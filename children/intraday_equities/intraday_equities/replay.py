@@ -723,6 +723,13 @@ class EquityReplay:
         self._cash_flow_funding_instants = ()
         self._cash_flow_funding_index = 0
         self._cash_balance = Decimal("0")
+        #: Every cash-flow body this replay booked to its ledger, in order.
+        self.cash_flows = []
+
+    @property
+    def cash_balance(self):
+        """The running cash balance (``Decimal``): funding plus every fill's cash."""
+        return self._cash_balance
 
     def run(self, bars, decisions=()):
         """Drive ServeLoop over ``bars`` and return fills/skips/refusals."""
@@ -998,6 +1005,7 @@ class EquityReplay:
         if due:
             self._cash_flow_ledger.append_many(due)
             self._cash_balance += sum(Decimal(record["body"]["amount"]) for record in due)
+            self.cash_flows.extend(dict(record["body"]) for record in due)
         instants = self._cash_flow_funding_instants
         index = self._cash_flow_funding_index
         while index < len(instants) and instants[index] < window_end_ms:
@@ -1755,11 +1763,36 @@ class DevelopmentReplay(Node):
 
     def run(self, ctx, inputs):
         """Refuse out-of-window decisions/bars, then replay through :class:`ReplayAdapter`."""
+        self._refuse_out_of_window(inputs["bars"], inputs["decisions"])
+        return ReplayAdapter(self._policy, self._cash_flow_policy).replay(
+            list(inputs["bars"]), list(inputs["decisions"])
+        )
+
+    def _refuse_out_of_window(self, bars, decisions):
+        """Refuse decisions at/after ``evidence_end`` and bars past the fill suffix.
+
+        Shared by this node and ``DevelopmentSimulation`` (ADR-0182 S7), so
+        the evidence window is enforced by one gate.
+
+        Parameters
+        ----------
+        bars : iterable of dict
+            Rows carrying ``asof_ms`` and ``symbol``.
+        decisions : iterable of dict
+            Rows carrying ``asof_ms``.
+
+        Raises
+        ------
+        ConfigError
+            A decision at or after the day after ``evidence_end``, a weekend
+            fill-only bar, or fill-only bars beyond ``fill_suffix_weekdays``
+            / ``fill_suffix_bars``.
+        """
         exclusive = self._exclusive_end_ms()
         suffix_bars = int(self._policy.fill_suffix_bars)
         suffix_weekdays = int(self._policy.fill_suffix_weekdays)
         late_decisions = [
-            row for row in inputs["decisions"]
+            row for row in decisions
             if int(row["asof_ms"]) >= exclusive
         ]
         if late_decisions:
@@ -1768,7 +1801,7 @@ class DevelopmentReplay(Node):
                 f"{len(late_decisions)} decision(s) at or after {exclusive}"
             ])
         per_symbol = {}
-        for bar in inputs["bars"]:
+        for bar in bars:
             asof_ms = int(bar["asof_ms"])
             if asof_ms < exclusive:
                 continue
@@ -1790,9 +1823,6 @@ class DevelopmentReplay(Node):
                     f"evidence_end {self.params['evidence_end']!r} excludes "
                     f"bar(s) beyond fill_suffix_bars={suffix_bars}"
                 ])
-        return ReplayAdapter(self._policy, self._cash_flow_policy).replay(
-            list(inputs["bars"]), list(inputs["decisions"])
-        )
 
 
 NODE_KINDS = {

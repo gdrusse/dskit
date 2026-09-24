@@ -1,0 +1,177 @@
+{
+  "name": "intraday-equities-development-simulation-smoke",
+  "notes": "ADR-0182 S8 one-segment smoke: run-development-simulation.json with fold 2 only (2022-09-09..2022-11-10) and the bars bounded to that segment; nothing else moves (pinned by test_config_validates_and_is_ineligible). Run it first under /usr/bin/time -v to extrapolate wall time and RSS to folds 2..19. DEVELOPMENTAL POST-SELECTION, deployment_eligible=false. Run from the child root: python -m dskit.pipeline run configs/run-development-simulation-smoke.json --adapter intraday_equities.",
+  "pipeline": {
+    "bars_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "/home/russell/dskit/children/intraday_equities/ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1662681600000,
+        "end_ms": 1668124800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "As in run-development-simulation.json, bounded to segment 2: end_ms (exclusive) = 2022-11-11."
+    },
+    "bars_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "/home/russell/dskit/children/intraday_equities/ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1662681600000,
+        "end_ms": 1668124800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "As in run-development-simulation.json, bounded to segment 2: end_ms (exclusive) = 2022-11-11."
+    },
+    "bars": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$bars_a.records",
+        "e": "$bars_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each bar record already carries its source; the two sources' symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      }
+    },
+    "publish": {
+      "uses": "intraday_equities-forecast-publisher",
+      "params": {
+        "inventory_manifest": "/home/russell/dskit/children/intraday_equities/pipeline_runs/p16-final-model-gate-inventory-staged-2026-02-28-fa061189/stages/inventory.json",
+        "inventory_manifest_sha256": "3c0741e3c2018718d73a2f532db2d6095ae48c478b89afd827b8f1e193e604c4",
+        "gates": "/home/russell/dskit/children/intraday_equities/pipeline_runs/p16-final-model-gates-staged-2026-02-28-77a7ab08/stages/gates.json",
+        "gates_sha256": "1fb4dec20a7ac32867f8a9cb20d1c96225b2818029034ab5ce7f1b2c872d8771",
+        "program_calendar": "configs/program-calendar.json",
+        "fold_schedule": "development_outer",
+        "walk_root": "/home/russell/dskit/children/intraday_equities",
+        "first_fold": 2,
+        "last_fold": 2,
+        "calibration_window_days": 730,
+        "uncertainty": {
+          "n_scenarios": 64,
+          "coverage": 0.95,
+          "window_blocks": 10,
+          "null_draws": 999,
+          "seed": 0
+        }
+      },
+      "notes": "One release per fold: cap artifact (TRUE stamps, never a confirmation), survivors and leads read from the pinned gates.json, per-lead attested uncertainty calibrated on folds < k inside the trailing 730 days; one ForecastBundle per (lattice tick, lead group), yhat only."
+    },
+    "decide": {
+      "uses": "intraday_equities-mio-decider",
+      "inputs": {
+        "releases": "$publish.releases"
+      },
+      "params": {
+        "mio": {
+          "risk_aversion_gamma": 2.0,
+          "n_tangents": 32,
+          "n_scenarios_max": 64,
+          "cvar_alpha": 0.95,
+          "cvar_limit": null,
+          "cardinality": 5,
+          "min_ticket": 0.0,
+          "hfdr_q": 0.3,
+          "band_bps": 10.0,
+          "max_position_notional": 1000000000000.0,
+          "bundle_max_staleness_ms": 0,
+          "cap_max_staleness_ms": 5529600000,
+          "deployment_mode": false,
+          "uncertainty_max_calibration_age_ms": 5529600000,
+          "uncertainty_min_coverage": 0.5,
+          "cap_evidence_look_ahead": true
+        }
+      },
+      "notes": "EquityKellyMIO base params, sized per tick inside simulate on live cash; bundle/cap pins and Schwab cost knobs are bound per tick (from the publisher and fill-policy.json). ADR-0182 development placeholders, not owner rulings."
+    },
+    "simulate": {
+      "uses": "intraday_equities-development-simulation",
+      "inputs": {
+        "bars": "$bars.merged",
+        "releases": "$publish.releases",
+        "bundles": "$publish.bundles",
+        "mio": "$decide.mio"
+      },
+      "params": {
+        "deployment_eligible": false,
+        "evidence_end": "2025-10-16",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
+        "caps": "development-only",
+        "cash_flow_policy": "configs/cash-flow-policy.json",
+        "cash_flow_policy_sha256": "501e27afca2ecae6aeb7a3d66136001aafa4d52dab9c98409496d0c446f0c878",
+        "first_fold": 2,
+        "last_fold": 2,
+        "consume_bars": true
+      }
+    },
+    "report": {
+      "uses": "intraday_equities-simulation-report",
+      "inputs": {
+        "fills": "$simulate.fills",
+        "skipped": "$simulate.skipped",
+        "refused": "$simulate.refused",
+        "cash": "$simulate.cash",
+        "metadata": "$simulate.metadata",
+        "releases": "$publish.releases"
+      }
+    },
+    "write_fills": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$simulate.fills"
+      },
+      "params": {
+        "path": "pipeline_runs/development-simulation-smoke-fills.jsonl",
+        "source": "ADR-0182 development simulation fills (developmental post-selection, not deployment evidence)"
+      }
+    },
+    "write_refused": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$simulate.refused"
+      },
+      "params": {
+        "path": "pipeline_runs/development-simulation-smoke-refused.jsonl",
+        "source": "ADR-0182 development simulation refusals"
+      }
+    },
+    "write_daily": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$report.daily"
+      },
+      "params": {
+        "path": "pipeline_runs/development-simulation-smoke-daily.jsonl",
+        "source": "ADR-0182 development simulation daily NAV/P&L"
+      }
+    },
+    "write_summary": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$report.summary"
+      },
+      "params": {
+        "path": "pipeline_runs/development-simulation-smoke-summary.json",
+        "source": "ADR-0182 development simulation summary and run metadata"
+      }
+    }
+  }
+}

@@ -173,7 +173,7 @@ intraday_equities/
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
 │   ├── forecast_bundle.py # ruled label inverse + confirmed-cap contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
-│   ├── simulation.py    # ADR-0182 publisher (caps/uncertainty/bundles) + per-tick MIO decider
+│   ├── simulation.py    # ADR-0182 publisher, per-tick MIO decider, simulate + report nodes
 │   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
@@ -182,7 +182,7 @@ intraday_equities/
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay
+├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/plans/          # owner-reviewed implementation plans and hard stops

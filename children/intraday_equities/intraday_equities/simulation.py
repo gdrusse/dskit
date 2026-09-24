@@ -1,4 +1,4 @@
-"""Development simulation nodes (ADR-0182): forecast publisher and per-tick MIO decider.
+"""Development simulation nodes (ADR-0182): publisher, per-tick MIO decider, simulation, report.
 
 The simulation replays the P16 walk-forward as production would have run
 it: each outer fold is one model RELEASE, retrained on the calendar's
@@ -11,6 +11,10 @@ release, a cap artifact plus attested uncertainty; per tick, one
 The ``decide`` node carries the validated ``EquityKellyMIO`` params, and
 :class:`MioDecider` is the per-tick strategy an ``EquityReplay`` calls to
 size each lattice tick from those bundles and the replay's live cash.
+:class:`DevelopmentSimulation` runs one ``EquityReplay`` segment per
+release over its ``bars`` input, carrying cash between releases, and
+:class:`SimulationReport` folds the fills through ``WindowBook`` into a
+daily NAV/P&L report.
 
 Point in time, by construction rather than by care: a release's
 calibration reads ONLY rows of earlier folds stamped before its cutoff,
@@ -26,8 +30,13 @@ from __future__ import annotations
 import json
 import math
 import os
+from bisect import bisect_right
+from collections import Counter
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from fractions import Fraction
+from zoneinfo import ZoneInfo
 
 from dskit.pipeline.attempts import (
     merge_session_totals,
@@ -40,7 +49,7 @@ from dskit.pipeline.false_signal import (
     GrenanderLocalFdr,
     SignalEvidence,
 )
-from dskit.pipeline.node import Node, class_ref, register_node_kind, reject_unknown_params
+from dskit.pipeline.node import ConfigError, Node, class_ref, register_node_kind, reject_unknown_params
 from dskit.pipeline.outcome_interval import (
     MAX_SCENARIOS,
     MIN_SCENARIOS,
@@ -56,7 +65,9 @@ from dskit.pipeline.uncertainty_intake import (
     CoverageEvidence,
     UncertaintyAttestation,
 )
+from dskit.production.accounting import WindowBook
 from dskit.production.base import canonical_hash
+from dskit.production.records import Fill
 
 from .final_gates import (
     DEVELOPMENT_EVIDENCE_SCOPE,
@@ -66,7 +77,7 @@ from .final_gates import (
 )
 from .final_model import _epoch_ms
 from .forecast_bundle import ConfirmedCaps, ForecastBundle
-from .nodes_capital import EquityKellyMIO, SchwabCostModel
+from .nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, EquityKellyMIO, SchwabCostModel
 from .nodes import (
     LABEL_PARAMS,
     LABEL_RETURN_BASIS,
@@ -75,8 +86,17 @@ from .nodes import (
     _resolve_path,
     _tapes_from_bars,
 )
+from .replay import CashFlowPolicy, DevelopmentReplay, EquityReplay
 
-__all__ = ["NODE_KINDS", "ForecastPublisher", "MioDecider", "MioDeciderNode"]
+__all__ = [
+    "DISCLOSURE",
+    "NODE_KINDS",
+    "DevelopmentSimulation",
+    "ForecastPublisher",
+    "MioDecider",
+    "MioDeciderNode",
+    "SimulationReport",
+]
 
 #: ADR-0152's measured attainment floor for the widened false-signal
 #: reading. It is NOT measured on this panel; the evidence id says so.
@@ -1094,9 +1114,530 @@ class MioDeciderNode(Node):
         return {"mio": {"params": dict(self.params["mio"]), "lead_groups": leads}}
 
 
+#: Stamped on every ``simulate``/``report`` row, the summary and the run
+#: metadata (ADR-0182 S7, Revision 2): nothing here is deployment evidence.
+DISCLOSURE = {
+    "deployment_eligible": False,
+    "evidence_scope": "development_replay_post_selection",
+    "cap_evidence_look_ahead": CAP_LOOK_AHEAD_DISCLOSURE,
+}
+#: A bundle's ``price`` is the fold cache tape's float32 close; the bar's
+#: close is the same minute read from the store. Relative float32 rounding
+#: is ~6e-8, so anything past this is a different minute or a different tape.
+_PRICE_TOLERANCE = 1e-6
+
+
+def _local_date(asof_ms, tz):
+    """ISO local date of an epoch-ms instant in ``tz``."""
+    return datetime.fromtimestamp(int(asof_ms) / 1000, tz=timezone.utc).astimezone(tz).date().isoformat()
+
+
+class _DayCloses:
+    """Forward to a per-tick decider, keeping each local date's last live account state.
+
+    ``EquityReplay`` hands its decider :meth:`EquityReplay._portfolio` after
+    every tick's exits and entries, so the last one of a date is that
+    date's closing cash and NAV as the replay itself holds them.
+    """
+
+    def __init__(self, inner, tz):
+        self._inner = inner
+        self._tz = tz
+        self.closes = {}
+
+    def decide(self, asof_ms, portfolio):
+        """Record ``portfolio`` as its date's latest state, then delegate."""
+        self.closes[_local_date(asof_ms, self._tz)] = portfolio
+        return self._inner.decide(asof_ms, portfolio)
+
+
+class DevelopmentSimulation(DevelopmentReplay):
+    """Run every release's segment through ``EquityReplay`` with the per-tick MIO (ADR-0182 S7).
+
+    The ``intraday_equities-development-simulation`` kind (role
+    ``transform``). A :class:`~intraday_equities.replay.DevelopmentReplay`
+    subclass, so it keeps that doorway's gates -- ``deployment_eligible``
+    false, ``caps`` ``development-only``, the ``evidence_end`` window
+    (``_refuse_out_of_window``) and the digest-pinned fill and cash-flow
+    policies -- and adds nothing but the segment loop. It reads NO data
+    itself: its ``bars`` input is sliced into one segment per release
+    (``[segment_start_ms, segment_end_ms)``, gate-admitted names only,
+    ``halted`` false where the source carries no halt flag), and each
+    segment runs ``EquityReplay(fill policy, cash policy,
+    decider=MioDecider(...))`` -- the production release lifecycle: new
+    model, new release, restart, account carried. Cash carries through a
+    derived ``CashFlowPolicy`` whose ``initial_capital_amount`` is the
+    previous segment's closing cash, so the pinned seed is booked once and
+    every trading date gets exactly one daily contribution; a segment that
+    ends with an open lot refuses. Every output row, and the metadata,
+    carry :data:`DISCLOSURE`.
+
+    Parameters
+    ----------
+    params : dict
+        ``DevelopmentReplay``'s five, with ``cash_flow_policy`` and
+        ``cash_flow_policy_sha256`` REQUIRED here, plus ``first_fold`` and
+        ``last_fold`` (ints >= 2, the releases this run must receive) and
+        optional ``consume_bars`` (JSON bool, default false): clear the
+        ``bars`` input list once it is sliced -- the explicit ownership
+        transfer ``concat``'s ``consume_inputs`` makes, for bounded memory.
+
+    Inputs
+    ------
+    ``bars`` (records), ``releases`` and ``bundles`` (the publisher's),
+    ``mio`` (the ``decide`` node's).
+
+    Outputs
+    -------
+    ``fills``, ``skipped``, ``refused``
+        The replays' rows plus the decider's (``mio_refused``,
+        ``open_lot_at_decision``), each with ``fold`` and ``release_id``.
+    ``cash``
+        One row per trading date: the ledger's booked amount, the carried
+        cash (segment-opening rows only), the external ``contribution``
+        and its running total, and the replay's own closing ``cash_close``,
+        ``nav_close`` and ``marks``.
+    ``metadata``
+        The disclosure, the pins, and per segment its opening and closing
+        cash.
+
+    Examples
+    --------
+    ::
+
+        node = DevelopmentSimulation("simulate", {
+            "deployment_eligible": False, "evidence_end": "2025-10-16",
+            "fill_policy": "configs/fill-policy.json", "fill_policy_sha256": fill_sha,
+            "caps": "development-only",
+            "cash_flow_policy": "configs/cash-flow-policy.json",
+            "cash_flow_policy_sha256": cash_sha,
+            "first_fold": 2, "last_fold": 19,
+        })
+        out = node.run(ctx, {"bars": bars, "releases": releases, "bundles": bundles, "mio": mio})
+    """
+
+    outputs = ("fills", "skipped", "refused", "cash", "metadata")
+    _PARAMS = DevelopmentReplay._PARAMS + (
+        "cash_flow_policy",
+        "cash_flow_policy_sha256",
+        "first_fold",
+        "last_fold",
+    )
+    _OPTIONAL_PARAMS = ("consume_bars",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none (the inherited gates first)."""
+        problems = super().validate_params(params)
+        for name in ("first_fold", "last_fold"):
+            if name in params:
+                problems.extend(ForecastPublisher._int_problems(params, name, 2))
+        if not problems and params["last_fold"] < params["first_fold"]:
+            problems.append("last_fold must be >= first_fold")
+        if not isinstance(params.get("consume_bars", False), bool):
+            problems.append(f"consume_bars must be a JSON bool, got {params['consume_bars']!r}")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require ``bars``/``bundles`` lists, a non-empty ``releases`` list and a ``mio`` mapping."""
+        problems = []
+        for port in ("bars", "bundles", "releases"):
+            if not isinstance(inputs.get(port), list):
+                problems.append(f"{port} must be a list")
+        if isinstance(inputs.get("releases"), list) and not inputs["releases"]:
+            problems.append("releases must not be empty")
+        mio = inputs.get("mio")
+        if not isinstance(mio, dict) or not {"params", "lead_groups"} <= set(mio):
+            problems.append("mio must be the decide node's {params, lead_groups}")
+        return problems
+
+    def run(self, ctx, inputs):
+        """Replay every segment in fold order, carrying cash; see the class docstring."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ConfigError([f"{self.key}: {problem}" for problem in problems])
+        releases = sorted(inputs["releases"], key=lambda release: release["fold"])
+        folds = [release["fold"] for release in releases]
+        declared = list(range(self.params["first_fold"], self.params["last_fold"] + 1))
+        if folds != declared:
+            raise ConfigError([
+                f"{self.key}: the releases cover folds {folds}, but first_fold..last_fold "
+                f"declare {declared}"
+            ])
+        bundles = inputs["bundles"]
+        self._refuse_out_of_window(inputs["bars"], [{"asof_ms": b["decision_ts"]} for b in bundles])
+        segments, census = self._segment_bars(inputs["bars"], releases)
+        if self.params.get("consume_bars", False):
+            inputs["bars"].clear()
+        tz = self._cash_flow_policy.timezone
+        out = {"fills": [], "skipped": [], "refused": [], "cash": []}
+        summaries = []
+        carried = Decimal("0")
+        contributed = Decimal("0")
+        for index, release in enumerate(releases):
+            bars, segments[index] = segments[index], None
+            self._refuse_price_disagreement(release, bundles, bars)
+            policy = self._cash_flow_policy
+            if index:
+                policy = CashFlowPolicy({**policy.to_obj(), "initial_capital_amount": str(carried)})
+            decider = MioDecider(release, bundles, inputs["mio"], self._policy, ctx)
+            recorder = _DayCloses(decider, tz)
+            replay = EquityReplay(self._policy, policy, decider=recorder)
+            result = replay.run(bars)
+            stuck = [row for row in result["refused"] if row["reason"] == "expiry_past_tape"]
+            if stuck:
+                raise ConfigError([
+                    f"{self.key}: segment fold {release['fold']} ended with {len(stuck)} open lot(s) "
+                    f"that cannot exit inside it, e.g. {stuck[:3]}"
+                ])
+            stamp = {"fold": release["fold"], "release_id": release["release_id"], **DISCLOSURE}
+            out["fills"].extend({**row, **stamp} for row in result["fills"])
+            out["skipped"].extend({**row, **stamp} for row in result["skipped"] + decider.skipped)
+            out["refused"].extend({**row, **stamp} for row in result["refused"] + decider.refused)
+            rows, contributed = self._cash_rows(replay, recorder, carried if index else None, contributed, tz)
+            out["cash"].extend({**row, **stamp} for row in rows)
+            summaries.append({
+                "fold": release["fold"],
+                "release_id": release["release_id"],
+                "segment_start_ms": release["segment_start_ms"],
+                "segment_end_ms": release["segment_end_ms"],
+                "opening_cash": str(carried),
+                "closing_cash": str(replay.cash_balance),
+                "trading_days": len(rows),
+                "bars": len(bars),
+                "fills": len(result["fills"]),
+            })
+            carried = replay.cash_balance
+            del bars, replay, recorder, decider
+        out["metadata"] = {
+            **DISCLOSURE,
+            "evidence_end": self.params["evidence_end"],
+            "first_fold": self.params["first_fold"],
+            "last_fold": self.params["last_fold"],
+            "fill_policy_sha256": self.params["fill_policy_sha256"],
+            "cash_flow_policy_sha256": self.params["cash_flow_policy_sha256"],
+            "currency": self._cash_flow_policy.currency,
+            "timezone": tz.key,
+            "segments": summaries,
+            **census,
+        }
+        return out
+
+    def _segment_bars(self, bars, releases):
+        """Slice ``bars`` into one minimal bar list per release; count what no segment holds."""
+        policy = self._policy
+        starts = [release["segment_start_ms"] for release in releases]
+        ends = [release["segment_end_ms"] for release in releases]
+        admitted = [set(release["survivors"]) for release in releases]
+        prices = (policy.decision_price_field, policy.fill_price_field, policy.forced_exit_price_field)
+        segments = [[] for _ in releases]
+        outside = not_admitted = 0
+        for bar in bars:
+            asof = int(bar["asof_ms"])
+            k = bisect_right(starts, asof) - 1
+            if k < 0 or asof >= ends[k]:
+                outside += 1
+                continue
+            symbol = bar[policy.symbol_field]
+            if symbol not in admitted[k]:
+                not_admitted += 1
+                continue
+            row = {policy.symbol_field: symbol, "asof_ms": asof, policy.halt_field: bar.get(policy.halt_field, False)}
+            row.update({field: bar[field] for field in prices if field in bar})
+            segments[k].append(row)
+        return segments, {"bars_outside_segments": outside, "bars_not_admitted": not_admitted}
+
+    def _refuse_price_disagreement(self, release, bundles, bars):
+        """Refuse when a bar's decision close is not the bundle's price for that minute."""
+        field = self._policy.decision_price_field
+        closes = {(bar[self._policy.symbol_field], bar["asof_ms"]): bar.get(field) for bar in bars}
+        bad = []
+        for bundle in bundles:
+            if bundle["release_id"] != release["release_id"]:
+                continue
+            for row in bundle["rows"]:
+                close = closes.get((row["entity"], int(bundle["decision_ts"])))
+                if close is not None and abs(close - row["price"]) > _PRICE_TOLERANCE * max(abs(row["price"]), 1.0):
+                    bad.append((row["entity"], bundle["decision_ts"], close, row["price"]))
+        if bad:
+            raise ConfigError([
+                f"{self.key}: the bar {field} disagrees with the bundle price at {len(bad)} "
+                f"decision(s) of fold {release['fold']}, e.g. {bad[:3]}"
+            ])
+
+    @staticmethod
+    def _cash_rows(replay, recorder, carried, contributed, tz):
+        """One row per trading date from the replay's booked cash flows and its day closes."""
+        booked = {}
+        for body in replay.cash_flows:
+            day = _local_date(body["effective_at_ms"], tz)
+            booked[day] = booked.get(day, Decimal("0")) + Decimal(body["amount"])
+        if set(booked) != set(recorder.closes):
+            raise ConfigError([
+                f"funded dates {sorted(set(booked) ^ set(recorder.closes))} disagree with the "
+                "dates the replay ticked"
+            ])
+        rows = []
+        for position, day in enumerate(sorted(booked)):
+            carry = carried if carried is not None and position == 0 else Decimal("0")
+            contribution = booked[day] - carry
+            contributed += contribution
+            close = recorder.closes[day]
+            rows.append({
+                "date": day,
+                "booked": str(booked[day]),
+                "carried_in": str(carry),
+                "contribution": str(contribution),
+                "contributions_to_date": str(contributed),
+                "cash_close": close["cash"],
+                "nav_close": close["gross_limit"],
+                "marks": dict(close["mark_prices"]),
+            })
+        return rows, contributed
+
+
+class SimulationReport(Node):
+    """Fold the simulation's fills into a daily NAV/P&L report (ADR-0182 S7).
+
+    The ``intraday_equities-simulation-report`` kind (role ``report``). It
+    reads only its wires. Every fill becomes one ``records.Fill`` folded
+    through :class:`dskit.production.accounting.WindowBook` -- the one P&L
+    fold production uses -- once for the account, once per symbol and once
+    per lead. NAV is ``contributions to date + WindowBook.pnl(marks)``
+    (cash is contributions plus every fill's cash, so the two are the same
+    number); the replay's own day-close NAV rides beside it as
+    ``replay_nav`` and ``nav_discrepancy``, a cross-check of two
+    independent accounts of one history.
+
+    Parameters
+    ----------
+    params : dict
+        None (``notes`` allowed).
+
+    Inputs
+    ------
+    ``fills``, ``skipped``, ``refused``, ``cash``, ``metadata`` (the
+    ``simulate`` node's) and ``releases`` (the publisher's).
+
+    Outputs
+    -------
+    ``daily``
+        One row per trading date: ``nav``, ``contribution``,
+        ``contributions_to_date``, ``net_pnl`` (NAV less contributions),
+        ``realised_pnl`` and ``unrealised_pnl``, ``fees`` and
+        ``fees_to_date``, ``buy_notional``/``sell_notional``, ``turnover``
+        (gross notional / NAV), ``entries``/``exits``, ``drawdown`` (the
+        daily net P&L's peak-to-date less its value), ``replay_cash``,
+        ``replay_nav``, ``nav_discrepancy``, the fold and the disclosure.
+    ``summary``
+        Totals, ``max_drawdown`` (``WindowBook.drawdown``: fill-resolution
+        net P&L path), fills by kind, refusals and skips by reason,
+        attribution by symbol and by lead, per-segment release evidence,
+        the disclosure and the run metadata.
+
+    Examples
+    --------
+    ::
+
+        report = SimulationReport("report", {}).run(ctx, {**simulate_outputs, "releases": releases})
+        report["summary"]["final_nav"]
+    """
+
+    role = "report"
+    outputs = ("daily", "summary")
+    _PORTS = ("fills", "skipped", "refused", "cash", "releases")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse every knob: the report is a function of its wires."""
+        problems = []
+        reject_unknown_params(problems, params, ("notes",))
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the list ports and a metadata mapping that carries the disclosure."""
+        problems = [f"{port} must be a list" for port in self._PORTS if not isinstance(inputs.get(port), list)]
+        metadata = inputs.get("metadata")
+        if not isinstance(metadata, dict) or {k: metadata.get(k) for k in DISCLOSURE} != DISCLOSURE:
+            problems.append("metadata must be the simulate node's, carrying the development disclosure")
+        return problems
+
+    def run(self, ctx, inputs):
+        """Build ``daily`` and ``summary``; see the class docstring."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ConfigError([f"{self.key}: {problem}" for problem in problems])
+        metadata = inputs["metadata"]
+        tz = ZoneInfo(metadata["timezone"])
+        by_day = {}
+        for index, row in enumerate(inputs["fills"]):
+            by_day.setdefault(_local_date(row["asof_ms"], tz), []).append((index, row))
+        account, symbols, leads = WindowBook(), {}, {}
+        attribution = {}
+        daily, peak, fees_to_date, gross, navs = [], Fraction(0), Fraction(0), Fraction(0), []
+        marks = {}
+        for cash in inputs["cash"]:
+            day = cash["date"]
+            fees = buy = sell = Fraction(0)
+            entries = exits = 0
+            for index, row in by_day.pop(day, ()):
+                fill = self._fill(index, row, metadata["currency"])
+                account.apply(fill)
+                symbols.setdefault(row["symbol"], WindowBook()).apply(fill)
+                leads.setdefault(str(row["lead"]), WindowBook()).apply(fill)
+                notional = fill.price * fill.qty
+                entry = attribution.setdefault(row["symbol"], {
+                    "lead": row["lead"], "fees": Fraction(0), "entries": 0, "exits": 0,
+                    "buy_notional": Fraction(0), "sell_notional": Fraction(0),
+                })
+                entry["fees"] += Fraction(fill.fee)
+                entry["entries" if row["kind"] == "entry" else "exits"] += 1
+                entry["buy_notional" if row["side"] == "buy" else "sell_notional"] += Fraction(notional)
+                fees += Fraction(fill.fee)
+                if row["side"] == "buy":
+                    buy += Fraction(notional)
+                else:
+                    sell += Fraction(notional)
+                entries += row["kind"] == "entry"
+                exits += row["kind"] == "exit"
+            marks = cash["marks"]
+            contributed = Fraction(Decimal(cash["contributions_to_date"]))
+            pnl = account.pnl(marks.get)
+            nav = contributed + pnl
+            peak = max(peak, pnl)
+            fees_to_date += fees
+            gross += buy + sell
+            navs.append(nav)
+            daily.append({
+                "date": day,
+                "nav": float(nav),
+                "contribution": float(Decimal(cash["contribution"])),
+                "contributions_to_date": float(contributed),
+                "net_pnl": float(pnl),
+                "realised_pnl": float(account.realised),
+                "unrealised_pnl": float(account.unrealised(marks.get)),
+                "fees": float(fees),
+                "fees_to_date": float(fees_to_date),
+                "buy_notional": float(buy),
+                "sell_notional": float(sell),
+                "turnover": float((buy + sell) / nav) if nav > 0 else None,
+                "entries": entries,
+                "exits": exits,
+                "drawdown": float(peak - pnl),
+                "replay_cash": cash["cash_close"],
+                "replay_nav": cash["nav_close"],
+                "nav_discrepancy": float(nav) - cash["nav_close"],
+                "fold": cash["fold"],
+                "release_id": cash["release_id"],
+                **DISCLOSURE,
+            })
+        if by_day:
+            raise ConfigError([f"{self.key}: fills on dates with no cash row: {sorted(by_day)[:5]}"])
+        summary = self._summary(inputs, daily, account, marks, symbols, leads, attribution, gross, navs)
+        return {"daily": daily, "summary": summary}
+
+    @staticmethod
+    def _fill(index, row, currency):
+        """One simulation fill row as the ``records.Fill`` ``WindowBook`` folds."""
+        return Fill(
+            fill_id=f"{row['fold']}-{index}",
+            venue_ref="development-replay",
+            client_ref=f"{row['kind']}-{row['symbol']}-{row['lead']}-{row['asof_ms']}",
+            instrument=row["symbol"],
+            side=row["side"],
+            qty=Decimal(str(row["qty"])),
+            price=Decimal(str(row["price"])),
+            fee=Decimal(str(row["fee"])),
+            fee_currency=currency,
+            liquidity="taker",
+            status="final",
+            ts_ms=int(row["asof_ms"]),
+            native=None,
+        )
+
+    @staticmethod
+    def _counts(rows):
+        """``{reason: count}`` over rows."""
+        return dict(Counter(row["reason"] for row in rows))
+
+    def _summary(self, inputs, daily, account, marks, symbols, leads, attribution, gross, navs):
+        """Return the run's totals, attribution and evidence (JSON)."""
+        refusals = self._counts(inputs["refused"])
+        by_symbol = {
+            symbol: {
+                "lead": entry["lead"],
+                "realised_pnl": float(symbols[symbol].realised),
+                "fees": float(entry["fees"]),
+                "entries": entry["entries"],
+                "exits": entry["exits"],
+                "buy_notional": float(entry["buy_notional"]),
+                "sell_notional": float(entry["sell_notional"]),
+            }
+            for symbol, entry in sorted(attribution.items())
+        }
+        by_lead = {}
+        for symbol, entry in by_symbol.items():
+            lead = by_lead.setdefault(str(entry["lead"]), {"symbols": [], "fees": 0.0, "entries": 0, "exits": 0})
+            lead["symbols"].append(symbol)
+            lead["fees"] += entry["fees"]
+            lead["entries"] += entry["entries"]
+            lead["exits"] += entry["exits"]
+        for lead, book in leads.items():
+            by_lead[lead]["realised_pnl"] = float(book.realised)
+        mean_nav = sum(navs) / len(navs) if navs else Fraction(0)
+        last = daily[-1] if daily else {}
+        return {
+            **DISCLOSURE,
+            "metadata": inputs["metadata"],
+            "currency": inputs["metadata"]["currency"],
+            "first_date": daily[0]["date"] if daily else None,
+            "last_date": last.get("date"),
+            "trading_days": len(daily),
+            "final_nav": last.get("nav"),
+            "total_contributed": last.get("contributions_to_date"),
+            "net_pnl": last.get("net_pnl"),
+            "realised_pnl": float(account.realised),
+            "unrealised_pnl": float(account.unrealised(marks.get)),
+            "fees": sum(row["fees"] for row in daily),
+            "gross_notional": float(gross),
+            "turnover": float(gross / mean_nav) if mean_nav > 0 else None,
+            "max_drawdown": float(account.drawdown(marks.get)),
+            "max_daily_drawdown": max((row["drawdown"] for row in daily), default=0.0),
+            "max_abs_nav_discrepancy": max((abs(row["nav_discrepancy"]) for row in daily), default=0.0),
+            "fills_by_kind": {
+                kind: sum(1 for row in inputs["fills"] if row["kind"] == kind) for kind in ("entry", "exit")
+            },
+            "refusals_by_reason": refusals,
+            "skips_by_reason": self._counts(inputs["skipped"]),
+            "mio_refused": refusals.get("mio_refused", 0),
+            "by_symbol": by_symbol,
+            "by_lead": by_lead,
+            "segments": [
+                {
+                    "fold": release["fold"],
+                    "release_id": release["release_id"],
+                    "cutoff": release["cutoff"],
+                    "survivors": release["survivors"],
+                    "lead_map": release["lead_map"],
+                    "measured_coverage": release["calibration"]["measured_coverage"],
+                    "false_signal": {
+                        lead: {
+                            "pi_hat": group["false_signal"]["artifact"]["pi_hat"],
+                            "pi_widened": group["false_signal"]["artifact"]["pi_widened"],
+                        }
+                        for lead, group in release["uncertainty"].items()
+                    },
+                }
+                for release in sorted(inputs["releases"], key=lambda release: release["fold"])
+            ],
+        }
+
+
 NODE_KINDS = {
     "intraday_equities-forecast-publisher": ForecastPublisher,
     "intraday_equities-mio-decider": MioDeciderNode,
+    "intraday_equities-development-simulation": DevelopmentSimulation,
+    "intraday_equities-simulation-report": SimulationReport,
 }
 
 for _name, _cls in NODE_KINDS.items():
