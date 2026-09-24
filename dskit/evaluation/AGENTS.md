@@ -35,7 +35,9 @@ package. Importing it registers nothing; the node is used by dotted path.
 - **The narrative is rules, not prose generation.** Add a sentence as a
   new `Narrative._rule` over numbers the report already shows.
 - **No look-ahead in a render.** A section showing a decision never reads
-  an `outcome` event.
+  an `outcome` event; `InferenceSection` (via `diagnostics.py`) is the one
+  reader and shows aggregates only. `decisions.csv` is pinned identical
+  with and without outcomes.
 - **Nothing silently dropped.** The census reports unaccounted decisions
   and orders; a capped render says what it cut and where the rest lives.
 - **Charts are classes, colours are CSS.** SVG elements carry classes;
@@ -59,13 +61,14 @@ dskit/evaluation/
 ├── __main__.py    python -m dskit.evaluation render <events.jsonl> --out <dir>
 ├── events.py      schema v1 kinds, EventLog, Links, Census, LocalTime
 ├── book.py        EvaluationBook (WindowBook adapter, FIFO trips, days, TWR)
-├── statistics.py  StatisticsTable over STAT_NAMES
+├── statistics.py  StatisticsTable over STAT_NAMES; SolveSummary
+├── diagnostics.py ForecastDiagnostics (score x outcome: deciles, hit rate, rank IC)
 ├── criteria.py    Criterion / Verdict / Scorecard
 ├── units.py       money / count / ratio / percent / declared score units
 ├── narrative.py   Narrative ("What happened" by explicit rules) + HOW_TO_READ
 ├── provenance.py  git_revision, fill_provenance
 ├── svg.py         stdlib SVG charts + SessionScale + CHART_CSS + downsample
-├── sections.py    Section ABC + the nine default sections
+├── sections.py    Section ABC + the eleven default sections
 ├── report.py      BacktestReport -> events.jsonl, summary.md, report.html, CSVs
 ├── nodes.py       EvaluationReport pipeline node
 ├── README.md

@@ -23,6 +23,14 @@ in a collapsed table and, with every raw column, in `decisions.csv`.
 Busy trades-on-price panels are thinned deterministically (every
 refusal/skip and the largest wins and losses always drawn) and say so.
 
+Phase 2 adds three readings. **Optimizer**: every `solve` event (status,
+termination, objective, gap, seconds, how often each constraint bound).
+**Inference diagnostics**: each candidate's score against its `outcome`
+— calibration by score decile, hit rate per bucket, rank IC per instant
+and per day; the only section that reads outcomes. **Guard findings**:
+an order's `findings` (the production ledger's pre-trade checks) show as
+the decision log's `guard_verdict` column and a (guard, verdict) summary.
+
 ## Writing the log
 
 One JSON object per line. Envelope: `schema`, `seq` (strictly increasing),
@@ -34,12 +42,12 @@ Unknown fields are refused, every problem listed at once.
 |---|---|
 | `run_start` | `run_id`, `tz` (IANA, display only); optional `title`, `project`, `config_hash`, `config`, `code`, `data`, `env` (`RunStart.capture_env()`), `criteria`, `trials`, `units` (`{"score": "return" \| "log_return" \| "bp" \| "prob" \| "usd" \| "z" \| "raw", "money": "USD"}`), `sources` (where filled provenance came from) |
 | `decision` | `decision_id`, `action` (`enter/exit/hold/skip/refuse`), `reason`; optional `candidates` (`instrument, score, rank, eligible, reason`), `chosen`, `threshold`, `edge`, `detail`, `model` |
-| `order` | `order_id`, `side`, `qty`; optional `decision_id`, `ref_price`, `legs` |
+| `order` | `order_id`, `side`, `qty`; optional `decision_id`, `ref_price`, `legs`, `findings` (guard checks: `guard, measure, value, bound, verdict, reason, window, scope_key` — shown in the decision log) |
 | `refusal` / `skip` | `reason` plus `decision_id` and/or `order_id`; optional `detail` |
 | `fill` | `fill_id`, `side`, `qty`, `price`; optional `order_id`, `fee`, `ref_price`, `tag` |
 | `mark` | `price` |
 | `cashflow` | `amount` (+ in, - out); optional `rule`, `detail` |
-| `outcome` | `decision_id`, `realized`; optional `horizon` (never rendered beside its decision) |
+| `outcome` | `decision_id`, `realized`, per candidate `instrument`; optional `horizon` (read only by `InferenceSection`, never beside its decision) |
 | `solve` | `solver`, `status`; optional `termination`, `objective`, `bound`, `gap`, `seconds`, `variables`, `constraints`, `model`, `binding` (`name, rows, binding, min_slack, dual`; the body of `libs.pyomo.SolveRecord.to_obj()`, rendered by `OptimizerSection`) |
 | `run_end` | `status`; optional `wall_s` |
 
@@ -90,7 +98,10 @@ dskit/evaluation/
 │                  Links (decision -> order -> fill), Census, LocalTime
 ├── book.py        EvaluationBook: WindowBook-backed equity/cash/exposure,
 │                  FIFO round trips, per-day rows, TWR via PerformanceCalculator
-├── statistics.py  StatisticsTable over STAT_NAMES; estimators from pipeline.stats
+├── statistics.py  StatisticsTable over STAT_NAMES; SolveSummary; estimators
+│                  from pipeline.stats
+├── diagnostics.py ForecastDiagnostics: candidate score x outcome pairs, deciles,
+│                  hit rate by bucket, rank IC (pipeline.ordering)
 ├── criteria.py    Criterion / Verdict / Scorecard (PASS, FAIL, INCONCLUSIVE)
 ├── units.py       number display: money, counts, ratios, declared score units
 ├── narrative.py   Narrative: the rule-written "What happened"; HOW_TO_READ
@@ -99,7 +110,8 @@ dskit/evaluation/
 │                  (market-closed gaps collapsed), BarChart, Histogram,
 │                  downsample; CSS-variable palette, light/dark
 ├── sections.py    Section ABC + Overview, Summary, Equity, TradesOnPrice,
-│                  DecisionLog, Cash, Distribution, Period, Provenance
+│                  DecisionLog (+ guard findings), Optimizer, Cash,
+│                  Distribution, Inference, Period, Provenance
 ├── report.py      BacktestReport -> the five files, atomically
 ├── nodes.py       EvaluationReport pipeline node (role report)
 ├── README.md      this file
