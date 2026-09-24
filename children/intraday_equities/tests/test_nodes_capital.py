@@ -18,6 +18,7 @@ import pytest
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, node_class_errors
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 
+from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import (
     BUNDLE_UNIT,
     ZERO_DRIFT,
@@ -1757,3 +1758,102 @@ class TestTheUncertaintyPortIsRefusedByNameNotWalked:
         )
         assert any("no entry in the admitted false-signal" in p for p in problems), problems
         assert any("no calibrated outcome band" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# ADR-0182 Revision 2: the declared developmental switch
+# ``cap_evidence_look_ahead``. It skips exactly the two cap-timing refusals
+# ("cap is from the future", "cap.generated_ms ... after bundle
+# decision_ts"), is legal only in development mode, and is disclosed in the
+# evidence output. Every other cap check is unchanged.
+# ---------------------------------------------------------------------------
+
+LOOK_AHEAD_DISCLOSURE = "caps use post-selection evidence (look-ahead disclosed)"
+
+
+def _future_cap(**overrides):
+    """A cap with TRUE stamps a day after the tick (evidence end, then generation)."""
+    later = ASOF_MS + 86_400_000
+    fields = {
+        "evidence_end_ms": later,
+        "generated_ms": later + 1000,
+        "evidence": {"sha256": CAP_EVIDENCE_SHA256, "scope": "synthetic_mio_demo", "end_ms": later},
+    }
+    fields.update(overrides)
+    return _cap(**fields)
+
+
+class TestCapEvidenceLookAhead:
+    def test_cap_look_ahead_default_refuses_future_cap(self):
+        cap = _future_cap()
+        problems = _node(cap=cap).validate_inputs(_uinputs(cap=cap))
+        assert any("cap is from the future" in p for p in problems), problems
+        assert any("after bundle decision_ts" in p for p in problems), problems
+        explicit = _node(cap=cap, cap_evidence_look_ahead=False).validate_inputs(_uinputs(cap=cap))
+        assert explicit == problems
+
+    def test_cap_look_ahead_true_admits_future_cap_and_records_disclosure(self, tmp_path):
+        pytest.importorskip("pyomo")
+        cap = _future_cap()
+        node = _node(cap=cap, cap_evidence_look_ahead=True)
+        assert node.validate_inputs(_uinputs(cap=cap)) == []
+        out = node.run(_ctx(tmp_path), _uinputs(cap=cap))
+        assert out["evidence"]["cap_evidence_look_ahead"] == LOOK_AHEAD_DISCLOSURE
+        default = _node().run(_ctx(tmp_path), _uinputs())
+        assert "cap_evidence_look_ahead" not in default["evidence"]
+        assert out["trades"] == default["trades"]
+
+    def test_cap_look_ahead_true_requires_development_mode(self):
+        deploy = {**PARAMS, "deployment_mode": True}
+        problems = EquityKellyMIO.validate_params({**deploy, "cap_evidence_look_ahead": True})
+        assert any(
+            "cap_evidence_look_ahead" in p and "deployment_mode" in p for p in problems
+        ), problems
+        for params in (deploy, {**deploy, "cap_evidence_look_ahead": False}):
+            assert not any("cap_evidence_look_ahead" in p for p in EquityKellyMIO.validate_params(params))
+        assert EquityKellyMIO.validate_params({**PARAMS, "cap_evidence_look_ahead": True}) == []
+
+    @pytest.mark.parametrize("value", [1, 0, 1.0, "true", None, [True]])
+    def test_cap_look_ahead_must_be_json_bool(self, value):
+        problems = EquityKellyMIO.validate_params({**PARAMS, "cap_evidence_look_ahead": value})
+        assert any("cap_evidence_look_ahead must be a JSON boolean" in p for p in problems), problems
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "stale", "digest", "producer_document", "producer_node", "evidence",
+            "deployment_eligible", "release", "scope",
+        ],
+    )
+    def test_cap_look_ahead_keeps_every_other_cap_check(self, case):
+        pinned = given = _future_cap()
+        params = {}
+        if case == "stale":
+            pinned = given = _cap(generated_ms=ASOF_MS - 999_999)
+            needle = "cap is stale"
+        elif case == "digest":
+            given = _future_cap(caps=[{"symbol": "AAPL", "capped_horizon": 2}])
+            needle = "cap_artifact_sha256"
+        elif case == "producer_document":
+            params, needle = {"cap_producer_document_sha256": "f" * 64}, "cap producer document"
+        elif case == "producer_node":
+            params, needle = {"cap_producer_node": "elsewhere"}, "cap producer node"
+        elif case == "evidence":
+            params, needle = {"cap_evidence_sha256": "f" * 64}, "cap evidence does not match"
+        elif case == "deployment_eligible":
+            pinned = given = _future_cap(deployment_eligible=True)
+            needle = "deployment_eligible must be false"
+        elif case == "release":
+            pinned = given = _future_cap(model_release_id="another-release")
+            needle = "model_release_id"
+        else:
+            later = ASOF_MS + 86_400_000
+            pinned = given = _future_cap(
+                evidence_scope=DEVELOPMENT_EVIDENCE_SCOPE,
+                evidence={"sha256": CAP_EVIDENCE_SHA256, "scope": DEVELOPMENT_EVIDENCE_SCOPE, "end_ms": later},
+            )
+            needle = "P16 development scope"
+        node = _node(cap=pinned, cap_evidence_look_ahead=True, **params)
+        problems = node.validate_inputs(_uinputs(cap=given))
+        assert any(needle in p for p in problems), problems
+        assert not any("from the future" in p or "after bundle decision_ts" in p for p in problems)
