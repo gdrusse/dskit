@@ -1,4 +1,4 @@
-"""ADR-0182 S5: the point-in-time forecast publisher over a synthetic three-fold walk.
+"""ADR-0182 S5/S6: the forecast publisher and the per-tick MIO decider on a synthetic walk.
 
 The fixture is a miniature P16 walk written with the real writers
 (``PredictionWriter``, ``write_feature_cache``) and the real universe
@@ -27,8 +27,9 @@ from intraday_equities.feature_cache import write_feature_cache
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
 from intraday_equities.nodes import Universe, _child_root, _label_from_params, _tapes_from_bars
-from intraday_equities.nodes_capital import REQUIRED_INTAKES
-from intraday_equities.simulation import ForecastPublisher, _Walk
+from intraday_equities.nodes_capital import REQUIRED_INTAKES, EquityKellyMIO
+from intraday_equities.replay import CashFlowPolicy, EquityReplay, FillPolicy
+from intraday_equities.simulation import ForecastPublisher, MioDecider, MioDeciderNode, _Walk
 
 KIND = "intraday_equities-forecast-publisher"
 FIRST = date(2022, 5, 6)
@@ -132,7 +133,11 @@ def _repin(fx, mutate):
 @pytest.fixture
 def fx(tmp_path):
     """A pinned three-fold walk, its gate artifact, calendar and a run dir."""
-    root = str(tmp_path)
+    return _build_fx(str(tmp_path))
+
+
+def _build_fx(root):
+    """Write the pinned three-fold walk under ``root``; return its handles."""
     stamps, prices = _tape()
     cache = os.path.join(root, "walk", "pipeline_cache", "a")
     frames = [
@@ -504,3 +509,297 @@ def test_outputs_are_json_and_the_kind_is_registered(fx):
     params["uncertainty"] = dict(params["uncertainty"], null_draws=10)
     assert ForecastPublisher.validate_params(params)
     assert ForecastPublisher.validate_params(fx["params"]) == []
+
+
+# --- ADR-0182 S6: the per-tick MIO decider inside EquityReplay --------------
+
+CONFIGS = os.path.join(_child_root(), "configs")
+FILL_POLICY = FillPolicy.from_path(os.path.join(CONFIGS, "fill-policy.json"))
+CASH_POLICY = CashFlowPolicy.from_path(os.path.join(CONFIGS, "cash-flow-policy.json"))
+#: ADR-0182's development placeholders, except ``hfdr_q`` 0.9 and
+#: ``uncertainty_min_coverage`` 0.05: the three-fold fixture's widened
+#: false-signal rates (0.66-1.0) and short-window coverage would otherwise
+#: forbid every trade, and these tests need trades to check.
+MIO = {
+    "risk_aversion_gamma": 2.0, "n_tangents": 32, "n_scenarios_max": 64,
+    "cvar_alpha": 0.95, "cvar_limit": None, "cardinality": 5, "min_ticket": 0.0,
+    "hfdr_q": 0.9, "band_bps": 10.0, "max_position_notional": 1e12,
+    "bundle_max_staleness_ms": 0, "cap_max_staleness_ms": 5_529_600_000,
+    "deployment_mode": False, "uncertainty_max_calibration_age_ms": 5_529_600_000,
+    "uncertainty_min_coverage": 0.05, "cap_evidence_look_ahead": True,
+}
+
+
+def _decider(published, fx, **overrides):
+    node = MioDeciderNode("decide", {"mio": {**MIO, **overrides}})
+    mio = node.run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    return MioDecider(published["releases"][0], published["bundles"], mio, FILL_POLICY, fx["ctx"])
+
+
+def _thin_bars(published, fx):
+    """Each admitted name's tape bar at every lattice tick and the three minutes after it.
+
+    Enough for a lead-2 lot's next-bar fill and its forced exit, over all
+    four segment days, at a fraction of the full tape's ticks.
+    """
+    stamps, prices = fx["tape"]
+    keep = {b["decision_ts"] + k * 60_000 for b in published["bundles"] for k in range(4)}
+    return [
+        {"symbol": s, "asof_ms": int(t), "open": float(p), "close": float(p), "halted": False}
+        for s in published["releases"][0]["survivors"]
+        for t, p in zip(stamps, prices[s])
+        if int(t) in keep
+    ]
+
+
+def _book(fx, asof_ms, positions=None):
+    """A funded, flat account at ``asof_ms`` marked at the fixture tape's closes."""
+    stamps, prices = fx["tape"]
+    loc = int(np.searchsorted(stamps, asof_ms))
+    return {
+        "asof_ms": asof_ms, "cash": 1020.0, "buying_power": 1020.0,
+        "positions": dict(positions or {}),
+        "mark_prices": {s: float(prices[s][loc]) for s in ("LLY", "LRCX", "NOW")},
+        "gross_limit": 1020.0,
+    }
+
+
+def _ticks(published):
+    """Decision instants that carry a bundle for every lead group, ascending."""
+    leads = {}
+    for bundle in published["bundles"]:
+        leads.setdefault(bundle["decision_ts"], set()).add(bundle["lead"])
+    return sorted(ts for ts, found in leads.items() if found == {1, 2})
+
+
+class _Spy:
+    """Forward to a decider, recording every ``(asof_ms, portfolio, orders)``."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = []
+
+    def decide(self, asof_ms, portfolio):
+        orders = self.inner.decide(asof_ms, portfolio)
+        self.calls.append((asof_ms, json.loads(json.dumps(portfolio)), list(orders)))
+        return orders
+
+
+class _Scripted:
+    """A stub decider: fixed orders per instant, and the portfolio it saw at each tick."""
+
+    def __init__(self, orders):
+        self.orders = orders
+        self.seen = {}
+
+    def decide(self, asof_ms, portfolio):
+        self.seen[asof_ms] = portfolio
+        return list(self.orders.get(asof_ms, ()))
+
+
+@pytest.fixture(scope="module")
+def sim(tmp_path_factory):
+    """One funded four-day MIO replay of segment 2, shared by the read-only checks."""
+    fx = _build_fx(str(tmp_path_factory.mktemp("s6")))
+    published = _run(fx)
+    spy = _Spy(_decider(published, fx))
+    bars = _thin_bars(published, fx)
+    out = EquityReplay(FILL_POLICY, CASH_POLICY, decider=spy).run(bars)
+    return {"fx": fx, "published": published, "bars": bars, "spy": spy, "out": out}
+
+
+def _by_symbol(bars):
+    out = {}
+    for bar in sorted(bars, key=lambda b: b["asof_ms"]):
+        out.setdefault(bar["symbol"], []).append(bar)
+    return out
+
+
+def _zero_fee_policy():
+    with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
+        raw = json.load(handle)
+    return FillPolicy({**raw, "spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0})
+
+
+def _minute(i):
+    return _ms(FIRST) + OPEN_MS + i * 60_000
+
+
+def test_decider_sees_cash_after_this_bars_fills():
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0 + i, "close": 10.5 + i, "halted": False}
+        for i in range(6)
+    ]
+    buy = {"symbol": "AAA", "asof_ms": _minute(0), "lead": 3, "qty": 10, "side": "buy"}
+    stub = _Scripted({_minute(0): [buy]})
+    out = EquityReplay(_zero_fee_policy(), CASH_POLICY, decider=stub).run(bars)
+    assert set(stub.seen) == {_minute(i) for i in range(6)}
+    assert stub.seen[_minute(0)]["cash"] == 1020.0
+    # The entry fills at t1's open (11) BEFORE the decider runs at t1.
+    at1 = stub.seen[_minute(1)]
+    assert at1 == {
+        "asof_ms": _minute(1), "cash": 910.0, "buying_power": 910.0,
+        "positions": {"AAA": 10}, "mark_prices": {"AAA": 11.5},
+        "gross_limit": 910.0 + 10 * 11.5,
+    }
+    # At t3 the lot exits at the next bar (index 4 = fill + lead): no longer a
+    # position for the decider, still part of NAV.
+    assert stub.seen[_minute(3)]["positions"] == {}
+    assert stub.seen[_minute(3)]["gross_limit"] == 910.0 + 10 * 13.5
+    assert stub.seen[_minute(4)]["cash"] == 910.0 + 10 * 14.0
+    assert [(f["kind"], f["asof_ms"], f["price"]) for f in out["fills"]] == [
+        ("entry", _minute(1), 11.0), ("exit", _minute(4), 14.0),
+    ]
+
+
+def test_mio_orders_are_integer_shares_filled_next_bar_open(sim):
+    calls = sim["spy"].calls
+    orders = [order for _, _, found in calls for order in found]
+    assert orders, "the fixture must trade for this test to mean anything"
+    decided = {(b["decision_ts"], b["lead"]) for b in sim["published"]["bundles"]}
+    by_symbol = _by_symbol(sim["bars"])
+    entries = [f for f in sim["out"]["fills"] if f["kind"] == "entry"]
+    refused = {(r["symbol"], r["asof_ms"], r["lead"]): r["reason"] for r in sim["out"]["refused"]}
+    matched = 0
+    for order in orders:
+        assert type(order["qty"]) is int and order["qty"] > 0
+        assert order["side"] == "buy"
+        assert (order["asof_ms"], order["lead"]) in decided
+        seq = by_symbol[order["symbol"]]
+        nxt = seq[[b["asof_ms"] for b in seq].index(order["asof_ms"]) + 1]
+        found = [
+            f for f in entries
+            if (f["symbol"], f["lead"], f["asof_ms"]) == (order["symbol"], order["lead"], nxt["asof_ms"])
+        ]
+        if found:
+            assert (found[0]["qty"], found[0]["price"]) == (order["qty"], nxt["open"])
+            matched += 1
+        else:
+            assert refused[(order["symbol"], nxt["asof_ms"], order["lead"])] == "insufficient_cash"
+    assert matched == len(entries) > 0
+
+
+def test_lots_force_exit_at_fill_plus_lead(sim):
+    by_symbol = _by_symbol(sim["bars"])
+    fills = sim["out"]["fills"]
+    entries = [f for f in fills if f["kind"] == "entry"]
+    exits = [f for f in fills if f["kind"] == "exit"]
+    assert len(exits) == len(entries) > 0
+    for entry in entries:
+        seq = by_symbol[entry["symbol"]]
+        due = seq[[b["asof_ms"] for b in seq].index(entry["asof_ms"]) + entry["lead"]]
+        assert any(
+            (f["symbol"], f["lead"], f["side"], f["qty"], f["asof_ms"], f["price"])
+            == (entry["symbol"], entry["lead"], "sell", entry["qty"], due["asof_ms"], due["open"])
+            for f in exits
+        )
+
+
+def test_mio_refusal_trades_nothing_and_is_recorded(sim):
+    decider = _decider(sim["published"], sim["fx"], uncertainty_min_coverage=0.99)
+    tick = _ticks(sim["published"])[0]
+    assert decider.decide(tick, _book(sim["fx"], tick)) == []
+    assert [(r["asof_ms"], r["lead"], r["reason"]) for r in decider.refused] == [
+        (tick, 1, "mio_refused"), (tick, 2, "mio_refused"),
+    ]
+    assert all("coverage" in r["detail"] for r in decider.refused)
+
+
+def test_cash_never_negative_over_a_funded_multi_day_tape(sim):
+    calls = sim["spy"].calls
+    days = sorted({asof // 86_400_000 for asof, _, _ in calls})
+    assert len(days) == STEP
+    assert all(portfolio["cash"] >= 0.0 for _, portfolio, _ in calls)
+    fills = sim["out"]["fills"]
+    assert len({f["asof_ms"] // 86_400_000 for f in fills if f["kind"] == "entry"}) >= 2
+    flows = sum(
+        (f["price"] * f["qty"] - f["fee"]) if f["side"] == "sell" else -(f["price"] * f["qty"] + f["fee"])
+        for f in fills
+    )
+    # The last tick is flat: its cash is the seed, $20 per trading day, and every fill.
+    assert calls[-1][1]["positions"] == {}
+    assert calls[-1][1]["cash"] == pytest.approx(1000.0 + 20.0 * len(days) + flows)
+
+
+def test_lead_groups_share_one_cash_budget_in_ascending_order(sim, monkeypatch):
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        out = real(self, ctx, inputs)
+        seen.append((inputs["bundle"][0]["lead"], inputs["portfolio"]["cash"], out["cash_after"]))
+        return out
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    decider = _decider(sim["published"], sim["fx"])
+    for tick in _ticks(sim["published"]):
+        seen.clear()
+        decider.decide(tick, _book(sim["fx"], tick))
+        if seen and seen[0][2] < seen[0][1]:
+            break
+    else:
+        pytest.fail("no tick where the first lead group buys")
+    assert [lead for lead, _, _ in seen] == [1, 2]
+    assert seen[0][1] == 1020.0
+    assert seen[1][1] == seen[0][2]
+
+
+def test_lot_expires_before_next_lattice_decision_for_max_lead_10():
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
+        for i in range(91)
+    ]
+    lattice = [_minute(0), _minute(30), _minute(60)]
+    stub = _Scripted({
+        ts: [{"symbol": "AAA", "asof_ms": ts, "lead": 10, "qty": 1, "side": "buy"}] for ts in lattice
+    })
+    out = EquityReplay(_zero_fee_policy(), CASH_POLICY, decider=stub).run(bars)
+    assert all(stub.seen[ts]["positions"] == {} for ts in lattice)
+    assert out["refused"] == [] and out["skipped"] == []
+    assert [(f["kind"], f["asof_ms"]) for f in out["fills"]] == [
+        ("entry", _minute(1)), ("exit", _minute(11)),
+        ("entry", _minute(31)), ("exit", _minute(41)),
+        ("entry", _minute(61)), ("exit", _minute(71)),
+    ]
+
+
+def test_thin_unit_with_open_lot_is_skipped_not_exited(sim, monkeypatch):
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(([row["entity"] for row in inputs["bundle"]], inputs["portfolio"]["positions"]))
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    decider = _decider(sim["published"], sim["fx"])
+    tick = _ticks(sim["published"])[0]
+    orders = decider.decide(tick, _book(sim["fx"], tick, positions={"LLY": 4}))
+    assert all(o["symbol"] != "LLY" and o["side"] == "buy" for o in orders)
+    assert decider.skipped == [
+        {"symbol": "LLY", "asof_ms": tick, "lead": 2, "reason": "open_lot_at_decision"},
+    ]
+    assert seen == [(["NOW"], {}), (["LRCX"], {})]
+
+
+def test_decide_node_emits_only_json_params(sim):
+    out = MioDeciderNode("decide", {"mio": MIO}).run(
+        sim["fx"]["ctx"], {"releases": sim["published"]["releases"]}
+    )
+    assert json.loads(json.dumps(out)) == out
+    assert out == {"mio": {"params": MIO, "lead_groups": [1, 2]}}
+    assert DEFAULT_NODE_KINDS.get("intraday_equities-mio-decider")[0] is MioDeciderNode
+    assert MioDeciderNode.role == "transform"
+
+
+def test_decide_node_refuses_bound_or_undeclared_params():
+    check = MioDeciderNode.validate_params
+    assert check({"mio": MIO}) == []
+    for bound in ({"spread_bps": 2.2}, {"cap_artifact_sha256": "a" * 64}, {"bundle_producer_node": "x"}):
+        assert any("must not carry" in p for p in check({"mio": {**MIO, **bound}}))
+    undeclared = {k: v for k, v in MIO.items() if k != "cap_evidence_look_ahead"}
+    assert any("declared true" in p for p in check({"mio": undeclared}))
+    assert any("declared true" in p for p in check({"mio": {**MIO, "cap_evidence_look_ahead": False}}))
+    assert any(p.startswith("mio: ") and "hfdr_q" in p for p in check({"mio": {**MIO, "hfdr_q": 1.5}}))
+    assert any("deployment_mode" in p for p in check({"mio": {**MIO, "deployment_mode": True}}))
+    assert check({"mio": MIO, "extra": 1})

@@ -1355,6 +1355,60 @@ def test_bar_tape_records_added_per_timestamp():
     assert BarTape([], "src").start_ms() == 0
 
 
+# --- ADR-0182 S6: the upfront-decisions path is unchanged by the decider hook
+
+
+def test_run_with_explicit_decisions_unchanged():
+    # Every upfront refusal, an insufficient-cash refusal at fill, a same-lead
+    # refusal, and two funded round trips -- pinned literally, then required
+    # byte-identical through the decider=None seam.
+    policy = _policy(_ZERO_FEES)
+    bars = (
+        _cf_bars([10.0, 11.0, 12.0, 13.0, 14.0], symbol="AAA")
+        + _cf_bars([20.0, 21.0, 22.0, 23.0, 24.0], symbol="BBB")
+    )
+    decisions = [
+        _decision("AAA", _cf_t(0), lead=2, qty=5),
+        _decision("BBB", _cf_t(0), lead=1, qty=100),
+        _decision("ZZZ", _cf_t(0), lead=1),
+        _decision("AAA", _cf_t(1), lead=0),
+        _decision("AAA", _cf_t(0) + 30_000, lead=1),
+        _decision("BBB", _cf_t(4), lead=1),
+        _decision("AAA", _cf_t(1), lead=2, qty=1),
+        _decision("BBB", _cf_t(2), lead=1, qty=10),
+    ]
+    expected = {
+        "fills": [
+            {"kind": "entry", "symbol": "AAA", "lead": 2, "side": "buy", "qty": 5,
+             "price": 11.0, "asof_ms": _cf_t(1), "fee": 0.0},
+            {"kind": "exit", "symbol": "AAA", "lead": 2, "side": "sell", "qty": 5,
+             "price": 13.0, "asof_ms": _cf_t(3), "fee": 0.0},
+            {"kind": "entry", "symbol": "BBB", "lead": 1, "side": "buy", "qty": 10,
+             "price": 23.0, "asof_ms": _cf_t(3), "fee": 0.0},
+            {"kind": "exit", "symbol": "BBB", "lead": 1, "side": "sell", "qty": 10,
+             "price": 24.0, "asof_ms": _cf_t(4), "fee": 0.0},
+        ],
+        "skipped": [],
+        "refused": [
+            {"symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol"},
+            {"symbol": "AAA", "asof_ms": _cf_t(1), "lead": 0, "reason": "lead"},
+            {"symbol": "AAA", "asof_ms": _cf_t(0) + 30_000, "lead": 1,
+             "reason": "unknown_decision_bar"},
+            {"symbol": "BBB", "asof_ms": _cf_t(4), "lead": 1, "reason": "fill_bar_past_tape"},
+            {"symbol": "BBB", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash"},
+            {"symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "same_lead_open"},
+        ],
+    }
+    cash = _cash_flow_policy()
+    out = EquityReplay(policy, cash).run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    assert out == expected
+    hooked = EquityReplay(policy, cash, decider=None).run(
+        copy.deepcopy(bars), copy.deepcopy(decisions)
+    )
+    assert json.dumps(hooked, sort_keys=True) == json.dumps(out, sort_keys=True)
+    assert ReplayAdapter(policy, cash).replay(bars, decisions) == expected
+
+
 # --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
 
 
