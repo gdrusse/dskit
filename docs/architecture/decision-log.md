@@ -22979,6 +22979,54 @@ document, pins swapped for a synthetic fixture, planned and run by the
 above is a node in the plan and no stage runs outside it),
 `test_report_is_a_separate_node_fed_only_by_wires`.
 
+**Amendment S7(d) — replay-only runtime-inventory memo in `dskit.production`
+(2026-09-24).** The S6 finding (every `ServeLoop` tick re-runs
+`verify_release` -> `RuntimeFingerprint.capture`, which re-reads and
+re-parses the metadata of every installed distribution) blocks S8, so the
+non-goal "no `dskit.production` change" is amended for exactly one seam.
+Measured: `capture` 66.8 ms/call (this venv, 156 distributions; the S6
+lens measured the same 66.8 ms, the hotspot `importlib.metadata` -> the
+`email` parser, which `capture` also ran twice per distribution); a
+synthetic 390-tick, 11-name day with lattice buys took 42.2 / 43.8 s wall.
+Why it cannot live in the child: the tick object is `loop.Tick`,
+constructed inside `ServeLoop._tick` (loop.py:1275) with no injection
+point, and `Tick.verify_release` calls the module function
+`verify_release` -> `_check_runtime` -> `RuntimeFingerprint.capture`; the
+only child-side seams were monkeypatching `dskit.production` or
+subclassing `ServeLoop` to skip the runtime check, and both weaken D24
+("startup, every tick and immediately before submit re-verify ... runtime
+fingerprint", pinned by `tests/production/test_loop.py:1338`). No cache or
+flag exists (`grep -n "cache\|memo\|lru" dskit/production/release.py`:
+none). Change (release.py only): `capture`'s distribution loop moves
+verbatim into `_read_inventory`; new `runtime_capture_memo()` context
+manager sets a process-level switch; only inside it does `_inventory`
+reuse the last read while the inventory's stat identity is unchanged --
+`sys.path`, the discovered distribution directories, and `(st_ino,
+st_size, st_mtime_ns)` of each directory and of `METADATA`, `PKG-INFO`,
+`RECORD`, `direct_url.json` (an installer creates, replaces or removes
+these, so install/upgrade/reinstall/uninstall are seen; an in-place
+rewrite preserving inode, size AND nanosecond mtime is not -- disclosed,
+and the reason this is opt-in). Interpreter, platform and project-file
+fields are recomputed every capture either way; `verify_release` still
+compares by value. Outside the block NOTHING changes: every capture
+re-reads from bytes (pinned by
+`test_capture_outside_the_memo_rereads_the_inventory_every_call`), so the
+production path is not weakened. `EquityReplay.run` wraps its loop in the
+block (one process mints the release and re-verifies it per tick). After:
+the same synthetic day 16.1 / 15.9 s (2.7x); per-tick wall 0.108 s ->
+0.041 s. The residual is the scratch ledger's `fsync` (`ledger._sync`,
+`durable_write_json` checkpoints: 15.8 s of a 21.6 s profile even under
+`durability.fsync: "none"`); with the replay scratch dir on tmpfs
+(`TMPDIR=/dev/shm/...`, operational only, no code) the same day took
+3.6 s. Estimates for folds 2..19 (~306k ticks, excluding MIO solves):
+~9.4 h before, ~3.5 h after, ~0.8 h with a tmpfs scratch dir. RED/GREEN:
+`tests/production/test_release.py` (`test_capture_outside_the_memo_rereads_the_inventory_every_call`,
+`test_capture_inside_the_memo_reuses_an_unchanged_inventory`,
+`test_the_memo_sees_an_installed_upgraded_rewritten_or_removed_distribution`,
+`test_the_memo_block_is_reentrant_and_always_switches_off`) and
+`children/intraday_equities/tests/test_replay.py::test_replay_reads_the_runtime_inventory_once_per_run_not_per_tick`
+(a 12-bar replay read the inventory 14 times; now once).
+
 **S8 — real-data run (operational, no code).** WSL, one job at a time, tmux
 session `prodsim`, log and work under `/home/russell/prodsim-work/`,
 `TMPDIR=/home/russell/prodsim-work/tmp` (EquityReplay's and the pin
@@ -23025,6 +23073,7 @@ the smoke shows it matters.
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
 | report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
 | Revision 3 node kinds `intraday_equities-forecast-publisher`, `-mio-decider`, `-development-simulation`, `-simulation-report` | toolkit kinds (`tests/pipeline/test_toolkit_conformance.py`: `concat`, `join`, `derive`, `groupby`, `records-write`, `table-write`, `run-report`, `banking-report`, `hpo-grid`); child kinds (`intraday_equities-bars`, `-kelly-mio`, `-development-replay`, `SyntheticMioSource`); `grep -rn "subgraph" dskit/pipeline` (only the `hpo-grid` rerun seam, param overrides, not per-tick inputs) | Bars, union and writes REUSE `intraday_equities-bars`, `concat`, `records-write`, `table-write`; sizing REUSES `intraday_equities-kelly-mio` per tick. No existing kind publishes real fold forecasts, carries MIO base params to a per-tick loop, runs a funded multi-release replay, or folds fills into a NAV report (`run-report`/`banking-report` report model runs, not accounts). |
+| `release.runtime_capture_memo`, `_inventory`, `_inventory_identity`, `_read_inventory` (S7(d)) | `grep -n "cache\|memo\|lru" dskit/production/release.py` (none); `loop.Tick` construction (loop.py:1275, no injection); `verify_release`/`_check_runtime`; `importlib.metadata`'s own `FastPath` cache (directory listings only, still parses every `METADATA`) | `_read_inventory` IS `capture`'s loop, moved verbatim; the memo is the smallest opt-in switch the child can set without monkeypatching or skipping D24's per-tick check. |
 | new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`; child README/AGENTS trees updated. |
 
 **Branch / worktree sweep (concurrent-effort findings checked).** After

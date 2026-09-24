@@ -61,7 +61,12 @@ from dskit.production.records import (
     Proposal,
     Quote,
 )
-from dskit.production.release import ReleaseManifest, RuntimeFingerprint, artifact_digest
+from dskit.production.release import (
+    ReleaseManifest,
+    RuntimeFingerprint,
+    artifact_digest,
+    runtime_capture_memo,
+)
 
 from .nodes_capital import SchwabCostModel
 
@@ -756,7 +761,10 @@ class EquityReplay:
             self._enqueue_decision(decision)
         if not self._by_symbol:
             return self._result()
-        self._run_loop(bars)
+        # One process mints this release and re-verifies it every tick: the
+        # inventory is re-read only when it moved (ADR-0182 S7(d)).
+        with runtime_capture_memo():
+            self._run_loop(bars)
         last = {symbol: seq[-1]["asof_ms"] for symbol, seq in self._by_symbol.items()}
         for (sym, lead), lot in self._book.unclosed():
             self.refused.append({

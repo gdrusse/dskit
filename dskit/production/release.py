@@ -17,7 +17,10 @@ re-digests every artifact, refuses a missing or future-dated timestamp,
 refuses one older than the document's ``max_artifact_age`` with the
 :data:`ARTIFACT_EXPIRED` reason, recaptures the runtime fingerprint and
 refuses drift, and (when the feed reports one) refuses a source-config
-hash the release did not bind. :class:`ReleaseReader` is the only
+hash the release did not bind. The one exception is opt-in and
+replay-only: inside :func:`runtime_capture_memo` (ADR-0182 S7(d)) the
+distribution inventory is re-read only when its stat identity moved.
+:class:`ReleaseReader` is the only
 capability a ``release_read`` node receives — ``get`` (digest-checked
 bytes) and ``names``, nothing else: no path, no handle, no write verb.
 
@@ -36,10 +39,12 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 import platform
 import re
 import sys
 import sysconfig
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from importlib import metadata
 from pathlib import Path
@@ -75,6 +80,7 @@ __all__ = [
     "artifact_digest",
     "fingerprint_class",
     "parse_iso_duration",
+    "runtime_capture_memo",
     "verify_release",
     "write_release",
 ]
@@ -316,6 +322,122 @@ class Distribution:
         return cls(**_fixed_fields(cls, obj, required=("name", "version")))
 
 
+#: The per-distribution files :func:`_read_inventory` reads (``""`` is the
+#: ``.dist-info``/``.egg-info`` directory itself), whose stat identity is
+#: :func:`_inventory_identity`'s key.
+_INVENTORY_FILES = ("", "METADATA", "PKG-INFO", "RECORD", "direct_url.json")
+
+#: Set only inside :func:`runtime_capture_memo` (ADR-0182 S7(d)). ``None``
+#: everywhere else, so every capture outside that block re-reads the bytes.
+_INVENTORY_MEMO = None
+
+
+@contextmanager
+def runtime_capture_memo():
+    """Reuse an unchanged distribution inventory across captures, inside this block only.
+
+    A historical replay (ADR-0182) mints its own release and then re-verifies
+    it on every simulated tick, in one process, thousands of times a
+    segment; each ``RuntimeFingerprint.capture`` re-reads and re-parses the
+    metadata of every installed distribution. Inside this block a capture
+    re-reads only when the inventory's stat identity moved: ``sys.path``, the
+    set of discovered distribution directories, or the ``(inode, size,
+    mtime_ns)`` of any such directory or of a file the capture reads. An
+    installer creates, replaces or removes those, so an install, upgrade,
+    reinstall or uninstall is seen at the next capture. What is NOT seen is
+    an in-place rewrite that keeps a file's inode, size and nanosecond
+    mtime -- which is why this is an opt-in for a replay and never the
+    production path: outside the block nothing changes and every capture
+    re-reads from bytes (D24). The interpreter, platform and project-file
+    fields are recomputed on every capture either way.
+
+    The block is reentrant (an inner block is a no-op) and always switches
+    the memo off when the outermost block exits.
+
+    Examples
+    --------
+    ::
+
+        with runtime_capture_memo():
+            loop.run()  # every tick's verify_release reuses one inventory read
+    """
+    global _INVENTORY_MEMO
+    if _INVENTORY_MEMO is not None:
+        yield
+        return
+    _INVENTORY_MEMO = {}
+    try:
+        yield
+    finally:
+        _INVENTORY_MEMO = None
+
+
+def _inventory_identity():
+    """Stat identity of the installed inventory, or None when one entry is not a path.
+
+    Returns
+    -------
+    tuple or None
+        ``sys.path`` plus, per discovered distribution, its directory and the
+        ``(st_ino, st_size, st_mtime_ns)`` of each of :data:`_INVENTORY_FILES`
+        (``None`` for an absent file). ``None`` -- never memoise -- when a
+        distribution has no filesystem path to stat.
+    """
+    identity = [tuple(sys.path)]
+    for dist in metadata.distributions():
+        root = getattr(dist, "_path", None)
+        if root is None:
+            return None
+        stamps = []
+        for name in _INVENTORY_FILES:
+            try:
+                stat = os.stat(os.path.join(root, name))
+            except OSError:
+                stamps.append(None)
+            else:
+                stamps.append((stat.st_ino, stat.st_size, stat.st_mtime_ns))
+        identity.append((str(root), tuple(stamps)))
+    return tuple(identity)
+
+
+def _read_inventory():
+    """Read every installed distribution from bytes: ``(entries, problems)``, both tuples."""
+    entries, problems = [], []
+    for dist in metadata.distributions():
+        name, version = dist.metadata["Name"], dist.metadata["Version"]
+        if not name or not version:
+            problems.append(f"distribution at {dist.locate_file('')} has no Name/Version metadata")
+            continue
+        record = dist.read_text("RECORD")
+        direct_url = dist.read_text("direct_url.json")
+        entries.append(
+            Distribution(
+                name=name,
+                version=version,
+                direct_url=direct_url.strip() if direct_url else None,
+                record_digest=(
+                    hashlib.sha256(record.encode("utf-8")).hexdigest() if record else None
+                ),
+            )
+        )
+    return tuple(entries), tuple(problems)
+
+
+def _inventory():
+    """Return the inventory ``capture`` records: read from bytes, or reused inside the memo block."""
+    memo = _INVENTORY_MEMO
+    if memo is None:
+        return _read_inventory()
+    key = _inventory_identity()
+    held = memo.get("held")
+    if key is not None and held is not None and held[0] == key:
+        return held[1]
+    value = _read_inventory()
+    if key is not None:
+        memo["held"] = (key, value)
+    return value
+
+
 @dataclass(frozen=True)
 class RuntimeFingerprint:
     """D24's runtime inventory: the interpreter, the platform and every installed distribution.
@@ -424,26 +546,8 @@ class RuntimeFingerprint:
                 digests[str(path)] = file_digest(str(path))
             else:
                 problems.append(f"project file {str(path)!r} is not there")
-        entries = []
-        for dist in metadata.distributions():
-            name, version = dist.metadata["Name"], dist.metadata["Version"]
-            if not name or not version:
-                problems.append(
-                    f"distribution at {dist.locate_file('')} has no Name/Version metadata"
-                )
-                continue
-            record = dist.read_text("RECORD")
-            direct_url = dist.read_text("direct_url.json")
-            entries.append(
-                Distribution(
-                    name=name,
-                    version=version,
-                    direct_url=direct_url.strip() if direct_url else None,
-                    record_digest=(
-                        hashlib.sha256(record.encode("utf-8")).hexdigest() if record else None
-                    ),
-                )
-            )
+        entries, inventory_problems = _inventory()
+        problems.extend(inventory_problems)
         if problems:
             raise ProductionError(problems)
         libc_name, libc_version = platform.libc_ver()
