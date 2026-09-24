@@ -185,6 +185,16 @@ after close), `candles` (`(ticker, ts)`), `fee_schedules` and `orderbooks`
 (provider-shaped bids, never mirrored) — through one injectable getter with
 pacing and 429/5xx retry; `libs/kalshi.py` is the knob reference.
 
+The `cboe` kind (ADR-0182) pulls Cboe's public CDN with no credential for a
+declared `symbols` list — `index_daily` (`(symbol, date)`: the daily
+history CSV, `DATE,OPEN,HIGH,LOW,CLOSE` or a close-only `DATE,<SYMBOL>`,
+dates emitted ISO and only after the cursor) and `option_chain`
+(`(option, quote_time)`: the 15-minute-delayed chain, OCC symbols parsed
+into root/expiry/right/strike, the New York `timestamp` converted to UTC,
+optional `roots` allowlist and `max_dte`; current state, never
+cursor-filtered) — through one injectable getter with pacing and 429/5xx
+retry; `libs/cboe.py` is the knob reference.
+
 The `predexon` kind (ADR-0075) pulls Predexon's Kalshi L2 order-book
 history as one `l2_snapshots` record per sequenced snapshot, keyed
 `(ticker, timestamp, sequence)`: ladders normalized to
@@ -319,6 +329,7 @@ dskit/onboarding/
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
+│   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)

@@ -1,0 +1,120 @@
+{
+  "name": "index-options-real-zoo",
+  "notes": "ADR-0182 zoo over the REAL rungs (Cboe SPX + VIX): empirical (R0a), log-HAR (R1) and LightGBM, identical except 'model' (contract_paths pin the readers, join, features, scores, condor report, backtest and walkforward). Run: python -m dskit.pipeline staged configs/run-real-zoo.json --asof <today>. First run is plan-only: paste the printed inventory sha256 into approval, set approved_by, run again. Primary score is twCRPS; the backtest metrics ride along per fold.",
+  "pipeline": {
+    "market": {
+      "uses": "index_options.observations:IndexCloseRows",
+      "params": {
+        "root": "./ob",
+        "source": "cboe-index",
+        "symbol": "SPX"
+      },
+      "notes": "Structural node only; each candidate document owns its own pipeline."
+    }
+  },
+  "stages": {
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "params": {
+        "candidates": [
+          {
+            "id": "empirical",
+            "group": "z21",
+            "family": "empirical-location-scale",
+            "representation": "tabular",
+            "feature_policy": "no conditioning: train-split empirical z shape",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "path": "run-real-distribution.json"
+          },
+          {
+            "id": "har",
+            "group": "z21",
+            "family": "log-har-ols",
+            "representation": "tabular",
+            "feature_policy": "log rv_1/rv_5/rv_22, train-only OLS",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "path": "run-real-har.json"
+          },
+          {
+            "id": "lightgbm",
+            "group": "z21",
+            "family": "lightgbm-scale",
+            "representation": "tabular",
+            "feature_policy": "log rv_1/rv_5/rv_22, shallow regularized booster fit on train",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 2,
+            "enabled": true,
+            "path": "run-real-lightgbm.json"
+          }
+        ],
+        "contract_paths": [
+          "pipeline.spx",
+          "pipeline.vix",
+          "pipeline.market",
+          "pipeline.rv",
+          "pipeline.labels",
+          "pipeline.fwd",
+          "pipeline.score",
+          "pipeline.condor",
+          "pipeline.backtest",
+          "pipeline.model.inputs",
+          "pipeline.model.params.fit_split",
+          "pipeline.model.params.label",
+          "pipeline.model.params.scale_field",
+          "pipeline.model.params.scale_multiplier",
+          "pipeline.model.params.n_samples",
+          "walkforward"
+        ],
+        "protocol": {
+          "attempt_family": "index-options-real-zoo",
+          "primary_score": "mean val threshold-weighted CRPS on |z| in [0.5, 2.5] (lower is better), locked Path A0002",
+          "null_baseline": "empirical location-scale rung (R0a)",
+          "cost_model": "equal fold weight; compute rank declared, not measured",
+          "lockbox": "none held out: val folds run 1995 through the pull date; a forward lockbox is the recorded-chain period (ADR-0182)",
+          "decision_rule": "report paired fold differences; prefer the simplest rung not detectably worse; never auto-promote",
+          "alpha": 0.05,
+          "comparison_hac_lags": 1,
+          "multiplicity_method": "bonferroni_all_pairwise",
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference"
+        }
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {
+        "inventory_sha256": "$plan.inventory_sha256"
+      },
+      "params": {
+        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
+        "approved_by": "PENDING-PLAN-REVIEW",
+        "approval_note": "First invocation is plan-only. Review the frozen inventory, then replace both PENDING values before any candidate may fit."
+      }
+    },
+    "run": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkRun",
+      "inputs": {
+        "candidates": "$plan.candidates",
+        "approval": "$approval.approval"
+      }
+    },
+    "compare": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkCompare",
+      "inputs": {
+        "runs": "$run.runs",
+        "protocol": "$plan.protocol",
+        "contracts": "$plan.contracts",
+        "approval": "$approval.approval"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": ""
+  }
+}

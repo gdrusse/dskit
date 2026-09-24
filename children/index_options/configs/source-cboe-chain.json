@@ -1,0 +1,12 @@
+{
+  "notes": "ADR-0182 recorder: Cboe 15-minute-delayed full option chain JSON per underlying (no credential). Register as source 'cboe-chain' with connector dskit.onboarding.libs.cboe:CboeConnector; acquire stream option_chain with --mode live twice per trading day (15:50 and 16:20 ET) into a durable root (~/data/index_options/ob). roots is an allowlist (SPXW PM weeklies/dailies and XSP); max_dte bounds the expiries kept. Recorded chains later calibrate the VIX proxy's skew/spread knobs and, once expiries settle, replace it.",
+  "symbols": [
+    "SPX",
+    "XSP"
+  ],
+  "roots": [
+    "SPXW",
+    "XSP"
+  ],
+  "max_dte": 70
+}

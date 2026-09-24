@@ -37,8 +37,9 @@ def params():
 class FixtureStore:
     """Actual localfiles acquisition; all writes stay under pytest's temp root."""
 
-    def __init__(self, directory, records):
+    def __init__(self, directory, records, source="index-fixture", effective_field="effective_at"):
         self.directory = directory
+        self.source = source
         self.fixtures = directory / "fixtures"
         self.fixtures.mkdir(parents=True)
         for stream, values in records.items():
@@ -46,9 +47,9 @@ class FixtureStore:
         self.root = OnboardingRoot.create(str(directory / "ob"))
         self.registry = self.root.registry()
         vid = self.registry.register("source_config", {
-            "name": "index-fixture", "catalog_source": "index-fixture-src",
+            "name": source, "catalog_source": f"{source}-src",
             "connector": "localfiles",
-            "config": {"path": str(self.fixtures), "effective_field": "effective_at"},
+            "config": {"path": str(self.fixtures), "effective_field": effective_field},
         }, origin="test")
         self.registry.transition(vid, "active", origin="test")
 
@@ -58,20 +59,20 @@ class FixtureStore:
         )
 
     def acquire(self, stream, mode="backfill"):
-        return run_acquisition(self.root, self.registry, "index-fixture", stream, mode)
+        return run_acquisition(self.root, self.registry, self.source, stream, mode)
 
     def node_params(self, **overrides):
-        return {"root": self.root.root, "source": "index-fixture", **overrides}
+        return {"root": self.root.root, "source": self.source, **overrides}
 
     def members(self, stream):
         # Deliberate test-only tamper surface, never a child reader implementation.
-        return sorted((Path(self.root.root) / "observations" / "index-fixture").glob(
+        return sorted((Path(self.root.root) / "observations" / self.source).glob(
             f"*/{stream}.jsonl"
         ))
 
 
 @pytest.fixture
 def store_factory(tmp_path):
-    def build(records, name="case"):
-        return FixtureStore(tmp_path / name, records)
+    def build(records, name="case", **source):
+        return FixtureStore(tmp_path / name, records, **source)
     return build

@@ -4,10 +4,11 @@ from abc import ABC, abstractmethod
 
 from dskit.pipeline.libs.numpy import narrow_params
 from dskit.pipeline.libs.observations import ObservationRows
+from dskit.pipeline.records import price_ok
 
 from .contracts import CashIndexContract, _IndexQuote, _IndexSettlement
 
-__all__ = ["ContractRows", "QuoteRows", "SettlementRows"]
+__all__ = ["ContractRows", "IndexCloseRows", "QuoteRows", "SettlementRows"]
 
 
 class _OptionRows(ObservationRows, ABC):
@@ -233,3 +234,192 @@ class SettlementRows(_OptionRows):
             Corpus, settlement identity, expiry and row version.
         """
         return ("corpus_id", "settlement_id", "expiry", "row_version")
+
+
+class IndexCloseRows(ObservationRows):
+    """Read one index's daily closes from the Cboe pack's ``index_daily`` stream.
+
+    Real data (ADR-0182). Index closes are not option rows, so this reader
+    deliberately bypasses the synthetic-provenance contracts in
+    ``contracts.py`` — those still validate the fixture track and are not
+    loosened here. It projects the declared ``symbol`` into the envelope
+    the numpy feature nodes read (``instrument``/``contract``/``group`` =
+    the symbol, ``close``, ``asof_ms``, ``date``) and also emits
+    ``by_date`` — ``{date: close}`` — the keyed side table dskit's
+    ``Join`` needs, so a second instance (``symbol: "VIX"``) joins onto
+    the first as ``iv_index`` with no child join code.
+
+    ``asof_ms`` is the date's UTC midnight: every daily feature and label
+    shares that stamp, so the walk-forward cut is consistent; it is not a
+    claim that the close was known at midnight.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        ``root`` and ``source`` (required), ``symbol`` (required, e.g.
+        ``"SPX"``), and the parent's optional ``since_ms`` /
+        ``as_of_acquisition_ms``.
+
+    Examples
+    --------
+    SPX closes and VIX as a side table::
+
+        spx = IndexCloseRows("spx", {"root": "./ob", "source": "cboe-index", "symbol": "SPX"})
+        vix = IndexCloseRows("vix", {"root": "./ob", "source": "cboe-index", "symbol": "VIX"})
+        rows, table = spx.run(None, {})["records"], vix.run(None, {})["by_date"]
+    """
+
+    outputs = ("records", "by_date")
+    _PARAMS = narrow_params(
+        ObservationRows._PARAMS, "stream", "key_fields", "ts_field", "ts_unit",
+        "ts_out", "shared_fields",
+    ) + ("symbol",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Add the required ``symbol`` to the parent's checks.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = super().validate_params(params)
+        symbol = params.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            problems.append(f"symbol is required and must be a non-empty string, got {symbol!r}")
+        return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Keep this research reader out of served graphs.
+
+        Parameters
+        ----------
+        params, verified_run_evidence : dict
+            Unused.
+
+        Returns
+        -------
+        str
+            Always forbidden.
+        """
+        return "forbidden"
+
+    def stream(self):
+        """Name the pack's daily index stream.
+
+        Returns
+        -------
+        str
+            ``"index_daily"``.
+        """
+        return "index_daily"
+
+    def key_fields(self):
+        """One row per symbol and trading date.
+
+        Returns
+        -------
+        tuple of str
+            ``("symbol", "date")``.
+        """
+        return ("symbol", "date")
+
+    def ts_field(self):
+        """Stamp each row from its ISO trading date.
+
+        Returns
+        -------
+        str
+            ``"date"``.
+        """
+        return "date"
+
+    def ts_unit(self):
+        """Read ``date`` as ISO.
+
+        Returns
+        -------
+        str
+            ``"iso"``.
+        """
+        return "iso"
+
+    def ts_out(self):
+        """Write the instant to the envelope's decision field.
+
+        Returns
+        -------
+        str
+            ``"asof_ms"``.
+        """
+        return "asof_ms"
+
+    def shared_fields(self):
+        """Intern nothing.
+
+        Returns
+        -------
+        tuple
+            Empty.
+        """
+        return ()
+
+    def project(self, records):
+        """Keep the declared symbol's rows as envelope dicts, oldest first.
+
+        Parameters
+        ----------
+        records : list of dict
+            The pack's winning rows, ``date`` stamped onto ``asof_ms``.
+
+        Returns
+        -------
+        list of dict
+            ``instrument``, ``contract``, ``group``, ``close``, ``asof_ms``
+            and ``date`` per row, sorted by ``asof_ms``.
+
+        Raises
+        ------
+        ValueError
+            When a kept row's close is not a positive number.
+        """
+        symbol = self.params["symbol"]
+        out = []
+        for record in records:
+            if record.get("symbol") != symbol:
+                continue
+            close = record.get("close")
+            if not price_ok(close):
+                raise ValueError(f"{self.key}: {symbol} {record.get('date')!r} close "
+                                 f"must be a positive number, got {close!r}")
+            out.append({"instrument": symbol, "contract": symbol, "group": symbol,
+                        "close": float(close), "asof_ms": record["asof_ms"],
+                        "date": record["date"]})
+        return sorted(out, key=lambda row: row["asof_ms"])
+
+    def run(self, ctx, inputs):
+        """Emit the rows and the ``{date: close}`` side table.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            Unused.
+        inputs : dict
+            Empty.
+
+        Returns
+        -------
+        dict
+            ``records`` and ``by_date``.
+        """
+        records = super().run(ctx, inputs)["records"]
+        return {"records": records, "by_date": {row["date"]: row["close"] for row in records}}

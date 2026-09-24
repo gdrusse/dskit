@@ -19,6 +19,7 @@ from dskit.onboarding import (
 from dskit.onboarding import libs
 from dskit.onboarding.libs import (
     alpaca_quotes,
+    cboe,
     kalshi,
     polymarket,
     predexon,
@@ -176,6 +177,7 @@ def test_a_spec_may_not_declare_the_reserved_keys():
     [
         "alpaca",
         "alpaca_quotes",
+        "cboe",
         "huggingface",
         "kalshi",
         "localfiles",
@@ -218,7 +220,7 @@ def test_max_backoff_is_one_name_across_every_pack():
     # `is`, not `==`: a pack that restated 60.0 locally would pass equality
     # and drift silently; identity proves each one BINDS the contract's name.
     assert (
-        kalshi.MAX_BACKOFF_S is predexon.MAX_BACKOFF_S
+        cboe.MAX_BACKOFF_S is kalshi.MAX_BACKOFF_S is predexon.MAX_BACKOFF_S
         is polymarket.MAX_BACKOFF_S is restapi.MAX_BACKOFF_S
         is schwab.MAX_BACKOFF_S is connector.MAX_BACKOFF_S is MAX_BACKOFF_S
     )
@@ -236,7 +238,7 @@ def test_max_backoff_is_one_name_across_every_pack():
 
 #: Every pack that retries. `localfiles`/`localtables`/`huggingface`/`alpaca`
 #: move no wait of their own and are scanned but not expected to import.
-RETRYING_PACKS = (alpaca_quotes, kalshi, polymarket, predexon, restapi, schwab)
+RETRYING_PACKS = (alpaca_quotes, cboe, kalshi, polymarket, predexon, restapi, schwab)
 
 
 def _two(node):
@@ -309,7 +311,7 @@ def test_every_retrying_pack_binds_the_one_owner():
     # still have the attribute — identity proves it BINDS the contract's.
     for pack in RETRYING_PACKS:
         assert pack.backoff is connector.backoff, pack.__name__
-    for pack in (kalshi, polymarket, predexon):
+    for pack in (cboe, kalshi, polymarket, predexon):
         assert pack.retry_after is connector.retry_after, pack.__name__
 
 

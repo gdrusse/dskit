@@ -22461,3 +22461,98 @@ in-sample shape predictions and zero-feature row drops (above).
 Final lens on `e16e465`: 0 Critical/Major (7 of 9 mutants killed). Minor
 backlog: the signature pin checks key names, not per-key types; defaults are
 not tested against `LGBM_KEY_TYPES`; numeric ranges refuse only at fit.
+
+## ADR-0182 — Index-options real data: Cboe pack, chain recorder, VIX-proxy condor backtest
+
+**Status:** Approved by Russell 2026-09-23 ("confirm and finish all the machinery needed for an initial backtest ... run it with real numbers ... data pulling and setting up a live recorder ... kick off training"; premiums: VIX proxy; "we need an ADR and merge"). Scope is the manifest below.
+**Owner:** Russell. **Base:** `3204d2b`.
+
+**Context.** ADR-0167/0168/0181 left the child synthetic-only: `contracts.py`
+refuses non-synthetic provenance, the zoo reads `SynthGjrPaths`, and
+`CondorDistributionReport` prices a fixed 30%-of-width credit over
+overlapping daily rows. Free-data diligence (2026-09-23): Cboe serves, with
+no credential, daily index history CSVs (SPX closes since 1975, VIX OHLC
+since 1990) and a 15-minute-delayed full option chain JSON per underlying
+(SPX ~30k contracts, XSP) with bid/ask/sizes/IV/greeks. No free source of
+HISTORICAL option quotes exists (the Theta key is unset; paid data is out
+by owner rule). Inventory: no connector covers Cboe or any option chain;
+`onboarding watch` / `acquire --mode live` is the recorder pattern (pmquant
+Kalshi books); `ObservationRows.project` is the reader seam; no options
+backtest ledger exists anywhere (EquityReplay is equities-only).
+
+**Decision.**
+
+dskit:
+1. `dskit/onboarding/libs/cboe.py` (new pack, stdlib only, no credential) —
+   `CboeConnector`, two provider-shaped streams:
+   - `index_daily` — one row per `(symbol, date)` from
+     `cdn.cboe.com/api/global/us_indices/daily_prices/{SYMBOL}_History.csv`:
+     `symbol`, `date` (ISO), `open/high/low` (null when the file has only a
+     close), `close`, `effective_date` (the date). Knob `symbols`.
+   - `option_chain` — one row per `(option, quote_time)` from
+     `cdn.cboe.com/api/global/delayed_quotes/options/_{SYMBOL}.json`:
+     OCC `option` parsed into `root`, `expiry`, `right`, `strike`; `bid`,
+     `bid_size`, `ask`, `ask_size`, `iv`, `open_interest`, `volume`,
+     greeks, `last_trade_price/time`, `underlying_price`, `quote_time`
+     (provider timestamp, America/New_York -> UTC), `effective_date` =
+     `quote_time`. Knobs `symbols`, `roots` (allowlist), `max_dte`.
+   Same transport contract as `kalshi.py`: one injectable getter, pacing,
+   capped retry/backoff, tests with a scripted getter and no network.
+2. `tests/onboarding/test_cboe.py` (new). Pack docs trees.
+
+Child `index_options` (supersedes the "all data is explicitly synthetic"
+and "no replay" lines of the child AGENTS.md for this manifest only):
+3. `index_options/observations.py` (edit) — `IndexCloseRows`: reads
+   `index_daily`, projects the declared `symbol` into the
+   `instrument/contract/group/close/asof_ms/date` envelope the numpy
+   features need, and also emits a `by_date` (`{date: close}`) side table.
+   The VIX close joins as `iv_index` through dskit's existing `Join` kind
+   (`how: "left"`, a second `IndexCloseRows` with `symbol: "VIX"` wired on
+   port `iv_index`), not child join code; a row without a same-date VIX
+   keeps `iv_index` null.
+4. `index_options/pricing.py` (new) — Black-76 on a forward, and the
+   `VixProxyQuotes` model: leg IV = VIX/100 x (1 + `skew_per_z` x
+   max(0, -z_K)) floored, mid from Black-76, bid/ask = mid -/+
+   max(`half_spread_min`, `half_spread_frac` x mid). Every knob explicit;
+   the output is labelled `pricing: "vix_proxy"`, never a quote.
+5. `index_options/nodes.py` (edit) — `CondorBacktest` (role score): over
+   the val split, NON-OVERLAPPING entries every `hold_steps` rows; strikes
+   from the forecast's quantiles (`short_q`, wings `wing_points` beyond)
+   rounded to `strike_increment`; short legs at the proxy bid, long legs at
+   the proxy ask; `fee_per_leg`; PM cash settlement at S_T = close x
+   exp(label) (21 trading days = the SPXW PM expiry the proxy assumes).
+   Three books over the same entries: `model` (enter only when the
+   forecast expected P&L at the proxy prices exceeds `min_edge_usd`),
+   `always` (same strikes, every entry) and `implied` (strikes from the
+   VIX-lognormal quantiles, every entry). Reports per-trade ledger,
+   mean/total P&L USD per condor, hit rate, CVaR, max drawdown.
+   `decision_eligible=false` while pricing is the proxy.
+6. `configs/source-cboe.json` (new) — the registered Cboe source.
+   `configs/run-real-{distribution,har,lightgbm}.json` and
+   `configs/run-real-zoo.json` (new) — the ADR-0181 rungs on
+   `IndexCloseRows` (SPX from 1975) with the backtest node; walk-forward
+   on trading-day rows, embargo re-checked against 21 trading days.
+7. `tests/test_real_data.py` (new; scripted rows, no network). Manifest
+   test, AGENTS/CLAUDE layout, README runbook (pull, recorder, zoo,
+   backtest) updated.
+
+**Recorder.** `python -m dskit.onboarding acquire --source cboe --stream
+option_chain --mode live` scheduled twice per trading day (15:50 and 16:20
+ET, delayed quotes ~15:35/16:05) into a durable root outside the repo
+(`~/data/index_options/ob`). Recorded chains later calibrate the proxy's
+skew/spread knobs and, once expiries settle, replace the proxy.
+
+**Non-goals.** Real-quote backtest (needs recorded history), AM-settled
+SPX monthlies, early exit/rolling, sizing/portfolio, rates term structure
+(a constant `rate` knob, default 0), XSP-specific backtest, broker/paper
+trading, optimizer, DL.
+
+**Alternatives.** Extend `restapi` with CSV (the chain needs OCC parsing
+and ET clock handling anyway — provider logic belongs in a pack); Theta
+free tier (no key; unknown entitlement); wait for recorded quotes only
+(owner chose the proxy now, recorded later).
+
+**Risks disclosed.** The proxy has no real skew term structure or spread
+dynamics, so absolute P&L is indicative; the RELATIVE comparison (model vs
+always vs implied on identical prices) is the signal. Pre-2016 SPX had
+no expiry every 21 trading days; the backtest assumes one.

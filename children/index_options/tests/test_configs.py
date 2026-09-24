@@ -39,10 +39,13 @@ def test_exact_manifest_and_agent_parity(child_root):
         "pyproject.toml", "AGENTS.md", "CLAUDE.md", "README.md", ".gitignore", "journal.json",
         "index_options/__init__.py", "index_options/contracts.py",
         "index_options/observations.py", "index_options/nodes.py",
-        "index_options/distribution.py",
+        "index_options/distribution.py", "index_options/pricing.py",
         "configs/source-fixture.json", "configs/suite-fixture.json", "configs/run-fixture.json",
         "configs/run-synthetic-distribution.json", "configs/run-synthetic-har.json",
         "configs/run-synthetic-lightgbm.json", "configs/run-distribution-zoo.json",
+        "configs/source-cboe-index.json", "configs/source-cboe-chain.json",
+        "configs/run-real-distribution.json", "configs/run-real-har.json",
+        "configs/run-real-lightgbm.json", "configs/run-real-zoo.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
@@ -54,7 +57,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "tests/conftest.py", "tests/test_contracts.py", "tests/test_observations.py",
         "tests/test_nodes.py", "tests/test_configs.py", "tests/test_integration.py",
         "tests/test_distribution.py", "tests/test_synthetic_distribution_run.py",
-        "tests/test_distribution_zoo.py",
+        "tests/test_distribution_zoo.py", "tests/test_real_data.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -62,7 +65,8 @@ def test_exact_manifest_and_agent_parity(child_root):
               if p.is_file() and not any(part in ignored or part.endswith(".egg-info")
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
-    assert len(actual) == 42  # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes
+    # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8
+    assert len(actual) == 50
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
