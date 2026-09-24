@@ -301,6 +301,59 @@ def test_fold_train_end_after_cutoff_refuses(fx):
         _run(fx)
 
 
+def test_non_contiguous_folds_refuse(fx):
+    # The calendar's validation window is one day shorter than its step, so
+    # every fold's own geometry matches the calendar but fold k+1 does not
+    # start where fold k ended.
+    with open(fx["params"]["program_calendar"], encoding="utf-8") as handle:
+        calendar = json.load(handle)
+    calendar["fold_schedules"]["development_outer"].update(
+        {"val_days": STEP - 1,
+         "last_validation_end_exclusive": (FIRST + timedelta(days=STEP * COUNT - 1)).isoformat()}
+    )
+    _dump(fx["params"]["program_calendar"], calendar)
+    for index, run_dir in enumerate(fx["runs"]):
+        path = os.path.join(run_dir, "resolved.json")
+        with open(path, encoding="utf-8") as handle:
+            resolved = json.load(handle)
+        cutoff = FIRST + timedelta(days=STEP * index)
+        resolved["splits"]["val_end_ms"] = _ms(cutoff + timedelta(days=STEP - 1)) - 1
+        _dump(path, resolved)
+    with pytest.raises(ValueError, match="fold 1 does not start where fold 0 ended"):
+        _run(fx)
+
+
+def test_release_fold_rows_before_its_cutoff_never_reach_it(fx):
+    # Fold 2's stored rows also carry the lattice day BEFORE its cutoff.
+    # Those rows belong to no earlier release and to no tick of segment 2:
+    # they must not enter its bundles, its outcome band (folds < k only) or
+    # its false-signal estimate (folds < k only).
+    day = FIRST + timedelta(days=STEP * 2 - 1)
+    pre = [_ms(day) + OPEN_MS + m * 1_800_000 for m in range(1, 13)]
+    for lead in LEADS:
+        block = fx["data"][(2, lead)]
+        for name in NAMES:
+            stamps, y, yhat = block[name]
+            block[name] = (pre + stamps, [0.3] * len(pre) + y, [0.9] * len(pre) + yhat)
+    _write_predictions(fx)
+    _write_inventory(fx)
+    before = _run(fx)
+    cutoff = before["releases"][0]["segment_start_ms"]
+    assert max(pre) < cutoff
+    assert before["bundles"] and all(b["decision_ts"] >= cutoff for b in before["bundles"])
+    marked = set(pre)
+    _repin(
+        fx,
+        lambda i, n, lead, s, y, yhat: (
+            [-5.0 if i == 2 and t in marked else v for t, v in zip(s, y)],
+            [7.0 if i == 2 and t in marked else v for t, v in zip(s, yhat)],
+        ),
+    )
+    after = _run(fx)
+    assert _canon(after["releases"]) == _canon(before["releases"])
+    assert _canon(after["bundles"]) == _canon(before["bundles"])
+
+
 def test_prediction_pin_mismatch_refuses(fx):
     for block in fx["data"].values():
         stamps, y, yhat = block["LLY"]
