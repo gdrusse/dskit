@@ -1,5 +1,21 @@
 # Re-entry
 
+## Backtest evaluator phase 2 (2026-09-24, ADR-0183 amendment)
+
+`dskit.evaluation` reports now carry an Optimizer section (`SolveRecord`
+from every `PyomoSolve`: status, gap, seconds, binding constraints),
+Inference diagnostics (calibration deciles, hit rate by bucket, rank IC
+over time; the only reader of `outcome` events) and ledger guard findings
+in the decision log (`LedgerHistory.leg_findings`, replay `guards`).
+Synthetic end-to-end run of `run-replay-report.json` passed; the REAL
+replay was not re-run (no `./ob` in the build container). `keep_ledger`
+ships false: a kept ledger is ~4 GB per 5 sessions. Branch
+`claude/backtest-evaluator-phase-2-yl0qif` (includes unmerged phase 1).
+Memo: `children/intraday_equities/docs/memos/2026-09-24-backtest-evaluator-phase-2.md`.
+
+Next bounded action: run the real replay report in WSL2; then wire
+`DevelopmentSimulation.solves` into the evaluator (phase 3).
+
 ## Centralized backtest evaluator `dskit.evaluation` (2026-09-24, ADR-0183)
 
 New tier-1 package: one event log (`events.jsonl`, schema dskit-eval-v1) ->
