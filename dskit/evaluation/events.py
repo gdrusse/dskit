@@ -37,6 +37,7 @@ from dskit.pipeline.node import atomic_write
 from dskit.pipeline.records import number_ok
 from dskit.production.base import canonical_bytes
 from dskit.production.release import RuntimeFingerprint
+from dskit.production.vocab import VERDICTS
 
 __all__ = [
     "ACTIONS",
@@ -79,6 +80,11 @@ _ENVELOPE = ("schema", "seq", "kind", "ts_ms", "known_ms", "instrument")
 
 #: A candidate row's closed field set (``instrument`` required).
 _CANDIDATE_FIELDS = ("instrument", "score", "rank", "eligible", "reason")
+
+#: A guard finding's fields on an ``order`` (ADR-0183 phase 2): the
+#: production ledger's ``Finding`` with ``value``/``bound`` as numbers.
+_FINDING_FIELDS = ("guard", "measure", "value", "bound", "verdict", "reason", "window",
+                   "scope_key")
 
 #: A side's sign on quantity — a table, never a side branch.
 _SIGN = {"buy": 1, "sell": -1}
@@ -560,6 +566,28 @@ def _candidate_problems(row, where):
     return problems
 
 
+def _finding_problems(row, where):
+    """Problems with one guard finding (default-deny; guard, measure, verdict required)."""
+    if not isinstance(row, dict):
+        return [f"{where} must be an object, got {row!r}"]
+    problems = []
+    unknown = sorted(set(row) - set(_FINDING_FIELDS))
+    if unknown:
+        problems.append(f"{where}: unknown field(s) {unknown} — allowed: {list(_FINDING_FIELDS)}")
+    rules = (
+        _id("guard"),
+        _id("measure"),
+        _number("value", required=False, nullable=True),
+        _number("bound", required=False, nullable=True),
+        _choice("verdict", VERDICTS),
+        _text("reason", required=False, nullable=True),
+        _text("window", required=False, nullable=True),
+        _text("scope_key", required=False, nullable=True),
+    )
+    problems.extend(p for rule in rules if (p := rule.problem(where, row)) is not None)
+    return problems
+
+
 def _candidate_order(row):
     """Sort key: ranked rows first by rank, then by descending score."""
     rank = row.get("rank")
@@ -590,7 +618,14 @@ class Order(Event):
         _positive("qty"),
         _positive("ref_price", required=False, nullable=True),
         _sequence("legs", required=False),
+        _sequence("findings", required=False),
     )
+
+    @classmethod
+    def extra_problems(cls, obj, where):
+        """Refuse a malformed guard finding (phase 2: the ledger's pre-trade checks)."""
+        return [p for position, row in enumerate(obj.get("findings") or ())
+                for p in _finding_problems(row, f"{where}.findings[{position}]")]
 
 
 class _Rejection(Event):

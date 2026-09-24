@@ -46,6 +46,7 @@ from dskit.evaluation.svg import (
 )
 from dskit.evaluation.units import DASH, Units, count, percent, ratio, sig
 from dskit.pipeline.runs import render_cell
+from dskit.production.guards import max_verdict
 
 __all__ = [
     "DEFAULT_MAX_MARKERS",
@@ -89,7 +90,7 @@ DECISION_COLUMNS = (
     "time", "ts_ms", "decision_id", "candidates", "chosen", "chosen_score", "chosen_rank",
     "runner_up", "runner_up_score", "threshold", "edge", "score_unit", "action", "reason",
     "detail", "model", "orders", "ref_price", "fill_price", "filled_qty", "slippage_bp", "fees",
-    "trip_pnl", "rejections",
+    "trip_pnl", "rejections", "guard_verdict", "findings",
 )
 
 #: How each statistic displays — a table, never a branch.
@@ -289,6 +290,18 @@ def _trips_by_decision(book):
         if trip.exit_decision_id is not None and trip.exit_decision_id != trip.entry_decision_id:
             out[trip.exit_decision_id].append(trip)
     return out
+
+
+def _worst_verdict(orders):
+    """Return the strictest verdict over ``orders``' findings (``max_verdict``), or None."""
+    findings = [f for order in orders for f in order.get("findings") or ()]
+    return max_verdict(findings) if findings else None
+
+
+def _finding_text(finding):
+    """``guard measure value/bound verdict`` for one finding."""
+    return (f"{finding['guard']} {finding['measure']} {display(None, finding.get('value'), None)}"
+            f"/{display(None, finding.get('bound'), None)} {finding['verdict']}")
 
 
 def _even(items, limit):
@@ -783,7 +796,7 @@ class DecisionLogSection(Section):
 
     #: The compact columns of the in-page tables, and how each displays.
     COLUMNS = ("time", "action", "chosen", "chosen_score", "chosen_rank", "edge", "reason",
-               "fill_price", "fees", "trip_pnl", "rejections")
+               "fill_price", "fees", "trip_pnl", "rejections", "guard_verdict")
     FORMATS = {"chosen_score": "score", "edge": "edge", "fill_price": "money", "fees": "money",
                "trip_pnl": "pnl", "chosen_rank": "count"}
 
@@ -843,6 +856,9 @@ class DecisionLogSection(Section):
             "trip_pnl": sum(t.pnl for t in linked) if linked else None,
             "rejections": "; ".join(f"{r.kind}:{r.get('reason')}"
                                     for r in links.rejections_of(decision_id)) or None,
+            "guard_verdict": _worst_verdict(orders),
+            "findings": "; ".join(_finding_text(f) for o in orders
+                                  for f in o.get("findings") or ()) or None,
         }
 
     @staticmethod
@@ -925,9 +941,48 @@ class DecisionLogSection(Section):
             parts.append(_html_table(self.COLUMNS, sample, "decisions", self.FORMATS, units))
         parts.append("<h3>Commonest refusal / skip reasons</h3>")
         parts.append(_reasons_table(context.log))
+        parts.append("<h3>Guard findings (pre-trade checks from the ledger)</h3>")
+        parts.append(self._findings_table(context))
         parts.append(f"<details><summary>All {count(len(rows))} decisions (every column raw in "
                      "decisions.csv)</summary>" + self._compact(context, rows) + "</details>")
         return "".join(parts)
+
+    @staticmethod
+    def findings_summary(log):
+        """Group every order's guard findings by (guard, measure, verdict).
+
+        Parameters
+        ----------
+        log : EventLog
+
+        Returns
+        -------
+        list of dict
+            ``guard``, ``measure``, ``verdict``, ``count``, ``min_value``,
+            ``max_value``, ``bound`` (the tightest one seen) — commonest first.
+        """
+        groups = defaultdict(list)
+        for order in log.of_kind("order"):
+            for finding in order.get("findings") or ():
+                groups[(finding["guard"], finding["measure"], finding["verdict"])].append(finding)
+        out = []
+        for (guard, measure, verdict), group in groups.items():
+            values = [f["value"] for f in group if f.get("value") is not None]
+            bounds = [f["bound"] for f in group if f.get("bound") is not None]
+            out.append({"guard": guard, "measure": measure, "verdict": verdict,
+                        "count": len(group), "min_value": min(values) if values else None,
+                        "max_value": max(values) if values else None,
+                        "bound": min(bounds) if bounds else None})
+        return sorted(out, key=lambda r: (-r["count"], r["guard"], r["measure"], r["verdict"]))
+
+    def _findings_table(self, context):
+        """Render the findings summary, or say why there is none."""
+        rows = self.findings_summary(context.log)
+        if not rows:
+            return _note("No guard findings: the producer recorded no pre-trade checks "
+                         "(no guards declared, or no ledger mapped into the log).")
+        return _html_table(("guard", "measure", "verdict", "count", "min_value", "max_value",
+                            "bound"), rows, units=context.units)
 
     def _compact(self, context, rows):
         """Render the full log as a light table: formatted cells, no per-cell attributes."""

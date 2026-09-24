@@ -234,3 +234,69 @@ def test_a_document_wires_the_node_by_dotted_path(tmp_path):
     assert result.state == "ran", result
     assert os.path.isfile(result.outputs["report"]["paths"]["html"])
     assert result.outputs["report"]["metrics"]["trades"] == 3
+
+
+# --- ADR-0183 phase 2: ledger guard findings in the decision log ---------------
+
+
+def _with_findings():
+    from tests.evaluation.conftest import build_scenario
+
+    events = build_scenario()
+    o1 = next(e for e in events if e.get("order_id") == "o1")
+    o1["findings"] = [
+        {"guard": "size", "measure": "quantity", "value": 10.0, "bound": 100.0,
+         "verdict": "allow", "reason": "quantity 10 within 100", "window": "none",
+         "scope_key": "AAA"},
+        {"guard": "cap", "measure": "notional", "value": 1000.5, "bound": 900.0,
+         "verdict": "warn", "reason": "notional over soft cap"},
+    ]
+    o2 = next(e for e in events if e.get("order_id") == "o2")
+    o2["findings"] = [{"guard": "size", "measure": "quantity", "value": 4.0, "bound": 100.0,
+                       "verdict": "allow"}]
+    return events
+
+
+def test_findings_reach_the_decision_row_with_the_worst_verdict():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import DecisionLogSection
+
+    report = BacktestReport(EventLog(_with_findings()))
+    rows = {r["decision_id"]: r for r in DecisionLogSection().rows(report.context)}
+    assert rows["d1"]["guard_verdict"] == "warn"
+    assert rows["d1"]["findings"] == ("size quantity 10.0/100 allow; "
+                                      "cap notional 1,000/900 warn")
+    assert rows["d2"]["guard_verdict"] == "allow"
+    assert rows["d6"]["guard_verdict"] is None and rows["d6"]["findings"] is None
+    header = next(csv.reader(io.StringIO(report.decisions_csv())))
+    assert header[-2:] == ["guard_verdict", "findings"]
+
+
+def test_findings_summary_groups_by_guard_measure_verdict():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import DecisionLogSection
+
+    log = EventLog(_with_findings())
+    summary = DecisionLogSection.findings_summary(log)
+    assert summary[0] == {"guard": "size", "measure": "quantity", "verdict": "allow",
+                          "count": 2, "min_value": 4.0, "max_value": 10.0, "bound": 100.0}
+    assert "Guard findings" in BacktestReport(log).html()
+    from tests.evaluation.conftest import build_scenario
+
+    plain = BacktestReport(EventLog(build_scenario()))
+    assert "No guard findings" in DecisionLogSection().html(plain.context)
+
+
+def test_a_malformed_finding_is_refused():
+    from dskit.evaluation.events import EvaluationError
+
+    events = _with_findings()
+    o1 = next(e for e in events if e.get("order_id") == "o1")
+    o1["findings"][0]["verdict"] = "maybe"
+    o1["findings"][1]["extra"] = 1
+    del o1["findings"][1]["guard"]
+    with pytest.raises(EvaluationError) as err:
+        EventLog(events)
+    text = str(err.value)
+    assert "findings[0].verdict" in text and "unknown field(s) ['extra']" in text
+    assert "missing required field 'guard'" in text
