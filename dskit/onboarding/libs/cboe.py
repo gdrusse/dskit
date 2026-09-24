@@ -20,7 +20,9 @@ normalizes into its own vocabulary):
   repeated date or an unknown header refuses the pull, naming the file
   and line.
 - ``option_chain`` — one row per ``(option, quote_time)`` from
-  ``/api/global/delayed_quotes/options/_{SYMBOL}.json``. The OCC
+  ``/api/global/delayed_quotes/options/_{SYMBOL}.json`` — Cboe prefixes an
+  INDEX with ``_``; an ETF or stock (declared in ``equity_symbols``) is
+  served at ``{SYMBOL}.json`` with no prefix. The OCC
   ``option`` symbol (``SPXW261016C07000000``) is parsed into ``root``,
   ``expiry`` (ISO), ``right`` (``call``/``put``) and ``strike`` (the last
   eight digits / 1000); quotes, sizes, ``iv``, open interest, volume and
@@ -125,6 +127,8 @@ STREAMS = tuple(sorted(_STREAMS))
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _INDEX_PATH = "/api/global/us_indices/daily_prices/{}_History.csv"
 _CHAIN_PATH = "/api/global/delayed_quotes/options/_{}.json"
+#: An ETF/stock chain carries no index underscore.
+_EQUITY_CHAIN_PATH = "/api/global/delayed_quotes/options/{}.json"
 #: A symbol is one URL path segment; Cboe spells indices upper-case.
 #: \Z, not $ — $ forgives a trailing newline (ADR-0020).
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9._-]*\Z")
@@ -351,6 +355,11 @@ class CboeConnector(Connector):
                 "notes": "Non-empty list of Cboe symbols (e.g. SPX, VIX, XSP) — "
                          "the universe every stream walks, in this order.",
             },
+            "equity_symbols": {
+                "notes": "Optional subset of `symbols` that are ETFs/stocks: their "
+                         "`option_chain` URL has no index underscore (SPY.json, not "
+                         "_SPY.json). Declared, never guessed from a 403.",
+            },
             "roots": {
                 "notes": "Optional OCC root allowlist for `option_chain` (e.g. "
                          "['SPXW', 'XSP']); absent keeps every root.",
@@ -406,6 +415,13 @@ class CboeConnector(Connector):
         problems = []
         symbols = _symbol_list(problems, config, "symbols", required=True)
         roots = _symbol_list(problems, config, "roots", required=False)
+        equities = _symbol_list(problems, config, "equity_symbols", required=False)
+        if equities is not None and symbols is not None \
+                and not set(equities) <= set(symbols):
+            problems.append(
+                f"config.equity_symbols must be a subset of symbols, got "
+                f"{sorted(set(equities) - set(symbols))!r} outside it"
+            )
         max_dte = config.get("max_dte")
         if max_dte is not None and (
             isinstance(max_dte, bool) or not isinstance(max_dte, int) or max_dte < 0
@@ -434,6 +450,7 @@ class CboeConnector(Connector):
         return {
             "symbols": list(symbols),
             "roots": None if roots is None else list(roots),
+            "equity_symbols": [] if equities is None else list(equities),
             "max_dte": max_dte,
             "retries": retries,
             "pace_s": pace_s,
@@ -518,7 +535,8 @@ class CboeConnector(Connector):
         """Yield ``(effective_date, row)`` per option of every chain — never cursor-filtered."""
         roots = None if knobs["roots"] is None else set(knobs["roots"])
         for symbol in knobs["symbols"]:
-            url, text = self._get(knobs, _CHAIN_PATH.format(urllib.parse.quote(symbol)))
+            path = _EQUITY_CHAIN_PATH if symbol in knobs["equity_symbols"] else _CHAIN_PATH
+            url, text = self._get(knobs, path.format(urllib.parse.quote(symbol)))
             try:
                 body = json.loads(text)
             except ValueError as exc:

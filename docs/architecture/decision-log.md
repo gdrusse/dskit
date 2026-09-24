@@ -22556,3 +22556,29 @@ free tier (no key; unknown entitlement); wait for recorded quotes only
 dynamics, so absolute P&L is indicative; the RELATIVE comparison (model vs
 always vs implied on identical prices) is the signal. Pre-2016 SPX had
 no expiry every 21 trading days; the backtest assumes one.
+
+**Amendment (2026-09-23, owner-delegated acceptance).** First real runs
+showed no rung's strikes beat the VIX-implied strikes, so three config-only
+rungs add VIX as a scale feature: `run-real-vix.json` (log VIX alone — the
+market-scale baseline, A0003 R4-lite), `run-real-har-vix.json` (HAR-IV) and
+`run-real-lightgbm-vix.json`; all join the real zoo. Strikes round OUTWARD
+(puts down, calls up) after review. Recorder: a user-level Windows task
+`dskit-index-options-chain-recorder` runs `~/data/index_options/record_chain.sh`
+weekdays 15:50/16:20 ET (~27 MB per snapshot, ~14 GB/year). Smile
+recalibration: the first recorded SPXW chain (30 DTE, VIX 14.21) showed
+the flat-call proxy ~2x rich on OTM calls and ~3x cheap on deep puts, so
+`VixProxyQuotes` now takes `atm_ratio` 0.794, `put_skew_per_z` 0.176
+(renamed from `skew_per_z`, no alias), `call_skew_per_z` -0.064 and
+`smile_curvature` 0.045 (least squares, within ±0.0051 IV on eight points)
+and a 0.20 pt / 0.5% half-spread; one day only — Cboe SKEW history is the
+planned time-varying upgrade.
+
+**Review (2026-09-23).** Sonnet lenses. Cboe pack on `cb761be`: 0 Critical,
+1 Major (a provider `0` bid/ask means "no market" — documented at the pack
+boundary; readers must treat it deliberately), 1 Minor (one cursor per
+stream: adding a symbol needs a new source — documented). Child on
+`cb761be`: 0 Critical/Major; Minor strike rounding toward the money fixed
+(outward); Minor midnight `asof_ms` stamping is consistent with the split
+cuts (EOD convention, not a leak). Child suite: all new tests pass; 6
+`test_integration.py` CLI failures reproduce unchanged on `3204d2b` (their
+subprocess resolves the stale `~/dskit` install) — environmental.

@@ -1,6 +1,6 @@
 {
-  "name": "index-options-real-lightgbm",
-  "notes": "ADR-0182 real-data rung (lightgbm): Cboe SPX daily closes with the VIX close joined as iv_index -> the ADR-0181 features/label/model/scores -> the VIX-proxy condor backtest. Identical to the other run-real-*.json except the 'model' node. Needs a pulled ./ob (README runbook). Run: python -m dskit.pipeline walkforward configs/run-real-lightgbm.json --asof <today>.",
+  "name": "index-options-real-lightgbm-vix",
+  "notes": "ADR-0182 real-data rung (lightgbm-vix): Cboe SPX daily closes with the VIX close joined as iv_index -> the ADR-0181 features/label/model/scores -> the VIX-proxy condor backtest. Identical to the other run-real-*.json except the 'model' node. Needs a pulled ./ob (README runbook). Run: python -m dskit.pipeline walkforward configs/run-real-lightgbm-vix.json --asof <today>. ADR-0182 amendment: VIX as a scale feature. Rows without a VIX (pre-1990) carry no forecast; val folds start 1995 so every scored row has one.",
   "pipeline": {
     "spx": {
       "uses": "index_options.observations:IndexCloseRows",
@@ -128,7 +128,8 @@
         "scale_features": [
           "rv_1",
           "rv_5",
-          "rv_22"
+          "rv_22",
+          "iv_index"
         ],
         "seed": 0,
         "lgbm_params": {
@@ -138,7 +139,7 @@
           "min_child_samples": 50
         }
       },
-      "notes": "Research A0004 candidate #1: a shallow, regularized LightGBM on the same HAR inputs. Small effective samples overfit; keep trees shallow and compare against HAR, not the empirical rung alone."
+      "notes": "The LightGBM scale rung with log VIX added to the HAR features: nonlinear interactions of realized and implied vol."
     },
     "score": {
       "uses": "dskit.pipeline.distribution_scores:ScoreDistributions",

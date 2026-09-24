@@ -47,7 +47,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
                            # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json
-                           # + run-real-zoo.json (ADR-0182)
+                           # + run-real-zoo.json (ADR-0182); run-real-vix/-har-vix/
+                           # -lightgbm-vix.json (VIX as a scale feature); source-cboe-chain-wide/
+                           # -index-wide.json (wide recorder + vol indices)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

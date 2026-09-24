@@ -572,3 +572,21 @@ def test_acquisition_appends_only_new_history_days(root, registry, cboe_source):
     rows = scan_stream(root.root, "cboe", "index_daily", key_fields=("symbol", "date"))
     assert sorted(row["date"] for row in rows) == [
         "1975-01-02", "1975-01-03", "1975-01-06"]
+
+def test_equity_symbols_fetch_the_unprefixed_chain():
+    spy_chain = "/api/global/delayed_quotes/options/SPY.json"
+    conn, script, _ = connector({
+        SPX_CHAIN: chain([option("SPXW261016C07000000")]),
+        spy_chain: chain([option("SPY261016P00650000")], price=661.2),
+    })
+    recs = records(read(conn, ["option_chain"], {
+        "symbols": ["SPX", "SPY"], "equity_symbols": ["SPY"], "base_url": BASE}))
+    assert script.calls == [SPX_CHAIN, spy_chain]  # index keeps "_", the ETF has none
+    assert [(r["data"]["underlying"], r["data"]["root"]) for r in recs] == \
+        [("SPX", "SPXW"), ("SPY", "SPY")]
+
+
+@pytest.mark.parametrize("equities", [["QQQ"], [], "SPY", ["SPY", "SPY"]])
+def test_equity_symbols_must_be_a_declared_subset(equities):
+    with pytest.raises(AssetError):
+        CboeConnector().resolve_knobs({"symbols": ["SPX", "SPY"], "equity_symbols": equities})

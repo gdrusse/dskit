@@ -20,7 +20,8 @@ from index_options.observations import IndexCloseRows
 from index_options.pricing import VixProxyQuotes, black76
 
 YEARS = 21 / 252
-REAL = ("run-real-distribution.json", "run-real-har.json", "run-real-lightgbm.json")
+REAL = ("run-real-distribution.json", "run-real-har.json", "run-real-lightgbm.json",
+        "run-real-vix.json", "run-real-har-vix.json", "run-real-lightgbm-vix.json")
 
 
 def _day(i, start=date(2000, 1, 3)):
@@ -117,27 +118,91 @@ def test_black76_monotonicity_and_refusals():
             black76(*args)
 
 
-def test_proxy_skew_floor_and_spread():
-    quotes = VixProxyQuotes(0.1, 0.05, 0.05, 0.03, 0.0)
-    atm = 0.2
-    sd = atm * math.sqrt(YEARS)
-    assert quotes.iv(1000.0, 1000.0, 20.0, YEARS) == pytest.approx(atm)
-    assert quotes.iv(1000.0, 1100.0, 20.0, YEARS) == pytest.approx(atm)  # calls: no skew
-    z = math.log(900 / 1000) / sd
-    assert quotes.iv(1000.0, 900.0, 20.0, YEARS) == pytest.approx(atm * (1 - 0.1 * z))
-    assert VixProxyQuotes(0.0, 0.3, 0, 0, 0).iv(1000.0, 1000.0, 20.0, YEARS) == 0.3
+#: (atm_ratio, put_skew_per_z, call_skew_per_z, smile_curvature) for the proxy tests.
+SMILE = (0.8, 0.2, -0.05, 0.04)
+#: The 2026-09-23 SPXW chain: 30 DTE, VIX 14.21, forward ~7795.8.
+CHAIN_VIX, CHAIN_FORWARD, CHAIN_YEARS = 14.21, 7795.8, 30 / 365
+
+
+def _smile_iv(z, vix=20.0, atm_ratio=0.8, put=0.2, call=-0.05, curvature=0.04):
+    """The proxy IV written out independently of ``VixProxyQuotes``."""
+    wing = put * -z if z < 0 else call * z
+    return vix / 100 * (atm_ratio + wing + curvature * z ** 2)
+
+
+def _strike(z, forward=1000.0, vix=20.0, years=YEARS):
+    return forward * math.exp(z * vix / 100 * math.sqrt(years))
+
+
+def test_proxy_atm_iv_is_atm_ratio_times_vix():
+    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
+    assert quotes.iv(1000.0, 1000.0, 20.0, YEARS) == pytest.approx(0.8 * 0.20)
+    assert quotes.iv(5000.0, 5000.0, 35.0, 0.25) == pytest.approx(0.8 * 0.35)
+
+
+def test_proxy_put_wing_rises_with_depth():
+    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
+    zs = (-0.5, -1.0, -2.0, -3.0)
+    ivs = [quotes.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
+    assert ivs == pytest.approx([_smile_iv(z) for z in zs])
+    assert ivs == sorted(ivs) and ivs[0] > quotes.iv(1000.0, 1000.0, 20.0, YEARS)
+    # z = -2: 0.2 * (0.8 + 0.4 + 0.16) = 0.272
+    assert ivs[2] == pytest.approx(0.272)
+
+
+def test_proxy_call_wing_follows_call_skew_and_curvature():
+    zs = (0.5, 1.0, 2.0, 3.0)
+    straight = VixProxyQuotes(0.8, 0.2, -0.05, 0.0, 0.05, 0.05, 0.03, 0.0)
+    ivs = [straight.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
+    assert ivs == pytest.approx([0.2 * (0.8 - 0.05 * z) for z in zs])
+    assert ivs == sorted(ivs, reverse=True)  # negative call skew, no curvature: dips
+    curved = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
+    ivs = [curved.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
+    assert ivs == pytest.approx([_smile_iv(z) for z in zs])
+    # the quadratic lifts the far wing back above ATM: z = 3 -> 0.2 * (0.8 - 0.15 + 0.36)
+    assert ivs[-1] == pytest.approx(0.202)
+    assert ivs[-1] > curved.iv(1000.0, 1000.0, 20.0, YEARS)
+    flat = VixProxyQuotes(1.0, 0.2, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0)
+    assert flat.iv(1000.0, _strike(2.0), 20.0, YEARS) == pytest.approx(0.2)
+
+
+def test_proxy_floor_applies():
+    assert VixProxyQuotes(0.1, 0, 0, 0, 0.3, 0, 0, 0).iv(1000.0, 1000.0, 20.0, YEARS) == 0.3
+    steep = VixProxyQuotes(0.8, 0.2, -1.0, 0.0, 0.05, 0.05, 0.03, 0.0)
+    # z = 1: 0.2 * (0.8 - 1.0) < 0, so the floor decides
+    assert steep.iv(1000.0, _strike(1.0), 20.0, YEARS) == 0.05
+
+
+def test_proxy_spread():
+    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
     bid, mid, ask = quotes.quote("put", 1000.0, 950.0, 20.0, YEARS)
-    assert mid == pytest.approx(black76("put", 1000.0, 950.0,
-                                        quotes.iv(1000.0, 950.0, 20.0, YEARS), YEARS))
+    z = math.log(950 / 1000) / (0.2 * math.sqrt(YEARS))
+    assert mid == pytest.approx(black76("put", 1000.0, 950.0, _smile_iv(z), YEARS))
     assert ask - mid == pytest.approx(max(0.05, 0.03 * mid)) == pytest.approx(mid - bid)
     far_bid, far_mid, far_ask = quotes.quote("call", 1000.0, 1400.0, 20.0, YEARS)
     assert far_bid == 0.0 and far_ask == pytest.approx(far_mid + 0.05)
 
 
+def test_config_smile_matches_the_recorded_chain(child_root):
+    params = _load(child_root, REAL[0])["pipeline"]["backtest"]["params"]
+    quotes = VixProxyQuotes(*(params[k] for k in VixProxyQuotes.KNOBS))
+    for z, real in ((-2.0, 0.190), (1.0, 0.105)):
+        strike = _strike(z, CHAIN_FORWARD, CHAIN_VIX, CHAIN_YEARS)
+        iv = quotes.iv(CHAIN_FORWARD, strike, CHAIN_VIX, CHAIN_YEARS)
+        assert abs(iv - real) < 0.01, (z, iv)
+
+
 @pytest.mark.parametrize("knobs", [
-    (-0.1, 0.05, 0.05, 0.03, 0.0), (0.1, 0.0, 0.05, 0.03, 0.0), (0.1, 0.05, -1, 0.03, 0.0),
-    (0.1, 0.05, 0.05, 1.0, 0.0), (0.1, 0.05, 0.05, 0.03, float("inf")),
-    (True, 0.05, 0.05, 0.03, 0.0),
+    (0.8, -0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0), (0.8, 0.1, 0.0, 0.0, 0.0, 0.05, 0.03, 0.0),
+    (0.8, 0.1, 0.0, 0.0, 0.05, -1, 0.03, 0.0), (0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 1.0, 0.0),
+    (0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, float("inf")),
+    (0.8, True, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
+    (0.0, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0), (-0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
+    (float("nan"), 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
+    (0.8, 0.1, float("inf"), 0.0, 0.05, 0.05, 0.03, 0.0),
+    (0.8, 0.1, "-0.1", 0.0, 0.05, 0.05, 0.03, 0.0),
+    (0.8, 0.1, 0.0, -0.01, 0.05, 0.05, 0.03, 0.0),
+    (0.8, 0.1, 0.0, float("nan"), 0.05, 0.05, 0.03, 0.0),
 ])
 def test_proxy_knob_refusal(knobs):
     assert VixProxyQuotes.problems(*knobs)
@@ -150,7 +215,8 @@ def test_proxy_knob_refusal(knobs):
 #: Draws whose 10%/90% lower quantiles are exactly -1 and +1 (index ceil(q n) - 1).
 DRAWS = [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
 BT = {"split": "val", "hold_steps": 3, "short_q": 0.1, "wing_points": 25,
-      "strike_increment": 5, "multiplier": 100, "fee_per_leg": 0.65, "skew_per_z": 0.0,
+      "strike_increment": 5, "multiplier": 100, "fee_per_leg": 0.65,
+      **dict(zip(("atm_ratio", "put_skew_per_z", "call_skew_per_z", "smile_curvature"), SMILE)),
       "iv_floor": 0.05, "half_spread_min": 0.0, "half_spread_frac": 0.0,
       "trading_days_per_year": 252 * 3 // 21}  # T = 3 / 36 = 21 / 252
 
@@ -174,9 +240,10 @@ def _z(level):
 
 
 def _credit(strikes):
-    k = strikes
-    mids = [black76(r, 1000.0, s, 0.2, YEARS) for r, s in
-            zip(("put", "put", "call", "call"), k)]
+    # each leg at its own smile IV (VIX 20, z in VIX/100 sqrt(T) units); zero spread
+    ivs = [_smile_iv(math.log(s / 1000.0) / (0.2 * math.sqrt(YEARS))) for s in strikes]
+    mids = [black76(r, 1000.0, s, iv, YEARS) for r, s, iv in
+            zip(("put", "put", "call", "call"), strikes, ivs)]
     return (mids[1] + mids[2] - mids[0] - mids[3]) * 100 - 4 * 0.65
 
 
@@ -281,7 +348,9 @@ def test_no_usable_entry_refuses():
     {"split": "nope"}, {"short_q": 0.5}, {"short_q": 0}, {"wing_z": 0.5},
     {"wing_points": 0}, {"strike_increment": -5}, {"multiplier": 0}, {"multiplier": True},
     {"fee_per_leg": -1}, {"hold_steps": 0}, {"trading_days_per_year": 2.5},
-    {"min_edge_usd": float("nan")}, {"cvar_alpha": 1.0}, {"skew_per_z": -1},
+    {"min_edge_usd": float("nan")}, {"cvar_alpha": 1.0}, {"put_skew_per_z": -1},
+    {"atm_ratio": 0}, {"call_skew_per_z": float("nan")}, {"smile_curvature": -1},
+    {"skew_per_z": 0.1},  # the pre-smile name is gone, no alias
     {"iv_floor": 0}, {"half_spread_frac": 1}, {"rate": "0"}, {"surprise": 1},
 ])
 def test_backtest_knob_refusal(change):
@@ -290,7 +359,8 @@ def test_backtest_knob_refusal(change):
 
 
 def test_backtest_requires_wings_and_proxy_knobs():
-    for missing in ("wing_points", "skew_per_z", "multiplier", "split"):
+    for missing in ("wing_points", "atm_ratio", "put_skew_per_z", "call_skew_per_z",
+                    "smile_curvature", "multiplier", "split"):
         with pytest.raises(ConfigError):
             CondorBacktest("bt", {k: v for k, v in BT.items() if k != missing})
 

@@ -406,7 +406,8 @@ class CondorBacktest(Node):
         ``wing_points`` / ``wing_z`` (positive), ``strike_increment``
         (positive), ``multiplier`` (int >= 1), ``fee_per_leg`` (>= 0) and
         the :class:`~index_options.pricing.VixProxyQuotes` knobs
-        ``skew_per_z``, ``iv_floor``, ``half_spread_min``,
+        ``atm_ratio``, ``put_skew_per_z``, ``call_skew_per_z``,
+        ``smile_curvature``, ``iv_floor``, ``half_spread_min``,
         ``half_spread_frac``. Optional: ``hold_steps`` (21),
         ``trading_days_per_year`` (252; ``T = hold_steps / it``),
         ``min_edge_usd`` (0), ``cvar_alpha`` (0.95), ``rate`` (0).
@@ -417,8 +418,9 @@ class CondorBacktest(Node):
 
         node = CondorBacktest("backtest", {
             "split": "val", "short_q": 0.1, "wing_z": 0.5, "strike_increment": 5,
-            "multiplier": 100, "fee_per_leg": 0.65, "skew_per_z": 0.1,
-            "iv_floor": 0.05, "half_spread_min": 0.05, "half_spread_frac": 0.03,
+            "multiplier": 100, "fee_per_leg": 0.65, "atm_ratio": 0.794,
+            "put_skew_per_z": 0.176, "call_skew_per_z": -0.064, "smile_curvature": 0.045,
+            "iv_floor": 0.05, "half_spread_min": 0.20, "half_spread_frac": 0.005,
         })
         out = node.run(ctx, {"forecasts": rows})
         out["metrics"]["model_total_pnl_usd"]
@@ -434,7 +436,8 @@ class CondorBacktest(Node):
     DEFAULTS = {"hold_steps": 21, "trading_days_per_year": 252, "min_edge_usd": 0.0,
                 "cvar_alpha": 0.95, "rate": 0.0}
     _REQUIRED = ("split", "short_q", "strike_increment", "multiplier", "fee_per_leg",
-                 "skew_per_z", "iv_floor", "half_spread_min", "half_spread_frac")
+                 "atm_ratio", "put_skew_per_z", "call_skew_per_z", "smile_curvature",
+                 "iv_floor", "half_spread_min", "half_spread_frac")
     _WINGS = ("wing_points", "wing_z")
     _PARAMS = tuple(sorted(_REQUIRED + _WINGS + tuple(DEFAULTS)))
     FORWARD_FIELD = "close"

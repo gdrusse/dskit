@@ -46,6 +46,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-cboe-index.json", "configs/source-cboe-chain.json",
         "configs/run-real-distribution.json", "configs/run-real-har.json",
         "configs/run-real-lightgbm.json", "configs/run-real-zoo.json",
+        "configs/run-real-vix.json", "configs/run-real-har-vix.json",
+        "configs/run-real-lightgbm-vix.json",
+        "configs/source-cboe-chain-wide.json", "configs/source-cboe-index-wide.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
@@ -66,7 +69,7 @@ def test_exact_manifest_and_agent_parity(child_root):
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
     # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8
-    assert len(actual) == 50
+    assert len(actual) == 55
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

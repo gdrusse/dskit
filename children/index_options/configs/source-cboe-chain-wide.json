@@ -1,0 +1,38 @@
+{
+  "notes": "ADR-0182 wide recorder (owner request 2026-09-23: 'more is better than less'): every Cboe 15-minute-delayed chain worth considering, ALL roots and ALL expiries (no roots/max_dte filter). Index options: SPX (AM SPX + PM SPXW), XSP, NDX, XND, RUT, MRUT, DJX, OEX, XEO, VIX; ETF options: SPY, QQQ, IWM, DIA, TLT, GLD, HYG, EEM, XLF, SMH. ~157k contracts, ~190 MB stored per snapshot. Register as source 'cboe-chain-wide'; acquire stream option_chain --mode live at 10:30, 15:50 and 16:20 ET on trading days into ~/data/index_options/ob. Supersedes the narrow 'cboe-chain' source for recording (its two 2026-09-23 snapshots remain).",
+  "symbols": [
+    "SPX",
+    "XSP",
+    "NDX",
+    "XND",
+    "RUT",
+    "MRUT",
+    "DJX",
+    "OEX",
+    "XEO",
+    "VIX",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "TLT",
+    "GLD",
+    "HYG",
+    "EEM",
+    "XLF",
+    "SMH"
+  ],
+  "pace_s": 1.0,
+  "equity_symbols": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "TLT",
+    "GLD",
+    "HYG",
+    "EEM",
+    "XLF",
+    "SMH"
+  ]
+}
