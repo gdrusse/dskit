@@ -1485,6 +1485,9 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
     assert events["params"]["realized_field"] == pipe["qhat"]["params"]["label"]
     assert params["keep_ledger"] is True
     assert {g["params"]["measure"] for g in params["guards"].values()} == {"quantity", "notional"}
+    # The observational size guard never binds: every order is dec_qty's one value.
+    qty = [case["value"] for case in pipe["dec_qty"]["params"]["cases"]]
+    assert all(q <= int(params["guards"]["size"]["params"]["bound"]["max"]) for q in qty)
     assert DevelopmentReplay.validate_params(params) == []
     report = pipe["report"]
     assert report["uses"] == "dskit.evaluation.nodes:EvaluationReport"
