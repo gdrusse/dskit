@@ -210,6 +210,9 @@ dskit/
 │   │   └── libs/              #   release forward on a cadence — guards, executor,
 │   │                          #   hash-chained ledger, monitors, alerts, health;
 │   │                          #   own README + CLAUDE.md; libs/ = phase-2 packs
+│   ├── evaluation/            # backtest evaluator (ADR-0183): event log ->
+│   │                          #   summary.md + self-contained report.html + CSVs;
+│   │                          #   own README + CLAUDE.md
 │   └── journal/               # child action ledger (ADR-0056); CSV + generated md
 ├── children/                  # child projects (ADR-0021): incubated at repo root,
 │   ├── README.md              #   never imported by dskit; the guide
@@ -227,6 +230,8 @@ dskit/
     ├── production/            # production: purity, oop + producer closure, every
     │                          #   module, and a shadow/paper/live_limited e2e
     ├── production_libs/       # tier-2 packs (sqlite ledger, parquet reference)
+    ├── evaluation/            # evaluator: schema, census, book, stats, SVG,
+    │                          #   self-contained HTML, CLI + node e2e, purity
     ├── journal/               # action ledger: purity, CSV, locate, CLI e2e
     └── children/              # skeleton pin + per-child subprocess runs
 ```

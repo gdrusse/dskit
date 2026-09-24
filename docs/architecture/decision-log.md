@@ -22764,3 +22764,15 @@ import production's `WindowBook`, and its shapes are pmquant's); put it in
 `production/` (it serves research backtests too, and production would grow a
 renderer); matplotlib/plotly HTML (dependencies/CDN; ADR-0029 kept HTML out
 of the figure pack).
+
+**Amendment (2026-09-24, build of items 1-11).** Deviations, one line each:
+- Trade t-stat is `pipeline.stats.across_fold_t` over the trip list (an equivalent existed); only `sharpe_ratio`, `probabilistic_sharpe_ratio`, `deflated_sharpe_ratio`, `profit_factor` and `payoff_ratio` were added to `pipeline/stats.py`.
+- Turnover, exposure and holding time are book readings in `evaluation/statistics.py`, not `pipeline/stats.py` estimators (definitions over the book, not sample statistics).
+- `PeriodSection` is per session day only: schema v1 has no fold field, so per-fold rows wait for one.
+- The census identity holds by the closed action set; what is checked (reported, never raised) is the evidence behind each action: refuse -> refusal, skip -> skip, enter/exit -> order or rejection, order -> fill or rejection, no overfill.
+- `outcome` ordering is enforced as "strictly after its decision's ts_ms" (ts_ms is monotone in the log, so an outcome is appended when it becomes known).
+- Envelope: `known_ms` is required on every event; `instrument` is required for `order`, `fill` and `mark`. Event problems raise `EvaluationError`; criteria (config) raise `ConfigError`.
+- `pipeline.kinds_report._csv_text` became public `csv_text` so the evaluator writes CSV through the one owner.
+- DSR without a recorded cross-trial Sharpe variance uses the estimator's own sampling variance (se^2).
+- TWR anchors its first observation at the external capital, so trading in the same instant as the first deposit is not absorbed (`production.report.PerformanceCalculator` does the chaining).
+- FIFO round-trip P&L is attribution; it equals `WindowBook`'s average-cost realised total only when flat (pinned by a test).

@@ -113,6 +113,12 @@ tape through recorded objects and diffs every field, and a readiness checklist
 may require all of that before a live arm. See
 [production](dskit/production/README.md).
 
+**Evaluation** — one backtest event log in, a standalone report out: the
+why of every decision, trades on price, equity gross vs net, cash flows,
+a census of refusals and skips, and pre-registered PASS / FAIL /
+INCONCLUSIVE criteria (`python -m dskit.evaluation render events.jsonl
+--out report/`). See [evaluation](dskit/evaluation/README.md).
+
 **Journal** — every child action labeled; CSV store; generated markdown:
 
 ```bash
@@ -152,7 +158,7 @@ and `children/<project>/` the incubator until a child graduates to its own repo.
 
 Each package's own `README.md` covers its config grammar and extension seams:
 [pipeline](dskit/pipeline/README.md) · [assets](dskit/assets/README.md) ·
-[onboarding](dskit/onboarding/README.md) · [journal](dskit/journal/README.md). Design history lives in
+[onboarding](dskit/onboarding/README.md) · [journal](dskit/journal/README.md) · [evaluation](dskit/evaluation/README.md). Design history lives in
 `docs/architecture/decision-log.md` (ADRs — no decision undocumented).
 
 ## Tests
