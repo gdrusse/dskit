@@ -297,6 +297,8 @@ class CashFlowPolicy:
         "initial_capital_amount",
         "timezone",
     )
+    #: Whether every ticked trading date must carry a booked flow.
+    FUNDS_EVERY_TRADING_DAY = True
 
     def __init__(self, params):
         problems = self.validate_params(params)
@@ -603,6 +605,7 @@ class ScheduledCashFlowPolicy(CashFlowPolicy):
         "holiday_rule",
     )
     _OPTIONAL_PARAMS = ("overrides",)
+    FUNDS_EVERY_TRADING_DAY = False
 
     def __init__(self, params):
         problems = self.validate_params(params)
@@ -682,7 +685,8 @@ class ScheduledCashFlowPolicy(CashFlowPolicy):
         problems = []
         seen = set()
         for index, row in enumerate(overrides):
-            fields = _OVERRIDE_FIELDS.get(row.get("kind")) if isinstance(row, dict) else None
+            kind = row.get("kind") if isinstance(row, dict) else None
+            fields = _OVERRIDE_FIELDS.get(kind) if isinstance(kind, str) else None
             if fields is None:
                 problems.append(f"overrides[{index}] kind must be one of {sorted(_OVERRIDE_FIELDS)}")
                 continue
@@ -759,12 +763,13 @@ class ScheduledCashFlowPolicy(CashFlowPolicy):
                 continue
             target = date.fromisoformat(edit["to"]) if edit.get("kind") == "move" else day
             amount = Decimal(edit["amount"]) if edit.get("kind") == "replace" else self.contribution_amount
-            self._book(deposits, rules, calendar, target, amount, edit.get("kind") or "scheduled", day)
+            rule = edit.get("kind") or "scheduled"
+            self._book(deposits, rules, calendar, target, amount, rule, strict=rule == "move")
         for row in self.overrides:
             if row["kind"] == "one_off":
-                self._book(deposits, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "one_off", None)
+                self._book(deposits, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "one_off")
             elif row["kind"] == "withdrawal":
-                self._book(withdrawals, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "withdrawal", None)
+                self._book(withdrawals, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "withdrawal")
         if self._carried is None:
             deposits[first] += self.initial_capital_amount
             rules[first].insert(0, "initial_capital")
@@ -789,11 +794,21 @@ class ScheduledCashFlowPolicy(CashFlowPolicy):
         return dates
 
     @staticmethod
-    def _book(ledger, rules, calendar, target, amount, rule, scheduled):
-        """Add ``amount`` on ``target`` rolled to the next trading date; drop one past the calendar."""
-        del scheduled
+    def _book(ledger, rules, calendar, target, amount, rule, strict=True):
+        """Add ``amount`` on ``target`` rolled to the next trading date.
+
+        Only a SCHEDULED contribution whose roll runs past the run's last
+        trading date is dropped (the run ended); a dated override that
+        cannot land inside the run refuses, so it never applies zero times.
+        """
         index = bisect_left(calendar, target)
-        if index == len(calendar):
+        inside = calendar[0] <= target and index < len(calendar)
+        if not inside:
+            if strict and rule != "scheduled":
+                raise ConfigError([
+                    f"cash-flow override {rule} on {target.isoformat()} falls outside the run "
+                    f"({calendar[0].isoformat()}..{calendar[-1].isoformat()})"
+                ])
             return
         booked = calendar[index]
         ledger[booked] += amount

@@ -798,7 +798,7 @@ class DocumentWalkRun(BenchmarkRun):
     Run the frozen walk a materialize stage wrote::
 
         stage = DocumentWalkRun("walk")
-        row = stage.run(ctx, {"candidate": {"id": "lean", "path": "walk.json"}})["run"]
+        row = stage.run(ctx, {"candidate": {"id": "lean", "path": "walk.json", "document_hash": digest}})["run"]
         row["state"]
         # -> 'ran'
     """
@@ -806,7 +806,7 @@ class DocumentWalkRun(BenchmarkRun):
     outputs = ("run",)
 
     def validate_inputs(self, inputs):
-        """Require exactly one materialized candidate with an id and a path.
+        """Require exactly one materialized candidate with an id, a path and its document hash.
 
         Parameters
         ----------
@@ -824,6 +824,8 @@ class DocumentWalkRun(BenchmarkRun):
             candidate.get("path")
         ):
             return ["candidate must be a materialized row with an id and a path"]
+        if not is_sha256hex(candidate.get("document_hash")):
+            return ["candidate must carry the document_hash its materializer wrote"]
         return []
 
     def run(self, ctx, inputs):
@@ -846,7 +848,15 @@ class DocumentWalkRun(BenchmarkRun):
             The document declares no walk-forward, or its walk did not complete.
         """
         candidate = copy.deepcopy(inputs["candidate"])
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"{self.key}: {problems}")
         document = load_document(_resolve_candidate_path(ctx.source_path, candidate["path"]))
+        if document.hash != candidate["document_hash"]:
+            raise ValueError(
+                f"candidate {candidate['id']!r} moved after it was materialized: "
+                f"{candidate['document_hash']} -> {document.hash}"
+            )
         if document.walkforward is None:
             raise ValueError(f"candidate {candidate['id']!r} declares no walk-forward")
         cutoffs = list(document.walkforward.fold_cutoffs())

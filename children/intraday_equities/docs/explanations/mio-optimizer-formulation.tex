@@ -336,8 +336,13 @@ $\text{CVaR}=\eta^\star+\sum_o\omega_o(\ell_o-\eta^\star)^+/(1-\alpha)$
   look-ahead disclosure, and the \code{SolveRecord} (status, gap, seconds,
   binding rows).
 \end{itemize}
-A refusal becomes a \code{mio_refused} row in the simulation, and that lead
-group trades nothing at that tick.
+How a refusal surfaces depends on its exception. A pre-solve refusal
+(\code{ValueError}) or a non-optimal termination (\code{RuntimeError}) becomes
+a \code{mio_refused} row, and that lead group trades nothing at that tick.
+A post-solve recompute violation (\code{AssertionError}: a fractional integer,
+cash, buying power, gross exposure, cardinality, minimum ticket, CVaR, or a
+non-positive $W_o$) is \emph{not} caught by \code{MioDecider.decide}, so it
+aborts the whole simulation run.
 
 %----------------------------------------------------------------------------
 \section{Backtest integration}\label{sec:integration}
@@ -417,7 +422,8 @@ solver & HiGHS, gap 0, 1 thread, seed 0 & base default \\
 \item buys only, from an empty book;
 \item at most 5 names;
 \item self-financed from live cash;
-\item total notional at most NAV;
+\item total notional at most NAV \emph{per lead-group solve} (each group gets
+  $G=$ NAV; across groups only the shared cash bounds the total);
 \item the HFDR row;
 \item CRRA($\gamma=2$) tangent utility over 64 recentered joint scenarios.
 \end{itemize}
@@ -440,6 +446,11 @@ The CVaR and no-trade-band rows are present but inert.
 \item The gate admission (tradable set, leads, caps) uses all 20 folds, so
   the results are developmental post-selection and
   \code{deployment_eligible}$=$false.
+\item The warmup hyperparameter search reads only rows before 2022-05-01, but
+  its cohort, each lead's scored names and the horizon weights come from the
+  Gate-3 admission, which was decided on the same 2022--2025 folds the
+  simulation trades. The traded window therefore chose which names and leads
+  were tuned (disclosed look-ahead).
 \item $\tilde\pi_i$ is not a bound, and its attested attainment floor is
   synthetic.
 \item The sequential lead-group allocation is myopic. There is no joint

@@ -61,7 +61,8 @@ Agent orientation — see README.md for operator commands.
 - `configs/run-retrain-simulation.json` (ADR-0185) is the ONE staged
   document that trains, retrains and trades: warmup HPO (`WarmupHpoCandidate`
   + `DocumentWalkRun`, the locked lean recipe's 24-candidate one-SE search on
-  fold 0's training window) -> `FrozenWinners` -> `FrozenWalkCandidate` +
+  fold 0's training window; its cohort/leads are the Gate-3 admission, decided
+  on the traded folds -- disclosed look-ahead) -> `FrozenWinners` -> `FrozenWalkCandidate` +
   `DocumentWalkRun` (20 releases refit with frozen winners on the calendar
   schedule) -> `RetrainedWalkInventory` -> `RetrainedWalkGates` ->
   `RetrainedSimulation`, which binds `run-retrain-simulation-template.json`

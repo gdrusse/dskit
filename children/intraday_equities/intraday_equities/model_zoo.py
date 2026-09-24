@@ -1703,6 +1703,7 @@ class _SingleRecipeCandidate(PooledGate3ZooCandidates):
 
     def run(self, ctx, inputs):
         """Write the shaped document of the one recipe; refuse a walk that is not the calendar's."""
+        self._check_phase(ctx.asof, inputs["phase"])
         self._check_schedule(ctx.document, inputs["phase"]["walkforward"])
         gate3_sources, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
         template = self.params["templates"][0]
@@ -1714,7 +1715,7 @@ class _SingleRecipeCandidate(PooledGate3ZooCandidates):
         _write(path, document)
         metadata = _metadata(template, candidate_id, "pooled-gate3", horizon, weights)
         return {
-            "candidate": {**metadata, "path": path},
+            "candidate": {**metadata, "path": path, "document_hash": document.hash},
             "eligibility": eligible,
             "provenance": {
                 "gate3_artifacts": gate3_sources,
@@ -1727,6 +1728,22 @@ class _SingleRecipeCandidate(PooledGate3ZooCandidates):
                 "eligible_count": len(eligible),
             },
         }
+
+    @staticmethod
+    def _check_phase(asof, phase):
+        """Refuse a phase that forbids fitting or selection, or an asof past its limit.
+
+        The same gates ``BenchmarkPlan`` applies to a zoo, applied here because
+        this chain fits and selects hyperparameters without one.
+        """
+        for gate in ("fit_allowed", "selection_allowed"):
+            if phase.get(gate) is not True:
+                raise ValueError(f"calendar phase {phase.get('key')!r} does not set {gate}")
+        if asof > phase.get("latest_asof", ""):
+            raise ValueError(
+                f"asof {asof} exceeds calendar phase {phase.get('key')!r} latest_asof "
+                f"{phase.get('latest_asof')!r}"
+            )
 
     @staticmethod
     def _check_schedule(document, schedule):

@@ -1312,7 +1312,9 @@ class DevelopmentSimulation(DevelopmentReplay):
             out["skipped"].extend({**row, **stamp} for row in result["skipped"] + decider.skipped)
             out["refused"].extend({**row, **stamp} for row in result["refused"] + decider.refused)
             out["solves"].extend({**row, **stamp} for row in decider.solves)
-            rows, contributed = self._cash_rows(replay, recorder, carried if index else None, contributed, tz)
+            rows, contributed = self._cash_rows(
+                replay, recorder, carried if index else None, contributed, tz, self._cash_flow_policy,
+            )
             out["cash"].extend({**row, **stamp} for row in rows)
             summaries.append({
                 "fold": release["fold"],
@@ -1384,8 +1386,12 @@ class DevelopmentSimulation(DevelopmentReplay):
             ])
 
     @staticmethod
-    def _cash_rows(replay, recorder, carried, contributed, tz):
-        """One row per trading date from the replay's booked cash flows and its day closes."""
+    def _cash_rows(replay, recorder, carried, contributed, tz, policy):
+        """One row per trading date from the replay's booked cash flows and its day closes.
+
+        A policy that funds every trading date (the daily one) still refuses
+        a ticked date nothing was booked on; a scheduled one reports it as 0.
+        """
         booked = {}
         for body in replay.booked_cash_flows:
             day = _local_date(body["effective_at_ms"], tz)
@@ -1394,6 +1400,11 @@ class DevelopmentSimulation(DevelopmentReplay):
             raise ConfigError([
                 f"funded dates {sorted(set(booked) - set(recorder.closes))} are not dates "
                 "the replay ticked"
+            ])
+        if policy.FUNDS_EVERY_TRADING_DAY and set(booked) != set(recorder.closes):
+            raise ConfigError([
+                f"ticked dates {sorted(set(recorder.closes) - set(booked))} were not funded "
+                "under a policy that funds every trading date"
             ])
         rows = []
         for position, day in enumerate(sorted(recorder.closes)):

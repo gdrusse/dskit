@@ -2280,3 +2280,54 @@ def test_a_replay_books_the_scheduled_flows_and_names_their_rules():
         ("initial_capital", 10000.0), ("scheduled_contribution", 500.0),
     ]
     assert replay._cash_balance == Decimal("10500")
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({"kind": "one_off", "date": "2026-03-02", "amount": "5"}, "outside the run"),
+        ({"kind": "withdrawal", "date": "2026-03-02", "amount": "5"}, "outside the run"),
+        ({"kind": "move", "date": "2026-01-09", "to": "2026-01-02"}, "outside the run"),
+        ({"kind": "move", "date": "2026-01-09", "to": "2026-03-02"}, "outside the run"),
+        ({"kind": "skip", "date": "2026-01-16"}, "not scheduled contributions"),
+        ({"kind": "replace", "date": "2026-03-06", "amount": "5"}, "not scheduled contributions"),
+    ],
+    ids=["one-off-past-end", "withdrawal-past-end", "move-before-start", "move-past-end",
+         "skip-off-phase", "replace-past-end"],
+)
+def test_scheduled_an_override_that_cannot_apply_inside_the_run_refuses(override, expected):
+    dates = _weekdays(date(2026, 1, 5), date(2026, 2, 27))
+    with pytest.raises(ConfigError, match=expected):
+        _scheduled(overrides=[override]).composer_for("s", _at_930(date(2026, 1, 5)), dates)
+
+
+def test_scheduled_policy_refuses_two_edits_of_one_date_and_an_unhashable_kind():
+    twice = [{"kind": "skip", "date": "2026-01-09"}, {"kind": "replace", "date": "2026-01-09", "amount": "1"}]
+    assert any("twice" in p for p in ScheduledCashFlowPolicy.validate_params({**_SCHEDULED, "overrides": twice}))
+    odd = [{"kind": ["skip"], "date": "2026-01-09"}]
+    assert any("kind must be one of" in p for p in ScheduledCashFlowPolicy.validate_params({**_SCHEDULED, "overrides": odd}))
+
+
+def test_scheduled_flows_name_every_rule_behind_them():
+    first = date(2026, 1, 5)
+    dates = _weekdays(first, date(2026, 2, 6), drop={date(2026, 1, 23)})
+    policy = _scheduled(overrides=[
+        {"kind": "move", "date": "2026-01-09", "to": "2026-01-07"},
+        {"kind": "replace", "date": "2026-02-06", "amount": "750"},
+    ]).segment(Decimal("123"), dates)
+    composer, _ = policy.composer_for("s", _at_930(first), dates)
+    due = composer.due(_utc(_at_930(first)), _utc(_at_930(date(2026, 2, 7))))
+    named = {
+        _utc(record["body"]["effective_at_ms"]).astimezone(_CF_TZ).date(): policy.describe_flow(record["body"], False)[0]
+        for record in due
+    }
+    assert named == {
+        first: "carried_cash",
+        date(2026, 1, 7): "moved_contribution",
+        date(2026, 1, 26): "scheduled_contribution",
+        date(2026, 2, 6): "replaced_contribution",
+    }
+    assert "rolled from 2026-01-23" in policy.describe_flow(
+        next(r["body"] for r in due if _utc(r["body"]["effective_at_ms"]).astimezone(_CF_TZ).date() == date(2026, 1, 26)),
+        False,
+    )[1]

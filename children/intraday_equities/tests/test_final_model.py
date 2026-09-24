@@ -970,7 +970,7 @@ def _head_evidence(head, index, document_obj):
 
 def _attested_hpo_run(
     tmp_path, *, state="ran", node_document_hash=None, config_obj=None,
-    recorded=None, carried=None, name="hpo-run", document=None,
+    recorded=None, carried=None, name="hpo-run", document=None, evidence=None,
 ):
     """Write a run directory the driver's own RunAttestation accepts."""
     import json
@@ -991,7 +991,7 @@ def _attested_hpo_run(
     }))
     manifests, carry = {}, {}
     for index, head in enumerate(HEADS):
-        manifest = _json_artifact(run_dir, _head_evidence(head, index, obj))
+        manifest = _json_artifact(run_dir, (evidence or _head_evidence)(head, index, obj))
         manifests[head] = manifest
         carry[f"scan_{head}"] = {
             "hpo_ledger": manifest if carried is None else carried(head, manifest)
@@ -3330,14 +3330,73 @@ def test_frozen_winners_refuses_a_summary_that_moved_after_its_seal(tmp_path):
         FrozenWinners("winners").run(None, {"run": row})
 
 
-def test_frozen_winners_refuses_a_ruling_that_is_not_the_ledgers(tmp_path):
+def _distinct_head_evidence(head, index, document_obj):
+    """Evidence whose one-standard-error winner differs per head (se 0, a distinct argmax)."""
+    model = [
+        t for t in document_obj["stages"]["finalist"]["params"]["templates"]
+        if t.get("family") == "pooled-lightgbm"
+    ][0]["model"]
+    inventory = CandidateInventory(
+        model["hpo_space"], n_trials=model["hpo_trials"], seed=model["hpo_seed"]
+    )
+    best = (3 * index) % len(inventory.combinations)
+    ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
+    for position, candidate in enumerate(inventory.combinations):
+        ledger.record(
+            candidate, -float((position - best) ** 2), se=0.0, diagnostics={},
+            on_boundary={}, fit_seed=0, cuts={}, n_rows=6, train_val_gap=0.0,
+            collapsed_prediction_variance=False,
+        )
+    selection = OneStandardErrorSelector(select="max", simplicity_key=simplicity_key).select(ledger)
+    return {
+        "producer_key": f"scan_{head}",
+        "feature_order": list(WIRE_FEATURES),
+        "categorical_feature": [],
+        "ledger": ledger.to_obj(),
+        "selection": selection.to_obj(),
+    }
+
+
+def test_frozen_winners_gives_each_lead_its_own_ledgers_winner(tmp_path):
     from intraday_equities.final_model import FrozenWinners
 
-    document = _scan_hpo_document()
-    run_dir, _, manifests = _attested_hpo_run(tmp_path, document=document)
-    path = run_dir / manifests["h03"]["path"]
-    evidence = json.loads(path.read_text())
-    evidence["selection"]["selected_candidate"] = {"learning_rate": 99.0}
-    path.write_text(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
-    with pytest.raises(ValueError):
+    obj = _fixture_hpo_document().to_obj()
+    run_dir, _, _ = _attested_hpo_run(
+        tmp_path, document=_scan_hpo_document(), evidence=_distinct_head_evidence,
+    )
+    winners = FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})["winners"]
+    expected = {
+        f"scan_{head}": _distinct_head_evidence(head, index, obj)["selection"]["selected_candidate"]
+        for index, head in enumerate(HEADS)
+    }
+    assert winners == expected
+    assert len({json.dumps(value, sort_keys=True) for value in winners.values()}) > 1
+
+
+def test_frozen_winners_refuses_a_recorded_selection_that_is_not_the_ledgers_ruling(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    def forged(head, index, obj):
+        evidence = _distinct_head_evidence(head, index, obj)
+        if head == "h03":
+            other = _distinct_head_evidence("h04", index + 1, obj)["selection"]
+            evidence["selection"] = other
+        return evidence
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document(), evidence=forged)
+    with pytest.raises(ValueError, match="one-standard-error ruling"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+def test_frozen_winners_refuses_evidence_recorded_by_another_producer(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    def swapped(head, index, obj):
+        evidence = _distinct_head_evidence(head, index, obj)
+        if head == "h03":
+            evidence["producer_key"] = "scan_h04"
+        return evidence
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document(), evidence=swapped)
+    with pytest.raises(ValueError, match="another producer"):
         FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})

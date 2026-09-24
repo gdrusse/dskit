@@ -949,7 +949,7 @@ def test_document_walk_run_fits_once_and_returns_the_sealed_planned_row(tmp_path
     calls = []
     monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
     monkeypatch.setattr("dskit.pipeline.benchmarks.run_walk_forward", _completing_walk(tmp_path, document, calls))
-    candidate = {**_metadata("lean"), "path": "candidate.json"}
+    candidate = {**_metadata("lean"), "path": "candidate.json", "document_hash": document.hash}
     row = DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": candidate})["run"]
     assert len(calls) == 1 and calls[0] == (document, "2026-02-28")
     assert row["state"] == "ran" and row["exit_code"] == 0
@@ -969,7 +969,7 @@ def test_document_walk_run_resumes_from_its_checkpoint_without_refitting(tmp_pat
     monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
     monkeypatch.setattr("dskit.pipeline.benchmarks.run_walk_forward", _completing_walk(tmp_path, document, calls))
     stage = DocumentWalkRun("walk")
-    inputs = {"candidate": {**_metadata("lean"), "path": "candidate.json"}}
+    inputs = {"candidate": {**_metadata("lean"), "path": "candidate.json", "document_hash": document.hash}}
     first = stage.run(_context(tmp_path), inputs)["run"]
     second = stage.run(_context(tmp_path), inputs)["run"]
     assert len(calls) == 1
@@ -989,13 +989,18 @@ def test_document_walk_run_refuses_a_walk_that_did_not_complete(tmp_path, monkey
         ),
     )
     with pytest.raises(ValueError, match="ended in state 'error'"):
-        DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": {**_metadata("lean"), "path": "c.json"}})
+        DocumentWalkRun("walk").run(
+            _context(tmp_path), {"candidate": {**_metadata("lean"), "path": "c.json", "document_hash": document.hash}}
+        )
 
 
 @pytest.mark.parametrize(
     "inputs",
-    [{}, {"candidate": "c.json"}, {"candidate": {"id": "lean"}}, {"candidate": {"path": "c.json"}},
-     {"candidate": {"id": "lean", "path": "c.json"}, "extra": 1}],
+    [{}, {"candidate": "c.json"}, {"candidate": {"id": "lean", "document_hash": "a" * 64}},
+     {"candidate": {"path": "c.json", "document_hash": "a" * 64}},
+     {"candidate": {"id": "lean", "path": "c.json"}},
+     {"candidate": {"id": "lean", "path": "c.json", "document_hash": "nope"}},
+     {"candidate": {"id": "lean", "path": "c.json", "document_hash": "a" * 64}, "extra": 1}],
 )
 def test_document_walk_run_requires_exactly_one_materialized_candidate(inputs):
     from dskit.pipeline.benchmarks import DocumentWalkRun
@@ -1008,3 +1013,16 @@ def test_document_walk_run_default_denies_params():
 
     assert DocumentWalkRun.validate_params({"knob": 1})
     assert DocumentWalkRun.validate_params({}) == []
+
+
+def test_document_walk_run_refuses_a_document_edited_after_it_was_materialized(tmp_path, monkeypatch):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    document = _walk_document(tmp_path)
+    calls = []
+    monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
+    monkeypatch.setattr("dskit.pipeline.benchmarks.run_walk_forward", _completing_walk(tmp_path, document, calls))
+    candidate = {**_metadata("lean"), "path": "candidate.json", "document_hash": "f" * 64}
+    with pytest.raises(ValueError, match="moved after"):
+        DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": candidate})
+    assert calls == []

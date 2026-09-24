@@ -23,6 +23,10 @@ New code:
   `FrozenWinners` (via the extracted `one_standard_error_winner`), the
   Retrained inventory/gates, and `RetrainedSimulation`.
 
+Disclosed look-ahead: the search rows precede 2022-05-01, but the cohort and
+leads come from Gate 3, which was decided on the traded folds. The gate caps
+also use all 20 folds.
+
 The formulation is
 `children/intraday_equities/docs/explanations/mio-optimizer-formulation.tex`
 (compiled clean). The MIO knobs are still ADR-0184 placeholders.

@@ -1623,6 +1623,15 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
     simulate, old = template["pipeline"]["simulate"]["params"], adr0184["pipeline"]["simulate"]["params"]
     policy = CashFlowPolicy.from_path(_path("cash-flow-policy-biweekly.json"))
     assert simulate["cash_flow_policy"] == "configs/cash-flow-policy-biweekly.json"
+    # The owner's funding ruling (ADR-0185 rulings 3), restated on purpose:
+    # an assertion read from the policy file would assert nothing.
+    funding = _raw("cash-flow-policy-biweekly.json")
+    assert {k: v for k, v in funding.items() if k != "notes"} == {
+        "kind": "scheduled", "currency": "USD", "initial_capital_amount": "10000",
+        "contribution_amount": "500", "interval_days": 14, "first_weekday": "friday",
+        "local_time": "09:30", "timezone": "America/New_York",
+        "holiday_rule": "next_trading_day", "overrides": [],
+    }
     assert simulate["cash_flow_policy_sha256"] == policy.digest()
     assert {k: v for k, v in simulate.items() if not k.startswith("cash_flow_policy")} == {
         k: v for k, v in old.items() if not k.startswith("cash_flow_policy")

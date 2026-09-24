@@ -723,12 +723,12 @@ _CACHES = {
 }
 
 
-def _phase(**changes):
+def _phase(gates=None, **changes):
     from dskit.pipeline.program_calendar import load_program_calendar
 
     calendar, _ = load_program_calendar(str(_RETRAIN), "program-calendar-p13-model-zoo.json")
     walk = {**calendar["fold_schedules"]["development_outer"], **changes}
-    return {"key": "model_zoo", "walkforward": walk}
+    return {"key": "model_zoo", **calendar["phases"]["model_zoo"], **(gates or {}), "walkforward": walk}
 
 
 def _retrain_stage(cls, key, tmp_path, monkeypatch):
@@ -739,7 +739,7 @@ def _retrain_stage(cls, key, tmp_path, monkeypatch):
     monkeypatch.setattr(
         stage, "resolve", lambda ctx, inputs: ([], list(_ELIGIBLE), dict(_CACHES), 3, {})
     )
-    ctx = SimpleNamespace(source_path=str(_RETRAIN), document=source, artifact_dir=str(tmp_path))
+    ctx = SimpleNamespace(source_path=str(_RETRAIN), document=source, artifact_dir=str(tmp_path), asof="2026-02-28")
     return stage, ctx
 
 
@@ -760,6 +760,7 @@ def test_warmup_hpo_candidate_narrows_the_locked_walk_to_its_first_fold(tmp_path
     out = stage.run(ctx, {"preflight": True, "caches": _CACHES, "phase": _phase()})
     document = load_document(out["candidate"]["path"])
     plan(document)
+    assert out["candidate"]["document_hash"] == document.hash
     walk = document.to_obj()["walkforward"]
     assert walk["folds"] == ["2022-05-06"]
     assert (walk["val_days"], walk["embargo_days"], walk["train_days"]) == (63, 5, 730)
@@ -811,16 +812,36 @@ def test_frozen_walk_candidate_refuses_winners_that_do_not_fit_the_recipe(tmp_pa
 
 
 @pytest.mark.parametrize("key", ["hpo_document", "walk_document"])
-def test_retrain_candidates_refuse_a_walk_that_differs_from_the_locked_calendar(tmp_path, monkeypatch, key):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("first", "2022-05-13"), ("step_days", 62), ("count", 19), ("val_days", 60),
+     ("embargo_days", 4), ("train_days", 365)],
+)
+def test_retrain_candidates_refuse_a_walk_that_differs_from_the_locked_calendar(tmp_path, monkeypatch, key, field, value):
     from intraday_equities.model_zoo import FrozenWalkCandidate, WarmupHpoCandidate
 
     cls = WarmupHpoCandidate if key == "hpo_document" else FrozenWalkCandidate
     stage, ctx = _retrain_stage(cls, key, tmp_path, monkeypatch)
-    inputs = {"preflight": True, "caches": _CACHES, "phase": _phase(train_days=365), "winners": _winners()}
+    inputs = {"preflight": True, "caches": _CACHES, "phase": _phase(**{field: value}), "winners": _winners()}
     if key == "hpo_document":
         del inputs["winners"]
-    with pytest.raises(ValueError, match="train_days"):
+    with pytest.raises(ValueError, match=field):
         stage.run(ctx, inputs)
+
+
+@pytest.mark.parametrize(
+    ("gates", "asof", "expected"),
+    [({}, "2026-03-01", "latest_asof"), ({"fit_allowed": False}, "2026-02-28", "fit"),
+     ({"selection_allowed": False}, "2026-02-28", "selection")],
+    ids=["asof-past-the-phase", "fit-not-allowed", "selection-not-allowed"],
+)
+def test_retrain_candidates_honour_the_calendar_phase_gates(tmp_path, monkeypatch, gates, asof, expected):
+    from intraday_equities.model_zoo import WarmupHpoCandidate
+
+    stage, ctx = _retrain_stage(WarmupHpoCandidate, "hpo_document", tmp_path, monkeypatch)
+    ctx.asof = asof
+    with pytest.raises(ValueError, match=expected):
+        stage.run(ctx, {"preflight": True, "caches": _CACHES, "phase": _phase(gates)})
 
 
 def test_warmup_hpo_candidate_requires_exactly_one_evidence_mode_recipe():
@@ -833,6 +854,12 @@ def test_warmup_hpo_candidate_requires_exactly_one_evidence_mode_recipe():
     blind = json.loads(json.dumps(params))
     blind["templates"][0]["model"]["hpo_evidence"] = False
     assert any("hpo_evidence" in problem for problem in WarmupHpoCandidate.validate_params(blind))
+    ic = json.loads(json.dumps(params))
+    ic["templates"][0]["model"]["hpo_objective"] = "ic"
+    assert any("hpo_objective" in problem for problem in WarmupHpoCandidate.validate_params(ic))
+    off = json.loads(json.dumps(params))
+    off["templates"][0]["enabled"] = False
+    assert any("enabled" in problem for problem in WarmupHpoCandidate.validate_params(off))
 
 
 # --- ADR-0185: the retrained walk's inventory and gates read this run's own artifacts ---
@@ -847,6 +874,13 @@ def test_retrained_walk_inventory_seals_the_same_folds_from_the_walk_row(tmp_pat
 
     run, _, cutoffs = _inventory_fixture(tmp_path, monkeypatch)
     row = run["outputs"]["runs"][0]
+    summary = json.loads(Path(row["evidence_manifest_path"]).read_text())
+    summary["aggregate"] = {"mean": 0.0125}
+    Path(row["evidence_manifest_path"]).write_text(json.dumps(summary))
+    row["evidence_manifest_sha256"] = __import__("hashlib").sha256(
+        Path(row["evidence_manifest_path"]).read_bytes()
+    ).hexdigest()
+    row_mean = 0.0125
     ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), document=SimpleNamespace(hash="f" * 64))
     manifest = RetrainedWalkInventory("inventory", {}).run(ctx, {"run": row})["manifest"]
     assert manifest["benchmark_identity"] == "f" * 64
@@ -855,6 +889,7 @@ def test_retrained_walk_inventory_seals_the_same_folds_from_the_walk_row(tmp_pat
     assert "no comparison" in manifest["selection_caveat"]
     assert [fold["cutoff"] for fold in manifest["folds"]] == cutoffs
     assert manifest["summary"]["sha256"] == row["evidence_manifest_sha256"]
+    assert manifest["winner"]["mean_path_score"] == row_mean
     assert manifest["expected_units"] == [
         {"symbol": "AAA", "horizon": 1}, {"symbol": "AAA", "horizon": 2}, {"symbol": "BBB", "horizon": 1},
     ]

@@ -1457,3 +1457,52 @@ def test_retrained_simulation_default_denies_params():
     assert RetrainedSimulation.validate_params(_retrained_params()) == []
     assert RetrainedSimulation.validate_params({**_retrained_params(), "extra": 1})
     assert RetrainedSimulation.validate_params(_retrained_params(template_sha256="nope"))
+
+
+def test_cash_rows_still_refuse_an_unfunded_trading_day_under_the_daily_policy():
+    from types import SimpleNamespace
+
+    from intraday_equities.replay import ScheduledCashFlowPolicy
+
+    day = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
+    replay = SimpleNamespace(booked_cash_flows=[
+        {"effective_at_ms": int(day.timestamp() * 1000), "amount": "1020"},
+    ])
+    closes = {"2026-01-05": {"cash": 1.0, "gross_limit": 1.0, "mark_prices": {}},
+              "2026-01-06": {"cash": 1.0, "gross_limit": 1.0, "mark_prices": {}}}
+    recorder = SimpleNamespace(closes=closes)
+    with pytest.raises(ConfigError, match="not funded"):
+        DevelopmentSimulation._cash_rows(replay, recorder, None, Decimal("0"), TZ, CASH_POLICY)
+    scheduled = ScheduledCashFlowPolicy({
+        "kind": "scheduled", "currency": "USD", "initial_capital_amount": "10000",
+        "contribution_amount": "500", "interval_days": 14, "first_weekday": "friday",
+        "local_time": "09:30", "timezone": "America/New_York", "holiday_rule": "next_trading_day",
+    })
+    rows, _ = DevelopmentSimulation._cash_rows(replay, recorder, None, Decimal("0"), TZ, scheduled)
+    assert [row["contribution"] for row in rows] == ["1020", "0"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda obj: obj["pipeline"].pop("publish"), "exactly one publisher"),
+        (lambda obj: obj["pipeline"]["write_fills"]["params"].update(path="pipeline_runs/x.jsonl"), "must start with"),
+    ],
+    ids=["no-publisher", "unbound-writer"],
+)
+def test_retrained_simulation_refuses_a_template_it_cannot_bind_whole(tmp_path, mutate, expected):
+    import hashlib
+
+    from intraday_equities.simulation import RetrainedSimulation
+
+    with open(_TEMPLATE, encoding="utf-8") as handle:
+        obj = json.load(handle)
+    mutate(obj)
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(obj))
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params(
+        template=str(path), template_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    ))
+    with pytest.raises(ValueError, match=expected):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})

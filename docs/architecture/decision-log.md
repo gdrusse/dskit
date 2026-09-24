@@ -23716,6 +23716,35 @@ admission as ConfirmedCaps confirmation (defeats ADR-0121).
 **Status:** accepted (2026-09-24, owner approved in session). **Owner:**
 Russell. **Base:** `eb0df36`. **Branch:** `claude/intraday-equities-backtest-ahza9o`.
 
+**Review record.** Round 1 ran on candidate `62b4b5d` with two fresh,
+independent lenses, sequentially. Correctness/authority found 0 Critical,
+1 Major, 4 Minor and 2 Nit. Tests/integration, with mutation testing, found
+0 Critical, 1 Major and 5 Minor.
+
+Majors, both fixed:
+
+- The cohort look-ahead in the warmup search was undisclosed. It is now
+  disclosed in this ADR, the config notes, the LaTeX and the agent docs.
+- The FrozenWinners tests could not reach the re-ruling: tampering broke
+  the digest first, and every head had the same winner. The tests now give
+  each head a distinct winner, forge a validly-digested selection, and forge
+  a producer mismatch. The re-ruling and producer mutations are now caught.
+
+Minors and nits:
+
+- Fixed: `DocumentWalkRun` now pins `document_hash`. Out-of-run overrides
+  refuse. The daily policy's every-day funding check is restored. The
+  calendar-phase gates (fit, selection, `latest_asof`) are enforced. The
+  funding cadence is pinned independently. Missing coverage was added:
+  every schedule field, the recipe checks, template binding, rule names and
+  `mean_path_score`. An unhashable override kind now refuses cleanly.
+- Corrected in the LaTeX: post-solve violations abort the run rather than
+  being recorded as `mio_refused`, and NAV bounds each lead group
+  separately.
+- Retained as disclosed limits: the base's untested checkpoint seal-drift
+  check predates this change, and the fixtures do not exercise the
+  publisher end to end without data.
+
 **Context.** ADR-0184's simulation replays stored out-of-fold `yhat` from an
 earlier P16 walk. It says so itself: "no in-loop refit". It also
 tunes per fold (4 trials) and funds $1,000 + $20/day. The final-model plan
@@ -23802,6 +23831,12 @@ withdrawal).
 - The gate admission uses all 20 folds (`cap_evidence_look_ahead`), so the
   evidence is developmental post-selection, and `deployment_eligible` is
   false.
+- The warmup search's ROWS all precede 2022-05-01, but its cohort does
+  not: the 25 names, each lead's scored names and the horizon weights come
+  from the pinned Gate-3 admission, decided on the P12 walk over the same
+  2022-2025 folds this run trades. The traded window therefore chose which
+  names and leads were tuned (look-ahead in the cohort; recorded by the
+  2026-09-24 correctness review, disclosed rather than re-derived).
 - Calibration uses the residuals of folds 0..1.
 - Fills are next-bar open with Schwab costs.
 - Not modelled: T+1 settlement, GFV, PDT and halts. Split-adjusted sizing
