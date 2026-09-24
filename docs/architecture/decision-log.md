@@ -22638,3 +22638,129 @@ Tier-refactor review (Sonnet, `12646c0`): 0 Critical/Major. `iv_ceiling`
 units) IV stays ~1.1 even at VIX 80; it would first bind near VIX 90 with
 z = -4 (IV 1.996). The put-wing branch of the smile negativity check is
 vacuous while `put_skew_per_z >= 0` (kept for symmetry).
+
+## ADR-0183 — `dskit.evaluation`: a centralized backtest evaluator (event log -> standalone report)
+
+**Status:** Accepted 2026-09-24 under Russell's delegation ("I give you permission to create and write ADRs and build and implement them overnight"; "You can start a new subpackage if that makes sense"). Scope is the manifest below.
+**Owner:** Russell. **Base:** `7605ba0`.
+
+**Context.** Every project re-invents "what did the backtest do and why".
+Inventory (full sweep 2026-09-24): `pipeline/kinds_report.RunReport`
+(evidence.json/md; pmquant-shaped trades/decisions; never wired with
+trades/capital on real data); `pipeline/libs/matplotlib` `FigureNode`/
+`DeclaredFigure` (PNG, unused by children); `production/accounting.WindowBook`
+(the one P&L fold), `production/report.Report` (attribution, value curve,
+TWR/MWR — needs a persistent ledger + serve document); `pipeline/stats`
+(`max_drawdown`, `lower_tail_mean`, DM, Clark-West); `runs.render_cell`
+(markdown escaping). Gaps: no decision/action log with reasons, no
+trades-on-price or equity visuals, no cash-flow timeline, no refused/skipped
+accounting, no provenance block, no HTML/SVG. intraday_equities loses the
+"why" twice: `PortfolioSelect` keeps per-symbol forecasts only inside its
+model (outputs `{asof_ms, symbol}`), and `EquityReplay` deletes its
+production ledger (`mkdtemp` + `rmtree`). Unapproved branch
+`claude/prod-sim-20260923` plans a child-side simulation report; this ADR
+supersedes that part (a child report would duplicate this one).
+Research (LEAN report/Insights, pyfolio/quantstats, vectorbt, Alphalens,
+NautilusTrader, Bailey-Lopez de Prado PSR/DSR, Lo 2002): one append-only
+event log as the source of truth; reports are a pure function of it.
+
+**Decision.** A new package `dskit/evaluation/` (tier 1: stdlib plus imports
+of `dskit.pipeline` and `dskit.production`; neither may import it; tier-2
+packs only under `dskit/evaluation/libs/`). Reports are a pure function
+`events -> artifacts`, re-renderable from `events.jsonl` alone.
+
+*Event schema v1* (JSON objects, one per line; all instants epoch ms UTC):
+envelope `schema` = `"dskit-eval-v1"`, `seq` (int, strictly increasing),
+`kind`, `ts_ms` (event instant), `known_ms` (when the information was
+available; `<= ts_ms` for decisions), `instrument` (venue-neutral string or
+null). Kinds:
+- `run_start` — `run_id`, `title`, `project`, `tz` (IANA, display only),
+  `config_hash`, `config` (obj), `code` (`{commit, dirty}`), `data`
+  (`{name: fingerprint}`), `env` (`{python, platform, packages}`),
+  `criteria` (list, below), `trials` (int, configurations tried; DSR).
+- `decision` — `decision_id`, `candidates` (list of `{instrument, score,
+  rank, eligible, reason}`), `chosen` (instrument or null), `threshold`,
+  `edge`, `action` (`enter|exit|hold|skip|refuse`), `reason` (code),
+  `detail` (text), `model` (str).
+- `order` — `order_id`, `decision_id`, `side` (`buy|sell`), `qty`,
+  `ref_price`, `legs` (optional list for multi-leg).
+- `refusal` and `skip` — `decision_id` or `order_id`, `reason` (code),
+  `detail`. Every refusal/skip is an event; none may be dropped.
+- `fill` — `fill_id`, `order_id`, `side`, `qty`, `price`, `fee`,
+  `ref_price` (optional), `tag` (`entry|exit|...`).
+- `mark` — `price` (bar close/mid used for unrealised P&L and price charts).
+- `cashflow` — `amount` (+ in, - out), `rule`, `detail`.
+- `outcome` — `decision_id`, `horizon`, `realized` (`known_ms > ts_ms` by
+  construction; never read by sections that render the decision).
+- `solve` (phase 2) — `solver`, `status`, `objective`, `bound`, `gap`,
+  `binding` (list), `seconds`.
+- `run_end` — `status`, `wall_s`.
+
+*Criteria*: `{name, stat, op (">=","<=",">","<"), value, min_n}` —
+pre-registered; the verdict is PASS/FAIL per criterion and INCONCLUSIVE when
+the stat's sample is below `min_n`.
+
+Manifest — dskit (new package `dskit/evaluation/`):
+1. `__init__.py`, `README.md`, `AGENTS.md`, `CLAUDE.md` (identical).
+2. `events.py` — event kinds as validating classes, `EventLog` (append,
+   ordering/seq checks, look-ahead check `known_ms <= ts_ms` for decisions,
+   census identity `decisions == entered + refused + skipped + held`,
+   JSONL read/write; canonical JSON reused from dskit, not re-invented).
+3. `book.py` — `EvaluationBook`: folds `fill` events through
+   `production.accounting.WindowBook` (adapter to its fill shape — NO second
+   P&L fold), marks from `mark` events, cash from `cashflow` + fills; yields
+   the equity/cash/exposure series and round trips (FIFO per instrument).
+4. `statistics.py` — the report's statistics table built from the book,
+   reusing `pipeline.stats` (`max_drawdown`, `lower_tail_mean`, ...); new
+   generic estimators (daily Sharpe with n, PSR, DSR with `trials`, trade
+   t-stat, profit factor, payoff ratio, turnover, exposure, holding time)
+   are added to `dskit/pipeline/stats.py` (tier 1, reusable) unless an
+   equivalent exists. Short-sample stats are labelled "insufficient n".
+5. `criteria.py` — `Criterion` / `Verdict` (pre-registered thresholds).
+6. `svg.py` — stdlib inline-SVG charts (`LineChart`, `StepChart`,
+   `MarkerLayer` with `<title>` tooltips, `Histogram`, `BarChart`) — no JS,
+   no CDN, light/dark-safe colours.
+7. `sections.py` — `Section` ABC + `SummarySection` (card, verdict, census),
+   `EquitySection` (equity, gross vs net, drawdown), `TradesOnPriceSection`
+   (per instrument x session: price with entry/exit and refused/skipped
+   markers annotated with the reason), `DecisionLogSection` (every decision
+   with candidates/score/edge/action/reason/fill/slippage), `CashSection`
+   (cash, exposure, cash flows), `DistributionSection`, `PeriodSection`
+   (per day / per fold), `ProvenanceSection`.
+8. `report.py` — `BacktestReport(log, sections=default)` -> `write(out_dir)`:
+   `events.jsonl`, `summary.md`, `report.html` (self-contained),
+   `decisions.csv`, `trades.csv`.
+9. `nodes.py` — pipeline node `EvaluationReport` (role `report`, resolved by
+   dotted path; input `events`; params `out_dir`, `title`) — a doorway.
+10. `__main__.py` — `python -m dskit.evaluation render <events.jsonl> --out <dir>`.
+11. Tests `tests/evaluation/` (+ a purity test: evaluation imports only
+    stdlib, dskit.pipeline, dskit.production; pipeline/production never
+    import it). Root AGENTS/README package trees.
+
+Manifest — child `intraday_equities` (tier-3 wrappers only):
+12. `PortfolioSelect` gains a `candidates` output (per stamp: every scored
+    symbol's forecast, rank, chosen flag) — the "why".
+13. `EquityReplay`/`DevelopmentReplay` gain a `cash_flows` output (the
+    policy's deposits as submitted) — no ledger retention in this slice.
+14. `intraday_equities/evaluation.py` — `ReplayEvents` node: maps
+    candidates + fills + refused + skipped + cash_flows + bars (marks) into
+    schema-v1 events (reason-code mapping only); config
+    `configs/run-replay-report.json` wiring it to `EvaluationReport`.
+15. Child tests; manifest/AGENTS updates.
+
+**Phases.** P1 (this ADR): items 1-15, run on a real replay.
+P2: `solve` events from `PyomoSolve` doorways (MIO status/objective/
+binding), inference diagnostics section (calibration deciles, rank IC via
+existing metrics), ledger-backed decision findings (retain the replay
+ledger; `production.report.Report` attribution). P3: other children
+(index_options `CondorBacktest`, pmquant `RunReport` convergence), optional
+`libs/matplotlib` PNG backend.
+
+**Non-goals.** Live dashboards, JS charting, a second P&L fold, changing
+`RunReport` (convergence is P3), trading/serving changes.
+
+**Alternatives.** Extend `pipeline/kinds_report.RunReport` (pipeline may not
+import production's `WindowBook`, and its shapes are pmquant's); put it in
+`production/` (it serves research backtests too, and production would grow a
+renderer); matplotlib/plotly HTML (dependencies/CDN; ADR-0029 kept HTML out
+of the figure pack).
