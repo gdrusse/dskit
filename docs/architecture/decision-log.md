@@ -22979,6 +22979,79 @@ document, pins swapped for a synthetic fixture, planned and run by the
 above is a node in the plan and no stage runs outside it),
 `test_report_is_a_separate_node_fed_only_by_wires`.
 
+**S7 as built (2026-09-24).** `intraday_equities/simulation.py`:
+`DevelopmentSimulation(DevelopmentReplay)` (kind
+`intraday_equities-development-simulation`, role `transform`) and
+`SimulationReport` (kind `intraday_equities-simulation-report`, role
+`report`); `replay.py`: `EquityReplay.cash_flows` (the cash-flow bodies it
+booked) and read-only `cash_balance`, and `DevelopmentReplay.run`'s window
+checks moved verbatim into `_refuse_out_of_window(bars, decisions)`.
+Documents `configs/run-development-simulation.json` (folds 2..19) and
+`configs/run-development-simulation-smoke.json` (fold 2 only; a test pins
+that it differs from the full document only in name/notes, folds, the
+bars `end_ms` and the output paths). As built:
+(1) `simulate` reads no data: its `bars` input is sliced once into one
+list per release (`[segment_start_ms, segment_end_ms)`, gate-admitted
+names only, projected to symbol/`asof_ms`/the three price fields,
+`halted` false where absent); optional `consume_bars` (JSON bool, the
+`concat.consume_inputs` ownership transfer) clears the input list after
+slicing and each segment's slice is dropped after its replay. Segments
+are contiguous whole UTC days and lots close intraday, so no fill suffix
+is used; an `expiry_past_tape` lot refuses the run (ADR rule).
+(2) Cash: segment k > first runs under `CashFlowPolicy({**pinned,
+"initial_capital_amount": str(closing_cash_k-1)})`; the `cash` output is
+one row per trading date (`booked` ledger amount, `carried_in` on a
+segment-opening date only, external `contribution`, running
+`contributions_to_date`, and the replay's own day-close `cash_close`,
+`nav_close`, `marks` taken from the portfolio `EquityReplay` hands its
+decider after the date's last tick, via a forwarding `_DayCloses`); the
+funded dates must equal the ticked dates or the node refuses. Tests pin
+seed once, $20 on every trading date, no gap or double count at the
+boundary, and opening cash == previous closing cash == contributions +
+every fill's cash.
+(3) `simulate` refuses a bar close that differs from the bundle's decision
+price by more than 1e-6 relative (the float32 cache close vs the store's
+close of the same minute; S5 deviation (3) made checkable), releases
+whose folds differ from `first_fold..last_fold`, and (inherited) any
+decision at or after the day after `evidence_end`.
+(4) `report`: each fill -> `records.Fill` -> `WindowBook` for the account,
+per symbol and per lead; daily NAV = contributions to date +
+`WindowBook.pnl(marks)` (identical to cash + marked lots), with the
+replay's own `nav_close` beside it (`nav_discrepancy`, 0 in the tests);
+`drawdown` in `daily` is the daily net P&L's peak-to-date less its value;
+the summary's `max_drawdown` is `WindowBook.drawdown` (fill-resolution).
+Every `simulate`/`report` row, the summary and `metadata` (written by
+`table-write` inside the summary) carry `deployment_eligible` false,
+`evidence_scope` `development_replay_post_selection` and the
+`cap_evidence_look_ahead` disclosure.
+(5) **ACCEPTED RISK (S6 lens):** the per-tick `EquityKellyMIO` sizing runs
+inside `simulate`'s loop, outside the DAG, so `planner.py:661-678`'s
+capital-role `stat_test` safety net does not apply to it; survivor gating
+is enforced instead on every call by `EquityKellyMIO.validate_inputs`
+against the survivors carried on each release, which are the pinned P16
+gate admission (question 13).
+Tests: `tests/test_simulation.py` 40 (S5-S7, including the shipped
+document run end to end by `python -m dskit.pipeline run ... --adapter
+intraday_equities` over a synthetic onboarding store with the pins
+swapped for the fixture); `tests/test_configs.py::test_config_validates_and_is_ineligible`;
+three hand mutants (no cash carry; carried cash counted as a
+contribution; open lot at segment end tolerated) each killed.
+**ADR errors found and fixed in the build:** (a) the Revision 3 table's
+`bars` node: `concat`'s output port is `merged`, not `records`, and
+`key: [symbol, asof_ms]` refuses (each key field is an independent
+namespace-disjointness check and both sources share every minute) --
+built as `key: "symbol"` with a `provenance_waiver` (the
+`run-final-hpo.json` pattern; `provenance` stamping would copy every
+row); (b) `report` also needs `$simulate.skipped`, `$simulate.refused`
+and `$simulate.metadata` for its counts and disclosure; (c) `simulate`'s
+cash-flow policy is required, not `DevelopmentReplay`'s optional pair;
+(d) "outputs under the run dir": the document language has no
+`$run_dir` reference and `FileWrite` refuses a missing parent, so the
+writes land beside the run dir in `./pipeline_runs/` (a second run
+refuses to clobber them); (e) the `cash` port is per trading date, not
+per fill; (f) "Only S3 touches dskit" and the `dskit.production`
+non-goal are superseded by amendment S7(d).
+
 **Amendment S7(d) — replay-only runtime-inventory memo in `dskit.production`
 (2026-09-24).** The S6 finding (every `ServeLoop` tick re-runs
 `verify_release` -> `RuntimeFingerprint.capture`, which re-reads and
@@ -23036,7 +23109,12 @@ is `python -m dskit.pipeline run configs/run-development-simulation.json
 one-segment smoke (a copy of the document with `first_fold=last_fold=2`
 and the `bars_<src>` bounds narrowed to that segment) under `/usr/bin/time -v`;
 extrapolate RSS and wall time; only then folds 2..19. Result recorded as a
-memo, labelled developmental post-selection.
+memo, labelled developmental post-selection. (S7 ships that copy as
+`configs/run-development-simulation-smoke.json`; both run from the child
+root of the worktree with `PYTHONPATH=<worktree>:<worktree>/children/intraday_equities`.
+Amendment S7(d) measured the replay scratch ledger's `fsync` as the next
+per-tick cost; pointing `TMPDIR` at tmpfs for the run is an operational
+option the owner may rule on -- it also holds the pin snapshots.)
 
 **Memory plan (f).** Streaming per segment: one fold's bars (~43 sessions x
 390 x 25 ~ 420k records, <1 GB with EquityReplay's copies), cache tapes for
@@ -23069,12 +23147,15 @@ the smoke shows it matters.
 | `read_predictions(columns=)` (S5 fix M1) | `grep -rn "def read_predictions\|pq.read_table"`: `_Walk.yhat` re-implemented the reader to project columns | One optional parameter on the existing reader; default output pinned. |
 | `MioDeciderNode` (`decide`, S6) | toolkit and child kinds above; `EquityKellyMIO.validate_params` | Validation delegates to `EquityKellyMIO`; no kind carries validated MIO params to a per-tick loop. |
 | `EquityKellyMIO.cap_evidence_look_ahead` (Revision 2) | `deployment_mode`, `DevelopmentReplay.caps`/`deployment_eligible`, `ConfirmedCaps.problems`, `ScenarioUtilitySolve._PARAMS`; `grep -n "look_ahead\|post_selection\|evidence_scope"` | No existing flag relaxes a timing check; the two refusals live only in `EquityKellyMIO.validate_inputs`, so one optional param there is the smallest honest seam (the rejected alternative was false stamps). |
-| `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). |
+| `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). As built its only new code is the segment loop over `EquityReplay` + `MioDecider` + a derived `CashFlowPolicy`. |
+| `_DayCloses` (S7) | `EquityReplay._portfolio`, `WindowBook`, `Report.value_curve` | Forwards the portfolio the replay already hands its decider; no second account is kept. |
+| `EquityReplay.cash_flows` / `cash_balance` (S7) | `_advance_cash_flow_window` (books the records), test-only `_CapturingEquityReplay` | Exposes what the ledger already booked, for the per-date contribution rows; no second cash computation. |
+| `SimulationReport` (S7) | `WindowBook`, `records.Fill`, `Report.value_curve`, toolkit `run-report`/`banking-report` (`kinds_report.py`) | `WindowBook` is the fold (account, per symbol, per lead); `Report` needs a persistent ledger; the toolkit reports summarize model runs, not accounts. |
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
 | report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
 | Revision 3 node kinds `intraday_equities-forecast-publisher`, `-mio-decider`, `-development-simulation`, `-simulation-report` | toolkit kinds (`tests/pipeline/test_toolkit_conformance.py`: `concat`, `join`, `derive`, `groupby`, `records-write`, `table-write`, `run-report`, `banking-report`, `hpo-grid`); child kinds (`intraday_equities-bars`, `-kelly-mio`, `-development-replay`, `SyntheticMioSource`); `grep -rn "subgraph" dskit/pipeline` (only the `hpo-grid` rerun seam, param overrides, not per-tick inputs) | Bars, union and writes REUSE `intraday_equities-bars`, `concat`, `records-write`, `table-write`; sizing REUSES `intraday_equities-kelly-mio` per tick. No existing kind publishes real fold forecasts, carries MIO base params to a per-tick loop, runs a funded multi-release replay, or folds fills into a NAV report (`run-report`/`banking-report` report model runs, not accounts). |
 | `release.runtime_capture_memo`, `_inventory`, `_inventory_identity`, `_read_inventory` (S7(d)) | `grep -n "cache\|memo\|lru" dskit/production/release.py` (none); `loop.Tick` construction (loop.py:1275, no injection); `verify_release`/`_check_runtime`; `importlib.metadata`'s own `FastPath` cache (directory listings only, still parses every `METADATA`) | `_read_inventory` IS `capture`'s loop, moved verbatim; the memo is the smallest opt-in switch the child can set without monkeypatching or skipping D24's per-tick check. |
-| new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`; child README/AGENTS trees updated. |
+| new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`, `configs/run-development-simulation-smoke.json` (S7); child README/AGENTS/CLAUDE trees updated. |
 
 **Branch / worktree sweep (concurrent-effort findings checked).** After
 `git fetch`: `origin/codex/intraday-equities-full-backtest-20260922` (tip
