@@ -23,6 +23,7 @@ from dskit.pipeline.node import ConfigError
 
 from intraday_equities.nodes_capital import SchwabCostModel
 from intraday_equities.replay import (
+    BarTape,
     CashFlowPolicy,
     DevelopmentReplay,
     EquityReplay,
@@ -1305,6 +1306,53 @@ def test_halted_symbol_exit_skip_unchanged_by_two_pass():
         ("exit", "BBB", 4_000, 22.0),
     ]
     assert out["refused"] == []
+
+
+# --- ADR-0182 S2: BarTape is built in one pass over the bars ----------------
+
+
+class _CountingBars(list):
+    """A bar list that counts how many times it is iterated."""
+
+    iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
+def test_bar_tape_iterates_bars_a_bounded_number_of_times():
+    bars = _CountingBars(
+        _bar(symbol, 1_000 * (i + 1), 10.0, 10.5)
+        for i in range(50)
+        for symbol in ("AAA", "BBB")
+    )
+    bars.iterations = 0
+    BarTape(bars, "src")
+    assert bars.iterations <= 2
+
+
+def test_bar_tape_records_added_per_timestamp():
+    bars = [
+        _bar("BBB", 2_000, 10.0, 10.5),
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("BBB", 1_000, 10.0, 10.5),
+        _bar("AAA", 3_000, 10.0, 10.5),
+        _bar("BBB", 3_000, 10.0, 10.5),
+        _bar("CCC", 3_000, 10.0, 10.5),
+    ]
+    tape = BarTape(bars, "src")
+    assert tape.start_ms() == 1_000
+    assert [
+        (r.status, r.acq_id, r.records_added, r.source_config_hash, r.at_ms)
+        for r in tape.feed_results()
+    ] == [
+        ("live", "bar-1000", 2, "src", 1_000),
+        ("live", "bar-2000", 1, "src", 2_000),
+        ("live", "bar-3000", 3, "src", 3_000),
+    ]
+    assert BarTape([], "src").feed_results() == ()
+    assert BarTape([], "src").start_ms() == 0
 
 
 # --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
