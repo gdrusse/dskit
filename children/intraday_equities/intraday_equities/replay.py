@@ -685,6 +685,8 @@ class EquityReplay:
         self.fills = []
         self.skipped = []
         self.refused = []
+        self.cash_flows = []
+        self.cash = []
         self._by_symbol = {}
         self._index_of = {}
         self._pending = {}
@@ -742,13 +744,13 @@ class EquityReplay:
             if symbol not in self._by_symbol:
                 self.refused.append({
                     "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "unknown_symbol",
+                    "reason": "unknown_symbol", "decision_ms": decision["asof_ms"],
                 })
                 continue
             if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
                 self.refused.append({
                     "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "lead",
+                    "reason": "lead", "decision_ms": decision["asof_ms"],
                 })
                 continue
             decision_index = self._index_of[symbol].get(int(decision["asof_ms"]))
@@ -756,20 +758,20 @@ class EquityReplay:
             if decision_index is None:
                 self.refused.append({
                     "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "unknown_decision_bar",
+                    "reason": "unknown_decision_bar", "decision_ms": decision["asof_ms"],
                 })
                 continue
             if policy.decision_price_field not in seq[decision_index]:
                 self.refused.append({
                     "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "decision_price_field",
+                    "reason": "decision_price_field", "decision_ms": decision["asof_ms"],
                 })
                 continue
             fill_index = decision_index + policy.fill_bar_offset
             if fill_index >= len(seq):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "fill_bar_past_tape",
+                    "reason": "fill_bar_past_tape", "decision_ms": decision["asof_ms"],
                 })
                 continue
             self._pending[symbol][fill_index].append(decision)
@@ -789,7 +791,13 @@ class EquityReplay:
         self.fills.sort(key=lambda row: (
             row["asof_ms"], row["symbol"], row["lead"], 0 if row["kind"] == "exit" else 1,
         ))
-        return {"fills": self.fills, "skipped": self.skipped, "refused": self.refused}
+        return {
+            "fills": self.fills,
+            "skipped": self.skipped,
+            "refused": self.refused,
+            "cash_flows": self.cash_flows,
+            "cash": self.cash,
+        }
 
     def _run_loop(self, bars):
         policy = self._policy
@@ -932,13 +940,60 @@ class EquityReplay:
         due = self._cash_flow_composer.due(start, end_exclusive)
         if due:
             self._cash_flow_ledger.append_many(due)
-            self._cash_balance += sum(Decimal(record["body"]["amount"]) for record in due)
+            for record in due:
+                self._cash_balance += Decimal(record["body"]["amount"])
+                self.cash_flows.append(self._cash_flow_row(record["body"]))
+                self._snapshot_cash(record["body"]["effective_at_ms"])
         instants = self._cash_flow_funding_instants
         index = self._cash_flow_funding_index
         while index < len(instants) and instants[index] < window_end_ms:
             index += 1
         self._cash_flow_funding_index = index
         self._cash_flow_window_ms = window_end_ms
+
+    def _cash_flow_row(self, body):
+        """One submitted cash-flow record as an output row (ADR-0183 item 13).
+
+        The first record a run submits is the schedule's first occurrence,
+        which :meth:`CashFlowPolicy.composer_for` replaces with initial
+        capital plus that day's contribution; every later one is a plain
+        daily contribution.
+        """
+        policy = self._cash_flow_policy
+        if not self.cash_flows:
+            rule = "initial_capital"
+            detail = (
+                f"initial_capital_amount {policy.initial_capital_amount} + "
+                f"daily_contribution_amount {policy.daily_contribution_amount} "
+                f"{body['currency']}"
+            )
+        else:
+            rule = "daily_contribution"
+            detail = (
+                f"daily_contribution_amount {policy.daily_contribution_amount} "
+                f"{body['currency']}"
+            )
+        return {
+            "asof_ms": body["effective_at_ms"],
+            "amount": float(Decimal(body["amount"])),
+            "currency": body["currency"],
+            "rule": rule,
+            "detail": f"{body['flow_kind']}: {detail}",
+        }
+
+    def _snapshot_cash(self, asof_ms):
+        """Record the running balance at ``asof_ms``; one row per instant (last wins).
+
+        Only a funded replay has a balance worth reporting — without a
+        cash-flow policy the balance starts at zero and goes negative.
+        """
+        if self._cash_flow_composer is None:
+            return
+        row = {"asof_ms": asof_ms, "cash": float(self._cash_balance)}
+        if self.cash and self.cash[-1]["asof_ms"] == asof_ms:
+            self.cash[-1] = row
+        else:
+            self.cash.append(row)
 
     def read_entry(self, tick_at_ms):
         """Freeze every name's bar at this tick as the entry batch."""
@@ -1059,6 +1114,7 @@ class EquityReplay:
                 for decision in incoming:
                     self.skipped.append({
                         "symbol": symbol, "asof_ms": bar["asof_ms"], "reason": "halted",
+                        "decision_ms": decision["asof_ms"],
                     })
             elif policy.halt_handling == "queue":
                 nxt = index + 1
@@ -1069,6 +1125,7 @@ class EquityReplay:
                             "asof_ms": bar["asof_ms"],
                             "lead": decision[self._policy.horizon_field],
                             "reason": "fill_bar_past_tape",
+                            "decision_ms": decision["asof_ms"],
                         })
                 else:
                     pending[nxt].extend(incoming)
@@ -1098,7 +1155,8 @@ class EquityReplay:
                 policy.costs.sell_per_share(price) if side == "sell" else policy.costs.buy_per_share(price)
             ) * lot["qty"]
             self._queue_fill(
-                "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index
+                "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index,
+                reason=policy.forced_exit_at,
             )
             self._book.close_lot(symbol, lead)
 
@@ -1128,11 +1186,13 @@ class EquityReplay:
                 ) * lot["qty"]
                 self._queue_fill(
                     "exit", symbol, lead, exit_side, lot["qty"], exit_px, bar["asof_ms"],
-                    exit_fee, index,
+                    exit_fee, index, reason="same_lead_override",
+                    decision_ms=decision["asof_ms"],
                 )
             if policy.costs.below_floor(price):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "min_price",
+                    "decision_ms": decision["asof_ms"],
                 })
                 continue
             fee = (
@@ -1143,20 +1203,32 @@ class EquityReplay:
                 if cost > self._cash_balance:
                     self.refused.append({
                         "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead,
-                        "reason": "insufficient_cash",
+                        "reason": "insufficient_cash", "decision_ms": decision["asof_ms"],
                     })
                     continue
             if not self._book.open_lot(symbol, lead, qty, side, index):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "same_lead_open",
+                    "decision_ms": decision["asof_ms"],
                 })
                 continue
             self._queue_fill(
-                "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index
+                "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
+                decision_ms=decision["asof_ms"],
             )
 
-    def _queue_fill(self, kind, symbol, lead, side, qty, price, asof_ms, fee, index):
-        """Remember one fill so ``proposals`` can hand it to LegPipeline."""
+    def _queue_fill(
+        self, kind, symbol, lead, side, qty, price, asof_ms, fee, index,
+        reason=None, decision_ms=None,
+    ):
+        """Remember one fill so ``proposals`` can hand it to LegPipeline.
+
+        ``decision_ms`` is the decision bar an entry (or the override exit
+        it forces) answers; ``reason`` is why an exit happened — the
+        policy's ``forced_exit_at`` name or ``same_lead_override``. Both
+        ride onto the output fill row so a report can join a fill back to
+        the decision that caused it (ADR-0183).
+        """
         prefix = "0" if kind == "exit" else "1"
         client_ref = f"{prefix}-{kind}-{symbol}-{lead}-{index}"
         meta = {
@@ -1169,6 +1241,8 @@ class EquityReplay:
             "price": price,
             "asof_ms": asof_ms,
             "fee": fee,
+            "reason": reason,
+            "decision_ms": decision_ms,
         }
         self._pending_by_id[client_ref] = meta
         self._queued.append(meta)
@@ -1178,6 +1252,7 @@ class EquityReplay:
             self._cash_balance -= cash_delta + fee_d
         else:
             self._cash_balance += cash_delta - fee_d
+        self._snapshot_cash(asof_ms)
 
     def _proposal_for(self, meta, digest, quote_digest):
         """Build the Proposal LegPipeline submits for one queued fill."""
@@ -1219,10 +1294,14 @@ class EquityReplay:
                     f"replay fill model forbids rejections, got status={ack.status!r} "
                     f"reason={ack.reason!r} for {intent.proposal.id}"
                 ])
-            self.fills.append(_fill_row(
+            row = _fill_row(
                 meta["kind"], meta["symbol"], meta["lead"], meta["side"],
                 meta["qty"], meta["price"], meta["asof_ms"], meta["fee"], ack,
-            ))
+            )
+            for key in ("reason", "decision_ms"):
+                if meta[key] is not None:
+                    row[key] = meta[key]
+            self.fills.append(row)
         except ConfigError as exc:
             if self._fault is None:
                 self._fault = exc
@@ -1493,7 +1572,11 @@ class ReplayAdapter:
         Returns
         -------
         dict
-            ``fills``, ``skipped``, ``refused``.
+            ``fills``, ``skipped``, ``refused``, ``cash_flows`` (one row per
+            cash-flow record the policy submitted: ``asof_ms``, ``amount``,
+            ``currency``, ``rule``, ``detail``) and ``cash`` (the running
+            balance after each change, ``{asof_ms, cash}``; both empty
+            without a cash-flow policy).
         """
         return EquityReplay(self._policy, self._cash_flow_policy).run(bars, decisions)
 
@@ -1529,7 +1612,7 @@ class DevelopmentReplay(Node):
     """
 
     role = "transform"
-    outputs = ("fills", "skipped", "refused")
+    outputs = ("fills", "skipped", "refused", "cash_flows", "cash")
     _PARAMS = (
         "deployment_eligible",
         "evidence_end",

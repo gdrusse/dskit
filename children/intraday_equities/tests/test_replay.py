@@ -159,7 +159,7 @@ def test_a_halted_symbol_is_skipped_not_queued():
     out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
     assert out["fills"] == []
     assert out["skipped"] == [
-        {"symbol": "AAA", "asof_ms": 2_000, "reason": "halted"}
+        {"symbol": "AAA", "asof_ms": 2_000, "reason": "halted", "decision_ms": 1_000}
     ]
 
 
@@ -1082,6 +1082,7 @@ def test_an_unaffordable_buy_is_refused_opens_no_lot_and_queues_no_fill():
     ])
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(0),
     }]
     assert not any(row["qty"] == 200 for row in out["fills"])
     # A stale lot from the refused decision would expire at index 4 and make the
@@ -1118,6 +1119,7 @@ def test_the_insufficient_cash_boundary_is_cost_strictly_greater_than_balance(
         assert entries == []
         assert _cash_reasons(out) == [{
             "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+            "decision_ms": _cf_t(0),
         }]
 
 
@@ -1143,6 +1145,7 @@ def test_the_running_balance_tracks_every_fill_across_a_mixed_sequence():
     ]
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 1, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(1),
     }]
 
 
@@ -1226,6 +1229,7 @@ def test_an_override_entry_refused_for_insufficient_cash_still_closes_the_prior_
     # refused buy reaches the end-of-tape expiry_past_tape sweep.
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(1),
     }]
 
 
@@ -1548,6 +1552,7 @@ def test_run_passes_the_cash_flow_policy_through_so_an_unaffordable_buy_refuses(
     ).run(None, {"bars": bars, "decisions": decisions})
     assert funded["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(0),
     }]
     assert [(row["kind"], row["qty"], row["asof_ms"]) for row in funded["fills"]] == [
         ("entry", 50, _cf_t(2)),
@@ -1615,3 +1620,107 @@ def test_a_wrong_cash_flow_policy_digest_refuses(digest, expected):
     with pytest.raises(ConfigError) as caught:
         DevelopmentReplay("replay", params)
     assert caught.value.errors == [f"replay: {expected}"]
+
+
+# --- ADR-0183 item 13: the policy's cash flows and the running balance as outputs ---
+
+
+def test_cash_flows_are_emitted_as_submitted_one_row_per_record():
+    policy = _policy()
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+    ]
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    out = replay.run(bars, [])
+    submitted = replay.cash_flow_snapshots
+    assert [
+        (row["asof_ms"], Decimal(str(row["amount"])), row["currency"])
+        for row in out["cash_flows"]
+    ] == [
+        (body["effective_at_ms"], Decimal(body["amount"]), body["currency"])
+        for body in submitted
+    ]
+    assert [row["rule"] for row in out["cash_flows"]] == [
+        "initial_capital",
+        "daily_contribution",
+    ]
+    assert [row["amount"] for row in out["cash_flows"]] == [1020.0, 20.0]
+    assert all(row["detail"].startswith("deposit: ") for row in out["cash_flows"])
+    # With no fills, the balance is the running sum of the deposits.
+    assert [row["cash"] for row in out["cash"]] == [1020.0, 1040.0]
+    assert [row["asof_ms"] for row in out["cash"]] == [
+        row["asof_ms"] for row in out["cash_flows"]
+    ]
+
+
+def test_the_cash_series_tracks_fills_exactly_one_row_per_instant():
+    policy = _policy(_ZERO_FEES)
+    bars = _cf_bars([10.0, 10.0, 12.0, 12.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(
+        bars, [_decision("AAA", _cf_t(0), lead=1, qty=10)]
+    )
+    # 1020 funded; buy 10 @ 10 at t1; the lead-1 lot exits 10 @ 12 at t2.
+    assert out["cash"] == [
+        {"asof_ms": out["cash_flows"][0]["asof_ms"], "cash": 1020.0},
+        {"asof_ms": _cf_t(1), "cash": 920.0},
+        {"asof_ms": _cf_t(2), "cash": 1040.0},
+    ]
+
+
+def test_an_unfunded_replay_emits_no_cash_flows_and_no_cash_series():
+    out = ReplayAdapter(_policy()).replay(
+        _cf_bars([10.0, 10.0, 10.0]), [_decision("AAA", _cf_t(0), lead=1, qty=1)]
+    )
+    assert out["cash_flows"] == []
+    assert out["cash"] == []
+
+
+def test_development_replay_declares_and_returns_the_cash_outputs():
+    assert DevelopmentReplay.outputs == (
+        "fills", "skipped", "refused", "cash_flows", "cash",
+    )
+    bars = _cf_bars([10.0] * 4)
+    out = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END, **_cash_flow_pair())
+    ).run(None, {"bars": bars, "decisions": [_decision("AAA", _cf_t(0), lead=1, qty=1)]})
+    assert set(out) == set(DevelopmentReplay.outputs)
+    assert [row["rule"] for row in out["cash_flows"]] == ["initial_capital"]
+
+
+def test_fills_name_their_decision_bar_and_exits_name_their_reason():
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", _cf_t(0), lead=2, qty=1)])
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    exit_ = next(row for row in out["fills"] if row["kind"] == "exit")
+    assert entry["decision_ms"] == _cf_t(0)
+    assert "reason" not in entry
+    assert exit_["reason"] == policy.forced_exit_at == "horizon_expiry"
+    assert "decision_ms" not in exit_
+
+
+def test_an_override_exit_names_the_decision_that_forced_it():
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0] * 5)
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=3, qty=1),
+        _decision("AAA", _cf_t(1), lead=3, qty=2),
+    ])
+    override = next(
+        row for row in out["fills"]
+        if row["kind"] == "exit" and row.get("reason") == "same_lead_override"
+    )
+    assert override["decision_ms"] == _cf_t(1)
+    assert override["asof_ms"] == _cf_t(2)
+
+
+def test_decision_stage_refusals_name_their_decision_bar():
+    out = ReplayAdapter(_policy()).replay(
+        _cf_bars([10.0, 10.0]), [_decision("ZZZ", _cf_t(0), lead=1)]
+    )
+    assert out["refused"] == [{
+        "symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol",
+        "decision_ms": _cf_t(0),
+    }]
