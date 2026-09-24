@@ -15,6 +15,9 @@ labelled "insufficient n" rather than hidden, so the reader sees both the
 number and why not to trust it.
 
 The table's names are :data:`STAT_NAMES`; criteria cite them.
+:class:`SolveSummary` is the optimizer's counterpart: counts and
+median / p90 / max over the log's ``solve`` events, never a criterion
+statistic.
 
 Import cost: stdlib plus ``dskit.pipeline`` and ``dskit.production``.
 """
@@ -22,6 +25,7 @@ Import cost: stdlib plus ``dskit.pipeline`` and ``dskit.production``.
 from __future__ import annotations
 
 import statistics as _stdstats
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 from dskit.pipeline.stats import (
@@ -34,7 +38,7 @@ from dskit.pipeline.stats import (
     sharpe_ratio,
 )
 
-__all__ = ["DEFAULT_MIN_N", "STAT_NAMES", "Statistic", "StatisticsTable"]
+__all__ = ["DEFAULT_MIN_N", "STAT_NAMES", "SolveSummary", "Statistic", "StatisticsTable"]
 
 #: The sample below which a sample-dependent statistic is "insufficient n"
 #: (~30 independent trades or days — the research spec's floor).
@@ -292,6 +296,100 @@ class StatisticsTable:
             self._sampled("holding_p90_minutes", _p90(held), n,
                           "90th percentile holding time"),
         ]
+
+
+class SolveSummary:
+    """The log's optimizer solves, aggregated: outcomes, measures, binding frequency.
+
+    A pure reading of the ``solve`` events (ADR-0183 phase 2) that
+    :class:`~dskit.evaluation.sections.OptimizerSection` renders. It
+    computes no statistic of its own beyond counts and the median / p90 /
+    max this module already takes for holding times.
+
+    Parameters
+    ----------
+    log : EventLog
+
+    Examples
+    --------
+    ::
+
+        summary = SolveSummary(log)
+        summary.outcomes()
+        # -> [{'status': 'ok', 'termination': 'optimal', 'solves': 12}]
+    """
+
+    #: The per-solve numbers :meth:`measures` summarises, in display order.
+    MEASURES = ("objective", "gap", "seconds")
+
+    def __init__(self, log):
+        self.solves = log.of_kind("solve")
+
+    def __len__(self):
+        """Return the number of solves."""
+        return len(self.solves)
+
+    def outcomes(self):
+        """Count solves by (status, termination), commonest first.
+
+        Returns
+        -------
+        list of dict
+            ``status``, ``termination`` (None when unrecorded), ``solves``.
+        """
+        counts = Counter((s.get("status"), s.get("termination")) for s in self.solves)
+        return [{"status": status, "termination": termination, "solves": n}
+                for (status, termination), n in sorted(
+                    counts.items(), key=lambda kv: (-kv[1], str(kv[0])))]
+
+    def measures(self):
+        """Summarise each of :data:`MEASURES` over the solves that recorded it.
+
+        Returns
+        -------
+        list of dict
+            ``measure``, ``n``, ``median``, ``p90``, ``max`` (None when n is 0).
+        """
+        rows = []
+        for name in self.MEASURES:
+            values = [s.get(name) for s in self.solves if s.get(name) is not None]
+            rows.append({"measure": name, "n": len(values),
+                         "median": _stdstats.median(values) if values else None,
+                         "p90": _p90(values), "max": max(values) if values else None})
+        return rows
+
+    def constraints(self):
+        """Binding frequency per constraint component, most often binding first.
+
+        Returns
+        -------
+        list of dict
+            ``constraint``, ``solves`` (that listed it), ``binding_solves``
+            (with a binding row), ``binding_rows`` (total), ``min_slack``.
+        """
+        groups = defaultdict(list)
+        for solve in self.solves:
+            for row in solve.get("binding", ()):
+                groups[row["name"]].append(row)
+        out = []
+        for name, rows in groups.items():
+            slacks = [r["min_slack"] for r in rows if r.get("min_slack") is not None]
+            out.append({"constraint": name, "solves": len(rows),
+                        "binding_solves": sum(1 for r in rows if r["binding"] > 0),
+                        "binding_rows": sum(r["binding"] for r in rows),
+                        "min_slack": min(slacks) if slacks else None})
+        return sorted(out, key=lambda r: (-r["binding_solves"], -r["binding_rows"],
+                                          r["constraint"]))
+
+    def seconds_series(self):
+        """Return ``[(ts_ms, seconds)]`` for every solve that recorded its time.
+
+        Returns
+        -------
+        list of tuple
+        """
+        return [(s.ts_ms, s.get("seconds")) for s in self.solves
+                if s.get("seconds") is not None]
 
 
 def _p90(values):

@@ -2,7 +2,9 @@
 
 A tier-3 wrapper: :class:`ReplayEvents` only MAPS what ``PortfolioSelect``
 and ``DevelopmentReplay`` already produced — candidates, fills, refusals,
-skips, cash flows and bars — onto the event schema ``dskit.evaluation``
+skips, cash flows, bars and optimizer solves (ADR-0183 phase 2: each
+``solves`` row is one ``solve`` event at its tick, carrying only the
+``libs.pyomo.SolveRecord`` keys) — onto the event schema ``dskit.evaluation``
 renders. It computes no statistic, folds no P&L and invents no reason
 code: every refusal/skip reason and every exit reason is the replay's own
 string. The events are plain dicts so this module does not import
@@ -22,6 +24,7 @@ import os
 from collections import defaultdict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from dskit.pipeline.libs.pyomo import SolveRecord
 from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
 from dskit.pipeline.runs import CONFIG_FILE
 
@@ -30,11 +33,13 @@ SCHEMA = "dskit-eval-v1"
 
 #: Kind order within one instant. A cash flow the policy funds at an
 #: instant is credited before that tick's fills (``EquityReplay.read_entry``
-#: funds, then ``evaluate`` fills), so it sorts ahead of them.
+#: funds, then ``evaluate`` fills), so it sorts ahead of them. A solve is
+#: what a decision at the same instant is read from, so it precedes it.
 KIND_ORDER = (
     "run_start",
     "cashflow",
     "mark",
+    "solve",
     "decision",
     "order",
     "refusal",
@@ -86,7 +91,8 @@ class ReplayEvents(Node):
         were chosen or filled; ``all``: every bar). Optional: ``criteria``
         (list of pre-registered criterion objects, ADR-0183),
         ``trials`` (int >= 1, configurations tried), ``model`` (label
-        stamped on each decision), ``units`` (``run_start.units``,
+        stamped on each decision, and on each solve whose row names no
+        ``model`` of its own), ``units`` (``run_start.units``,
         default :data:`DEFAULT_UNITS`).
 
     Examples
@@ -106,6 +112,7 @@ class ReplayEvents(Node):
     _PARAMS = ("title", "project", "tz", "price_field", "mark_symbols")
     _OPTIONAL = ("criteria", "trials", "model", "units")
     _LISTS = ("candidates", "fills", "refused", "skipped", "cash_flows", "bars")
+    _OPTIONAL_LISTS = ("picks", "solves")
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -156,13 +163,15 @@ class ReplayEvents(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Require the replay's row lists; ``picks`` is optional.
+        """Require the replay's row lists; ``picks`` and ``solves`` are optional.
 
         Parameters
         ----------
         inputs : dict
             ``candidates``, ``fills``, ``refused``, ``skipped``,
-            ``cash_flows``, ``bars``; optional ``picks``.
+            ``cash_flows``, ``bars``; optional ``picks`` and ``solves``
+            (rows with ``asof_ms``, the ``SolveRecord`` keys and an
+            optional ``model`` string).
 
         Returns
         -------
@@ -173,9 +182,10 @@ class ReplayEvents(Node):
         for port in self._LISTS:
             if not isinstance(inputs.get(port), (list, tuple)):
                 problems.append(f"{port} must be a list of rows, got {type(inputs.get(port)).__name__}")
-        picks = inputs.get("picks")
-        if picks is not None and not isinstance(picks, (list, tuple)):
-            problems.append(f"picks must be a list of rows when wired, got {type(picks).__name__}")
+        for port in self._OPTIONAL_LISTS:
+            rows = inputs.get(port)
+            if rows is not None and not isinstance(rows, (list, tuple)):
+                problems.append(f"{port} must be a list of rows when wired, got {type(rows).__name__}")
         return problems
 
     def run(self, ctx, inputs):
@@ -313,6 +323,8 @@ class ReplayEvents(Node):
                 event["detail"] = flow["detail"]
             body.append((at, "cashflow", None, event))
 
+        body.extend(self._solve(row, model) for row in inputs.get("solves") or ())
+
         marked = None if self.params["mark_symbols"] == "all" else traded
         for (symbol, at), price in closes.items():
             if marked is not None and symbol not in marked:
@@ -369,6 +381,16 @@ class ReplayEvents(Node):
         if ref_price is not None:
             event["ref_price"] = ref_price
         return (at, "fill", row["symbol"], event)
+
+    @staticmethod
+    def _solve(row, model):
+        """One solve row -> a ``solve`` event at its tick: the record's keys, then the label."""
+        at = int(row["asof_ms"])
+        event = {name: row[name] for name in SolveRecord.field_names() if name in row}
+        label = row.get("model") or model
+        if label:
+            event["model"] = label
+        return (at, "solve", None, event)
 
     @staticmethod
     def _rejection(kind, row, decision_id):
