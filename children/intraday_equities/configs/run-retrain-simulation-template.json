@@ -1,0 +1,177 @@
+{
+  "name": "retrain-simulation-trade",
+  "notes": "ADR-0185: the decision graph RetrainedSimulation runs as the last stage of run-retrain-simulation.json. It is ADR-0184's graph (bars -> publisher -> per-tick EquityKellyMIO decider -> DevelopmentSimulation -> report -> writers) with two changes: funding is cash-flow-policy-biweekly.json ($10,000 initial, $500 every other Friday 09:30 New York, holiday -> next trading day, booked before a same-instant decision), and every value marked BOUND-BY-STAGE is bound by the stage to THIS staged run: the publisher's inventory/gates artifacts and their sha256 (read at bind time), walk_root (the directory the walk ran from) and the writers' output directory (<run>/stages/simulate/). A template with any other value there is refused, so no stale pin can ride along. The MIO knobs in decide are ADR-0184 development placeholders, NOT owner rulings. Developmental post-selection, deployment_eligible=false. Not runnable on its own: run the staged document.",
+  "pipeline": {
+    "bars_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1662681600000,
+        "end_ms": 1760659200000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "Split-adjusted SIP minutes holding the admitted LLY and XLK (and the other P13 names this source carries, dropped by simulate). start_ms = the fold-2 cutoff 2022-09-09; end_ms (exclusive) = 2025-10-17, the day after evidence_end, so nothing after the evidence window is read. RTH only, the tape the P16 labels count lead bars on."
+    },
+    "bars_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1662681600000,
+        "end_ms": 1760659200000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "Split-adjusted SIP minutes holding the admitted ADBE, CIEN, LITE, LRCX, LULU, MSTR, NOW, PANW, TER. Same window as bars_a."
+    },
+    "bars": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$bars_a.records",
+        "e": "$bars_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each bar record already carries its source; the two sources' symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      }
+    },
+    "publish": {
+      "uses": "intraday_equities-forecast-publisher",
+      "params": {
+        "inventory_manifest": "BOUND-BY-STAGE",
+        "inventory_manifest_sha256": "BOUND-BY-STAGE",
+        "gates": "BOUND-BY-STAGE",
+        "gates_sha256": "BOUND-BY-STAGE",
+        "program_calendar": "configs/program-calendar.json",
+        "fold_schedule": "development_outer",
+        "walk_root": "BOUND-BY-STAGE",
+        "first_fold": 2,
+        "last_fold": 19,
+        "calibration_window_days": 730,
+        "uncertainty": {
+          "n_scenarios": 64,
+          "coverage": 0.95,
+          "window_blocks": 10,
+          "null_draws": 999,
+          "seed": 0
+        }
+      },
+      "notes": "One release per fold: cap artifact (TRUE stamps, never a confirmation), survivors and leads read from the pinned gates.json, per-lead attested uncertainty calibrated on folds < k inside the trailing 730 days; one ForecastBundle per (lattice tick, lead group), yhat only."
+    },
+    "decide": {
+      "uses": "intraday_equities-mio-decider",
+      "inputs": {
+        "releases": "$publish.releases"
+      },
+      "params": {
+        "mio": {
+          "risk_aversion_gamma": 2.0,
+          "n_tangents": 32,
+          "n_scenarios_max": 64,
+          "cvar_alpha": 0.95,
+          "cvar_limit": null,
+          "cardinality": 5,
+          "min_ticket": 0.0,
+          "hfdr_q": 0.3,
+          "band_bps": 10.0,
+          "max_position_notional": 1000000000000.0,
+          "bundle_max_staleness_ms": 0,
+          "cap_max_staleness_ms": 5529600000,
+          "deployment_mode": false,
+          "uncertainty_max_calibration_age_ms": 5529600000,
+          "uncertainty_min_coverage": 0.5,
+          "cap_evidence_look_ahead": true
+        }
+      },
+      "notes": "ADR-0184 DEVELOPMENT PLACEHOLDERS, not owner rulings (MIO plan Sec.10 is open): risk_aversion_gamma 2.0, n_tangents 32, n_scenarios_max 64, cvar_alpha 0.95 with no cvar_limit, cardinality 5, min_ticket 0, hfdr_q 0.30 on pi_widened (a widened point estimate, not a bound), band_bps 10, max_position_notional 1e12 (no per-name cap beyond cash), staleness 64 days, uncertainty_min_coverage 0.50, cap_evidence_look_ahead true (the gate admission uses all 20 folds, disclosed)."
+    },
+    "simulate": {
+      "uses": "intraday_equities-development-simulation",
+      "inputs": {
+        "bars": "$bars.merged",
+        "releases": "$publish.releases",
+        "bundles": "$publish.bundles",
+        "mio": "$decide.mio"
+      },
+      "params": {
+        "deployment_eligible": false,
+        "evidence_end": "2025-10-16",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
+        "caps": "development-only",
+        "cash_flow_policy": "configs/cash-flow-policy-biweekly.json",
+        "cash_flow_policy_sha256": "03c31ce2d6bebaaee6eac2f9916ea7e96137f7787e566d45ebfd3acfc25a1a68",
+        "first_fold": 2,
+        "last_fold": 19,
+        "consume_bars": true
+      }
+    },
+    "report": {
+      "uses": "intraday_equities-simulation-report",
+      "inputs": {
+        "fills": "$simulate.fills",
+        "skipped": "$simulate.skipped",
+        "refused": "$simulate.refused",
+        "cash": "$simulate.cash",
+        "metadata": "$simulate.metadata",
+        "releases": "$publish.releases"
+      }
+    },
+    "write_fills": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$simulate.fills"
+      },
+      "params": {
+        "path": "BOUND-BY-STAGE/retrain-simulation-fills.jsonl",
+        "source": "ADR-0185 retrain simulation fills (developmental post-selection, not deployment evidence)"
+      }
+    },
+    "write_refused": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$simulate.refused"
+      },
+      "params": {
+        "path": "BOUND-BY-STAGE/retrain-simulation-refused.jsonl",
+        "source": "ADR-0185 retrain simulation refusals"
+      }
+    },
+    "write_daily": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$report.daily"
+      },
+      "params": {
+        "path": "BOUND-BY-STAGE/retrain-simulation-daily.jsonl",
+        "source": "ADR-0185 retrain simulation daily NAV/P&L"
+      }
+    },
+    "write_summary": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$report.summary"
+      },
+      "params": {
+        "path": "BOUND-BY-STAGE/retrain-simulation-summary.json",
+        "source": "ADR-0185 retrain simulation summary and run metadata"
+      }
+    }
+  }
+}

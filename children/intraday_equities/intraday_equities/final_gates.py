@@ -13,6 +13,8 @@ __all__ = [
     "DEVELOPMENT_EVIDENCE_SCOPE",
     "FinalModelGateInventory",
     "FinalModelGates",
+    "RetrainedWalkGates",
+    "RetrainedWalkInventory",
 ]
 
 _INVENTORY_PARAMS = (
@@ -30,6 +32,9 @@ _SCOPE = "developmental_post_selection"
 #: P16 mask (plan §6 Phase 4 item 4).
 DEVELOPMENT_EVIDENCE_SCOPE = _SCOPE
 _SELECTION = "simplicity_heuristic_after_no_detected_difference"
+#: ADR-0185: one fixed recipe retrained on the calendar schedule -- no zoo,
+#: no comparison, nothing selected among candidates.
+_RETRAIN_SELECTION = "frozen_recipe_retrained_on_calendar_schedule"
 
 
 def _string(value):
@@ -42,6 +47,12 @@ def _sha256(value):
         and len(value) == 64
         and all(char in "0123456789abcdef" for char in value)
     )
+
+
+def _canonical_sha256(value):
+    """Sha256 of ``value``'s canonical JSON."""
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _digest(path):
@@ -183,6 +194,12 @@ class FinalModelGateInventory(Stage):
     """Hash every saved prediction needed by the developmental gate run."""
 
     outputs = ("manifest",)
+    #: How the manifest's winner was chosen, and the caveat it carries.
+    _SELECTION_RULE = _SELECTION
+    _SELECTION_CAVEAT = (
+        "Non-rejection is not equivalence; this is a simplicity "
+        "heuristic on development folds, not confirmation."
+    )
 
     @classmethod
     def validate_params(cls, params):
@@ -201,9 +218,6 @@ class FinalModelGateInventory(Stage):
 
     def run(self, ctx, inputs):
         """Select the heuristic winner and emit a content manifest of its rows."""
-        from dskit.pipeline.document import load_document
-        from dskit.pipeline.predictions import find_predictions
-
         del inputs
         run_path, run_artifact = _read_pinned_json(
             ctx.source_path, self.params["run_artifact"],
@@ -218,6 +232,38 @@ class FinalModelGateInventory(Stage):
         _validate_compare_provenance(
             compare_artifact, identity, candidate
         )
+        sources = {
+            "run": {"path": run_path, "sha256": self.params["run_sha256"]},
+            "compare": {
+                "path": compare_path,
+                "sha256": self.params["compare_sha256"],
+            },
+        }
+        return self._manifest(ctx, identity, selected, candidate, sources)
+
+    def _manifest(self, ctx, identity, selected, candidate, sources):
+        """Verify the selected candidate's sealed walk and return its content manifest.
+
+        Parameters
+        ----------
+        ctx : StageContext
+        identity : str
+            The benchmark (or staged document) identity the manifest names.
+        selected : dict
+            The winner's ``id`` and ``mean``.
+        candidate : dict
+            Its sealed run row.
+        sources : dict
+            Where ``selected`` and ``candidate`` were read from.
+
+        Returns
+        -------
+        dict
+            ``{"manifest": ...}``.
+        """
+        from dskit.pipeline.document import load_document
+        from dskit.pipeline.predictions import find_predictions
+
         candidate_path = _resolve(ctx.source_path, candidate.get("path", ""))
         document = load_document(candidate_path)
         if document.hash != candidate.get("document_hash"):
@@ -331,26 +377,19 @@ class FinalModelGateInventory(Stage):
                 "schema_version": 1,
                 "benchmark_identity": identity,
                 "evidence_scope": _SCOPE,
-                "selection_caveat": (
-                    "Non-rejection is not equivalence; this is a simplicity "
-                    "heuristic on development folds, not confirmation."
-                ),
+                "selection_caveat": self._SELECTION_CAVEAT,
                 "winner": {
                     "id": selected["id"],
                     "feature_policy": candidate.get("feature_policy"),
                     "mean_path_score": selected.get("mean"),
-                    "selection_rule": _SELECTION,
+                    "selection_rule": self._SELECTION_RULE,
                     "document_hash": candidate["document_hash"],
                     "asof": candidate.get("asof"),
                     "objective": candidate.get("objective"),
                     "select": candidate.get("select"),
                 },
                 "sources": {
-                    "run": {"path": run_path, "sha256": self.params["run_sha256"]},
-                    "compare": {
-                        "path": compare_path,
-                        "sha256": self.params["compare_sha256"],
-                    },
+                    **sources,
                     "candidate": {
                         "path": os.path.realpath(candidate_path),
                         "document_hash": document.hash,
@@ -369,6 +408,9 @@ class FinalModelGates(Stage):
     """Gate a manifest-pinned heuristic winner without re-fitting it."""
 
     outputs = ("winner", "evidence", "caps", "metrics")
+    _PARAMS = _GATE_PARAMS
+    #: The only winner selection rule a manifest may carry into these gates.
+    _SELECTION_RULE = _SELECTION
 
     @classmethod
     def validate_params(cls, params):
@@ -376,10 +418,8 @@ class FinalModelGates(Stage):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
         problems = []
-        reject_unknown_params(problems, params, _GATE_PARAMS)
-        problems.extend(
-            _pin_problems(params, "manifest_artifact", "manifest_sha256")
-        )
+        reject_unknown_params(problems, params, cls._PARAMS)
+        problems.extend(cls._source_problems(params))
         alpha = params.get("alpha")
         if (
             isinstance(alpha, bool) or not isinstance(alpha, (int, float))
@@ -423,9 +463,22 @@ class FinalModelGates(Stage):
                 problems.append("season_months must partition months 1..12 exactly once")
         return problems
 
+    @classmethod
+    def _source_problems(cls, params):
+        """Problems with how the manifest is located: here, a pasted pin."""
+        return _pin_problems(params, "manifest_artifact", "manifest_sha256")
+
     def validate_inputs(self, inputs):
         """Refuse inputs because this stage reads one pinned manifest."""
         return [] if inputs == {} else ["FinalModelGates takes no inputs"]
+
+    def _manifest_artifact(self, ctx, inputs):
+        """Return ``(path, artifact)`` of the gate evidence manifest: the pinned one."""
+        del inputs
+        return _read_pinned_json(
+            ctx.source_path, self.params["manifest_artifact"],
+            self.params["manifest_sha256"], "gate evidence manifest",
+        )
 
     def run(self, ctx, inputs):
         """Verify every dependency, compute corrected skill, slice, and cap."""
@@ -439,17 +492,13 @@ class FinalModelGates(Stage):
         )
         from dskit.pipeline.stats import correction, skill_vs_mean
 
-        del inputs
-        manifest_path, artifact = _read_pinned_json(
-            ctx.source_path, self.params["manifest_artifact"],
-            self.params["manifest_sha256"], "gate evidence manifest",
-        )
+        manifest_path, artifact = self._manifest_artifact(ctx, inputs)
         manifest = _outputs(artifact, "gate evidence manifest").get("manifest")
         if (
             not isinstance(manifest, dict) or manifest.get("schema_version") != 1
             or manifest.get("evidence_scope") != self.params["evidence_scope"]
             or not isinstance(manifest.get("winner"), dict)
-            or manifest["winner"].get("selection_rule") != _SELECTION
+            or manifest["winner"].get("selection_rule") != self._SELECTION_RULE
         ):
             raise ValueError("gate evidence manifest contract is invalid")
         summary = manifest.get("summary")
@@ -631,3 +680,123 @@ class FinalModelGates(Stage):
                 "manifest_artifact": manifest_path,
             },
         }
+
+
+class RetrainedWalkInventory(FinalModelGateInventory):
+    """Seal the frozen-recipe retraining walk's predictions for the gates (ADR-0185).
+
+    The walk row comes straight from this staged run's
+    :class:`~dskit.pipeline.benchmarks.DocumentWalkRun` stage, so there is
+    no comparison to pin and no winner to select: the one recipe is the
+    winner by construction, and the manifest says so
+    (``selection_rule`` ``frozen_recipe_retrained_on_calendar_schedule``).
+    Every fold, carry and prediction pin is verified by the SAME method the
+    zoo inventory uses (:meth:`FinalModelGateInventory._manifest`).
+
+    Parameters
+    ----------
+    params : dict
+        None; every knob is refused.
+
+    Examples
+    --------
+    ::
+
+        stage = RetrainedWalkInventory("inventory", {})
+        manifest = stage.run(ctx, {"run": walk_row})["manifest"]
+    """
+
+    _SELECTION_RULE = _RETRAIN_SELECTION
+    _SELECTION_CAVEAT = (
+        "One fixed recipe with frozen warmup-HPO winners, retrained on the "
+        "calendar schedule; no comparison and no selection among candidates. "
+        "Development folds, not confirmation."
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse every knob: the walk row is this stage's only source."""
+        problems = []
+        reject_unknown_params(problems, params, ())
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require exactly the walk stage's completed run row."""
+        if not isinstance(inputs, dict) or set(inputs) != {"run"}:
+            return ["inputs must contain exactly run"]
+        row = inputs["run"]
+        if not isinstance(row, dict) or row.get("state") != "ran" or not _string(row.get("id")):
+            return ["run must be the walk stage's completed row"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Verify the walk's sealed folds and emit the gate manifest."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"{self.key}: {problems}")
+        row = inputs["run"]
+        _, summary = _read_pinned_json(
+            ctx.source_path, row.get("evidence_manifest_path", ""),
+            row.get("evidence_manifest_sha256", ""), "retraining walk evidence seal",
+        )
+        aggregate = summary.get("aggregate") if isinstance(summary, dict) else None
+        selected = {
+            "id": row["id"],
+            "mean": aggregate.get("mean") if isinstance(aggregate, dict) else None,
+        }
+        sources = {"walk_row": {"sha256": _canonical_sha256(row)}}
+        return self._manifest(ctx, ctx.document.hash, selected, row, sources)
+
+
+class RetrainedWalkGates(FinalModelGates):
+    """Gate the retraining walk from THIS staged run's own inventory artifact (ADR-0185).
+
+    The gate math is :class:`FinalModelGates`' unchanged. Only the source
+    differs: instead of a pin pasted into the config, the manifest is the
+    artifact the ``manifest_stage`` stage of this same run wrote
+    (``<artifact_dir>/<manifest_stage>.json``), hashed at read time and
+    required to equal the manifest handed in on the ``manifest`` input.
+    Only the retraining selection rule is accepted.
+
+    Parameters
+    ----------
+    params : dict
+        ``manifest_stage`` plus :class:`FinalModelGates`' ``alpha``,
+        ``correction``, ``evidence_scope``, ``season_timezone`` and
+        ``season_months``.
+
+    Examples
+    --------
+    ::
+
+        stage = RetrainedWalkGates("gates", {**gate_params, "manifest_stage": "inventory"})
+        caps = stage.run(ctx, {"manifest": manifest})["caps"]
+    """
+
+    _PARAMS = tuple(name for name in _GATE_PARAMS if not name.startswith("manifest_")) + (
+        "manifest_stage",
+    )
+    _SELECTION_RULE = _RETRAIN_SELECTION
+
+    @classmethod
+    def _source_problems(cls, params):
+        """Require the key of this run's inventory stage."""
+        if not _string(params.get("manifest_stage")):
+            return ["manifest_stage must name this run's inventory stage"]
+        return []
+
+    def validate_inputs(self, inputs):
+        """Require exactly the inventory stage's manifest."""
+        if not isinstance(inputs, dict) or set(inputs) != {"manifest"}:
+            return ["inputs must contain exactly manifest"]
+        return []
+
+    def _manifest_artifact(self, ctx, inputs):
+        """Read this run's own inventory artifact; refuse one that is not the handed manifest."""
+        path = os.path.realpath(
+            os.path.join(ctx.artifact_dir, f"{self.params['manifest_stage']}.json")
+        )
+        artifact = _read_pinned_json(ctx.source_path, path, _digest(path), "retraining inventory")[1]
+        if _outputs(artifact, "retraining inventory").get("manifest") != inputs.get("manifest"):
+            raise ValueError("the inventory artifact on disk differs from the inventory this stage was handed")
+        return path, artifact

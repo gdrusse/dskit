@@ -55,6 +55,8 @@ MODELABILITY_DOCS = {
     "run-p12-modelability.json": ("configs/universe-p12.json", 65),
     "run-p13-pooled-model-zoo.json": ("configs/universe-p13-pooled.json", 26),
     "run-p18-modelability.json": ("configs/universe-p18.json", 109),
+    # ADR-0185: the staged retrain run reads P16's pooled cohort from the study start.
+    "run-retrain-simulation.json": ("configs/universe-p13-pooled.json", 26),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",
@@ -623,7 +625,10 @@ SIMULATION_DOCS = (
     "run-development-simulation-smoke.json",
 )
 SIMULATION_START_MS = 1662681600000  # 2022-09-09T00:00:00Z, the fold-2 cutoff
-_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json", *SIMULATION_DOCS})
+#: ADR-0185: the decision graph the staged retrain run binds and executes;
+#: its enclosing staged document carries the tracking sink.
+RETRAIN_TEMPLATE = "run-retrain-simulation-template.json"
+_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json", *SIMULATION_DOCS, RETRAIN_TEMPLATE})
 
 
 def _market_run_docs():
@@ -733,7 +738,7 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert params["start_ms"] == REPLAY_REPORT_START_MS[name], name
                 assert params["start_ms"] > STUDY_START_MS, name
                 continue
-            if name in SIMULATION_DOCS:
+            if name in (*SIMULATION_DOCS, RETRAIN_TEMPLATE):
                 # Split-adjusted, and bounded to the replay window on both
                 # sides; moving the start forward cannot undo ADR-0066.
                 assert params["source"] in MODELABILITY_SOURCES, name
@@ -1576,3 +1581,55 @@ def test_config_validates_and_is_ineligible():
         return out
 
     assert _strip(full) == _strip(smoke)
+
+
+def test_the_retrain_run_restates_no_locked_value_it_can_read():
+    """ADR-0185: the staged retrain run differs from its sources ONLY where the ADR says.
+
+    The recipe is run-final-hpo.json's lean template byte for byte; the walk
+    is the calendar's development_outer schedule; the trading graph is
+    ADR-0184's except for the stage-bound values, the biweekly cash policy,
+    the bar store root, the writers, the name and the notes.
+    """
+    import hashlib
+
+    from dskit.pipeline.program_calendar import load_program_calendar
+    from dskit.pipeline.stages import plan_stages
+
+    from intraday_equities.replay import CashFlowPolicy
+
+    staged = _raw("run-retrain-simulation.json")
+    final = _raw("run-final-hpo.json")
+    recipe = [t for t in final["stages"]["finalist"]["params"]["templates"] if t["id"] == "lean"]
+    for key in ("hpo_document", "walk_document"):
+        assert staged["stages"][key]["params"]["templates"] == recipe, key
+    calendar, _ = load_program_calendar(_path("run-retrain-simulation.json"), "program-calendar-p13-model-zoo.json")
+    schedule = calendar["fold_schedules"]["development_outer"]
+    for field in ("first", "step_days", "count", "val_days", "embargo_days", "train_days"):
+        assert staged["walkforward"][field] == schedule[field], field
+    with open(_path(RETRAIN_TEMPLATE), "rb") as handle:
+        assert staged["stages"]["simulate"]["params"]["template_sha256"] == hashlib.sha256(handle.read()).hexdigest()
+    plan_stages(load_document(_path("run-retrain-simulation.json")))
+
+    template, adr0184 = _raw(RETRAIN_TEMPLATE), _raw("run-development-simulation.json")
+    assert template["pipeline"]["decide"]["params"] == adr0184["pipeline"]["decide"]["params"]
+    assert set(template["pipeline"]) == set(adr0184["pipeline"])
+    bound = {"inventory_manifest", "inventory_manifest_sha256", "gates", "gates_sha256", "walk_root"}
+    publish = template["pipeline"]["publish"]["params"]
+    assert {name for name in publish if publish[name] == "BOUND-BY-STAGE"} == bound
+    assert {k: v for k, v in publish.items() if k not in bound} == {
+        k: v for k, v in adr0184["pipeline"]["publish"]["params"].items() if k not in bound
+    }
+    simulate, old = template["pipeline"]["simulate"]["params"], adr0184["pipeline"]["simulate"]["params"]
+    policy = CashFlowPolicy.from_path(_path("cash-flow-policy-biweekly.json"))
+    assert simulate["cash_flow_policy"] == "configs/cash-flow-policy-biweekly.json"
+    assert simulate["cash_flow_policy_sha256"] == policy.digest()
+    assert {k: v for k, v in simulate.items() if not k.startswith("cash_flow_policy")} == {
+        k: v for k, v in old.items() if not k.startswith("cash_flow_policy")
+    }
+    for key in ("bars_a", "bars_e"):
+        new, prior = template["pipeline"][key]["params"], adr0184["pipeline"][key]["params"]
+        assert new["root"] == "./ob"
+        assert {k: v for k, v in new.items() if k != "root"} == {k: v for k, v in prior.items() if k != "root"}
+    assert template["pipeline"]["bars"] == adr0184["pipeline"]["bars"]
+    assert template["pipeline"]["report"] == adr0184["pipeline"]["report"]

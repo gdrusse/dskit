@@ -58,7 +58,7 @@ from dskit.pipeline.outcome_interval import (
     OutcomeIntervalResult,
 )
 from dskit.pipeline.program_calendar import load_program_calendar
-from dskit.pipeline.stages import is_sha256hex
+from dskit.pipeline.stages import Stage, is_sha256hex
 from dskit.pipeline.uncertainty_intake import (
     AttestedFalseSignalRate,
     AttestedOutcomeBand,
@@ -89,12 +89,14 @@ from .nodes import (
 from .replay import DevelopmentReplay, EquityReplay
 
 __all__ = [
+    "BOUND_BY_STAGE",
     "DISCLOSURE",
     "NODE_KINDS",
     "DevelopmentSimulation",
     "ForecastPublisher",
     "MioDecider",
     "MioDeciderNode",
+    "RetrainedSimulation",
     "SimulationReport",
 ]
 
@@ -1648,6 +1650,135 @@ class SimulationReport(Node):
                 for release in sorted(inputs["releases"], key=lambda release: release["fold"])
             ],
         }
+
+
+
+#: The template value the simulation stage must bind; any other value is a stale pin.
+BOUND_BY_STAGE = "BOUND-BY-STAGE"
+_PUBLISHER_KIND = "intraday_equities-forecast-publisher"
+_WRITER_KINDS = ("records-write", "table-write")
+
+
+class RetrainedSimulation(Stage):
+    """Run the ADR-0184 decision graph over THIS staged run's retrained walk (ADR-0185).
+
+    The last stage of ``configs/run-retrain-simulation.json``. It reads the
+    template document (sha256-pinned), requires every run-specific value to
+    be the literal :data:`BOUND_BY_STAGE`, and binds them: the publisher's
+    ``inventory_manifest``/``gates`` to this run's ``inventory_stage`` and
+    ``gates_stage`` artifacts with their sha256 read now, its ``walk_root``
+    to the directory the walks ran from (the process's working directory),
+    and each writer's ``path`` under ``<artifact_dir>/<key>/``. The on-disk
+    inventory must be the manifest this stage was handed. The bound graph
+    runs through the ordinary ``run_document``; a run that does not finish
+    ``ran`` refuses. Nothing here decides, sizes or accounts -- the graph's
+    own nodes do.
+
+    Parameters
+    ----------
+    params : dict
+        ``template`` (path, relative to the staged document's directory or
+        absolute), ``template_sha256``, ``inventory_stage``, ``gates_stage``.
+
+    Examples
+    --------
+    ::
+
+        stage = RetrainedSimulation("simulate", {
+            "template": "run-retrain-simulation-template.json",
+            "template_sha256": digest, "inventory_stage": "inventory", "gates_stage": "gates",
+        })
+        out = stage.run(ctx, {"manifest": manifest, "caps": caps})
+    """
+
+    outputs = ("run_dir", "document_hash", "summary", "files")
+    _PARAMS = ("template", "template_sha256", "inventory_stage", "gates_stage")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        for name in cls._PARAMS:
+            if not isinstance(params.get(name), str) or not params.get(name):
+                problems.append(f"{name} must be a non-empty string")
+        if isinstance(params.get("template_sha256"), str) and not is_sha256hex(params["template_sha256"]):
+            problems.append("template_sha256 must be a lowercase sha256")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the inventory manifest and the gate caps (the stages this one follows)."""
+        if not isinstance(inputs, dict) or set(inputs) != {"manifest", "caps"}:
+            return ["inputs must contain exactly manifest and caps"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Bind the template to this run, execute it, and return where its results are."""
+        from dskit.pipeline import driver
+        from dskit.pipeline.document import PipelineDocument
+
+        obj = self._template(ctx)
+        inventory = self._artifact(ctx, self.params["inventory_stage"])
+        gates = self._artifact(ctx, self.params["gates_stage"])
+        if inventory["value"].get("outputs", {}).get("manifest") != inputs["manifest"]:
+            raise ValueError(f"{self.key}: the inventory on disk differs from the manifest this stage was handed")
+        files = self._bind(obj, ctx, inventory, gates)
+        document = PipelineDocument.from_obj(obj)
+        result = driver.run_document(document, asof=ctx.asof)
+        if result.state != "ran":
+            raise ValueError(f"{self.key}: the simulation ended in state {result.state!r} ({result.run_dir})")
+        summary = (result.outputs.get("report") or {}).get("summary")
+        return {"run_dir": result.run_dir, "document_hash": document.hash, "summary": summary, "files": files}
+
+    def _template(self, ctx):
+        """The pinned template document object."""
+        import hashlib
+
+        path = self.params["template"]
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(ctx.source_path)), path)
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        if hashlib.sha256(raw).hexdigest() != self.params["template_sha256"]:
+            raise ValueError(f"{self.key}: the template {path} does not match template_sha256")
+        return json.loads(raw)
+
+    @staticmethod
+    def _artifact(ctx, stage_key):
+        """``{path, sha256, value}`` of one earlier stage's artifact in this run."""
+        import hashlib
+
+        path = os.path.realpath(os.path.join(ctx.artifact_dir, f"{stage_key}.json"))
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        return {"path": path, "sha256": hashlib.sha256(raw).hexdigest(), "value": json.loads(raw)}
+
+    def _bind(self, obj, ctx, inventory, gates):
+        """Replace every :data:`BOUND_BY_STAGE` value; refuse a template with a stale one."""
+        values = {
+            "inventory_manifest": inventory["path"], "inventory_manifest_sha256": inventory["sha256"],
+            "gates": gates["path"], "gates_sha256": gates["sha256"], "walk_root": os.getcwd(),
+        }
+        out_dir = os.path.join(ctx.artifact_dir, self.key)
+        files = {}
+        publishers = 0
+        for key, node in obj["pipeline"].items():
+            params = node.get("params") or {}
+            if node.get("uses") == _PUBLISHER_KIND:
+                publishers += 1
+                stale = sorted(name for name in values if params.get(name) != BOUND_BY_STAGE)
+                if stale:
+                    raise ValueError(f"{self.key}: publisher {key} must carry {BOUND_BY_STAGE} in {stale}")
+                params.update(values)
+            elif node.get("uses") in _WRITER_KINDS:
+                prefix = BOUND_BY_STAGE + "/"
+                if not str(params.get("path", "")).startswith(prefix):
+                    raise ValueError(f"{self.key}: writer {key} path must start with {prefix}")
+                params["path"] = os.path.join(out_dir, params["path"][len(prefix):])
+                files[key] = params["path"]
+        if publishers != 1:
+            raise ValueError(f"{self.key}: the template must hold exactly one publisher, found {publishers}")
+        return files
 
 
 NODE_KINDS = {

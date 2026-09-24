@@ -120,9 +120,8 @@ def _final_gate_fixture(tmp_path):
     return params, manifest_path, Path(manifest["folds"][0]["predictions"][0]["path"])
 
 
-def test_final_model_gate_inventory_pins_the_approved_complete_ladder(
-    tmp_path, monkeypatch,
-):
+def _inventory_fixture(tmp_path, monkeypatch):
+    """A sealed two-fold walk row, its compare artifact, and a fake candidate document."""
     from types import SimpleNamespace
 
     candidate_path = tmp_path / "candidate.json"
@@ -196,10 +195,6 @@ def test_final_model_gate_inventory_pins_the_approved_complete_ladder(
             "asof": "2026-02-28",
         }},
     }
-    run_path, compare_path = tmp_path / "run.json", tmp_path / "compare.json"
-    run_sha = _write_json(run_path, run)
-    compare_sha = _write_json(compare_path, compare)
-
     fake_document = SimpleNamespace(
         hash="c" * 64,
         pipeline={
@@ -218,6 +213,18 @@ def test_final_model_gate_inventory_pins_the_approved_complete_ladder(
         "dskit.pipeline.predictions.find_predictions",
         lambda run_dir: [str(Path(run_dir) / "artifacts" / "scan" / "predictions.parquet")],
     )
+    return run, compare, cutoffs
+
+
+def test_final_model_gate_inventory_pins_the_approved_complete_ladder(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    run, compare, cutoffs = _inventory_fixture(tmp_path, monkeypatch)
+    run_path, compare_path = tmp_path / "run.json", tmp_path / "compare.json"
+    run_sha = _write_json(run_path, run)
+    compare_sha = _write_json(compare_path, compare)
     stage = FinalModelGateInventory("inventory", {
         "run_artifact": str(run_path), "run_sha256": run_sha,
         "compare_artifact": str(compare_path), "compare_sha256": compare_sha,
@@ -826,3 +833,96 @@ def test_warmup_hpo_candidate_requires_exactly_one_evidence_mode_recipe():
     blind = json.loads(json.dumps(params))
     blind["templates"][0]["model"]["hpo_evidence"] = False
     assert any("hpo_evidence" in problem for problem in WarmupHpoCandidate.validate_params(blind))
+
+
+# --- ADR-0185: the retrained walk's inventory and gates read this run's own artifacts ---
+
+_RETRAIN_RULE = "frozen_recipe_retrained_on_calendar_schedule"
+
+
+def test_retrained_walk_inventory_seals_the_same_folds_from_the_walk_row(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    run, _, cutoffs = _inventory_fixture(tmp_path, monkeypatch)
+    row = run["outputs"]["runs"][0]
+    ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), document=SimpleNamespace(hash="f" * 64))
+    manifest = RetrainedWalkInventory("inventory", {}).run(ctx, {"run": row})["manifest"]
+    assert manifest["benchmark_identity"] == "f" * 64
+    assert manifest["winner"]["id"] == "lean"
+    assert manifest["winner"]["selection_rule"] == _RETRAIN_RULE
+    assert "no comparison" in manifest["selection_caveat"]
+    assert [fold["cutoff"] for fold in manifest["folds"]] == cutoffs
+    assert manifest["summary"]["sha256"] == row["evidence_manifest_sha256"]
+    assert manifest["expected_units"] == [
+        {"symbol": "AAA", "horizon": 1}, {"symbol": "AAA", "horizon": 2}, {"symbol": "BBB", "horizon": 1},
+    ]
+
+
+@pytest.mark.parametrize("state", ["awaiting_approval", "running", "error"])
+def test_retrained_walk_inventory_refuses_a_walk_that_did_not_run(state):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    assert RetrainedWalkInventory("inventory", {}).validate_inputs({"run": {"id": "lean", "state": state}})
+
+
+def test_retrained_walk_inventory_refuses_every_knob():
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    assert RetrainedWalkInventory.validate_params({"run_artifact": "x"})
+
+
+def _retrained_gate_fixture(tmp_path):
+    import json as _json
+
+    params, manifest_path, _ = _final_gate_fixture(tmp_path)
+    artifact = _json.loads(manifest_path.read_text())
+    artifact["outputs"]["manifest"]["winner"]["selection_rule"] = _RETRAIN_RULE
+    stages = tmp_path / "stages"
+    stages.mkdir()
+    (stages / "inventory.json").write_text(_json.dumps(artifact))
+    gate_params = {key: value for key, value in params.items() if not key.startswith("manifest_")}
+    return {**gate_params, "manifest_stage": "inventory"}, stages, artifact["outputs"]["manifest"]
+
+
+def test_retrained_walk_gates_gate_this_runs_own_inventory_artifact(tmp_path):
+    from types import SimpleNamespace
+
+    from intraday_equities.final_gates import RetrainedWalkGates
+
+    params, stages, manifest = _retrained_gate_fixture(tmp_path)
+    ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), artifact_dir=str(stages))
+    result = RetrainedWalkGates("gates", params).run(ctx, {"manifest": manifest})
+    assert result["caps"][0]["unit"] == "AAA" and result["caps"][0]["capped_horizon"] == 1
+    assert result["metrics"]["manifest_artifact"] == str((stages / "inventory.json").resolve())
+    assert result["metrics"]["deployment_eligible"] is False
+
+
+def test_retrained_walk_gates_refuse_an_artifact_that_is_not_the_inventory_they_were_handed(tmp_path):
+    from types import SimpleNamespace
+
+    from intraday_equities.final_gates import RetrainedWalkGates
+
+    params, stages, manifest = _retrained_gate_fixture(tmp_path)
+    ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), artifact_dir=str(stages))
+    moved = {**manifest, "benchmark_identity": "0" * 64}
+    with pytest.raises(ValueError, match="differs from the inventory"):
+        RetrainedWalkGates("gates", params).run(ctx, {"manifest": moved})
+
+
+def test_retrained_walk_gates_refuse_a_zoo_selection_and_a_pasted_pin(tmp_path):
+    import json as _json
+    from types import SimpleNamespace
+
+    from intraday_equities.final_gates import RetrainedWalkGates
+
+    params, stages, manifest = _retrained_gate_fixture(tmp_path)
+    assert RetrainedWalkGates.validate_params({**params, "manifest_sha256": "0" * 64})
+    artifact = {"outputs": {"manifest": {**manifest, "winner": {
+        **manifest["winner"], "selection_rule": "simplicity_heuristic_after_no_detected_difference",
+    }}}}
+    (stages / "inventory.json").write_text(_json.dumps(artifact))
+    ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), artifact_dir=str(stages))
+    with pytest.raises(ValueError, match="contract is invalid"):
+        RetrainedWalkGates("gates", params).run(ctx, {"manifest": artifact["outputs"]["manifest"]})

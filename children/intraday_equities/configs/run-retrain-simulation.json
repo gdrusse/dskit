@@ -584,6 +584,7 @@
         "manifest": "$inventory.manifest"
       },
       "params": {
+        "manifest_stage": "inventory",
         "alpha": 0.05,
         "correction": "bonferroni",
         "evidence_scope": "developmental_post_selection",
@@ -621,7 +622,9 @@
       },
       "params": {
         "template": "run-retrain-simulation-template.json",
-        "template_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        "template_sha256": "03aca94e858ae228a6b58e60d750ec6c20fbbd96d55267440cc5826d94dedca6",
+        "inventory_stage": "inventory",
+        "gates_stage": "gates"
       },
       "notes": "Runs the ADR-0184 decision graph (template) with the publisher bound to this run's inventory and gates artifacts; outputs land under this run's stages/ directory."
     }

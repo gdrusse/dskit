@@ -1326,3 +1326,134 @@ def test_scheduled_segment_carry_is_not_a_contribution(sim_scheduled):
     assert Decimal(rows[0]["booked"]) - Decimal(rows[0]["carried_in"]) == Decimal(rows[0]["contribution"])
     for row in sim_scheduled["report"]["daily"]:
         assert row["nav"] - row["contributions_to_date"] == pytest.approx(row["net_pnl"], abs=1e-9)
+
+
+# --- ADR-0185: the staged run's simulation stage binds the template to its own artifacts ---
+
+_TEMPLATE = os.path.join(_child_root(), "configs", "run-retrain-simulation-template.json")
+
+
+def _template_sha():
+    import hashlib
+
+    with open(_TEMPLATE, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def _stage_dir(tmp_path):
+    stages = tmp_path / "stages"
+    stages.mkdir()
+    (stages / "inventory.json").write_text(json.dumps({"outputs": {"manifest": {"m": 1}}}))
+    (stages / "gates.json").write_text(json.dumps({"outputs": {"caps": [{"unit": "AAA"}]}}))
+    return stages
+
+
+def _retrained_params(**overrides):
+    return {
+        "template": "run-retrain-simulation-template.json", "template_sha256": _template_sha(),
+        "inventory_stage": "inventory", "gates_stage": "gates", **overrides,
+    }
+
+
+def _retrained_ctx(tmp_path, stages):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        source_path=os.path.join(_child_root(), "configs", "run-retrain-simulation.json"),
+        artifact_dir=str(stages), asof="2026-02-28",
+    )
+
+
+def test_retrained_simulation_binds_the_template_to_this_runs_artifacts_and_runs_it(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.simulation import RetrainedSimulation
+
+    stages = _stage_dir(tmp_path)
+    seen = []
+
+    def fake_run(document, asof=None):
+        seen.append((document, asof))
+        return SimpleNamespace(state="ran", exit_code=0, run_dir=str(tmp_path / "sim-run"),
+                               outputs={"report": {"summary": {"final_nav": 1.0}}})
+
+    monkeypatch.setattr("dskit.pipeline.driver.run_document", fake_run)
+    stage = RetrainedSimulation("simulate", _retrained_params())
+    out = stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
+    document, asof = seen[0]
+    assert asof == "2026-02-28"
+    plan(document)
+    publish = document.pipeline["publish"].params
+    for key, name in (("inventory_manifest", "inventory"), ("gates", "gates")):
+        path = str((stages / f"{name}.json").resolve())
+        assert publish[key] == path
+        assert publish[f"{key}_sha256"] == hashlib.sha256(open(path, "rb").read()).hexdigest()
+    assert publish["walk_root"] == os.getcwd()
+    for key in ("write_fills", "write_refused", "write_daily", "write_summary"):
+        assert document.pipeline[key].params["path"].startswith(str(stages / "simulate") + os.sep)
+    assert document.pipeline["simulate"].params["cash_flow_policy"] == "configs/cash-flow-policy-biweekly.json"
+    assert out["run_dir"] == str(tmp_path / "sim-run")
+    assert out["summary"] == {"final_nav": 1.0}
+    assert out["document_hash"] == document.hash
+
+
+def test_retrained_simulation_refuses_a_template_that_moved(tmp_path):
+    from intraday_equities.simulation import RetrainedSimulation
+
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params(template_sha256="0" * 64))
+    with pytest.raises(ValueError, match="template"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})
+
+
+def test_retrained_simulation_refuses_a_template_carrying_a_stale_pin(tmp_path):
+    import hashlib
+
+    from intraday_equities.simulation import RetrainedSimulation
+
+    with open(_TEMPLATE, encoding="utf-8") as handle:
+        obj = json.load(handle)
+    obj["pipeline"]["publish"]["params"]["gates_sha256"] = "1" * 64
+    path = tmp_path / "stale-template.json"
+    path.write_text(json.dumps(obj))
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params(
+        template=str(path), template_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    ))
+    with pytest.raises(ValueError, match="BOUND-BY-STAGE"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})
+
+
+def test_retrained_simulation_refuses_an_inventory_on_disk_that_is_not_the_one_handed_in(tmp_path):
+    from intraday_equities.simulation import RetrainedSimulation
+
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params())
+    with pytest.raises(ValueError, match="differs"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 2}, "caps": [{"unit": "AAA"}]})
+
+
+def test_retrained_simulation_refuses_a_run_that_did_not_finish(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from intraday_equities.simulation import RetrainedSimulation
+
+    stages = _stage_dir(tmp_path)
+    monkeypatch.setattr(
+        "dskit.pipeline.driver.run_document",
+        lambda document, asof=None: SimpleNamespace(state="error", exit_code=1, run_dir="x", outputs={}),
+    )
+    stage = RetrainedSimulation("simulate", _retrained_params())
+    with pytest.raises(ValueError, match="error"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
+
+
+def test_retrained_simulation_default_denies_params():
+    from intraday_equities.simulation import RetrainedSimulation
+
+    assert RetrainedSimulation.validate_params(_retrained_params()) == []
+    assert RetrainedSimulation.validate_params({**_retrained_params(), "extra": 1})
+    assert RetrainedSimulation.validate_params(_retrained_params(template_sha256="nope"))
