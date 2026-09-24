@@ -55,7 +55,9 @@ Agent orientation — see README.md for operator commands.
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   `configs/run-development-replay.json` is not a market-data run: no
   tracking sink, `deployment_eligible=false`, fill knobs in
-  `configs/fill-policy.json`.
+  `configs/fill-policy.json`. Neither are ADR-0184's
+  `configs/run-development-simulation.json` (folds 2..19) and its one-segment
+  `-smoke` twin: developmental post-selection, no tracking sink.
 - `configs/run-replay-report.json` (ADR-0183) is the real-data development
   replay rendered by `dskit.evaluation`: `select.candidates` + the replay's
   fills/refused/skipped/cash_flows -> `evaluation.ReplayEvents` (schema-v1
@@ -136,8 +138,8 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay, evaluation
-configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay, replay-report
+intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay, evaluation, simulation
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation, replay-report
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes

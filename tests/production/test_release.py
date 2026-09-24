@@ -26,10 +26,13 @@ restatement").
 
 import dataclasses
 import hashlib
+import importlib
 import inspect
 import json
 import os
+import shutil
 import socket
+import threading
 import sys
 import sysconfig
 from importlib import metadata
@@ -49,6 +52,7 @@ from dskit.production.release import (
     artifact_digest,
     fingerprint_class,
     parse_iso_duration,
+    runtime_capture_memo,
     verify_release,
     write_release,
 )
@@ -712,6 +716,132 @@ def test_verify_release_refuses_source_config_drift(tmp_path):
     with pytest.raises(ProductionError) as exc:
         verify_release(made, root, NOW_MS, MAX_AGE_MS, source_config_hash="0f" * 32)
     assert "source" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# runtime_capture_memo — a historical replay's opt-in reuse (ADR-0184 S7(d))
+# --------------------------------------------------------------------------
+
+
+def _count_inventory_reads(monkeypatch):
+    """Record every file an installed distribution is asked to read."""
+    calls = []
+    real = metadata.PathDistribution.read_text
+
+    def spy(self, filename):
+        calls.append(filename)
+        return real(self, filename)
+
+    monkeypatch.setattr(metadata.PathDistribution, "read_text", spy)
+    return calls
+
+
+def _dist_info(site, name, version, extra=""):
+    """Write one minimal installed distribution the way an installer lays it out."""
+    info = site / f"{name}-{version}.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{extra}", encoding="utf-8"
+    )
+    (info / "RECORD").write_text(f"{name}/__init__.py,,\n", encoding="utf-8")
+    importlib.invalidate_caches()
+    return info
+
+
+def _version_of(name):
+    found = [d.version for d in RuntimeFingerprint.capture().distributions if d.name == name]
+    return found[0] if found else None
+
+
+def test_capture_outside_the_memo_rereads_the_inventory_every_call(monkeypatch):
+    """The production path is unchanged: every capture re-reads every distribution."""
+    calls = _count_inventory_reads(monkeypatch)
+    RuntimeFingerprint.capture()
+    once = len(calls)
+    RuntimeFingerprint.capture()
+    assert once > 0
+    assert len(calls) == 2 * once
+
+
+def test_capture_inside_the_memo_reuses_an_unchanged_inventory(tmp_path, monkeypatch):
+    fresh = RuntimeFingerprint.capture()
+    calls = _count_inventory_reads(monkeypatch)
+    with runtime_capture_memo():
+        first = RuntimeFingerprint.capture()
+        once = len(calls)
+        second = RuntimeFingerprint.capture()
+        assert len(calls) == once > 0
+        assert first == second == fresh
+        # verify_release still compares by value inside the block.
+        root = artifact_root(tmp_path)
+        made = manifest(root)
+        ghost = dataclasses.replace(
+            made.runtime_fingerprint,
+            distributions=made.runtime_fingerprint.distributions[1:],
+        )
+        with pytest.raises(ProductionError):
+            verify_release(
+                dataclasses.replace(made, runtime_fingerprint=ghost), root, NOW_MS, MAX_AGE_MS
+            )
+    # The switch is off again once the block exits.
+    before = len(calls)
+    RuntimeFingerprint.capture()
+    assert len(calls) - before == once
+
+
+def test_the_memo_sees_an_installed_upgraded_rewritten_or_removed_distribution(
+    tmp_path, monkeypatch
+):
+    site = tmp_path / "site"
+    site.mkdir()
+    monkeypatch.syspath_prepend(str(site))
+    with runtime_capture_memo():
+        assert _version_of("zzzmemo") is None
+        info = _dist_info(site, "zzzmemo", "1.0")
+        assert _version_of("zzzmemo") == "1.0"
+        # An upgrade removes the old dist-info and writes a new one.
+        shutil.rmtree(info)
+        info = _dist_info(site, "zzzmemo", "2.0")
+        assert _version_of("zzzmemo") == "2.0"
+        # An in-place rewrite of a file the capture reads.
+        (info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: zzzmemo\nVersion: 3.0.1\n", encoding="utf-8"
+        )
+        assert _version_of("zzzmemo") == "3.0.1"
+        shutil.rmtree(info)
+        importlib.invalidate_caches()
+        assert _version_of("zzzmemo") is None
+
+
+def test_a_capture_on_another_thread_during_an_active_block_is_not_memoized(monkeypatch):
+    calls = _count_inventory_reads(monkeypatch)
+    RuntimeFingerprint.capture()
+    once = len(calls)
+    calls.clear()
+    with runtime_capture_memo():
+        RuntimeFingerprint.capture()
+        assert len(calls) == once
+        worker = threading.Thread(target=lambda: [RuntimeFingerprint.capture() for _ in range(2)])
+        worker.start()
+        worker.join()
+        # Two full reads on the other thread: the block's memo never reached it.
+        assert len(calls) == 3 * once
+        RuntimeFingerprint.capture()
+        assert len(calls) == 3 * once
+
+
+def test_the_memo_block_is_reentrant_and_always_switches_off(monkeypatch):
+    calls = _count_inventory_reads(monkeypatch)
+    with pytest.raises(RuntimeError):
+        with runtime_capture_memo():
+            with runtime_capture_memo():
+                RuntimeFingerprint.capture()
+            once = len(calls)
+            RuntimeFingerprint.capture()
+            assert len(calls) == once
+            raise RuntimeError("boom")
+    RuntimeFingerprint.capture()
+    assert len(calls) == 2 * once
 
 
 # --------------------------------------------------------------------------

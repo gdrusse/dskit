@@ -22846,3 +22846,786 @@ then the full log as a light table in `<details>`. The child's
 USD}`: its scores forecast `y_next`, a log return). Re-rendering the real
 run's `events.jsonl`: 2,129,885 -> 817,527 bytes (824,096 with units
 declared), ~1.2 s.
+
+## ADR-0184 — Production-equivalent historical simulation for intraday_equities
+
+**Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
+real-data run complete; proposed 2026-09-23 as a Phase 0 design). Renumbered
+from ADR-0182 before merge: 0182 is the index-options ADR on main and 0183 is
+claimed by `origin/claude/backtest-evaluator`. **Owner:** Russell. **Base:**
+`3204d2b`. **Branch:** `claude/prod-sim-20260923`. Every decision below that
+the brief left open was taken by the agent conservatively while the owner was
+unavailable; each is listed under **Agent-decided questions** and remains
+open for owner ruling.
+
+**Results (S8, 2026-09-24).** See
+`children/intraday_equities/docs/memos/2026-09-24-production-equivalent-simulation-results.md`.
+Folds 2..19 (2022-09-09..2025-10-16), run from `bb1ef42`: final NAV
+$18,066.16 on $16,580 contributed, net +$1,486.16 after $1,463.24 fees,
+457 round trips. The evidence is developmental post-selection and
+`deployment_eligible` is false.
+
+**Revision 1 (2026-09-23, after two Phase-0 lenses on `4ad520c`).**
+Orchestrator ruling, from owner intent in
+`docs/evidence/closeout/0203-intraday-full-backtest-claude-handoff.md`
+("consume all and only stock/horizon candidates admitted by the prior gate
+outputs"): the tradable set and caps are the P16 `gates.json` admission
+(11 units), not the model's `asset_horizons` (25 names, Reviewer B Major);
+the lead-1-only restriction is dropped in favour of each unit's admitted
+horizon; the StatTest survivor step is removed (the gate is the survivor
+set); S4 is re-anchored on the verified `admit` hook; the branch sweep and
+the ReplayRun citation are added.
+
+**Revision 2 (2026-09-23, orchestrator ruling on question 5).** No false
+timestamps anywhere: the cap artifact keeps its TRUE stamps
+(`evidence_end_ms` = the last millisecond of 2025-10-16 UTC, `generated_ms`
+a true instant after it). The MIO's two cap-timing refusals ("cap is from
+the future", "cap.generated_ms ... is after bundle decision_ts") are instead
+passed through one declared developmental switch on `EquityKellyMIO`,
+`cap_evidence_look_ahead` (see the cap bullet below, S6 and S7). Seam sweep:
+`EquityKellyMIO` already carries `deployment_mode` (bool; development mode
+already requires `cap.deployment_eligible` false), `DevelopmentReplay`
+carries `caps: "development-only"` and `deployment_eligible: false`;
+neither can relax a timing check, and `ConfirmedCaps` / `ScenarioUtilitySolve`
+have no timing or scope knob (`grep -n "look_ahead\|post_selection\|
+evidence_scope" intraday_equities/*.py`: only `final_gates._SCOPE`, the
+`ConfirmedCaps` scope refusal, and demo scopes). The two refusals live only
+in `EquityKellyMIO.validate_inputs` (nodes_capital.py:878-917), so the
+switch is one optional param there, gated on `deployment_mode` false.
+
+**Revision 3 (2026-09-23, owner PIPELINE-NODE RULE, relayed by the
+orchestrator).** The whole simulation runs through one JSON pipeline
+document under `python -m dskit.pipeline run ... --adapter
+intraday_equities`, every stage a registered node kind wired by
+`$node.port` (bars, publisher, MIO decider, simulation, report,
+records-write); see **Pipeline document** below. S1-S4 are unchanged in
+code; S5-S8 are re-specified as nodes.
+
+**Context.** The owner wants the strategy run on real bars exactly as
+production would: rolling inference per decision tick, periodic retraining,
+$1,000 + $20/day funding (`configs/cash-flow-policy.json`), `EquityKellyMIO`
+sizing from real forecasts plus attested uncertainty, next-bar-open fills
+with Schwab costs (`configs/fill-policy.json`), and a P&L/NAV report.
+Verified against `3204d2b` and the on-disk artifacts:
+
+- `replay.EquityReplay` drives `ServeLoop` (via `compose.bundles_for`, a
+  `BarTape`, `_TapeCadence`, `PaperExecutor`) with `CashFlowPolicy` funding
+  and the ADR-0177 `insufficient_cash` refusal, but consumes a PRE-COMPUTED
+  `decisions` list (`run`, replay.py:706-786). Same-bar ordering bug
+  confirmed: `evaluate` (971-998) calls `_apply_bar` per symbol, and
+  `_apply_bar` runs that symbol's exits then entries (1078-1081), so an entry
+  on a symbol iterated before another symbol's same-bar exit is checked
+  against cash that exit has not credited yet (`_queue_fill`, 1175-1180).
+- `BarTape.__init__` (509-522) counts `records_added` with
+  `sum(1 for bar in bars if ...)` per timestamp — O(timestamps x bars),
+  about 7e9 steps for one real 63-day segment.
+- `forecast_bundle.ForecastBundle` validates and converts (`gross_return`,
+  `_recentered_scenarios`) but derives no `pi_hat`/`pi_widened`/`scenarios`;
+  the only producer is `testing.SyntheticMioSource` (297-602), which already
+  shows the exact estimator calls a real producer needs
+  (`GrenanderLocalFdr().estimate`, `BlockConformalInterval().calibrate`,
+  `AttestedFalseSignalRate`/`AttestedOutcomeBand`, `UncertaintyAttestation`).
+- `nodes_capital.EquityKellyMIO` (478-1368) sizes integer shares from
+  `bundle`, `portfolio`, `survivors`, `cap`, `uncertainty`; its params pin
+  the exact bundle/cap digests, so a per-tick caller must construct it per
+  tick. `ConfirmedCaps.problems` refuses `evidence_scope ==
+  DEVELOPMENT_EVIDENCE_SCOPE` (`"developmental_post_selection"`).
+- P16 `lean-pooled-h10-wf-*` (20 folds, `pipeline_runs/`): each fold's
+  `resolved.json` splits are train `[cutoff-5d-730d, cutoff-5d)`, val
+  `[cutoff, next cutoff)`, step 63 days, exactly `program-calendar.json`
+  `fold_schedules.development_outer` and the memo's production retrain rule
+  (every 63 days, trailing 730 days, 5-day embargo). `predictions.parquet`
+  schema: `ts, series, fold, horizon, yhat, y, mu` (no sigma, beta or
+  price); rows exist only on the 30-min scoring lattice
+  (`score_period_ms=1800000`) and only where every head label is finite
+  (`common_origin_policy=all_head_labels_finite`, `common_lead_stop=10`).
+  `horizon` h counts 1-minute tape bars (`future = loc + lead` over
+  `_tapes_from_bars`' 1-minute arrays, nodes.py:3872, 4717). 90 (symbol, h)
+  units, 25 symbols, h1 present for all 25, ~902k rows. No model files are
+  saved, so no in-loop inference is possible without refitting.
+- Gate admission on disk: two staged gate runs,
+  `p16-final-model-gates-staged-2026-02-28-77a7ab08/stages/gates.json`
+  (sha256 `1fb4dec20a7ac32867f8a9cb20d1c96225b2818029034ab5ce7f1b2c872d8771`,
+  manifest `...gate-inventory-staged-2026-02-28-fa061189/stages/inventory.json`)
+  and `...-dc250a5c` (sha256 `093eadce...`, manifest `...-a46cab26`); their
+  `outputs.caps` are identical. This ADR pins `77a7ab08` and its own
+  manifest `fa061189`. `outputs.caps` has 25 units, `n_served_units` 11,
+  `capped_horizon > 0` for exactly ADBE 4, CIEN 5, LITE 3, LLY 2, LRCX 10,
+  LULU 2, MSTR 6, NOW 5, PANW 1, TER 3, XLK 3 (verified); ANET, BAC, BIDU,
+  DAL, FCX, INTC, IWM, MET, NRG, QQQ, SMH, XBI, XLE, XLF are 0. Caps are
+  contiguous from h1. Scope `developmental_post_selection`,
+  `deployment_eligible=false`, Bonferroni over a 90-cell family using ALL
+  20 folds (evidence through 2025-10-16).
+- The pinned inventory lists all 20 folds with sha256 prediction pins;
+  `final_gates._verified_prediction_snapshot` verifies them.
+- `dskit/production`: no refit/model-swap hook; a new release is a new run
+  dir, release and process (compose.py:1299-1309). `WindowBook`
+  (accounting.py:536) is the one P&L fold; `Report.value_curve` needs a
+  persistent ledger and is O(ticks x fills).
+- The JSON-pipeline backtester line (ADR-0125/0127/0180, `trust.ReplayRun`,
+  `document.ExecutionBacktestSpec`) is fail-closed and synthetic-only:
+  `ReplayRun.run` (dskit/pipeline/trust.py:5981-5987) unconditionally raises
+  `RuntimeError("replay execution requires the F3 composed-tape broker ...")`.
+
+### Decision
+
+Reuse `EquityReplay` + `ServeLoop` as the engine and run the simulation as a
+sequence of **segments, one per P16 fold = one model release**, mirroring
+production's release lifecycle (new model => new release => restart, account
+state carried). Inside each segment a per-tick `MioDecider` replaces the
+pre-computed decision list. Eight slices, each RED-first and separately
+testable. Only S3 touches dskit.
+
+**Fixed contract (applies to every slice).**
+- *Forecast source / retraining (b).* The P16 folds ARE the retrain
+  schedule; no in-loop refit. At tick `ts` in `[cutoff_k, cutoff_k+1)` the
+  forecast is fold k's stored OOS `yhat` for `(symbol, L)` at `ts`, from a
+  model trained strictly before `cutoff_k - 5d`. Equivalence: the fold
+  geometry is the production retrain rule verbatim, and replaying a
+  deterministic model's stored output at the instant it was computed is
+  in-loop inference at that instant. Disclosed differences: (i) P16 did 4
+  nested HPO trials per fold, production freezes hyperparameters; (ii) the
+  architecture/mask was selected on these same folds (post-selection,
+  developmental); (iii) rows exist only where all head labels were finite —
+  a small availability filter that production would not have; (iv)
+  predictions exist only on the 30-min lattice, so production may decide
+  more often than this simulation can.
+- *Admission, caps and survivors (d) — RULED (Revision 1).* Tradable units
+  are exactly the `gates.json` (sha pinned above) caps with `capped_horizon
+  > 0`; the other 14 are excluded. The mapping is READ from the pinned
+  artifact, never restated in config. Survivors passed to `EquityKellyMIO`
+  = the admitted symbols (the gate is Bonferroni skill testing; no second
+  StatTest). Disclosed look-ahead: the admission uses evidence through
+  2025-10-16, so at a 2022 tick the universe and horizons are chosen with
+  later information — results are developmental post-selection and say so.
+- *Cadence, leads and units (e).* Decisions only at the 30-min lattice
+  instants (the only instants with stored predictions). Lead L is in
+  1-minute tape bars (the label, `HorizonBook` and `common_lead_stop` unit).
+  Each admitted unit trades at ONE lead, its `capped_horizon` (the longest
+  admitted head; caps are contiguous from h1, so it is itself admitted):
+  PANW 1; LLY 2, LULU 2; LITE 3, TER 3, XLK 3; ADBE 4; CIEN 5, NOW 5;
+  MSTR 6; LRCX 10. `ForecastBundle` and `EquityKellyMIO` both refuse mixed
+  leads, so each tick solves one MIO per lead group (7 groups), in
+  ascending lead order, each seeing the cash left by the previous groups'
+  planned buys (`cash_after`). The order is a disclosed allocation bias.
+  Trading every admitted horizon of a unit as concurrent lots was rejected:
+  it multiplies that arbitrary sequential allocation for no production
+  precedent.
+- *No overlap — checked.* A decision at lattice bar index i fills at i+1
+  (`fill_bar_offset` 1) and force-exits at i+1+L <= i+11 (`forced_exit_horizon_basis
+  "fill"`, max admitted L = 10). The next decision on that unit is 30
+  minutes later, i.e. at index >= i+11 whenever the name printed at least
+  11 one-minute bars in between, so the lot has already exited. The last
+  lattice origin with stored predictions is 15:30 ET (all ten head labels
+  must be finite), so no lot crosses the close. The one exception is a thin
+  name with fewer than 11 bars in a 30-minute window: the decider then
+  skips that unit for the tick with reason `open_lot_at_decision` (never an
+  early exit, never a same-lead refusal). Consequently `EquityKellyMIO`
+  always sees an empty book; its inventory/no-trade-band path is NOT
+  exercised (disclosed).
+- *Window (f).* Segments k = 2..19: 2022-09-09..2025-10-16, inside
+  `development_validation`; `evidence_end = "2025-10-16"` through the
+  inherited `DevelopmentReplay` gate. Folds 0-1 are warm-up only (S5 needs
+  one fold to calibrate and one more to measure coverage out of sample).
+- *Calibration (c).* Per segment k, computed once at `cutoff_k` from OOS
+  rows of folds j < k with `ts >= cutoff_k - 730d` (rolls every 63 days with
+  the release; all such labels realize before `cutoff_k` because labels are
+  intraday). `calibration_end_ms = cutoff_k - 1`, `known_at_ms = cutoff_k`.
+  This is procedure-level calibration (earlier refits' residuals attested
+  for release k), stated in every artifact's evidence id.
+- *Cap artifact carrying the admission.* `EquityKellyMIO` only reads caps
+  through `ConfirmedCaps`, whose validator refuses the exact scope
+  `developmental_post_selection` (ADR-0121). The per-segment artifact is
+  therefore NOT a confirmation and never says so: `deployment_eligible`
+  false, `evidence_scope` `"p16-gate-admission-developmental-post-selection-evidence-end-2025-10-16"`
+  (names the true source and end), `evidence.sha256` = the pinned
+  `gates.json` sha, caps = the 11 admitted units' `capped_horizon`,
+  `model_release_id` = the segment release, and TRUE stamps (Revision 2):
+  `evidence_end_ms` = 2025-10-17T00:00Z - 1 ms, `generated_ms` = the pinned
+  `gates.json` file's modification time read at publisher init (a true
+  instant after the evidence end, deterministic for the pinned file so the
+  per-tick digest pins are reproducible). Every tick precedes both stamps,
+  so the MIO's timing screen would refuse; it is passed ONLY through the
+  declared switch `EquityKellyMIO.cap_evidence_look_ahead` (optional JSON
+  bool, default false; true is a validation problem unless
+  `deployment_mode` is false). When true, exactly two checks are skipped —
+  `age_ms < 0` ("cap is from the future") and `generated_ms > decision_ts`
+  — the staleness check still applies whenever `age_ms >= 0`, and every
+  other cap check (digest, producer, evidence sha, release match,
+  `deployment_eligible` false, `ConfirmedCaps.problems`) is unchanged. The
+  node's `evidence` output then carries `cap_evidence_look_ahead:
+  "caps use post-selection evidence (look-ahead disclosed)"`; S7 stamps the
+  same string on every report row and in the run metadata.
+  `deployment_mode=false`, so the artifact can never authorize deployment;
+  ADR-0121's rule and `ConfirmedCaps` are unchanged.
+- *Development placeholders (not owner rulings).* `risk_aversion_gamma` 2.0,
+  `n_tangents` 32, `n_scenarios_max` 64, `cvar_alpha` 0.95, `cvar_limit`
+  null, `cardinality` 5, `min_ticket` 0.0, `hfdr_q` 0.30, `band_bps` 10.0,
+  `max_position_notional` 1e12 (no per-name ceiling beyond cash),
+  `bundle_max_staleness_ms` 0, `cap_max_staleness_ms` and
+  `uncertainty_max_calibration_age_ms` 5,529,600,000 (64 days),
+  `uncertainty_min_coverage` 0.50; portfolio `buying_power = cash`,
+  `gross_limit = NAV` (cash account, no leverage), `cash_reserve` 0,
+  `sale_credit` 1.0. Fees/costs come only from `fill-policy.json`.
+
+**Pipeline document (Revision 3, owner PIPELINE-NODE RULE, 2026-09-23).**
+The simulation runs ONLY as one JSON pipeline document,
+`configs/run-development-simulation.json`, executed by
+`python -m dskit.pipeline run configs/run-development-simulation.json
+--adapter intraday_equities`. Every stage is a registered node kind wired
+by `$node.port`; no driver script, no out-of-pipeline P&L. Reused kinds
+first (the shape of `configs/run-mio-demo.json`, whose `SyntheticMioSource`
+this document's publisher replaces):
+
+| Node | Kind | Inputs -> outputs |
+|---|---|---|
+| `bars_<src>` (one per split source) | EXISTING `intraday_equities-bars` (`BarsFromStore`, `start_ms` = first segment cutoff, `end_ms` = end of the last segment, S4) | -> `records` |
+| `bars` | EXISTING toolkit `concat` (`shape: records`, `provenance: source`, `key: [symbol, asof_ms]`, `allow_overlap: false`) | `$bars_<src>.records` -> `records` |
+| `publish` | NEW `intraday_equities-forecast-publisher` (`ForecastPublisher` IS the node, S5; role `data`, port vocabulary of `SyntheticMioSource`) | -> `releases` (per segment: release id, model manifest, cap artifact, survivors, lead map, per-lead-group `uncertainty`), `bundles` (every lattice tick's per-lead-group `ForecastBundle` rows; point-in-time, portfolio-independent, so materializable once) |
+| `decide` | NEW `intraday_equities-mio-decider` (S6; role `capital`) | `$publish.releases` -> `mio` (the validated `EquityKellyMIO` base params incl. `cap_evidence_look_ahead`, and the ascending lead-group order). The sizing itself is the EXISTING `intraday_equities-kelly-mio` kind, resolved through the node registry and run per tick inside `simulate` with the live portfolio — a DAG node runs once, the MIO must run per tick on live cash, which is exactly what production's served head does per tick. |
+| `simulate` | NEW `intraday_equities-development-simulation` (`DevelopmentSimulation(DevelopmentReplay)`, S7) | `$bars.records`, `$publish.releases`, `$publish.bundles`, `$decide.mio` -> `fills`, `skipped`, `refused`, `cash` (per-fill cash and cumulative contributions) |
+| `report` | NEW `intraday_equities-simulation-report` (S7; `WindowBook` fold) | `$simulate.fills`, `$simulate.cash`, `$publish.releases` -> `daily` (records), `summary` (mapping) |
+| `write_fills`, `write_daily` | EXISTING toolkit `records-write` | `$simulate.fills`, `$report.daily` -> jsonl + digest |
+| `write_summary` | EXISTING toolkit `table-write` | `$report.summary` -> json |
+
+Consequences for the slices below: S5's `ForecastPublisher` is a `Node`
+subclass (params = its constructor args; `release(k)`/`bundles_at` become
+the `releases`/`bundles` outputs); S6's `MioDecider` is the per-tick
+strategy the `simulate` node builds from `$decide.mio` (not a free-standing
+entry point); S7's `DevelopmentSimulation` reads NO bars itself — bars
+arrive on its `bars` input and each segment is a slice of it — and the
+report is its own node. S4 is unchanged in code; its role becomes the
+whole-window bound of the `bars_<src>` nodes (without it they read to
+2026). Memory changes accordingly (see the memory plan).
+
+**S1 — same-bar cash ordering (a).** `replay.py`: `EquityReplay.evaluate`
+runs two passes over the symbols with a bar at this instant — pass 1 halt
+handling + `_process_exits` for ALL symbols, pass 2 `_process_entries` —
+replacing `_apply_bar` with `_apply_exits(symbol, bar, index)` and
+`_apply_entries(symbol, bar, index)`. `same_tick_order="exits_then_entries"`
+now holds across the tick, which is what ADR-0120 states.
+RED (`tests/test_replay.py`): `test_same_bar_exit_on_later_symbol_funds_entry_on_earlier_symbol`
+(symbol A inserted first enters at bar k; symbol B's lot expires at bar k;
+cash suffices only with B's proceeds; today A is refused `insufficient_cash`);
+`test_halted_symbol_exit_skip_unchanged_by_two_pass`.
+
+**S2 — `BarTape` linear construction.** Count bars per timestamp once
+(`collections.Counter`); no behaviour change. RED:
+`test_bar_tape_iterates_bars_a_bounded_number_of_times` (a `list` subclass
+counting `__iter__`; today it is iterated once per timestamp) and
+`test_bar_tape_records_added_per_timestamp`.
+
+**S3 — dskit: per-cell session-flip null draws.**
+`dskit/pipeline/attempts.py`: public
+`session_flip_nulls(cells, n_boot, seed=0, chunk=500)` ->
+`{cell: (t_observed, tuple_of_n_boot_null_t)}`, built only from the existing
+`_cell_columns` + `_replicate_matrix` (the draws `max_bar` already computes
+and discards). This is the `SignalEvidence(statistic, null_draws)` input
+`GrenanderLocalFdr` needs. RED (`tests/pipeline/test_attempts.py`):
+`test_session_flip_nulls_t_matches_max_bar_rows`,
+`test_session_flip_nulls_quantile_of_max_reproduces_c_star`,
+`test_session_flip_nulls_seed_reproducible`,
+`test_session_flip_nulls_skips_constant_cells`.
+
+**S4 — bounded bar reads.** `nodes.BarsFromStore` gains optional `end_ms`
+(exclusive). Hook verified: `scan_stream(..., admit=None, ...)`
+(dskit/onboarding/observations.py:237-239) calls `admit(data, stamp)` at
+intake with `stamp` = the derived epoch-ms `ts_out` (applied at :530,
+after `since_ms`/`keep_values`); `BarsFromStore.run` already passes
+`admit=_tag` (children/intraday_equities/intraday_equities/nodes.py:926).
+The change is one clause in `_tag`: return False when `end_ms` is declared
+and `stamp >= end_ms`. No dskit change. Emitted into fingerprint/cache key
+only when present, so no existing hash moves. Needed because `start_ms`
+alone makes each segment read the store to 2026 (~8.5M records). RED
+(`tests/test_nodes.py`):
+`test_bars_from_store_end_ms_excludes_at_and_after`,
+`test_bars_from_store_without_end_ms_fingerprint_unchanged`.
+
+**S5 — `ForecastPublisher` (b, c).** New child module
+`intraday_equities/simulation.py`.
+`ForecastPublisher(inventory_path, inventory_sha256, gates_path,
+gates_sha256, calendar_path, calibration_window_days, n_scenarios,
+coverage, window_blocks, null_draws, seed)`:
+- `__init__` reads the pinned inventory (`final_gates._read_pinned_json`),
+  verifies every fold's prediction pins
+  (`final_gates._verified_prediction_snapshot`), reads each fold's
+  `resolved.json` splits and `run_hash`, and refuses unless fold geometry
+  equals `fold_schedules.development_outer` of the calendar loaded through
+  `dskit.pipeline.program_calendar.load_program_calendar`,
+  `train_end < cutoff` for every fold, and folds are contiguous and ordered.
+  It also reads the pinned `gates.json` (`_read_pinned_json`), refuses
+  unless `metrics.manifest_artifact` is the pinned inventory, and derives
+  the lead map `{symbol: capped_horizon}` for `capped_horizon > 0`.
+- `release(k)` -> dict with `release_id`
+  (`lean-pooled-h10-fold{k:02d}-{run_hash[:16]}`), `model_manifest_sha256`
+  (= `run_hash`), `cap` (above), `survivors` (the admitted symbols), and
+  one `uncertainty` pair PER LEAD GROUP L: `outcome` =
+  `BlockConformalInterval().calibrate(BlockResiduals(names=group symbols,
+  rows, blocks=utc_day, stamps))` on complete-case lattice rows of
+  `y - yhat` at lead L; `scenarios` from `.scenarios(residuals,
+  n_scenarios, seed)`; `false_signal`: ONE `GrenanderLocalFdr().estimate(
+  {"SYM:hLL": SignalEvidence(*session_flip_nulls(...)[cell])},
+  independent_units=<distinct symbols>)` per segment over all 90 modeled
+  (symbol, h) cells in the window (the same family the gate corrected
+  over), then per group projected to a `FalseSignalEstimate` keyed by
+  symbol holding exactly that group's `SYM:hL` values, unchanged, with the
+  source estimate's `evidence` (the capital node keys `pi_hat` by entity;
+  a projection, not a re-estimate — disclosed). Attestations: outcome `CoverageEvidence.measured` = out-of-sample
+  coverage of the same procedure calibrated on folds < k-1 and scored on fold
+  k-1; false-signal `measured` = 0.53 with evidence id
+  `ADR-0152-synthetic-attainment-floor-not-measured-on-this-panel`.
+- `bundles_at(ts, closes)` -> `{L: ForecastBundle(...).rows}`, one bundle
+  per lead group, for admitted names with a fold-k prediction at
+  `(ts, lead_map[symbol])`: `yhat` only (the tick path never
+  reads `y`), `price` = decision-bar close, `sigma_t`/`beta_t` from
+  `nodes._LeadLabel` built by `_label_from_params(scan_params,
+  _tapes_from_bars(cache_tapes, spec["price_field"], val_end_k),
+  spec["period_ms"])` — the fold's own scan params, universe spec and
+  verified feature-cache tapes (`feature_cache.verify_feature_cache`), so
+  sigma is the label's sigma, never restated. `known_at`: market fields =
+  `ts`, `pi_*` = `cutoff_k`.
+RED (`tests/test_simulation.py`, synthetic 3-fold fixture written with
+`PredictionWriter` + a tiny feature-cache): `test_segment_artifacts_ignore_rows_at_or_after_cutoff`
+(mutating any `y`/`yhat` with `ts >= cutoff_k` leaves `release(k)` digests
+identical); `test_tick_path_never_reads_realized_y` (mutating fold-k `y`
+leaves every `bundles_at` identical); `test_fold_train_end_after_cutoff_refuses`;
+`test_prediction_pin_mismatch_refuses`; `test_sigma_reproduces_the_stored_label`
+(the fixture's `y` recomputed with publisher sigma/beta equals the stored
+`y`); `test_artifacts_admitted_in_segment_and_refused_before_cutoff`
+(`admission_problems` empty at a tick in segment k, `post_decision` for a
+tick before `cutoff_k`); `test_cap_never_carries_the_p16_scope`;
+`test_only_gate_admitted_units_at_capped_horizon_enter_bundles`
+(a zero-cap unit with predictions never appears);
+`test_gates_sha_or_manifest_mismatch_refuses`;
+`test_one_bundle_per_lead_group_never_mixed`;
+`test_false_signal_projection_preserves_values`.
+
+**S5 as built (2026-09-23).** `intraday_equities/simulation.py`:
+`ForecastPublisher` (kind `intraday_equities-forecast-publisher`, role
+`data`, outputs `releases` and `bundles`, both plain JSON) over a private
+`_Walk` that owns the verified pinned reads. Deviations from the text
+above, each the smallest that unblocked the slice: (1) params use
+Revision 3's names (`inventory_manifest`, `inventory_manifest_sha256`,
+`gates`, `gates_sha256`, `program_calendar`, `first_fold`, `last_fold`,
+`calibration_window_days`, `uncertainty` = `{n_scenarios, coverage,
+window_blocks, null_draws, seed}`) plus two the text omitted:
+`fold_schedule` (the calendar key, not hardcoded) and `walk_root` (the
+P16 fold documents name their caches `./pipeline_cache/...`, relative to
+the directory the walk ran from). (2) Pinned reads happen in `run`, not
+`__init__` (a node is constructed at plan time). (3) `price` is the fold
+tape's decision-bar close (the bar the label's `P0` reads), not a
+`closes` argument: Revision 3 gives `publish` no inputs. S7 must accept
+that the cache tape (float32 `close`) and the split-adjusted bars are two
+reads of the same minute. (4) Fold documents are verified with
+`RunAttestation.binds_document_identity`, the universe by its recorded
+fingerprint, caches by recorded manifest digest and `verify_feature_cache`
+(once per cache); a symbol in several caches must carry byte-identical
+tapes. (5) Scan `val_end_ms` is `$splits.val_end_ms` in the fold
+documents and resolves from `resolved.json`. (6) Each bundle row's
+`label` is the fold label's effective knobs, so a fold whose label
+differs from the pinned contract refuses in `ForecastBundle`. (7) The
+producer document hash is read from the driver's `resolved.json` in
+`ctx.run_dir`. (8) Outcome `measured` = share of fold k-1's complete-case
+(row, component) cells inside the band calibrated on folds < k-1;
+`n_units` = its UTC days. (9) `ForecastPublisher.envelopes(release,
+lead)` rebuilds both attested envelopes from the JSON; S6/S7 use it.
+Real-data smoke (pins above, folds 2-3): 6.8 s, 531 MB RSS, 6,935
+bundles / 10,904 rows, 37 MB JSON; measured coverage 0.957-0.988 at
+target 0.95; `pi_widened` reaches 0.77-0.89 for LLY/ADBE in some releases
+(question 7's HFDR effect is live). Folds 2..19 extrapolate to ~62k
+bundles and ~330 MB of JSON resident for `simulate`.
+
+**S6 — `MioDecider` inside `EquityReplay` (e).** `EquityReplay(policy,
+cash_flow_policy=None, decider=None)`: the upfront loop body of `run` moves
+to `_enqueue_decision(decision)` (same refusals); `run(bars, decisions=())`.
+In `evaluate`, after S1's two passes, when `decider` is set and `asof` is a
+decision instant, it calls `decider.decide(asof, self._portfolio(asof))` and
+enqueues the returned rows for fill at the next bar. `_portfolio` reads live
+state: `cash = buying_power = self._cash_balance`, `positions` = lots not
+expiring at or before the fill bar, `mark_prices` = decision closes,
+`gross_limit` = NAV. `MioDecider(publisher, release, mio_params)`: per tick
+drops units with an open lot (`open_lot_at_decision`), then for each lead
+group in ascending L builds that group's bundle, constructs
+`EquityKellyMIO(key, {**mio_params, **pins})` where pins are the
+in-process producer's own digests (`ForecastBundle.digest`,
+`ConfirmedCaps.digest`, producer = the simulation document hash + node key)
+— the in-process trust relationship, disclosed — runs it with the cash
+left by earlier groups (`cash_after`), and maps `trades` to `{"symbol",
+"asof_ms", "lead": L, "qty": buy, "side": "buy"}`. A MIO
+refusal/`ValueError`/non-optimal solve records `mio_refused` for that group
+and emits nothing for it; a `sell` while the book is empty raises.
+RED (`tests/test_simulation.py`): `test_decider_sees_cash_after_this_bars_fills`,
+`test_mio_orders_are_integer_shares_filled_next_bar_open`,
+`test_lots_force_exit_at_fill_plus_lead`, `test_mio_refusal_trades_nothing_and_is_recorded`,
+`test_cash_never_negative_over_a_funded_multi_day_tape`,
+`test_lead_groups_share_one_cash_budget_in_ascending_order`,
+`test_lot_expires_before_next_lattice_decision_for_max_lead_10`,
+`test_thin_unit_with_open_lot_is_skipped_not_exited`; plus `tests/test_replay.py`
+`test_run_with_explicit_decisions_unchanged` (existing behaviour pinned).
+Revision 2 adds the switch here (the only `EquityKellyMIO` change):
+`nodes_capital.EquityKellyMIO` gains optional `cap_evidence_look_ahead`
+(above); `MioDecider` passes it only from the declared `mio` params, never
+by default. RED (`tests/test_nodes_capital.py`):
+`test_cap_look_ahead_default_refuses_future_cap` (existing refusal pinned),
+`test_cap_look_ahead_true_admits_future_cap_and_records_disclosure`,
+`test_cap_look_ahead_true_requires_development_mode`,
+`test_cap_look_ahead_must_be_json_bool`,
+`test_cap_look_ahead_keeps_every_other_cap_check`.
+
+**S6 as built (2026-09-23).** The switch is exactly as specified
+(`nodes_capital.CAP_LOOK_AHEAD_DISCLOSURE` is the recorded string).
+`EquityReplay` gains `decider=` and `_enqueue_decision`/`_portfolio` as
+specified; the decider is called after every tick's two passes and
+returns nothing where it holds no bundle, so the replay needs no lattice
+knowledge. `_portfolio`'s NAV counts every open lot at its latest
+decision-price close, while `positions` omits lots that exit at or
+before the fill bar. Deviations, each the smallest that fit Revision 3:
+(1) `MioDecider(release, bundles, mio, fill_policy, ctx)` takes the
+publisher's JSON outputs, not the publisher; (2) the Schwab cost knobs
+are bound per tick from the replay's `FillPolicy` ("fees come only from
+`fill-policy.json`"), so the `mio` block refuses them and the eight
+digest/producer pins; (3) the bundle pins are the release's
+`model_manifest_sha256` and the release cap's producer document and
+node (the same publisher node), a cross-check rather than a self-read of
+each row; (4) held units are dropped before the solve, so the MIO gets
+`positions: {}`, `cash_reserve` 0 and `sale_credit` 1.0 set by the
+decider; (5) `mio_refused` rows (with the refusal text as `detail`) and
+`open_lot_at_decision` skips live on `MioDecider.refused`/`.skipped` for
+S7 to merge; an `AssertionError` from the doorway's exact recompute is
+not caught (a solver inconsistency is a crash, not a refusal); (6)
+`EquityKellyMIO` is imported directly rather than looked up in the
+registry. The "refuse a `mio` block without `cap_evidence_look_ahead:
+true`" rule (S7 text) lives in the `decide` node, where Revision 3 put
+`mio`. **ADR error fixed (blocker):** the Revision 3 table gives `decide`
+role `capital`, which cannot plan — `planner.py:661-678` requires every
+capital node to wire a `stat_test` output, and Revision 1 removed the
+StatTest step. `MioDeciderNode` (kind `intraday_equities-mio-decider`)
+is role `transform`: it sizes nothing and emits only JSON `{params,
+lead_groups}`. The sizing inside `simulate` likewise has no `stat_test`
+wire; the survivor set is the pinned gate admission (question 13).
+**Finding for S8:** each ServeLoop tick re-runs `verify_release` ->
+`RuntimeFingerprint.capture`, which re-reads installed-package metadata
+(profiled as the dominant per-tick cost; a synthetic 390-tick day took
+40 s). At ~17k ticks per segment that is roughly half an hour per
+segment, ~9 h for folds 2..19; `dskit.production` is a non-goal, so the
+S8 smoke measures it and the owner rules. Tests: every S6 test named
+above plus `test_decide_node_emits_only_json_params` and
+`test_decide_node_refuses_bound_or_undeclared_params`; the
+`test_simulation.py` ones share one funded four-day MIO replay of the S5 fixture (lattice ticks plus three minutes,
+`hfdr_q` 0.9 and `uncertainty_min_coverage` 0.05 because the fixture's
+widened rates are 0.66-1.0); 17 hand mutants of the switch, hook,
+portfolio, decider and node were each killed.
+S5 lens fixes landed alongside: `dskit.pipeline.predictions.read_predictions`
+gains an optional `columns` projection (default read pinned literally)
+and `_Walk.yhat` reads through it (M1); fold contiguity and the
+release-fold cutoff bounds are pinned by two tests that kill four
+surviving mutants (M2).
+
+**S7 — `DevelopmentSimulation` node + config + report (f, g).**
+`DevelopmentSimulation(DevelopmentReplay)` (kind
+`intraday_equities-development-simulation`) inherits the five gates
+(`deployment_eligible` false, `caps` `development-only`, `evidence_end`,
+fill/cash-flow pins); `DevelopmentReplay.run`'s window checks move to
+`_refuse_out_of_window(bars, decisions)` so both nodes share them. Own
+params: `inventory_manifest`, `inventory_manifest_sha256`, `gates`,
+`gates_sha256`, `program_calendar`, `first_fold`, `last_fold`,
+`calibration_window_days`, `bar_reads` (list of `{source, universe}`),
+`onboarding_root`, `mio` (the EquityKellyMIO base params above),
+`uncertainty` (`n_scenarios` 64, `coverage` 0.95, `window_blocks` 10,
+`null_draws` 999, `seed` 0). No `lead` param: leads come from the gates.
+(Revision 3: the publisher params — inventory, gates, calendar, folds,
+calibration window, `uncertainty` — move to the `publish` node, `mio` to
+the `decide` node, and `bar_reads`/`onboarding_root` become the
+`bars_<src>` nodes' own params; `simulate` keeps the `DevelopmentReplay`
+gates plus `first_fold`/`last_fold` and refuses when its inputs' segment
+set disagrees with them.)
+`run` loops segments k over its `bars` INPUT sliced to `[cutoff_k,
+cutoff_k+1)` plus the fill suffix (Revision 3: no bar read inside the
+node), adds `halted=False` (the source has no halt flag), runs
+`EquityReplay(policy, segment_cash_policy, MioDecider(...))` over the
+slice. Cash carries by deriving
+`segment_cash_policy = CashFlowPolicy({**pinned.to_obj(),
+"initial_capital_amount": str(closing_cash)})` for k > first_fold, so the
+production ledger path is unchanged; a segment that ends with open lots
+refuses. Report outputs, from fills through `WindowBook` (one
+`records.Fill` per fill) plus the replay's cash: `daily` (date, NAV,
+contributions to date, NAV - contributions, realised P&L, fees, buy/sell
+notional, turnover = gross notional / NAV, trades), `summary` (final NAV,
+total contributed, net P&L, fees, turnover, max drawdown of NAV -
+contributions, refusals by reason, `mio_refused` count, per-segment release
+id/survivors/pi/measured coverage), and every row stamped
+`deployment_eligible=false`, `evidence_scope="development_replay_post_selection"`,
+`cap_evidence_look_ahead="caps use post-selection evidence (look-ahead
+disclosed)"` (Revision 2; also in the run metadata). The node refuses a
+`mio` block without `cap_evidence_look_ahead: true` — the switch is
+declared in the config, never implied.
+Config `configs/run-development-simulation.json` (folds 2..19,
+2025-10-16, inventory `fa061189` + gates `77a7ab08` pins). RED: `test_config_validates_and_is_ineligible`,
+`test_segment_opening_cash_equals_previous_closing_cash`,
+`test_total_contributions_equal_seed_plus_20_per_trading_day`,
+`test_nav_minus_contributions_equals_windowbook_realised_when_flat`,
+`test_decision_after_evidence_end_refuses`,
+`test_bars_read_bounded_to_the_window` (monkeypatched `scan_stream` sees
+the `bars_<src>` nodes' `since_ms` and the `end_ms` admit bound),
+`test_open_lots_at_segment_end_refuse`,
+`test_document_runs_end_to_end_through_the_pipeline_driver` (the shipped
+document, pins swapped for a synthetic fixture, planned and run by the
+`dskit.pipeline` driver with `--adapter intraday_equities`; every stage
+above is a node in the plan and no stage runs outside it),
+`test_report_is_a_separate_node_fed_only_by_wires`.
+
+**S7 as built (2026-09-24).** `intraday_equities/simulation.py`:
+`DevelopmentSimulation(DevelopmentReplay)` (kind
+`intraday_equities-development-simulation`, role `transform`) and
+`SimulationReport` (kind `intraday_equities-simulation-report`, role
+`report`); `replay.py`: `EquityReplay.cash_flows` (the cash-flow bodies it
+booked) and read-only `cash_balance`, and `DevelopmentReplay.run`'s window
+checks moved verbatim into `_refuse_out_of_window(bars, decisions)`.
+Documents `configs/run-development-simulation.json` (folds 2..19) and
+`configs/run-development-simulation-smoke.json` (fold 2 only; a test pins
+that it differs from the full document only in name/notes, folds, the
+bars `end_ms` and the output paths). As built:
+(1) `simulate` reads no data: its `bars` input is sliced once into one
+list per release (`[segment_start_ms, segment_end_ms)`, gate-admitted
+names only, projected to symbol/`asof_ms`/the three price fields,
+`halted` false where absent); optional `consume_bars` (JSON bool, the
+`concat.consume_inputs` ownership transfer) clears the input list after
+slicing and each segment's slice is dropped after its replay. Segments
+are contiguous whole UTC days and lots close intraday, so no fill suffix
+is used; an `expiry_past_tape` lot refuses the run (ADR rule).
+(2) Cash: segment k > first runs under `CashFlowPolicy({**pinned,
+"initial_capital_amount": str(closing_cash_k-1)})`; the `cash` output is
+one row per trading date (`booked` ledger amount, `carried_in` on a
+segment-opening date only, external `contribution`, running
+`contributions_to_date`, and the replay's own day-close `cash_close`,
+`nav_close`, `marks` taken from the portfolio `EquityReplay` hands its
+decider after the date's last tick, via a forwarding `_DayCloses`); the
+funded dates must equal the ticked dates or the node refuses. Tests pin
+seed once, $20 on every trading date, no gap or double count at the
+boundary, and opening cash == previous closing cash == contributions +
+every fill's cash.
+(3) `simulate` refuses a bar close that differs from the bundle's decision
+price by more than 1e-6 relative (the float32 cache close vs the store's
+close of the same minute; S5 deviation (3) made checkable), releases
+whose folds differ from `first_fold..last_fold`, and (inherited) any
+decision at or after the day after `evidence_end`.
+(4) `report`: each fill -> `records.Fill` -> `WindowBook` for the account,
+per symbol and per lead; daily NAV = contributions to date +
+`WindowBook.pnl(marks)` (identical to cash + marked lots), with the
+replay's own `nav_close` beside it (`nav_discrepancy`, 0 in the tests);
+`drawdown` in `daily` is the daily net P&L's peak-to-date less its value;
+the summary's `max_drawdown` is `WindowBook.drawdown` (fill-resolution).
+Every `simulate`/`report` row, the summary and `metadata` (written by
+`table-write` inside the summary) carry `deployment_eligible` false,
+`evidence_scope` `development_replay_post_selection` and the
+`cap_evidence_look_ahead` disclosure.
+(5) **ACCEPTED RISK (S6 lens):** the per-tick `EquityKellyMIO` sizing runs
+inside `simulate`'s loop, outside the DAG, so `planner.py:661-678`'s
+capital-role `stat_test` safety net does not apply to it; survivor gating
+is enforced instead on every call by `EquityKellyMIO.validate_inputs`
+against the survivors carried on each release, which are the pinned P16
+gate admission (question 13).
+Tests: `tests/test_simulation.py` 40 (S5-S7, including the shipped
+document run end to end by `python -m dskit.pipeline run ... --adapter
+intraday_equities` over a synthetic onboarding store with the pins
+swapped for the fixture); `tests/test_configs.py::test_config_validates_and_is_ineligible`;
+three hand mutants (no cash carry; carried cash counted as a
+contribution; open lot at segment end tolerated) each killed.
+**ADR errors found and fixed in the build:** (a) the Revision 3 table's
+`bars` node: `concat`'s output port is `merged`, not `records`, and
+`key: [symbol, asof_ms]` refuses (each key field is an independent
+namespace-disjointness check and both sources share every minute) --
+built as `key: "symbol"` with a `provenance_waiver` (the
+`run-final-hpo.json` pattern; `provenance` stamping would copy every
+row); (b) `report` also needs `$simulate.skipped`, `$simulate.refused`
+and `$simulate.metadata` for its counts and disclosure; (c) `simulate`'s
+cash-flow policy is required, not `DevelopmentReplay`'s optional pair;
+(d) "outputs under the run dir": the document language has no
+`$run_dir` reference and `FileWrite` refuses a missing parent, so the
+writes land beside the run dir in `./pipeline_runs/` (a second run
+refuses to clobber them); (e) the `cash` port is per trading date, not
+per fill; (f) "Only S3 touches dskit" and the `dskit.production`
+non-goal are superseded by amendment S7(d).
+
+**Amendment S7(d) — replay-only runtime-inventory memo in `dskit.production`
+(2026-09-24).** The S6 finding (every `ServeLoop` tick re-runs
+`verify_release` -> `RuntimeFingerprint.capture`, which re-reads and
+re-parses the metadata of every installed distribution) blocks S8, so the
+non-goal "no `dskit.production` change" is amended for exactly one seam.
+Measured: `capture` 66.8 ms/call (this venv, 156 distributions; the S6
+lens measured the same 66.8 ms, the hotspot `importlib.metadata` -> the
+`email` parser, which `capture` also ran twice per distribution); a
+synthetic 390-tick, 11-name day with lattice buys took 42.2 / 43.8 s wall.
+Why it cannot live in the child: the tick object is `loop.Tick`,
+constructed inside `ServeLoop._tick` (loop.py:1275) with no injection
+point, and `Tick.verify_release` calls the module function
+`verify_release` -> `_check_runtime` -> `RuntimeFingerprint.capture`; the
+only child-side seams were monkeypatching `dskit.production` or
+subclassing `ServeLoop` to skip the runtime check, and both weaken D24
+("startup, every tick and immediately before submit re-verify ... runtime
+fingerprint", pinned by `tests/production/test_loop.py:1338`). No cache or
+flag exists (`grep -n "cache\|memo\|lru" dskit/production/release.py`:
+none). Change (release.py only): `capture`'s distribution loop moves
+verbatim into `_read_inventory`; new `runtime_capture_memo()` context
+manager sets a process-level switch; only inside it does `_inventory`
+reuse the last read while the inventory's stat identity is unchanged --
+`sys.path`, the discovered distribution directories, and `(st_ino,
+st_size, st_mtime_ns)` of each directory and of `METADATA`, `PKG-INFO`,
+`RECORD`, `direct_url.json` (an installer creates, replaces or removes
+these, so install/upgrade/reinstall/uninstall are seen; an in-place
+rewrite preserving inode, size AND nanosecond mtime is not -- disclosed,
+and the reason this is opt-in). Interpreter, platform and project-file
+fields are recomputed every capture either way; `verify_release` still
+compares by value. Outside the block NOTHING changes: every capture
+re-reads from bytes (pinned by
+`test_capture_outside_the_memo_rereads_the_inventory_every_call`), so the
+production path is not weakened. `EquityReplay.run` wraps its loop in the
+block (one process mints the release and re-verifies it per tick). After:
+the same synthetic day 16.1 / 15.9 s (2.7x); per-tick wall 0.108 s ->
+0.041 s. The residual is the scratch ledger's `fsync` (`ledger._sync`,
+`durable_write_json` checkpoints: 15.8 s of a 21.6 s profile even under
+`durability.fsync: "none"`); with the replay scratch dir on tmpfs
+(`TMPDIR=/dev/shm/...`, operational only, no code) the same day took
+3.6 s. Estimates for folds 2..19 (~306k ticks, excluding MIO solves):
+~9.4 h before, ~3.5 h after, ~0.8 h with a tmpfs scratch dir. RED/GREEN:
+`tests/production/test_release.py` (`test_capture_outside_the_memo_rereads_the_inventory_every_call`,
+`test_capture_inside_the_memo_reuses_an_unchanged_inventory`,
+`test_the_memo_sees_an_installed_upgraded_rewritten_or_removed_distribution`,
+`test_the_memo_block_is_reentrant_and_always_switches_off`) and
+`children/intraday_equities/tests/test_replay.py::test_replay_reads_the_runtime_inventory_once_per_run_not_per_tick`
+(a 12-bar replay read the inventory 14 times; now once).
+
+**S8 — real-data run (operational, no code).** WSL, one job at a time, tmux
+session `prodsim`, log and work under `/home/russell/prodsim-work/`,
+`TMPDIR=/home/russell/prodsim-work/tmp` (EquityReplay's and the pin
+snapshot's `tempfile` dirs; never `/tmp`), `ulimit -v 12582912`. The run
+is `python -m dskit.pipeline run configs/run-development-simulation.json
+--adapter intraday_equities` (Revision 3; no other entry point). First a
+one-segment smoke (a copy of the document with `first_fold=last_fold=2`
+and the `bars_<src>` bounds narrowed to that segment) under `/usr/bin/time -v`;
+extrapolate RSS and wall time; only then folds 2..19. Result recorded as a
+memo, labelled developmental post-selection. (S7 ships that copy as
+`configs/run-development-simulation-smoke.json`; both run from the child
+root of the worktree with `PYTHONPATH=<worktree>:<worktree>/children/intraday_equities`.
+Amendment S7(d) measured the replay scratch ledger's `fsync` as the next
+per-tick cost; pointing `TMPDIR` at tmpfs for the run is an operational
+option the owner may rule on -- it also holds the pin snapshots.)
+
+**Memory plan (f).** Streaming per segment: one fold's bars (~43 sessions x
+390 x 25 ~ 420k records, <1 GB with EquityReplay's copies), cache tapes for
+sigma memory-mapped (~26 x 790k x 16 B) plus prepared beta/sigma (~0.35 GB),
+all predictions ~0.3 GB, per-segment ledger on disk. Estimated peak < 3 GB,
+to be measured by the S8 smoke against the 12 GB cap. Revision 3 changes
+this: bars are a node output, so the whole window (2022-09-09..2025-10-16
+fill suffix, 25 names, ~7.6M records at ~409 B each per ADR-0073, ~3-4 GB)
+is resident while `simulate` runs; `EquityReplay` still copies only one
+segment's slice. Estimated peak ~5-6 GB; the smoke's RSS decides. If it
+exceeds the cap, the fallback needs an owner ruling (a universe file
+restricted to the 11 admitted names, pinned to `gates.json` by a test,
+would cut bars ~55% but restates the admission in config).
+`_TapeCadence.next_tick`
+is a linear scan per tick (O(ticks^2) per segment, ~17k ticks); fixed only if
+the smoke shows it matters.
+
+### Reuse check (NO-REWORK gate)
+
+| New symbol | Searched | Why not reused / extended |
+|---|---|---|
+| `EquityReplay._apply_exits/_apply_entries` | `grep -n "_apply_bar" replay.py`: one caller, `evaluate` | The fix IS splitting it; no second copy. |
+| `BarTape` counter | `grep -rn "BarTape(" --include=*.py`: one class | Edit in place, no new symbol. |
+| `attempts.session_flip_nulls` | `grep -rn "def .*null_draws\|scramble"`; `max_bar`, `_replicate_matrix`, `_cell_columns` | `max_bar` computes these draws and discards them; importing `_`-private helpers across packages breaks the API contract. As built: `max_bar`'s family validation + resample prelude moved verbatim into private `_session_flip_family`, which both functions call, so the validation is not written twice (`alpha`/`floor_t` are now checked before the family). |
+| `BarsFromStore.end_ms` | `_PARAMS` (nodes.py:741) has only `start_ms`; `scan_stream(admit=)` (observations.py:239, applied :530) already wired as `admit=_tag` (nodes.py:926) | One clause in the existing `_tag`; a new reader would duplicate session/cohort/dedup logic. |
+| lead map / survivors | `gates.json` `outputs.caps`; `final_gates._read_pinned_json` | Read from the pinned gate artifact; the earlier StatTest survivor step and `asset_horizons` caps are removed (no new code for either). |
+| `ForecastPublisher` | `grep -rn "class \w*(Publisher\|Calibrat\|PointInTime)"`: only `SyntheticMioSource`, estimators, trust.py synthetic publishers | Nothing reads real fold predictions into bundles; it composes existing estimators, `read_predictions`, `_LeadLabel`, `ForecastBundle`, `ConfirmedCaps`. |
+| `MioDecider` | `class \w*Decider`: `production.Decider` (re-runs a saved pipeline subgraph; no fold-by-fold forecasts, no MIO), test fakes | `EquityReplay` already is the ServeLoop decider; this is the strategy object it calls. |
+| `EquityReplay._enqueue_decision/_portfolio`, `decider=` | `run` loop body (739-775) | Extraction so upfront and per-tick decisions share one validation path. |
+| `read_predictions(columns=)` (S5 fix M1) | `grep -rn "def read_predictions\|pq.read_table"`: `_Walk.yhat` re-implemented the reader to project columns | One optional parameter on the existing reader; default output pinned. |
+| `MioDeciderNode` (`decide`, S6) | toolkit and child kinds above; `EquityKellyMIO.validate_params` | Validation delegates to `EquityKellyMIO`; no kind carries validated MIO params to a per-tick loop. |
+| `EquityKellyMIO.cap_evidence_look_ahead` (Revision 2) | `deployment_mode`, `DevelopmentReplay.caps`/`deployment_eligible`, `ConfirmedCaps.problems`, `ScenarioUtilitySolve._PARAMS`; `grep -n "look_ahead\|post_selection\|evidence_scope"` | No existing flag relaxes a timing check; the two refusals live only in `EquityKellyMIO.validate_inputs`, so one optional param there is the smallest honest seam (the rejected alternative was false stamps). |
+| `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). As built its only new code is the segment loop over `EquityReplay` + `MioDecider` + a derived `CashFlowPolicy`. |
+| `_DayCloses` (S7) | `EquityReplay._portfolio`, `WindowBook`, `Report.value_curve` | Forwards the portfolio the replay already hands its decider; no second account is kept. |
+| `EquityReplay.cash_flows` / `cash_balance` (S7) | `_advance_cash_flow_window` (books the records), test-only `_CapturingEquityReplay` | Exposes what the ledger already booked, for the per-date contribution rows; no second cash computation. |
+| `SimulationReport` (S7) | `WindowBook`, `records.Fill`, `Report.value_curve`, toolkit `run-report`/`banking-report` (`kinds_report.py`) | `WindowBook` is the fold (account, per symbol, per lead); `Report` needs a persistent ledger; the toolkit reports summarize model runs, not accounts. |
+| `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
+| report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
+| Revision 3 node kinds `intraday_equities-forecast-publisher`, `-mio-decider`, `-development-simulation`, `-simulation-report` | toolkit kinds (`tests/pipeline/test_toolkit_conformance.py`: `concat`, `join`, `derive`, `groupby`, `records-write`, `table-write`, `run-report`, `banking-report`, `hpo-grid`); child kinds (`intraday_equities-bars`, `-kelly-mio`, `-development-replay`, `SyntheticMioSource`); `grep -rn "subgraph" dskit/pipeline` (only the `hpo-grid` rerun seam, param overrides, not per-tick inputs) | Bars, union and writes REUSE `intraday_equities-bars`, `concat`, `records-write`, `table-write`; sizing REUSES `intraday_equities-kelly-mio` per tick. No existing kind publishes real fold forecasts, carries MIO base params to a per-tick loop, runs a funded multi-release replay, or folds fills into a NAV report (`run-report`/`banking-report` report model runs, not accounts). |
+| `release.runtime_capture_memo`, `_inventory`, `_inventory_identity`, `_read_inventory` (S7(d)) | `grep -n "cache\|memo\|lru" dskit/production/release.py` (none); `loop.Tick` construction (loop.py:1275, no injection); `verify_release`/`_check_runtime`; `importlib.metadata`'s own `FastPath` cache (directory listings only, still parses every `METADATA`) | `_read_inventory` IS `capture`'s loop, moved verbatim; the memo is the smallest opt-in switch the child can set without monkeypatching or skipping D24's per-tick check. |
+| new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`, `configs/run-development-simulation-smoke.json` (S7); child README/AGENTS/CLAUDE trees updated. |
+
+**Branch / worktree sweep (concurrent-effort findings checked).** After
+`git fetch`: `origin/codex/intraday-equities-full-backtest-20260922` (tip
+`4834c9b`, worktree `/home/russell/wt/p19-full-backtest-20260922`) is 0
+commits ahead of `origin/main`, 61 behind, and an ancestor of main;
+`origin/claude/intraday-equities-backtest-cont-41xqxz` (tip `5dc76c4`) is 0
+ahead, 9 behind, ancestor of main. Both are fully merged: they are the prior
+slices (ADR-0172–0179: the replay, cash-flow policy, insufficient-cash
+refusal, calendar-aware funding, `DevelopmentReplay` wiring) this ADR builds
+on, not competing work. `git branch -r` shows no other backtest, simulation
+or publisher branch; `git worktree list` shows only those two plus this one.
+
+**Related suites per slice** (run from the worktree with
+`PYTHONPATH=$PWD:$PWD/children/intraday_equities`; never the full suite):
+S1/S2/S6 `children/intraday_equities/tests/test_replay.py`; S3
+`tests/pipeline/test_attempts.py tests/pipeline/test_false_signal.py
+tests/pipeline/test_purity.py`; S4 `children/intraday_equities/tests/test_nodes.py`
+(`-k BarsFromStore` selects nothing — the tests are named
+`bars_from_store`/`bars_node`; the whole file is the suite); S5-S7 `children/intraday_equities/tests/test_simulation.py
+test_forecast_bundle.py test_nodes_capital.py test_configs.py
+test_program_calendar.py` plus `tests/pipeline/test_outcome_interval.py
+tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.
+
+### Agent-decided questions (for owner ruling)
+
+1. Retraining = the P16 fold schedule; no in-loop refit (no saved models).
+2. Cadence = 30-min lattice; each admitted unit at its `capped_horizon`
+   (one lead per unit); one MIO solve per lead group, ascending, sharing one
+   cash budget; thin units with an open lot are skipped.
+3. Window = folds 2..19 (2022-09-09..2025-10-16); folds 0-1 warm-up.
+4. Calibration = trailing 730 days of prior-fold residuals, refreshed per
+   release, per lead group; procedure-level, not model-level.
+5. RULED by the orchestrator (Revision 1): universe, caps and survivors =
+   P16 gate admission (11 units), pinned `77a7ab08`; look-ahead disclosed.
+   Stamp handling RULED (Revision 2): true stamps on the cap artifact; the
+   MIO timing screen is passed only through the declared development
+   switch `EquityKellyMIO.cap_evidence_look_ahead`, disclosed on every
+   report row and in the run metadata.
+6. False-signal numbers: one estimate over all 90 modeled cells, projected
+   per lead group by symbol.
+7. `uncertainty_min_coverage` 0.50 and the false-signal attestation 0.53
+   (ADR-0152's synthetic floor, not measured here). Likely effect: small-m
+   `pi_widened` near 1 makes HFDR forbid most positions; zero turnover would
+   be a finding, not a bug.
+8. All MIO risk knobs are development placeholders (listed above).
+9. Settlement, good-faith-violation and PDT rules are NOT modelled: sale
+   proceeds are reusable at once. Results are optimistic for a small cash
+   account. Highest-priority ruling.
+10. Split-adjusted prices (the designated sources): integer-share sizing is
+    distorted before later splits (LRCX, MSTR, PANW in window).
+11. `halted=false` for every present bar; absent minutes are absent bars.
+12. Segment cash carry through a derived `CashFlowPolicy`.
+13. (S6) No `stat_test` wire into capital: the planner's capital rule
+    cannot be met without a StatTest step Revision 1 removed, so `decide`
+    is role `transform` and the per-tick sizing trusts the pinned gate
+    admission as its survivor set.
+
+### Non-goals
+
+In-loop refit or inference; mixed-lead bundles; trading more than one
+admitted horizon per unit; the 14 zero-cap units; early-exit orders and
+overlapping lots; confirmed caps; settlement
+modelling; any read of 2025-10-17 onward; changes to `fill-policy.json`,
+`cash-flow-policy.json`, `EquityKellyMIO` (except Revision 2's one optional
+`cap_evidence_look_ahead` param), `ForecastBundle`, the estimators
+or `dskit.production`; `docs/decisioning/path.csv`.
+
+### Alternatives rejected
+
+In-loop refit (no model artifacts; ~20 walk refits, not production-different);
+`trust.ReplayRun` / F3 broker (`ReplayRun.run` always raises,
+trust.py:5981-5987; a far larger program); one whole-window replay (8M bar
+dicts plus the quadratic tape); the model's `asset_horizons` as caps and a
+StatTest survivor step (Revision 1: trades units the gate rejected);
+cap stamps set to the segment start so the MIO timing screen passes
+(Revision 2: a false timestamp, ruled out); a
+lead-1-only run (drops the admitted horizons); relabelling the gate
+admission as ConfirmedCaps confirmation (defeats ADR-0121).

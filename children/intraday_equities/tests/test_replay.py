@@ -23,6 +23,7 @@ from dskit.pipeline.node import ConfigError
 
 from intraday_equities.nodes_capital import SchwabCostModel
 from intraday_equities.replay import (
+    BarTape,
     CashFlowPolicy,
     DevelopmentReplay,
     EquityReplay,
@@ -1254,6 +1255,201 @@ def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
     ]
     assert out["refused"] == []
     assert out["skipped"] == []
+
+
+# --- ADR-0184 S1: exits before entries across every symbol of one tick -----
+
+
+def test_same_bar_exit_on_later_symbol_funds_entry_on_earlier_symbol():
+    # 1020 funded. BBB buys 100 @ 10 (balance 20) and force-exits at _cf_t(2);
+    # AAA (inserted first, so iterated first) enters 100 @ 10 at _cf_t(2). The
+    # buy is affordable ONLY with BBB's same-bar sale proceeds credited first.
+    policy = _policy(_ZERO_FEES)
+    bars = _cf_bars([10.0] * 4, symbol="AAA") + _cf_bars([10.0] * 4, symbol="BBB")
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("BBB", _cf_t(0), lead=1, qty=100),
+        _decision("AAA", _cf_t(1), lead=1, qty=100),
+    ])
+    assert _cash_reasons(out) == []
+    assert [
+        (row["kind"], row["symbol"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "BBB", 100, _cf_t(1)),
+        ("entry", "AAA", 100, _cf_t(2)),
+        ("exit", "BBB", 100, _cf_t(2)),
+        ("exit", "AAA", 100, _cf_t(3)),
+    ]
+
+
+def test_halted_symbol_exit_skip_unchanged_by_two_pass():
+    # AAA's lot expires on a halted bar: its exit is skipped there and taken at
+    # the next live bar, while BBB's same-bar entry still fills normally.
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5, halted=True),
+        _bar("AAA", 4_000, 13.0, 13.5),
+        _bar("BBB", 2_000, 20.0, 20.5),
+        _bar("BBB", 3_000, 21.0, 21.5),
+        _bar("BBB", 4_000, 22.0, 22.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", 1_000, lead=1),
+        _decision("BBB", 2_000, lead=1),
+    ])
+    assert out["skipped"] == [
+        {"symbol": "AAA", "asof_ms": 3_000, "lead": 1, "reason": "halted"}
+    ]
+    assert [
+        (row["kind"], row["symbol"], row["asof_ms"], row["price"]) for row in out["fills"]
+    ] == [
+        ("entry", "AAA", 2_000, 11.0),
+        ("entry", "BBB", 3_000, 21.0),
+        ("exit", "AAA", 4_000, 13.0),
+        ("exit", "BBB", 4_000, 22.0),
+    ]
+    assert out["refused"] == []
+
+
+# --- ADR-0184 S2: BarTape is built in one pass over the bars ----------------
+
+
+class _CountingBars(list):
+    """A bar list that counts how many times it is iterated."""
+
+    iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
+def test_bar_tape_iterates_bars_a_bounded_number_of_times():
+    bars = _CountingBars(
+        _bar(symbol, 1_000 * (i + 1), 10.0, 10.5)
+        for i in range(50)
+        for symbol in ("AAA", "BBB")
+    )
+    bars.iterations = 0
+    BarTape(bars, "src")
+    assert bars.iterations <= 2
+
+
+def test_bar_tape_records_added_per_timestamp():
+    bars = [
+        _bar("BBB", 2_000, 10.0, 10.5),
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("BBB", 1_000, 10.0, 10.5),
+        _bar("AAA", 3_000, 10.0, 10.5),
+        _bar("BBB", 3_000, 10.0, 10.5),
+        _bar("CCC", 3_000, 10.0, 10.5),
+    ]
+    tape = BarTape(bars, "src")
+    assert tape.start_ms() == 1_000
+    assert [
+        (r.status, r.acq_id, r.records_added, r.source_config_hash, r.at_ms)
+        for r in tape.feed_results()
+    ] == [
+        ("live", "bar-1000", 2, "src", 1_000),
+        ("live", "bar-2000", 1, "src", 2_000),
+        ("live", "bar-3000", 3, "src", 3_000),
+    ]
+    assert BarTape([], "src").feed_results() == ()
+    assert BarTape([], "src").start_ms() == 0
+
+
+# --- ADR-0184 S6: the upfront-decisions path is unchanged by the decider hook
+
+
+def test_run_with_explicit_decisions_unchanged():
+    # Every upfront refusal, an insufficient-cash refusal at fill, a same-lead
+    # refusal, and two funded round trips -- pinned literally, then required
+    # byte-identical through the decider=None seam.
+    policy = _policy(_ZERO_FEES)
+    bars = (
+        _cf_bars([10.0, 11.0, 12.0, 13.0, 14.0], symbol="AAA")
+        + _cf_bars([20.0, 21.0, 22.0, 23.0, 24.0], symbol="BBB")
+    )
+    decisions = [
+        _decision("AAA", _cf_t(0), lead=2, qty=5),
+        _decision("BBB", _cf_t(0), lead=1, qty=100),
+        _decision("ZZZ", _cf_t(0), lead=1),
+        _decision("AAA", _cf_t(1), lead=0),
+        _decision("AAA", _cf_t(0) + 30_000, lead=1),
+        _decision("BBB", _cf_t(4), lead=1),
+        _decision("AAA", _cf_t(1), lead=2, qty=1),
+        _decision("BBB", _cf_t(2), lead=1, qty=10),
+    ]
+    expected = {
+        "fills": [
+            {"kind": "entry", "symbol": "AAA", "lead": 2, "side": "buy", "qty": 5,
+             "price": 11.0, "asof_ms": _cf_t(1), "fee": 0.0, "decision_ms": _cf_t(0)},
+            {"kind": "exit", "symbol": "AAA", "lead": 2, "side": "sell", "qty": 5,
+             "price": 13.0, "asof_ms": _cf_t(3), "fee": 0.0, "reason": "horizon_expiry"},
+            {"kind": "entry", "symbol": "BBB", "lead": 1, "side": "buy", "qty": 10,
+             "price": 23.0, "asof_ms": _cf_t(3), "fee": 0.0, "decision_ms": _cf_t(2)},
+            {"kind": "exit", "symbol": "BBB", "lead": 1, "side": "sell", "qty": 10,
+             "price": 24.0, "asof_ms": _cf_t(4), "fee": 0.0, "reason": "horizon_expiry"},
+        ],
+        "skipped": [],
+        "refused": [
+            {"symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol",
+             "decision_ms": _cf_t(0)},
+            {"symbol": "AAA", "asof_ms": _cf_t(1), "lead": 0, "reason": "lead",
+             "decision_ms": _cf_t(1)},
+            {"symbol": "AAA", "asof_ms": _cf_t(0) + 30_000, "lead": 1,
+             "reason": "unknown_decision_bar", "decision_ms": _cf_t(0) + 30_000},
+            {"symbol": "BBB", "asof_ms": _cf_t(4), "lead": 1, "reason": "fill_bar_past_tape",
+             "decision_ms": _cf_t(4)},
+            {"symbol": "BBB", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+             "decision_ms": _cf_t(0)},
+            {"symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "same_lead_open",
+             "decision_ms": _cf_t(1)},
+        ],
+    }
+    cash = _cash_flow_policy()
+    out = EquityReplay(policy, cash).run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    # ADR-0183 item 13 adds the funded run's cash_flows + cash outputs; the
+    # three pinned outputs are unchanged by them.
+    assert set(out) == set(expected) | {"cash_flows", "cash"}
+    assert {key: out[key] for key in expected} == expected
+    hooked = EquityReplay(policy, cash, decider=None).run(
+        copy.deepcopy(bars), copy.deepcopy(decisions)
+    )
+    assert json.dumps(hooked, sort_keys=True) == json.dumps(out, sort_keys=True)
+    adapted = ReplayAdapter(policy, cash).replay(bars, decisions)
+    assert {key: adapted[key] for key in expected} == expected
+
+
+# --- ADR-0184 S7(d): one runtime-inventory read per replay run, not per tick
+
+
+def test_replay_reads_the_runtime_inventory_once_per_run_not_per_tick(monkeypatch):
+    from importlib import metadata
+
+    from dskit.production.release import RuntimeFingerprint
+
+    reads = []
+    real = metadata.PathDistribution.read_text
+
+    def spy(self, filename):
+        reads.append(filename)
+        return real(self, filename)
+
+    monkeypatch.setattr(metadata.PathDistribution, "read_text", spy)
+    RuntimeFingerprint.capture()
+    once = len(reads)
+    reads.clear()
+    bars = _cf_bars([10.0 + i for i in range(12)])
+    out = EquityReplay(_policy(), _cash_flow_policy()).run(bars, [_decision("AAA", _cf_t(0), 2, qty=1)])
+    assert [f["kind"] for f in out["fills"]] == ["entry", "exit"]
+    # The release's own capture plus twelve per-tick re-verifications would
+    # be thirteen reads of the inventory; the replay makes exactly one.
+    assert once > 0 and len(reads) == once
+    # Outside the replay the production path re-reads on every capture.
+    RuntimeFingerprint.capture()
+    assert len(reads) == 2 * once
 
 
 # --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------

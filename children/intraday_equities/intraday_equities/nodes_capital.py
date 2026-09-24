@@ -106,6 +106,7 @@ from .forecast_bundle import (
 
 __all__ = [
     "BUNDLE_FIELDS",
+    "CAP_LOOK_AHEAD_DISCLOSURE",
     "DEFAULT_LOT_SIZE",
     "HFDR_COEFFICIENT_FIELD",
     "REQUIRED_INTAKES",
@@ -163,6 +164,10 @@ REQUIRED_INTAKES = (
 #: not do (a skeptic review found the name alone reads as a stronger
 #: promise than the code keeps).
 DEFAULT_LOT_SIZE = 1
+
+#: What the ``evidence`` output records when the declared developmental
+#: switch ``cap_evidence_look_ahead`` is true (ADR-0184 Revision 2).
+CAP_LOOK_AHEAD_DISCLOSURE = "caps use post-selection evidence (look-ahead disclosed)"
 
 #: How far a bound-setting envelope is padded past the bundle's own observed
 #: scenario extremes — a heuristic outer bound for the tangent knots'
@@ -536,7 +541,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         multiples of ``lot_size`` — ``model.b``/``model.s`` stay plain
         integers. A round-lot trading constraint would need its own MILP
         change (an integer lot-count variable, not this knob) and is not
-        built here).
+        built here). ``cap_evidence_look_ahead`` (optional JSON bool,
+        default false; true only with ``deployment_mode`` false —
+        ADR-0184 Revision 2): the declared developmental switch that skips
+        exactly the two cap-timing refusals ("cap is from the future" and
+        ``cap.generated_ms`` after the bundle's ``decision_ts``) for a cap
+        whose TRUE stamps postdate the tick; staleness still applies when
+        the cap is not from the future, every other cap check is unchanged,
+        and ``evidence`` records :data:`CAP_LOOK_AHEAD_DISCLOSURE`.
 
     Examples
     --------
@@ -589,6 +601,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "uncertainty_max_calibration_age_ms",
         "uncertainty_min_coverage",
         "lot_size",
+        "cap_evidence_look_ahead",
     )
 
     #: Per-run bookkeeping for :meth:`domain_constraints`, set by
@@ -688,6 +701,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             problems.append("deployment_mode is required — development versus deployment must be explicit")
         elif not isinstance(params["deployment_mode"], bool):
             problems.append("deployment_mode must be a JSON boolean")
+        look_ahead = params.get("cap_evidence_look_ahead", False)
+        if not isinstance(look_ahead, bool):
+            problems.append("cap_evidence_look_ahead must be a JSON boolean")
+        elif look_ahead and params.get("deployment_mode") is not False:
+            problems.append(
+                "cap_evidence_look_ahead may be true only with deployment_mode false — "
+                "caps built on post-selection evidence never authorize deployment"
+            )
         problems.extend(cls._intake_policy_problems(params))
         check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
         return problems
@@ -875,6 +896,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 problems.append(
                     "cap.deployment_eligible must be false in development mode"
                 )
+            # ADR-0184 Revision 2: the declared developmental switch skips
+            # exactly the two cap-timing refusals below; staleness still
+            # applies whenever age_ms >= 0.
+            look_ahead = self.params.get("cap_evidence_look_ahead", False) is True
             if (
                 isinstance(portfolio, dict)
                 and isinstance(portfolio.get("asof_ms"), int)
@@ -883,9 +908,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 age_ms = portfolio["asof_ms"] - confirmed.generated_ms
                 max_stale = int(self.params["cap_max_staleness_ms"])
                 if age_ms < 0:
-                    problems.append(
-                        f"cap is from the future: age_ms={age_ms} against portfolio.asof_ms"
-                    )
+                    if not look_ahead:
+                        problems.append(
+                            f"cap is from the future: age_ms={age_ms} against portfolio.asof_ms"
+                        )
                 elif age_ms > max_stale:
                     problems.append(
                         f"cap is stale: age_ms={age_ms} exceeds cap_max_staleness_ms={max_stale}"
@@ -903,7 +929,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                     f"{confirmed.model_release_id!r}"
                 )
             if (
-                isinstance(bundle, (list, tuple))
+                not look_ahead
+                and isinstance(bundle, (list, tuple))
                 and bundle
                 and isinstance(bundle[0], dict)
                 and isinstance(bundle[0].get("decision_ts"), int)
@@ -1362,6 +1389,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 "n_bundle_rows": 0, "n_gated": 0, "n_held": 0, "routed_out": {},
                 "uncertainty": self._intake_evidence(inputs),
             }
+            if self.params.get("cap_evidence_look_ahead", False) is True:
+                out["evidence"]["cap_evidence_look_ahead"] = CAP_LOOK_AHEAD_DISCLOSURE
             return out
         finally:
             self._pi_widened = self._band_shares = self._payoffs = None

@@ -214,6 +214,46 @@ class TestReader:
         assert {u["fold"] for u in units} == {4}
         assert all(len(u["y"]) == 6 for u in units)
 
+    def _two_rows(self, run_dir):
+        with PredictionWriter(_node_dir(run_dir), SERIES, fold=2,
+                              period_minutes=PERIOD) as w:
+            w.append("AAA", 3, [1, 2], [0.5, -0.25], [0.75, 0.125], 0.5)
+
+    def test_the_default_read_is_every_column_unchanged(self, tmp_path):
+        run_dir = str(tmp_path)
+        self._two_rows(run_dir)
+        expected = {
+            "ts": [1, 2], "series": ["AAA", "AAA"], "fold": [2, 2],
+            "horizon": [3, 3], "yhat": [0.75, 0.125], "y": [0.5, -0.25],
+            "mu": [0.5, 0.5], "period_minutes": PERIOD,
+        }
+        assert read_predictions(run_dir) == expected
+        assert read_predictions(run_dir, columns=None) == expected
+
+    def test_a_column_projection_reads_only_those_columns(self, tmp_path, monkeypatch):
+        run_dir = str(tmp_path)
+        self._two_rows(run_dir)
+        requested = []
+        real = pq.read_table
+
+        def spy(path, **kwargs):
+            requested.append(kwargs.get("columns"))
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(pq, "read_table", spy)
+        out = read_predictions(run_dir, columns=("ts", "series", "yhat"))
+        assert out == {
+            "ts": [1, 2], "series": ["AAA", "AAA"], "yhat": [0.75, 0.125],
+            "period_minutes": PERIOD,
+        }
+        assert requested == [["ts", "series", "yhat"]]
+
+    def test_an_unknown_column_is_refused(self, tmp_path):
+        run_dir = str(tmp_path)
+        self._two_rows(run_dir)
+        with pytest.raises(ValueError, match="unknown prediction column"):
+            read_predictions(run_dir, columns=("ts", "nope"))
+
 
 class TestTheRowsReproduceTheSummary:
     def test_the_reported_mspe_pair_is_recomputable_from_the_rows(self, tmp_path):

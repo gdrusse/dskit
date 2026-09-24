@@ -614,7 +614,16 @@ def _run_docs():
 # Gate 5 developmental replay is not a market-data training document:
 # no universe node, no tracking sink, no bars read (ADR-0120). Cohort,
 # MLflow, and store pins do not apply to it.
-_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json"})
+# The ADR-0184 development simulation is not a training document either:
+# it fits nothing and tracks nothing, and it reads the split-adjusted
+# sources that hold the gate-admitted names over the replay window only
+# (checked in test_every_run_reads_the_split_adjusted_store_...).
+SIMULATION_DOCS = (
+    "run-development-simulation.json",
+    "run-development-simulation-smoke.json",
+)
+SIMULATION_START_MS = 1662681600000  # 2022-09-09T00:00:00Z, the fold-2 cutoff
+_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json", *SIMULATION_DOCS})
 
 
 def _market_run_docs():
@@ -723,6 +732,13 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert params["source"] == SPLIT_SOURCE, name
                 assert params["start_ms"] == REPLAY_REPORT_START_MS[name], name
                 assert params["start_ms"] > STUDY_START_MS, name
+                continue
+            if name in SIMULATION_DOCS:
+                # Split-adjusted, and bounded to the replay window on both
+                # sides; moving the start forward cannot undo ADR-0066.
+                assert params["source"] in MODELABILITY_SOURCES, name
+                assert params["start_ms"] == SIMULATION_START_MS > STUDY_START_MS, name
+                assert params["end_ms"] > params["start_ms"], name
                 continue
             assert params["source"] == SPLIT_SOURCE, name
             if params.get("quote_source") is not None:
@@ -1479,3 +1495,70 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
         document = load_document(str(bare))
     the_plan = plan(document)
     assert "events" in the_plan.order
+
+
+# ADR-0184's pinned P16 evidence: the gate inventory manifest fa061189 and
+# the gate artifact 77a7ab08 (the development_outer fold walk behind them).
+_P16_RUNS = "/home/russell/dskit/children/intraday_equities/pipeline_runs"
+_P16_INVENTORY = (
+    _P16_RUNS + "/p16-final-model-gate-inventory-staged-2026-02-28-fa061189/stages/inventory.json",
+    "3c0741e3c2018718d73a2f532db2d6095ae48c478b89afd827b8f1e193e604c4",
+)
+_P16_GATES = (
+    _P16_RUNS + "/p16-final-model-gates-staged-2026-02-28-77a7ab08/stages/gates.json",
+    "1fb4dec20a7ac32867f8a9cb20d1c96225b2818029034ab5ce7f1b2c872d8771",
+)
+
+
+def test_config_validates_and_is_ineligible():
+    """ADR-0184 S7: the simulation documents plan, pin P16, and can never be deployment evidence."""
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.replay import CashFlowPolicy, FillPolicy
+
+    full, smoke = (_raw(name) for name in SIMULATION_DOCS)
+    fill = FillPolicy.from_path(_path("fill-policy.json")).digest()
+    cash = CashFlowPolicy.from_path(_path("cash-flow-policy.json")).digest()
+    for raw, (first, last), end_ms in (
+        (full, (2, 19), 1760659200000),  # 2025-10-17T00:00:00Z: the day after evidence_end
+        (smoke, (2, 2), 1668124800000),  # 2022-11-11T00:00:00Z: the fold-3 cutoff
+    ):
+        pipeline = raw["pipeline"]
+        sim = pipeline["simulate"]
+        assert sim["uses"] == "intraday_equities-development-simulation"
+        params = sim["params"]
+        assert params["deployment_eligible"] is False
+        assert params["caps"] == "development-only"
+        assert params["evidence_end"] == "2025-10-16"
+        assert params["fill_policy_sha256"] == fill
+        assert params["cash_flow_policy_sha256"] == cash
+        assert (params["first_fold"], params["last_fold"]) == (first, last)
+        publish = pipeline["publish"]["params"]
+        assert (publish["first_fold"], publish["last_fold"]) == (first, last)
+        assert (publish["inventory_manifest"], publish["inventory_manifest_sha256"]) == _P16_INVENTORY
+        assert (publish["gates"], publish["gates_sha256"]) == _P16_GATES
+        assert publish["fold_schedule"] == "development_outer"
+        mio = pipeline["decide"]["params"]["mio"]
+        assert mio["cap_evidence_look_ahead"] is True
+        assert mio["deployment_mode"] is False
+        assert not set(mio) & {"spread_bps", "taf_per_share", "sec31_bps", "min_price"}
+        for spec in pipeline.values():
+            if spec["uses"] == "intraday_equities-bars":
+                assert spec["params"]["start_ms"] == SIMULATION_START_MS
+                assert spec["params"]["end_ms"] == end_ms
+                assert spec["params"]["universe"] == "configs/universe-p13-pooled.json"
+                assert spec["params"]["sessions"] == ["rth"]
+        document = load_document(_path(SIMULATION_DOCS[0 if raw is full else 1]))
+        planned = plan(document)
+        assert set(planned.order) == set(pipeline)
+    # The smoke run is the full document with one segment: nothing else moves.
+    def _strip(raw):
+        out = copy.deepcopy(raw)
+        out.pop("name"), out.pop("notes", None)
+        for spec in out["pipeline"].values():
+            spec.pop("notes", None)
+            for key in ("first_fold", "last_fold", "end_ms", "path"):
+                spec.get("params", {}).pop(key, None)
+        return out
+
+    assert _strip(full) == _strip(smoke)

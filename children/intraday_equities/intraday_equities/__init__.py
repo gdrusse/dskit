@@ -36,6 +36,7 @@ from .nodes import (
 from .nodes_capital import NODE_KINDS as CAPITAL_NODE_KINDS
 from .nodes_capital import EquityKellyMIO
 from .replay import DevelopmentReplay, FillPolicy, ReplayAdapter
+from .simulation import ForecastPublisher
 
 __all__ = [
     "AlpacaBars",
@@ -47,6 +48,7 @@ __all__ = [
     "FeedParity",
     "FillPolicy",
     "FoldFeatureStats",
+    "ForecastPublisher",
     "HorizonScan",
     "KeepSymbols",
     "LookbackScan",

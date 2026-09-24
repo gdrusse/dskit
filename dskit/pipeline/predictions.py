@@ -284,41 +284,60 @@ def find_predictions(run_dir):
     return found
 
 
-def read_predictions(run_dir):
+def read_predictions(run_dir, columns=None):
     """Read a run's saved rows as a columnar mapping.
 
     Parameters
     ----------
     run_dir : str
         A run directory.
+    columns : sequence of str, optional
+        A projection: read and return only these names from
+        :data:`PREDICTION_COLUMNS` (the file is never read in full, so a
+        caller that must not see a column never loads it). ``None``, the
+        default, reads every column.
 
     Returns
     -------
     dict
         ``period_minutes`` plus one list per name in
-        :data:`PREDICTION_COLUMNS`, concatenated over every prediction
-        file the run holds. Empty when it holds none.
+        :data:`PREDICTION_COLUMNS` (or in ``columns``), concatenated over
+        every prediction file the run holds. Empty when it holds none.
+
+    Raises
+    ------
+    ValueError
+        ``columns`` names a column that is not in :data:`PREDICTION_COLUMNS`.
 
     Examples
     --------
     The rows a fold scored::
 
         len(read_predictions(fold)["ts"])  # 6216
+        read_predictions(fold, columns=("ts", "yhat")).keys()
+        # -> dict_keys(['ts', 'yhat', 'period_minutes'])
     """
+    names = PREDICTION_COLUMNS if columns is None else tuple(columns)
+    unknown = [name for name in names if name not in PREDICTION_COLUMNS]
+    if unknown:
+        raise ValueError(f"unknown prediction column(s) {unknown}")
     paths = find_predictions(run_dir)
     if not paths:
         return {}
     import pyarrow.parquet as pq
 
-    out = {name: [] for name in PREDICTION_COLUMNS}
+    out = {name: [] for name in names}
     period = 1
     for path in paths:
-        table = pq.read_table(path)
+        if columns is None:
+            table = pq.read_table(path)
+        else:
+            table = pq.read_table(path, columns=list(names))
         meta = table.schema.metadata or {}
         raw = meta.get(b"period_minutes")
         if raw is not None:
             period = int(raw)
-        for name in PREDICTION_COLUMNS:
+        for name in names:
             column = table.column(name)
             if name == "series":
                 column = column.cast("string")
