@@ -1,4 +1,4 @@
-"""Development simulation nodes (ADR-0182): the point-in-time forecast publisher.
+"""Development simulation nodes (ADR-0182): forecast publisher and per-tick MIO decider.
 
 The simulation replays the P16 walk-forward as production would have run
 it: each outer fold is one model RELEASE, retrained on the calendar's
@@ -8,6 +8,9 @@ pinned evidence into the two things the capital step consumes -- per
 release, a cap artifact plus attested uncertainty; per tick, one
 :class:`~intraday_equities.forecast_bundle.ForecastBundle` per lead group
 -- as JSON, so every downstream node receives data, never Python objects.
+The ``decide`` node carries the validated ``EquityKellyMIO`` params, and
+:class:`MioDecider` is the per-tick strategy an ``EquityReplay`` calls to
+size each lattice tick from those bundles and the replay's live cash.
 
 Point in time, by construction rather than by care: a release's
 calibration reads ONLY rows of earlier folds stamped before its cutoff,
@@ -63,6 +66,7 @@ from .final_gates import (
 )
 from .final_model import _epoch_ms
 from .forecast_bundle import ConfirmedCaps, ForecastBundle
+from .nodes_capital import EquityKellyMIO, SchwabCostModel
 from .nodes import (
     LABEL_PARAMS,
     LABEL_RETURN_BASIS,
@@ -72,7 +76,7 @@ from .nodes import (
     _tapes_from_bars,
 )
 
-__all__ = ["NODE_KINDS", "ForecastPublisher"]
+__all__ = ["NODE_KINDS", "ForecastPublisher", "MioDecider", "MioDeciderNode"]
 
 #: ADR-0152's measured attainment floor for the widened false-signal
 #: reading. It is NOT measured on this panel; the evidence id says so.
@@ -855,8 +859,244 @@ class ForecastPublisher(Node):
         return out
 
 
+#: ``EquityKellyMIO`` params the per-tick decider binds itself, so the
+#: ``decide`` node's ``mio`` block must not carry them: the bundle/cap
+#: identity pins (read from each tick's in-process publisher outputs) and
+#: the Schwab cost knobs (read from the replay's ``fill-policy.json``, the
+#: one place costs live).
+_PIN_PARAMS = (
+    "bundle_artifact_sha256",
+    "bundle_producer_document_sha256",
+    "bundle_producer_node",
+    "bundle_model_manifest_sha256",
+    "cap_artifact_sha256",
+    "cap_producer_document_sha256",
+    "cap_producer_node",
+    "cap_evidence_sha256",
+)
+_BOUND_PARAMS = _PIN_PARAMS + SchwabCostModel._PARAMS
+#: Syntactically valid stand-ins used ONLY to validate a ``mio`` block at
+#: plan time; the decider replaces every one of them per tick.
+_BOUND_PLACEHOLDERS = {
+    **{name: "0" * 64 for name in _PIN_PARAMS},
+    "bundle_producer_node": "bound-per-tick",
+    "cap_producer_node": "bound-per-tick",
+    "spread_bps": 0.0,
+    "taf_per_share": 0.0,
+    "sec31_bps": 0.0,
+    "min_price": 1.0,
+}
+
+
+class MioDecider:
+    """Per-tick ``EquityKellyMIO`` strategy an ``EquityReplay`` calls (ADR-0182 S6).
+
+    Holds one release's JSON (``ForecastPublisher``'s ``releases`` entry)
+    and that release's tick bundles. At a decision instant it drops every
+    unit that still holds an open lot (recorded ``open_lot_at_decision``;
+    never an early exit), then solves ONE ``EquityKellyMIO`` per lead
+    group in ascending lead order, all from one cash budget: each group
+    sees the cash the previous groups' planned buys left
+    (``cash_after``) -- a disclosed allocation bias. The node is built
+    fresh per solve because its params pin the exact bundle and cap
+    digests; those pins are the in-process publisher's own identities (the
+    release's cap and model manifest, the cap producer's document and
+    node), and the cost knobs are the fill policy's. A refused or
+    non-optimal solve is recorded ``mio_refused`` and trades nothing for
+    that group.
+
+    Parameters
+    ----------
+    release : dict
+        One ``releases`` entry.
+    bundles : list of dict
+        ``bundles`` entries; only this release's are used.
+    mio : dict
+        The ``decide`` node's ``mio`` output: ``params`` (the
+        ``EquityKellyMIO`` base params) and ``lead_groups`` (ascending).
+    fill_policy : intraday_equities.replay.FillPolicy
+        Source of the Schwab cost knobs.
+    ctx : dskit.pipeline.node.NodeContext
+        Passed to each solve.
+
+    Examples
+    --------
+    Drive one release through the replay::
+
+        decider = MioDecider(release, bundles, mio, policy, ctx)
+        EquityReplay(policy, cash_policy, decider=decider).run(bars)
+        decider.refused  # [{"asof_ms": ..., "lead": 2, "reason": "mio_refused", ...}]
+    """
+
+    def __init__(self, release, bundles, mio, fill_policy, ctx):
+        if list(release["lead_groups"]) != list(mio["lead_groups"]):
+            raise ValueError(
+                f"release {release['release_id']} lead groups {release['lead_groups']} "
+                f"differ from the decider's {mio['lead_groups']}"
+            )
+        self._release = release
+        self._params = dict(mio["params"])
+        self._costs = {name: getattr(fill_policy, name) for name in SchwabCostModel._PARAMS}
+        self._ctx = ctx
+        self._leads = [int(lead) for lead in mio["lead_groups"]]
+        self._envelopes = {lead: ForecastPublisher.envelopes(release, lead) for lead in self._leads}
+        self._bundles = {
+            (int(bundle["decision_ts"]), int(bundle["lead"])): bundle["rows"]
+            for bundle in bundles
+            if bundle["release_id"] == release["release_id"]
+        }
+        self.skipped = []
+        self.refused = []
+
+    def decide(self, asof_ms, portfolio):
+        """Orders for this tick: ``{"symbol", "asof_ms", "lead", "qty", "side": "buy"}``."""
+        held = {symbol for symbol, shares in portfolio["positions"].items() if shares}
+        cash = portfolio["cash"]
+        orders = []
+        for lead in self._leads:
+            rows = self._bundles.get((asof_ms, lead))
+            if not rows:
+                continue
+            kept = []
+            for row in rows:
+                if row["entity"] in held:
+                    self.skipped.append({
+                        "symbol": row["entity"], "asof_ms": asof_ms, "lead": lead,
+                        "reason": "open_lot_at_decision",
+                    })
+                else:
+                    kept.append(row)
+            if not kept:
+                continue
+            node = EquityKellyMIO(f"mio_h{lead:02d}", {**self._params, **self._costs, **self._pins(kept)})
+            inputs = {
+                "bundle": kept,
+                "portfolio": {
+                    "asof_ms": asof_ms,
+                    "cash": cash,
+                    "buying_power": cash,
+                    # Held units were dropped above, so the MIO sees an empty
+                    # book: its inventory path is not exercised (ADR-0182).
+                    "positions": {},
+                    "mark_prices": portfolio["mark_prices"],
+                    "gross_limit": portfolio["gross_limit"],
+                    "cash_reserve": 0.0,
+                    "sale_credit": 1.0,
+                },
+                "survivors": list(self._release["survivors"]),
+                "cap": self._release["cap"],
+                "uncertainty": self._envelopes[lead],
+            }
+            try:
+                out = node.run(self._ctx, inputs)
+            except (ValueError, RuntimeError) as exc:
+                self.refused.append({
+                    "asof_ms": asof_ms, "lead": lead, "reason": "mio_refused", "detail": str(exc),
+                })
+                continue
+            for symbol, trade in sorted(out["trades"].items()):
+                if trade["sell"]:
+                    raise ValueError(f"{node.key}: MIO sold {symbol} from an empty book at {asof_ms}")
+                orders.append({"symbol": symbol, "asof_ms": asof_ms, "lead": lead, "qty": trade["buy"], "side": "buy"})
+            cash = out["cash_after"]
+        return orders
+
+    def _pins(self, rows):
+        """Return the in-process producer's identities this solve is pinned to."""
+        cap = self._release["cap"]
+        return {
+            "bundle_artifact_sha256": ForecastBundle.digest(rows),
+            "bundle_producer_document_sha256": cap["producer"]["document_sha256"],
+            "bundle_producer_node": cap["producer"]["node"],
+            "bundle_model_manifest_sha256": self._release["model_manifest_sha256"],
+            "cap_artifact_sha256": ConfirmedCaps.digest(cap),
+            "cap_producer_document_sha256": cap["producer"]["document_sha256"],
+            "cap_producer_node": cap["producer"]["node"],
+            "cap_evidence_sha256": cap["evidence"]["sha256"],
+        }
+
+
+class MioDeciderNode(Node):
+    """Carry the validated per-tick MIO params to the simulation (ADR-0182 S6, Revision 3).
+
+    The ``intraday_equities-mio-decider`` kind. It sizes nothing: a DAG
+    node runs once, while the MIO must run per tick on live cash, so this
+    node only validates the ``EquityKellyMIO`` base params and emits them,
+    with the releases' ascending lead-group order, as JSON for the
+    ``simulate`` node's :class:`MioDecider`. Role ``transform``, not
+    ``capital``: the planner's capital rule requires a ``stat_test`` wire,
+    and this document's survivor set is the pinned gate admission carried
+    on each release (ADR-0182 Revision 1), never a new test.
+
+    Parameters
+    ----------
+    params : dict
+        ``mio``: the ``EquityKellyMIO`` params WITHOUT the bundle/cap pins
+        and Schwab cost knobs (bound per tick), and with
+        ``cap_evidence_look_ahead`` declared true -- the P16 caps are
+        post-selection, so the switch is stated in the document, never
+        implied.
+
+    Examples
+    --------
+    ::
+
+        node = MioDeciderNode("decide", {"mio": {..., "cap_evidence_look_ahead": True}})
+        node.run(ctx, {"releases": releases})["mio"]
+        # -> {"params": {...}, "lead_groups": [1, 2, 3, 4, 5, 6, 10]}
+    """
+
+    role = "transform"
+    outputs = ("mio",)
+    _PARAMS = ("mio",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        mio = params.get("mio")
+        if not isinstance(mio, dict):
+            return problems + [f"mio must be a mapping of EquityKellyMIO params, got {mio!r}"]
+        bound = sorted(set(mio) & set(_BOUND_PARAMS))
+        if bound:
+            problems.append(
+                f"mio must not carry {bound}: pins are bound per tick from the publisher "
+                "and costs from fill-policy.json"
+            )
+        if mio.get("cap_evidence_look_ahead") is not True:
+            problems.append(
+                "mio.cap_evidence_look_ahead must be declared true: the gate caps use "
+                "post-selection evidence (ADR-0182 Revision 2)"
+            )
+        problems.extend(
+            f"mio: {problem}"
+            for problem in EquityKellyMIO.validate_params({**mio, **_BOUND_PLACEHOLDERS})
+        )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require a non-empty ``releases`` list that agrees on its lead groups."""
+        releases = inputs.get("releases")
+        if not isinstance(releases, list) or not releases:
+            return ["releases must be a non-empty list"]
+        groups = {json.dumps(release.get("lead_groups")) for release in releases}
+        if len(groups) != 1:
+            return [f"releases disagree on their lead groups: {sorted(groups)}"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Emit ``mio``: the base params and the ascending lead-group order (JSON)."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"{self.key}: " + "; ".join(problems))
+        leads = sorted(int(lead) for lead in inputs["releases"][0]["lead_groups"])
+        return {"mio": {"params": dict(self.params["mio"]), "lead_groups": leads}}
+
+
 NODE_KINDS = {
     "intraday_equities-forecast-publisher": ForecastPublisher,
+    "intraday_equities-mio-decider": MioDeciderNode,
 }
 
 for _name, _cls in NODE_KINDS.items():

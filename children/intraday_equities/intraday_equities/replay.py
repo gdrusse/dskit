@@ -675,11 +675,27 @@ class _PaperVenue:
 
 
 class EquityReplay:
-    """Drive compose.bundles_for + ServeLoop around the equity book."""
+    """Drive compose.bundles_for + ServeLoop around the equity book.
 
-    def __init__(self, policy, cash_flow_policy=None):
+    Parameters
+    ----------
+    policy : FillPolicy
+        The fill-model bundle.
+    cash_flow_policy : CashFlowPolicy, optional
+        Funding (ADR-0176); ``None`` binds no composer.
+    decider : object, optional
+        A per-tick strategy (ADR-0182 S6) with ``decide(asof_ms,
+        portfolio) -> list of decision rows``. After each tick's exits and
+        entries, it is called with :meth:`_portfolio`'s live account state
+        and its rows are queued exactly like upfront ``decisions`` (same
+        refusals, next-bar fill). ``None`` (the default) leaves the
+        upfront-decisions path unchanged.
+    """
+
+    def __init__(self, policy, cash_flow_policy=None, decider=None):
         self._policy = policy
         self._cash_flow_policy = cash_flow_policy
+        self._decider = decider
         self.proposer = self
         self.serving_hash = policy.digest()
         self.fills = []
@@ -703,7 +719,7 @@ class EquityReplay:
         self._cash_flow_funding_index = 0
         self._cash_balance = Decimal("0")
 
-    def run(self, bars, decisions):
+    def run(self, bars, decisions=()):
         """Drive ServeLoop over ``bars`` and return fills/skips/refusals."""
         policy = self._policy
         by_symbol = defaultdict(list)
@@ -737,42 +753,7 @@ class EquityReplay:
         self._pending = {symbol: defaultdict(list) for symbol in self._by_symbol}
         self._last_bar = {symbol: seq[0]["asof_ms"] for symbol, seq in self._by_symbol.items()}
         for decision in decisions:
-            symbol = decision[policy.symbol_field]
-            lead = decision[policy.horizon_field]
-            if symbol not in self._by_symbol:
-                self.refused.append({
-                    "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "unknown_symbol",
-                })
-                continue
-            if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
-                self.refused.append({
-                    "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "lead",
-                })
-                continue
-            decision_index = self._index_of[symbol].get(int(decision["asof_ms"]))
-            seq = self._by_symbol[symbol]
-            if decision_index is None:
-                self.refused.append({
-                    "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "unknown_decision_bar",
-                })
-                continue
-            if policy.decision_price_field not in seq[decision_index]:
-                self.refused.append({
-                    "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "decision_price_field",
-                })
-                continue
-            fill_index = decision_index + policy.fill_bar_offset
-            if fill_index >= len(seq):
-                self.refused.append({
-                    "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                    "reason": "fill_bar_past_tape",
-                })
-                continue
-            self._pending[symbol][fill_index].append(decision)
+            self._enqueue_decision(decision)
         if not self._by_symbol:
             return self._result()
         self._run_loop(bars)
@@ -784,6 +765,82 @@ class EquityReplay:
             })
             self._book.close_lot(sym, lead)
         return self._result()
+
+    def _enqueue_decision(self, decision):
+        """Queue one decision for its next-bar fill, or record why it is refused."""
+        policy = self._policy
+        symbol = decision[policy.symbol_field]
+        lead = decision[policy.horizon_field]
+        if symbol not in self._by_symbol:
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "unknown_symbol",
+            })
+            return
+        if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "lead",
+            })
+            return
+        decision_index = self._index_of[symbol].get(int(decision["asof_ms"]))
+        seq = self._by_symbol[symbol]
+        if decision_index is None:
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "unknown_decision_bar",
+            })
+            return
+        if policy.decision_price_field not in seq[decision_index]:
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "decision_price_field",
+            })
+            return
+        fill_index = decision_index + policy.fill_bar_offset
+        if fill_index >= len(seq):
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "fill_bar_past_tape",
+            })
+            return
+        self._pending[symbol][fill_index].append(decision)
+
+    def _portfolio(self, asof):
+        """Live account state at tick ``asof`` for a per-tick decider (ADR-0182 S6).
+
+        ``cash`` = ``buying_power`` = the running cash balance after this
+        tick's funding, exits and entries; ``positions`` holds the signed
+        shares of lots that are still open at each name's fill bar (a lot
+        expiring at or before it is exited before that bar's entries);
+        ``mark_prices`` are each name's latest decision-price close; and
+        ``gross_limit`` is NAV (cash plus every open lot at its mark).
+        """
+        policy = self._policy
+        marks = {}
+        for symbol, seq in self._by_symbol.items():
+            bar = seq[self._index_of[symbol][self._last_bar[symbol]]]
+            price = bar.get(policy.decision_price_field)
+            if number_ok(price) and not isinstance(price, bool) and price > 0:
+                marks[symbol] = float(price)
+        cash = float(self._cash_balance)
+        nav = cash
+        positions = {}
+        for (symbol, _lead), lot in self._book.unclosed():
+            signed = lot["qty"] if lot["side"] == "buy" else -lot["qty"]
+            nav += signed * marks.get(symbol, 0.0)
+            index = self._index_of[symbol].get(asof)
+            if index is not None and lot["expiry_index"] <= index + policy.fill_bar_offset:
+                continue
+            positions[symbol] = positions.get(symbol, 0) + signed
+        return {
+            "asof_ms": asof,
+            "cash": cash,
+            "buying_power": cash,
+            "positions": positions,
+            "mark_prices": marks,
+            "gross_limit": nav,
+        }
 
     def _result(self):
         self.fills.sort(key=lambda row: (
@@ -988,6 +1045,9 @@ class EquityReplay:
                     live.append((symbol, seq[idx], idx))
             for item in live:
                 self._apply_entries(*item)
+            if self._decider is not None:
+                for decision in self._decider.decide(asof, self._portfolio(asof)):
+                    self._enqueue_decision(decision)
             return {"records": list(batch.outputs["records"])}, self._policy.digest()
         except ConfigError as exc:
             if self._fault is None:
