@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import socket
+import threading
 import sys
 import sysconfig
 from importlib import metadata
@@ -810,6 +811,23 @@ def test_the_memo_sees_an_installed_upgraded_rewritten_or_removed_distribution(
         shutil.rmtree(info)
         importlib.invalidate_caches()
         assert _version_of("zzzmemo") is None
+
+
+def test_a_capture_on_another_thread_during_an_active_block_is_not_memoized(monkeypatch):
+    calls = _count_inventory_reads(monkeypatch)
+    RuntimeFingerprint.capture()
+    once = len(calls)
+    calls.clear()
+    with runtime_capture_memo():
+        RuntimeFingerprint.capture()
+        assert len(calls) == once
+        worker = threading.Thread(target=lambda: [RuntimeFingerprint.capture() for _ in range(2)])
+        worker.start()
+        worker.join()
+        # Two full reads on the other thread: the block's memo never reached it.
+        assert len(calls) == 3 * once
+        RuntimeFingerprint.capture()
+        assert len(calls) == 3 * once
 
 
 def test_the_memo_block_is_reentrant_and_always_switches_off(monkeypatch):

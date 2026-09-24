@@ -45,6 +45,7 @@ import re
 import sys
 import sysconfig
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from importlib import metadata
 from pathlib import Path
@@ -329,7 +330,9 @@ _INVENTORY_FILES = ("", "METADATA", "PKG-INFO", "RECORD", "direct_url.json")
 
 #: Set only inside :func:`runtime_capture_memo` (ADR-0182 S7(d)). ``None``
 #: everywhere else, so every capture outside that block re-reads the bytes.
-_INVENTORY_MEMO = None
+#: A ``ContextVar``, not a module global: the block's memo is visible only
+#: in the context that entered it, never to another thread or task.
+_INVENTORY_MEMO = ContextVar("dskit_production_inventory_memo", default=None)
 
 
 @contextmanager
@@ -351,8 +354,10 @@ def runtime_capture_memo():
     re-reads from bytes (D24). The interpreter, platform and project-file
     fields are recomputed on every capture either way.
 
-    The block is reentrant (an inner block is a no-op) and always switches
-    the memo off when the outermost block exits.
+    The block is reentrant (an inner block is a no-op), always switches the
+    memo off when the outermost block exits, and is scoped to the current
+    ``contextvars`` context: a capture on another thread (which starts with
+    its own context) re-reads from bytes.
 
     Examples
     --------
@@ -361,15 +366,14 @@ def runtime_capture_memo():
         with runtime_capture_memo():
             loop.run()  # every tick's verify_release reuses one inventory read
     """
-    global _INVENTORY_MEMO
-    if _INVENTORY_MEMO is not None:
+    if _INVENTORY_MEMO.get() is not None:
         yield
         return
-    _INVENTORY_MEMO = {}
+    token = _INVENTORY_MEMO.set({})
     try:
         yield
     finally:
-        _INVENTORY_MEMO = None
+        _INVENTORY_MEMO.reset(token)
 
 
 def _inventory_identity():
@@ -425,7 +429,7 @@ def _read_inventory():
 
 def _inventory():
     """Return the inventory ``capture`` records: read from bytes, or reused inside the memo block."""
-    memo = _INVENTORY_MEMO
+    memo = _INVENTORY_MEMO.get()
     if memo is None:
         return _read_inventory()
     key = _inventory_identity()
