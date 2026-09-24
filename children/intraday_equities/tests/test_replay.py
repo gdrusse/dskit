@@ -1409,6 +1409,36 @@ def test_run_with_explicit_decisions_unchanged():
     assert ReplayAdapter(policy, cash).replay(bars, decisions) == expected
 
 
+# --- ADR-0182 S7(d): one runtime-inventory read per replay run, not per tick
+
+
+def test_replay_reads_the_runtime_inventory_once_per_run_not_per_tick(monkeypatch):
+    from importlib import metadata
+
+    from dskit.production.release import RuntimeFingerprint
+
+    reads = []
+    real = metadata.PathDistribution.read_text
+
+    def spy(self, filename):
+        reads.append(filename)
+        return real(self, filename)
+
+    monkeypatch.setattr(metadata.PathDistribution, "read_text", spy)
+    RuntimeFingerprint.capture()
+    once = len(reads)
+    reads.clear()
+    bars = _cf_bars([10.0 + i for i in range(12)])
+    out = EquityReplay(_policy(), _cash_flow_policy()).run(bars, [_decision("AAA", _cf_t(0), 2, qty=1)])
+    assert [f["kind"] for f in out["fills"]] == ["entry", "exit"]
+    # The release's own capture plus twelve per-tick re-verifications would
+    # be thirteen reads of the inventory; the replay makes exactly one.
+    assert once > 0 and len(reads) == once
+    # Outside the replay the production path re-reads on every capture.
+    RuntimeFingerprint.capture()
+    assert len(reads) == 2 * once
+
+
 # --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
 
 
