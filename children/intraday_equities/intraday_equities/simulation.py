@@ -281,20 +281,13 @@ class _Walk:
 
     def yhat(self, index):
         """Fold ``index``'s ``{(symbol, lead): [(ts, yhat), ...]}``, read WITHOUT ``y``."""
-        import pyarrow.parquet as pq
-        from dskit.pipeline.predictions import find_predictions
+        from dskit.pipeline.predictions import read_predictions
 
+        names = ("ts", "series", "horizon", "yhat")
+        table = read_predictions(self.folds[index]["snapshot"], columns=names)
         out = {}
-        for path in find_predictions(self.folds[index]["snapshot"]):
-            table = pq.read_table(path, columns=["ts", "series", "horizon", "yhat"])
-            columns = [
-                table.column("ts").to_pylist(),
-                table.column("series").cast("string").to_pylist(),
-                table.column("horizon").to_pylist(),
-                table.column("yhat").to_pylist(),
-            ]
-            for stamp, symbol, lead, value in zip(*columns):
-                out.setdefault((symbol, int(lead)), []).append((int(stamp), float(value)))
+        for stamp, symbol, lead, value in zip(*(table.get(name, ()) for name in names)):
+            out.setdefault((symbol, int(lead)), []).append((int(stamp), float(value)))
         return out
 
     def market(self, index):
