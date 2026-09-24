@@ -237,3 +237,65 @@ def test_solves_are_optional_and_refused_when_not_a_list():
     solve = next(e for e in unlabelled.run(None, dict(inputs, solves=[_solve_row(_t(0))]))[
         "events"] if e["kind"] == "solve")
     assert "model" not in solve
+
+
+# --- ADR-0183 phase 2: outcomes, ledger findings, ledger head ---------------------
+
+
+def _labeled():
+    """``y_next`` for every (stamp, symbol) the candidates score; SPY has no bars."""
+    return [{"asof_ms": _t(i), "symbol": s, "y_next": 0.001 * (i + 1) * (1 if s == "AAA" else -1)}
+            for i in (0, 1, 5) for s in ("AAA", "BBB", "SPY")]
+
+
+OUTCOME_PARAMS = {"realized_field": "y_next", "outcome_lead_bars": 1}
+
+
+def test_labeled_candidates_become_outcomes_one_bar_later():
+    from dskit.evaluation.events import EventLog
+
+    inputs, _ = _scenario()
+    events = _events(dict(inputs, labeled=_labeled()), OUTCOME_PARAMS)
+    outcomes = [e for e in events if e["kind"] == "outcome"]
+    got = {(e["decision_id"], e["instrument"]): (e["ts_ms"], e["realized"]) for e in outcomes}
+    assert got[(f"d-{_t(0)}", "AAA")] == (_t(1), 0.001)
+    assert got[(f"d-{_t(1)}", "BBB")] == (_t(2), -0.002)
+    # AAA at t5 has no later bar, BBB has no bar at t5, SPY has no bars: no outcome.
+    assert (f"d-{_t(5)}", "AAA") not in got and (f"d-{_t(5)}", "BBB") not in got
+    assert not any(instrument == "SPY" for _, instrument in got)
+    EventLog(events)  # outcomes validate: strictly after their decisions
+
+
+def test_labeled_needs_its_params_declared():
+    inputs, _ = _scenario()
+    node = ReplayEvents("events", PARAMS)
+    problems = node.validate_inputs(dict(inputs, labeled=_labeled()))
+    assert any("realized_field" in p and "outcome_lead_bars" in p for p in problems)
+    assert ReplayEvents.validate_params(dict(PARAMS, outcome_lead_bars=0)) != []
+    assert ReplayEvents.validate_params(dict(PARAMS, realized_field="")) != []
+    assert ReplayEvents.validate_params(dict(PARAMS, **OUTCOME_PARAMS)) == []
+
+
+def test_findings_attach_to_the_order_of_the_fill_their_leg_produced():
+    from dskit.evaluation.events import EventLog
+
+    inputs, out = _scenario()
+    entry = next(f for f in out["fills"] if f["kind"] == "entry")
+    exit_ = next(f for f in out["fills"] if f["kind"] == "exit")
+    stored = {"guard": "size", "measure": "quantity", "value": "10", "bound": "500",
+              "window": "none", "scope_key": entry["symbol"], "verdict": "allow",
+              "reason": "quantity 10 within 500"}
+    findings = [
+        {"symbol": f["symbol"], "lead": f["lead"], "kind": f["kind"], "asof_ms": f["asof_ms"],
+         "tick_id": "t", "leg_id": "l", "verdict": "allow", "findings": [stored]}
+        for f in (entry, exit_)
+    ] + [{"symbol": None, "lead": None, "kind": None, "asof_ms": None, "tick_id": "t",
+          "leg_id": "r", "verdict": "refuse", "findings": [dict(stored, verdict="refuse")]}]
+    ledger = {"root": "/x", "series_id": "s", "seq": 41, "hash": "abc"}
+    events = _events(dict(inputs, findings=findings, ledger=ledger))
+    orders = [e for e in events if e["kind"] == "order"]
+    assert all(o["findings"] == [dict(stored, value=10.0, bound=500.0)] for o in orders)
+    assert events[0]["data"]["ledger"] == "seq 41 abc"
+    EventLog(events)
+    plain = _events(inputs)
+    assert not any("findings" in e for e in plain) and "data" not in plain[0]

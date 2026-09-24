@@ -1443,7 +1443,7 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
     from dskit.pipeline.planner import plan
 
     from intraday_equities.evaluation import ReplayEvents
-    from intraday_equities.replay import CashFlowPolicy, FillPolicy
+    from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, FillPolicy
 
     raw = _raw("run-replay-report.json")
     pipe = raw["pipeline"]
@@ -1473,8 +1473,19 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
         "skipped": "$replay.skipped",
         "cash_flows": "$replay.cash_flows",
         "bars": "$replay_bars.records",
+        "labeled": "$val_rows.records",
+        "solves": "$select.solves",
+        "findings": "$replay.findings",
+        "ledger": "$replay.ledger",
     }
     assert ReplayEvents.validate_params(events["params"]) == []
+    # ADR-0183 phase 2: an outcome is known label_lead bars after its decision,
+    # and it scores the label the model was fitted to.
+    assert events["params"]["outcome_lead_bars"] == pipe["window"]["params"]["label_lead"]
+    assert events["params"]["realized_field"] == pipe["qhat"]["params"]["label"]
+    assert params["keep_ledger"] is True
+    assert {g["params"]["measure"] for g in params["guards"].values()} == {"quantity", "notional"}
+    assert DevelopmentReplay.validate_params(params) == []
     report = pipe["report"]
     assert report["uses"] == "dskit.evaluation.nodes:EvaluationReport"
     assert report["inputs"] == {"events": "$events.events"}

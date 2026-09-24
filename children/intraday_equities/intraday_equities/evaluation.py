@@ -45,6 +45,7 @@ KIND_ORDER = (
     "refusal",
     "skip",
     "fill",
+    "outcome",
     "run_end",
 )
 _RANK = {kind: i for i, kind in enumerate(KIND_ORDER)}
@@ -110,9 +111,12 @@ class ReplayEvents(Node):
     role = "transform"
     outputs = ("events",)
     _PARAMS = ("title", "project", "tz", "price_field", "mark_symbols")
-    _OPTIONAL = ("criteria", "trials", "model", "units")
+    _OPTIONAL = ("criteria", "trials", "model", "units", "realized_field", "outcome_lead_bars")
     _LISTS = ("candidates", "fills", "refused", "skipped", "cash_flows", "bars")
-    _OPTIONAL_LISTS = ("picks", "solves")
+    _OPTIONAL_LISTS = ("picks", "solves", "labeled", "findings")
+    #: What ``labeled`` needs declared: the realised field and how many bars
+    #: after the decision it becomes known.
+    _OUTCOME_PARAMS = ("realized_field", "outcome_lead_bars")
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -160,6 +164,14 @@ class ReplayEvents(Node):
         units = params.get("units", DEFAULT_UNITS)
         if not isinstance(units, dict) or not all(isinstance(v, str) for v in units.values()):
             problems.append(f"units must be an object of strings, got {units!r}")
+        if "realized_field" in params and (
+                not isinstance(params["realized_field"], str) or not params["realized_field"]):
+            problems.append(
+                f"realized_field must be a non-empty string, got {params['realized_field']!r}")
+        lead = params.get("outcome_lead_bars")
+        if "outcome_lead_bars" in params and (
+                isinstance(lead, bool) or not isinstance(lead, int) or lead < 1):
+            problems.append(f"outcome_lead_bars must be an int >= 1, got {lead!r}")
         return problems
 
     def validate_inputs(self, inputs):
@@ -169,9 +181,14 @@ class ReplayEvents(Node):
         ----------
         inputs : dict
             ``candidates``, ``fills``, ``refused``, ``skipped``,
-            ``cash_flows``, ``bars``; optional ``picks`` and ``solves``
+            ``cash_flows``, ``bars``; optional ``picks``, ``solves``
             (rows with ``asof_ms``, the ``SolveRecord`` keys and an
-            optional ``model`` string).
+            optional ``model`` string), ``labeled`` (rows keyed by
+            ``asof_ms`` + ``symbol`` carrying ``realized_field``; needs
+            ``realized_field`` and ``outcome_lead_bars``), ``findings``
+            (``DevelopmentReplay.findings`` rows) and ``ledger``
+            (``DevelopmentReplay.ledger``: its head names the ledger in
+            ``run_start.data``).
 
         Returns
         -------
@@ -186,6 +203,13 @@ class ReplayEvents(Node):
             rows = inputs.get(port)
             if rows is not None and not isinstance(rows, (list, tuple)):
                 problems.append(f"{port} must be a list of rows when wired, got {type(rows).__name__}")
+        if inputs.get("labeled") is not None:
+            missing = [name for name in self._OUTCOME_PARAMS if name not in self.params]
+            if missing:
+                problems.append(f"labeled is wired, so params {missing} must be declared")
+        ledger = inputs.get("ledger")
+        if ledger is not None and not isinstance(ledger, dict):
+            problems.append(f"ledger must be an object or null, got {type(ledger).__name__}")
         return problems
 
     def run(self, ctx, inputs):
@@ -229,6 +253,7 @@ class ReplayEvents(Node):
                 else:
                     rejections[(row["symbol"], _int_ms(row["decision_ms"]))].append((kind, row))
 
+        findings = self._findings_by_fill(inputs.get("findings") or ())
         chosen_by_stamp = self._chosen(inputs)
         traded = set(chosen_by_stamp.values())
         by_stamp = defaultdict(list)
@@ -270,13 +295,13 @@ class ReplayEvents(Node):
             body.append((stamp, "decision", chosen, event))
             if entry is not None:
                 order_id = f"o-{chosen}-{stamp}-{entry['lead']}"
-                body.append((stamp, "order", chosen, {
+                body.append((stamp, "order", chosen, self._with_findings({
                     "order_id": order_id,
                     "decision_id": decision_id,
                     "side": entry["side"],
                     "qty": entry["qty"],
                     "ref_price": closes.get((chosen, stamp)),
-                }))
+                }, findings, entry)))
                 body.append(self._fill(entry, order_id, closes.get((chosen, stamp))))
             for kind, row in found:
                 body.append(self._rejection(kind, row, decision_id))
@@ -293,12 +318,12 @@ class ReplayEvents(Node):
                 "reason": row.get("reason") or "exit",
                 "detail": f"lead {row['lead']} lot closed",
             }))
-            body.append((at, "order", symbol, {
+            body.append((at, "order", symbol, self._with_findings({
                 "order_id": order_id,
                 "decision_id": decision_id,
                 "side": row["side"],
                 "qty": row["qty"],
-            }))
+            }, findings, row)))
             body.append(self._fill(row, order_id, None))
             traded.add(symbol)
 
@@ -324,6 +349,8 @@ class ReplayEvents(Node):
             body.append((at, "cashflow", None, event))
 
         body.extend(self._solve(row, model) for row in inputs.get("solves") or ())
+        if inputs.get("labeled") is not None:
+            body.extend(self._outcomes(by_stamp, inputs["labeled"], inputs["bars"]))
 
         marked = None if self.params["mark_symbols"] == "all" else traded
         for (symbol, at), price in closes.items():
@@ -332,7 +359,7 @@ class ReplayEvents(Node):
             if price > 0:
                 body.append((at, "mark", symbol, {"price": price}))
 
-        return {"events": self._envelope(ctx, body)}
+        return {"events": self._envelope(ctx, body, inputs.get("ledger"))}
 
     def _chosen(self, inputs):
         """``{asof_ms: symbol}`` from ``picks`` when wired, else the candidates' flag."""
@@ -383,6 +410,55 @@ class ReplayEvents(Node):
         return (at, "fill", row["symbol"], event)
 
     @staticmethod
+    def _findings_by_fill(rows):
+        """``{(symbol, lead, kind, fill asof_ms): [finding]}`` from the replay's judged legs."""
+        out = {}
+        for row in rows:
+            if row.get("symbol") is None:
+                continue  # a refused leg has no fill; the replay fails loudly on it
+            key = (row["symbol"], row["lead"], row["kind"], int(row["asof_ms"]))
+            out.setdefault(key, []).extend(_finding(f) for f in row["findings"])
+        return out
+
+    @staticmethod
+    def _with_findings(order, findings, fill):
+        """Attach the ledger findings of the leg that produced ``fill`` to ``order``."""
+        found = findings.get((fill["symbol"], fill["lead"], fill["kind"], int(fill["asof_ms"])))
+        if found:
+            order["findings"] = found
+        return order
+
+    def _outcomes(self, by_stamp, labeled, bars):
+        """One ``outcome`` per candidate: its realised label, known ``outcome_lead_bars`` later.
+
+        The outcome's instant is the candidate symbol's ``outcome_lead_bars``-th
+        later bar in ``bars`` — when the label's target bar has closed. A
+        candidate with no such bar, or no label, gets none (the report counts
+        it as unscored).
+        """
+        field, lead = self.params["realized_field"], self.params["outcome_lead_bars"]
+        realized = {(int(r["asof_ms"]), r["symbol"]): r.get(field) for r in labeled}
+        times = defaultdict(list)
+        for bar in bars:
+            times[bar["symbol"]].append(int(bar["asof_ms"]))
+        index = {}
+        for symbol, stamps in times.items():
+            stamps.sort()
+            index[symbol] = {at: i for i, at in enumerate(stamps)}
+        out = []
+        for stamp, rows in by_stamp.items():
+            for row in rows:
+                symbol, value = row["symbol"], realized.get((stamp, row["symbol"]))
+                position = index.get(symbol, {}).get(stamp)
+                if value is None or position is None or position + lead >= len(times[symbol]):
+                    continue
+                out.append((times[symbol][position + lead], "outcome", symbol, {
+                    "decision_id": f"d-{stamp}", "horizon": f"{lead} bar(s)",
+                    "realized": float(value),
+                }))
+        return out
+
+    @staticmethod
     def _solve(row, model):
         """One solve row -> a ``solve`` event at its tick: the record's keys, then the label."""
         at = int(row["asof_ms"])
@@ -402,14 +478,14 @@ class ReplayEvents(Node):
         }
         return (at, kind, row["symbol"], event)
 
-    def _envelope(self, ctx, body):
+    def _envelope(self, ctx, body, ledger=None):
         """Sort, bracket with run_start/run_end and stamp the envelope."""
         body.sort(key=lambda item: (
             item[0], _RANK[item[1]], item[2] or "", item[3].get("decision_id", ""),
         ))
         first = body[0][0] if body else 0
         last = body[-1][0] if body else 0
-        items = [(first, "run_start", None, self._run_start(ctx))]
+        items = [(first, "run_start", None, self._run_start(ctx, ledger))]
         items.extend(body)
         items.append((last, "run_end", None, {"status": "ok"}))
         events = []
@@ -425,7 +501,7 @@ class ReplayEvents(Node):
             })
         return events
 
-    def _run_start(self, ctx):
+    def _run_start(self, ctx, ledger=None):
         params = self.params
         event = {
             "run_id": params["title"],
@@ -448,7 +524,18 @@ class ReplayEvents(Node):
                 event["data"] = resolved["data_fingerprint"]
             if isinstance(config, dict):
                 event["config"] = config
+        if ledger:
+            event.setdefault("data", {})["ledger"] = f"seq {ledger['seq']} {ledger['hash']}"
         return event
+
+
+def _finding(stored):
+    """Return a stored ``Finding`` object as an event finding, decimals as numbers."""
+    out = {key: stored.get(key) for key in ("guard", "measure", "verdict", "reason", "window",
+                                            "scope_key")}
+    for key in ("value", "bound"):
+        out[key] = None if stored.get(key) is None else float(stored[key])
+    return out
 
 
 NODE_KINDS = {
