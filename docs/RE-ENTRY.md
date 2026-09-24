@@ -1,5 +1,20 @@
 # Re-entry
 
+## Centralized backtest evaluator `dskit.evaluation` (2026-09-24, ADR-0183)
+
+New tier-1 package: one event log (`events.jsonl`, schema dskit-eval-v1) ->
+`summary.md` (plain-English What happened, verdict vs pre-registered
+criteria, stats, census, provenance) + self-contained `report.html` (SVG:
+trading P&L, drawdown, equity with deposits marked, trades on price with a
+hover "why", decision log) + CSVs. P&L folds through `WindowBook`.
+intraday_equities emits events via `ReplayEvents`
+(`configs/run-replay-report.json`); first real report (Oct 13-16 2025
+replay): FAIL, +$6 gross vs $186 fees. Memo:
+`children/intraday_equities/docs/memos/2026-09-24-centralized-backtest-evaluator.md`.
+
+Next bounded action: phase 2 (MIO `solve` events, inference diagnostics,
+ledger-backed findings), then index_options/pmquant adapters.
+
 ## Index-options real data, zoo and live chain recorder (2026-09-24, ADR-0182)
 
 Real data end to end: tier-2 Cboe pack (`onboarding/libs/cboe.py`: index
