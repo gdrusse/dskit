@@ -22965,6 +22965,16 @@ name list validated in `validate_params`).
    action inference stay in `ReplayEvents`), index_options/pmquant wiring
    (their rows need a plain list port / exploded evidence first).
 
+*Build note.* Built as above; `events.KIND_ORDER`, `ENVELOPE`,
+`CANDIDATE_FIELDS` and `instant_ok` and `runs.RESOLVED_FILE` became public
+single owners. Review (Sonnet, two lenses): 3 Major fixed — the mapper
+restated the instant rule without `>= 0` (now `instant_ok`), a decisions
+map that also mapped `candidates` dropped the candidates port's rows (now
+refused), `run_start` could stamp envelope fields (now refused and
+stripped); Minors fixed: corrupt run-dir JSON is named, `RowsToEvents` is
+not cleared for a served tick. Disclosed: `driver.py`/`resolve.py` still
+spell `resolved.json` (pinned by `TestRunDirLayout`, as `config.json` is).
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
