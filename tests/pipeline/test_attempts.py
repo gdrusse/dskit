@@ -29,6 +29,7 @@ from dskit.pipeline.attempts import (
     implied_trials,
     max_bar,
     merge_session_totals,
+    session_flip_nulls,
     session_totals,
     tier2_plan,
     tier2_verdict,
@@ -248,6 +249,49 @@ class TestTheStatistic:
     def test_a_bad_replicate_count_is_refused(self):
         with pytest.raises(ValueError, match="n_boot"):
             max_bar({"a": {0: (1.0, 2)}}, n_boot=10)
+
+
+class TestSessionFlipNulls:
+    """ADR-0182 S3: the per-cell draws ``max_bar`` computes, handed back."""
+
+    def test_session_flip_nulls_t_matches_max_bar_rows(self):
+        cells = _noise_cells(5, 30, 3, seed=21)
+        nulls = session_flip_nulls(cells, n_boot=300, seed=3)
+        rows = {r["cell"]: r["t"] for r in max_bar(cells, n_boot=300, seed=3)["rows"]}
+        assert sorted(nulls) == sorted(cells)
+        for name, (t_obs, draws) in nulls.items():
+            assert t_obs == rows[name]
+            assert isinstance(draws, tuple)
+            assert len(draws) == 300
+            assert all(isinstance(v, float) for v in draws)
+
+    def test_session_flip_nulls_quantile_of_max_reproduces_c_star(self):
+        cells = _noise_cells(6, 40, 3, seed=4)
+        nulls = session_flip_nulls(cells, n_boot=500, seed=7, chunk=128)
+        order = sorted(nulls)
+        maxima = np.array([nulls[name][1] for name in order], dtype=np.float32).max(axis=0)
+        c_star = max_bar(cells, n_boot=500, seed=7, chunk=128)["c_star"]
+        assert float(np.quantile(maxima, 0.95)) == pytest.approx(c_star, rel=1e-12, abs=0.0)
+
+    def test_session_flip_nulls_seed_reproducible(self):
+        cells = _noise_cells(3, 20, 2, seed=5)
+        assert session_flip_nulls(cells, n_boot=200, seed=9) == session_flip_nulls(
+            cells, n_boot=200, seed=9
+        )
+        assert session_flip_nulls(cells, n_boot=200, seed=9) != session_flip_nulls(
+            cells, n_boot=200, seed=10
+        )
+
+    def test_session_flip_nulls_skips_constant_cells(self):
+        cells = {
+            "flat": {s: (1.0, 1) for s in range(5)},
+            "real": {s: (float(s), 1) for s in range(5)},
+            "thin": {0: (1.0, 1)},
+        }
+        nulls = session_flip_nulls(cells, n_boot=200, seed=1)
+        assert sorted(nulls) == ["real"]
+        with pytest.raises(ValueError, match="constant across sessions"):
+            session_flip_nulls({"flat": cells["flat"]}, n_boot=200, seed=1)
 
 
 class TestTheNull:
