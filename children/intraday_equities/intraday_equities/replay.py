@@ -981,11 +981,13 @@ class EquityReplay:
                 raise ConfigError([
                     f"different_lead_overlap {policy.different_lead_overlap!r} has no dispatch"
                 ])
+            live = []
             for symbol, seq in self._by_symbol.items():
                 idx = self._index_of[symbol].get(asof)
-                if idx is None:
-                    continue
-                self._apply_bar(symbol, seq[idx], idx)
+                if idx is not None and self._apply_exits(symbol, seq[idx], idx):
+                    live.append((symbol, seq[idx], idx))
+            for item in live:
+                self._apply_entries(*item)
             return {"records": list(batch.outputs["records"])}, self._policy.digest()
         except ConfigError as exc:
             if self._fault is None:
@@ -1044,8 +1046,12 @@ class EquityReplay:
             out.append(self._proposal_for(meta, digest, quote_digest))
         return out
 
-    def _apply_bar(self, symbol, bar, index):
-        """Apply exits then entries, or halt skip/queue, at one fill bar."""
+    def _apply_exits(self, symbol, bar, index):
+        """Apply halt skip/queue or forced exits at one fill bar; True when live.
+
+        Every symbol's exits run before any symbol's entries on the same
+        tick (ADR-0182 S1), so a same-bar sale funds a same-bar buy.
+        """
         policy = self._policy
         halted = self._halted(bar)
         pending = self._pending[symbol]
@@ -1074,11 +1080,15 @@ class EquityReplay:
                     pending[nxt].extend(incoming)
             else:
                 raise ConfigError([f"halt_handling {policy.halt_handling!r} has no dispatch"])
-            return
+            return False
         if policy.same_tick_order != "exits_then_entries":
             raise ConfigError([f"same_tick_order {policy.same_tick_order!r} has no dispatch"])
         self._process_exits(symbol, bar, index)
-        self._process_entries(symbol, bar, index, pending.pop(index, ()))
+        return True
+
+    def _apply_entries(self, symbol, bar, index):
+        """Open this live fill bar's pending entries, after every symbol's exits."""
+        self._process_entries(symbol, bar, index, self._pending[symbol].pop(index, ()))
 
     def _halted(self, bar):
         """Return whether ``bar`` is halted, accepting JSON and numpy bools."""
