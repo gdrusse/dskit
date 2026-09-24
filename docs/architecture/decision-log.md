@@ -22498,6 +22498,14 @@ evidence_scope" intraday_equities/*.py`: only `final_gates._SCOPE`, the
 in `EquityKellyMIO.validate_inputs` (nodes_capital.py:878-917), so the
 switch is one optional param there, gated on `deployment_mode` false.
 
+**Revision 3 (2026-09-23, owner PIPELINE-NODE RULE, relayed by the
+orchestrator).** The whole simulation runs through one JSON pipeline
+document under `python -m dskit.pipeline run ... --adapter
+intraday_equities`, every stage a registered node kind wired by
+`$node.port` (bars, publisher, MIO decider, simulation, report,
+records-write); see **Pipeline document** below. S1-S4 are unchanged in
+code; S5-S8 are re-specified as nodes.
+
 **Context.** The owner wants the strategy run on real bars exactly as
 production would: rolling inference per decision tick, periodic retraining,
 $1,000 + $20/day funding (`configs/cash-flow-policy.json`), `EquityKellyMIO`
@@ -22665,6 +22673,36 @@ testable. Only S3 touches dskit.
   `gross_limit = NAV` (cash account, no leverage), `cash_reserve` 0,
   `sale_credit` 1.0. Fees/costs come only from `fill-policy.json`.
 
+**Pipeline document (Revision 3, owner PIPELINE-NODE RULE, 2026-09-23).**
+The simulation runs ONLY as one JSON pipeline document,
+`configs/run-development-simulation.json`, executed by
+`python -m dskit.pipeline run configs/run-development-simulation.json
+--adapter intraday_equities`. Every stage is a registered node kind wired
+by `$node.port`; no driver script, no out-of-pipeline P&L. Reused kinds
+first (the shape of `configs/run-mio-demo.json`, whose `SyntheticMioSource`
+this document's publisher replaces):
+
+| Node | Kind | Inputs -> outputs |
+|---|---|---|
+| `bars_<src>` (one per split source) | EXISTING `intraday_equities-bars` (`BarsFromStore`, `start_ms` = first segment cutoff, `end_ms` = end of the last segment, S4) | -> `records` |
+| `bars` | EXISTING toolkit `concat` (`shape: records`, `provenance: source`, `key: [symbol, asof_ms]`, `allow_overlap: false`) | `$bars_<src>.records` -> `records` |
+| `publish` | NEW `intraday_equities-forecast-publisher` (`ForecastPublisher` IS the node, S5; role `data`, port vocabulary of `SyntheticMioSource`) | -> `releases` (per segment: release id, model manifest, cap artifact, survivors, lead map, per-lead-group `uncertainty`), `bundles` (every lattice tick's per-lead-group `ForecastBundle` rows; point-in-time, portfolio-independent, so materializable once) |
+| `decide` | NEW `intraday_equities-mio-decider` (S6; role `capital`) | `$publish.releases` -> `mio` (the validated `EquityKellyMIO` base params incl. `cap_evidence_look_ahead`, and the ascending lead-group order). The sizing itself is the EXISTING `intraday_equities-kelly-mio` kind, resolved through the node registry and run per tick inside `simulate` with the live portfolio — a DAG node runs once, the MIO must run per tick on live cash, which is exactly what production's served head does per tick. |
+| `simulate` | NEW `intraday_equities-development-simulation` (`DevelopmentSimulation(DevelopmentReplay)`, S7) | `$bars.records`, `$publish.releases`, `$publish.bundles`, `$decide.mio` -> `fills`, `skipped`, `refused`, `cash` (per-fill cash and cumulative contributions) |
+| `report` | NEW `intraday_equities-simulation-report` (S7; `WindowBook` fold) | `$simulate.fills`, `$simulate.cash`, `$publish.releases` -> `daily` (records), `summary` (mapping) |
+| `write_fills`, `write_daily` | EXISTING toolkit `records-write` | `$simulate.fills`, `$report.daily` -> jsonl + digest |
+| `write_summary` | EXISTING toolkit `table-write` | `$report.summary` -> json |
+
+Consequences for the slices below: S5's `ForecastPublisher` is a `Node`
+subclass (params = its constructor args; `release(k)`/`bundles_at` become
+the `releases`/`bundles` outputs); S6's `MioDecider` is the per-tick
+strategy the `simulate` node builds from `$decide.mio` (not a free-standing
+entry point); S7's `DevelopmentSimulation` reads NO bars itself — bars
+arrive on its `bars` input and each segment is a slice of it — and the
+report is its own node. S4 is unchanged in code; its role becomes the
+whole-window bound of the `bars_<src>` nodes (without it they read to
+2026). Memory changes accordingly (see the memory plan).
+
 **S1 — same-bar cash ordering (a).** `replay.py`: `EquityReplay.evaluate`
 runs two passes over the symbols with a bar at this instant — pass 1 halt
 handling + `_process_exits` for ALL symbols, pass 2 `_process_entries` —
@@ -22816,10 +22854,17 @@ params: `inventory_manifest`, `inventory_manifest_sha256`, `gates`,
 `onboarding_root`, `mio` (the EquityKellyMIO base params above),
 `uncertainty` (`n_scenarios` 64, `coverage` 0.95, `window_blocks` 10,
 `null_draws` 999, `seed` 0). No `lead` param: leads come from the gates.
-`run` loops segments k: read bars with `BarsFromStore(end_ms=cutoff_k+1)`
-per `bar_reads` (RTH via the universe session), add `halted=False` (the
-source has no halt flag), run `EquityReplay(policy, segment_cash_policy,
-MioDecider(...))`, drop the bars. Cash carries by deriving
+(Revision 3: the publisher params — inventory, gates, calendar, folds,
+calibration window, `uncertainty` — move to the `publish` node, `mio` to
+the `decide` node, and `bar_reads`/`onboarding_root` become the
+`bars_<src>` nodes' own params; `simulate` keeps the `DevelopmentReplay`
+gates plus `first_fold`/`last_fold` and refuses when its inputs' segment
+set disagrees with them.)
+`run` loops segments k over its `bars` INPUT sliced to `[cutoff_k,
+cutoff_k+1)` plus the fill suffix (Revision 3: no bar read inside the
+node), adds `halted=False` (the source has no halt flag), runs
+`EquityReplay(policy, segment_cash_policy, MioDecider(...))` over the
+slice. Cash carries by deriving
 `segment_cash_policy = CashFlowPolicy({**pinned.to_obj(),
 "initial_capital_amount": str(closing_cash)})` for k > first_fold, so the
 production ledger path is unchanged; a segment that ends with open lots
@@ -22841,14 +22886,23 @@ Config `configs/run-development-simulation.json` (folds 2..19,
 `test_total_contributions_equal_seed_plus_20_per_trading_day`,
 `test_nav_minus_contributions_equals_windowbook_realised_when_flat`,
 `test_decision_after_evidence_end_refuses`,
-`test_bars_read_bounded_per_segment` (monkeypatched `scan_stream` sees
-`since_ms`/end bound), `test_open_lots_at_segment_end_refuse`.
+`test_bars_read_bounded_to_the_window` (monkeypatched `scan_stream` sees
+the `bars_<src>` nodes' `since_ms` and the `end_ms` admit bound),
+`test_open_lots_at_segment_end_refuse`,
+`test_document_runs_end_to_end_through_the_pipeline_driver` (the shipped
+document, pins swapped for a synthetic fixture, planned and run by the
+`dskit.pipeline` driver with `--adapter intraday_equities`; every stage
+above is a node in the plan and no stage runs outside it),
+`test_report_is_a_separate_node_fed_only_by_wires`.
 
 **S8 — real-data run (operational, no code).** WSL, one job at a time, tmux
 session `prodsim`, log and work under `/home/russell/prodsim-work/`,
 `TMPDIR=/home/russell/prodsim-work/tmp` (EquityReplay's and the pin
-snapshot's `tempfile` dirs; never `/tmp`), `ulimit -v 12582912`. First a
-one-segment smoke (`first_fold=last_fold=2`) under `/usr/bin/time -v`;
+snapshot's `tempfile` dirs; never `/tmp`), `ulimit -v 12582912`. The run
+is `python -m dskit.pipeline run configs/run-development-simulation.json
+--adapter intraday_equities` (Revision 3; no other entry point). First a
+one-segment smoke (a copy of the document with `first_fold=last_fold=2`
+and the `bars_<src>` bounds narrowed to that segment) under `/usr/bin/time -v`;
 extrapolate RSS and wall time; only then folds 2..19. Result recorded as a
 memo, labelled developmental post-selection.
 
@@ -22856,7 +22910,15 @@ memo, labelled developmental post-selection.
 390 x 25 ~ 420k records, <1 GB with EquityReplay's copies), cache tapes for
 sigma memory-mapped (~26 x 790k x 16 B) plus prepared beta/sigma (~0.35 GB),
 all predictions ~0.3 GB, per-segment ledger on disk. Estimated peak < 3 GB,
-to be measured by the S8 smoke against the 12 GB cap. `_TapeCadence.next_tick`
+to be measured by the S8 smoke against the 12 GB cap. Revision 3 changes
+this: bars are a node output, so the whole window (2022-09-09..2025-10-16
+fill suffix, 25 names, ~7.6M records at ~409 B each per ADR-0073, ~3-4 GB)
+is resident while `simulate` runs; `EquityReplay` still copies only one
+segment's slice. Estimated peak ~5-6 GB; the smoke's RSS decides. If it
+exceeds the cap, the fallback needs an owner ruling (a universe file
+restricted to the 11 admitted names, pinned to `gates.json` by a test,
+would cut bars ~55% but restates the admission in config).
+`_TapeCadence.next_tick`
 is a linear scan per tick (O(ticks^2) per segment, ~17k ticks); fixed only if
 the smoke shows it matters.
 
@@ -22876,6 +22938,7 @@ the smoke shows it matters.
 | `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). |
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
 | report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
+| Revision 3 node kinds `intraday_equities-forecast-publisher`, `-mio-decider`, `-development-simulation`, `-simulation-report` | toolkit kinds (`tests/pipeline/test_toolkit_conformance.py`: `concat`, `join`, `derive`, `groupby`, `records-write`, `table-write`, `run-report`, `banking-report`, `hpo-grid`); child kinds (`intraday_equities-bars`, `-kelly-mio`, `-development-replay`, `SyntheticMioSource`); `grep -rn "subgraph" dskit/pipeline` (only the `hpo-grid` rerun seam, param overrides, not per-tick inputs) | Bars, union and writes REUSE `intraday_equities-bars`, `concat`, `records-write`, `table-write`; sizing REUSES `intraday_equities-kelly-mio` per tick. No existing kind publishes real fold forecasts, carries MIO base params to a per-tick loop, runs a funded multi-release replay, or folds fills into a NAV report (`run-report`/`banking-report` report model runs, not accounts). |
 | new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`; child README/AGENTS trees updated. |
 
 **Branch / worktree sweep (concurrent-effort findings checked).** After
