@@ -22956,8 +22956,9 @@ or publisher branch; `git worktree list` shows only those two plus this one.
 `PYTHONPATH=$PWD:$PWD/children/intraday_equities`; never the full suite):
 S1/S2/S6 `children/intraday_equities/tests/test_replay.py`; S3
 `tests/pipeline/test_attempts.py tests/pipeline/test_false_signal.py
-tests/pipeline/test_purity.py`; S4 `children/intraday_equities/tests/test_nodes.py
--k BarsFromStore`; S5-S7 `children/intraday_equities/tests/test_simulation.py
+tests/pipeline/test_purity.py`; S4 `children/intraday_equities/tests/test_nodes.py`
+(`-k BarsFromStore` selects nothing — the tests are named
+`bars_from_store`/`bars_node`; the whole file is the suite); S5-S7 `children/intraday_equities/tests/test_simulation.py
 test_forecast_bundle.py test_nodes_capital.py test_configs.py
 test_program_calendar.py` plus `tests/pipeline/test_outcome_interval.py
 tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.

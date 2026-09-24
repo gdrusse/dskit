@@ -707,6 +707,11 @@ class BarsFromStore(Node):
         where the data is read, mirroring the ``end`` bound ADR-0063 put
         where the data is fetched. It is part of the cache key and the
         fingerprint, so two windows can never share one identity.
+        ``end_ms`` is the optional EXCLUSIVE upper bound (ADR-0182),
+        applied at the same intake hook as the session bound; it enters
+        the cache key and fingerprint only when declared, so no
+        undeclared read's identity moves. It bounds bars only, not an
+        attached quote index.
         Declaring ``quote_source`` attaches the minute-quote columns of
         ADR-0065 (``quote_fields``, default
         :data:`DEFAULT_QUOTE_FIELDS`, from ``quote_stream``) onto each
@@ -746,6 +751,7 @@ class BarsFromStore(Node):
         "ts_field",
         "shared_fields",
         "start_ms",
+        "end_ms",
         "sessions",
         "quote_source",
         "quote_stream",
@@ -809,6 +815,20 @@ class BarsFromStore(Node):
         start_ms = params.get("start_ms")
         if start_ms is not None:
             check_int_param(problems, "start_ms", start_ms, ge=0)
+        end_ms = params.get("end_ms")
+        if end_ms is not None:
+            before = len(problems)
+            check_int_param(problems, "end_ms", end_ms, ge=0)
+            if (
+                len(problems) == before
+                and isinstance(start_ms, int)
+                and not isinstance(start_ms, bool)
+                and int(end_ms) <= start_ms
+            ):
+                problems.append(
+                    f"end_ms must be greater than start_ms, got end_ms={end_ms!r} "
+                    f"<= start_ms={start_ms!r}"
+                )
         sessions = params.get("sessions")
         if sessions is not None:
             if (
@@ -858,7 +878,7 @@ class BarsFromStore(Node):
                     stream_dir(self.params["root"], self.params["quote_source"])
                 )
             ),
-        )
+        ) + (() if self.params.get("end_ms") is None else (("end_ms", self.params["end_ms"]),))
 
     def _scan(self):
         """Memoize the flattened, session-tagged snapshot."""
@@ -883,6 +903,8 @@ class BarsFromStore(Node):
         # measured saving exactly 0 MB of RSS that way.
         start_ms = self.params.get("start_ms")
         start_ms = None if start_ms is None else int(start_ms)
+        end_ms = self.params.get("end_ms")
+        end_ms = None if end_ms is None else int(end_ms)
         symbols = tuple(spec["symbols"])
         ts_field = self.params.get("ts_field", DEFAULT_TS_FIELD)
         wanted = self.params.get("sessions")
@@ -893,14 +915,17 @@ class BarsFromStore(Node):
             policy["rth_end_minutes"],
         )
 
-        def _tag(data, _stamp):
-            """Write the session bucket, and answer the session bound.
+        def _tag(data, epoch_ms):
+            """Write the session bucket, and answer the session and end bounds.
 
             The tag is derived HERE because the bound needs it here, and
             a record derives it once either way: it rides into the
             emitted record exactly as it did when a second pass wrote
-            it.
+            it. ``end_ms`` (exclusive, ADR-0182) is answered from the
+            reader's own epoch-ms stamp before the tag is derived.
             """
+            if end_ms is not None and epoch_ms is not None and epoch_ms >= end_ms:
+                return False
             stamp = data.get(ts_field)
             if not isinstance(stamp, str) or not stamp:
                 return wanted is None
@@ -1015,6 +1040,8 @@ class BarsFromStore(Node):
             "universe": _file_digest(self.params["universe"]),
             "start_ms": self.params.get("start_ms"),
         }
+        if self.params.get("end_ms") is not None:
+            self._fp["end_ms"] = self.params["end_ms"]
         if cls._cached_key == self._key:
             cls._cached_fingerprint = dict(self._fp)
         return dict(self._fp)
