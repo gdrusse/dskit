@@ -41,6 +41,7 @@ from dskit.production.vocab import VERDICTS
 
 __all__ = [
     "ACTIONS",
+    "CANDIDATE_FIELDS",
     "EVENT_KINDS",
     "KIND_ORDER",
     "SCHEMA",
@@ -570,6 +571,9 @@ _CANDIDATE_RULES = (
     _flag("eligible", required=False),
     _text("reason", required=False, nullable=True),
 )
+
+#: A candidate row's field names, for producers mapping rows onto them.
+CANDIDATE_FIELDS = tuple(rule.name for rule in _CANDIDATE_RULES)
 
 
 def _candidate_problems(row, where):

@@ -59,6 +59,43 @@ and the schema tag. Criteria are pre-registered in `run_start`:
 
 ## In a pipeline
 
+Two nodes, both by dotted path. `RowsToEvents` maps the row lists a
+backtest already emits — no project code — and `EvaluationReport` renders:
+
+```json
+"events": {
+  "uses": "dskit.evaluation.nodes:RowsToEvents",
+  "inputs": {"fills": "$backtest.fills", "marks": "$bars.records"},
+  "params": {
+    "run_start": {"tz": "America/New_York", "title": "Backtest",
+                  "units": {"score": "return", "money": "USD"}},
+    "map": {
+      "fills": {"instrument": "symbol", "fields": {
+        "fill_id": {"template": "f-{symbol}-{asof_ms}"},
+        "side": "side", "qty": "qty", "price": "price", "fee": "fee"}},
+      "marks": {"instrument": "symbol", "fields": {"price": "close"}}}}
+},
+"report": {
+  "uses": "dskit.evaluation.nodes:EvaluationReport",
+  "inputs": {"events": "$events.events"},
+  "params": {"out_dir": "report", "sections": ["equity", "trades", "decisions"]}
+}
+```
+
+Ports: `decisions`, `candidates` (grouped into their decision by
+`decision_id`), `orders`, `refusals`, `skips`, `fills`, `marks`,
+`cashflows`, `outcomes`, `solves`. Per port: `ts` (row field of the
+instant, default `asof_ms`), `known`, `instrument`, `explode` (fan out a
+list or dict field), and `fields` — each a row field name,
+`{"const": v}` or `{"template": "..."}`; targets are the kind's own
+schema fields, and a required one left out is refused at plan time.
+Rows needing a domain join (which fill answers which decision) are
+shaped upstream (`derive`, `join`) or by a project mapper
+(`intraday_equities.evaluation.ReplayEvents`). `sections` names from
+`summary, overview, equity, trades, decisions, optimizer, cash,
+distributions, inference, periods, provenance`; `summary` and
+`provenance` always render (CLI: `--sections a,b`).
+
 ```json
 "report": {
   "uses": "dskit.evaluation.nodes:EvaluationReport",
@@ -100,12 +137,14 @@ dskit/evaluation/
 │                  FIFO round trips, per-day rows, TWR via PerformanceCalculator
 ├── statistics.py  StatisticsTable over STAT_NAMES; SolveSummary; estimators
 │                  from pipeline.stats
+├── mapping.py     EventMapping / RowMap / FieldSource: rows -> events from JSON
 ├── diagnostics.py ForecastDiagnostics: candidate score x outcome pairs, deciles,
 │                  hit rate by bucket, rank IC (pipeline.ordering)
 ├── criteria.py    Criterion / Verdict / Scorecard (PASS, FAIL, INCONCLUSIVE)
 ├── units.py       number display: money, counts, ratios, declared score units
 ├── narrative.py   Narrative: the rule-written "What happened"; HOW_TO_READ
-├── provenance.py  git_revision, fill_provenance (code/env/wall_s + sources)
+├── provenance.py  git_revision, fill_provenance (code/env/wall_s + sources),
+│                  run_dir_provenance
 ├── svg.py         stdlib SVG: LineChart, StepChart, MarkerLayer, SessionScale
 │                  (market-closed gaps collapsed), BarChart, Histogram,
 │                  downsample; CSS-variable palette, light/dark
@@ -113,7 +152,8 @@ dskit/evaluation/
 │                  DecisionLog (+ guard findings), Optimizer, Cash,
 │                  Distribution, Inference, Period, Provenance
 ├── report.py      BacktestReport -> the five files, atomically
-├── nodes.py       EvaluationReport pipeline node (role report)
+├── nodes.py       EvaluationReport (role report, `sections`) + RowsToEvents
+│                  (role transform) pipeline nodes
 ├── README.md      this file
 ├── AGENTS.md      agent orientation
 └── CLAUDE.md      identical to AGENTS.md

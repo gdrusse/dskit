@@ -50,8 +50,12 @@ package. Importing it registers nothing; the node is used by dotted path.
 
 `sections.Section` (subclass, pass to `BacktestReport(sections=...)`),
 `svg.XYChart.path` / `svg.Chart.body`, `events.Event` subclasses (a new
-kind also needs an `EVENT_KINDS` entry and a schema bump), and
-`statistics.StatisticsTable` rows (add the name to `STAT_NAMES`).
+kind also needs an `EVENT_KINDS` entry and a schema bump),
+`statistics.StatisticsTable` rows (add the name to `STAT_NAMES`), and
+`mapping.FieldSource` (a new dict-shaped source: subclass, add it to
+`_SOURCES`). A new default section is selectable by its `anchor`
+(`sections.SECTIONS`) with no other change. `KIND_ORDER`, `SCHEMA` and
+`provenance.run_dir_provenance` have one owner each; producers import them.
 
 ## Contents
 
@@ -62,15 +66,16 @@ dskit/evaluation/
 ├── events.py      schema v1 kinds, EventLog, Links, Census, LocalTime
 ├── book.py        EvaluationBook (WindowBook adapter, FIFO trips, days, TWR)
 ├── statistics.py  StatisticsTable over STAT_NAMES; SolveSummary
+├── mapping.py     EventMapping / RowMap: rows -> events from a JSON field map
 ├── diagnostics.py ForecastDiagnostics (score x outcome: deciles, hit rate, rank IC)
 ├── criteria.py    Criterion / Verdict / Scorecard
 ├── units.py       money / count / ratio / percent / declared score units
 ├── narrative.py   Narrative ("What happened" by explicit rules) + HOW_TO_READ
-├── provenance.py  git_revision, fill_provenance
+├── provenance.py  git_revision, fill_provenance, run_dir_provenance
 ├── svg.py         stdlib SVG charts + SessionScale + CHART_CSS + downsample
 ├── sections.py    Section ABC + the eleven default sections
 ├── report.py      BacktestReport -> events.jsonl, summary.md, report.html, CSVs
-├── nodes.py       EvaluationReport pipeline node
+├── nodes.py       EvaluationReport (+ sections) and RowsToEvents nodes
 ├── README.md
 ├── AGENTS.md      this file
 └── CLAUDE.md      identical
