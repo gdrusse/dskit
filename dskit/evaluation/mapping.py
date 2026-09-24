@@ -15,7 +15,8 @@ without a project-specific mapper node:
   map is closed (default-deny) without restating the schema, and a
   required field left unmapped is refused before the run;
 * ``explode`` fans one row out over a list field, or over a dict field as
-  ``{"key": k, **value}`` rows — a per-book or per-contract nesting;
+  ``{"key": k, **value}`` rows — a per-book or per-contract nesting (a
+  nested field wins over a parent field or ``key`` of the same name);
 * ``candidates`` rows are grouped into their decision by ``decision_id``.
 
 Rows merge into one log ordered by instant, then
@@ -36,12 +37,14 @@ from collections import defaultdict
 
 from dskit.evaluation.events import (
     CANDIDATE_FIELDS,
+    ENVELOPE,
     EVENT_KINDS,
     KIND_ORDER,
     SCHEMA,
     EvaluationError,
     EventLog,
     RunStart,
+    instant_ok,
 )
 
 __all__ = [
@@ -416,9 +419,9 @@ class RowMap:
 
 
 def _instant(value, where):
-    """Return ``value`` as epoch ms, refusing a non-integer instant."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise EvaluationError([f"{where} must be an int epoch-ms instant, got {value!r}"])
+    """Return ``value`` as epoch ms, refusing what ``events.instant_ok`` refuses."""
+    if not instant_ok(value):
+        raise EvaluationError([f"{where} must be an int epoch-ms instant >= 0, got {value!r}"])
     return value
 
 
@@ -471,6 +474,9 @@ class EventMapping:
         problems = []
         if not isinstance(run_start, dict):
             problems.append(f"run_start must be an object, got {run_start!r}")
+        elif set(run_start) & set(ENVELOPE):
+            problems.append(f"run_start may not declare envelope field(s) "
+                            f"{sorted(set(run_start) & set(ENVELOPE))} — the mapping stamps them")
         else:
             # The body a document declares is checked by the kind's own
             # rules; run_id may come from the run directory, so a stand-in
@@ -489,6 +495,11 @@ class EventMapping:
                 problems.extend(RowMap.problems(cls.kind_of(port), spec, f"map.{port}"))
         if CANDIDATES_PORT in maps and "decisions" not in maps:
             problems.append("map.candidates needs map.decisions: candidates join a decision")
+        decision_fields = (maps.get("decisions") or {}).get("fields")
+        if (CANDIDATES_PORT in maps and isinstance(decision_fields, dict)
+                and "candidates" in decision_fields):
+            problems.append("map.decisions.fields.candidates and map.candidates both supply "
+                            "a decision's candidates — declare one")
         return problems
 
     def events(self, inputs, provenance=None):
@@ -522,7 +533,9 @@ class EventMapping:
             for order, (ts, fields, known, instrument, _where) in enumerate(
                     rowmap.items(rows, port)):
                 if rowmap.kind == "decision" and fields.get("decision_id") in grouped:
-                    fields.setdefault("candidates", grouped.pop(fields["decision_id"]))
+                    # Plan time refuses a decisions map that also maps
+                    # candidates, so a grouped list is never discarded.
+                    fields["candidates"] = grouped.pop(fields["decision_id"])
                 body.append((ts, _RANK[rowmap.kind], order, rowmap.kind, known, instrument,
                              fields))
         if grouped:
@@ -546,7 +559,8 @@ class EventMapping:
         body.sort(key=lambda item: item[:3])
         first = body[0][0] if body else 0
         last = body[-1][0] if body else 0
-        start = {**self.run_start, **provenance}
+        start = {key: value for key, value in {**self.run_start, **provenance}.items()
+                 if key not in ENVELOPE}
         items = [(first, RunStart.kind, first, None, start)]
         items.extend((ts, kind, known, instrument, fields)
                      for ts, _rank, _order, kind, known, instrument, fields in body)

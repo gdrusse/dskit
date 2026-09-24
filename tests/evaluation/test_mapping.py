@@ -133,6 +133,10 @@ def test_run_time_failures_are_loud():
     rows["marks"][0]["asof_ms"] = "noon"
     with pytest.raises(EvaluationError, match=r"must be an int epoch-ms instant"):
         EventMapping(dict(RUN_START, run_id="r"), MAP).events(rows)
+    rows = _rows()
+    rows["marks"][0]["asof_ms"] = -5
+    with pytest.raises(EvaluationError, match=r"marks\[0\] \(ts\) must be an int epoch-ms instant >= 0"):
+        EventMapping(dict(RUN_START, run_id="r"), MAP).events(rows)
     with pytest.raises(EvaluationError, match="run_id"):
         EventMapping(RUN_START, MAP).events(_rows())  # no run_id declared or recorded
 
@@ -190,3 +194,30 @@ def test_node_run_uses_the_run_dir_when_there_is_one(tmp_path):
     ctx = NodeContext(name="t", asof="2026-09-24", run_dir=str(tmp_path))
     events = node.run(ctx, _rows())["events"]
     assert events[0]["run_id"] == "h1" and events[0]["config_hash"] == "d1"
+
+
+def test_a_corrupt_run_dir_record_is_named(tmp_path):
+    from dskit.evaluation.provenance import run_dir_provenance
+
+    (tmp_path / "resolved.json").write_text("{not json")
+    with pytest.raises(EvaluationError, match="resolved.json is not valid JSON"):
+        run_dir_provenance(str(tmp_path))
+
+
+def test_a_decision_map_cannot_also_take_candidates_from_the_port():
+    maps = dict(MAP, decisions={"instrument": "pick", "fields": dict(
+        MAP["decisions"]["fields"], candidates="own")})
+    assert any("declare one" in p for p in EventMapping.problems(RUN_START, maps))
+
+
+def test_run_start_may_not_declare_envelope_fields():
+    problems = EventMapping.problems(dict(RUN_START, instrument="SPOOF", ts_ms=9), MAP)
+    assert problems == ["run_start may not declare envelope field(s) ['instrument', 'ts_ms'] "
+                        "— the mapping stamps them"]
+    # Provenance cannot either.
+    events = EventMapping(dict(RUN_START, run_id="r"), MAP).events(_rows(), {"seq": 7})
+    assert events[0]["seq"] == 0
+
+
+def test_the_mapper_is_not_cleared_for_a_served_tick():
+    assert RowsToEvents.serving_effect({}, {}) == "forbidden"

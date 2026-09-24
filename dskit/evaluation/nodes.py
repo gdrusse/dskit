@@ -197,11 +197,6 @@ class RowsToEvents(Node):
     _PARAMS = ("run_start", "map", "notes")
 
     @classmethod
-    def serving_effect(cls, params, verified_run_evidence):
-        """Classify the node as a pure input/param reader."""
-        return "pure"
-
-    @classmethod
     def validate_params(cls, params):
         """Refuse unknown knobs and a malformed ``run_start`` or ``map``.
 

@@ -33,7 +33,7 @@ import os
 import subprocess
 import time
 
-from dskit.evaluation.events import RunStart
+from dskit.evaluation.events import EvaluationError, RunStart
 from dskit.pipeline.runs import CONFIG_FILE, RESOLVED_FILE
 
 __all__ = ["GIT_TIMEOUT_S", "fill_provenance", "git_revision", "run_dir_provenance"]
@@ -143,7 +143,10 @@ def _read_json(run_dir, name):
     if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        try:
+            return json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise EvaluationError([f"{path} is not valid JSON: {exc}"]) from None
 
 
 def run_dir_provenance(run_dir):
