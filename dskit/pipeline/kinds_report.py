@@ -126,6 +126,7 @@ __all__ = [
     "SECTIONS",
     "TRADE_COLUMNS",
     "RunReport",
+    "csv_text",
     "register",
 ]
 
@@ -293,8 +294,32 @@ def _total(rows, key):
     return sum(present) if present else None
 
 
-def _csv_text(columns, rows):
-    """``rows`` as CSV text over an ordered column list."""
+def csv_text(columns, rows):
+    """Render ``rows`` as CSV text over an ordered column list.
+
+    The one owner of a report's CSV spelling: public because
+    ``dskit.evaluation`` writes its decision and trade tables through it
+    too, and a second writer would be a second quoting rule.
+
+    Parameters
+    ----------
+    columns : sequence of str
+        The header, in order; a row's other keys are ignored.
+    rows : iterable of dict
+        One mapping per line; a missing key or ``None`` is an empty cell.
+
+    Returns
+    -------
+    str
+        The header line plus one line per row.
+
+    Examples
+    --------
+    Two columns, one row::
+
+        csv_text(("a", "b"), [{"a": 1}])
+        # -> the header line "a,b" then "1," (CRLF line ends)
+    """
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=list(columns), extrasaction="ignore")
     writer.writeheader()
@@ -1549,7 +1574,7 @@ class RunReport(Node):
             "artifact": ev.trades_artifact,
         }
         self.write_artifact_text(
-            ctx, ev.trades_artifact, _csv_text(("when", *TRADE_COLUMNS), rows)
+            ctx, ev.trades_artifact, csv_text(("when", *TRADE_COLUMNS), rows)
         )
         if missing_columns:
             ev.flags.append(
@@ -1657,7 +1682,7 @@ class RunReport(Node):
         self.write_artifact_text(
             ctx,
             ev.decisions_artifact,
-            _csv_text(("contract", "decided_at", *DECISION_COLUMNS[1:]), rows),
+            csv_text(("contract", "decided_at", *DECISION_COLUMNS[1:]), rows),
         )
 
     # -- the human read -----------------------------------------------------

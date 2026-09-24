@@ -39,6 +39,17 @@ Two descriptive summaries of an ordered P&L series ride beside the tests
 path numbers a backtest reports next to its mean, stated once here so a
 second backtest cannot drift from the first's tail rule.
 
+Five performance estimators join them (ADR-0183): :func:`sharpe_ratio`
+(per-period, never annualised, with its sample size and a
+skew/kurtosis-aware confidence interval — Lo 2002, Mertens 2002),
+:func:`probabilistic_sharpe_ratio` and :func:`deflated_sharpe_ratio`
+(Bailey & López de Prado: the probability the true Sharpe beats a
+benchmark, and that benchmark raised to the expected maximum over the
+configurations tried), and the trade-list ratios :func:`profit_factor`
+and :func:`payoff_ratio`. A trade-level t-test is :func:`across_fold_t`
+over the trade P&L list — the same one-sample Student t, so it is not
+restated.
+
 Import cost: stdlib only.
 """
 
@@ -47,11 +58,13 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from statistics import NormalDist
 
 from dskit.pipeline.records import number_ok
 
 __all__ = [
     "CORRECTIONS",
+    "EULER_MASCHERONI",
     "METHODS",
     "across_fold_t",
     "benjamini_hochberg",
@@ -61,6 +74,7 @@ __all__ = [
     "cluster_bootstrap_t",
     "correction",
     "cross_sectional_fold",
+    "deflated_sharpe_ratio",
     "diebold_mariano_test",
     "dm_lags",
     "dm_loss_series",
@@ -70,8 +84,12 @@ __all__ = [
     "newey_west_mean",
     "no_correction",
     "no_information_test",
+    "payoff_ratio",
+    "probabilistic_sharpe_ratio",
+    "profit_factor",
     "register_correction",
     "regularized_incomplete_beta",
+    "sharpe_ratio",
     "skill_vs_mean",
     "student_t_sf",
     "weighted_benjamini_hochberg",
@@ -1432,6 +1450,270 @@ def max_drawdown(pnls):
         peak = max(peak, total)
         worst = max(worst, peak - total)
     return worst
+
+
+#: The Euler–Mascheroni constant: the expected-maximum weight in the
+#: deflated Sharpe ratio's benchmark (Bailey & López de Prado 2014, eq. 2).
+EULER_MASCHERONI = 0.5772156649015329
+
+
+def _finite_series(values, what, minimum):
+    """Return ``values`` as a list of floats, refusing a short or non-finite series."""
+    if isinstance(values, (str, bytes, dict)) or not hasattr(values, "__iter__"):
+        raise ValueError(f"{what} needs a sequence of numbers, got {values!r}")
+    series = list(values)
+    for i, v in enumerate(series):
+        if not number_ok(v):
+            raise ValueError(f"{what}: values[{i}] must be a finite number, got {v!r}")
+    if len(series) < minimum:
+        raise ValueError(f"{what} needs at least {minimum} values, got {len(series)}")
+    return [float(v) for v in series]
+
+
+def _sharpe_variance_term(sharpe, skew, kurtosis):
+    """The ``1 - g3*SR + (g4 - 1)/4 * SR^2`` factor of the Sharpe estimator's variance."""
+    return 1.0 - skew * sharpe + (kurtosis - 1.0) / 4.0 * sharpe * sharpe
+
+
+def sharpe_ratio(returns, alpha=0.05):
+    """Per-period Sharpe ratio with its sample size, SE and confidence interval.
+
+    ``mean / sd`` of the per-period returns as given — never annualised,
+    because scaling a per-bar ratio by ``sqrt(periods)`` assumes the iid
+    returns an intraday series never has (Lo 2002). Feed DAILY returns.
+    The standard error is the non-normal one (Mertens 2002; Bailey &
+    López de Prado 2012): ``sqrt((1 - g3*SR + (g4-1)/4*SR^2) / (n - 1))``
+    with ``g3`` the skewness and ``g4`` the (non-excess) kurtosis, so fat
+    tails and skew widen the interval instead of being assumed away.
+
+    Parameters
+    ----------
+    returns : sequence of float
+        Per-period returns, time order irrelevant, at least two.
+    alpha : float
+        Two-sided level of the normal interval, in ``(0, 1)``.
+
+    Returns
+    -------
+    dict
+        ``n``, ``mean``, ``sd`` (sample, ``n - 1``), ``skew``,
+        ``kurtosis``, ``sharpe``, ``se``, ``ci_low``, ``ci_high``,
+        ``alpha``. ``sharpe`` and everything derived from it are ``None``
+        when the series has no variance.
+
+    Raises
+    ------
+    ValueError
+        On fewer than two returns, a non-finite return or a bad ``alpha``.
+
+    Examples
+    --------
+    Four daily returns::
+
+        out = sharpe_ratio([0.01, 0.02, 0.03, 0.04])
+        round(out["sharpe"], 4)  # 1.9365
+    """
+    if not number_ok(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+    series = _finite_series(returns, "sharpe_ratio", 2)
+    n = len(series)
+    mean = sum(series) / n
+    centered = [v - mean for v in series]
+    m2 = sum(c * c for c in centered) / n
+    out = {"n": n, "mean": mean, "sd": math.sqrt(m2 * n / (n - 1)), "alpha": alpha}
+    if m2 <= 0.0:
+        return {**out, "skew": None, "kurtosis": None, "sharpe": None,
+                "se": None, "ci_low": None, "ci_high": None}
+    skew = sum(c ** 3 for c in centered) / n / m2 ** 1.5
+    kurtosis = sum(c ** 4 for c in centered) / n / (m2 * m2)
+    sharpe = mean / out["sd"]
+    term = _sharpe_variance_term(sharpe, skew, kurtosis)
+    se = math.sqrt(term / (n - 1)) if term > 0.0 else None
+    z = NormalDist().inv_cdf(1.0 - alpha / 2.0)
+    return {
+        **out,
+        "skew": skew,
+        "kurtosis": kurtosis,
+        "sharpe": sharpe,
+        "se": se,
+        "ci_low": None if se is None else sharpe - z * se,
+        "ci_high": None if se is None else sharpe + z * se,
+    }
+
+
+def probabilistic_sharpe_ratio(returns, benchmark=0.0):
+    """Probability that the true per-period Sharpe exceeds ``benchmark``.
+
+    Bailey & López de Prado (2012):
+    ``PSR = Phi((SR - SR*) / se)`` with :func:`sharpe_ratio`'s non-normal
+    standard error, so a short or fat-tailed sample earns less confidence
+    than its point estimate suggests.
+
+    Parameters
+    ----------
+    returns : sequence of float
+        Per-period returns, at least two.
+    benchmark : float
+        The per-period Sharpe to beat, ``SR*``.
+
+    Returns
+    -------
+    float or None
+        In ``[0, 1]``; ``None`` when the series has no variance or the
+        variance term is not positive.
+
+    Raises
+    ------
+    ValueError
+        As :func:`sharpe_ratio`, or on a non-finite ``benchmark``.
+
+    Examples
+    --------
+    A benchmark equal to the estimate is a coin flip::
+
+        sr = sharpe_ratio([0.01, 0.02, 0.03, 0.04])["sharpe"]
+        probabilistic_sharpe_ratio([0.01, 0.02, 0.03, 0.04], sr)  # 0.5
+    """
+    if not number_ok(benchmark):
+        raise ValueError(f"benchmark must be a finite number, got {benchmark!r}")
+    found = sharpe_ratio(returns)
+    if found["se"] is None:
+        return None
+    return NormalDist().cdf((found["sharpe"] - benchmark) / found["se"])
+
+
+def deflated_sharpe_ratio(returns, trials, sharpe_variance=None):
+    """PSR against the Sharpe the BEST of ``trials`` null strategies would show.
+
+    Bailey & López de Prado (2014): the benchmark is the expected maximum
+    of ``trials`` Sharpe estimates whose true value is zero,
+    ``sqrt(V) * ((1 - g) * Phi^-1(1 - 1/N) + g * Phi^-1(1 - 1/(N e)))``
+    with ``g`` :data:`EULER_MASCHERONI`. ``V`` is the variance of the
+    Sharpe estimates ACROSS the trials; when the caller did not record
+    it, the estimator's own sampling variance (``se**2``) stands in —
+    the variance a null trial's estimate would have. One trial deflates
+    nothing: the benchmark is 0 and the DSR is the PSR against 0.
+
+    Parameters
+    ----------
+    returns : sequence of float
+        Per-period returns of the selected configuration, at least two.
+    trials : int
+        Configurations tried, ``>= 1``.
+    sharpe_variance : float or None
+        Cross-trial variance of the Sharpe estimates, ``>= 0``.
+
+    Returns
+    -------
+    dict
+        ``dsr`` (float or None), ``expected_max_sharpe``, ``trials``,
+        ``sharpe_variance`` (the ``V`` used, or None when undefined).
+
+    Raises
+    ------
+    ValueError
+        On a bad series, ``trials`` or ``sharpe_variance``.
+
+    Examples
+    --------
+    One trial is the plain PSR against zero::
+
+        deflated_sharpe_ratio([0.01, 0.02, 0.03, 0.04], 1)["expected_max_sharpe"]  # 0.0
+    """
+    if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
+        raise ValueError(f"trials must be an int >= 1, got {trials!r}")
+    if sharpe_variance is not None and (not number_ok(sharpe_variance) or sharpe_variance < 0):
+        raise ValueError(f"sharpe_variance must be a finite number >= 0, got {sharpe_variance!r}")
+    found = sharpe_ratio(returns)
+    variance = sharpe_variance
+    if variance is None and found["se"] is not None:
+        variance = found["se"] ** 2
+    if variance is None:
+        return {"dsr": None, "expected_max_sharpe": None, "trials": trials,
+                "sharpe_variance": None}
+    expected = 0.0
+    if trials > 1:
+        inv = NormalDist().inv_cdf
+        expected = math.sqrt(variance) * (
+            (1.0 - EULER_MASCHERONI) * inv(1.0 - 1.0 / trials)
+            + EULER_MASCHERONI * inv(1.0 - 1.0 / (trials * math.e))
+        )
+    return {
+        "dsr": probabilistic_sharpe_ratio(returns, expected),
+        "expected_max_sharpe": expected,
+        "trials": trials,
+        "sharpe_variance": variance,
+    }
+
+
+def profit_factor(pnls):
+    """Gross profit over gross loss of a trade list: ``sum(wins) / |sum(losses)|``.
+
+    Read it beside the trade count and :func:`payoff_ratio` — a factor
+    over a handful of trades says little.
+
+    Parameters
+    ----------
+    pnls : sequence of float
+        Per-trade P&L, at least one.
+
+    Returns
+    -------
+    float or None
+        ``None`` when no trade lost (the ratio is unbounded, and JSON has
+        no infinity).
+
+    Raises
+    ------
+    ValueError
+        On an empty list or a non-finite value.
+
+    Examples
+    --------
+    Two winners (5) against two losers (2)::
+
+        profit_factor([2.0, -1.0, 3.0, -1.0])  # 2.5
+    """
+    series = _finite_series(pnls, "profit_factor", 1)
+    losses = -sum(v for v in series if v < 0.0)
+    if losses == 0.0:
+        return None
+    return sum(v for v in series if v > 0.0) / losses
+
+
+def payoff_ratio(pnls):
+    """Average win over the average loss's magnitude.
+
+    The number a hit rate needs beside it: a 90% hit rate with a payoff of
+    0.05 loses money.
+
+    Parameters
+    ----------
+    pnls : sequence of float
+        Per-trade P&L, at least one.
+
+    Returns
+    -------
+    float or None
+        ``None`` unless there is at least one win and one loss.
+
+    Raises
+    ------
+    ValueError
+        On an empty list or a non-finite value.
+
+    Examples
+    --------
+    Wins average 2.5, losses average -1::
+
+        payoff_ratio([2.0, -1.0, 3.0, -1.0])  # 2.5
+    """
+    series = _finite_series(pnls, "payoff_ratio", 1)
+    wins = [v for v in series if v > 0.0]
+    losses = [v for v in series if v < 0.0]
+    if not wins or not losses:
+        return None
+    return (sum(wins) / len(wins)) / (-sum(losses) / len(losses))
 
 
 def correction(name):

@@ -747,7 +747,8 @@ dskit/pipeline/
 │                      registry (bh / bonferroni / none / weighted-bh) +
 │                      register_correction; no-information vs mean
 │                      (Clark–West HAC + sequential h*, ADR-0057); P&L series
-│                      summaries lower_tail_mean (empirical CVaR) + max_drawdown
+│                      summaries lower_tail_mean (empirical CVaR) + max_drawdown;
+│                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio
 ├── option_pricing.py black76 (European on a forward) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
