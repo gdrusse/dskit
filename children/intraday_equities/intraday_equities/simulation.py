@@ -1731,7 +1731,7 @@ class RetrainedSimulation(Stage):
         return {"run_dir": result.run_dir, "document_hash": document.hash, "summary": summary, "files": files}
 
     def _template(self, ctx):
-        """The pinned template document object."""
+        """Return the pinned template document object."""
         import hashlib
 
         path = self.params["template"]
