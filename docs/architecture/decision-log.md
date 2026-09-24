@@ -22877,6 +22877,55 @@ by default. RED (`tests/test_nodes_capital.py`):
 `test_cap_look_ahead_must_be_json_bool`,
 `test_cap_look_ahead_keeps_every_other_cap_check`.
 
+**S6 as built (2026-09-23).** The switch is exactly as specified
+(`nodes_capital.CAP_LOOK_AHEAD_DISCLOSURE` is the recorded string).
+`EquityReplay` gains `decider=` and `_enqueue_decision`/`_portfolio` as
+specified; the decider is called after every tick's two passes and
+returns nothing where it holds no bundle, so the replay needs no lattice
+knowledge. `_portfolio`'s NAV counts every open lot at its latest
+decision-price close, while `positions` omits lots that exit at or
+before the fill bar. Deviations, each the smallest that fit Revision 3:
+(1) `MioDecider(release, bundles, mio, fill_policy, ctx)` takes the
+publisher's JSON outputs, not the publisher; (2) the Schwab cost knobs
+are bound per tick from the replay's `FillPolicy` ("fees come only from
+`fill-policy.json`"), so the `mio` block refuses them and the eight
+digest/producer pins; (3) the bundle pins are the release's
+`model_manifest_sha256` and the release cap's producer document and
+node (the same publisher node), a cross-check rather than a self-read of
+each row; (4) held units are dropped before the solve, so the MIO gets
+`positions: {}`, `cash_reserve` 0 and `sale_credit` 1.0 set by the
+decider; (5) `mio_refused` rows (with the refusal text as `detail`) and
+`open_lot_at_decision` skips live on `MioDecider.refused`/`.skipped` for
+S7 to merge; an `AssertionError` from the doorway's exact recompute is
+not caught (a solver inconsistency is a crash, not a refusal); (6)
+`EquityKellyMIO` is imported directly rather than looked up in the
+registry. The "refuse a `mio` block without `cap_evidence_look_ahead:
+true`" rule (S7 text) lives in the `decide` node, where Revision 3 put
+`mio`. **ADR error fixed (blocker):** the Revision 3 table gives `decide`
+role `capital`, which cannot plan — `planner.py:661-678` requires every
+capital node to wire a `stat_test` output, and Revision 1 removed the
+StatTest step. `MioDeciderNode` (kind `intraday_equities-mio-decider`)
+is role `transform`: it sizes nothing and emits only JSON `{params,
+lead_groups}`. The sizing inside `simulate` likewise has no `stat_test`
+wire; the survivor set is the pinned gate admission (question 13).
+**Finding for S8:** each ServeLoop tick re-runs `verify_release` ->
+`RuntimeFingerprint.capture`, which re-reads installed-package metadata
+(profiled as the dominant per-tick cost; a synthetic 390-tick day took
+40 s). At ~17k ticks per segment that is roughly half an hour per
+segment, ~9 h for folds 2..19; `dskit.production` is a non-goal, so the
+S8 smoke measures it and the owner rules. Tests: every S6 test named
+above plus `test_decide_node_emits_only_json_params` and
+`test_decide_node_refuses_bound_or_undeclared_params`; the
+`test_simulation.py` ones share one funded four-day MIO replay of the S5 fixture (lattice ticks plus three minutes,
+`hfdr_q` 0.9 and `uncertainty_min_coverage` 0.05 because the fixture's
+widened rates are 0.66-1.0); 17 hand mutants of the switch, hook,
+portfolio, decider and node were each killed.
+S5 lens fixes landed alongside: `dskit.pipeline.predictions.read_predictions`
+gains an optional `columns` projection (default read pinned literally)
+and `_Walk.yhat` reads through it (M1); fold contiguity and the
+release-fold cutoff bounds are pinned by two tests that kill four
+surviving mutants (M2).
+
 **S7 — `DevelopmentSimulation` node + config + report (f, g).**
 `DevelopmentSimulation(DevelopmentReplay)` (kind
 `intraday_equities-development-simulation`) inherits the five gates
@@ -22969,6 +23018,8 @@ the smoke shows it matters.
 | `ForecastPublisher` | `grep -rn "class \w*(Publisher\|Calibrat\|PointInTime)"`: only `SyntheticMioSource`, estimators, trust.py synthetic publishers | Nothing reads real fold predictions into bundles; it composes existing estimators, `read_predictions`, `_LeadLabel`, `ForecastBundle`, `ConfirmedCaps`. |
 | `MioDecider` | `class \w*Decider`: `production.Decider` (re-runs a saved pipeline subgraph; no fold-by-fold forecasts, no MIO), test fakes | `EquityReplay` already is the ServeLoop decider; this is the strategy object it calls. |
 | `EquityReplay._enqueue_decision/_portfolio`, `decider=` | `run` loop body (739-775) | Extraction so upfront and per-tick decisions share one validation path. |
+| `read_predictions(columns=)` (S5 fix M1) | `grep -rn "def read_predictions\|pq.read_table"`: `_Walk.yhat` re-implemented the reader to project columns | One optional parameter on the existing reader; default output pinned. |
+| `MioDeciderNode` (`decide`, S6) | toolkit and child kinds above; `EquityKellyMIO.validate_params` | Validation delegates to `EquityKellyMIO`; no kind carries validated MIO params to a per-tick loop. |
 | `EquityKellyMIO.cap_evidence_look_ahead` (Revision 2) | `deployment_mode`, `DevelopmentReplay.caps`/`deployment_eligible`, `ConfirmedCaps.problems`, `ScenarioUtilitySolve._PARAMS`; `grep -n "look_ahead\|post_selection\|evidence_scope"` | No existing flag relaxes a timing check; the two refusals live only in `EquityKellyMIO.validate_inputs`, so one optional param there is the smallest honest seam (the rejected alternative was false stamps). |
 | `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). |
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
@@ -23027,6 +23078,10 @@ tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.
     distorted before later splits (LRCX, MSTR, PANW in window).
 11. `halted=false` for every present bar; absent minutes are absent bars.
 12. Segment cash carry through a derived `CashFlowPolicy`.
+13. (S6) No `stat_test` wire into capital: the planner's capital rule
+    cannot be met without a StatTest step Revision 1 removed, so `decide`
+    is role `transform` and the per-tick sizing trusts the pinned gate
+    admission as its survivor set.
 
 ### Non-goals
 
