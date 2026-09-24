@@ -21,7 +21,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -507,14 +507,14 @@ class BarTape(ReplayTape):
     """Historical bars as D20 tape data: feed results, not a scheduler."""
 
     def __init__(self, bars, source_config_hash):
-        times = sorted({int(bar["asof_ms"]) for bar in bars})
-        self._times = tuple(times)
+        counts = Counter(int(bar["asof_ms"]) for bar in bars)
+        self._times = tuple(sorted(counts))
         self._source = source_config_hash
         self._results = tuple(
             FeedResult(
                 status="live",
                 acq_id=f"bar-{ts}",
-                records_added=sum(1 for bar in bars if int(bar["asof_ms"]) == ts),
+                records_added=counts[ts],
                 source_config_hash=source_config_hash,
                 at_ms=ts,
             )
