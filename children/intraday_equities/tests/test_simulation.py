@@ -15,21 +15,31 @@ import os
 import shutil
 from datetime import date, datetime, timedelta, timezone
 
+from decimal import Decimal
+
 import numpy as np
 import pytest
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.false_signal import GrenanderLocalFdr
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, class_ref
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, ConfigError, NodeContext, class_ref
 from dskit.pipeline.predictions import PredictionWriter
 from dskit.pipeline.uncertainty_intake import DecisionDemand, admission_problems
 
+import intraday_equities.simulation as simulation_module
 from intraday_equities.feature_cache import write_feature_cache
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
 from intraday_equities.nodes import Universe, _child_root, _label_from_params, _tapes_from_bars
-from intraday_equities.nodes_capital import REQUIRED_INTAKES, EquityKellyMIO
-from intraday_equities.replay import CashFlowPolicy, EquityReplay, FillPolicy
-from intraday_equities.simulation import ForecastPublisher, MioDecider, MioDeciderNode, _Walk
+from intraday_equities.nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, REQUIRED_INTAKES, EquityKellyMIO
+from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, EquityReplay, FillPolicy
+from intraday_equities.simulation import (
+    DevelopmentSimulation,
+    ForecastPublisher,
+    MioDecider,
+    MioDeciderNode,
+    SimulationReport,
+    _Walk,
+)
 
 KIND = "intraday_equities-forecast-publisher"
 FIRST = date(2022, 5, 6)
@@ -59,10 +69,10 @@ def _dump(path, value):
         json.dump(value, handle, sort_keys=True)
 
 
-def _tape():
+def _tape(count=COUNT):
     """One-minute sessions from 16 days before the first cutoff to past the last fold."""
     rng = np.random.default_rng(7)
-    days = [FIRST - timedelta(days=16 - i) for i in range(16 + STEP * COUNT + 2)]
+    days = [FIRST - timedelta(days=16 - i) for i in range(16 + STEP * count + 2)]
     stamps = np.array(
         [_ms(day) + OPEN_MS + i * 60_000 for day in days for i in range(390)], dtype=np.int64
     )
@@ -136,9 +146,9 @@ def fx(tmp_path):
     return _build_fx(str(tmp_path))
 
 
-def _build_fx(root):
-    """Write the pinned three-fold walk under ``root``; return its handles."""
-    stamps, prices = _tape()
+def _build_fx(root, count=COUNT):
+    """Write the pinned ``count``-fold walk under ``root``; return its handles."""
+    stamps, prices = _tape(count)
     cache = os.path.join(root, "walk", "pipeline_cache", "a")
     frames = [
         {"symbol": s, "names": ["f0"], "asof_ms": stamps[:5], "close": prices[s][:5], "X": np.zeros((5, 1))}
@@ -153,7 +163,7 @@ def _build_fx(root):
     universe_sha = Universe("universe", {"path": UNIVERSE}).fingerprint()["sha256"]
     rng = np.random.default_rng(11)
     fx = {"runs": [], "data": {}, "tape": (stamps, prices), "inventory": os.path.join(root, "inv", "stages", "inventory.json")}
-    for index in range(COUNT):
+    for index in range(count):
         splits = _splits(index)
         cutoff = FIRST + timedelta(days=STEP * index)
         run_dir = os.path.join(root, "runs", f"fixture-wf-{cutoff.isoformat()}")
@@ -230,9 +240,9 @@ def _build_fx(root):
     with open(os.path.join(_child_root(), "configs", "program-calendar.json"), encoding="utf-8") as handle:
         calendar = json.load(handle)
     calendar["fold_schedules"]["development_outer"].update(
-        {"first": FIRST.isoformat(), "step_days": STEP, "count": COUNT, "val_days": STEP,
+        {"first": FIRST.isoformat(), "step_days": STEP, "count": count, "val_days": STEP,
          "embargo_days": 1, "train_days": 10,
-         "last_validation_end_exclusive": (FIRST + timedelta(days=STEP * COUNT)).isoformat()}
+         "last_validation_end_exclusive": (FIRST + timedelta(days=STEP * count)).isoformat()}
     )
     _dump(fx["params"]["program_calendar"], calendar)
     run = os.path.join(root, "run")
@@ -803,3 +813,411 @@ def test_decide_node_refuses_bound_or_undeclared_params():
     assert any(p.startswith("mio: ") and "hfdr_q" in p for p in check({"mio": {**MIO, "hfdr_q": 1.5}}))
     assert any("deployment_mode" in p for p in check({"mio": {**MIO, "deployment_mode": True}}))
     assert check({"mio": MIO, "extra": 1})
+
+
+# --- ADR-0182 S7: the simulate and report nodes, and the pipeline document --
+
+SIM_KIND = "intraday_equities-development-simulation"
+REPORT_KIND = "intraday_equities-simulation-report"
+DISCLOSURE = {
+    "deployment_eligible": False,
+    "evidence_scope": "development_replay_post_selection",
+    "cap_evidence_look_ahead": CAP_LOOK_AHEAD_DISCLOSURE,
+}
+#: The four-fold fixture's last validation day: segments 2 and 3 end here.
+EVIDENCE_END = (FIRST + timedelta(days=STEP * 4 - 1)).isoformat()
+TZ = CASH_POLICY.timezone
+
+
+def _sim_params(first=2, last=3, **overrides):
+    return {
+        "deployment_eligible": False,
+        "evidence_end": EVIDENCE_END,
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": FILL_POLICY.digest(),
+        "caps": "development-only",
+        "cash_flow_policy": "configs/cash-flow-policy.json",
+        "cash_flow_policy_sha256": CASH_POLICY.digest(),
+        "first_fold": first,
+        "last_fold": last,
+        **overrides,
+    }
+
+
+def _sim_inputs(published, bars, fx):
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    return {
+        "bars": bars,
+        "releases": published["releases"],
+        "bundles": published["bundles"],
+        "mio": mio,
+    }
+
+
+def _local_day(asof_ms):
+    return datetime.fromtimestamp(asof_ms / 1000, tz=timezone.utc).astimezone(TZ).date().isoformat()
+
+
+@pytest.fixture(scope="module")
+def sim7(tmp_path_factory):
+    """Two funded segments (folds 2 and 3) through the simulate and report nodes."""
+    fx = _build_fx(str(tmp_path_factory.mktemp("s7")), count=4)
+    fx["params"]["last_fold"] = 3
+    published = _run(fx)
+    bars = _thin_bars(published, fx)
+    node = DevelopmentSimulation("simulate", _sim_params())
+    out = node.run(fx["ctx"], _sim_inputs(published, list(bars), fx))
+    ports = ("fills", "skipped", "refused", "cash", "metadata")
+    report = SimulationReport("report", {}).run(
+        fx["ctx"], {**{port: out[port] for port in ports}, "releases": published["releases"]}
+    )
+    return {"fx": fx, "published": published, "bars": bars, "out": out, "report": report}
+
+
+def test_simulate_and_report_are_registered_nodes_with_json_outputs(sim7):
+    assert DEFAULT_NODE_KINDS.get(SIM_KIND)[0] is DevelopmentSimulation
+    assert DEFAULT_NODE_KINDS.get(REPORT_KIND)[0] is SimulationReport
+    assert issubclass(DevelopmentSimulation, DevelopmentReplay)
+    assert set(DevelopmentSimulation.outputs) == {"fills", "skipped", "refused", "cash", "metadata"}
+    assert set(SimulationReport.outputs) == {"daily", "summary"}
+    for value in (sim7["out"], sim7["report"]):
+        assert json.loads(json.dumps(value)) == value
+
+
+def test_simulate_inherits_the_development_replay_gates():
+    check = DevelopmentSimulation.validate_params
+    assert check(_sim_params()) == []
+    assert any("deployment_eligible" in p for p in check(_sim_params(deployment_eligible=True)))
+    assert any("caps" in p for p in check(_sim_params(caps="confirmed")))
+    assert any("evidence_end" in p for p in check(_sim_params(evidence_end="2022/05/21")))
+    assert any("fill_policy_sha256" in p for p in check(_sim_params(fill_policy_sha256="0" * 64)))
+    bare = {k: v for k, v in _sim_params().items() if not k.startswith("cash_flow_policy")}
+    assert any("cash_flow_policy" in p for p in check(bare))
+    assert any("first_fold" in p for p in check(_sim_params(first=1)))
+    assert any("last_fold" in p for p in check(_sim_params(first=3, last=2)))
+    assert check({**_sim_params(), "extra": 1})
+
+
+def test_segment_opening_cash_equals_previous_closing_cash(sim7):
+    segments = sim7["out"]["metadata"]["segments"]
+    assert [s["fold"] for s in segments] == [2, 3]
+    first, second = segments
+    assert first["opening_cash"] == "0"
+    assert second["opening_cash"] == first["closing_cash"]
+    rows = [row for row in sim7["out"]["cash"] if row["fold"] == 3]
+    assert rows[0]["carried_in"] == first["closing_cash"]
+    assert Decimal(rows[0]["booked"]) == Decimal(first["closing_cash"]) + Decimal("20")
+    assert all(row["carried_in"] == "0" for row in rows[1:])
+    # The closing cash is the seed, every contribution and every fill of segment 2.
+    fills = [f for f in sim7["out"]["fills"] if f["fold"] == 2]
+    assert fills, "segment 2 must trade for this test to mean anything"
+    flows = sum(
+        (Decimal(str(f["price"])) * f["qty"] - Decimal(str(f["fee"])))
+        if f["side"] == "sell" else -(Decimal(str(f["price"])) * f["qty"] + Decimal(str(f["fee"])))
+        for f in fills
+    )
+    contributed = sum(Decimal(row["contribution"]) for row in sim7["out"]["cash"] if row["fold"] == 2)
+    assert Decimal(first["closing_cash"]) == contributed + flows
+
+
+def test_total_contributions_equal_seed_plus_20_per_trading_day(sim7):
+    days = sorted({_local_day(bar["asof_ms"]) for bar in sim7["bars"]})
+    rows = sim7["out"]["cash"]
+    assert [row["date"] for row in rows] == days
+    assert len(days) == 2 * STEP
+    contributions = [Decimal(row["contribution"]) for row in rows]
+    assert contributions == [Decimal("1020")] + [Decimal("20")] * (len(days) - 1)
+    assert Decimal(rows[-1]["contributions_to_date"]) == Decimal("1000") + 20 * len(days)
+    daily = sim7["report"]["daily"]
+    assert [row["date"] for row in daily] == days
+    assert sim7["report"]["summary"]["total_contributed"] == pytest.approx(1000.0 + 20.0 * len(days))
+
+
+def test_nav_minus_contributions_equals_windowbook_realised_when_flat(sim7):
+    from fractions import Fraction
+
+    from dskit.production.accounting import WindowBook
+    from dskit.production.records import Fill
+
+    book = WindowBook()
+    by_day = {}
+    for index, f in enumerate(sim7["out"]["fills"]):
+        book.apply(Fill(
+            fill_id=str(index), venue_ref="t", client_ref="t", instrument=f["symbol"], side=f["side"],
+            qty=Decimal(str(f["qty"])), price=Decimal(str(f["price"])), fee=Decimal(str(f["fee"])),
+            fee_currency="USD", liquidity="taker", status="final", ts_ms=f["asof_ms"], native=None,
+        ))
+        by_day[_local_day(f["asof_ms"])] = book.realised
+    realised = Fraction(0)
+    checked = 0
+    for row in sim7["report"]["daily"]:
+        realised = by_day.get(row["date"], realised)
+        assert row["nav"] - row["contributions_to_date"] == pytest.approx(row["net_pnl"], abs=1e-9)
+        assert row["nav_discrepancy"] == pytest.approx(0.0, abs=1e-6)
+        assert row["replay_nav"] == pytest.approx(row["nav"], abs=1e-6)
+        if row["unrealised_pnl"] == 0.0:
+            assert row["net_pnl"] == pytest.approx(float(realised), abs=1e-9)
+            assert row["realised_pnl"] == pytest.approx(float(realised), abs=1e-9)
+            checked += 1
+    assert checked == len(sim7["report"]["daily"])
+    summary = sim7["report"]["summary"]
+    assert summary["realised_pnl"] == pytest.approx(float(book.realised), abs=1e-9)
+    assert summary["max_drawdown"] == pytest.approx(float(book.drawdown(lambda _s: None)), abs=1e-9)
+    assert summary["fees"] == pytest.approx(sum(f["fee"] for f in sim7["out"]["fills"]), abs=1e-9)
+
+
+def test_report_attribution_and_counts_sum_to_the_totals(sim7):
+    summary = sim7["report"]["summary"]
+    out = sim7["out"]
+    assert sum(v["realised_pnl"] for v in summary["by_symbol"].values()) == pytest.approx(summary["realised_pnl"])
+    assert sum(v["realised_pnl"] for v in summary["by_lead"].values()) == pytest.approx(summary["realised_pnl"])
+    assert set(summary["by_symbol"]) <= {"LLY", "LRCX", "NOW"}
+    assert {v["lead"] for v in summary["by_symbol"].values()} <= {1, 2}
+    assert summary["fills_by_kind"] == {
+        kind: sum(1 for f in out["fills"] if f["kind"] == kind) for kind in ("entry", "exit")
+    }
+    reasons = {}
+    for row in out["refused"]:
+        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+    assert summary["refusals_by_reason"] == reasons
+    assert summary["mio_refused"] == reasons.get("mio_refused", 0)
+    skips = {}
+    for row in out["skipped"]:
+        skips[row["reason"]] = skips.get(row["reason"], 0) + 1
+    assert summary["skips_by_reason"] == skips
+    gross = sum(f["price"] * f["qty"] for f in out["fills"])
+    assert sum(row["buy_notional"] + row["sell_notional"] for row in sim7["report"]["daily"]) == pytest.approx(gross)
+    assert [s["release_id"] for s in summary["segments"]] == [r["release_id"] for r in sim7["published"]["releases"]]
+    assert summary["segments"][0]["measured_coverage"] == sim7["published"]["releases"][0]["calibration"]["measured_coverage"]
+
+
+def test_every_output_row_and_the_run_metadata_carry_the_disclosure(sim7):
+    out, report = sim7["out"], sim7["report"]
+    rows = out["fills"] + out["skipped"] + out["refused"] + out["cash"] + report["daily"]
+    assert rows and out["fills"]
+    for row in rows:
+        assert {k: row[k] for k in DISCLOSURE} == DISCLOSURE
+        assert row["fold"] in (2, 3) and row["release_id"]
+    for block in (out["metadata"], report["summary"], report["summary"]["metadata"]):
+        assert {k: block[k] for k in DISCLOSURE} == DISCLOSURE
+    assert out["metadata"]["evidence_end"] == EVIDENCE_END
+
+
+def test_one_segment_equals_a_direct_equity_replay_of_the_same_bars(sim7):
+    fx, published = sim7["fx"], sim7["published"]
+    first = published["releases"][0]
+    bars = [
+        {**b, "halted": False} for b in sim7["bars"]
+        if first["segment_start_ms"] <= b["asof_ms"] < first["segment_end_ms"]
+    ]
+    mio = _sim_inputs(published, [], fx)["mio"]
+    decider = MioDecider(first, published["bundles"], mio, FILL_POLICY, fx["ctx"])
+    direct = EquityReplay(FILL_POLICY, CASH_POLICY, decider=decider).run(bars)
+    mine = [
+        {k: v for k, v in f.items() if k not in DISCLOSURE and k not in ("fold", "release_id")}
+        for f in sim7["out"]["fills"] if f["fold"] == 2
+    ]
+    assert mine == direct["fills"]
+
+
+def test_each_segment_replays_only_its_own_bars_and_consumes_the_input(sim7, monkeypatch):
+    fx, published = sim7["fx"], sim7["published"]
+    seen = []
+    real = EquityReplay.run
+
+    def spy(self, bars, decisions=()):
+        seen.append([b["asof_ms"] for b in bars])
+        return real(self, bars, decisions)
+
+    monkeypatch.setattr(EquityReplay, "run", spy)
+    bars = list(sim7["bars"])
+    DevelopmentSimulation("simulate", _sim_params(last=2, consume_bars=True)).run(
+        fx["ctx"], _sim_inputs({**published, "releases": published["releases"][:1]}, bars, fx)
+    )
+    release = published["releases"][0]
+    assert len(seen) == 1 and seen[0]
+    assert all(release["segment_start_ms"] <= t < release["segment_end_ms"] for t in seen[0])
+    assert bars == []
+
+
+def test_simulate_refuses_releases_that_disagree_with_its_folds(sim7):
+    fx, published = sim7["fx"], sim7["published"]
+    with pytest.raises(ConfigError, match="fold"):
+        DevelopmentSimulation("simulate", _sim_params(last=2)).run(
+            fx["ctx"], _sim_inputs(published, list(sim7["bars"]), fx)
+        )
+
+
+def test_decision_after_evidence_end_refuses(sim7):
+    fx, published = sim7["fx"], sim7["published"]
+    early = (FIRST + timedelta(days=STEP * 3)).isoformat()
+    with pytest.raises(ConfigError, match="evidence_end"):
+        DevelopmentSimulation("simulate", _sim_params(evidence_end=early)).run(
+            fx["ctx"], _sim_inputs(published, list(sim7["bars"]), fx)
+        )
+
+
+def test_bar_close_disagreeing_with_the_bundle_price_refuses(sim7):
+    fx, published = sim7["fx"], sim7["published"]
+    row = published["bundles"][0]["rows"][0]
+    bars = [
+        {**b, "close": b["close"] * 1.01}
+        if (b["symbol"], b["asof_ms"]) == (row["entity"], row["decision_ts"]) else b
+        for b in sim7["bars"]
+    ]
+    with pytest.raises(ConfigError, match="disagrees"):
+        DevelopmentSimulation("simulate", _sim_params()).run(fx["ctx"], _sim_inputs(published, bars, fx))
+
+
+def test_open_lots_at_segment_end_refuse(sim7, monkeypatch):
+    fx, published = sim7["fx"], sim7["published"]
+    release = published["releases"][0]
+    last = max(b["decision_ts"] for b in published["bundles"] if b["release_id"] == release["release_id"])
+
+    class Stub:
+        def __init__(self, release, bundles, mio, fill_policy, ctx):
+            self.skipped, self.refused = [], []
+
+        def decide(self, asof_ms, portfolio):
+            if asof_ms != last:
+                return []
+            return [{"symbol": "LLY", "asof_ms": asof_ms, "lead": 2, "qty": 1, "side": "buy"}]
+
+    monkeypatch.setattr(simulation_module, "MioDecider", Stub)
+    # LLY's tape ends one bar after the last decision: its lead-2 lot cannot exit.
+    bars = [b for b in sim7["bars"] if not (b["symbol"] == "LLY" and b["asof_ms"] > last + 60_000)]
+    with pytest.raises(ConfigError, match="open lot"):
+        DevelopmentSimulation("simulate", _sim_params(last=2)).run(
+            fx["ctx"], _sim_inputs({**published, "releases": published["releases"][:1]}, bars, fx)
+        )
+
+
+# --- the shipped pipeline documents ------------------------------------------
+
+DOCUMENT = os.path.join(CONFIGS, "run-development-simulation.json")
+SMOKE = os.path.join(CONFIGS, "run-development-simulation-smoke.json")
+
+
+def _document_raw(path=DOCUMENT):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_report_is_a_separate_node_fed_only_by_wires():
+    for path in (DOCUMENT, SMOKE):
+        pipeline = _document_raw(path)["pipeline"]
+        kinds = {key: spec["uses"] for key, spec in pipeline.items()}
+        report = [key for key, kind in kinds.items() if kind == REPORT_KIND]
+        assert len(report) == 1
+        spec = pipeline[report[0]]
+        assert set(spec.get("params") or {}) <= {"notes"}
+        assert spec["inputs"] and all(
+            isinstance(ref, str) and ref.startswith(("$simulate.", "$publish.")) for ref in spec["inputs"].values()
+        )
+        assert SimulationReport.role == "report"
+        writes = {key: spec for key, spec in pipeline.items() if spec["uses"] in ("records-write", "table-write")}
+        wired = {ref for spec in writes.values() for ref in spec["inputs"].values()}
+        assert {"$simulate.fills", "$report.daily", "$report.summary"} <= wired
+        assert sorted(set(kinds.values())) == sorted({
+            "intraday_equities-bars", "concat", "intraday_equities-forecast-publisher",
+            "intraday_equities-mio-decider", SIM_KIND, REPORT_KIND, "records-write", "table-write",
+        })
+
+
+def _utc_ms(day):
+    return _ms(date.fromisoformat(day))
+
+
+def test_bars_read_bounded_to_the_window(monkeypatch, tmp_path):
+    import intraday_equities.nodes as nodes
+
+    for path, start, end in (
+        (DOCUMENT, "2022-09-09", "2025-10-17"),
+        (SMOKE, "2022-09-09", "2022-11-11"),
+    ):
+        specs = [s for s in _document_raw(path)["pipeline"].values() if s["uses"] == "intraday_equities-bars"]
+        assert sorted(s["params"]["source"] for s in specs) == ["alpaca-sip-split", "alpaca-sip-split-e"]
+        for spec in specs:
+            seen = {}
+
+            def fake(root, source, stream, **kwargs):
+                seen.update(kwargs, source=source)
+                return []
+
+            monkeypatch.setattr(nodes, "scan_stream", fake)
+            monkeypatch.setattr(nodes, "dir_digest", lambda _path: "store")
+            for name in ("_cached_key", "_cached_snap", "_cached_fingerprint"):
+                monkeypatch.setattr(nodes.BarsFromStore, name, None)
+            node = nodes.BarsFromStore("bars", {**spec["params"], "root": str(tmp_path)})
+            node.run(NodeContext(name="t", asof="2026-09-24", run_dir=str(tmp_path)), {})
+            assert seen["source"] == spec["params"]["source"]
+            assert seen["since_ms"] == _utc_ms(start)
+            admit = seen["admit"]
+            inside = _utc_ms(end) - 86_400_000 + 15 * 3_600_000  # 11:00 ET on the last day
+            ts = datetime.fromtimestamp(inside / 1000, tz=timezone.utc).isoformat()
+            assert admit({"ts": ts}, inside) is True
+            assert admit({"ts": ts}, _utc_ms(end)) is False
+            assert admit({"ts": ts}, _utc_ms(end) + 3_600_000) is False
+
+
+def _store_rows(bars):
+    """Observation rows an onboarding store holds for ``bars`` (the ``_write_store`` shape)."""
+    for bar in bars:
+        ts = datetime.fromtimestamp(bar["asof_ms"] / 1000, tz=timezone.utc).isoformat()
+        yield {
+            "stream": "bars", "mode": "backfill", "kind": "observation", "effective_date": ts,
+            "acquired_at": "2022-06-01T00:00:00+00:00",
+            "data": {
+                "symbol": bar["symbol"], "ts": ts, "open": bar["open"], "high": bar["open"],
+                "low": bar["close"], "close": bar["close"], "volume": 100.0, "trade_count": 5,
+                "vwap": bar["close"],
+            },
+        }
+
+
+def test_document_runs_end_to_end_through_the_pipeline_driver(sim7, tmp_path, monkeypatch):
+    from dskit.pipeline.__main__ import main
+
+    fx, published = sim7["fx"], sim7["published"]
+    raw = _document_raw()
+    pipeline = raw["pipeline"]
+    root = tmp_path / "ob"
+    sources = {spec["params"]["source"]: key for key, spec in pipeline.items() if spec["uses"] == "intraday_equities-bars"}
+    for source in sources:
+        directory = root / "observations" / source / "acq-0001"
+        directory.mkdir(parents=True)
+        owned = {"alpaca-sip-split": {"LLY"}, "alpaca-sip-split-e": {"LRCX", "NOW"}}[source]
+        with open(directory / "bars.jsonl", "w", encoding="utf-8") as handle:
+            for row in _store_rows(b for b in sim7["bars"] if b["symbol"] in owned):
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+    releases = published["releases"]
+    for key in sources.values():
+        pipeline[key]["params"].update(
+            root=str(root), start_ms=releases[0]["segment_start_ms"], end_ms=releases[-1]["segment_end_ms"],
+        )
+    pipeline["publish"]["params"].update({k: fx["params"][k] for k in pipeline["publish"]["params"] if k != "notes"})
+    pipeline["simulate"]["params"].update(evidence_end=EVIDENCE_END, first_fold=2, last_fold=3)
+    pipeline["decide"]["params"]["mio"] = MIO
+    path = tmp_path / "run-development-simulation.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert main(["run", str(path), "--asof", "2022-06-01", "--adapter", "intraday_equities"]) == 0
+    runs = [d for d in (tmp_path / "pipeline_runs").iterdir() if d.is_dir()]
+    assert len(runs) == 1
+    with open(runs[0] / "plan.json", encoding="utf-8") as handle:
+        planned = json.dumps(json.load(handle))
+    for key in pipeline:
+        assert key in planned
+    written = {
+        p.name: p for p in (tmp_path / "pipeline_runs").iterdir() if p.is_file()
+    }
+    with open(written["development-simulation-summary.json"], encoding="utf-8") as handle:
+        summary = json.load(handle)
+    assert {k: summary[k] for k in DISCLOSURE} == DISCLOSURE
+    assert [s["fold"] for s in summary["segments"]] == [2, 3]
+    with open(written["development-simulation-daily.jsonl"], encoding="utf-8") as handle:
+        daily = [json.loads(line) for line in handle]
+    assert daily and all({k: row[k] for k in DISCLOSURE} == DISCLOSURE for row in daily)
+    assert summary["trading_days"] == len(daily)
+    with open(written["development-simulation-fills.jsonl"], encoding="utf-8") as handle:
+        assert sum(1 for _ in handle) == sum(summary["fills_by_kind"].values())
