@@ -1,0 +1,356 @@
+{
+  "name": "intraday-equities-replay-report",
+  "notes": "ADR-0183 phase 1 real run: the replay-cashflow-20260923 probe (ridge one-pick on the tradables, 2025-10-13..16 decisions, fills through 2025-10-21, ADR-0179 $1,000 seed + $20/day) with PortfolioSelect candidates and the replay's outputs rendered by dskit.evaluation. deployment_eligible=false; development evidence only.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      }
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe.json",
+        "start_ms": 1748822400000,
+        "sessions": [
+          "rth"
+        ]
+      },
+      "notes": "Split-adjusted SIP tape (ADR-0063), read from the child's ./ob like every other run document. start_ms is 2025-06-02, NOT the 2018-01-01 study start: this is the replay-cashflow-20260923 probe's training window, kept so the report replays the same ridge fit; it is a development replay, never model-selection evidence. Run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      }
+    },
+    "window": {
+      "uses": "intraday_equities-window",
+      "inputs": {
+        "records": "$session.records"
+      },
+      "params": {
+        "lookback": "$universe.lookback",
+        "label_lead": 1,
+        "max_gap_minutes": "$universe.max_gap_minutes"
+      }
+    },
+    "grid": {
+      "uses": "event-grid",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "period_ms": 60000,
+        "offset_ms": 0
+      }
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$grid.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      }
+    },
+    "train_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.train_end_ms"
+          }
+        ]
+      }
+    },
+    "val_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "asof_ms",
+            "op": ">=",
+            "value": "$splits.val_start_ms"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.val_end_ms"
+          }
+        ]
+      }
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+      "mode": "train",
+      "inputs": {
+        "rows": "$train_rows.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          "ret_lag_0",
+          "ret_lag_1",
+          "ret_lag_2",
+          "ret_lag_3",
+          "ret_lag_4",
+          "ret_lag_5",
+          "ret_lag_6",
+          "ret_lag_7",
+          "ret_lag_8",
+          "ret_lag_9",
+          "ret_lag_10",
+          "ret_lag_11",
+          "ret_lag_12",
+          "ret_lag_13",
+          "ret_lag_14",
+          "ret_lag_15",
+          "ret_lag_16",
+          "ret_lag_17",
+          "ret_lag_18",
+          "ret_lag_19",
+          "ret_lag_20",
+          "ret_lag_21",
+          "ret_lag_22",
+          "ret_lag_23",
+          "ret_lag_24",
+          "ret_lag_25",
+          "ret_lag_26",
+          "ret_lag_27",
+          "ret_lag_28",
+          "ret_lag_29"
+        ],
+        "label": "y_next",
+        "seed": 7
+      }
+    },
+    "select": {
+      "uses": "intraday_equities-portfolio",
+      "inputs": {
+        "signal": "$qhat.signal",
+        "records": "$val_rows.records",
+        "labeled": "$val_rows.records",
+        "tradable": "$universe.tradable"
+      },
+      "params": {
+        "split": "val"
+      }
+    },
+    "dec_lead": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$select.picks"
+      },
+      "params": {
+        "field": "lead",
+        "cases": [
+          {
+            "when": [],
+            "value": 1
+          }
+        ]
+      },
+      "notes": "Matches window.label_lead. An empty when is the kind's declared catch-all."
+    },
+    "dec_side": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$dec_lead.records"
+      },
+      "params": {
+        "field": "side",
+        "cases": [
+          {
+            "when": [],
+            "value": "buy"
+          }
+        ]
+      },
+      "notes": "PortfolioSelect ranks and picks one name; long-only for this probe."
+    },
+    "dec_qty": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$dec_side.records"
+      },
+      "params": {
+        "field": "qty",
+        "cases": [
+          {
+            "when": [],
+            "value": 1
+          }
+        ]
+      },
+      "notes": "Fixed lot. Real sizing is EquityKellyMIO, which needs the unbuilt pi/scenario evidence."
+    },
+    "replay_window": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$session.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "asof_ms",
+            "op": ">=",
+            "value": 1760313600000
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": 1761091199000
+          }
+        ]
+      },
+      "notes": "Decision window plus three trailing sessions, inside fill_suffix_bars=1171 and fill_suffix_weekdays=5."
+    },
+    "replay_symbols": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$replay_window.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      }
+    },
+    "replay_bars": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$replay_symbols.records"
+      },
+      "params": {
+        "field": "halted",
+        "cases": [
+          {
+            "when": [],
+            "value": false
+          }
+        ]
+      },
+      "notes": "The store carries no halt flag and ReplayAdapter._halted refuses a missing one; this says the default out loud."
+    },
+    "replay": {
+      "uses": "intraday_equities.replay:DevelopmentReplay",
+      "inputs": {
+        "bars": "$replay_bars.records",
+        "decisions": "$dec_qty.records"
+      },
+      "params": {
+        "deployment_eligible": false,
+        "evidence_end": "2025-10-16",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
+        "caps": "development-only",
+        "cash_flow_policy": "configs/cash-flow-policy.json",
+        "cash_flow_policy_sha256": "501e27afca2ecae6aeb7a3d66136001aafa4d52dab9c98409496d0c446f0c878"
+      }
+    },
+    "events": {
+      "uses": "intraday_equities-replay-events",
+      "inputs": {
+        "candidates": "$select.candidates",
+        "picks": "$select.picks",
+        "fills": "$replay.fills",
+        "refused": "$replay.refused",
+        "skipped": "$replay.skipped",
+        "cash_flows": "$replay.cash_flows",
+        "bars": "$replay_bars.records"
+      },
+      "params": {
+        "title": "Ridge one-pick development replay, 2025-10-13..16",
+        "project": "intraday_equities",
+        "tz": "America/New_York",
+        "price_field": "close",
+        "mark_symbols": "traded",
+        "model": "ridge-alpha1-lags30",
+        "trials": 1,
+        "criteria": [
+          {
+            "name": "net P&L positive",
+            "stat": "net_pnl",
+            "op": ">",
+            "value": 0,
+            "min_n": 30
+          },
+          {
+            "name": "per-trade t-stat >= 2",
+            "stat": "trade_t",
+            "op": ">=",
+            "value": 2.0,
+            "min_n": 30
+          },
+          {
+            "name": "daily Sharpe positive",
+            "stat": "daily_sharpe",
+            "op": ">",
+            "value": 0,
+            "min_n": 20
+          }
+        ]
+      },
+      "notes": "ADR-0183 item 14: maps the pick's candidates and the replay's fills, refusals, skips and cash flows onto dskit-eval-v1 events. Criteria are pre-registered here, before the run; four sessions cannot satisfy daily_sharpe's min_n, so that one reads INCONCLUSIVE by design. trials=1: one configuration was tried."
+    },
+    "report": {
+      "uses": "dskit.evaluation.nodes:EvaluationReport",
+      "inputs": {
+        "events": "$events.events"
+      },
+      "params": {
+        "out_dir": "pipeline_runs/replay-report-20251013",
+        "title": "intraday_equities development replay 2025-10-13..16"
+      },
+      "notes": "Writes events.jsonl, summary.md, report.html, decisions.csv, trades.csv under the invoking cwd's pipeline_runs/ (gitignored). Re-render from events.jsonl alone with python -m dskit.evaluation render."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1760140799000,
+    "val_start_ms": 1760313600000,
+    "val_end_ms": 1760659199000,
+    "test_end_ms": 1761091199000
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd. One experiment so cadence and HPO runs compare in one UI. Params are the declared document; metrics are the final pass. Trials do not reach this sink."
+      }
+    ],
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
+  }
+}
