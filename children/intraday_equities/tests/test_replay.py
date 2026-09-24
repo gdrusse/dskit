@@ -1687,7 +1687,7 @@ def _cash_flow_pair(path="configs/cash-flow-policy.json"):
     }
 
 
-def test_development_replay_keeps_five_required_params_and_two_paired_optional_ones():
+def test_development_replay_keeps_five_required_params_and_its_optional_ones():
     assert DevelopmentReplay._PARAMS == (
         "deployment_eligible",
         "evidence_end",
@@ -1698,6 +1698,8 @@ def test_development_replay_keeps_five_required_params_and_two_paired_optional_o
     assert DevelopmentReplay._OPTIONAL_PARAMS == (
         "cash_flow_policy",
         "cash_flow_policy_sha256",
+        "keep_ledger",
+        "guards",
     )
 
 
@@ -1875,7 +1877,7 @@ def test_an_unfunded_replay_emits_no_cash_flows_and_no_cash_series():
 
 def test_development_replay_declares_and_returns_the_cash_outputs():
     assert DevelopmentReplay.outputs == (
-        "fills", "skipped", "refused", "cash_flows", "cash",
+        "fills", "skipped", "refused", "cash_flows", "cash", "findings", "ledger",
     )
     bars = _cf_bars([10.0] * 4)
     out = DevelopmentReplay(
@@ -1920,3 +1922,172 @@ def test_decision_stage_refusals_name_their_decision_bar():
         "symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol",
         "decision_ms": _cf_t(0),
     }]
+
+
+# --- ADR-0183 phase 2 item 3: ledger findings, the kept ledger, guards
+
+
+def _observational_guards(max_qty="1000000", max_notional="100000000"):
+    """Two limits too generous to breach: they record, they never refuse."""
+    return {
+        "size": {"uses": "limit", "params": {
+            "measure": "quantity", "bound": {"max": max_qty}, "on_breach": "refuse",
+        }},
+        "notional": {"uses": "limit", "params": {
+            "measure": "notional", "bound": {"max": max_notional}, "on_breach": "refuse",
+        }},
+    }
+
+
+def _findings_tape():
+    return _cf_bars([10.0, 11.0, 12.0, 13.0]), [_decision("AAA", _cf_t(0), lead=2, qty=5)]
+
+
+def _read_back(root, series_id):
+    from dskit.production.clock import TestClock
+    from dskit.production.ledger import JsonlLedger, ServeRoot
+
+    return JsonlLedger.reading(ServeRoot(str(root), series_id), clock=TestClock(0))
+
+
+_RUN_KEYS = ("fills", "skipped", "refused", "cash_flows", "cash")
+
+
+def test_observational_limits_record_one_findings_row_per_fill():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES), guards=_observational_guards())
+    out = replay.run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    # The run() dict is unchanged: findings ride on the object.
+    assert set(out) == set(_RUN_KEYS)
+    plain = EquityReplay(_policy(_ZERO_FEES)).run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    assert out == plain
+    assert len(out["fills"]) == 2
+    keys = [(r["symbol"], r["lead"], r["kind"], r["asof_ms"]) for r in replay.findings]
+    assert keys == [(f["symbol"], f["lead"], f["kind"], f["asof_ms"]) for f in out["fills"]]
+    for row, fill in zip(replay.findings, out["fills"]):
+        assert set(row) == {
+            "symbol", "lead", "kind", "asof_ms", "tick_id", "leg_id", "verdict", "findings",
+        }
+        assert row["verdict"] == "allow"
+        assert isinstance(row["tick_id"], str) and isinstance(row["leg_id"], str)
+        measured = {
+            f["guard"]: (f["measure"], Decimal(f["value"]), f["bound"], f["verdict"])
+            for f in row["findings"]
+        }
+        assert measured == {
+            "size": ("quantity", Decimal(fill["qty"]), "1000000", "allow"),
+            "notional": (
+                "notional", Decimal(str(fill["price"])) * fill["qty"], "100000000", "allow",
+            ),
+        }
+
+
+def test_a_replay_without_guards_has_no_findings_rows():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES))
+    replay.run(bars, decisions)
+    assert replay.findings == []
+
+
+def test_the_ledger_is_copied_to_ledger_dir_and_reads_back_at_the_same_head(tmp_path):
+    from dskit.production.reconcile import LedgerHistory
+
+    bars, decisions = _findings_tape()
+    target = tmp_path / "kept"
+    replay = EquityReplay(
+        _policy(_ZERO_FEES), guards=_observational_guards(), ledger_dir=str(target),
+    )
+    replay.run(bars, decisions)
+    segments = list((target / replay.series_id / "ledger").iterdir())
+    assert segments and all(path.stat().st_size > 0 for path in segments)
+    reader = _read_back(target, replay.series_id)
+    seq, head = replay.ledger_head
+    assert seq > 0 and reader.head() == (seq, head)
+    assert reader.verify() is None
+    kept = LedgerHistory(reader).leg_findings(0)
+    assert [row["leg_id"] for row in kept] == [row["leg_id"] for row in replay.findings]
+
+
+def test_an_existing_non_empty_ledger_dir_is_refused_before_the_replay_runs(tmp_path):
+    bars, decisions = _findings_tape()
+    target = tmp_path / "kept"
+    target.mkdir()
+    (target / "stale").write_text("x", encoding="utf-8")
+    replay = EquityReplay(_policy(_ZERO_FEES), ledger_dir=str(target))
+    with pytest.raises(ConfigError, match="ledger_dir"):
+        replay.run(bars, decisions)
+    assert replay.fills == []
+    assert sorted(path.name for path in target.iterdir()) == ["stale"]
+
+
+def test_a_guard_breach_still_fails_the_replay_loudly():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES), guards=_observational_guards(max_qty="1"))
+    with pytest.raises(ConfigError, match="queued but never submitted"):
+        replay.run(bars, decisions)
+    # Every refused leg is still reported, with no fill to join to.
+    assert replay.findings
+    for row in replay.findings:
+        assert row["verdict"] == "refuse"
+        assert (row["symbol"], row["lead"], row["kind"], row["asof_ms"]) == (None,) * 4
+        assert {f["guard"] for f in row["findings"] if f["verdict"] == "refuse"} == {"size"}
+
+
+def test_an_absent_guard_map_leaves_the_serve_document_unchanged():
+    from intraday_equities.replay import _serve_document
+
+    base = _serve_document("run", "series-1", ["AAA"], [1, 2])
+    assert base["guards"] == {}
+    assert _serve_document("run", "series-1", ["AAA"], [1, 2], guards=None) == base
+    guarded = _serve_document(
+        "run", "series-1", ["AAA"], [1, 2], guards=_observational_guards(),
+    )
+    assert guarded["guards"] == _observational_guards()
+
+
+def test_development_replay_returns_findings_and_keeps_its_ledger(tmp_path):
+    from types import SimpleNamespace
+
+    params = _shipped_replay_params(evidence_end=_CF_EVIDENCE_END)
+    assert "guards" not in params and "keep_ledger" not in params
+    bars, decisions = _findings_tape()
+    plain = DevelopmentReplay("replay", params).run(None, {"bars": bars, "decisions": decisions})
+    assert plain["findings"] == [] and plain["ledger"] is None
+    kept = DevelopmentReplay("replay", dict(
+        params, keep_ledger=True, guards=_observational_guards(),
+    ))
+    ctx = SimpleNamespace(run_dir=str(tmp_path))
+    out = kept.run(ctx, {"bars": bars, "decisions": decisions})
+    assert set(out) == set(DevelopmentReplay.outputs)
+    assert {key: out[key] for key in _RUN_KEYS} == {key: plain[key] for key in _RUN_KEYS}
+    assert [row["verdict"] for row in out["findings"]] == ["allow"] * len(out["fills"])
+    ledger = out["ledger"]
+    assert ledger["root"] == os.path.join(kept.artifact_dir(ctx), "ledger")
+    reader = _read_back(ledger["root"], ledger["series_id"])
+    assert reader.head() == (ledger["seq"], ledger["hash"])
+
+
+@pytest.mark.parametrize(
+    ("guards", "expected"),
+    [
+        ([], "guards must be a mapping"),
+        ({"size": {"uses": "nope"}}, "unknown kind 'nope'"),
+        ({"size": {"uses": "limit", "params": {"measure": "quantity"}}}, "bound"),
+        ({"size": {"uses": "limit", "bogus": 1}}, "unknown key(s) ['bogus']"),
+    ],
+    ids=["not-a-map", "unknown-kind", "guard-refuses-its-params", "site-default-deny"],
+)
+def test_development_replay_validates_guards_through_the_production_path(guards, expected):
+    problems = DevelopmentReplay.validate_params(_shipped_replay_params(guards=guards))
+    assert problems and any(expected in problem for problem in problems)
+
+
+def test_development_replay_accepts_a_sound_guard_map():
+    params = _shipped_replay_params(guards=_observational_guards(), keep_ledger=False)
+    assert DevelopmentReplay.validate_params(params) == []
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_development_replay_keep_ledger_must_be_a_bool(value):
+    problems = DevelopmentReplay.validate_params(_shipped_replay_params(keep_ledger=value))
+    assert any("keep_ledger must be a bool" in problem for problem in problems)

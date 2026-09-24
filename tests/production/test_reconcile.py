@@ -64,6 +64,8 @@ from dskit.production.records import (
 )
 from dskit.production.state import SeriesState
 from tests.production.test_document import minimal_document, set_path
+from tests.production.test_guards import a_limit, chain_of, tick_state
+from tests.production.test_guards import proposal as guard_proposal
 
 # ---------------------------------------------------------------------------
 # Fixed material
@@ -1503,7 +1505,70 @@ def test_ledger_history_bounds_legs_inclusively_by_the_instant_they_were_decided
     assert [leg.leg_id for leg in legs] == ["leg-2"]
 
 
-@pytest.mark.parametrize("reader", ("fills", "cash_flows", "marks", "outcomes", "legs"))
+def test_leg_findings_carry_a_real_guards_findings_and_their_composite_verdict():
+    """ADR-0183 phase 2 item 3: every decided leg's stored findings and
+    `guards.max_verdict` over them, joined to the tick exactly as `legs()`."""
+    size = a_limit(name="size", bound={"max": "1000"})
+    notional = a_limit(name="notional", measure="notional", bound={"max": "100000"})
+    _, findings = chain_of(size, notional).check_all(guard_proposal(), tick_state())
+    stored = [finding.to_obj() for finding in findings]
+    entry = decision_leg(leg_id="leg-1")
+    entry["proposal"] = {"id": "cand-1", "qty": "10", "side": "buy"}
+    entry["findings"] = stored
+    ledger = make_reconciler()[1]
+    fold(ledger, "decision", decision_body([entry, decision_leg("leg-2")]))
+    fold(ledger, "tick", tick_body(observed_at_ms=BASE_MS + 7))
+    rows = LedgerHistory(ledger).leg_findings(0)
+    assert [row["leg_id"] for row in rows] == ["leg-1", "leg-2"]
+    first, second = rows
+    assert first == {
+        "leg_id": "leg-1",
+        "tick_id": "tick-1",
+        "instrument": "AAPL",
+        "decided_at_ms": BASE_MS + 7,
+        "client_ref": "ref-leg-1",
+        "proposal_id": "cand-1",
+        "final": "buy",
+        "verdict": "allow",
+        "findings": stored,
+    }
+    assert [(f["guard"], f["measure"], f["value"], f["bound"]) for f in first["findings"]] == [
+        ("size", "quantity", "10", "1000"),
+        ("notional", "notional", "100", "100000"),
+    ]
+    # A leg with no findings reads max_verdict's empty answer: allow.
+    assert second["findings"] == [] and second["verdict"] == "allow"
+    assert second["proposal_id"] is None
+    legs = LedgerHistory(ledger).legs(0)
+    assert [(leg.leg_id, leg.tick_id, leg.decided_at_ms) for leg in legs] == [
+        (row["leg_id"], row["tick_id"], row["decided_at_ms"]) for row in rows
+    ]
+
+
+def test_leg_findings_composite_is_the_strictest_stored_verdict():
+    entry = decision_leg()
+    entry["findings"] = [
+        {"guard": "a", "verdict": "warn"}, {"guard": "b", "verdict": "refuse"},
+    ]
+    ledger = make_reconciler()[1]
+    fold(ledger, "decision", decision_body([entry], tick_id="t1"))
+    fold(ledger, "tick", tick_body(tick_id="t1", observed_at_ms=BASE_MS - 3000))
+    fold(ledger, "decision", decision_body([decision_leg("leg-2")], tick_id="t2"))
+    fold(ledger, "tick", tick_body(tick_id="t2", observed_at_ms=BASE_MS - 1000))
+    history = LedgerHistory(ledger)
+    assert [row["verdict"] for row in history.leg_findings(0)] == ["refuse", "allow"]
+    assert [row["leg_id"] for row in history.leg_findings(BASE_MS - 1000)] == ["leg-2"]
+
+
+def test_leg_findings_drop_a_decision_whose_tick_never_landed():
+    ledger = make_reconciler()[1]
+    fold(ledger, "decision", decision_body([decision_leg()]))
+    assert LedgerHistory(ledger).leg_findings(0) == ()
+
+
+@pytest.mark.parametrize(
+    "reader", ("fills", "cash_flows", "marks", "outcomes", "legs", "leg_findings"),
+)
 def test_every_reader_refuses_a_bound_that_is_not_a_non_negative_instant(reader):
     reconciler, ledger, state, clock = make_reconciler()
     with pytest.raises(ProductionError):
