@@ -22470,6 +22470,17 @@ approves). **Owner:** Russell. **Base:** `3204d2b`. **Branch:**
 taken by the agent conservatively while the owner was unavailable; each is
 listed under **Agent-decided questions** for ruling.
 
+**Revision 1 (2026-09-23, after two Phase-0 lenses on `4ad520c`).**
+Orchestrator ruling, from owner intent in
+`docs/evidence/closeout/0203-intraday-full-backtest-claude-handoff.md`
+("consume all and only stock/horizon candidates admitted by the prior gate
+outputs"): the tradable set and caps are the P16 `gates.json` admission
+(11 units), not the model's `asset_horizons` (25 names, Reviewer B Major);
+the lead-1-only restriction is dropped in favour of each unit's admitted
+horizon; the StatTest survivor step is removed (the gate is the survivor
+set); S4 is re-anchored on the verified `admit` hook; the branch sweep and
+the ReplayRun citation are added.
+
 **Context.** The owner wants the strategy run on real bars exactly as
 production would: rolling inference per decision tick, periodic retraining,
 $1,000 + $20/day funding (`configs/cash-flow-policy.json`), `EquityKellyMIO`
@@ -22512,17 +22523,29 @@ Verified against `3204d2b` and the on-disk artifacts:
   `_tapes_from_bars`' 1-minute arrays, nodes.py:3872, 4717). 90 (symbol, h)
   units, 25 symbols, h1 present for all 25, ~902k rows. No model files are
   saved, so no in-loop inference is possible without refitting.
-- Pinned inventory
-  `p16-final-model-gate-inventory-staged-*/stages/inventory.json` lists all
-  20 folds with sha256 prediction pins; `final_gates._verified_prediction_snapshot`
-  verifies them. `gates.json` caps carry `evidence_scope
-  developmental_post_selection` (11 served units).
+- Gate admission on disk: two staged gate runs,
+  `p16-final-model-gates-staged-2026-02-28-77a7ab08/stages/gates.json`
+  (sha256 `1fb4dec20a7ac32867f8a9cb20d1c96225b2818029034ab5ce7f1b2c872d8771`,
+  manifest `...gate-inventory-staged-2026-02-28-fa061189/stages/inventory.json`)
+  and `...-dc250a5c` (sha256 `093eadce...`, manifest `...-a46cab26`); their
+  `outputs.caps` are identical. This ADR pins `77a7ab08` and its own
+  manifest `fa061189`. `outputs.caps` has 25 units, `n_served_units` 11,
+  `capped_horizon > 0` for exactly ADBE 4, CIEN 5, LITE 3, LLY 2, LRCX 10,
+  LULU 2, MSTR 6, NOW 5, PANW 1, TER 3, XLK 3 (verified); ANET, BAC, BIDU,
+  DAL, FCX, INTC, IWM, MET, NRG, QQQ, SMH, XBI, XLE, XLF are 0. Caps are
+  contiguous from h1. Scope `developmental_post_selection`,
+  `deployment_eligible=false`, Bonferroni over a 90-cell family using ALL
+  20 folds (evidence through 2025-10-16).
+- The pinned inventory lists all 20 folds with sha256 prediction pins;
+  `final_gates._verified_prediction_snapshot` verifies them.
 - `dskit/production`: no refit/model-swap hook; a new release is a new run
   dir, release and process (compose.py:1299-1309). `WindowBook`
   (accounting.py:536) is the one P&L fold; `Report.value_curve` needs a
   persistent ledger and is O(ticks x fills).
 - The JSON-pipeline backtester line (ADR-0125/0127/0180, `trust.ReplayRun`,
-  `document.ExecutionBacktestSpec`) is fail-closed and synthetic-only.
+  `document.ExecutionBacktestSpec`) is fail-closed and synthetic-only:
+  `ReplayRun.run` (dskit/pipeline/trust.py:5981-5987) unconditionally raises
+  `RuntimeError("replay execution requires the F3 composed-tape broker ...")`.
 
 ### Decision
 
@@ -22547,15 +22570,39 @@ testable. Only S3 touches dskit.
   a small availability filter that production would not have; (iv)
   predictions exist only on the 30-min lattice, so production may decide
   more often than this simulation can.
-- *Cadence and units (e).* Decisions only at lattice instants (30 min).
-  `lead` L is in 1-minute tape bars, the same unit as `HorizonBook` and the
-  label; one L per run (ForecastBundle refuses mixed leads). Shipped L = 1:
-  the only lead every one of the 25 names was modeled at; choosing among
-  leads on development folds is selection and must be labelled as such.
-  Config refuses `L >= 30`: every lot then expires before the next decision,
-  so `EquityKellyMIO` always sees an empty book and the replay never needs an
-  early-exit order. The MIO's inventory/no-trade-band path is therefore NOT
-  exercised by this simulation (disclosed).
+- *Admission, caps and survivors (d) — RULED (Revision 1).* Tradable units
+  are exactly the `gates.json` (sha pinned above) caps with `capped_horizon
+  > 0`; the other 14 are excluded. The mapping is READ from the pinned
+  artifact, never restated in config. Survivors passed to `EquityKellyMIO`
+  = the admitted symbols (the gate is Bonferroni skill testing; no second
+  StatTest). Disclosed look-ahead: the admission uses evidence through
+  2025-10-16, so at a 2022 tick the universe and horizons are chosen with
+  later information — results are developmental post-selection and say so.
+- *Cadence, leads and units (e).* Decisions only at the 30-min lattice
+  instants (the only instants with stored predictions). Lead L is in
+  1-minute tape bars (the label, `HorizonBook` and `common_lead_stop` unit).
+  Each admitted unit trades at ONE lead, its `capped_horizon` (the longest
+  admitted head; caps are contiguous from h1, so it is itself admitted):
+  PANW 1; LLY 2, LULU 2; LITE 3, TER 3, XLK 3; ADBE 4; CIEN 5, NOW 5;
+  MSTR 6; LRCX 10. `ForecastBundle` and `EquityKellyMIO` both refuse mixed
+  leads, so each tick solves one MIO per lead group (7 groups), in
+  ascending lead order, each seeing the cash left by the previous groups'
+  planned buys (`cash_after`). The order is a disclosed allocation bias.
+  Trading every admitted horizon of a unit as concurrent lots was rejected:
+  it multiplies that arbitrary sequential allocation for no production
+  precedent.
+- *No overlap — checked.* A decision at lattice bar index i fills at i+1
+  (`fill_bar_offset` 1) and force-exits at i+1+L <= i+11 (`forced_exit_horizon_basis
+  "fill"`, max admitted L = 10). The next decision on that unit is 30
+  minutes later, i.e. at index >= i+11 whenever the name printed at least
+  11 one-minute bars in between, so the lot has already exited. The last
+  lattice origin with stored predictions is 15:30 ET (all ten head labels
+  must be finite), so no lot crosses the close. The one exception is a thin
+  name with fewer than 11 bars in a 30-minute window: the decider then
+  skips that unit for the tick with reason `open_lot_at_decision` (never an
+  early exit, never a same-lead refusal). Consequently `EquityKellyMIO`
+  always sees an empty book; its inventory/no-trade-band path is NOT
+  exercised (disclosed).
 - *Window (f).* Segments k = 2..19: 2022-09-09..2025-10-16, inside
   `development_validation`; `evidence_end = "2025-10-16"` through the
   inherited `DevelopmentReplay` gate. Folds 0-1 are warm-up only (S5 needs
@@ -22566,17 +22613,20 @@ testable. Only S3 touches dskit.
   intraday). `calibration_end_ms = cutoff_k - 1`, `known_at_ms = cutoff_k`.
   This is procedure-level calibration (earlier refits' residuals attested
   for release k), stated in every artifact's evidence id.
-- *Caps (d).* A per-segment cap artifact, `deployment_eligible=false`,
-  `evidence_scope="development_replay_unconfirmed"`, caps = the fold config's
-  `path.asset_horizons` (the model's own head count, no confirmation claim),
-  `generated_ms = cutoff_k`, `evidence_end_ms = cutoff_k - 1`, evidence sha =
-  sha256 of the canonical `asset_horizons` list. The P16 `gates.json` caps
-  are NOT used: relabelling `developmental_post_selection` evidence under
-  another scope would defeat ADR-0121's rule. `deployment_mode=false`.
-- *Survivors.* The owned `stat_test` (`kinds_stats.StatTest`, alpha 0.05,
-  `bh`, n_boot 2000, seed 0) on per-session mean scaled loss gaps `d/q`
-  (`read_prediction_series`) of the calibration window at lead L —
-  point-in-time, as the planner's capital rule requires.
+- *Cap artifact carrying the admission.* `EquityKellyMIO` only reads caps
+  through `ConfirmedCaps`, whose validator refuses the exact scope
+  `developmental_post_selection` (ADR-0121). The per-segment artifact is
+  therefore NOT a confirmation and never says so: `deployment_eligible`
+  false, `evidence_scope` `"p16-gate-admission-developmental-post-selection-evidence-end-2025-10-16"`
+  (names the true source and end), `evidence.sha256` = the pinned
+  `gates.json` sha, caps = the 11 admitted units' `capped_horizon`,
+  `model_release_id` = the segment release, `generated_ms = cutoff_k`,
+  `evidence_end_ms = cutoff_k - 1`. Those two stamps are replay-issue stamps
+  forced by the MIO's timing screen, NOT the evidence end (2025-10-16) —
+  the one deliberate stamp fiction in this design, disclosed here, in the
+  scope string and on every report row. `deployment_mode=false`, so the
+  artifact can never authorize deployment; ADR-0121's rule and
+  `ConfirmedCaps` are unchanged.
 - *Development placeholders (not owner rulings).* `risk_aversion_gamma` 2.0,
   `n_tangents` 32, `n_scenarios_max` 64, `cvar_alpha` 0.95, `cvar_limit`
   null, `cardinality` 5, `min_ticket` 0.0, `hfdr_q` 0.30, `band_bps` 10.0,
@@ -22617,18 +22667,24 @@ and discards). This is the `SignalEvidence(statistic, null_draws)` input
 `test_session_flip_nulls_skips_constant_cells`.
 
 **S4 — bounded bar reads.** `nodes.BarsFromStore` gains optional `end_ms`
-(exclusive; applied at intake through `scan_stream`'s existing `admit`;
-emitted into fingerprint/cache key only when present, so no existing hash
-moves). Needed because `start_ms` alone makes each segment read the store to
-2026 (~8.5M records). RED (`tests/test_nodes.py`):
+(exclusive). Hook verified: `scan_stream(..., admit=None, ...)`
+(dskit/onboarding/observations.py:237-239) calls `admit(data, stamp)` at
+intake with `stamp` = the derived epoch-ms `ts_out` (applied at :530,
+after `since_ms`/`keep_values`); `BarsFromStore.run` already passes
+`admit=_tag` (children/intraday_equities/intraday_equities/nodes.py:926).
+The change is one clause in `_tag`: return False when `end_ms` is declared
+and `stamp >= end_ms`. No dskit change. Emitted into fingerprint/cache key
+only when present, so no existing hash moves. Needed because `start_ms`
+alone makes each segment read the store to 2026 (~8.5M records). RED
+(`tests/test_nodes.py`):
 `test_bars_from_store_end_ms_excludes_at_and_after`,
 `test_bars_from_store_without_end_ms_fingerprint_unchanged`.
 
 **S5 — `ForecastPublisher` (b, c).** New child module
 `intraday_equities/simulation.py`.
-`ForecastPublisher(inventory_path, inventory_sha256, calendar_path, lead,
-calibration_window_days, n_scenarios, coverage, window_blocks, null_draws,
-seed)`:
+`ForecastPublisher(inventory_path, inventory_sha256, gates_path,
+gates_sha256, calendar_path, calibration_window_days, n_scenarios,
+coverage, window_blocks, null_draws, seed)`:
 - `__init__` reads the pinned inventory (`final_gates._read_pinned_json`),
   verifies every fold's prediction pins
   (`final_gates._verified_prediction_snapshot`), reads each fold's
@@ -22636,21 +22692,30 @@ seed)`:
   equals `fold_schedules.development_outer` of the calendar loaded through
   `dskit.pipeline.program_calendar.load_program_calendar`,
   `train_end < cutoff` for every fold, and folds are contiguous and ordered.
+  It also reads the pinned `gates.json` (`_read_pinned_json`), refuses
+  unless `metrics.manifest_artifact` is the pinned inventory, and derives
+  the lead map `{symbol: capped_horizon}` for `capped_horizon > 0`.
 - `release(k)` -> dict with `release_id`
   (`lean-pooled-h10-fold{k:02d}-{run_hash[:16]}`), `model_manifest_sha256`
-  (= `run_hash`), `cap` (above), `survivors` (StatTest), and `uncertainty`:
-  `outcome` = `BlockConformalInterval().calibrate(BlockResiduals(names,
+  (= `run_hash`), `cap` (above), `survivors` (the admitted symbols), and
+  one `uncertainty` pair PER LEAD GROUP L: `outcome` =
+  `BlockConformalInterval().calibrate(BlockResiduals(names=group symbols,
   rows, blocks=utc_day, stamps))` on complete-case lattice rows of
   `y - yhat` at lead L; `scenarios` from `.scenarios(residuals,
-  n_scenarios, seed)`; `false_signal` = `GrenanderLocalFdr().estimate(
-  {cell: SignalEvidence(*session_flip_nulls(...)[cell])},
-  independent_units=<distinct symbols>)` over every (symbol, h) cell in the
-  window. Attestations: outcome `CoverageEvidence.measured` = out-of-sample
+  n_scenarios, seed)`; `false_signal`: ONE `GrenanderLocalFdr().estimate(
+  {"SYM:hLL": SignalEvidence(*session_flip_nulls(...)[cell])},
+  independent_units=<distinct symbols>)` per segment over all 90 modeled
+  (symbol, h) cells in the window (the same family the gate corrected
+  over), then per group projected to a `FalseSignalEstimate` keyed by
+  symbol holding exactly that group's `SYM:hL` values, unchanged, with the
+  source estimate's `evidence` (the capital node keys `pi_hat` by entity;
+  a projection, not a re-estimate — disclosed). Attestations: outcome `CoverageEvidence.measured` = out-of-sample
   coverage of the same procedure calibrated on folds < k-1 and scored on fold
   k-1; false-signal `measured` = 0.53 with evidence id
   `ADR-0152-synthetic-attainment-floor-not-measured-on-this-panel`.
-- `bundle_at(ts, closes)` -> assembled `ForecastBundle(...).rows` for names
-  with a fold-k prediction at `(ts, L)`: `yhat` only (the tick path never
+- `bundles_at(ts, closes)` -> `{L: ForecastBundle(...).rows}`, one bundle
+  per lead group, for admitted names with a fold-k prediction at
+  `(ts, lead_map[symbol])`: `yhat` only (the tick path never
   reads `y`), `price` = decision-bar close, `sigma_t`/`beta_t` from
   `nodes._LeadLabel` built by `_label_from_params(scan_params,
   _tapes_from_bars(cache_tapes, spec["price_field"], val_end_k),
@@ -22662,13 +22727,17 @@ RED (`tests/test_simulation.py`, synthetic 3-fold fixture written with
 `PredictionWriter` + a tiny feature-cache): `test_segment_artifacts_ignore_rows_at_or_after_cutoff`
 (mutating any `y`/`yhat` with `ts >= cutoff_k` leaves `release(k)` digests
 identical); `test_tick_path_never_reads_realized_y` (mutating fold-k `y`
-leaves every `bundle_at` identical); `test_fold_train_end_after_cutoff_refuses`;
+leaves every `bundles_at` identical); `test_fold_train_end_after_cutoff_refuses`;
 `test_prediction_pin_mismatch_refuses`; `test_sigma_reproduces_the_stored_label`
 (the fixture's `y` recomputed with publisher sigma/beta equals the stored
 `y`); `test_artifacts_admitted_in_segment_and_refused_before_cutoff`
 (`admission_problems` empty at a tick in segment k, `post_decision` for a
 tick before `cutoff_k`); `test_cap_never_carries_the_p16_scope`;
-`test_survivors_from_calibration_window_only`.
+`test_only_gate_admitted_units_at_capped_horizon_enter_bundles`
+(a zero-cap unit with predictions never appears);
+`test_gates_sha_or_manifest_mismatch_refuses`;
+`test_one_bundle_per_lead_group_never_mixed`;
+`test_false_signal_projection_preserves_values`.
 
 **S6 — `MioDecider` inside `EquityReplay` (e).** `EquityReplay(policy,
 cash_flow_policy=None, decider=None)`: the upfront loop body of `run` moves
@@ -22678,19 +22747,24 @@ decision instant, it calls `decider.decide(asof, self._portfolio(asof))` and
 enqueues the returned rows for fill at the next bar. `_portfolio` reads live
 state: `cash = buying_power = self._cash_balance`, `positions` = lots not
 expiring at or before the fill bar, `mark_prices` = decision closes,
-`gross_limit` = NAV. `MioDecider(publisher, release, mio_params, lead)`:
-per tick builds the bundle, constructs `EquityKellyMIO(key, {**mio_params,
-**pins})` where pins are the in-process producer's own digests
-(`ForecastBundle.digest`, `ConfirmedCaps.digest`, producer = the simulation
-document hash + node key) — the in-process trust relationship, disclosed —
-runs it, and maps `trades` to `{"symbol", "asof_ms", "lead": L, "qty":
-buy, "side": "buy"}`. A MIO refusal/`ValueError`/non-optimal solve records
-`mio_refused` and emits nothing; a `sell` while the book is empty raises.
+`gross_limit` = NAV. `MioDecider(publisher, release, mio_params)`: per tick
+drops units with an open lot (`open_lot_at_decision`), then for each lead
+group in ascending L builds that group's bundle, constructs
+`EquityKellyMIO(key, {**mio_params, **pins})` where pins are the
+in-process producer's own digests (`ForecastBundle.digest`,
+`ConfirmedCaps.digest`, producer = the simulation document hash + node key)
+— the in-process trust relationship, disclosed — runs it with the cash
+left by earlier groups (`cash_after`), and maps `trades` to `{"symbol",
+"asof_ms", "lead": L, "qty": buy, "side": "buy"}`. A MIO
+refusal/`ValueError`/non-optimal solve records `mio_refused` for that group
+and emits nothing for it; a `sell` while the book is empty raises.
 RED (`tests/test_simulation.py`): `test_decider_sees_cash_after_this_bars_fills`,
 `test_mio_orders_are_integer_shares_filled_next_bar_open`,
 `test_lots_force_exit_at_fill_plus_lead`, `test_mio_refusal_trades_nothing_and_is_recorded`,
 `test_cash_never_negative_over_a_funded_multi_day_tape`,
-`test_lead_not_below_cadence_refuses`; plus `tests/test_replay.py`
+`test_lead_groups_share_one_cash_budget_in_ascending_order`,
+`test_lot_expires_before_next_lattice_decision_for_max_lead_10`,
+`test_thin_unit_with_open_lot_is_skipped_not_exited`; plus `tests/test_replay.py`
 `test_run_with_explicit_decisions_unchanged` (existing behaviour pinned).
 
 **S7 — `DevelopmentSimulation` node + config + report (f, g).**
@@ -22699,12 +22773,12 @@ RED (`tests/test_simulation.py`): `test_decider_sees_cash_after_this_bars_fills`
 (`deployment_eligible` false, `caps` `development-only`, `evidence_end`,
 fill/cash-flow pins); `DevelopmentReplay.run`'s window checks move to
 `_refuse_out_of_window(bars, decisions)` so both nodes share them. Own
-params: `inventory_manifest`, `inventory_manifest_sha256`,
-`program_calendar`, `lead`, `first_fold`, `last_fold`,
+params: `inventory_manifest`, `inventory_manifest_sha256`, `gates`,
+`gates_sha256`, `program_calendar`, `first_fold`, `last_fold`,
 `calibration_window_days`, `bar_reads` (list of `{source, universe}`),
 `onboarding_root`, `mio` (the EquityKellyMIO base params above),
 `uncertainty` (`n_scenarios` 64, `coverage` 0.95, `window_blocks` 10,
-`null_draws` 999, `seed` 0), `stat_test` (alpha, correction, n_boot, seed).
+`null_draws` 999, `seed` 0). No `lead` param: leads come from the gates.
 `run` loops segments k: read bars with `BarsFromStore(end_ms=cutoff_k+1)`
 per `bar_reads` (RTH via the universe session), add `halted=False` (the
 source has no halt flag), run `EquityReplay(policy, segment_cash_policy,
@@ -22720,8 +22794,8 @@ total contributed, net P&L, fees, turnover, max drawdown of NAV -
 contributions, refusals by reason, `mio_refused` count, per-segment release
 id/survivors/pi/measured coverage), and every row stamped
 `deployment_eligible=false`, `evidence_scope="development_replay_post_selection"`.
-Config `configs/run-development-simulation.json` (L=1, folds 2..19,
-2025-10-16, pins). RED: `test_config_validates_and_is_ineligible`,
+Config `configs/run-development-simulation.json` (folds 2..19,
+2025-10-16, inventory `fa061189` + gates `77a7ab08` pins). RED: `test_config_validates_and_is_ineligible`,
 `test_segment_opening_cash_equals_previous_closing_cash`,
 `test_total_contributions_equal_seed_plus_20_per_trading_day`,
 `test_nav_minus_contributions_equals_windowbook_realised_when_flat`,
@@ -22752,14 +22826,26 @@ the smoke shows it matters.
 | `EquityReplay._apply_exits/_apply_entries` | `grep -n "_apply_bar" replay.py`: one caller, `evaluate` | The fix IS splitting it; no second copy. |
 | `BarTape` counter | `grep -rn "BarTape(" --include=*.py`: one class | Edit in place, no new symbol. |
 | `attempts.session_flip_nulls` | `grep -rn "def .*null_draws\|scramble"`; `max_bar`, `_replicate_matrix`, `_cell_columns` | `max_bar` computes these draws and discards them; importing `_`-private helpers across packages breaks the API contract. |
-| `BarsFromStore.end_ms` | `_PARAMS` (nodes.py:741) has only `start_ms`; `scan_stream(admit=)` exists | A few lines on the existing node; a new reader would duplicate session/cohort/dedup logic. |
+| `BarsFromStore.end_ms` | `_PARAMS` (nodes.py:741) has only `start_ms`; `scan_stream(admit=)` (observations.py:239, applied :530) already wired as `admit=_tag` (nodes.py:926) | One clause in the existing `_tag`; a new reader would duplicate session/cohort/dedup logic. |
+| lead map / survivors | `gates.json` `outputs.caps`; `final_gates._read_pinned_json` | Read from the pinned gate artifact; the earlier StatTest survivor step and `asset_horizons` caps are removed (no new code for either). |
 | `ForecastPublisher` | `grep -rn "class \w*(Publisher\|Calibrat\|PointInTime)"`: only `SyntheticMioSource`, estimators, trust.py synthetic publishers | Nothing reads real fold predictions into bundles; it composes existing estimators, `read_predictions`, `_LeadLabel`, `ForecastBundle`, `ConfirmedCaps`. |
 | `MioDecider` | `class \w*Decider`: `production.Decider` (re-runs a saved pipeline subgraph; no fold-by-fold forecasts, no MIO), test fakes | `EquityReplay` already is the ServeLoop decider; this is the strategy object it calls. |
 | `EquityReplay._enqueue_decision/_portfolio`, `decider=` | `run` loop body (739-775) | Extraction so upfront and per-tick decisions share one validation path. |
-| `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun` (fail-closed), `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; ReplayRun has no executable path. |
+| `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). |
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
 | report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
 | new files | — | `intraday_equities/simulation.py`, `tests/test_simulation.py`, `configs/run-development-simulation.json`; child README/AGENTS trees updated. |
+
+**Branch / worktree sweep (concurrent-effort findings checked).** After
+`git fetch`: `origin/codex/intraday-equities-full-backtest-20260922` (tip
+`4834c9b`, worktree `/home/russell/wt/p19-full-backtest-20260922`) is 0
+commits ahead of `origin/main`, 61 behind, and an ancestor of main;
+`origin/claude/intraday-equities-backtest-cont-41xqxz` (tip `5dc76c4`) is 0
+ahead, 9 behind, ancestor of main. Both are fully merged: they are the prior
+slices (ADR-0172–0179: the replay, cash-flow policy, insufficient-cash
+refusal, calendar-aware funding, `DevelopmentReplay` wiring) this ADR builds
+on, not competing work. `git branch -r` shows no other backtest, simulation
+or publisher branch; `git worktree list` shows only those two plus this one.
 
 **Related suites per slice** (run from the worktree with
 `PYTHONPATH=$PWD:$PWD/children/intraday_equities`; never the full suite):
@@ -22774,12 +22860,20 @@ tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.
 ### Agent-decided questions (for owner ruling)
 
 1. Retraining = the P16 fold schedule; no in-loop refit (no saved models).
-2. Cadence = 30-min lattice; one lead per run; L = 1 shipped; L < 30 enforced.
+2. Cadence = 30-min lattice; each admitted unit at its `capped_horizon`
+   (one lead per unit); one MIO solve per lead group, ascending, sharing one
+   cash budget; thin units with an open lot are skipped.
 3. Window = folds 2..19 (2022-09-09..2025-10-16); folds 0-1 warm-up.
 4. Calibration = trailing 730 days of prior-fold residuals, refreshed per
-   release; procedure-level, not model-level.
-5. Caps = structural, unconfirmed (`asset_horizons`); P16 gates caps unused.
-6. Survivors = owned `stat_test` on the calibration window.
+   release, per lead group; procedure-level, not model-level.
+5. RULED by the orchestrator (Revision 1): universe, caps and survivors =
+   P16 gate admission (11 units), pinned `77a7ab08`; look-ahead disclosed.
+   Agent choice inside it: the cap artifact's `generated_ms`/`evidence_end_ms`
+   are replay-issue stamps (the MIO timing screen needs them); the true
+   evidence end is in the scope string. Owner should confirm this stamp
+   handling.
+6. False-signal numbers: one estimate over all 90 modeled cells, projected
+   per lead group by symbol.
 7. `uncertainty_min_coverage` 0.50 and the false-signal attestation 0.53
    (ADR-0152's synthetic floor, not measured here). Likely effect: small-m
    `pi_widened` near 1 makes HFDR forbid most positions; zero turnover would
@@ -22795,8 +22889,9 @@ tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.
 
 ### Non-goals
 
-In-loop refit or inference; mixed-lead bundles or per-lead solve groups;
-early-exit orders and overlapping lots; confirmed caps; settlement
+In-loop refit or inference; mixed-lead bundles; trading more than one
+admitted horizon per unit; the 14 zero-cap units; early-exit orders and
+overlapping lots; confirmed caps; settlement
 modelling; any read of 2025-10-17 onward; changes to `fill-policy.json`,
 `cash-flow-policy.json`, `EquityKellyMIO`, `ForecastBundle`, the estimators
 or `dskit.production`; `docs/decisioning/path.csv`.
@@ -22804,7 +22899,9 @@ or `dskit.production`; `docs/decisioning/path.csv`.
 ### Alternatives rejected
 
 In-loop refit (no model artifacts; ~20 walk refits, not production-different);
-`trust.ReplayRun` / F3 broker (fail-closed, a far larger program); one
-whole-window replay (8M bar dicts plus the quadratic tape); using the
-`gates.json` caps under a new scope (defeats ADR-0121); treating every name
-as a survivor (skips production's capital gate).
+`trust.ReplayRun` / F3 broker (`ReplayRun.run` always raises,
+trust.py:5981-5987; a far larger program); one whole-window replay (8M bar
+dicts plus the quadratic tape); the model's `asset_horizons` as caps and a
+StatTest survivor step (Revision 1: trades units the gate rejected); a
+lead-1-only run (drops the admitted horizons); relabelling the gate
+admission as ConfirmedCaps confirmation (defeats ADR-0121).
