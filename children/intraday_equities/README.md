@@ -173,6 +173,7 @@ intraday_equities/
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
 │   ├── forecast_bundle.py # ruled label inverse + confirmed-cap contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
+│   ├── simulation.py    # ADR-0182 publisher: per-release caps/uncertainty + per-tick bundles
 │   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)

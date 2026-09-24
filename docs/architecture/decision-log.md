@@ -22805,6 +22805,41 @@ tick before `cutoff_k`); `test_cap_never_carries_the_p16_scope`;
 `test_one_bundle_per_lead_group_never_mixed`;
 `test_false_signal_projection_preserves_values`.
 
+**S5 as built (2026-09-23).** `intraday_equities/simulation.py`:
+`ForecastPublisher` (kind `intraday_equities-forecast-publisher`, role
+`data`, outputs `releases` and `bundles`, both plain JSON) over a private
+`_Walk` that owns the verified pinned reads. Deviations from the text
+above, each the smallest that unblocked the slice: (1) params use
+Revision 3's names (`inventory_manifest`, `inventory_manifest_sha256`,
+`gates`, `gates_sha256`, `program_calendar`, `first_fold`, `last_fold`,
+`calibration_window_days`, `uncertainty` = `{n_scenarios, coverage,
+window_blocks, null_draws, seed}`) plus two the text omitted:
+`fold_schedule` (the calendar key, not hardcoded) and `walk_root` (the
+P16 fold documents name their caches `./pipeline_cache/...`, relative to
+the directory the walk ran from). (2) Pinned reads happen in `run`, not
+`__init__` (a node is constructed at plan time). (3) `price` is the fold
+tape's decision-bar close (the bar the label's `P0` reads), not a
+`closes` argument: Revision 3 gives `publish` no inputs. S7 must accept
+that the cache tape (float32 `close`) and the split-adjusted bars are two
+reads of the same minute. (4) Fold documents are verified with
+`RunAttestation.binds_document_identity`, the universe by its recorded
+fingerprint, caches by recorded manifest digest and `verify_feature_cache`
+(once per cache); a symbol in several caches must carry byte-identical
+tapes. (5) Scan `val_end_ms` is `$splits.val_end_ms` in the fold
+documents and resolves from `resolved.json`. (6) Each bundle row's
+`label` is the fold label's effective knobs, so a fold whose label
+differs from the pinned contract refuses in `ForecastBundle`. (7) The
+producer document hash is read from the driver's `resolved.json` in
+`ctx.run_dir`. (8) Outcome `measured` = share of fold k-1's complete-case
+(row, component) cells inside the band calibrated on folds < k-1;
+`n_units` = its UTC days. (9) `ForecastPublisher.envelopes(release,
+lead)` rebuilds both attested envelopes from the JSON; S6/S7 use it.
+Real-data smoke (pins above, folds 2-3): 6.8 s, 531 MB RSS, 6,935
+bundles / 10,904 rows, 37 MB JSON; measured coverage 0.957-0.988 at
+target 0.95; `pi_widened` reaches 0.77-0.89 for LLY/ADBE in some releases
+(question 7's HFDR effect is live). Folds 2..19 extrapolate to ~62k
+bundles and ~330 MB of JSON resident for `simulate`.
+
 **S6 — `MioDecider` inside `EquityReplay` (e).** `EquityReplay(policy,
 cash_flow_policy=None, decider=None)`: the upfront loop body of `run` moves
 to `_enqueue_decision(decision)` (same refusals); `run(bars, decisions=())`.
