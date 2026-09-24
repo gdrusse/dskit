@@ -282,6 +282,27 @@ class TestSessionFlipNulls:
             cells, n_boot=200, seed=10
         )
 
+    def test_session_flip_nulls_draws_belong_to_their_own_cell(self):
+        # Every cell shares the same sessions, so a single-cell call draws the
+        # same coins: each cell's draws must equal its own naive computation,
+        # never a neighbour's column.
+        cells = _noise_cells(5, 30, 3, seed=33)
+        nulls = session_flip_nulls(cells, n_boot=300, seed=11)
+        for name in cells:
+            alone = session_flip_nulls({name: cells[name]}, n_boot=300, seed=11)[name]
+            assert nulls[name][0] == pytest.approx(alone[0], rel=1e-12)
+            assert nulls[name][1] == pytest.approx(alone[1], rel=1e-5, abs=1e-6)
+
+    def test_session_flip_nulls_changing_one_cell_moves_only_its_draws(self):
+        cells = _noise_cells(4, 25, 2, seed=8)
+        before = session_flip_nulls(cells, n_boot=200, seed=2)
+        moved = dict(cells)
+        moved["cell002"] = {s: (t * 3.0 + s, n) for s, (t, n) in cells["cell002"].items()}
+        after = session_flip_nulls(moved, n_boot=200, seed=2)
+        assert after["cell002"][1] != before["cell002"][1]
+        for name in ("cell000", "cell001", "cell003"):
+            assert after[name] == before[name]
+
     def test_session_flip_nulls_skips_constant_cells(self):
         cells = {
             "flat": {s: (1.0, 1) for s in range(5)},
