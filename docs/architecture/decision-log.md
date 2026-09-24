@@ -22481,6 +22481,23 @@ horizon; the StatTest survivor step is removed (the gate is the survivor
 set); S4 is re-anchored on the verified `admit` hook; the branch sweep and
 the ReplayRun citation are added.
 
+**Revision 2 (2026-09-23, orchestrator ruling on question 5).** No false
+timestamps anywhere: the cap artifact keeps its TRUE stamps
+(`evidence_end_ms` = the last millisecond of 2025-10-16 UTC, `generated_ms`
+a true instant after it). The MIO's two cap-timing refusals ("cap is from
+the future", "cap.generated_ms ... is after bundle decision_ts") are instead
+passed through one declared developmental switch on `EquityKellyMIO`,
+`cap_evidence_look_ahead` (see the cap bullet below, S6 and S7). Seam sweep:
+`EquityKellyMIO` already carries `deployment_mode` (bool; development mode
+already requires `cap.deployment_eligible` false), `DevelopmentReplay`
+carries `caps: "development-only"` and `deployment_eligible: false`;
+neither can relax a timing check, and `ConfirmedCaps` / `ScenarioUtilitySolve`
+have no timing or scope knob (`grep -n "look_ahead\|post_selection\|
+evidence_scope" intraday_equities/*.py`: only `final_gates._SCOPE`, the
+`ConfirmedCaps` scope refusal, and demo scopes). The two refusals live only
+in `EquityKellyMIO.validate_inputs` (nodes_capital.py:878-917), so the
+switch is one optional param there, gated on `deployment_mode` false.
+
 **Context.** The owner wants the strategy run on real bars exactly as
 production would: rolling inference per decision tick, periodic retraining,
 $1,000 + $20/day funding (`configs/cash-flow-policy.json`), `EquityKellyMIO`
@@ -22620,13 +22637,24 @@ testable. Only S3 touches dskit.
   false, `evidence_scope` `"p16-gate-admission-developmental-post-selection-evidence-end-2025-10-16"`
   (names the true source and end), `evidence.sha256` = the pinned
   `gates.json` sha, caps = the 11 admitted units' `capped_horizon`,
-  `model_release_id` = the segment release, `generated_ms = cutoff_k`,
-  `evidence_end_ms = cutoff_k - 1`. Those two stamps are replay-issue stamps
-  forced by the MIO's timing screen, NOT the evidence end (2025-10-16) —
-  the one deliberate stamp fiction in this design, disclosed here, in the
-  scope string and on every report row. `deployment_mode=false`, so the
-  artifact can never authorize deployment; ADR-0121's rule and
-  `ConfirmedCaps` are unchanged.
+  `model_release_id` = the segment release, and TRUE stamps (Revision 2):
+  `evidence_end_ms` = 2025-10-17T00:00Z - 1 ms, `generated_ms` = the pinned
+  `gates.json` file's modification time read at publisher init (a true
+  instant after the evidence end, deterministic for the pinned file so the
+  per-tick digest pins are reproducible). Every tick precedes both stamps,
+  so the MIO's timing screen would refuse; it is passed ONLY through the
+  declared switch `EquityKellyMIO.cap_evidence_look_ahead` (optional JSON
+  bool, default false; true is a validation problem unless
+  `deployment_mode` is false). When true, exactly two checks are skipped —
+  `age_ms < 0` ("cap is from the future") and `generated_ms > decision_ts`
+  — the staleness check still applies whenever `age_ms >= 0`, and every
+  other cap check (digest, producer, evidence sha, release match,
+  `deployment_eligible` false, `ConfirmedCaps.problems`) is unchanged. The
+  node's `evidence` output then carries `cap_evidence_look_ahead:
+  "caps use post-selection evidence (look-ahead disclosed)"`; S7 stamps the
+  same string on every report row and in the run metadata.
+  `deployment_mode=false`, so the artifact can never authorize deployment;
+  ADR-0121's rule and `ConfirmedCaps` are unchanged.
 - *Development placeholders (not owner rulings).* `risk_aversion_gamma` 2.0,
   `n_tangents` 32, `n_scenarios_max` 64, `cvar_alpha` 0.95, `cvar_limit`
   null, `cardinality` 5, `min_ticket` 0.0, `hfdr_q` 0.30, `band_bps` 10.0,
@@ -22766,6 +22794,15 @@ RED (`tests/test_simulation.py`): `test_decider_sees_cash_after_this_bars_fills`
 `test_lot_expires_before_next_lattice_decision_for_max_lead_10`,
 `test_thin_unit_with_open_lot_is_skipped_not_exited`; plus `tests/test_replay.py`
 `test_run_with_explicit_decisions_unchanged` (existing behaviour pinned).
+Revision 2 adds the switch here (the only `EquityKellyMIO` change):
+`nodes_capital.EquityKellyMIO` gains optional `cap_evidence_look_ahead`
+(above); `MioDecider` passes it only from the declared `mio` params, never
+by default. RED (`tests/test_nodes_capital.py`):
+`test_cap_look_ahead_default_refuses_future_cap` (existing refusal pinned),
+`test_cap_look_ahead_true_admits_future_cap_and_records_disclosure`,
+`test_cap_look_ahead_true_requires_development_mode`,
+`test_cap_look_ahead_must_be_json_bool`,
+`test_cap_look_ahead_keeps_every_other_cap_check`.
 
 **S7 — `DevelopmentSimulation` node + config + report (f, g).**
 `DevelopmentSimulation(DevelopmentReplay)` (kind
@@ -22793,7 +22830,11 @@ notional, turnover = gross notional / NAV, trades), `summary` (final NAV,
 total contributed, net P&L, fees, turnover, max drawdown of NAV -
 contributions, refusals by reason, `mio_refused` count, per-segment release
 id/survivors/pi/measured coverage), and every row stamped
-`deployment_eligible=false`, `evidence_scope="development_replay_post_selection"`.
+`deployment_eligible=false`, `evidence_scope="development_replay_post_selection"`,
+`cap_evidence_look_ahead="caps use post-selection evidence (look-ahead
+disclosed)"` (Revision 2; also in the run metadata). The node refuses a
+`mio` block without `cap_evidence_look_ahead: true` — the switch is
+declared in the config, never implied.
 Config `configs/run-development-simulation.json` (folds 2..19,
 2025-10-16, inventory `fa061189` + gates `77a7ab08` pins). RED: `test_config_validates_and_is_ineligible`,
 `test_segment_opening_cash_equals_previous_closing_cash`,
@@ -22831,6 +22872,7 @@ the smoke shows it matters.
 | `ForecastPublisher` | `grep -rn "class \w*(Publisher\|Calibrat\|PointInTime)"`: only `SyntheticMioSource`, estimators, trust.py synthetic publishers | Nothing reads real fold predictions into bundles; it composes existing estimators, `read_predictions`, `_LeadLabel`, `ForecastBundle`, `ConfirmedCaps`. |
 | `MioDecider` | `class \w*Decider`: `production.Decider` (re-runs a saved pipeline subgraph; no fold-by-fold forecasts, no MIO), test fakes | `EquityReplay` already is the ServeLoop decider; this is the strategy object it calls. |
 | `EquityReplay._enqueue_decision/_portfolio`, `decider=` | `run` loop body (739-775) | Extraction so upfront and per-tick decisions share one validation path. |
+| `EquityKellyMIO.cap_evidence_look_ahead` (Revision 2) | `deployment_mode`, `DevelopmentReplay.caps`/`deployment_eligible`, `ConfirmedCaps.problems`, `ScenarioUtilitySolve._PARAMS`; `grep -n "look_ahead\|post_selection\|evidence_scope"` | No existing flag relaxes a timing check; the two refusals live only in `EquityKellyMIO.validate_inputs`, so one optional param there is the smallest honest seam (the rejected alternative was false stamps). |
 | `DevelopmentSimulation` | `DevelopmentReplay`, `trust.ReplayRun`, `ExecutionBacktestSpec` | Subclasses `DevelopmentReplay` for its gates; `ReplayRun.run` always raises (trust.py:5981-5987). |
 | `DevelopmentReplay._refuse_out_of_window` | `DevelopmentReplay.run` 1678-1714 | Extraction so both nodes share one window gate. |
 | report helpers | `WindowBook`, `Report.value_curve`, `records.Fill` | `WindowBook` reused as the P&L fold; `Report` needs a persistent ledger and is O(ticks x fills); per-segment ledgers are temporary. |
@@ -22868,10 +22910,10 @@ tests/pipeline/test_uncertainty_intake.py tests/pipeline/test_predictions.py`.
    release, per lead group; procedure-level, not model-level.
 5. RULED by the orchestrator (Revision 1): universe, caps and survivors =
    P16 gate admission (11 units), pinned `77a7ab08`; look-ahead disclosed.
-   Agent choice inside it: the cap artifact's `generated_ms`/`evidence_end_ms`
-   are replay-issue stamps (the MIO timing screen needs them); the true
-   evidence end is in the scope string. Owner should confirm this stamp
-   handling.
+   Stamp handling RULED (Revision 2): true stamps on the cap artifact; the
+   MIO timing screen is passed only through the declared development
+   switch `EquityKellyMIO.cap_evidence_look_ahead`, disclosed on every
+   report row and in the run metadata.
 6. False-signal numbers: one estimate over all 90 modeled cells, projected
    per lead group by symbol.
 7. `uncertainty_min_coverage` 0.50 and the false-signal attestation 0.53
@@ -22893,7 +22935,8 @@ In-loop refit or inference; mixed-lead bundles; trading more than one
 admitted horizon per unit; the 14 zero-cap units; early-exit orders and
 overlapping lots; confirmed caps; settlement
 modelling; any read of 2025-10-17 onward; changes to `fill-policy.json`,
-`cash-flow-policy.json`, `EquityKellyMIO`, `ForecastBundle`, the estimators
+`cash-flow-policy.json`, `EquityKellyMIO` (except Revision 2's one optional
+`cap_evidence_look_ahead` param), `ForecastBundle`, the estimators
 or `dskit.production`; `docs/decisioning/path.csv`.
 
 ### Alternatives rejected
@@ -22902,6 +22945,8 @@ In-loop refit (no model artifacts; ~20 walk refits, not production-different);
 `trust.ReplayRun` / F3 broker (`ReplayRun.run` always raises,
 trust.py:5981-5987; a far larger program); one whole-window replay (8M bar
 dicts plus the quadratic tape); the model's `asset_horizons` as caps and a
-StatTest survivor step (Revision 1: trades units the gate rejected); a
+StatTest survivor step (Revision 1: trades units the gate rejected);
+cap stamps set to the segment start so the MIO timing screen passes
+(Revision 2: a false timestamp, ruled out); a
 lead-1-only run (drops the admitted horizons); relabelling the gate
 admission as ConfirmedCaps confirmation (defeats ADR-0121).
