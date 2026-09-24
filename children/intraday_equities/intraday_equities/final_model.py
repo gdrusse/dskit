@@ -57,6 +57,7 @@ from dskit.pipeline.driver import (
 from dskit.pipeline.document import load_document
 from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator
 from dskit.pipeline.node import ConfigError, Node, reject_unknown_params
+from dskit.pipeline.stages import Stage
 from dskit.pipeline.stats import cluster_bootstrap_t
 
 __all__ = [
@@ -67,6 +68,7 @@ __all__ = [
     "FIXTURE_CHANNEL",
     "GATE_FACTS",
     "FinalRefit",
+    "FrozenWinners",
     "HEADS",
     "HPO_LEDGER_OUTPUT",
     "PRODUCTION_CHANNEL",
@@ -79,6 +81,7 @@ __all__ = [
     "final_hpo_document_identity",
     "hpo_space",
     "lean_feature_drop",
+    "one_standard_error_winner",
     "permitted_for_refit",
     "refit_heads",
     "run_lead_selection",
@@ -822,31 +825,9 @@ class FinalRefit(Node):
 
     def _winner_from_evidence(self, head, evidence):
         """Rebuild the frozen inventory, ledger, and 1-SE ruling."""
-        template = self._hpo_template()
-        model = template["model"]
-        inventory = CandidateInventory(
-            model["hpo_space"], n_trials=model["hpo_trials"], seed=model["hpo_seed"]
+        return one_standard_error_winner(
+            self._hpo_template()["model"], evidence, f"FinalRefit: {head}"
         )
-        ledger_obj, selection = evidence["ledger"], evidence["selection"]
-        if not isinstance(ledger_obj, dict) or set(ledger_obj) != {
-            "inventory_digest", "evidence_fields", "rows",
-        }:
-            raise ValueError(f"FinalRefit: {head} ledger has the wrong shape")
-        if ledger_obj["inventory_digest"] != inventory.digest:
-            raise ValueError(f"FinalRefit: {head} ledger inventory differs from pinned HPO")
-        if tuple(ledger_obj["evidence_fields"]) != EVIDENCE_FIELDS:
-            raise ValueError(f"FinalRefit: {head} ledger evidence fields differ from contract")
-        ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
-        for row in ledger_obj["rows"]:
-            ledger.record(row["overrides"], row["score"], **{
-                key: value for key, value in row.items() if key not in {"overrides", "score"}
-            })
-        if ledger.to_obj() != ledger_obj:
-            raise ValueError(f"FinalRefit: {head} ledger is incomplete or noncanonical")
-        ruled = OneStandardErrorSelector(select="max", simplicity_key=simplicity_key).select(ledger)
-        if ruled.to_obj() != selection:
-            raise ValueError(f"FinalRefit: {head} selection is not the pinned one-standard-error ruling")
-        return ruled.selected_candidate
 
     def _hpo_template(self):
         templates = self._hpo_document["stages"]["finalist"]["params"]["templates"]
@@ -1656,6 +1637,150 @@ def simplicity_key(row) -> tuple:
         -overrides["reg_alpha"],
     )
 
+
+
+def one_standard_error_winner(model, evidence, label):
+    """Re-derive one head's frozen winner from its recorded trial ledger (ADR-0114 §11.1).
+
+    The one rule both :class:`FinalRefit` and :class:`FrozenWinners` apply:
+    rebuild the candidate inventory the recipe declares, replay the ledger
+    into a fresh :class:`~dskit.pipeline.kinds_search.TrialLedger`, rule it
+    with the one-standard-error selector, and accept the recorded selection
+    only when it is exactly that ruling.
+
+    Parameters
+    ----------
+    model : dict
+        The recipe's model block; ``hpo_space``, ``hpo_trials`` and
+        ``hpo_seed`` are read.
+    evidence : dict
+        The head's ``hpo_ledger`` output (``ledger`` and ``selection``).
+    label : str
+        Prefix naming the head in every refusal.
+
+    Returns
+    -------
+    dict
+        The winning candidate's overrides.
+
+    Raises
+    ------
+    ValueError
+        A malformed, foreign, incomplete or re-ruled ledger.
+    """
+    inventory = CandidateInventory(
+        model["hpo_space"], n_trials=model["hpo_trials"], seed=model["hpo_seed"]
+    )
+    ledger_obj, selection = evidence["ledger"], evidence["selection"]
+    if not isinstance(ledger_obj, dict) or set(ledger_obj) != {
+        "inventory_digest", "evidence_fields", "rows",
+    }:
+        raise ValueError(f"{label} ledger has the wrong shape")
+    if ledger_obj["inventory_digest"] != inventory.digest:
+        raise ValueError(f"{label} ledger inventory differs from pinned HPO")
+    if tuple(ledger_obj["evidence_fields"]) != EVIDENCE_FIELDS:
+        raise ValueError(f"{label} ledger evidence fields differ from contract")
+    ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
+    for row in ledger_obj["rows"]:
+        ledger.record(row["overrides"], row["score"], **{
+            key: value for key, value in row.items() if key not in {"overrides", "score"}
+        })
+    if ledger.to_obj() != ledger_obj:
+        raise ValueError(f"{label} ledger is incomplete or noncanonical")
+    ruled = OneStandardErrorSelector(select="max", simplicity_key=simplicity_key).select(ledger)
+    if ruled.to_obj() != selection:
+        raise ValueError(f"{label} selection is not the pinned one-standard-error ruling")
+    return ruled.selected_candidate
+
+
+class FrozenWinners(Stage):
+    """Each lead's frozen winner, re-derived from a one-fold warmup HPO walk (ADR-0185).
+
+    Reads the :class:`~dskit.pipeline.benchmarks.DocumentWalkRun` row of
+    the warmup walk: its sealed summary (sha re-checked), its ONE fold's run
+    directory (a completed run whose ``config.json`` and ``resolved.json``
+    bind one document identity), and every ``scan_hNN`` node's
+    ``hpo_ledger`` as the run itself recorded AND carried it
+    (``RunAttestation.attested_output``). Each ruling goes through
+    :func:`one_standard_error_winner` against that node's own recipe
+    (``hpo_space``, ``hpo_trials``, ``hpo_seed``). Nothing is read from a
+    value pasted into a config.
+
+    Parameters
+    ----------
+    params : dict
+        None; every knob is refused.
+
+    Examples
+    --------
+    ::
+
+        stage = FrozenWinners("winners")
+        winners = stage.run(ctx, {"run": hpo_row})["winners"]
+        sorted(winners)
+        # -> ['scan_h01', ..., 'scan_h10']
+    """
+
+    outputs = ("winners", "evidence")
+
+    def validate_inputs(self, inputs):
+        """Require exactly the walk's completed, sealed run row."""
+        if not isinstance(inputs, dict) or set(inputs) != {"run"}:
+            return ["inputs must contain exactly run"]
+        row = inputs["run"]
+        if not isinstance(row, dict) or row.get("state") != "ran":
+            return ["run must be a completed walk row"]
+        if not isinstance(row.get("evidence_manifest_path"), str) or not isinstance(
+            row.get("evidence_manifest_sha256"), str
+        ):
+            return ["run carries no evidence seal"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Return ``{scan_hNN: overrides}`` and the evidence each ruling rests on."""
+        import hashlib
+
+        del ctx
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"{self.key}: {problems}")
+        row = inputs["run"]
+        with open(row["evidence_manifest_path"], "rb") as handle:
+            raw = handle.read()
+        if hashlib.sha256(raw).hexdigest() != row["evidence_manifest_sha256"]:
+            raise ValueError(f"{self.key}: the walk summary moved after its seal")
+        folds = json.loads(raw).get("folds")
+        if not isinstance(folds, list) or len(folds) != 1:
+            raise ValueError(f"{self.key}: the warmup walk must have exactly one fold")
+        run_dir = folds[0].get("run_dir")
+        with open(os.path.join(run_dir, "resolved.json"), encoding="utf-8") as handle:
+            document_hash = json.load(handle).get("document_hash")
+        attestation = RunAttestation(run_dir)
+        if not attestation.completed() or not attestation.binds_document_identity(document_hash):
+            raise ValueError(f"{self.key}: no completed run attestation binds the warmup fold")
+        pipeline = load_document(os.path.join(run_dir, "config.json")).to_obj()["pipeline"]
+        scans = sorted(key for key in pipeline if key.startswith(_PRODUCER_PREFIX + "h"))
+        if not scans:
+            raise ValueError(f"{self.key}: the warmup fold has no scan_hNN node")
+        winners, heads = {}, {}
+        for key in scans:
+            manifest = attestation.attested_output(key, HPO_LEDGER_OUTPUT, document_hash)
+            if manifest is None:
+                raise ValueError(f"{self.key}: {key}'s hpo_ledger is not attested by its run")
+            evidence = resolve_json_artifact(run_dir, manifest)
+            if not isinstance(evidence, dict) or evidence.get("producer_key") != key:
+                raise ValueError(f"{self.key}: {key}'s evidence names another producer")
+            winners[key] = dict(one_standard_error_winner(pipeline[key]["params"], evidence, key))
+            heads[key] = {"manifest": manifest, "selection": evidence["selection"]}
+        return {
+            "winners": winners,
+            "evidence": {
+                "run_dir": run_dir,
+                "document_hash": document_hash,
+                "summary_sha256": row["evidence_manifest_sha256"],
+                "heads": heads,
+            },
+        }
 
 def run_lead_selection(inventory, evaluate, *, n_boot, seed, alpha=0.05):
     """Score every candidate for one lead, independently, and select its frozen winner (ADR-0114 §2/§11.1).

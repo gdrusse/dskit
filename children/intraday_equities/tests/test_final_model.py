@@ -15,6 +15,7 @@ import collections
 import contextlib
 import hashlib
 import inspect
+import json
 import types
 
 from unittest.mock import patch
@@ -969,23 +970,23 @@ def _head_evidence(head, index, document_obj):
 
 def _attested_hpo_run(
     tmp_path, *, state="ran", node_document_hash=None, config_obj=None,
-    recorded=None, carried=None, name="hpo-run",
+    recorded=None, carried=None, name="hpo-run", document=None,
 ):
     """Write a run directory the driver's own RunAttestation accepts."""
     import json
 
     run_dir = tmp_path / name
     (run_dir / "nodes").mkdir(parents=True)
-    document = _fixture_hpo_document()
-    obj = document.to_obj()
+    document = document or _fixture_hpo_document()
+    obj = _fixture_hpo_document().to_obj()
     (run_dir / "config.json").write_text(
-        json.dumps(obj if config_obj is None else config_obj, indent=2, sort_keys=True)
+        json.dumps(document.to_obj() if config_obj is None else config_obj, indent=2, sort_keys=True)
     )
     (run_dir / "resolved.json").write_text(
         json.dumps({"document_hash": document.hash, "run_hash": "e" * 64})
     )
     (run_dir / "result.json").write_text(json.dumps({
-        "name": obj["name"], "asof": "2026-02-28", "document_hash": document.hash,
+        "name": document.name, "asof": "2026-02-28", "document_hash": document.hash,
         "run_hash": "e" * 64, "state": state, "exit_code": 0,
     }))
     manifests, carry = {}, {}
@@ -2825,10 +2826,7 @@ _PINNED_MODULE_PROSE = {
     'constants:FinalRefit._schema_problems.fixture': '08ad17d85d857265',
     'constants:FinalRefit._verified_hpo_outputs': 'fdb6f168b15a2ff5',
     'constants:FinalRefit._verified_hpo_outputs.document_hash': 'dabceb4401cdd3f1',
-    'constants:FinalRefit._winner_from_evidence': '3b7c0227573aedbd',
-    'constants:FinalRefit._winner_from_evidence.inventory': '00feb4e19e3425b3',
-    'constants:FinalRefit._winner_from_evidence.model': '8bd2e950f86ebd71',
-    'constants:FinalRefit._winner_from_evidence.ruled': '3378f131311498f6',
+    'constants:FinalRefit._winner_from_evidence': '3c08cf46a446f198',
     'constants:FinalRefit._winners': '4f2894548399cae9',
     'constants:FinalRefit._winners.digest': '2650c651d1a1b006',
     'constants:FinalRefit._winners.evidence': 'd17e304e38914b3e',
@@ -2848,6 +2846,16 @@ _PINNED_MODULE_PROSE = {
     'constants:FinalRefit.validate_inputs.start': 'd5b70d0b70708d14',
     'constants:FinalRefit.validate_params': '832bf207a4480e54',
     'constants:FinalRefit.validate_params.seed': '366ecbf4e2adf7ba',
+    'constants:FrozenWinners.outputs': 'a00e3eb4da724c4e',
+    'constants:FrozenWinners.run': '4acd2f48f7db5a4a',
+    'constants:FrozenWinners.run.document_hash': '2dffb92adacd6eea',
+    'constants:FrozenWinners.run.folds': '01ae447499c674cf',
+    'constants:FrozenWinners.run.pipeline': 'a234801ddfde6b0e',
+    'constants:FrozenWinners.run.row': 'a7a03a73f90572ca',
+    'constants:FrozenWinners.run.run_dir': '2ea241ed7beb23b4',
+    'constants:FrozenWinners.run.scans': '6314b263a4727f00',
+    'constants:FrozenWinners.validate_inputs': '830a5723330f3dd4',
+    'constants:FrozenWinners.validate_inputs.row': 'a7a03a73f90572ca',
     'constants:GATE_FACTS': 'd0fac7cf2e13e890',
     'constants:HEADS': 'd7a3abf5e90e956b',
     'constants:HPO_LEDGER_OUTPUT': 'bdf0d7f6bf97df66',
@@ -2863,7 +2871,7 @@ _PINNED_MODULE_PROSE = {
     'constants:_REAL_DICT': '3bf137a69eec50e9',
     'constants:_REAL_MRO': 'dd2ceb4b3459e50c',
     'constants:_WRAPPER_PATH': 'ceab284417f60b67',
-    'constants:__all__': 'fbdaddbb2c9c4909',
+    'constants:__all__': 'fd81f7dd76197d27',
     'constants:_epoch_ms': '83149f20476e52d1',
     'constants:_is_sha256': 'c05217bb83828b48',
     'constants:_unsealed_problems': '2fa2ca57110e0297',
@@ -2888,6 +2896,9 @@ _PINNED_MODULE_PROSE = {
     'constants:lean_feature_drop.path': 'dc937b59892604f5',
     'constants:lean_feature_drop.template': '5feceb66ffc86f38',
     'constants:lean_feature_drop.templates': 'ba32e23886863b34',
+    'constants:one_standard_error_winner': 'eb83c4bb6f30201d',
+    'constants:one_standard_error_winner.inventory': '00feb4e19e3425b3',
+    'constants:one_standard_error_winner.ruled': '3378f131311498f6',
     'constants:permitted_for_refit': '60a33e6cf5151f2d',
     'constants:refit_heads': '78dd6dcd08344ce5',
     'constants:refit_heads.categorical_feature': 'dc937b59892604f5',
@@ -2917,6 +2928,9 @@ _PINNED_MODULE_PROSE = {
     'doc:FinalRefit.run': '2a1de82cc12f94c0',
     'doc:FinalRefit.validate_inputs': '4e057f59846b0464',
     'doc:FinalRefit.validate_params': '60749320f3fa55d4',
+    'doc:FrozenWinners': '184c51ddcce3b008',
+    'doc:FrozenWinners.run': '42d0cfd316d9520c',
+    'doc:FrozenWinners.validate_inputs': 'be7561daf92cb45c',
     'doc:SealRefused': 'a6aaa8b83de3177d',
     'doc:_epoch_ms': '9775f2736675746a',
     'doc:_is_sha256': '69a8a4877d33b696',
@@ -2931,6 +2945,7 @@ _PINNED_MODULE_PROSE = {
     'doc:final_hpo_document_identity': 'df13456fb8e3f933',
     'doc:hpo_space': '1db3ec460b038999',
     'doc:lean_feature_drop': 'e3a1d5be4da169fc',
+    'doc:one_standard_error_winner': '6dee327e7b4d45c8',
     'doc:permitted_for_refit': '94a9e5c874036a23',
     'doc:refit_heads': '2c83bbf9c8af5d6e',
     'doc:run_lead_selection': 'c4a144976ac96c58',
@@ -3236,3 +3251,93 @@ def test_the_declaration_is_where_the_polarity_lives():
     # The class docstring's one summarising sentence is true by construction
     # only while some declared attempt actually opens an entry point.
     assert any(reach for _, _, reach, _ in final_model.GATE_FACTS)
+
+
+# --- ADR-0185: FrozenWinners re-derives each lead's ruling from an attested walk fold ---
+
+
+def _scan_hpo_document():
+    """The fixture recipe as ten ``scan_hNN`` nodes, the shape a walk fold's config carries."""
+    from dskit.pipeline.document import PipelineDocument
+
+    obj = _fixture_hpo_document().to_obj()
+    model = [
+        t for t in obj["stages"]["finalist"]["params"]["templates"]
+        if t.get("family") == "pooled-lightgbm"
+    ][0]["model"]
+    base = obj["pipeline"]["scan"]
+    for head in HEADS:
+        node = json.loads(json.dumps(base))
+        node["params"].update({key: model[key] for key in ("hpo_space", "hpo_trials", "hpo_seed")})
+        obj["pipeline"][f"scan_{head}"] = node
+    obj["name"] = "fixture-warmup-hpo"
+    return PipelineDocument.from_obj(obj)
+
+
+def _walk_row(tmp_path, run_dir, folds=1):
+    import hashlib
+
+    summary = tmp_path / "walkforward.json"
+    summary.write_text(json.dumps({
+        "state": "ran",
+        "folds": [{"cutoff": f"2022-05-0{6 + i}", "run_dir": str(run_dir), "state": "ran"} for i in range(folds)],
+    }))
+    return {
+        "id": "lean", "state": "ran", "exit_code": 0,
+        "evidence_manifest_path": str(summary),
+        "evidence_manifest_sha256": hashlib.sha256(summary.read_bytes()).hexdigest(),
+    }
+
+
+def test_frozen_winners_reads_each_leads_attested_one_standard_error_ruling(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    document = _scan_hpo_document()
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=document)
+    out = FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+    obj = _fixture_hpo_document().to_obj()
+    for index, head in enumerate(HEADS):
+        expected = _head_evidence(head, index, obj)["selection"]["selected_candidate"]
+        assert out["winners"][f"scan_{head}"] == expected
+    assert sorted(out["evidence"]["heads"]) == [f"scan_{head}" for head in HEADS]
+    assert out["evidence"]["document_hash"] == document.hash
+
+
+def test_frozen_winners_refuses_a_walk_with_more_than_one_fold(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document())
+    with pytest.raises(ValueError, match="exactly one fold"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir, folds=2)})
+
+
+def test_frozen_winners_refuses_an_unattested_fold(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document(), state="error")
+    with pytest.raises(ValueError, match="attest"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+def test_frozen_winners_refuses_a_summary_that_moved_after_its_seal(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document())
+    row = _walk_row(tmp_path, run_dir)
+    with open(row["evidence_manifest_path"], "a", encoding="utf-8") as handle:
+        handle.write(" ")
+    with pytest.raises(ValueError, match="seal"):
+        FrozenWinners("winners").run(None, {"run": row})
+
+
+def test_frozen_winners_refuses_a_ruling_that_is_not_the_ledgers(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    document = _scan_hpo_document()
+    run_dir, _, manifests = _attested_hpo_run(tmp_path, document=document)
+    path = run_dir / manifests["h03"]["path"]
+    evidence = json.loads(path.read_text())
+    evidence["selection"]["selected_candidate"] = {"learning_rate": 99.0}
+    path.write_text(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
+    with pytest.raises(ValueError):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})

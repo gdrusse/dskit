@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from abc import abstractmethod
 import hashlib
 import json
 import math
@@ -20,6 +21,7 @@ __all__ = [
     "DirectPathScore",
     "EmpiricalSelectRegressor",
     "FinalistCandidate",
+    "FrozenWalkCandidate",
     "FinalModelGateInventory",
     "FinalModelGates",
     "Gate3ZooCandidates",
@@ -29,6 +31,7 @@ __all__ = [
     "SequenceFusionRows",
     "SequenceOnlyZooEstimator",
     "StandardizedSelectRegressor",
+    "WarmupHpoCandidate",
 ]
 
 _PARAMS = (
@@ -1642,6 +1645,194 @@ class FinalistCandidate(PooledGate3ZooCandidates):
                 "eligible_count": len(eligible),
             },
         }
+
+
+
+#: The calendar fold-schedule fields a retraining walk must reproduce exactly.
+_SCHEDULE_FIELDS = ("first", "step_days", "count", "val_days", "embargo_days", "train_days")
+_HPO_FIELDS = tuple(sorted(field for field in _MODEL_FIELDS if field.startswith("hpo_")))
+
+
+class _SingleRecipeCandidate(PooledGate3ZooCandidates):
+    """Materialize ONE document from the ONE declared recipe, shaped by a subclass (ADR-0185).
+
+    The parent's pinned Gate-3 eligibility, cache membership and pooled
+    geometry are reused unchanged (:meth:`PooledGate3ZooCandidates.resolve`);
+    this class adds the checks both retraining stages share -- exactly one
+    enabled recipe, and a source walk-forward that is the locked calendar
+    schedule field for field -- and leaves one hook, :meth:`_shape`, for
+    what each stage changes about the document.
+    """
+
+    outputs = ("candidate", "eligibility", "provenance")
+    _EXTRA_INPUTS = ()
+    _SUFFIX = ""
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return the parent's problems plus a refusal of anything but one enabled recipe."""
+        problems = super().validate_params(params)
+        templates = params.get("templates")
+        if isinstance(templates, list) and len(templates) != 1:
+            problems.append("templates must declare exactly one recipe")
+        elif isinstance(templates, list) and isinstance(templates[0], dict):
+            if templates[0].get("enabled") is not True:
+                problems.append("the one recipe must be enabled")
+            problems.extend(cls._recipe_problems(templates[0].get("model") or {}))
+        return problems
+
+    @classmethod
+    def _recipe_problems(cls, model):
+        """Problems with the recipe's model block specific to this stage."""
+        del model
+        return []
+
+    def validate_inputs(self, inputs):
+        """Require the memory gate, its caches, the calendar phase and this stage's extra inputs."""
+        wanted = {"preflight", "caches", "phase", *self._EXTRA_INPUTS}
+        if not isinstance(inputs, dict) or set(inputs) != wanted:
+            return [f"inputs must contain exactly {sorted(wanted)}"]
+        if inputs["preflight"] is not True:
+            return ["preflight must pass before candidate materialization"]
+        if not isinstance(inputs["caches"], dict):
+            return ["caches must materialize as an object"]
+        phase = inputs["phase"]
+        if not isinstance(phase, dict) or not isinstance(phase.get("walkforward"), dict):
+            return ["phase must be the calendar phase with its walkforward schedule"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Write the shaped document of the one recipe; refuse a walk that is not the calendar's."""
+        self._check_schedule(ctx.document, inputs["phase"]["walkforward"])
+        gate3_sources, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
+        template = self.params["templates"][0]
+        candidate_id = f"{template['id']}-pooled-h{horizon:02d}-{self._SUFFIX}"
+        document = _pooled_document(ctx.document, template, eligible, caches, candidate_id)
+        obj = self._shape(document.to_obj(), template, inputs)
+        document = PipelineDocument.from_obj(obj)
+        path = os.path.join(ctx.artifact_dir, f"{self.key}-document", candidate_id + ".json")
+        _write(path, document)
+        metadata = _metadata(template, candidate_id, "pooled-gate3", horizon, weights)
+        return {
+            "candidate": {**metadata, "path": path},
+            "eligibility": eligible,
+            "provenance": {
+                "gate3_artifacts": gate3_sources,
+                "caches": [
+                    {"group": group, "cache": cache["cache"],
+                     "manifest_sha256": cache["manifest_sha256"],
+                     "universe_sha256": cache["universe_sha256"]}
+                    for group, cache in caches.items()
+                ],
+                "eligible_count": len(eligible),
+            },
+        }
+
+    @staticmethod
+    def _check_schedule(document, schedule):
+        """Refuse a source walk-forward that differs from the locked calendar schedule."""
+        walk = document.walkforward.to_obj() if document.walkforward is not None else {}
+        changed = [field for field in _SCHEDULE_FIELDS if walk.get(field) != schedule.get(field)]
+        if changed:
+            raise ValueError(
+                f"the document's walk-forward differs from the calendar schedule in {changed}"
+            )
+
+    @abstractmethod
+    def _shape(self, obj, template, inputs):
+        """Return the candidate document object this stage emits."""
+
+
+class WarmupHpoCandidate(_SingleRecipeCandidate):
+    """The warmup HPO document: the locked recipe's search on the schedule's FIRST fold only (ADR-0185).
+
+    The recipe must run the evidence-mode search (``hpo_evidence`` true,
+    ``hpo_objective`` ``squared_error_improvement``): the one-standard-error
+    ruling over a complete trial ledger is what :class:`FrozenWinners`
+    re-derives. The walk keeps the calendar's ``val_days``,
+    ``embargo_days`` and ``train_days`` and fixes ``folds`` to the first
+    cutoff, so the search reads only that fold's training window.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`PooledGate3ZooCandidates`' block with exactly one template.
+
+    Examples
+    --------
+    ::
+
+        params = document.stages["hpo_document"].params
+        stage = WarmupHpoCandidate("hpo_document", params)
+    """
+
+    _SUFFIX = "warmup-hpo"
+
+    @classmethod
+    def _recipe_problems(cls, model):
+        """Require the evidence-mode, squared-error-improvement search."""
+        problems = []
+        if model.get("hpo_evidence") is not True:
+            problems.append("the recipe must set hpo_evidence true (the one-standard-error ledger)")
+        if model.get("hpo_objective") != "squared_error_improvement":
+            problems.append("the recipe's hpo_objective must be squared_error_improvement")
+        return problems
+
+    def _shape(self, obj, template, inputs):
+        """Narrow the walk to the first cutoff."""
+        del template
+        schedule = inputs["phase"]["walkforward"]
+        walk = {key: value for key, value in obj["walkforward"].items()
+                if key not in ("first", "step_days", "count")}
+        walk["folds"] = [schedule["first"]]
+        obj["walkforward"] = walk
+        return obj
+
+
+class FrozenWalkCandidate(_SingleRecipeCandidate):
+    """The retraining document: every release refit with its lead's FROZEN winner, no search (ADR-0185).
+
+    Each ``scan_hNN`` loses every ``hpo_*`` knob and its ``estimator_params``
+    become the recipe base merged with that lead's winner. A winner set that
+    misses or adds a lead, or names a knob outside the recipe's
+    ``hpo_space``, refuses. The walk is the calendar schedule unchanged.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`PooledGate3ZooCandidates`' block with exactly one template.
+
+    Examples
+    --------
+    ::
+
+        params = document.stages["walk_document"].params
+        stage = FrozenWalkCandidate("walk_document", params)
+    """
+
+    _EXTRA_INPUTS = ("winners",)
+    _SUFFIX = "frozen-walk"
+
+    def _shape(self, obj, template, inputs):
+        """Apply each lead's winner and drop the search."""
+        winners = inputs["winners"]
+        space = template["model"]["hpo_space"]
+        scans = sorted(key for key in obj["pipeline"] if key.startswith("scan_h"))
+        if not isinstance(winners, dict) or sorted(winners) != scans:
+            raise ValueError(
+                f"winners cover {sorted(winners) if isinstance(winners, dict) else winners!r}; "
+                f"the document's leads are {scans}"
+            )
+        base = template["model"]["estimator_params"]
+        for key in scans:
+            outside = sorted(set(winners[key]) - set(space))
+            if outside:
+                raise ValueError(f"{key}'s winner names knob(s) {outside} outside the recipe's hpo_space")
+            params = obj["pipeline"][key]["params"]
+            for field in _HPO_FIELDS:
+                params.pop(field, None)
+            params["estimator_params"] = {**copy.deepcopy(base), **copy.deepcopy(winners[key])}
+        return obj
 
 
 class Gate3ZooCandidates(Stage):

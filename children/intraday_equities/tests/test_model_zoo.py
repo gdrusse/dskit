@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -701,3 +702,127 @@ def test_the_finalist_stage_accepts_a_well_formed_selection():
         )
         == []
     )
+
+
+# --- ADR-0185: warmup HPO and frozen-winner retraining candidates -------------
+
+_RETRAIN = Path(__file__).parents[1] / "configs" / "run-retrain-simulation.json"
+_ELIGIBLE = [{"asset": "LLY", "horizon": 3}, {"asset": "NOW", "horizon": 2}]
+_CACHES = {
+    "a": {"cache": "/c/a", "manifest_sha256": "1" * 64, "symbols": ["LLY", "SPY"],
+          "universe": "u", "universe_sha256": "2" * 64},
+    "c": {"cache": "/c/c", "manifest_sha256": "3" * 64, "symbols": ["NOW"],
+          "universe": "u", "universe_sha256": "4" * 64},
+}
+
+
+def _phase(**changes):
+    from dskit.pipeline.program_calendar import load_program_calendar
+
+    calendar, _ = load_program_calendar(str(_RETRAIN), "program-calendar-p13-model-zoo.json")
+    walk = {**calendar["fold_schedules"]["development_outer"], **changes}
+    return {"key": "model_zoo", "walkforward": walk}
+
+
+def _retrain_stage(cls, key, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    source = load_document(str(_RETRAIN))
+    stage = cls(key, source.to_obj()["stages"][key]["params"])
+    monkeypatch.setattr(
+        stage, "resolve", lambda ctx, inputs: ([], list(_ELIGIBLE), dict(_CACHES), 3, {})
+    )
+    ctx = SimpleNamespace(source_path=str(_RETRAIN), document=source, artifact_dir=str(tmp_path))
+    return stage, ctx
+
+
+def _winners(leads=(1, 2, 3), **extra):
+    return {
+        f"scan_h{lead:02d}": {"learning_rate": 0.003, "num_leaves": 4, "min_child_samples": 2000,
+                              "reg_lambda": 100.0, "reg_alpha": 0.1, **extra}
+        for lead in leads
+    }
+
+
+def test_warmup_hpo_candidate_narrows_the_locked_walk_to_its_first_fold(tmp_path, monkeypatch):
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.model_zoo import WarmupHpoCandidate
+
+    stage, ctx = _retrain_stage(WarmupHpoCandidate, "hpo_document", tmp_path, monkeypatch)
+    out = stage.run(ctx, {"preflight": True, "caches": _CACHES, "phase": _phase()})
+    document = load_document(out["candidate"]["path"])
+    plan(document)
+    walk = document.to_obj()["walkforward"]
+    assert walk["folds"] == ["2022-05-06"]
+    assert (walk["val_days"], walk["embargo_days"], walk["train_days"]) == (63, 5, 730)
+    scans = [key for key in document.pipeline if key.startswith("scan_h")]
+    assert scans == ["scan_h01", "scan_h02", "scan_h03"]
+    for key in scans:
+        params = document.pipeline[key].params
+        assert (params["hpo_trials"], params["hpo_evidence"], params["hpo_objective"]) == (
+            24, True, "squared_error_improvement",
+        )
+
+
+def test_frozen_walk_candidate_pins_each_leads_winner_and_removes_every_search_knob(tmp_path, monkeypatch):
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.model_zoo import FrozenWalkCandidate
+
+    stage, ctx = _retrain_stage(FrozenWalkCandidate, "walk_document", tmp_path, monkeypatch)
+    winners = _winners()
+    winners["scan_h02"]["learning_rate"] = 0.03
+    out = stage.run(ctx, {"preflight": True, "caches": _CACHES, "phase": _phase(), "winners": winners})
+    document = load_document(out["candidate"]["path"])
+    plan(document)
+    walk = document.to_obj()["walkforward"]
+    assert (walk["first"], walk["step_days"], walk["count"]) == ("2022-05-06", 63, 20)
+    recipe = ctx.document.to_obj()["stages"]["walk_document"]["params"]["templates"][0]["model"]
+    for key, winner in winners.items():
+        params = document.pipeline[key].params
+        assert not [name for name in params if name.startswith("hpo_")]
+        assert params["estimator_params"] == {**recipe["estimator_params"], **winner}
+    assert document.pipeline["scan_h02"].params["estimator_params"]["learning_rate"] == 0.03
+
+
+@pytest.mark.parametrize(
+    ("winners", "expected"),
+    [
+        (_winners(leads=(1, 2)), "scan_h03"),
+        (_winners(leads=(1, 2, 3, 4)), "scan_h04"),
+        (_winners(max_depth=9), "max_depth"),
+    ],
+    ids=["missing-lead", "extra-lead", "knob-outside-the-space"],
+)
+def test_frozen_walk_candidate_refuses_winners_that_do_not_fit_the_recipe(tmp_path, monkeypatch, winners, expected):
+    from intraday_equities.model_zoo import FrozenWalkCandidate
+
+    stage, ctx = _retrain_stage(FrozenWalkCandidate, "walk_document", tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match=expected):
+        stage.run(ctx, {"preflight": True, "caches": _CACHES, "phase": _phase(), "winners": winners})
+
+
+@pytest.mark.parametrize("key", ["hpo_document", "walk_document"])
+def test_retrain_candidates_refuse_a_walk_that_differs_from_the_locked_calendar(tmp_path, monkeypatch, key):
+    from intraday_equities.model_zoo import FrozenWalkCandidate, WarmupHpoCandidate
+
+    cls = WarmupHpoCandidate if key == "hpo_document" else FrozenWalkCandidate
+    stage, ctx = _retrain_stage(cls, key, tmp_path, monkeypatch)
+    inputs = {"preflight": True, "caches": _CACHES, "phase": _phase(train_days=365), "winners": _winners()}
+    if key == "hpo_document":
+        del inputs["winners"]
+    with pytest.raises(ValueError, match="train_days"):
+        stage.run(ctx, inputs)
+
+
+def test_warmup_hpo_candidate_requires_exactly_one_evidence_mode_recipe():
+    from intraday_equities.model_zoo import WarmupHpoCandidate
+
+    params = load_document(str(_RETRAIN)).to_obj()["stages"]["hpo_document"]["params"]
+    assert WarmupHpoCandidate.validate_params(params) == []
+    two = {**params, "templates": [params["templates"][0], {**params["templates"][0], "id": "other"}]}
+    assert any("exactly one" in problem for problem in WarmupHpoCandidate.validate_params(two))
+    blind = json.loads(json.dumps(params))
+    blind["templates"][0]["model"]["hpo_evidence"] = False
+    assert any("hpo_evidence" in problem for problem in WarmupHpoCandidate.validate_params(blind))

@@ -1,0 +1,629 @@
+{
+  "name": "retrain-simulation",
+  "notes": "ADR-0185: ONE staged document that trains, retrains and trades. Stages: calendar (locked development_outer) -> memory -> hpo_document + hpo (warmup HPO: the locked lean recipe's 24-candidate evidence-mode search, one-standard-error rule per lead, on fold 0's inner purged slice, which ends before 2022-05-01) -> winners (each lead's ruling re-derived from its attested trial ledger) -> walk_document + walk (the scheduled retraining: 20 releases, each FITTED on its trailing 730 days with a 5-day embargo, every 63 days, with the frozen winners and no search) -> inventory -> gates -> simulate (ADR-0184's publisher, per-tick EquityKellyMIO, next-bar-open fills and Schwab costs over folds 2..19 = 2022-09-09..2025-10-16, $10,000 + $500 every other Friday per cash-flow-policy-biweekly.json). DEVELOPMENTAL POST-SELECTION, deployment_eligible=false: the gate admission reads all 20 folds (look-ahead, disclosed), and the MIO knobs are ADR-0184 placeholders, not owner rulings. Predictions are computed in batch at fit time over each release's validation window, not by per-tick calls to a persisted model. Run from the child root: python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities. A rerun of the same document resumes finished stages.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "c": "$source_c.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "Only source groups containing the 25 selected names are read; their symbol namespaces are disjoint and source_a also supplies SPY."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "include_klines": true,
+        "cache_dir": "./pipeline_cache/p13-features-f32-kronos-v1",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true
+          }
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        },
+        "score_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ]
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730,
+    "notes": "The locked development_outer schedule (A18623/ADR-0098), restated here only because the walk grammar needs it inline; WarmupHpoCandidate and FrozenWalkCandidate refuse any field that differs from $calendar.phase.walkforward. The warmup HPO walk narrows it to its FIRST fold; the frozen retraining walk runs all 20."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar-p13-model-zoo.json",
+        "phase": "model_zoo"
+      },
+      "notes": "The locked development_outer schedule every later stage checks its walk against."
+    },
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "a": {
+            "universe": "configs/universe-p12-a.json",
+            "sources": [
+              "source_a"
+            ]
+          },
+          "c": {
+            "universe": "configs/universe-p12-c.json",
+            "sources": [
+              "source_a",
+              "source_c"
+            ]
+          },
+          "d": {
+            "universe": "configs/universe-p13-d-selected.json",
+            "sources": [
+              "source_a",
+              "source_d"
+            ]
+          },
+          "e": {
+            "universe": "configs/universe-p13-e-selected.json",
+            "sources": [
+              "source_a",
+              "source_e"
+            ]
+          }
+        }
+      },
+      "notes": "Build four bounded P13 group caches containing the frozen P12 feature matrix, label tape, and causal five-minute OHLCVA bars. The P12 caches remain untouched because write-once cache identity changes when K-lines are added. Groups D and E use P13 cohort-only universes plus SPY so unused P12 breadth candidates cannot inflate peak memory."
+    },
+    "hpo_document": {
+      "uses": "intraday_equities.model_zoo:WarmupHpoCandidate",
+      "inputs": {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups",
+        "phase": "$calendar.phase"
+      },
+      "params": {
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "cache_groups": [
+          "a",
+          "c",
+          "d",
+          "e"
+        ],
+        "templates": [
+          {
+            "id": "lean",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except the exact P16 lean-mask drop (33 columns, pinned below and by tests/test_configs.py against intraday_equities.final_model.lean_feature_drop()); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0; ADR-0115 evidence-mode selection over the same 24-trial purged inner CandidateInventory draw",
+            "compute_class": "cpu-medium",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "after_holiday",
+                  "amihud_3s",
+                  "dow_cos",
+                  "dow_sin",
+                  "mom_1w",
+                  "mom_2s",
+                  "mom_3s",
+                  "month_cos",
+                  "month_sin",
+                  "range_3s",
+                  "ret_1w",
+                  "ret_2s",
+                  "ret_3s",
+                  "ret_lag_10",
+                  "ret_lag_11",
+                  "ret_lag_12",
+                  "ret_lag_13",
+                  "ret_lag_14",
+                  "ret_lag_15",
+                  "ret_lag_16",
+                  "ret_lag_17",
+                  "ret_lag_18",
+                  "ret_lag_19",
+                  "ret_lag_5",
+                  "ret_lag_6",
+                  "ret_lag_7",
+                  "ret_lag_8",
+                  "ret_lag_9",
+                  "rv_1w",
+                  "rv_2s",
+                  "rv_3s",
+                  "session_gap_days",
+                  "vol_3s"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 24,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "squared_error_improvement",
+              "hpo_evidence": true,
+              "hpo_space": {
+                "learning_rate": [
+                  0.003,
+                  0.01,
+                  0.03
+                ],
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000,
+                  4000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ]
+              }
+            },
+            "notes": "ADR-0115: model-family and feature-mask selection are closed (master plan Sec.2), so the torch-mlp candidate is removed and this is the ONLY finalist recipe. estimator wraps ColumnSubsetEstimator around the same LightGBM the space was built for (2026-09-06 research, docs/research/zoo-feature-selection-and-hpo/), applying the exact P16 lean drop (docs/memos/p16-feature-mask-and-final-gate-results.md) so training reads the identical 33-fewer-column feature set P16 selected on. hpo_objective is squared_error_improvement (never IC, master plan Sec.2) with hpo_evidence=true, so per-lead selection runs ADR-0114 SS11 item 1's one-standard-error rule over a complete trial ledger instead of a raw argmin/argmax; hpo_trials/hpo_seed/hpo_val_days/hpo_embargo_days/hpo_space are UNCHANGED from the prior 'ic'-objective recipe \u2014 same 24-of-324 frozen inventory, same inner cuts. This template's id is 'lean' (not the prior 'lgbm'), matching P16's own winning candidate's mask-family component (P16 memo line 37) so FinalistCandidate's own id-plus-horizon-suffix recipe lookup resolves to the real winner BenchmarkSelect names -- this document restates no full candidate name itself. intraday_equities.final_model.hpo_space() was updated in the same change to match this template by family == 'pooled-lightgbm' rather than a fixed id, since id is now the finalist's candidate-name component, not a stable lookup key for the generic HPO-grid reader."
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal_asset_equal_within_asset",
+          "fit_universe": "all_gate3_passers_each_lead",
+          "score_universe": "certified_horizon_includes_lead"
+        }
+      },
+      "notes": "The ONE locked recipe (run-final-hpo.json's lean template, byte-identical: P16's 33-column mask, 24-candidate CandidateInventory, hpo_evidence, squared_error_improvement, one-standard-error rule) with its walk narrowed to the schedule's first fold. Its search reads only that fold's training window (inner 63-day slice, 5-day embargo), so no tuned setting sees a traded day."
+    },
+    "hpo": {
+      "uses": "dskit.pipeline.benchmarks:DocumentWalkRun",
+      "inputs": {
+        "candidate": "$hpo_document.candidate"
+      },
+      "notes": "Actual fits: 10 leads x 24 candidates on the warmup window, checkpointed and evidence-sealed."
+    },
+    "winners": {
+      "uses": "intraday_equities.final_model:FrozenWinners",
+      "inputs": {
+        "run": "$hpo.run"
+      },
+      "notes": "Each lead's winner re-derived from its attested hpo_ledger with the same one-standard-error rule FinalRefit uses; nothing is read from a pasted value."
+    },
+    "walk_document": {
+      "uses": "intraday_equities.model_zoo:FrozenWalkCandidate",
+      "inputs": {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups",
+        "phase": "$calendar.phase",
+        "winners": "$winners.winners"
+      },
+      "params": {
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "cache_groups": [
+          "a",
+          "c",
+          "d",
+          "e"
+        ],
+        "templates": [
+          {
+            "id": "lean",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except the exact P16 lean-mask drop (33 columns, pinned below and by tests/test_configs.py against intraday_equities.final_model.lean_feature_drop()); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0; ADR-0115 evidence-mode selection over the same 24-trial purged inner CandidateInventory draw",
+            "compute_class": "cpu-medium",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "after_holiday",
+                  "amihud_3s",
+                  "dow_cos",
+                  "dow_sin",
+                  "mom_1w",
+                  "mom_2s",
+                  "mom_3s",
+                  "month_cos",
+                  "month_sin",
+                  "range_3s",
+                  "ret_1w",
+                  "ret_2s",
+                  "ret_3s",
+                  "ret_lag_10",
+                  "ret_lag_11",
+                  "ret_lag_12",
+                  "ret_lag_13",
+                  "ret_lag_14",
+                  "ret_lag_15",
+                  "ret_lag_16",
+                  "ret_lag_17",
+                  "ret_lag_18",
+                  "ret_lag_19",
+                  "ret_lag_5",
+                  "ret_lag_6",
+                  "ret_lag_7",
+                  "ret_lag_8",
+                  "ret_lag_9",
+                  "rv_1w",
+                  "rv_2s",
+                  "rv_3s",
+                  "session_gap_days",
+                  "vol_3s"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 24,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "squared_error_improvement",
+              "hpo_evidence": true,
+              "hpo_space": {
+                "learning_rate": [
+                  0.003,
+                  0.01,
+                  0.03
+                ],
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000,
+                  4000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ]
+              }
+            },
+            "notes": "ADR-0115: model-family and feature-mask selection are closed (master plan Sec.2), so the torch-mlp candidate is removed and this is the ONLY finalist recipe. estimator wraps ColumnSubsetEstimator around the same LightGBM the space was built for (2026-09-06 research, docs/research/zoo-feature-selection-and-hpo/), applying the exact P16 lean drop (docs/memos/p16-feature-mask-and-final-gate-results.md) so training reads the identical 33-fewer-column feature set P16 selected on. hpo_objective is squared_error_improvement (never IC, master plan Sec.2) with hpo_evidence=true, so per-lead selection runs ADR-0114 SS11 item 1's one-standard-error rule over a complete trial ledger instead of a raw argmin/argmax; hpo_trials/hpo_seed/hpo_val_days/hpo_embargo_days/hpo_space are UNCHANGED from the prior 'ic'-objective recipe \u2014 same 24-of-324 frozen inventory, same inner cuts. This template's id is 'lean' (not the prior 'lgbm'), matching P16's own winning candidate's mask-family component (P16 memo line 37) so FinalistCandidate's own id-plus-horizon-suffix recipe lookup resolves to the real winner BenchmarkSelect names -- this document restates no full candidate name itself. intraday_equities.final_model.hpo_space() was updated in the same change to match this template by family == 'pooled-lightgbm' rather than a fixed id, since id is now the finalist's candidate-name component, not a stable lookup key for the generic HPO-grid reader."
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal_asset_equal_within_asset",
+          "fit_universe": "all_gate3_passers_each_lead",
+          "score_universe": "certified_horizon_includes_lead"
+        }
+      },
+      "notes": "The same recipe with every hpo_* knob removed and each lead's estimator_params = recipe base + its frozen winner; the full 20-fold schedule."
+    },
+    "walk": {
+      "uses": "dskit.pipeline.benchmarks:DocumentWalkRun",
+      "inputs": {
+        "candidate": "$walk_document.candidate"
+      },
+      "notes": "The scheduled retraining: one fit per release (fold), trailing 730 days, 5-day embargo, every 63 days."
+    },
+    "inventory": {
+      "uses": "intraday_equities.final_gates:RetrainedWalkInventory",
+      "inputs": {
+        "run": "$walk.run"
+      },
+      "notes": "Seals every release's saved predictions into the manifest the gates and the publisher verify."
+    },
+    "gates": {
+      "uses": "intraday_equities.final_gates:RetrainedWalkGates",
+      "inputs": {
+        "manifest": "$inventory.manifest"
+      },
+      "params": {
+        "alpha": 0.05,
+        "correction": "bonferroni",
+        "evidence_scope": "developmental_post_selection",
+        "season_timezone": "America/New_York",
+        "season_months": {
+          "winter": [
+            12,
+            1,
+            2
+          ],
+          "spring": [
+            3,
+            4,
+            5
+          ],
+          "summer": [
+            6,
+            7,
+            8
+          ],
+          "fall": [
+            9,
+            10,
+            11
+          ]
+        }
+      },
+      "notes": "P16 gate math unchanged (Bonferroni over every unit); reads THIS run's inventory artifact, never a pasted pin."
+    },
+    "simulate": {
+      "uses": "intraday_equities.simulation:RetrainedSimulation",
+      "inputs": {
+        "manifest": "$inventory.manifest",
+        "caps": "$gates.caps"
+      },
+      "params": {
+        "template": "run-retrain-simulation-template.json",
+        "template_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "notes": "Runs the ADR-0184 decision graph (template) with the publisher bound to this run's inventory and gates artifacts; outputs land under this run's stages/ directory."
+    }
+  }
+}
