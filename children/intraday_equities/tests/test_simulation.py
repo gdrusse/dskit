@@ -1003,6 +1003,32 @@ def test_every_output_row_and_the_run_metadata_carry_the_disclosure(sim7):
     assert out["metadata"]["evidence_end"] == EVIDENCE_END
 
 
+def test_skipped_and_refused_rows_carry_the_disclosure(sim7, monkeypatch):
+    fx, published = sim7["fx"], sim7["published"]
+    release = published["releases"][0]
+    first = min(b["decision_ts"] for b in published["bundles"] if b["release_id"] == release["release_id"])
+
+    class Held(MioDecider):
+        """The real decider; at the first tick the book is told LLY is still held."""
+
+        def decide(self, asof_ms, portfolio):
+            if asof_ms == first:
+                portfolio = {**portfolio, "positions": {"LLY": 1}}
+            return super().decide(asof_ms, portfolio)
+
+    monkeypatch.setattr(simulation_module, "MioDecider", Held)
+    inputs = _sim_inputs({**published, "releases": [release]}, list(sim7["bars"]), fx)
+    # Coverage no calibration here attains: every lead group's solve is refused.
+    inputs["mio"]["params"] = {**inputs["mio"]["params"], "uncertainty_min_coverage": 0.99}
+    out = DevelopmentSimulation("simulate", _sim_params(last=2)).run(fx["ctx"], inputs)
+    skips = [row for row in out["skipped"] if row["reason"] == "open_lot_at_decision"]
+    refusals = [row for row in out["refused"] if row["reason"] == "mio_refused"]
+    assert skips and refusals
+    for row in skips + refusals:
+        assert {k: row[k] for k in DISCLOSURE} == DISCLOSURE
+        assert (row["fold"], row["release_id"]) == (2, release["release_id"])
+
+
 def test_one_segment_equals_a_direct_equity_replay_of_the_same_bars(sim7):
     fx, published = sim7["fx"], sim7["published"]
     first = published["releases"][0]
