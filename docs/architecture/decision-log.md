@@ -23710,3 +23710,133 @@ cap stamps set to the segment start so the MIO timing screen passes
 (Revision 2: a false timestamp, ruled out); a
 lead-1-only run (drops the admitted horizons); relabelling the gate
 admission as ConfirmedCaps confirmation (defeats ADR-0121).
+
+## ADR-0185 — Retrain-in-run simulation and the biweekly funding policy for intraday_equities
+
+**Status:** accepted (2026-09-24, owner approved in session). **Owner:**
+Russell. **Base:** `eb0df36`. **Branch:** `claude/intraday-equities-backtest-ahza9o`.
+
+**Context.** ADR-0184's simulation replays stored out-of-fold `yhat` from an
+earlier P16 walk. It says so itself: "no in-loop refit". It also
+tunes per fold (4 trials) and funds $1,000 + $20/day. The final-model plan
+(`children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md`
+§2) settles:
+
+- one 24-combination search per lead, one-standard-error rule, winners frozen;
+- a 63-day refresh on a trailing 730 days with the frozen design;
+- $10,000 initial plus $500 every other Friday at 09:30 America/New_York;
+- external flows never counted as PnL.
+
+Two sweeps of main and every remote branch found:
+
+- **Parts that exist:** the locked schedule (A18623/ADR-0098:
+  `development_outer`, 20 folds from 2022-05-06, 63-day step, 730-day
+  train, 5-day embargo); the evidence-mode HPO (`NoInformationScan`
+  `hpo_evidence`, ADR-0115); the frozen-winner rebuild from a trial ledger
+  (`FinalRefit._winner_from_evidence`); the walk runner and fold sealing
+  (`run_walk_forward`, `benchmarks._seal_run_row`); gate inventory and
+  gates; and ADR-0184's publisher, decider, simulation and report.
+- **What is missing:** a chain joining them. Today it takes four documents
+  joined by hand-pasted sha pins. Also missing is any cash policy other
+  than daily: `CashFlowPolicy` re-anchors at each segment, which would
+  reset a biweekly phase, since 63 days is 9 weeks.
+
+**Owner rulings (2026-09-24).**
+
+1. The trading window is development data, 2022-09-09..2025-10-16
+   (folds 2..19).
+2. HPO happens once, in warmup, before trading. It is then frozen.
+3. $10,000 is booked on the first trading day. $500 falls on the first
+   Friday on or after it, then every 14 days. A Friday with no session
+   rolls to the next trading day. The time is 09:30 New York, booked
+   before a decision at the same instant (the order `read_entry` already
+   uses).
+4. The MIO settings stay the ADR-0184 values, labelled developmental
+   placeholders that are not owner-ruled.
+5. The build is done here; the run happens in WSL.
+
+### Decision
+
+One staged document, `children/intraday_equities/configs/run-retrain-simulation.json`,
+run from the child root as:
+
+`python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities`
+
+| Stage | Kind | Job |
+|---|---|---|
+| `calendar` | existing `ProgramCalendar` | the locked `development_outer` schedule |
+| `memory` | existing `MemoryPreflightStage` | P16 cache groups |
+| `hpo_document` | new `WarmupHpoCandidate(PooledGate3ZooCandidates)` | the locked `lean` recipe (the P16 mask, 24 trials, `hpo_evidence`, `squared_error_improvement`), with the walk narrowed to ONE fold at the schedule's first cutoff (2022-05-06). The search runs on that fold's inner purged slice: the last 63 days of its 730-day train, 5-day embargo, all before 2022-05-01. |
+| `hpo` | new `DocumentWalkRun` | runs that one-fold walk (actual fits: 10 heads x 24 candidates) and seals it like `BenchmarkRun` |
+| `winners` | new `FrozenWinners` | re-derives each lead's one-standard-error winner from the sealed ledger, through the same function `FinalRefit` uses (extracted once, not copied) |
+| `walk_document` | new `FrozenWalkCandidate(PooledGate3ZooCandidates)` | the same recipe with no search: each lead's `estimator_params` = recipe base + its frozen winner; the full 20-fold `development_outer` walk |
+| `walk` | `DocumentWalkRun` | **the scheduled retraining**: 20 releases, each fitted on its trailing 730 days, 5-day embargo, every 63 days |
+| `inventory` | new `RetrainedWalkInventory` | seals the walk's per-fold predictions into the manifest `FinalModelGateInventory` emits (shared verifier, extracted) |
+| `gates` | new `RetrainedWalkGates(FinalModelGates)` | reads this run's own `inventory` artifact; gate math unchanged |
+| `simulate` | new `RetrainedSimulation` | runs `configs/run-retrain-simulation-template.json` (ADR-0184's graph with the new cash policy), binding the publisher's inventory/gates pins to this run's artifacts, through `run_document` |
+
+Stage artifacts are this run's own files. A downstream stage re-hashes
+the file it reads and names that sha in its output. No pin is pasted by
+hand.
+
+**Funding.** `ScheduledCashFlowPolicy(CashFlowPolicy)` is selected by
+`"kind": "scheduled"`. The existing daily file carries no kind and its
+hash is unchanged. Its params: `currency`, `initial_capital_amount`,
+`contribution_amount`, `interval_days`, `first_weekday`, `local_time`,
+`timezone`, `holiday_rule`, and dated `overrides` (skip, move, replace,
+withdrawal).
+
+- It keeps the daily ADR-0176/0178 occurrence grid and the core
+  primitives: the recurring amount is $500 at `local_time`, and every
+  non-contribution date is skipped.
+- A `ReplaceCashFlow` puts the initial capital (plus $500 if that day is
+  a contribution day) on the first trading day.
+- A contribution date with no bars moves to the next trading date.
+- The hook `for_segment(carried)` keeps the global phase anchor, so the
+  alternation survives release boundaries.
+- `_cash_rows` accepts trading dates with nothing booked.
+- `SimulationReport` NAV stays contributions plus `WindowBook` PnL.
+
+**Unchanged and disclosed:**
+
+- The gate admission uses all 20 folds (`cap_evidence_look_ahead`), so the
+  evidence is developmental post-selection, and `deployment_eligible` is
+  false.
+- Calibration uses the residuals of folds 0..1.
+- Fills are next-bar open with Schwab costs.
+- Not modelled: T+1 settlement, GFV, PDT and halts. Split-adjusted sizing
+  is distorted.
+- Predictions are computed in batch at fit time for each release's
+  validation window. They are not per-tick calls to a persisted model, and
+  models are not saved.
+
+**Also delivered:** `children/intraday_equities/docs/explanations/mio-optimizer-formulation.tex`,
+a standalone formulation of the implemented MIO. The stale markdown gets a
+one-line pointer to it.
+
+**Tests (RED first):**
+
+- policy phase, holiday roll, and seed-day cases;
+- carry across a 63-day boundary;
+- overrides;
+- the daily policy unchanged;
+- `_cash_rows` with unfunded days;
+- the one-fold HPO document's geometry;
+- winner re-derivation against a synthetic ledger;
+- per-lead frozen params with no search left;
+- inventory/gates refusing drift;
+- template binding;
+- the shipped config validating and planning.
+
+**Non-goals:** persisted models or per-tick inference; P19 models; final
+refit; 2026 windows; any change to `EquityKellyMIO`, `dskit/production` or
+`path.csv`.
+
+**Alternatives rejected:**
+
+- the four hand-pinned documents, which are not one workflow;
+- per-fold search, which the plan freezes;
+- HPO on Dec 2025..Feb 2026, whose winners would look ahead into a 2022
+  trading window;
+- the BenchmarkPlan/Approval barrier, since this ADR's approval is the
+  review of the single fixed recipe.
