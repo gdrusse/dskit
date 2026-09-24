@@ -32,6 +32,7 @@ __all__ = [
     "CONFIG_FILE",
     "DEFAULT_RUN_ROOT",
     "NODES_DIR",
+    "RESOLVED_FILE",
     "RESULT_FILE",
     "RunProblem",
     "RunSummary",
@@ -67,6 +68,9 @@ DEFAULT_RUN_ROOT = "./pipeline_runs"
 RESULT_FILE = "result.json"
 CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
+#: The driver's resolved record (``run_hash``, ``document_hash``,
+#: ``data_fingerprint``); read by ``evaluation.provenance``.
+RESOLVED_FILE = "resolved.json"
 NODES_DIR = "nodes"
 ARTIFACTS_DIR = "artifacts"
 

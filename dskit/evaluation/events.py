@@ -42,6 +42,7 @@ from dskit.production.vocab import VERDICTS
 __all__ = [
     "ACTIONS",
     "EVENT_KINDS",
+    "KIND_ORDER",
     "SCHEMA",
     "SIDES",
     "Cashflow",
@@ -68,6 +69,14 @@ __all__ = [
 #: ``run_start.sources`` — ADR-0183 amendment) does not, so every older v1
 #: log still reads.
 SCHEMA = "dskit-eval-v1"
+
+#: The order kinds take within one instant when a producer merges its rows
+#: into one log. A cash flow funds before that instant's fills; a solve is
+#: what a decision at the same instant reads, so it precedes it; a decision
+#: precedes its orders, an order its rejections and fills; an outcome comes
+#: last (it is only ever logged after its decision).
+KIND_ORDER = ("run_start", "cashflow", "mark", "solve", "decision", "order", "refusal", "skip",
+              "fill", "outcome", "run_end")
 
 #: A decision's closed action set.
 ACTIONS = ("enter", "exit", "hold", "skip", "refuse")

@@ -23,6 +23,7 @@ from dskit.pipeline.runs import (
     CONFIG_FILE,
     DEFAULT_RUN_ROOT,
     NODES_DIR,
+    RESOLVED_FILE,
     RESULT_FILE,
     RunProblem,
     RunSummary,
@@ -589,7 +590,7 @@ class TestRunDirLayout:
     def test_the_writer_writes_the_names_the_reader_reads(self, two_runs):
         _root, results = two_runs
         run_dir = results[0].run_dir
-        for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
+        for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE, RESOLVED_FILE):
             assert os.path.isfile(os.path.join(run_dir, name)), name
         assert os.path.isdir(os.path.join(run_dir, NODES_DIR))
 
