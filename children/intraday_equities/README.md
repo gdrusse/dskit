@@ -81,6 +81,13 @@ python -m dskit.pipeline run configs/run-action-01m.json \
 python -m dskit.pipeline run configs/run-train.json \
     --asof 2026-08-30 --adapter intraday_equities
 
+# 4b. development replay report (ADR-0183): ridge one-pick replay of
+#     2025-10-13..16 with the $1,000 + $20/day cash-flow policy, rendered by
+#     dskit.evaluation into pipeline_runs/<run>/report/
+#     (report.html, summary.md, events.jsonl, decisions.csv, trades.csv)
+python -m dskit.pipeline run configs/run-replay-report.json \
+    --asof 2026-09-24 --adapter intraday_equities
+
 # 5. paper intents (reads the shipped documents; refuses real money)
 python -m intraday_equities.live --run-doc configs/run-train.json \
     --source-config configs/source-schwab-live.json --qty 1
@@ -174,6 +181,7 @@ intraday_equities/
 │   ├── forecast_bundle.py # ruled label inverse + confirmed-cap contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
 │   ├── simulation.py    # ADR-0184 publisher, per-tick MIO decider, simulate + report nodes
+│   ├── evaluation.py    # ReplayEvents: replay outputs -> dskit-eval-v1 events
 │   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
@@ -182,7 +190,7 @@ intraday_equities/
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation
+├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation, replay-report
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/plans/          # owner-reviewed implementation plans and hard stops

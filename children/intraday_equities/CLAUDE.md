@@ -58,12 +58,20 @@ Agent orientation — see README.md for operator commands.
   `configs/fill-policy.json`. Neither are ADR-0184's
   `configs/run-development-simulation.json` (folds 2..19) and its one-segment
   `-smoke` twin: developmental post-selection, no tracking sink.
+- `configs/run-replay-report.json` (ADR-0183) is the real-data development
+  replay rendered by `dskit.evaluation`: `select.candidates` + the replay's
+  fills/refused/skipped/cash_flows -> `evaluation.ReplayEvents` (schema-v1
+  events; reason codes are the replay's own) -> `EvaluationReport`. The
+  child only MAPS rows to events; statistics, P&L and rendering live in
+  `dskit/evaluation/`. Its 2025-06-02 training start is a documented
+  exception to the study start (development evidence only).
 - The stopped asset-local P13 remains reproducible in
-  `configs/run-p13-model-zoo.json`; its active pooled replacement is
-  `configs/run-p13-pooled-model-zoo.json`.
+  `configs/run-p13-model-zoo.json`. ADR-0102's active replacement is
+  `configs/run-p13-pooled-model-zoo.json`: pooled LightGBM and embedding Torch
+  MLP with separate inner HPO and the same inventory approval barrier.
 - P14's exploratory extension is `configs/run-p14-recurrent-fusion-zoo.json`:
   paired pooled LSTM/GRU late fusion over session-local one-minute OHLCV and an
-  explicit side-feature projection. It remains inventory-gated and not locked.
+  explicit side-feature projection. It is not locked or automatically promoted.
 - P15's exploratory extension is `configs/run-p15-temporal-fusion-zoo.json`:
   one-hot Ridge, causal TCN, and small causal Transformer candidates share the
   exact P14 sequence rows and side features. It is not locked or auto-promoted.
@@ -130,8 +138,8 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay, simulation
-configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation
+intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay, evaluation, simulation
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation, replay-report
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes

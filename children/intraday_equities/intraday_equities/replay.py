@@ -46,13 +46,14 @@ from dskit.production.cashflows import (
     ReplaceCashFlow,
     SkipCashFlow,
 )
-from dskit.production.compose import ReplayCashFlowComposer, bundles_for
+from dskit.production.compose import ReplayCashFlowComposer, bundles_for, guard_chain
 from dskit.production.document import ServeDocument
 from dskit.production.executor import PaperExecutor
 from dskit.production.health import InstanceLock
 from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import ServeRoot
 from dskit.production.loop import ServeLoop
+from dskit.production.reconcile import LedgerHistory
 from dskit.production.records import (
     EntryBatch,
     ExecutionScope,
@@ -695,17 +696,66 @@ class EquityReplay:
         and its rows are queued exactly like upfront ``decisions`` (same
         refusals, next-bar fill). ``None`` (the default) leaves the
         upfront-decisions path unchanged.
+    guards : dict, optional
+        The serve document's ``guards`` map (ADR-0183 phase 2), judged by
+        the production guard chain on every leg. ``None`` (the default)
+        declares ``{}``, so every existing serve identity holds. A breach
+        that refuses a leg fails the run loudly: the fill model forbids
+        rejections, so the fill is "queued but never submitted".
+    ledger_dir : str, optional
+        Where the replay's ledger ROOT (``placement.ledger_root``: one
+        ``<series_id>/`` holding ``series.json`` and ``ledger/``) is copied
+        after the ledger closes and before the scratch dir is removed, so
+        ``ServeRoot(ledger_dir, series_id)`` reads it back. The copy is
+        made before any end-of-run refusal is raised, so a failed run
+        (a guard breach) still leaves its evidence. An existing non-empty
+        directory refuses before the replay runs; ``None`` (the default)
+        keeps nothing.
+
+    Attributes
+    ----------
+    findings : list of dict
+        One row per decided leg that carries at least one guard finding
+        (so empty without guards), joined to the fill it produced by
+        proposal id: ``symbol``, ``lead``, ``kind``, ``asof_ms`` (the
+        fill's), ``tick_id``, ``leg_id``, ``verdict`` (the leg's composite)
+        and ``findings`` (the stored ``Finding.to_obj()`` dicts). A leg that
+        never filled carries ``None`` for the four fill keys.
+    series_id : str or None
+        The last run's serve series id.
+    ledger_head : tuple or None
+        The last run's ``Ledger.head()``, ``(seq, hash)``.
+
+    Examples
+    --------
+    Replay one decision under an observational size limit::
+
+        replay = EquityReplay(policy, guards={"size": {"uses": "limit", "params": {
+            "measure": "quantity", "bound": {"max": "1000000"}, "on_breach": "refuse",
+        }}})
+        replay.run(bars, decisions)
+        replay.findings[0]["verdict"]  # 'allow'
     """
 
-    def __init__(self, policy, cash_flow_policy=None, decider=None):
+    def __init__(
+        self, policy, cash_flow_policy=None, decider=None, guards=None, ledger_dir=None,
+    ):
         self._policy = policy
         self._cash_flow_policy = cash_flow_policy
         self._decider = decider
+        self._guards = guards
+        self._ledger_dir = ledger_dir
+        self.findings = []
+        self.series_id = None
+        self.ledger_head = None
+        self._filled_by_id = {}
         self.proposer = self
         self.serving_hash = policy.digest()
         self.fills = []
         self.skipped = []
         self.refused = []
+        self.cash_flows = []
+        self.cash = []
         self._by_symbol = {}
         self._index_of = {}
         self._pending = {}
@@ -723,8 +773,9 @@ class EquityReplay:
         self._cash_flow_funding_instants = ()
         self._cash_flow_funding_index = 0
         self._cash_balance = Decimal("0")
-        #: Every cash-flow body this replay booked to its ledger, in order.
-        self.cash_flows = []
+        #: Every cash-flow body this replay booked to its ledger, in order,
+        #: with its exact decimal ``amount`` (``cash_flows`` holds the rows).
+        self.booked_cash_flows = []
 
     @property
     def cash_balance(self):
@@ -789,13 +840,13 @@ class EquityReplay:
         if symbol not in self._by_symbol:
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                "reason": "unknown_symbol",
+                "reason": "unknown_symbol", "decision_ms": decision["asof_ms"],
             })
             return
         if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                "reason": "lead",
+                "reason": "lead", "decision_ms": decision["asof_ms"],
             })
             return
         decision_index = self._index_of[symbol].get(int(decision["asof_ms"]))
@@ -803,20 +854,20 @@ class EquityReplay:
         if decision_index is None:
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                "reason": "unknown_decision_bar",
+                "reason": "unknown_decision_bar", "decision_ms": decision["asof_ms"],
             })
             return
         if policy.decision_price_field not in seq[decision_index]:
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                "reason": "decision_price_field",
+                "reason": "decision_price_field", "decision_ms": decision["asof_ms"],
             })
             return
         fill_index = decision_index + policy.fill_bar_offset
         if fill_index >= len(seq):
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
-                "reason": "fill_bar_past_tape",
+                "reason": "fill_bar_past_tape", "decision_ms": decision["asof_ms"],
             })
             return
         self._pending[symbol][fill_index].append(decision)
@@ -861,7 +912,13 @@ class EquityReplay:
         self.fills.sort(key=lambda row: (
             row["asof_ms"], row["symbol"], row["lead"], 0 if row["kind"] == "exit" else 1,
         ))
-        return {"fills": self.fills, "skipped": self.skipped, "refused": self.refused}
+        return {
+            "fills": self.fills,
+            "skipped": self.skipped,
+            "refused": self.refused,
+            "cash_flows": self.cash_flows,
+            "cash": self.cash,
+        }
 
     def _run_loop(self, bars):
         policy = self._policy
@@ -869,12 +926,14 @@ class EquityReplay:
         tape = BarTape(bars, self._source)
         times = tape._times
         symbols = sorted(self._by_symbol)
+        self._refuse_occupied_ledger_dir()
         work = tempfile.mkdtemp(prefix="gate5-replay-")
         series_id = str(uuid.uuid4())
+        self.series_id = series_id
         try:
             run_dir, artifact, ob_root = _write_serving_run(work, policy)
             document = ServeDocument.from_obj(
-                _serve_document(run_dir, series_id, symbols, times)
+                _serve_document(run_dir, series_id, symbols, times, guards=self._guards)
             )
             release = _release_for(
                 run_dir, artifact, symbols, digest, self._source,
@@ -960,8 +1019,12 @@ class EquityReplay:
                     text = err.get("text") or body.get("refusal_reason") or ""
                     failed.append(f"{cls}: {text}")
             leftover = list(self._queued) + list(self._pending_by_id)
+            legs = LedgerHistory(recording.ledger).leg_findings(0)
+            self.ledger_head = recording.ledger.head()
             recording.ledger.close()
             lock.release()
+            self.findings = self._findings_rows(legs)
+            self._keep_ledger(os.path.join(work, "serve"))
             if self._fault is not None:
                 raise self._fault
             if failed:
@@ -978,6 +1041,43 @@ class EquityReplay:
                 ])
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def _refuse_occupied_ledger_dir(self):
+        """Refuse a ``ledger_dir`` that exists and is not an empty directory."""
+        target = self._ledger_dir
+        if target is None or not os.path.lexists(target):
+            return
+        if not os.path.isdir(target) or os.listdir(target):
+            raise ConfigError([
+                f"ledger_dir {target!r} already exists and is not empty; "
+                "a kept ledger is never merged into or overwritten"
+            ])
+
+    def _keep_ledger(self, ledger_root):
+        """Copy the closed ledger root to ``ledger_dir`` when one was asked for."""
+        if self._ledger_dir is None:
+            return
+        self._refuse_occupied_ledger_dir()
+        shutil.copytree(ledger_root, self._ledger_dir, dirs_exist_ok=True)
+
+    def _findings_rows(self, legs):
+        """Join each judged leg to the fill it produced, by proposal id."""
+        rows = []
+        for leg in legs:
+            if not leg["findings"]:
+                continue
+            fill = self._filled_by_id.get(leg["proposal_id"], {})
+            rows.append({
+                "symbol": fill.get("symbol"),
+                "lead": fill.get("lead"),
+                "kind": fill.get("kind"),
+                "asof_ms": fill.get("asof_ms"),
+                "tick_id": leg["tick_id"],
+                "leg_id": leg["leg_id"],
+                "verdict": leg["verdict"],
+                "findings": leg["findings"],
+            })
+        return rows
 
     def _submit_due_cash_flows(self, tick_at_ms):
         """Fund the window once this tick reaches the next funding instant (ADR-0176/0178)."""
@@ -1004,14 +1104,61 @@ class EquityReplay:
         due = self._cash_flow_composer.due(start, end_exclusive)
         if due:
             self._cash_flow_ledger.append_many(due)
-            self._cash_balance += sum(Decimal(record["body"]["amount"]) for record in due)
-            self.cash_flows.extend(dict(record["body"]) for record in due)
+            for record in due:
+                self._cash_balance += Decimal(record["body"]["amount"])
+                self.cash_flows.append(self._cash_flow_row(record["body"]))
+                self.booked_cash_flows.append(dict(record["body"]))
+                self._snapshot_cash(record["body"]["effective_at_ms"])
         instants = self._cash_flow_funding_instants
         index = self._cash_flow_funding_index
         while index < len(instants) and instants[index] < window_end_ms:
             index += 1
         self._cash_flow_funding_index = index
         self._cash_flow_window_ms = window_end_ms
+
+    def _cash_flow_row(self, body):
+        """One submitted cash-flow record as an output row (ADR-0183 item 13).
+
+        The first record a run submits is the schedule's first occurrence,
+        which :meth:`CashFlowPolicy.composer_for` replaces with initial
+        capital plus that day's contribution; every later one is a plain
+        daily contribution.
+        """
+        policy = self._cash_flow_policy
+        if not self.cash_flows:
+            rule = "initial_capital"
+            detail = (
+                f"initial_capital_amount {policy.initial_capital_amount} + "
+                f"daily_contribution_amount {policy.daily_contribution_amount} "
+                f"{body['currency']}"
+            )
+        else:
+            rule = "daily_contribution"
+            detail = (
+                f"daily_contribution_amount {policy.daily_contribution_amount} "
+                f"{body['currency']}"
+            )
+        return {
+            "asof_ms": body["effective_at_ms"],
+            "amount": float(Decimal(body["amount"])),
+            "currency": body["currency"],
+            "rule": rule,
+            "detail": f"{body['flow_kind']}: {detail}",
+        }
+
+    def _snapshot_cash(self, asof_ms):
+        """Record the running balance at ``asof_ms``; one row per instant (last wins).
+
+        Only a funded replay has a balance worth reporting — without a
+        cash-flow policy the balance starts at zero and goes negative.
+        """
+        if self._cash_flow_composer is None:
+            return
+        row = {"asof_ms": asof_ms, "cash": float(self._cash_balance)}
+        if self.cash and self.cash[-1]["asof_ms"] == asof_ms:
+            self.cash[-1] = row
+        else:
+            self.cash.append(row)
 
     def read_entry(self, tick_at_ms):
         """Freeze every name's bar at this tick as the entry batch."""
@@ -1141,6 +1288,7 @@ class EquityReplay:
                 for decision in incoming:
                     self.skipped.append({
                         "symbol": symbol, "asof_ms": bar["asof_ms"], "reason": "halted",
+                        "decision_ms": decision["asof_ms"],
                     })
             elif policy.halt_handling == "queue":
                 nxt = index + 1
@@ -1151,6 +1299,7 @@ class EquityReplay:
                             "asof_ms": bar["asof_ms"],
                             "lead": decision[self._policy.horizon_field],
                             "reason": "fill_bar_past_tape",
+                            "decision_ms": decision["asof_ms"],
                         })
                 else:
                     pending[nxt].extend(incoming)
@@ -1184,7 +1333,8 @@ class EquityReplay:
                 policy.costs.sell_per_share(price) if side == "sell" else policy.costs.buy_per_share(price)
             ) * lot["qty"]
             self._queue_fill(
-                "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index
+                "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index,
+                reason=policy.forced_exit_at,
             )
             self._book.close_lot(symbol, lead)
 
@@ -1214,11 +1364,13 @@ class EquityReplay:
                 ) * lot["qty"]
                 self._queue_fill(
                     "exit", symbol, lead, exit_side, lot["qty"], exit_px, bar["asof_ms"],
-                    exit_fee, index,
+                    exit_fee, index, reason="same_lead_override",
+                    decision_ms=decision["asof_ms"],
                 )
             if policy.costs.below_floor(price):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "min_price",
+                    "decision_ms": decision["asof_ms"],
                 })
                 continue
             fee = (
@@ -1229,20 +1381,32 @@ class EquityReplay:
                 if cost > self._cash_balance:
                     self.refused.append({
                         "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead,
-                        "reason": "insufficient_cash",
+                        "reason": "insufficient_cash", "decision_ms": decision["asof_ms"],
                     })
                     continue
             if not self._book.open_lot(symbol, lead, qty, side, index):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "same_lead_open",
+                    "decision_ms": decision["asof_ms"],
                 })
                 continue
             self._queue_fill(
-                "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index
+                "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
+                decision_ms=decision["asof_ms"],
             )
 
-    def _queue_fill(self, kind, symbol, lead, side, qty, price, asof_ms, fee, index):
-        """Remember one fill so ``proposals`` can hand it to LegPipeline."""
+    def _queue_fill(
+        self, kind, symbol, lead, side, qty, price, asof_ms, fee, index,
+        reason=None, decision_ms=None,
+    ):
+        """Remember one fill so ``proposals`` can hand it to LegPipeline.
+
+        ``decision_ms`` is the decision bar an entry (or the override exit
+        it forces) answers; ``reason`` is why an exit happened — the
+        policy's ``forced_exit_at`` name or ``same_lead_override``. Both
+        ride onto the output fill row so a report can join a fill back to
+        the decision that caused it (ADR-0183).
+        """
         prefix = "0" if kind == "exit" else "1"
         client_ref = f"{prefix}-{kind}-{symbol}-{lead}-{index}"
         meta = {
@@ -1255,6 +1419,8 @@ class EquityReplay:
             "price": price,
             "asof_ms": asof_ms,
             "fee": fee,
+            "reason": reason,
+            "decision_ms": decision_ms,
         }
         self._pending_by_id[client_ref] = meta
         self._queued.append(meta)
@@ -1264,6 +1430,7 @@ class EquityReplay:
             self._cash_balance -= cash_delta + fee_d
         else:
             self._cash_balance += cash_delta - fee_d
+        self._snapshot_cash(asof_ms)
 
     def _proposal_for(self, meta, digest, quote_digest):
         """Build the Proposal LegPipeline submits for one queued fill."""
@@ -1305,10 +1472,17 @@ class EquityReplay:
                     f"replay fill model forbids rejections, got status={ack.status!r} "
                     f"reason={ack.reason!r} for {intent.proposal.id}"
                 ])
-            self.fills.append(_fill_row(
+            row = _fill_row(
                 meta["kind"], meta["symbol"], meta["lead"], meta["side"],
                 meta["qty"], meta["price"], meta["asof_ms"], meta["fee"], ack,
-            ))
+            )
+            for key in ("reason", "decision_ms"):
+                if meta[key] is not None:
+                    row[key] = meta[key]
+            self.fills.append(row)
+            self._filled_by_id[intent.proposal.id] = {
+                key: row[key] for key in ("kind", "symbol", "lead", "asof_ms")
+            }
         except ConfigError as exc:
             if self._fault is None:
                 self._fault = exc
@@ -1397,8 +1571,12 @@ def _write_serving_run(work, policy):
     return run_dir, artifact, ob.root
 
 
-def _serve_document(run_dir, series_id, symbols, times):
-    """Shadow ServeDocument compose.bundles_for accepts; cadence is overlaid to the tape."""
+def _serve_document(run_dir, series_id, symbols, times, guards=None):
+    """Shadow ServeDocument compose.bundles_for accepts; cadence is overlaid to the tape.
+
+    ``guards`` is the document's guard map; ``None`` declares ``{}`` so every
+    serve identity minted before guards existed is unchanged.
+    """
     universe = list(symbols) or ["AAA"]
     span = (int(times[-1]) - int(times[0]) + 1) if times else 1
     horizon_ms = max(span * 2, 1)
@@ -1435,7 +1613,7 @@ def _serve_document(run_dir, series_id, symbols, times):
             "max_staleness_ms": horizon_ms,
             "max_quote_age_ms": horizon_ms,
         },
-        "guards": {},
+        "guards": {} if guards is None else guards,
         "execution": {"uses": "shadow", "submit_timeout_ms": 5000},
         "accounting": {"uses": "paper", "max_valuation_age_ms": horizon_ms},
         "arming": {"max_duration_s": 14400, "approval": {"uses": "deny-all"}},
@@ -1497,6 +1675,21 @@ def _serve_document(run_dir, series_id, symbols, times):
     }
 
 
+#: A syntactically valid series id for validating a guard map; never served.
+_VALIDATION_SERIES_ID = "00000000-0000-4000-8000-000000000000"
+
+
+def _guard_problems(guards):
+    """Judge a guard map by the serve-document grammar and the guard classes themselves."""
+    try:
+        guard_chain(ServeDocument.from_obj(
+            _serve_document("guard-validation", _VALIDATION_SERIES_ID, (), (), guards=guards)
+        ))
+    except ProductionError as exc:
+        return list(exc.problems)
+    return []
+
+
 def _release_for(run_dir, artifact, symbols, digest, source_hash, document, created_ms, ob_root):
     """Build a ReleaseManifest whose feed_spec matches ``_TapeEntry``'s contract."""
     hex64 = digest
@@ -1544,6 +1737,9 @@ class ReplayAdapter:
         The initial-capital/daily-contribution bundle (ADR-0176). ``None``
         (the default) means no cash-flow composer is bound, matching this
         class's behavior before ADR-0176 exactly.
+    guards, ledger_dir : optional
+        Passed to :class:`EquityReplay` unchanged (ADR-0183 phase 2);
+        ``None`` keeps the guard map ``{}`` and keeps no ledger.
 
     Examples
     --------
@@ -1562,9 +1758,11 @@ class ReplayAdapter:
         out["fills"][0]["price"]  # 11.0
     """
 
-    def __init__(self, policy, cash_flow_policy=None):
+    def __init__(self, policy, cash_flow_policy=None, guards=None, ledger_dir=None):
         self._policy = policy
         self._cash_flow_policy = cash_flow_policy
+        self._guards = guards
+        self._ledger_dir = ledger_dir
 
     def replay(self, bars, decisions):
         """Replay ``decisions`` over ``bars`` through :class:`ServeLoop`.
@@ -1579,9 +1777,30 @@ class ReplayAdapter:
         Returns
         -------
         dict
-            ``fills``, ``skipped``, ``refused``.
+            ``fills``, ``skipped``, ``refused``, ``cash_flows`` (one row per
+            cash-flow record the policy submitted: ``asof_ms``, ``amount``,
+            ``currency``, ``rule``, ``detail``) and ``cash`` (the running
+            balance after each change, ``{asof_ms, cash}``; both empty
+            without a cash-flow policy), ``findings`` (the
+            :attr:`EquityReplay.findings` rows; empty without guards) and
+            ``ledger`` (``None`` unless ``ledger_dir`` was given; then
+            ``root``, ``series_id``, ``seq`` and ``hash`` — the kept
+            ledger's root and the head it closed at).
         """
-        return EquityReplay(self._policy, self._cash_flow_policy).run(bars, decisions)
+        replay = EquityReplay(
+            self._policy, self._cash_flow_policy,
+            guards=self._guards, ledger_dir=self._ledger_dir,
+        )
+        out = replay.run(bars, decisions)
+        out["findings"] = replay.findings
+        out["ledger"] = None
+        if self._ledger_dir is not None:
+            seq, head = replay.ledger_head
+            out["ledger"] = {
+                "root": self._ledger_dir, "series_id": replay.series_id,
+                "seq": seq, "hash": head,
+            }
+        return out
 
 class DevelopmentReplay(Node):
     """Pipeline doorway for developmental replay: ineligible, evidence-bounded.
@@ -1597,6 +1816,16 @@ class DevelopmentReplay(Node):
         the child root) and ``cash_flow_policy_sha256`` (must match the
         loaded :class:`CashFlowPolicy` digest) — both present or both
         absent. Absent means no cash-flow composer, exactly as before.
+        Optional (ADR-0183 phase 2), each absent from the identity when
+        omitted: ``keep_ledger`` (bool, default false; true copies the
+        replay's ledger root to ``<artifact_dir>/ledger``) and ``guards``
+        (the serve document's guard map, judged by the production document
+        grammar and ``compose.guard_chain``; default ``{}``).
+
+    Outputs: ``fills``, ``skipped``, ``refused``, ``cash_flows``, ``cash``,
+    ``findings`` (one row per judged leg; empty without guards) and
+    ``ledger`` (``None`` unless ``keep_ledger``; then ``root``,
+    ``series_id``, ``seq``, ``hash``). A guard breach fails the run.
 
     Examples
     --------
@@ -1615,7 +1844,7 @@ class DevelopmentReplay(Node):
     """
 
     role = "transform"
-    outputs = ("fills", "skipped", "refused")
+    outputs = ("fills", "skipped", "refused", "cash_flows", "cash", "findings", "ledger")
     _PARAMS = (
         "deployment_eligible",
         "evidence_end",
@@ -1623,7 +1852,7 @@ class DevelopmentReplay(Node):
         "fill_policy_sha256",
         "caps",
     )
-    _OPTIONAL_PARAMS = ("cash_flow_policy", "cash_flow_policy_sha256")
+    _OPTIONAL_PARAMS = ("cash_flow_policy", "cash_flow_policy_sha256", "keep_ledger", "guards")
 
     def __init__(self, key, params=None, **kwargs):
         super().__init__(key, params, **kwargs)
@@ -1705,6 +1934,10 @@ class DevelopmentReplay(Node):
                             "cash_flow_policy_sha256 does not match the loaded "
                             "cash-flow-policy digest"
                         )
+        if "keep_ledger" in params and not isinstance(params["keep_ledger"], bool):
+            problems.append(f"keep_ledger must be a bool, got {params['keep_ledger']!r}")
+        if "guards" in params:
+            problems.extend(_guard_problems(params["guards"]))
         return problems
 
     @classmethod
@@ -1764,9 +1997,13 @@ class DevelopmentReplay(Node):
     def run(self, ctx, inputs):
         """Refuse out-of-window decisions/bars, then replay through :class:`ReplayAdapter`."""
         self._refuse_out_of_window(inputs["bars"], inputs["decisions"])
-        return ReplayAdapter(self._policy, self._cash_flow_policy).replay(
-            list(inputs["bars"]), list(inputs["decisions"])
-        )
+        ledger_dir = None
+        if self.params.get("keep_ledger"):
+            ledger_dir = os.path.join(self.artifact_dir(ctx), "ledger")
+        return ReplayAdapter(
+            self._policy, self._cash_flow_policy,
+            guards=self.params.get("guards"), ledger_dir=ledger_dir,
+        ).replay(list(inputs["bars"]), list(inputs["decisions"]))
 
     def _refuse_out_of_window(self, bars, decisions):
         """Refuse decisions at/after ``evidence_end`` and bars past the fill suffix.

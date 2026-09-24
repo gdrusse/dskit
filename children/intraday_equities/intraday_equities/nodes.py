@@ -2924,6 +2924,56 @@ def build_portfolio_model(per_t, tradable):
     return model
 
 
+def portfolio_candidates(book, picks):
+    """Every scored symbol per stamp, ranked, with the solved pick flagged.
+
+    Parameters
+    ----------
+    book : dict or None
+        ``{"per_t": {asof_ms: {symbol: score}}, "tradable": set}`` as
+        :meth:`PortfolioSelect.build_model` leaves it on the model;
+        ``None`` yields no rows.
+    picks : list of dict
+        Solved ``{asof_ms, symbol}`` rows.
+
+    Returns
+    -------
+    list of dict
+        One row per ``(asof_ms, symbol)`` scored: ``score`` (the
+        prediction), ``rank`` (1 = highest score, ties broken by symbol),
+        ``n_candidates``, ``chosen`` and ``eligible`` (in ``tradable``),
+        ordered by stamp then rank.
+
+    Examples
+    --------
+    ::
+
+        portfolio_candidates(
+            {"per_t": {1: {"A": 0.1, "B": 0.2}}, "tradable": {"A", "B"}},
+            [{"asof_ms": 1, "symbol": "B"}],
+        )[0]["symbol"]  # 'B'
+    """
+    if not book:
+        return []
+    tradable = book["tradable"]
+    chosen = {(pick["asof_ms"], pick["symbol"]) for pick in picks}
+    rows = []
+    for stamp in sorted(book["per_t"]):
+        scores = book["per_t"][stamp]
+        ordered = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))
+        for rank, symbol in enumerate(ordered, start=1):
+            rows.append({
+                "asof_ms": stamp,
+                "symbol": symbol,
+                "score": scores[symbol],
+                "rank": rank,
+                "n_candidates": len(ordered),
+                "chosen": (stamp, symbol) in chosen,
+                "eligible": symbol in tradable,
+            })
+    return rows
+
+
 class PortfolioSelect(PyomoSolve):
     """Pick one tradable symbol per timestamp from a signal.
 
@@ -2948,7 +2998,7 @@ class PortfolioSelect(PyomoSolve):
     """
 
     role = "score"
-    outputs = ("picks", "metrics")
+    outputs = ("picks", "metrics", "candidates", "solves")
     _PARAMS = PyomoSolve._PARAMS + ("split", "tradable")
 
     @classmethod
@@ -3045,7 +3095,12 @@ class PortfolioSelect(PyomoSolve):
         if not per_t:
             raise RuntimeError("portfolio received no scorable rows")
         tradable = inputs.get("tradable", params.get("tradable"))
-        return build_portfolio_model(per_t, tradable)
+        model = build_portfolio_model(per_t, tradable)
+        # Underscore-prefixed: plain bookkeeping for extract(), invisible
+        # to pyomo's component machinery (the BudgetedSelect precedent).
+        # extract() reads the scores here rather than predicting twice.
+        model._portfolio = {"per_t": per_t, "tradable": frozenset(tradable)}
+        return model
 
     def extract(self, model, results):
         """Read the solved picks.
@@ -3060,7 +3115,8 @@ class PortfolioSelect(PyomoSolve):
         Returns
         -------
         dict
-            ``picks`` and ``metrics``.
+            ``picks``, ``metrics`` and ``candidates`` (see
+            :func:`portfolio_candidates`).
         """
         picks = []
         for stamp, symbol in model.x:
@@ -3071,6 +3127,9 @@ class PortfolioSelect(PyomoSolve):
         return {
             "picks": picks,
             "metrics": {"n_picks": len(picks)},
+            "candidates": portfolio_candidates(
+                getattr(model, "_portfolio", None), picks
+            ),
         }
 
     def run(self, ctx, inputs):
@@ -3087,11 +3146,19 @@ class PortfolioSelect(PyomoSolve):
         -------
         dict
             ``picks`` plus decision metrics (IC, hit rate, no-cost
-            return, drawdown, turnover). Fill rate and delay decay wait
-            on a fill model.
+            return, drawdown, turnover), ``candidates`` — every scored
+            symbol per stamp with its score, rank and chosen flag (ADR-0183
+            item 12; the "why" behind each pick) — and ``solves``: the one
+            whole-window solve as ``[{"asof_ms", **SolveRecord.to_obj()}]``
+            (ADR-0183 phase 2). Its ``asof_ms`` is the EARLIEST scored
+            stamp: the program spans the whole window and is solved before
+            any of its picks can be read, so no later stamp may claim it.
+            Fill rate and delay decay wait on a fill model.
         """
         out = super().run(ctx, inputs)
         out["metrics"] = _decision_metrics(out.get("picks") or [], inputs)
+        first = min(row["asof_ms"] for row in out["candidates"])
+        out["solves"] = [{"asof_ms": first, **self.solve_record.to_obj()}]
         return out
 
 

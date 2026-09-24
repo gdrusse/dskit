@@ -138,6 +138,7 @@ __all__ = [
     "ReplayCashFlowComposer",
     "bundles_for",
     "clock_for",
+    "guard_chain",
     "handlers_for",
     "outcome_join",
     "parity_monitors",
@@ -1043,8 +1044,37 @@ def clock_for(document):
     )
 
 
-def _guards(document):
-    """Build the document's named guards as one ordered chain."""
+def guard_chain(document):
+    """Build the document's named guards as one ordered chain.
+
+    The one place a document's ``guards`` map becomes guard objects: each
+    site resolves through ``GUARD_KINDS`` and its class judges its own
+    ``params`` at construction. ``bundles_for`` builds the chain it serves
+    with; a caller that only needs to know whether a guard map is sound
+    (a replay validating its node params) builds one and discards it.
+
+    Parameters
+    ----------
+    document : ServeDocument
+        A validated serve document.
+
+    Returns
+    -------
+    GuardChain
+        The guards in document order; empty when ``guards`` is ``{}``.
+
+    Raises
+    ------
+    ProductionError
+        On an unregistered ``uses`` or params the guard class refuses.
+
+    Examples
+    --------
+    ::
+
+        chain = guard_chain(document)
+        final, findings = chain.check_all(proposal, state)
+    """
     return GuardChain(
         {
             name: GUARD_KINDS.resolve(site.uses)(_selector(site), name=name)
@@ -1235,7 +1265,7 @@ def bundles_for(
         dead_after_ms=document.schedule.dead_after_ms,
     )
 
-    guards = _guards(document)
+    guards = guard_chain(document)
     action_policy = ActionPolicy()
     transition_policy = TransitionPolicy()
     arming = Arming(

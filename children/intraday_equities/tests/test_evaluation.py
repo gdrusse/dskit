@@ -1,0 +1,301 @@
+"""ReplayEvents: replay outputs -> dskit-eval-v1 events (ADR-0183 item 14)."""
+
+import json
+import os
+
+import pytest
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext
+
+
+from intraday_equities.evaluation import KIND_ORDER, NODE_KINDS, SCHEMA, ReplayEvents
+from intraday_equities.nodes import portfolio_candidates
+from intraday_equities.replay import CashFlowPolicy, FillPolicy, ReplayAdapter
+
+CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIGS = os.path.join(CHILD_ROOT, "configs")
+T0 = 1_767_623_400_000  # 2026-01-05 14:30 UTC, a Monday session open
+MIN = 60_000
+
+PARAMS = {
+    "title": "synthetic replay",
+    "project": "intraday_equities",
+    "tz": "America/New_York",
+    "price_field": "close",
+    "mark_symbols": "traded",
+    "criteria": [{"name": "sharpe", "stat": "sharpe", "op": ">=", "value": 0.0, "min_n": 5}],
+    "trials": 3,
+    "model": "ridge",
+}
+
+
+def _t(i):
+    return T0 + i * MIN
+
+
+def _bar(symbol, i, px):
+    return {"symbol": symbol, "asof_ms": _t(i), "open": px, "close": px + 0.5, "halted": False}
+
+
+def _scenario(cash=True):
+    """Three stamps over two names: an entry, a cash refusal, an unknown bar."""
+    bars = [_bar("AAA", i, 10.0) for i in range(6)] + [_bar("BBB", i, 20.0) for i in range(5)]
+    book = {
+        "per_t": {
+            _t(0): {"AAA": 0.03, "BBB": 0.01, "SPY": 0.09},
+            _t(1): {"AAA": 0.00, "BBB": 0.02},
+            _t(5): {"AAA": 0.01, "BBB": 0.04},
+        },
+        "tradable": frozenset({"AAA", "BBB"}),
+    }
+    picks = [
+        {"asof_ms": _t(0), "symbol": "AAA"},
+        {"asof_ms": _t(1), "symbol": "BBB"},
+        {"asof_ms": _t(5), "symbol": "BBB"},  # BBB has no bar at t5
+    ]
+    decisions = [
+        {"symbol": "AAA", "asof_ms": _t(0), "lead": 2, "qty": 10, "side": "buy"},
+        {"symbol": "BBB", "asof_ms": _t(1), "lead": 1, "qty": 1000, "side": "buy"},
+        {"symbol": "BBB", "asof_ms": _t(5), "lead": 1, "qty": 1, "side": "buy"},
+    ]
+    policy = FillPolicy.from_path(os.path.join(CONFIGS, "fill-policy.json"))
+    cash_policy = (
+        CashFlowPolicy.from_path(os.path.join(CONFIGS, "cash-flow-policy.json")) if cash else None
+    )
+    out = ReplayAdapter(policy, cash_policy).replay(bars, decisions)
+    inputs = {
+        "candidates": portfolio_candidates(book, picks),
+        "picks": picks,
+        "fills": out["fills"],
+        "refused": out["refused"],
+        "skipped": out["skipped"],
+        "cash_flows": out["cash_flows"],
+        "bars": bars,
+    }
+    return inputs, out
+
+
+def _events(inputs, params=None, ctx=None):
+    return ReplayEvents("events", dict(PARAMS, **(params or {}))).run(ctx, inputs)["events"]
+
+
+def test_the_kind_is_registered_as_a_transform():
+    assert NODE_KINDS == {"intraday_equities-replay-events": ReplayEvents}
+    assert DEFAULT_NODE_KINDS.get("intraday_equities-replay-events")[0] is ReplayEvents
+    assert ReplayEvents.role == "transform"
+    assert ReplayEvents.outputs == ("events",)
+
+
+def test_params_are_validated():
+    assert ReplayEvents.validate_params(PARAMS) == []
+    bad = dict(PARAMS, tz="Mars/Olympus", mark_symbols="some", trials=0, extra=1)
+    problems = " ".join(ReplayEvents.validate_params(bad))
+    for word in ("tz", "mark_symbols", "trials", "extra"):
+        assert word in problems
+    assert any("units must be" in p
+               for p in ReplayEvents.validate_params(dict(PARAMS, units={"score": 1})))
+    assert ReplayEvents("events", PARAMS).validate_inputs({}) != []
+
+
+def test_envelope_seq_and_kind_order():
+    inputs, _ = _scenario()
+    events = _events(inputs)
+    assert [e["seq"] for e in events] == list(range(len(events)))
+    assert all(e["schema"] == SCHEMA and e["known_ms"] == e["ts_ms"] for e in events)
+    keys = [(e["ts_ms"], KIND_ORDER.index(e["kind"])) for e in events[1:-1]]
+    assert keys == sorted(keys)
+    assert events[0]["kind"] == "run_start" and events[-1]["kind"] == "run_end"
+    start = events[0]
+    assert start["criteria"] == PARAMS["criteria"] and start["trials"] == 3
+    assert start["tz"] == "America/New_York"
+    # scores are the ridge forecast of y_next, a LOG return; the account is USD
+    assert start["units"] == {"score": "log_return", "money": "USD"}
+
+
+def test_each_decision_names_candidates_edge_action_and_the_replays_reason():
+    inputs, out = _scenario()
+    events = _events(inputs)
+    stamp = {e["decision_id"]: e for e in events if e["kind"] == "decision"}
+    first = stamp[f"d-{_t(0)}"]
+    assert first["chosen"] == "AAA" and first["action"] == "enter"
+    assert first["reason"] == "top_score" and first["model"] == "ridge"
+    assert [c["instrument"] for c in first["candidates"]] == ["SPY", "AAA", "BBB"]
+    assert first["candidates"][0] == {
+        "instrument": "SPY", "score": 0.09, "rank": 1, "eligible": False,
+        "reason": "not_tradable",
+    }
+    # Edge is against the best other ELIGIBLE name, not the untradable SPY.
+    assert first["edge"] == pytest.approx(0.03 - 0.01)
+    # BBB x1000 @ 20 cannot be afforded from the $1,020 seed.
+    second = stamp[f"d-{_t(1)}"]
+    assert (second["action"], second["reason"]) == ("refuse", "insufficient_cash")
+    assert any(r["reason"] == "insufficient_cash" for r in out["refused"])
+    third = stamp[f"d-{_t(5)}"]
+    assert (third["action"], third["reason"]) == ("refuse", "unknown_decision_bar")
+    # Every replay refusal/skip is an event, linked to a decision.
+    rejections = [e for e in events if e["kind"] in ("refusal", "skip")]
+    assert len(rejections) == len(out["refused"]) + len(out["skipped"])
+    assert all(e["decision_id"] in stamp for e in rejections)
+    assert sorted(e["reason"] for e in rejections) == sorted(
+        r["reason"] for r in out["refused"] + out["skipped"]
+    )
+
+
+def test_entries_get_an_order_and_a_fill_and_expiry_exits_are_decisions():
+    inputs, out = _scenario()
+    events = _events(inputs)
+    orders = {e["order_id"]: e for e in events if e["kind"] == "order"}
+    fills = [e for e in events if e["kind"] == "fill"]
+    assert len(fills) == len(out["fills"]) == 2
+    entry = next(f for f in fills if f["tag"] == "entry")
+    exit_ = next(f for f in fills if f["tag"] == "exit")
+    assert orders[entry["order_id"]]["decision_id"] == f"d-{_t(0)}"
+    assert orders[entry["order_id"]]["ref_price"] == 10.5  # decision-bar close
+    assert entry["ref_price"] == 10.5 and entry["price"] == 10.0
+    assert entry["ts_ms"] == _t(1) and exit_["ts_ms"] == _t(3)
+    exit_decision = next(
+        e for e in events
+        if e["kind"] == "decision" and e["decision_id"] == orders[exit_["order_id"]]["decision_id"]
+    )
+    assert exit_decision["action"] == "exit"
+    assert exit_decision["reason"] == "horizon_expiry"
+    assert exit_decision["ts_ms"] == exit_["ts_ms"]
+
+
+def test_cash_flows_and_marks():
+    inputs, out = _scenario()
+    events = _events(inputs)
+    flows = [e for e in events if e["kind"] == "cashflow"]
+    assert [(f["amount"], f["rule"]) for f in flows] == [(1020.0, "initial_capital")]
+    marks = [e for e in events if e["kind"] == "mark"]
+    # traded: AAA (entered) and BBB (chosen) — every bar close of both.
+    assert len(marks) == len(inputs["bars"])
+    only_aaa = dict(inputs, picks=[p for p in inputs["picks"] if p["symbol"] == "AAA"])
+    marks = [e for e in _events(only_aaa) if e["kind"] == "mark"]
+    assert {m["instrument"] for m in marks} == {"AAA"}
+    assert all(m["price"] == 10.5 for m in marks)
+
+
+def test_run_start_reads_the_run_dir_provenance(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"name": "doc"}), encoding="utf-8")
+    (tmp_path / "resolved.json").write_text(json.dumps({
+        "document_hash": "abc", "run_hash": "r123", "data_fingerprint": {"alpaca": "fp"},
+    }), encoding="utf-8")
+    inputs, _ = _scenario(cash=False)
+    ctx = NodeContext(name="run", asof="2026-01-06", run_dir=str(tmp_path))
+    start = _events(inputs, ctx=ctx)[0]
+    assert start["run_id"] == "r123" and start["config_hash"] == "abc"
+    assert start["config"] == {"name": "doc"} and start["data"] == {"alpaca": "fp"}
+
+
+def test_events_validate_against_the_schema_when_the_evaluator_is_present():
+    events_mod = pytest.importorskip("dskit.evaluation.events")
+    inputs, _ = _scenario()
+    for obj in _events(inputs):
+        events_mod.Event.from_obj(obj)
+    events_mod.EventLog(_events(inputs))
+
+
+def _solve_row(asof_ms, **extra):
+    """A solve row as the simulation emits it: tick, lead, record keys, stamps."""
+    return {
+        "asof_ms": asof_ms, "lead": 2, "solver": "appsi_highs", "status": "ok",
+        "termination": "optimal", "objective": 1.5, "bound": 1.5, "gap": 0.0,
+        "seconds": 0.02, "variables": 9, "constraints": 4,
+        "binding": [{"name": "cardinality", "rows": 1, "binding": 1, "min_slack": 0.0}],
+        "fold": 2, "release_id": "r2", "deployment_eligible": False, **extra,
+    }
+
+
+def test_each_solve_row_becomes_one_solve_event_at_its_tick():
+    inputs, _ = _scenario()
+    solves = [_solve_row(_t(0)), _solve_row(_t(1), model="mio_h01", objective=None)]
+    events = _events(dict(inputs, solves=solves))
+    found = [e for e in events if e["kind"] == "solve"]
+    assert [(e["ts_ms"], e["known_ms"], e["instrument"]) for e in found] == [
+        (_t(0), _t(0), None), (_t(1), _t(1), None),
+    ]
+    first, second = found
+    # Only the record's keys cross; the row's fold/release/lead stamps do not.
+    assert {k: first[k] for k in ("solver", "status", "termination", "gap", "binding")} == {
+        "solver": "appsi_highs", "status": "ok", "termination": "optimal", "gap": 0.0,
+        "binding": solves[0]["binding"],
+    }
+    assert "fold" not in first and "lead" not in first
+    assert first["model"] == "ridge" and second["model"] == "mio_h01"  # the row's own wins
+    assert second["objective"] is None
+    assert "solve" in KIND_ORDER
+    events_mod = pytest.importorskip("dskit.evaluation.events")
+    events_mod.EventLog(events)
+
+
+def test_solves_are_optional_and_refused_when_not_a_list():
+    inputs, _ = _scenario()
+    assert not [e for e in _events(inputs) if e["kind"] == "solve"]
+    node = ReplayEvents("events", PARAMS)
+    assert any("solves" in p for p in node.validate_inputs(dict(inputs, solves={})))
+    unlabelled = ReplayEvents("events", {k: v for k, v in PARAMS.items() if k != "model"})
+    solve = next(e for e in unlabelled.run(None, dict(inputs, solves=[_solve_row(_t(0))]))[
+        "events"] if e["kind"] == "solve")
+    assert "model" not in solve
+
+
+# --- ADR-0183 phase 2: outcomes, ledger findings, ledger head ---------------------
+
+
+def _labeled():
+    """``y_next`` for every (stamp, symbol) the candidates score; SPY has no bars."""
+    return [{"asof_ms": _t(i), "symbol": s, "y_next": 0.001 * (i + 1) * (1 if s == "AAA" else -1)}
+            for i in (0, 1, 5) for s in ("AAA", "BBB", "SPY")]
+
+
+OUTCOME_PARAMS = {"realized_field": "y_next", "outcome_lead_bars": 1}
+
+
+def test_labeled_candidates_become_outcomes_one_bar_later():
+    from dskit.evaluation.events import EventLog
+
+    inputs, _ = _scenario()
+    events = _events(dict(inputs, labeled=_labeled()), OUTCOME_PARAMS)
+    outcomes = [e for e in events if e["kind"] == "outcome"]
+    got = {(e["decision_id"], e["instrument"]): (e["ts_ms"], e["realized"]) for e in outcomes}
+    assert got[(f"d-{_t(0)}", "AAA")] == (_t(1), 0.001)
+    assert got[(f"d-{_t(1)}", "BBB")] == (_t(2), -0.002)
+    # AAA at t5 has no later bar, BBB has no bar at t5, SPY has no bars: no outcome.
+    assert (f"d-{_t(5)}", "AAA") not in got and (f"d-{_t(5)}", "BBB") not in got
+    assert not any(instrument == "SPY" for _, instrument in got)
+    EventLog(events)  # outcomes validate: strictly after their decisions
+
+
+def test_labeled_needs_its_params_declared():
+    inputs, _ = _scenario()
+    node = ReplayEvents("events", PARAMS)
+    problems = node.validate_inputs(dict(inputs, labeled=_labeled()))
+    assert any("realized_field" in p and "outcome_lead_bars" in p for p in problems)
+    assert ReplayEvents.validate_params(dict(PARAMS, outcome_lead_bars=0)) != []
+    assert ReplayEvents.validate_params(dict(PARAMS, realized_field="")) != []
+    assert ReplayEvents.validate_params(dict(PARAMS, **OUTCOME_PARAMS)) == []
+
+
+def test_findings_attach_to_the_order_of_the_fill_their_leg_produced():
+    from dskit.evaluation.events import EventLog
+
+    inputs, out = _scenario()
+    entry = next(f for f in out["fills"] if f["kind"] == "entry")
+    exit_ = next(f for f in out["fills"] if f["kind"] == "exit")
+    stored = {"guard": "size", "measure": "quantity", "value": "10", "bound": "500",
+              "window": "none", "scope_key": entry["symbol"], "verdict": "allow",
+              "reason": "quantity 10 within 500"}
+    findings = [
+        {"symbol": f["symbol"], "lead": f["lead"], "kind": f["kind"], "asof_ms": f["asof_ms"],
+         "tick_id": "t", "leg_id": "l", "verdict": "allow", "findings": [stored]}
+        for f in (entry, exit_)
+    ] + [{"symbol": None, "lead": None, "kind": None, "asof_ms": None, "tick_id": "t",
+          "leg_id": "r", "verdict": "refuse", "findings": [dict(stored, verdict="refuse")]}]
+    ledger = {"root": "/x", "series_id": "s", "seq": 41, "hash": "abc"}
+    events = _events(dict(inputs, findings=findings, ledger=ledger))
+    orders = [e for e in events if e["kind"] == "order"]
+    assert all(o["findings"] == [dict(stored, value=10.0, bound=500.0)] for o in orders)
+    assert events[0]["data"]["ledger"] == "seq 41 abc"
+    EventLog(events)
+    plain = _events(inputs)
+    assert not any("findings" in e for e in plain) and "data" not in plain[0]

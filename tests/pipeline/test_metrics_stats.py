@@ -1,6 +1,7 @@
 """Scoring rules + the cluster bootstrap / multiplicity machinery."""
 
 import math
+from statistics import NormalDist
 
 import pytest
 
@@ -23,13 +24,18 @@ from dskit.pipeline.stats import (
     cluster_bootstrap_pvalue,
     cluster_bootstrap_t,
     correction,
+    deflated_sharpe_ratio,
     lower_tail_mean,
     max_drawdown,
     max_informative_horizon,
     newey_west_mean,
     no_correction,
     no_information_test,
+    payoff_ratio,
+    probabilistic_sharpe_ratio,
+    profit_factor,
     register_correction,
+    sharpe_ratio,
     student_t_sf,
     weighted_benjamini_hochberg,
 )
@@ -696,3 +702,105 @@ class TestPnlSeriesSummaries:
     def test_max_drawdown_refuses_a_non_finite_increment(self):
         with pytest.raises(ValueError, match="finite"):
             max_drawdown([1.0, float("inf")])
+
+
+class TestPerformanceEstimators:
+    """sharpe_ratio / PSR / DSR / profit_factor / payoff_ratio (ADR-0183), vs hand values."""
+
+    RETURNS = [0.01, 0.02, 0.03, 0.04]
+
+    def test_sharpe_matches_the_hand_computation(self):
+        out = sharpe_ratio(self.RETURNS)
+        sd = math.sqrt(sum((r - 0.025) ** 2 for r in self.RETURNS) / 3)
+        sr = 0.025 / sd
+        assert out["n"] == 4
+        assert out["sharpe"] == pytest.approx(sr)
+        assert out["skew"] == pytest.approx(0.0, abs=1e-9)
+        assert out["kurtosis"] == pytest.approx(1.64)  # m4 / m2^2 of the four points
+        se = math.sqrt((1 + (1.64 - 1) / 4 * sr * sr) / 3)
+        assert out["se"] == pytest.approx(se)
+        assert out["ci_low"] == pytest.approx(sr - 1.959963984540054 * se)
+        assert out["ci_high"] == pytest.approx(sr + 1.959963984540054 * se)
+
+    def test_a_flat_series_has_no_sharpe(self):
+        out = sharpe_ratio([0.01, 0.01, 0.01])
+        assert out["sharpe"] is None and out["ci_low"] is None and out["n"] == 3
+
+    @pytest.mark.parametrize("values, alpha", [
+        ([0.01], 0.05), ([0.01, float("nan")], 0.05), ([0.01, 0.02], 0.0), ("ab", 0.05),
+    ])
+    def test_sharpe_refusals(self, values, alpha):
+        with pytest.raises(ValueError):
+            sharpe_ratio(values, alpha)
+
+    def test_psr_is_one_half_at_its_own_estimate(self):
+        sr = sharpe_ratio(self.RETURNS)["sharpe"]
+        assert probabilistic_sharpe_ratio(self.RETURNS, sr) == pytest.approx(0.5)
+        assert probabilistic_sharpe_ratio(self.RETURNS, 0.0) > 0.9
+        assert probabilistic_sharpe_ratio([0.01, 0.01], 0.0) is None
+
+    def test_dsr_with_one_trial_is_the_psr_against_zero(self):
+        out = deflated_sharpe_ratio(self.RETURNS, 1)
+        assert out["expected_max_sharpe"] == 0.0
+        assert out["dsr"] == pytest.approx(probabilistic_sharpe_ratio(self.RETURNS, 0.0))
+
+    def test_dsr_raises_the_bar_with_more_trials(self):
+        few = deflated_sharpe_ratio(self.RETURNS, 2, sharpe_variance=0.25)
+        many = deflated_sharpe_ratio(self.RETURNS, 100, sharpe_variance=0.25)
+        g = 0.5772156649015329
+        inv = NormalDist().inv_cdf
+        expected = 0.5 * ((1 - g) * inv(1 - 1 / 100) + g * inv(1 - 1 / (100 * math.e)))
+        assert many["expected_max_sharpe"] == pytest.approx(expected)
+        assert many["dsr"] < few["dsr"]
+
+    @pytest.mark.parametrize("trials, variance", [(0, None), (True, None), (2, -1.0)])
+    def test_dsr_refusals(self, trials, variance):
+        with pytest.raises(ValueError):
+            deflated_sharpe_ratio(self.RETURNS, trials, variance)
+
+    def test_profit_factor_and_payoff(self):
+        assert profit_factor([2.0, -1.0, 3.0, -1.0]) == pytest.approx(2.5)
+        assert payoff_ratio([2.0, -1.0, 3.0, -1.0]) == pytest.approx(2.5)
+        assert payoff_ratio([4.0, 2.0, -1.0, -2.0, -3.0]) == pytest.approx(1.5)
+        assert profit_factor([1.0, 2.0]) is None  # no loss: unbounded
+        assert payoff_ratio([1.0, 2.0]) is None
+        assert profit_factor([-1.0]) == 0.0
+
+    @pytest.mark.parametrize("fn, values", [
+        (profit_factor, []), (payoff_ratio, [float("inf")]), (profit_factor, "12"),
+    ])
+    def test_trade_ratio_refusals(self, fn, values):
+        with pytest.raises(ValueError):
+            fn(values)
+
+
+# --- ADR-0183 phase 2: the one owner of the equal-count bucket rule --------
+
+
+def test_quantile_edges_are_equal_count_cut_points():
+    from dskit.pipeline.stats import quantile_bin, quantile_edges
+
+    values = list(range(1, 101))
+    edges = quantile_edges(values, 10)
+    assert len(edges) == 9
+    counts = [0] * 10
+    for value in values:
+        counts[quantile_bin(value, edges)] += 1
+    assert counts == [10] * 10
+    assert quantile_edges([1.0], 10) == []
+    assert quantile_edges(values, 1) == []
+
+
+def test_quantile_bin_puts_a_cut_point_in_the_bucket_above():
+    from dskit.pipeline.stats import quantile_bin
+
+    assert quantile_bin(2.0, [1.0, 2.0, 3.0]) == 2
+    assert quantile_bin(0.5, [1.0, 2.0, 3.0]) == 0
+    assert quantile_bin(9.0, [1.0, 2.0, 3.0]) == 3
+    assert quantile_bin(1.0, []) == 0
+
+
+def test_monitors_bin_through_the_pipeline_owner():
+    from dskit.production import monitors
+
+    assert not hasattr(monitors, "_quantile_edges")

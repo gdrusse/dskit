@@ -923,7 +923,9 @@ class MioDecider:
     release's cap and model manifest, the cap producer's document and
     node), and the cost knobs are the fill policy's. A refused or
     non-optimal solve is recorded ``mio_refused`` and trades nothing for
-    that group.
+    that group. Every solve that ran -- a refused non-optimal one
+    included -- leaves ``{asof_ms, lead, **SolveRecord.to_obj()}`` in
+    :attr:`solves` (ADR-0183 phase 2).
 
     Parameters
     ----------
@@ -967,6 +969,7 @@ class MioDecider:
         }
         self.skipped = []
         self.refused = []
+        self.solves = []
 
     def decide(self, asof_ms, portfolio):
         """Orders for this tick: ``{"symbol", "asof_ms", "lead", "qty", "side": "buy"}``."""
@@ -1014,12 +1017,19 @@ class MioDecider:
                     "asof_ms": asof_ms, "lead": lead, "reason": "mio_refused", "detail": str(exc),
                 })
                 continue
+            finally:
+                self._keep_solve(node, asof_ms, lead)
             for symbol, trade in sorted(out["trades"].items()):
                 if trade["sell"]:
                     raise ValueError(f"{node.key}: MIO sold {symbol} from an empty book at {asof_ms}")
                 orders.append({"symbol": symbol, "asof_ms": asof_ms, "lead": lead, "qty": trade["buy"], "side": "buy"})
             cash = out["cash_after"]
         return orders
+
+    def _keep_solve(self, node, asof_ms, lead):
+        """Keep the node's solve record, if it solved (a refused solve included)."""
+        if node.solve_record is not None:
+            self.solves.append({"asof_ms": asof_ms, "lead": lead, **node.solve_record.to_obj()})
 
     def _pins(self, rows):
         """Return the in-process producer's identities this solve is pinned to."""
@@ -1200,6 +1210,9 @@ class DevelopmentSimulation(DevelopmentReplay):
     ``metadata``
         The disclosure, the pins, and per segment its opening and closing
         cash.
+    ``solves``
+        Every MIO solve (:attr:`MioDecider.solves`), with ``fold`` and
+        ``release_id`` (ADR-0183 phase 2; additive).
 
     Examples
     --------
@@ -1216,7 +1229,7 @@ class DevelopmentSimulation(DevelopmentReplay):
         out = node.run(ctx, {"bars": bars, "releases": releases, "bundles": bundles, "mio": mio})
     """
 
-    outputs = ("fills", "skipped", "refused", "cash", "metadata")
+    outputs = ("fills", "skipped", "refused", "cash", "metadata", "solves")
     _PARAMS = DevelopmentReplay._PARAMS + (
         "cash_flow_policy",
         "cash_flow_policy_sha256",
@@ -1270,7 +1283,7 @@ class DevelopmentSimulation(DevelopmentReplay):
         if self.params.get("consume_bars", False):
             inputs["bars"].clear()
         tz = self._cash_flow_policy.timezone
-        out = {"fills": [], "skipped": [], "refused": [], "cash": []}
+        out = {"fills": [], "skipped": [], "refused": [], "cash": [], "solves": []}
         summaries = []
         carried = Decimal("0")
         contributed = Decimal("0")
@@ -1294,6 +1307,7 @@ class DevelopmentSimulation(DevelopmentReplay):
             out["fills"].extend({**row, **stamp} for row in result["fills"])
             out["skipped"].extend({**row, **stamp} for row in result["skipped"] + decider.skipped)
             out["refused"].extend({**row, **stamp} for row in result["refused"] + decider.refused)
+            out["solves"].extend({**row, **stamp} for row in decider.solves)
             rows, contributed = self._cash_rows(replay, recorder, carried if index else None, contributed, tz)
             out["cash"].extend({**row, **stamp} for row in rows)
             summaries.append({
@@ -1369,7 +1383,7 @@ class DevelopmentSimulation(DevelopmentReplay):
     def _cash_rows(replay, recorder, carried, contributed, tz):
         """One row per trading date from the replay's booked cash flows and its day closes."""
         booked = {}
-        for body in replay.cash_flows:
+        for body in replay.booked_cash_flows:
             day = _local_date(body["effective_at_ms"], tz)
             booked[day] = booked.get(day, Decimal("0")) + Decimal(body["amount"])
         if set(booked) != set(recorder.closes):

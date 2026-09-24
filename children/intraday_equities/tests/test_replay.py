@@ -160,7 +160,7 @@ def test_a_halted_symbol_is_skipped_not_queued():
     out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
     assert out["fills"] == []
     assert out["skipped"] == [
-        {"symbol": "AAA", "asof_ms": 2_000, "reason": "halted"}
+        {"symbol": "AAA", "asof_ms": 2_000, "reason": "halted", "decision_ms": 1_000}
     ]
 
 
@@ -1083,6 +1083,7 @@ def test_an_unaffordable_buy_is_refused_opens_no_lot_and_queues_no_fill():
     ])
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(0),
     }]
     assert not any(row["qty"] == 200 for row in out["fills"])
     # A stale lot from the refused decision would expire at index 4 and make the
@@ -1119,6 +1120,7 @@ def test_the_insufficient_cash_boundary_is_cost_strictly_greater_than_balance(
         assert entries == []
         assert _cash_reasons(out) == [{
             "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+            "decision_ms": _cf_t(0),
         }]
 
 
@@ -1144,6 +1146,7 @@ def test_the_running_balance_tracks_every_fill_across_a_mixed_sequence():
     ]
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 1, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(1),
     }]
 
 
@@ -1227,6 +1230,7 @@ def test_an_override_entry_refused_for_insufficient_cash_still_closes_the_prior_
     # refused buy reaches the end-of-tape expiry_past_tape sweep.
     assert out["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(1),
     }]
 
 
@@ -1380,33 +1384,42 @@ def test_run_with_explicit_decisions_unchanged():
     expected = {
         "fills": [
             {"kind": "entry", "symbol": "AAA", "lead": 2, "side": "buy", "qty": 5,
-             "price": 11.0, "asof_ms": _cf_t(1), "fee": 0.0},
+             "price": 11.0, "asof_ms": _cf_t(1), "fee": 0.0, "decision_ms": _cf_t(0)},
             {"kind": "exit", "symbol": "AAA", "lead": 2, "side": "sell", "qty": 5,
-             "price": 13.0, "asof_ms": _cf_t(3), "fee": 0.0},
+             "price": 13.0, "asof_ms": _cf_t(3), "fee": 0.0, "reason": "horizon_expiry"},
             {"kind": "entry", "symbol": "BBB", "lead": 1, "side": "buy", "qty": 10,
-             "price": 23.0, "asof_ms": _cf_t(3), "fee": 0.0},
+             "price": 23.0, "asof_ms": _cf_t(3), "fee": 0.0, "decision_ms": _cf_t(2)},
             {"kind": "exit", "symbol": "BBB", "lead": 1, "side": "sell", "qty": 10,
-             "price": 24.0, "asof_ms": _cf_t(4), "fee": 0.0},
+             "price": 24.0, "asof_ms": _cf_t(4), "fee": 0.0, "reason": "horizon_expiry"},
         ],
         "skipped": [],
         "refused": [
-            {"symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol"},
-            {"symbol": "AAA", "asof_ms": _cf_t(1), "lead": 0, "reason": "lead"},
+            {"symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol",
+             "decision_ms": _cf_t(0)},
+            {"symbol": "AAA", "asof_ms": _cf_t(1), "lead": 0, "reason": "lead",
+             "decision_ms": _cf_t(1)},
             {"symbol": "AAA", "asof_ms": _cf_t(0) + 30_000, "lead": 1,
-             "reason": "unknown_decision_bar"},
-            {"symbol": "BBB", "asof_ms": _cf_t(4), "lead": 1, "reason": "fill_bar_past_tape"},
-            {"symbol": "BBB", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash"},
-            {"symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "same_lead_open"},
+             "reason": "unknown_decision_bar", "decision_ms": _cf_t(0) + 30_000},
+            {"symbol": "BBB", "asof_ms": _cf_t(4), "lead": 1, "reason": "fill_bar_past_tape",
+             "decision_ms": _cf_t(4)},
+            {"symbol": "BBB", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+             "decision_ms": _cf_t(0)},
+            {"symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "same_lead_open",
+             "decision_ms": _cf_t(1)},
         ],
     }
     cash = _cash_flow_policy()
     out = EquityReplay(policy, cash).run(copy.deepcopy(bars), copy.deepcopy(decisions))
-    assert out == expected
+    # ADR-0183 item 13 adds the funded run's cash_flows + cash outputs; the
+    # three pinned outputs are unchanged by them.
+    assert set(out) == set(expected) | {"cash_flows", "cash"}
+    assert {key: out[key] for key in expected} == expected
     hooked = EquityReplay(policy, cash, decider=None).run(
         copy.deepcopy(bars), copy.deepcopy(decisions)
     )
     assert json.dumps(hooked, sort_keys=True) == json.dumps(out, sort_keys=True)
-    assert ReplayAdapter(policy, cash).replay(bars, decisions) == expected
+    adapted = ReplayAdapter(policy, cash).replay(bars, decisions)
+    assert {key: adapted[key] for key in expected} == expected
 
 
 # --- ADR-0184 S7(d): one runtime-inventory read per replay run, not per tick
@@ -1674,7 +1687,7 @@ def _cash_flow_pair(path="configs/cash-flow-policy.json"):
     }
 
 
-def test_development_replay_keeps_five_required_params_and_two_paired_optional_ones():
+def test_development_replay_keeps_five_required_params_and_its_optional_ones():
     assert DevelopmentReplay._PARAMS == (
         "deployment_eligible",
         "evidence_end",
@@ -1685,6 +1698,8 @@ def test_development_replay_keeps_five_required_params_and_two_paired_optional_o
     assert DevelopmentReplay._OPTIONAL_PARAMS == (
         "cash_flow_policy",
         "cash_flow_policy_sha256",
+        "keep_ledger",
+        "guards",
     )
 
 
@@ -1735,6 +1750,7 @@ def test_run_passes_the_cash_flow_policy_through_so_an_unaffordable_buy_refuses(
     ).run(None, {"bars": bars, "decisions": decisions})
     assert funded["refused"] == [{
         "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+        "decision_ms": _cf_t(0),
     }]
     assert [(row["kind"], row["qty"], row["asof_ms"]) for row in funded["fills"]] == [
         ("entry", 50, _cf_t(2)),
@@ -1802,3 +1818,276 @@ def test_a_wrong_cash_flow_policy_digest_refuses(digest, expected):
     with pytest.raises(ConfigError) as caught:
         DevelopmentReplay("replay", params)
     assert caught.value.errors == [f"replay: {expected}"]
+
+
+# --- ADR-0183 item 13: the policy's cash flows and the running balance as outputs ---
+
+
+def test_cash_flows_are_emitted_as_submitted_one_row_per_record():
+    policy = _policy()
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+    ]
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    out = replay.run(bars, [])
+    submitted = replay.cash_flow_snapshots
+    assert [
+        (row["asof_ms"], Decimal(str(row["amount"])), row["currency"])
+        for row in out["cash_flows"]
+    ] == [
+        (body["effective_at_ms"], Decimal(body["amount"]), body["currency"])
+        for body in submitted
+    ]
+    assert [row["rule"] for row in out["cash_flows"]] == [
+        "initial_capital",
+        "daily_contribution",
+    ]
+    assert [row["amount"] for row in out["cash_flows"]] == [1020.0, 20.0]
+    assert all(row["detail"].startswith("deposit: ") for row in out["cash_flows"])
+    # With no fills, the balance is the running sum of the deposits.
+    assert [row["cash"] for row in out["cash"]] == [1020.0, 1040.0]
+    assert [row["asof_ms"] for row in out["cash"]] == [
+        row["asof_ms"] for row in out["cash_flows"]
+    ]
+
+
+def test_the_cash_series_tracks_fills_exactly_one_row_per_instant():
+    policy = _policy(_ZERO_FEES)
+    bars = _cf_bars([10.0, 10.0, 12.0, 12.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(
+        bars, [_decision("AAA", _cf_t(0), lead=1, qty=10)]
+    )
+    # 1020 funded; buy 10 @ 10 at t1; the lead-1 lot exits 10 @ 12 at t2.
+    assert out["cash"] == [
+        {"asof_ms": out["cash_flows"][0]["asof_ms"], "cash": 1020.0},
+        {"asof_ms": _cf_t(1), "cash": 920.0},
+        {"asof_ms": _cf_t(2), "cash": 1040.0},
+    ]
+
+
+def test_an_unfunded_replay_emits_no_cash_flows_and_no_cash_series():
+    out = ReplayAdapter(_policy()).replay(
+        _cf_bars([10.0, 10.0, 10.0]), [_decision("AAA", _cf_t(0), lead=1, qty=1)]
+    )
+    assert out["cash_flows"] == []
+    assert out["cash"] == []
+
+
+def test_development_replay_declares_and_returns_the_cash_outputs():
+    assert DevelopmentReplay.outputs == (
+        "fills", "skipped", "refused", "cash_flows", "cash", "findings", "ledger",
+    )
+    bars = _cf_bars([10.0] * 4)
+    out = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END, **_cash_flow_pair())
+    ).run(None, {"bars": bars, "decisions": [_decision("AAA", _cf_t(0), lead=1, qty=1)]})
+    assert set(out) == set(DevelopmentReplay.outputs)
+    assert [row["rule"] for row in out["cash_flows"]] == ["initial_capital"]
+
+
+def test_fills_name_their_decision_bar_and_exits_name_their_reason():
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", _cf_t(0), lead=2, qty=1)])
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    exit_ = next(row for row in out["fills"] if row["kind"] == "exit")
+    assert entry["decision_ms"] == _cf_t(0)
+    assert "reason" not in entry
+    assert exit_["reason"] == policy.forced_exit_at == "horizon_expiry"
+    assert "decision_ms" not in exit_
+
+
+def test_an_override_exit_names_the_decision_that_forced_it():
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0] * 5)
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=3, qty=1),
+        _decision("AAA", _cf_t(1), lead=3, qty=2),
+    ])
+    override = next(
+        row for row in out["fills"]
+        if row["kind"] == "exit" and row.get("reason") == "same_lead_override"
+    )
+    assert override["decision_ms"] == _cf_t(1)
+    assert override["asof_ms"] == _cf_t(2)
+
+
+def test_decision_stage_refusals_name_their_decision_bar():
+    out = ReplayAdapter(_policy()).replay(
+        _cf_bars([10.0, 10.0]), [_decision("ZZZ", _cf_t(0), lead=1)]
+    )
+    assert out["refused"] == [{
+        "symbol": "ZZZ", "asof_ms": _cf_t(0), "lead": 1, "reason": "unknown_symbol",
+        "decision_ms": _cf_t(0),
+    }]
+
+
+# --- ADR-0183 phase 2 item 3: ledger findings, the kept ledger, guards
+
+
+def _observational_guards(max_qty="1000000", max_notional="100000000"):
+    """Two limits too generous to breach: they record, they never refuse."""
+    return {
+        "size": {"uses": "limit", "params": {
+            "measure": "quantity", "bound": {"max": max_qty}, "on_breach": "refuse",
+        }},
+        "notional": {"uses": "limit", "params": {
+            "measure": "notional", "bound": {"max": max_notional}, "on_breach": "refuse",
+        }},
+    }
+
+
+def _findings_tape():
+    return _cf_bars([10.0, 11.0, 12.0, 13.0]), [_decision("AAA", _cf_t(0), lead=2, qty=5)]
+
+
+def _read_back(root, series_id):
+    from dskit.production.clock import TestClock
+    from dskit.production.ledger import JsonlLedger, ServeRoot
+
+    return JsonlLedger.reading(ServeRoot(str(root), series_id), clock=TestClock(0))
+
+
+_RUN_KEYS = ("fills", "skipped", "refused", "cash_flows", "cash")
+
+
+def test_observational_limits_record_one_findings_row_per_fill():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES), guards=_observational_guards())
+    out = replay.run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    # The run() dict is unchanged: findings ride on the object.
+    assert set(out) == set(_RUN_KEYS)
+    plain = EquityReplay(_policy(_ZERO_FEES)).run(copy.deepcopy(bars), copy.deepcopy(decisions))
+    assert out == plain
+    assert len(out["fills"]) == 2
+    keys = [(r["symbol"], r["lead"], r["kind"], r["asof_ms"]) for r in replay.findings]
+    assert keys == [(f["symbol"], f["lead"], f["kind"], f["asof_ms"]) for f in out["fills"]]
+    for row, fill in zip(replay.findings, out["fills"]):
+        assert set(row) == {
+            "symbol", "lead", "kind", "asof_ms", "tick_id", "leg_id", "verdict", "findings",
+        }
+        assert row["verdict"] == "allow"
+        assert isinstance(row["tick_id"], str) and isinstance(row["leg_id"], str)
+        measured = {
+            f["guard"]: (f["measure"], Decimal(f["value"]), f["bound"], f["verdict"])
+            for f in row["findings"]
+        }
+        assert measured == {
+            "size": ("quantity", Decimal(fill["qty"]), "1000000", "allow"),
+            "notional": (
+                "notional", Decimal(str(fill["price"])) * fill["qty"], "100000000", "allow",
+            ),
+        }
+
+
+def test_a_replay_without_guards_has_no_findings_rows():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES))
+    replay.run(bars, decisions)
+    assert replay.findings == []
+
+
+def test_the_ledger_is_copied_to_ledger_dir_and_reads_back_at_the_same_head(tmp_path):
+    from dskit.production.reconcile import LedgerHistory
+
+    bars, decisions = _findings_tape()
+    target = tmp_path / "kept"
+    replay = EquityReplay(
+        _policy(_ZERO_FEES), guards=_observational_guards(), ledger_dir=str(target),
+    )
+    replay.run(bars, decisions)
+    segments = list((target / replay.series_id / "ledger").iterdir())
+    assert segments and all(path.stat().st_size > 0 for path in segments)
+    reader = _read_back(target, replay.series_id)
+    seq, head = replay.ledger_head
+    assert seq > 0 and reader.head() == (seq, head)
+    assert reader.verify() is None
+    kept = LedgerHistory(reader).leg_findings(0)
+    assert [row["leg_id"] for row in kept] == [row["leg_id"] for row in replay.findings]
+
+
+def test_an_existing_non_empty_ledger_dir_is_refused_before_the_replay_runs(tmp_path):
+    bars, decisions = _findings_tape()
+    target = tmp_path / "kept"
+    target.mkdir()
+    (target / "stale").write_text("x", encoding="utf-8")
+    replay = EquityReplay(_policy(_ZERO_FEES), ledger_dir=str(target))
+    with pytest.raises(ConfigError, match="ledger_dir"):
+        replay.run(bars, decisions)
+    assert replay.fills == []
+    assert sorted(path.name for path in target.iterdir()) == ["stale"]
+
+
+def test_a_guard_breach_still_fails_the_replay_loudly():
+    bars, decisions = _findings_tape()
+    replay = EquityReplay(_policy(_ZERO_FEES), guards=_observational_guards(max_qty="1"))
+    with pytest.raises(ConfigError, match="queued but never submitted"):
+        replay.run(bars, decisions)
+    # Every refused leg is still reported, with no fill to join to.
+    assert replay.findings
+    for row in replay.findings:
+        assert row["verdict"] == "refuse"
+        assert (row["symbol"], row["lead"], row["kind"], row["asof_ms"]) == (None,) * 4
+        assert {f["guard"] for f in row["findings"] if f["verdict"] == "refuse"} == {"size"}
+
+
+def test_an_absent_guard_map_leaves_the_serve_document_unchanged():
+    from intraday_equities.replay import _serve_document
+
+    base = _serve_document("run", "series-1", ["AAA"], [1, 2])
+    assert base["guards"] == {}
+    assert _serve_document("run", "series-1", ["AAA"], [1, 2], guards=None) == base
+    guarded = _serve_document(
+        "run", "series-1", ["AAA"], [1, 2], guards=_observational_guards(),
+    )
+    assert guarded["guards"] == _observational_guards()
+
+
+def test_development_replay_returns_findings_and_keeps_its_ledger(tmp_path):
+    from types import SimpleNamespace
+
+    params = _shipped_replay_params(evidence_end=_CF_EVIDENCE_END)
+    assert "guards" not in params and "keep_ledger" not in params
+    bars, decisions = _findings_tape()
+    plain = DevelopmentReplay("replay", params).run(None, {"bars": bars, "decisions": decisions})
+    assert plain["findings"] == [] and plain["ledger"] is None
+    kept = DevelopmentReplay("replay", dict(
+        params, keep_ledger=True, guards=_observational_guards(),
+    ))
+    ctx = SimpleNamespace(run_dir=str(tmp_path))
+    out = kept.run(ctx, {"bars": bars, "decisions": decisions})
+    assert set(out) == set(DevelopmentReplay.outputs)
+    assert {key: out[key] for key in _RUN_KEYS} == {key: plain[key] for key in _RUN_KEYS}
+    assert [row["verdict"] for row in out["findings"]] == ["allow"] * len(out["fills"])
+    ledger = out["ledger"]
+    assert ledger["root"] == os.path.join(kept.artifact_dir(ctx), "ledger")
+    reader = _read_back(ledger["root"], ledger["series_id"])
+    assert reader.head() == (ledger["seq"], ledger["hash"])
+
+
+@pytest.mark.parametrize(
+    ("guards", "expected"),
+    [
+        ([], "guards must be a mapping"),
+        ({"size": {"uses": "nope"}}, "unknown kind 'nope'"),
+        ({"size": {"uses": "limit", "params": {"measure": "quantity"}}}, "bound"),
+        ({"size": {"uses": "limit", "bogus": 1}}, "unknown key(s) ['bogus']"),
+    ],
+    ids=["not-a-map", "unknown-kind", "guard-refuses-its-params", "site-default-deny"],
+)
+def test_development_replay_validates_guards_through_the_production_path(guards, expected):
+    problems = DevelopmentReplay.validate_params(_shipped_replay_params(guards=guards))
+    assert problems and any(expected in problem for problem in problems)
+
+
+def test_development_replay_accepts_a_sound_guard_map():
+    params = _shipped_replay_params(guards=_observational_guards(), keep_ledger=False)
+    assert DevelopmentReplay.validate_params(params) == []
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_development_replay_keep_ledger_must_be_a_bool(value):
+    problems = DevelopmentReplay.validate_params(_shipped_replay_params(keep_ledger=value))
+    assert any("keep_ledger must be a bool" in problem for problem in problems)

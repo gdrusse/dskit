@@ -678,6 +678,13 @@ STUDY_START_MS = 1514764800000  # 2018-01-01T00:00:00Z
 QUOTE_SOURCE = "alpaca-sip-quotes"
 QUOTE_START_MS = 1730419200000  # 2024-11-01T00:00:00Z
 QUOTED_NAMES = ["LLY", "XOM"]
+# ADR-0183's real replay report fits the replay-cashflow-20260923 probe's
+# ridge on that probe's own training window (2025-06-02 onward) so the
+# report renders that exact replay. It is a development replay
+# (deployment_eligible=false), never model-selection evidence, so the
+# study-start rule's purpose (every FOLD reads the same history) does not
+# bind it; the split-adjusted source still does.
+REPLAY_REPORT_START_MS = {"run-replay-report.json": 1748822400000}  # 2025-06-02
 
 
 def _quoted_family():
@@ -720,6 +727,11 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
             if name in MODELABILITY_DOCS:
                 assert params["source"] in MODELABILITY_SOURCES, name
                 assert params["start_ms"] == STUDY_START_MS, name
+                continue
+            if name in REPLAY_REPORT_START_MS:
+                assert params["source"] == SPLIT_SOURCE, name
+                assert params["start_ms"] == REPLAY_REPORT_START_MS[name], name
+                assert params["start_ms"] > STUDY_START_MS, name
                 continue
             if name in SIMULATION_DOCS:
                 # Split-adjusted, and bounded to the replay window on both
@@ -1422,6 +1434,81 @@ def test_run_development_replay_forces_ineligible_caps_and_pins_fill_policy():
     assert params["fill_policy_sha256"] == policy.digest()
     document = load_document(_path("run-development-replay.json"))
     assert document.hash
+
+
+def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
+    """ADR-0183 item 15: candidates + replay outputs -> events -> report."""
+    import importlib.util
+
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.evaluation import ReplayEvents
+    from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, FillPolicy
+
+    raw = _raw("run-replay-report.json")
+    pipe = raw["pipeline"]
+    replay = pipe["replay"]
+    assert replay["uses"] == "intraday_equities.replay:DevelopmentReplay"
+    assert replay["inputs"] == {"bars": "$replay_bars.records", "decisions": "$dec_qty.records"}
+    params = replay["params"]
+    assert params["deployment_eligible"] is False
+    assert params["caps"] == "development-only"
+    assert params["evidence_end"] == "2025-10-16"
+    assert params["fill_policy_sha256"] == FillPolicy.from_path(_path("fill-policy.json")).digest()
+    assert params["cash_flow_policy_sha256"] == (
+        CashFlowPolicy.from_path(_path("cash-flow-policy.json")).digest()
+    )
+    # The decision window is the val split: 2025-10-13 .. 2025-10-16 UTC.
+    assert raw["splits"]["val_start_ms"] == 1760313600000
+    assert raw["splits"]["val_end_ms"] == 1760659199000
+    assert pipe["select"]["inputs"]["records"] == "$val_rows.records"
+    assert pipe["dec_lead"]["inputs"]["records"] == "$select.picks"
+    events = pipe["events"]
+    assert events["uses"] == "intraday_equities-replay-events"
+    assert events["inputs"] == {
+        "candidates": "$select.candidates",
+        "picks": "$select.picks",
+        "fills": "$replay.fills",
+        "refused": "$replay.refused",
+        "skipped": "$replay.skipped",
+        "cash_flows": "$replay.cash_flows",
+        "bars": "$replay_bars.records",
+        "labeled": "$val_rows.records",
+        "solves": "$select.solves",
+        "findings": "$replay.findings",
+        "ledger": "$replay.ledger",
+    }
+    assert ReplayEvents.validate_params(events["params"]) == []
+    # ADR-0183 phase 2: an outcome is known label_lead bars after its decision,
+    # and it scores the label the model was fitted to.
+    assert events["params"]["outcome_lead_bars"] == pipe["window"]["params"]["label_lead"]
+    assert events["params"]["realized_field"] == pipe["qhat"]["params"]["label"]
+    assert params["keep_ledger"] is False  # ~4 GB per five-session run; see its notes
+    assert {g["params"]["measure"] for g in params["guards"].values()} == {"quantity", "notional"}
+    # The observational size guard never binds: every order is dec_qty's one value.
+    qty = [case["value"] for case in pipe["dec_qty"]["params"]["cases"]]
+    assert all(q <= int(params["guards"]["size"]["params"]["bound"]["max"]) for q in qty)
+    assert DevelopmentReplay.validate_params(params) == []
+    report = pipe["report"]
+    assert report["uses"] == "dskit.evaluation.nodes:EvaluationReport"
+    assert report["inputs"] == {"events": "$events.events"}
+    # A relative out_dir resolves against the run directory (ADR-0183
+    # amendment): "report" lands at pipeline_runs/<run>/report/, never a
+    # nested pipeline_runs/ inside the run.
+    assert report["params"]["out_dir"] == "report"
+    assert events["params"]["units"] == {"score": "log_return", "money": "USD"}
+    document = load_document(_path("run-replay-report.json"))
+    assert document.hash
+    if importlib.util.find_spec("dskit.evaluation.nodes") is None:
+        # The evaluator doorway lands with dskit/evaluation (ADR-0183 item 9);
+        # until then the plan is checked for every node but the report.
+        raw = copy.deepcopy(raw)
+        raw["pipeline"].pop("report")
+        bare = tmp_path / "run-replay-report.json"
+        bare.write_text(json.dumps(raw), encoding="utf-8")
+        document = load_document(str(bare))
+    the_plan = plan(document)
+    assert "events" in the_plan.order
 
 
 # ADR-0184's pinned P16 evidence: the gate inventory manifest fa061189 and

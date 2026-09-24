@@ -22639,6 +22639,295 @@ units) IV stays ~1.1 even at VIX 80; it would first bind near VIX 90 with
 z = -4 (IV 1.996). The put-wing branch of the smile negativity check is
 vacuous while `put_skew_per_z >= 0` (kept for symmetry).
 
+## ADR-0183 — `dskit.evaluation`: a centralized backtest evaluator (event log -> standalone report)
+
+**Status:** Accepted 2026-09-24 under Russell's delegation ("I give you permission to create and write ADRs and build and implement them overnight"; "You can start a new subpackage if that makes sense"). Scope is the manifest below.
+**Owner:** Russell. **Base:** `7605ba0`.
+
+**Context.** Every project re-invents "what did the backtest do and why".
+Inventory (full sweep 2026-09-24): `pipeline/kinds_report.RunReport`
+(evidence.json/md; pmquant-shaped trades/decisions; never wired with
+trades/capital on real data); `pipeline/libs/matplotlib` `FigureNode`/
+`DeclaredFigure` (PNG, unused by children); `production/accounting.WindowBook`
+(the one P&L fold), `production/report.Report` (attribution, value curve,
+TWR/MWR — needs a persistent ledger + serve document); `pipeline/stats`
+(`max_drawdown`, `lower_tail_mean`, DM, Clark-West); `runs.render_cell`
+(markdown escaping). Gaps: no decision/action log with reasons, no
+trades-on-price or equity visuals, no cash-flow timeline, no refused/skipped
+accounting, no provenance block, no HTML/SVG. intraday_equities loses the
+"why" twice: `PortfolioSelect` keeps per-symbol forecasts only inside its
+model (outputs `{asof_ms, symbol}`), and `EquityReplay` deletes its
+production ledger (`mkdtemp` + `rmtree`). Unapproved branch
+`claude/prod-sim-20260923` plans a child-side simulation report; this ADR
+supersedes that part (a child report would duplicate this one).
+Research (LEAN report/Insights, pyfolio/quantstats, vectorbt, Alphalens,
+NautilusTrader, Bailey-Lopez de Prado PSR/DSR, Lo 2002): one append-only
+event log as the source of truth; reports are a pure function of it.
+
+**Decision.** A new package `dskit/evaluation/` (tier 1: stdlib plus imports
+of `dskit.pipeline` and `dskit.production`; neither may import it; tier-2
+packs only under `dskit/evaluation/libs/`). Reports are a pure function
+`events -> artifacts`, re-renderable from `events.jsonl` alone.
+
+*Event schema v1* (JSON objects, one per line; all instants epoch ms UTC):
+envelope `schema` = `"dskit-eval-v1"`, `seq` (int, strictly increasing),
+`kind`, `ts_ms` (event instant), `known_ms` (when the information was
+available; `<= ts_ms` for decisions), `instrument` (venue-neutral string or
+null). Kinds:
+- `run_start` — `run_id`, `title`, `project`, `tz` (IANA, display only),
+  `config_hash`, `config` (obj), `code` (`{commit, dirty}`), `data`
+  (`{name: fingerprint}`), `env` (`{python, platform, packages}`),
+  `criteria` (list, below), `trials` (int, configurations tried; DSR).
+- `decision` — `decision_id`, `candidates` (list of `{instrument, score,
+  rank, eligible, reason}`), `chosen` (instrument or null), `threshold`,
+  `edge`, `action` (`enter|exit|hold|skip|refuse`), `reason` (code),
+  `detail` (text), `model` (str).
+- `order` — `order_id`, `decision_id`, `side` (`buy|sell`), `qty`,
+  `ref_price`, `legs` (optional list for multi-leg).
+- `refusal` and `skip` — `decision_id` or `order_id`, `reason` (code),
+  `detail`. Every refusal/skip is an event; none may be dropped.
+- `fill` — `fill_id`, `order_id`, `side`, `qty`, `price`, `fee`,
+  `ref_price` (optional), `tag` (`entry|exit|...`).
+- `mark` — `price` (bar close/mid used for unrealised P&L and price charts).
+- `cashflow` — `amount` (+ in, - out), `rule`, `detail`.
+- `outcome` — `decision_id`, `horizon`, `realized` (`known_ms > ts_ms` by
+  construction; never read by sections that render the decision).
+- `solve` (phase 2) — `solver`, `status`, `objective`, `bound`, `gap`,
+  `binding` (list), `seconds`.
+- `run_end` — `status`, `wall_s`.
+
+*Criteria*: `{name, stat, op (">=","<=",">","<"), value, min_n}` —
+pre-registered; the verdict is PASS/FAIL per criterion and INCONCLUSIVE when
+the stat's sample is below `min_n`.
+
+Manifest — dskit (new package `dskit/evaluation/`):
+1. `__init__.py`, `README.md`, `AGENTS.md`, `CLAUDE.md` (identical).
+2. `events.py` — event kinds as validating classes, `EventLog` (append,
+   ordering/seq checks, look-ahead check `known_ms <= ts_ms` for decisions,
+   census identity `decisions == entered + refused + skipped + held`,
+   JSONL read/write; canonical JSON reused from dskit, not re-invented).
+3. `book.py` — `EvaluationBook`: folds `fill` events through
+   `production.accounting.WindowBook` (adapter to its fill shape — NO second
+   P&L fold), marks from `mark` events, cash from `cashflow` + fills; yields
+   the equity/cash/exposure series and round trips (FIFO per instrument).
+4. `statistics.py` — the report's statistics table built from the book,
+   reusing `pipeline.stats` (`max_drawdown`, `lower_tail_mean`, ...); new
+   generic estimators (daily Sharpe with n, PSR, DSR with `trials`, trade
+   t-stat, profit factor, payoff ratio, turnover, exposure, holding time)
+   are added to `dskit/pipeline/stats.py` (tier 1, reusable) unless an
+   equivalent exists. Short-sample stats are labelled "insufficient n".
+5. `criteria.py` — `Criterion` / `Verdict` (pre-registered thresholds).
+6. `svg.py` — stdlib inline-SVG charts (`LineChart`, `StepChart`,
+   `MarkerLayer` with `<title>` tooltips, `Histogram`, `BarChart`) — no JS,
+   no CDN, light/dark-safe colours.
+7. `sections.py` — `Section` ABC + `SummarySection` (card, verdict, census),
+   `EquitySection` (equity, gross vs net, drawdown), `TradesOnPriceSection`
+   (per instrument x session: price with entry/exit and refused/skipped
+   markers annotated with the reason), `DecisionLogSection` (every decision
+   with candidates/score/edge/action/reason/fill/slippage), `CashSection`
+   (cash, exposure, cash flows), `DistributionSection`, `PeriodSection`
+   (per day / per fold), `ProvenanceSection`.
+8. `report.py` — `BacktestReport(log, sections=default)` -> `write(out_dir)`:
+   `events.jsonl`, `summary.md`, `report.html` (self-contained),
+   `decisions.csv`, `trades.csv`.
+9. `nodes.py` — pipeline node `EvaluationReport` (role `report`, resolved by
+   dotted path; input `events`; params `out_dir`, `title`) — a doorway.
+10. `__main__.py` — `python -m dskit.evaluation render <events.jsonl> --out <dir>`.
+11. Tests `tests/evaluation/` (+ a purity test: evaluation imports only
+    stdlib, dskit.pipeline, dskit.production; pipeline/production never
+    import it). Root AGENTS/README package trees.
+
+Manifest — child `intraday_equities` (tier-3 wrappers only):
+12. `PortfolioSelect` gains a `candidates` output (per stamp: every scored
+    symbol's forecast, rank, chosen flag) — the "why".
+13. `EquityReplay`/`DevelopmentReplay` gain a `cash_flows` output (the
+    policy's deposits as submitted) — no ledger retention in this slice.
+14. `intraday_equities/evaluation.py` — `ReplayEvents` node: maps
+    candidates + fills + refused + skipped + cash_flows + bars (marks) into
+    schema-v1 events (reason-code mapping only); config
+    `configs/run-replay-report.json` wiring it to `EvaluationReport`.
+15. Child tests; manifest/AGENTS updates.
+
+**Phases.** P1 (this ADR): items 1-15, run on a real replay.
+P2: `solve` events from `PyomoSolve` doorways (MIO status/objective/
+binding), inference diagnostics section (calibration deciles, rank IC via
+existing metrics), ledger-backed decision findings (retain the replay
+ledger; `production.report.Report` attribution). P3: other children
+(index_options `CondorBacktest`, pmquant `RunReport` convergence), optional
+`libs/matplotlib` PNG backend.
+
+**Non-goals.** Live dashboards, JS charting, a second P&L fold, changing
+`RunReport` (convergence is P3), trading/serving changes.
+
+**Alternatives.** Extend `pipeline/kinds_report.RunReport` (pipeline may not
+import production's `WindowBook`, and its shapes are pmquant's); put it in
+`production/` (it serves research backtests too, and production would grow a
+renderer); matplotlib/plotly HTML (dependencies/CDN; ADR-0029 kept HTML out
+of the figure pack).
+
+**Amendment (2026-09-24, build of items 1-11).** Deviations, one line each:
+- Trade t-stat is `pipeline.stats.across_fold_t` over the trip list (an equivalent existed); only `sharpe_ratio`, `probabilistic_sharpe_ratio`, `deflated_sharpe_ratio`, `profit_factor` and `payoff_ratio` were added to `pipeline/stats.py`.
+- Turnover, exposure and holding time are book readings in `evaluation/statistics.py`, not `pipeline/stats.py` estimators (definitions over the book, not sample statistics).
+- `PeriodSection` is per session day only: schema v1 has no fold field, so per-fold rows wait for one.
+- The census identity holds by the closed action set; what is checked (reported, never raised) is the evidence behind each action: refuse -> refusal, skip -> skip, enter/exit -> order or rejection, order -> fill or rejection, no overfill.
+- `outcome` ordering is enforced as "strictly after its decision's ts_ms" (ts_ms is monotone in the log, so an outcome is appended when it becomes known).
+- Envelope: `known_ms` is required on every event; `instrument` is required for `order`, `fill` and `mark`. Event problems raise `EvaluationError`; criteria (config) raise `ConfigError`.
+- `pipeline.kinds_report._csv_text` became public `csv_text` so the evaluator writes CSV through the one owner.
+- DSR without a recorded cross-trial Sharpe variance uses the estimator's own sampling variance (se^2).
+- TWR anchors its first observation at the external capital, so trading in the same instant as the first deposit is not absorbed (`production.report.PerformanceCalculator` does the chaining).
+- FIFO round-trip P&L is attribution; it equals `WindowBook`'s average-cost realised total only when flat (pinned by a test).
+
+**Amendment (2026-09-24, build of items 12-15).** `PortfolioSelect` keeps
+its scores on `model._portfolio` (the `BudgetedSelect` precedent) and emits
+`candidates` without re-predicting; `picks`/`metrics` unchanged. The replay
+adds `cash_flows` and `cash` (running balance; empty without a cash-flow
+policy) and, additively, `decision_ms` on entry fills and on every
+decision-driven refusal/skip, plus `reason` (`horizon_expiry` |
+`same_lead_override`) on exit fills — fill-stage refusals (`min_price`,
+`insufficient_cash`, `same_lead_open`) are stamped at the FILL bar, so a
+bar+symbol join would mislink them. Decision-less lot closures
+(`expiry_past_tape`, lot-expiry `halted`) become their own exit decisions.
+At one instant `cashflow` sorts before `mark`/`decision` (the replay funds
+before that tick's fills). `configs/run-replay-report.json` keeps the
+2025-06-02 training start of the 2026-09-23 replay it reproduces (same
+ridge fit), exempted narrowly in `test_configs.py` (development replay,
+`deployment_eligible=false`, never model-selection evidence). Pre-registered
+criteria: `net_pnl > 0`, `trade_t >= 2`, `daily_sharpe > 0` (min_n 20 days —
+INCONCLUSIVE on a 4-session run by design). Child review (Sonnet): 0
+Critical; the only Major was this missing amendment.
+
+**Amendment (2026-09-24, readability after the first real report).** The
+first real run (`intraday-equities-replay-report`, 1,290 trips, 2.1 MB
+`report.html` the browser struggled with) printed forecasts as
+`1.82016e-07`, drew lines across closed markets, led with a deposit-inflated
+equity curve and left provenance blank. Changes, all generic in
+`dskit/evaluation/` (the child stays a mapper): (1) `narrative.py` — a
+rule-written "What happened" paragraph (activity and both windows; gross,
+fees, net and cost multiple; the biggest driver; mean chosen forecast vs
+round-trip fee in bp when scores are returns; hit rate and win/loss sizes;
+best/worst instrument; drawdown; external cash never profit; refusals by
+reason; census; verdict per failed/inconclusive criterion) plus a fixed
+"How to read" note, first in `summary.md` and `report.html`
+(`OverviewSection`); (2) `units.py` — one formatter each for money (2dp,
+currency sign, separators, half-up from the written decimal), counts,
+ratios (3 s.f., no e-notation), percents and declared score units;
+`run_start.units` = `{score: return|log_return|bp|prob|usd|z|raw, money:
+<ISO>}` is an optional ADDITIVE v1 field (the `SCHEMA` comment now says only
+a required field or changed meaning bumps the tag); returns render in bp in
+tooltips, tables and the decision log, while `decisions.csv` keeps raw
+values plus `score_unit` and a new `trip_pnl`; (3) `svg.SessionScale` —
+gaps longer than `gap_ms` (default `auto_gap_ms`: 20 median steps, floor 30
+min) collapse to a 10 px break line with the next session's date, paths
+lift the pen at every break, ticks are intraday clock times; default for
+every timed chart (`gap_ms=False` opts out); (4) `EquitySection` leads
+with trading P&L net and gross (external flows excluded), then drawdown,
+then account equity with each cash flow marked and labelled (amount,
+rule); (5) `provenance.py` — `fill_provenance`, called by the
+`EvaluationReport` node, fills only a missing `code` (`git_revision`: `git
+rev-parse HEAD` + `status --porcelain` in the run directory's repository,
+None when absent), `env` (`RunStart.capture_env` -> `RuntimeFingerprint`)
+and `run_end.wall_s` (now minus `config.json` mtime) and names each source
+in the additive `run_start.sources`; the only other git call
+(`libs/kronos.py`) verifies a pin and raises, so it was not reusable; the
+CLI re-render does not fill (it cannot know the run's commit); (6) the card
+shows the decision window and the data window with session counts
+(`EventLog.span`); (7) a relative `out_dir` resolves against the run
+directory and one starting `pipeline_runs` is refused; the child config now
+says `"report"`; (8) trades-on-price draws only instrument-days with a fill
+or rejection, groups panels per instrument in `<details>` (first open) and
+thins each panel to `max_markers` (40) fills — open fills and the 6
+largest wins and losses always kept, the rest evenly spaced, every
+refusal/skip drawn — and says how many it cut; series thin at 2 px per
+bucket; (9) the decision log leads with a by-(action, reason) summary
+(count, names, mean forecast, trip P&L) and the most consequential
+decisions (largest losing/winning entries, an even sample of refusals),
+then the full log as a light table in `<details>`. The child's
+`ReplayEvents` declares `units` (default `{score: log_return, money:
+USD}`: its scores forecast `y_next`, a log return). Re-rendering the real
+run's `events.jsonl`: 2,129,885 -> 817,527 bytes (824,096 with units
+declared), ~1.2 s.
+
+**Amendment (2026-09-24, phase 2: solves, inference diagnostics, ledger findings).**
+Accepted under the same delegation ("you have my permission to write and
+accept ADRs"). Base: phase 1 (`1cff88d`) merged with `origin/main`
+(`efdf153`, ADR-0184). Sweep (main, both unmerged branches, all modules):
+`evaluation.events.Solve` exists but nothing produces it; `PyomoSolve.run`
+reads only the termination condition; `PortfolioSelect.extract` ignores
+`results`; `MioDecider` drops `EquityKellyMIO`'s metrics/evidence;
+`production/vocab.EVENT_FIELDS["mio"]` names MIO telemetry with no producer;
+`ordering.spearman`/`cross_section_by_stamp`/`per_timestamp_ic`/
+`calibration_slope` cover rank IC and slope; no decile or bucket helper
+exists outside private `production.monitors._quantile_edges`; the replay's
+serve document declares `guards: {}` and deletes its `JsonlLedger`;
+`reconcile.LedgerHistory` is the one ledger reader and its `DecidedLeg`
+drops findings. Neither unmerged branch overlaps.
+
+1. *Solves (tier 2 + tier 1).* `libs/pyomo.SolveRecord` — built by the
+   `PyomoSolve.run` lifecycle for EVERY subclass (no subclass change):
+   `solver`, `status`, `termination`, `objective`, `bound`, `gap`
+   (relative, from the results' problem bounds), `seconds` (perf_counter
+   around `solve`), `variables`, `constraints`, `binding` — one row per
+   constraint COMPONENT (`name`, `rows`, `binding` count, `min_slack`,
+   `dual` only when the model carries an imported `dual` Suffix; a MIP has
+   none). The last record is `PyomoSolve.solve_record` (`None` before a
+   solve and on a subclass's no-solve short circuit). Its keys are the
+   `Solve` event's body, pinned by a test. `Solve` gains optional
+   additive `termination`, `model`, `variables`, `constraints`; `binding`
+   rows are validated. Child: `PortfolioSelect` adds a `solves` output;
+   `EquityKellyMIO.evidence["solve"]`; `MioDecider.solves` and a
+   `solves` output on `DevelopmentSimulation` (additive). `ReplayEvents`
+   takes an optional `solves` port -> `solve` events. `OptimizerSection`
+   renders counts by status/termination, objective/gap/seconds, and
+   binding frequency per constraint; "none recorded" when empty.
+2. *Inference diagnostics (tier 1).* `stats.quantile_edges` +
+   `stats.quantile_bin` become the public owner of the equal-count rule
+   (`production.monitors` imports them; its private copy goes).
+   `evaluation/diagnostics.py` `ForecastDiagnostics` pairs every decision
+   candidate's `score` with its `outcome` (`decision_id`, `instrument`):
+   calibration by score decile (mean score vs mean realised, n), hit rate
+   by bucket (sign agreement), rank IC per stamp and per day
+   (`ordering.cross_section_by_stamp`), the pooled summary
+   (`ordering.per_timestamp_ic`) and the Mincer-Zarnowitz slope
+   (`ordering.calibration_slope`). `InferenceSection` renders them; it
+   never touches decision rows (`decisions.csv` is byte-identical with or
+   without outcomes — pinned). Child: `ReplayEvents` takes an optional
+   `labeled` port and `realized_field` / `outcome_lead_bars` params: one
+   `outcome` per candidate at the symbol's `outcome_lead_bars`-th later
+   bar (no later bar -> none, counted). `outcome_lead_bars` restates
+   `window.label_lead` — pinned by a config test.
+3. *Ledger findings (tier 1 + tier 3).* `LedgerHistory.leg_findings(since_ms)`
+   returns every decided leg's `findings` and composite verdict
+   (`guards.max_verdict`) with the same tick join as `legs()` (one shared
+   helper). `EquityReplay(ledger_dir=None)` copies its ledger there before
+   the scratch dir is removed and exposes `findings` rows keyed by
+   (`symbol`, `lead`, `kind`, fill `asof_ms`). `DevelopmentReplay` gains
+   optional `keep_ledger` (-> `<run>/artifacts/<node>/ledger`) and
+   `guards` (the serve document's guard map, default `{}` so existing
+   identities hold) and a `findings` output. A guard BREACH still fails
+   the replay loudly (its fill model forbids rejections). `order` gains an
+   optional `findings` list (`guard, measure, value, bound, verdict,
+   reason`); the decision log shows the worst verdict and each finding,
+   and summarises by (guard, verdict); `run_start.data.ledger` names the
+   ledger head. `production.report.Report` is NOT used: it needs a serve
+   document and release and refolds `WindowBook` per tick (a second P&L
+   fold), and the replay's zeroed predictions would make its attribution
+   empty.
+4. `configs/run-replay-report.json` wires `labeled`, `solves`, `findings`,
+   `keep_ledger: true` and two observational limits (quantity, notional).
+
+Non-goals unchanged; no trading or serving behaviour changes.
+
+*Build note (same day).* Built as above, with: `compose.guard_chain` made
+public (the replay validates guards through it, no copy); `ReplayAdapter`
+also returns `findings`/`ledger`; a hard guard stores each finding twice per
+leg (proposal + final re-check) and the decision log shows/counts it once
+per order. **`keep_ledger` ships `false`**: a five-session synthetic
+end-to-end run kept a 4.1 GB ledger (per-tick accounting `snapshot` records,
+~450 KB each and growing with every fill — O(ticks x fills), ~10x gzip),
+while the findings are read before the scratch copy goes, so the report
+has them either way. Reviews (Sonnet): correctness 0 Critical/Major (1
+Minor, fixed: size bound pinned against `dec_qty`); tests/reuse 0 findings.
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
