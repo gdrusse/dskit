@@ -29,6 +29,7 @@ __all__ = [
     "BenchmarkCompare",
     "BenchmarkPlan",
     "BenchmarkSelect",
+    "DocumentWalkRun",
     "PathBenchmarkCompare",
     "BenchmarkRun",
     "ProgramCalendar",
@@ -661,91 +662,211 @@ class BenchmarkRun(Stage):
                     f"candidate {candidate.get('id')!r} has invalid plan state "
                     f"{candidate.get('state')!r}"
                 )
-            resolved = _resolve_candidate_path(ctx.source_path, candidate["path"])
-            document = load_document(resolved)
-            if document.hash != candidate["document_hash"]:
+            self._execute(ctx, candidate, completed, rows, checkpoint_path, signature)
+        return {"runs": rows}
+
+
+    def _execute(self, ctx, candidate, completed, rows, checkpoint_path, signature):
+        """Run, or recover from the checkpoint, ONE planned candidate; append its sealed row.
+
+        Shared by :class:`DocumentWalkRun`: the drift checks, checkpoint
+        recovery and evidence seal are one mechanism, never two copies.
+
+        Parameters
+        ----------
+        ctx : StageContext
+        candidate : dict
+            A planned row (``document_hash``, ``expected_cutoffs``, ...).
+        completed : dict
+            Checkpointed rows by candidate id.
+        rows : list
+            The rows so far; the candidate's row is appended.
+        checkpoint_path : str
+        signature : str
+            The checkpoint's identity.
+
+        Raises
+        ------
+        ValueError
+            Drift, an unrecoverable checkpoint, or a walk that did not complete.
+        """
+        resolved = _resolve_candidate_path(ctx.source_path, candidate["path"])
+        document = load_document(resolved)
+        if document.hash != candidate["document_hash"]:
+            raise ValueError(
+                f"candidate {candidate['id']!r} moved after planning: "
+                f"{candidate['document_hash']} -> {document.hash}"
+            )
+        if candidate.get("latest_asof") and ctx.asof > candidate["latest_asof"]:
+            raise ValueError(
+                f"candidate {candidate['id']!r} asof {ctx.asof} exceeds "
+                f"calendar phase limit {candidate['latest_asof']}"
+            )
+        expected_summary = _expected_summary_dir(document, ctx.asof)
+        if candidate["id"] in completed:
+            prior = copy.deepcopy(completed[candidate["id"]])
+            if prior.get("document_hash") != candidate["document_hash"]:
                 raise ValueError(
-                    f"candidate {candidate['id']!r} moved after planning: "
-                    f"{candidate['document_hash']} -> {document.hash}"
+                    f"checkpoint hash drift for candidate {candidate['id']!r}"
                 )
-            if candidate.get("latest_asof") and ctx.asof > candidate["latest_asof"]:
+            if prior.get("summary_dir") != expected_summary:
                 raise ValueError(
-                    f"candidate {candidate['id']!r} asof {ctx.asof} exceeds "
-                    f"calendar phase limit {candidate['latest_asof']}"
+                    f"checkpoint summary path drift for candidate {candidate['id']!r}"
                 )
-            expected_summary = _expected_summary_dir(document, ctx.asof)
-            if candidate["id"] in completed:
-                prior = copy.deepcopy(completed[candidate["id"]])
-                if prior.get("document_hash") != candidate["document_hash"]:
-                    raise ValueError(
-                        f"checkpoint hash drift for candidate {candidate['id']!r}"
-                    )
-                if prior.get("summary_dir") != expected_summary:
-                    raise ValueError(
-                        f"checkpoint summary path drift for candidate {candidate['id']!r}"
-                    )
-                if prior.get("state") == "running":
-                    prior = {
-                        **copy.deepcopy(candidate),
-                        "state": "ran",
-                        "summary_dir": expected_summary,
-                        "exit_code": 0,
-                        "recovered_after_interruption": True,
-                    }
-                    summary, summary_sha, _ = _load_summary_bytes(prior)
-                    _validate_summary(prior, summary)
-                    prior = _seal_run_row(prior, summary, summary_sha)
-                    rows.append(prior)
-                    _write_checkpoint(checkpoint_path, signature, rows)
-                    continue
-                if prior.get("state") != "ran" or prior.get("exit_code") != 0:
-                    raise ValueError(
-                        f"candidate {candidate['id']!r} previously ended in "
-                        f"state {prior.get('state')!r}; resolve it under a new "
-                        "benchmark identity"
-                    )
+            if prior.get("state") == "running":
+                prior = {
+                    **copy.deepcopy(candidate),
+                    "state": "ran",
+                    "summary_dir": expected_summary,
+                    "exit_code": 0,
+                    "recovered_after_interruption": True,
+                }
                 summary, summary_sha, _ = _load_summary_bytes(prior)
                 _validate_summary(prior, summary)
-                sealed = _seal_run_row(prior, summary, summary_sha)
-                if (
-                    prior.get("evidence_manifest_path")
-                    != sealed["evidence_manifest_path"]
-                    or prior.get("evidence_manifest_sha256")
-                    != sealed["evidence_manifest_sha256"]
-                ):
-                    raise ValueError("checkpoint evidence seal drifted")
+                prior = _seal_run_row(prior, summary, summary_sha)
                 rows.append(prior)
-                continue
-            running = {
-                **copy.deepcopy(candidate),
-                "state": "running",
-                "summary_dir": expected_summary,
-                "exit_code": None,
-            }
-            _write_checkpoint(checkpoint_path, signature, rows + [running])
-            result = run_walk_forward(document, asof=ctx.asof)
-            if result.summary_dir != expected_summary:
+                _write_checkpoint(checkpoint_path, signature, rows)
+                return
+            if prior.get("state") != "ran" or prior.get("exit_code") != 0:
                 raise ValueError(
-                    f"candidate {candidate['id']!r} returned an unexpected summary path"
+                    f"candidate {candidate['id']!r} previously ended in "
+                    f"state {prior.get('state')!r}; resolve it under a new "
+                    "benchmark identity"
                 )
-            row = {
-                **copy.deepcopy(candidate),
-                "state": result.state,
-                "summary_dir": result.summary_dir,
-                "exit_code": result.exit_code,
-            }
-            if result.state == "ran" and result.exit_code == 0:
-                summary, summary_sha, _ = _load_summary_bytes(row)
-                _validate_summary(row, summary)
-                row = _seal_run_row(row, summary, summary_sha)
-            rows.append(row)
-            _write_checkpoint(checkpoint_path, signature, rows)
-            if result.state != "ran" or result.exit_code != 0:
-                raise ValueError(
-                    f"candidate {candidate['id']!r} ended in state "
-                    f"{result.state!r} with exit code {result.exit_code}"
-                )
-        return {"runs": rows}
+            summary, summary_sha, _ = _load_summary_bytes(prior)
+            _validate_summary(prior, summary)
+            sealed = _seal_run_row(prior, summary, summary_sha)
+            if (
+                prior.get("evidence_manifest_path")
+                != sealed["evidence_manifest_path"]
+                or prior.get("evidence_manifest_sha256")
+                != sealed["evidence_manifest_sha256"]
+            ):
+                raise ValueError("checkpoint evidence seal drifted")
+            rows.append(prior)
+            return
+        running = {
+            **copy.deepcopy(candidate),
+            "state": "running",
+            "summary_dir": expected_summary,
+            "exit_code": None,
+        }
+        _write_checkpoint(checkpoint_path, signature, rows + [running])
+        result = run_walk_forward(document, asof=ctx.asof)
+        if result.summary_dir != expected_summary:
+            raise ValueError(
+                f"candidate {candidate['id']!r} returned an unexpected summary path"
+            )
+        row = {
+            **copy.deepcopy(candidate),
+            "state": result.state,
+            "summary_dir": result.summary_dir,
+            "exit_code": result.exit_code,
+        }
+        if result.state == "ran" and result.exit_code == 0:
+            summary, summary_sha, _ = _load_summary_bytes(row)
+            _validate_summary(row, summary)
+            row = _seal_run_row(row, summary, summary_sha)
+        rows.append(row)
+        _write_checkpoint(checkpoint_path, signature, rows)
+        if result.state != "ran" or result.exit_code != 0:
+            raise ValueError(
+                f"candidate {candidate['id']!r} ended in state "
+                f"{result.state!r} with exit code {result.exit_code}"
+            )
+
+
+class DocumentWalkRun(BenchmarkRun):
+    """Run the ONE walk-forward document an earlier stage of this staged run materialized (ADR-0185).
+
+    For a chain whose document is not a zoo field: a warmup HPO walk, or a
+    frozen-winner retraining walk built from that HPO's ruling. There is no
+    plan inventory to approve -- the document is fully determined by the
+    staged document's own identity and the stages before this one -- so the
+    stage builds the planned row from the document itself (its hash, fold
+    cutoffs, objective and select) and hands it to :class:`BenchmarkRun`'s
+    one execution mechanism: drift check, checkpoint recovery, evidence
+    seal. It never plans, compares or selects.
+
+    Parameters
+    ----------
+    params : dict
+        None; every knob is refused.
+
+    Examples
+    --------
+    Run the frozen walk a materialize stage wrote::
+
+        stage = DocumentWalkRun("walk")
+        row = stage.run(ctx, {"candidate": {"id": "lean", "path": "walk.json"}})["run"]
+        row["state"]
+        # -> 'ran'
+    """
+
+    outputs = ("run",)
+
+    def validate_inputs(self, inputs):
+        """Require exactly one materialized candidate with an id and a path.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
+        if not isinstance(inputs, dict) or set(inputs) != {"candidate"}:
+            return ["inputs must contain exactly candidate"]
+        candidate = inputs["candidate"]
+        if not isinstance(candidate, dict) or not _string(candidate.get("id")) or not _string(
+            candidate.get("path")
+        ):
+            return ["candidate must be a materialized row with an id and a path"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Plan the candidate from its own document, then run or recover its walk.
+
+        Parameters
+        ----------
+        ctx : StageContext
+        inputs : dict
+            Carries ``candidate``.
+
+        Returns
+        -------
+        dict
+            ``run``: the sealed row (``state`` ``ran``).
+
+        Raises
+        ------
+        ValueError
+            The document declares no walk-forward, or its walk did not complete.
+        """
+        candidate = copy.deepcopy(inputs["candidate"])
+        document = load_document(_resolve_candidate_path(ctx.source_path, candidate["path"]))
+        if document.walkforward is None:
+            raise ValueError(f"candidate {candidate['id']!r} declares no walk-forward")
+        cutoffs = list(document.walkforward.fold_cutoffs())
+        planned = {
+            **candidate,
+            "state": "planned",
+            "document_hash": document.hash,
+            "name": document.name,
+            "objective": document.walkforward.objective,
+            "select": document.walkforward.select,
+            "asof": ctx.asof,
+            "expected_fold_count": len(cutoffs),
+            "expected_cutoffs": cutoffs,
+        }
+        signature = _run_signature(ctx, [planned], {"inventory_sha256": document.hash})
+        checkpoint_path = os.path.join(ctx.artifact_dir, f"{self.key}-walk-checkpoint.json")
+        completed = {row["id"]: row for row in _load_checkpoint(checkpoint_path, signature)}
+        rows = []
+        self._execute(ctx, planned, completed, rows, checkpoint_path, signature)
+        return {"run": rows[0]}
 
 
 def _run_signature(ctx, candidates, approval):

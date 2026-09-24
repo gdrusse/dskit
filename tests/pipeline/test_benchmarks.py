@@ -913,3 +913,98 @@ def test_select_reports_a_missing_sha256_digest(tmp_path):
     }
     problems = BenchmarkSelect.validate_params(params)
     assert any("sha256 must be a lowercase SHA-256" in p for p in problems)
+
+
+# --- ADR-0185: DocumentWalkRun, one materialized candidate's walk -------------
+
+
+def _walk_document(tmp_path, document_hash="a" * 64):
+    cutoffs = ("2025-01-01", "2025-02-01")
+    return SimpleNamespace(
+        hash=document_hash,
+        name="candidate",
+        outputs=SimpleNamespace(run_root=str(tmp_path / "runs")),
+        walkforward=SimpleNamespace(
+            objective="$score.metrics.ic", select="max", fold_cutoffs=lambda: cutoffs,
+        ),
+    )
+
+
+def _completing_walk(tmp_path, document, calls):
+    expected = tmp_path / "runs" / f"candidate-walkforward-2026-02-28-{document.hash[:8]}"
+
+    def walk(doc, asof=None):
+        calls.append((doc, asof))
+        _summary(expected, document.hash, [0.1, 0.2])
+        _seal_test_summary(expected)
+        return SimpleNamespace(state="ran", exit_code=0, summary_dir=str(expected))
+
+    return walk
+
+
+def test_document_walk_run_fits_once_and_returns_the_sealed_planned_row(tmp_path, monkeypatch):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    document = _walk_document(tmp_path)
+    calls = []
+    monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
+    monkeypatch.setattr("dskit.pipeline.benchmarks.run_walk_forward", _completing_walk(tmp_path, document, calls))
+    candidate = {**_metadata("lean"), "path": "candidate.json"}
+    row = DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": candidate})["run"]
+    assert len(calls) == 1 and calls[0] == (document, "2026-02-28")
+    assert row["state"] == "ran" and row["exit_code"] == 0
+    assert row["document_hash"] == document.hash
+    assert row["expected_cutoffs"] == ["2025-01-01", "2025-02-01"]
+    assert row["expected_fold_count"] == 2
+    assert (row["objective"], row["select"], row["asof"]) == ("$score.metrics.ic", "max", "2026-02-28")
+    seal = Path(row["evidence_manifest_path"])
+    assert hashlib.sha256(seal.read_bytes()).hexdigest() == row["evidence_manifest_sha256"]
+
+
+def test_document_walk_run_resumes_from_its_checkpoint_without_refitting(tmp_path, monkeypatch):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    document = _walk_document(tmp_path)
+    calls = []
+    monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
+    monkeypatch.setattr("dskit.pipeline.benchmarks.run_walk_forward", _completing_walk(tmp_path, document, calls))
+    stage = DocumentWalkRun("walk")
+    inputs = {"candidate": {**_metadata("lean"), "path": "candidate.json"}}
+    first = stage.run(_context(tmp_path), inputs)["run"]
+    second = stage.run(_context(tmp_path), inputs)["run"]
+    assert len(calls) == 1
+    assert second == first
+
+
+def test_document_walk_run_refuses_a_walk_that_did_not_complete(tmp_path, monkeypatch):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    document = _walk_document(tmp_path)
+    monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
+    monkeypatch.setattr(
+        "dskit.pipeline.benchmarks.run_walk_forward",
+        lambda doc, asof=None: SimpleNamespace(
+            state="error", exit_code=1,
+            summary_dir=str(tmp_path / "runs" / f"candidate-walkforward-2026-02-28-{document.hash[:8]}"),
+        ),
+    )
+    with pytest.raises(ValueError, match="ended in state 'error'"):
+        DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": {**_metadata("lean"), "path": "c.json"}})
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [{}, {"candidate": "c.json"}, {"candidate": {"id": "lean"}}, {"candidate": {"path": "c.json"}},
+     {"candidate": {"id": "lean", "path": "c.json"}, "extra": 1}],
+)
+def test_document_walk_run_requires_exactly_one_materialized_candidate(inputs):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    assert DocumentWalkRun("walk").validate_inputs(inputs)
+
+
+def test_document_walk_run_default_denies_params():
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    assert DocumentWalkRun.validate_params({"knob": 1})
+    assert DocumentWalkRun.validate_params({}) == []
