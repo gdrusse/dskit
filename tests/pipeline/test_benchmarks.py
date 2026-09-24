@@ -1026,3 +1026,14 @@ def test_document_walk_run_refuses_a_document_edited_after_it_was_materialized(t
     with pytest.raises(ValueError, match="moved after"):
         DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": candidate})
     assert calls == []
+
+
+def test_document_walk_run_refuses_a_document_without_a_walk(tmp_path, monkeypatch):
+    from dskit.pipeline.benchmarks import DocumentWalkRun
+
+    document = SimpleNamespace(hash="a" * 64, name="candidate", walkforward=None,
+                               outputs=SimpleNamespace(run_root=str(tmp_path / "runs")))
+    monkeypatch.setattr("dskit.pipeline.benchmarks.load_document", lambda path: document)
+    candidate = {**_metadata("lean"), "path": "c.json", "document_hash": "a" * 64}
+    with pytest.raises(ValueError, match="declares no walk-forward"):
+        DocumentWalkRun("walk").run(_context(tmp_path), {"candidate": candidate})

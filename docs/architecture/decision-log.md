@@ -23745,6 +23745,31 @@ Minors and nits:
   check predates this change, and the fixtures do not exercise the
   publisher end to end without data.
 
+Round 2 ran on candidate `45c4611` with two fresh lenses. Correctness found
+0 Critical, 0 Major and 3 Minor; it mutation-checked every round-1 fix and
+caught each one. Tests/integration ran 96 mutations and found 0 Critical,
+1 Major and 8 Minor.
+
+The Major is fixed: the config pin missed values it claimed to pin. It now
+pins `pipeline` and `memory` to P16's, the cohort pins of both candidate
+stages to P16's materializer, the gates to P16's gate params, and the
+calendar and stage keys.
+
+Minors fixed:
+
+- `RetrainedSimulation` now checks the gates on disk against the handed
+  caps.
+- A rolled withdrawal no longer relabels a deposit.
+- The README now carries the look-ahead disclosure.
+- New tests cover the unreached refusals: two publishers, a booked date
+  that was never ticked, a document with no walk, a fold with no scan node,
+  a non-completed walk row, a config identity mismatch, an uncarried
+  ledger, a foreign inventory digest, and a missing `manifest_stage`.
+
+Pre-existing and disclosed: `BenchmarkRun._execute`'s checkpoint hash-drift,
+`latest_asof` and previously-failed-row checks have been untested since
+before this change.
+
 **Context.** ADR-0184's simulation replays stored out-of-fold `yhat` from an
 earlier P16 walk. It says so itself: "no in-loop refit". It also
 tunes per fold (4 trials) and funds $1,000 + $20/day. The final-model plan

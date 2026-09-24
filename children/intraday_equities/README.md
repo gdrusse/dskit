@@ -93,6 +93,8 @@ python -m dskit.pipeline run configs/run-replay-report.json \
 #     releases (730d train, 5d embargo, every 63 days) -> gates -> per-tick
 #     EquityKellyMIO over 2022-09-09..2025-10-16, $10,000 + $500 every other
 #     Friday 09:30 ET. Developmental post-selection; MIO knobs are placeholders.
+#     Disclosed look-ahead: the search rows precede 2022-05-01, but its cohort
+#     and leads come from Gate 3, decided on the traded 2022-2025 folds.
 #     A rerun resumes finished stages; outputs land in the run's stages/simulate/.
 python -m dskit.pipeline staged configs/run-retrain-simulation.json \
     --asof 2026-02-28 --adapter intraday_equities

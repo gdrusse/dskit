@@ -961,3 +961,12 @@ def test_retrained_walk_gates_refuse_a_zoo_selection_and_a_pasted_pin(tmp_path):
     ctx = SimpleNamespace(source_path=str(tmp_path / "retrain.json"), artifact_dir=str(stages))
     with pytest.raises(ValueError, match="contract is invalid"):
         RetrainedWalkGates("gates", params).run(ctx, {"manifest": artifact["outputs"]["manifest"]})
+
+
+def test_retrained_walk_gates_require_the_stage_that_holds_the_inventory():
+    from intraday_equities.final_gates import RetrainedWalkGates
+
+    params = load_document(str(_RETRAIN)).to_obj()["stages"]["gates"]["params"]
+    assert RetrainedWalkGates.validate_params(params) == []
+    missing = {k: v for k, v in params.items() if k != "manifest_stage"}
+    assert any("manifest_stage" in p for p in RetrainedWalkGates.validate_params(missing))

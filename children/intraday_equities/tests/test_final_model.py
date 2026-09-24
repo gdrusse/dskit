@@ -3400,3 +3400,58 @@ def test_frozen_winners_refuses_evidence_recorded_by_another_producer(tmp_path):
     run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document(), evidence=swapped)
     with pytest.raises(ValueError, match="another producer"):
         FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+def test_frozen_winners_refuses_a_fold_whose_config_is_not_its_resolved_identity(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=_scan_hpo_document())
+    config = json.loads((run_dir / "config.json").read_text())
+    config["name"] = "someone-else"
+    (run_dir / "config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="no completed run attestation binds"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+def test_frozen_winners_refuses_a_ledger_the_run_did_not_carry(tmp_path):
+    from intraday_equities.final_model import FrozenWinners
+
+    run_dir, _, _ = _attested_hpo_run(
+        tmp_path, document=_scan_hpo_document(),
+        carried=lambda head, manifest: {**manifest, "sha256": "0" * 64} if head == "h05" else manifest,
+    )
+    with pytest.raises(ValueError, match="not attested"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+def test_frozen_winners_refuses_a_fold_with_no_scan_node(tmp_path):
+    from dskit.pipeline.document import PipelineDocument
+
+    from intraday_equities.final_model import FrozenWinners
+
+    obj = _scan_hpo_document().to_obj()
+    for head in HEADS:
+        obj["pipeline"].pop(f"scan_{head}")
+    run_dir, _, _ = _attested_hpo_run(tmp_path, document=PipelineDocument.from_obj(obj))
+    with pytest.raises(ValueError, match="no scan_hNN node"):
+        FrozenWinners("winners").run(None, {"run": _walk_row(tmp_path, run_dir)})
+
+
+@pytest.mark.parametrize("row", [{"state": "running"}, {"state": "ran"}, "x"])
+def test_frozen_winners_refuses_a_row_that_is_not_a_completed_sealed_walk(row):
+    from intraday_equities.final_model import FrozenWinners
+
+    assert FrozenWinners("winners").validate_inputs({"run": row})
+    with pytest.raises(ValueError):
+        FrozenWinners("winners").run(None, {"run": row})
+
+
+def test_one_standard_error_winner_refuses_a_ledger_from_another_inventory():
+    from intraday_equities.final_model import one_standard_error_winner
+
+    obj = _fixture_hpo_document().to_obj()
+    model = obj["stages"]["finalist"]["params"]["templates"][0]["model"]
+    evidence = _head_evidence("h01", 0, obj)
+    evidence["ledger"]["inventory_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="inventory differs"):
+        one_standard_error_winner(model, evidence, "h01")

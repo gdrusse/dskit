@@ -1406,7 +1406,7 @@ def test_retrained_simulation_refuses_a_template_that_moved(tmp_path):
     stages = _stage_dir(tmp_path)
     stage = RetrainedSimulation("simulate", _retrained_params(template_sha256="0" * 64))
     with pytest.raises(ValueError, match="template"):
-        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
 
 
 def test_retrained_simulation_refuses_a_template_carrying_a_stale_pin(tmp_path):
@@ -1424,7 +1424,7 @@ def test_retrained_simulation_refuses_a_template_carrying_a_stale_pin(tmp_path):
         template=str(path), template_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     ))
     with pytest.raises(ValueError, match="BOUND-BY-STAGE"):
-        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
 
 
 def test_retrained_simulation_refuses_an_inventory_on_disk_that_is_not_the_one_handed_in(tmp_path):
@@ -1505,4 +1505,41 @@ def test_retrained_simulation_refuses_a_template_it_cannot_bind_whole(tmp_path, 
         template=str(path), template_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     ))
     with pytest.raises(ValueError, match=expected):
-        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": []})
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
+
+
+def test_retrained_simulation_refuses_gates_on_disk_that_are_not_the_caps_handed_in(tmp_path):
+    from intraday_equities.simulation import RetrainedSimulation
+
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params())
+    with pytest.raises(ValueError, match="gates on disk differ"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "BBB"}]})
+
+
+def test_retrained_simulation_refuses_two_publishers(tmp_path):
+    import hashlib
+
+    from intraday_equities.simulation import RetrainedSimulation
+
+    with open(_TEMPLATE, encoding="utf-8") as handle:
+        obj = json.load(handle)
+    obj["pipeline"]["publish_again"] = json.loads(json.dumps(obj["pipeline"]["publish"]))
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(obj))
+    stages = _stage_dir(tmp_path)
+    stage = RetrainedSimulation("simulate", _retrained_params(
+        template=str(path), template_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    ))
+    with pytest.raises(ValueError, match="exactly one publisher"):
+        stage.run(_retrained_ctx(tmp_path, stages), {"manifest": {"m": 1}, "caps": [{"unit": "AAA"}]})
+
+
+def test_cash_rows_refuse_a_booked_date_the_replay_never_ticked():
+    from types import SimpleNamespace
+
+    day = datetime(2026, 1, 7, 14, 30, tzinfo=timezone.utc)
+    replay = SimpleNamespace(booked_cash_flows=[{"effective_at_ms": int(day.timestamp() * 1000), "amount": "20"}])
+    recorder = SimpleNamespace(closes={"2026-01-05": {"cash": 1.0, "gross_limit": 1.0, "mark_prices": {}}})
+    with pytest.raises(ConfigError, match="not dates the replay ticked"):
+        DevelopmentSimulation._cash_rows(replay, recorder, None, Decimal("0"), TZ, CASH_POLICY)

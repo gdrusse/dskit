@@ -1611,6 +1611,27 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
         assert staged["stages"]["simulate"]["params"]["template_sha256"] == hashlib.sha256(handle.read()).hexdigest()
     plan_stages(load_document(_path("run-retrain-simulation.json")))
 
+    # Every other stage value is its source's, restated nowhere else (review round 2).
+    p16 = _raw("run-p16-feature-mask-zoo.json")
+    assert staged["pipeline"] == p16["pipeline"]
+    assert staged["stages"]["memory"] == p16["stages"]["memory"]
+    source = p16["stages"]["materialize"]["params"]
+    for key in ("hpo_document", "walk_document"):
+        params = staged["stages"][key]["params"]
+        assert {k: v for k, v in params.items() if k != "templates"} == {
+            k: source[k] for k in ("gate3_artifact", "gate3_sha256", "cache_groups", "path_protocol")
+        }, key
+    gates = _raw("run-p16-final-model-gates.json")["stages"]["gates"]["params"]
+    assert staged["stages"]["gates"]["params"] == {
+        "manifest_stage": "inventory",
+        **{k: v for k, v in gates.items() if not k.startswith("manifest_")},
+    }
+    assert staged["stages"]["calendar"]["params"] == {
+        "path": "program-calendar-p13-model-zoo.json", "phase": "model_zoo",
+    }
+    simulate_stage = staged["stages"]["simulate"]["params"]
+    assert (simulate_stage["inventory_stage"], simulate_stage["gates_stage"]) == ("inventory", "gates")
+
     template, adr0184 = _raw(RETRAIN_TEMPLATE), _raw("run-development-simulation.json")
     assert template["pipeline"]["decide"]["params"] == adr0184["pipeline"]["decide"]["params"]
     assert set(template["pipeline"]) == set(adr0184["pipeline"])

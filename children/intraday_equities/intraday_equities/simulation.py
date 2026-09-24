@@ -1733,6 +1733,8 @@ class RetrainedSimulation(Stage):
         gates = self._artifact(ctx, self.params["gates_stage"])
         if inventory["value"].get("outputs", {}).get("manifest") != inputs["manifest"]:
             raise ValueError(f"{self.key}: the inventory on disk differs from the manifest this stage was handed")
+        if gates["value"].get("outputs", {}).get("caps") != inputs["caps"]:
+            raise ValueError(f"{self.key}: the gates on disk differ from the caps this stage was handed")
         files = self._bind(obj, ctx, inventory, gates)
         document = PipelineDocument.from_obj(obj)
         result = driver.run_document(document, asof=ctx.asof)

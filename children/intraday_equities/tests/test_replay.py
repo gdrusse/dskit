@@ -2331,3 +2331,16 @@ def test_scheduled_flows_name_every_rule_behind_them():
         next(r["body"] for r in due if _utc(r["body"]["effective_at_ms"]).astimezone(_CF_TZ).date() == date(2026, 1, 26)),
         False,
     )[1]
+
+
+def test_scheduled_a_rolled_withdrawal_never_relabels_the_deposit_it_lands_on():
+    first = date(2026, 1, 5)
+    dates = _weekdays(first, date(2026, 1, 30), drop={date(2026, 1, 22)})
+    policy = _scheduled(overrides=[{"kind": "withdrawal", "date": "2026-01-22", "amount": "40"}]).segment(None, dates)
+    composer, _ = policy.composer_for("s", _at_930(first), dates)
+    due = composer.due(_utc(_at_930(first)), _utc(_at_930(date(2026, 1, 31))))
+    on_23 = sorted(
+        (policy.describe_flow(r["body"], False)[0], r["body"]["amount"]) for r in due
+        if _utc(r["body"]["effective_at_ms"]).astimezone(_CF_TZ).date() == date(2026, 1, 23)
+    )
+    assert on_23 == [("scheduled_contribution", "500"), ("withdrawal", "-40")]

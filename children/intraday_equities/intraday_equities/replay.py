@@ -882,7 +882,7 @@ class ScheduledCashFlowPolicy(CashFlowPolicy):
         day = datetime.fromtimestamp(body["effective_at_ms"] / 1000, tz=timezone.utc).astimezone(self.timezone).date()
         if body["flow_kind"] == "withdrawal":
             return "withdrawal", f"withdrawal {body['amount']} {body['currency']}"
-        names = [name for name in self._rules.get(day, ()) if name != "withdrawal"]
+        names = [name for name in self._rules.get(day, ()) if name.split("(")[0] != "withdrawal"]
         return "+".join(name.split("(")[0] for name in names), f"{' + '.join(names)} {body['currency']}"
 
 
