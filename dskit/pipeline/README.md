@@ -248,6 +248,12 @@ legacy stage-list grammar (below).
   It reads only the `ranking` rows the comparators already emit, refuses any
   source with an empty or incomplete ranking, and never promotes —
   `auto_promote` is always `False`.
+- **One materialized walk** (ADR-0185): `DocumentWalkRun` runs the single
+  walk-forward document an earlier stage of the same staged run wrote (a
+  warmup HPO walk, a frozen-winner retraining walk). It plans the row from
+  the document itself and reuses `BenchmarkRun`'s one execution method
+  (drift check, checkpoint recovery, evidence seal); it never plans,
+  approves, compares or selects.
 - **Fan-out** (ADR-0039): an optional `foreach` section — `keys` (a declared
   list, sorted at construction) plus a `pipeline` of TEMPLATE nodes — expanded
   at document construction, so "one model per symbol" stops being N

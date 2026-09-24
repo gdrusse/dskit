@@ -1,5 +1,36 @@
 # Re-entry
 
+## Retrain-in-run simulation + biweekly funding + MIO formulation (2026-09-24, ADR-0185)
+
+Built. Not run: this cloud container has no `./ob` bars and no Alpaca keys.
+One staged document now trains, retrains and trades:
+`children/intraday_equities/configs/run-retrain-simulation.json`
+(hash `29a82b73…`):
+
+- **Warmup HPO:** the locked lean recipe, 24 candidates per lead, one-SE
+  rule, on fold 0's training window before 2022-05-01.
+- **Retraining:** frozen winners refit for 20 releases (730-day window,
+  5-day embargo, every 63 days).
+- **Gates:** computed over this run's own artifacts.
+- **Trading:** the ADR-0184 per-tick `EquityKellyMIO` over 2022-09-09..2025-10-16.
+- **Funding:** $10,000, plus $500 every other Friday at 09:30 ET (a holiday
+  rolls to the next trading day), with one phase across releases.
+
+New code:
+
+- dskit: `benchmarks.DocumentWalkRun`, which shares `BenchmarkRun._execute`.
+- child: `ScheduledCashFlowPolicy`, the Warmup/Frozen candidates,
+  `FrozenWinners` (via the extracted `one_standard_error_winner`), the
+  Retrained inventory/gates, and `RetrainedSimulation`.
+
+The formulation is
+`children/intraday_equities/docs/explanations/mio-optimizer-formulation.tex`
+(compiled clean). The MIO knobs are still ADR-0184 placeholders.
+
+Next bounded action, in WSL from the child root:
+`python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities`,
+then write the results memo.
+
 ## Backtest evaluator phase 2 (2026-09-24, ADR-0183 amendment)
 
 `dskit.evaluation` reports now carry an Optimizer section (`SolveRecord`

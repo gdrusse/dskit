@@ -1,5 +1,10 @@
 # Intraday-equities MIO: technical implementation and decision wiring
 
+> **Superseded (2026-09-24).** This design-era text still says "proposed"
+> and uses the withdrawn `pi_upper`. The implemented formulation, with the
+> exact backtest values, is
+> [`mio-optimizer-formulation.tex`](mio-optimizer-formulation.tex) (ADR-0185).
+
 ## TL;DR
 
 The proposed mixed-integer optimizer converts one verified forecast bundle,

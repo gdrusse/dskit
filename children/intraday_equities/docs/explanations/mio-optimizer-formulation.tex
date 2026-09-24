@@ -1,0 +1,453 @@
+% ADR-0185: the exact mixed-integer optimizer the intraday_equities
+% retrain simulation runs. Standalone: pdflatex mio-optimizer-formulation.tex
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+% \path (url/xurl) typesets an identifier verbatim and may break it
+% anywhere, so long dotted class/method names never overflow a line.
+\newcommand{\code}[1]{\path{#1}}
+\newcommand{\impl}[1]{\par\hfill{\footnotesize\color{gray}[implemented in #1]}\par}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Om}{\Omega}
+
+\title{The \texttt{EquityKellyMIO} Formulation\\\large Exactly as the ADR-0185 Retrain Simulation Runs It}
+\author{dskit / intraday\_equities}
+\date{2026-09-24}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document states the mixed-integer program that sizes every trading
+decision in \code{configs/run-retrain-simulation.json} (ADR-0185), and how
+that program is placed inside the per-tick simulation. Each equation cites
+the class and method that implements it. The generic program lives in
+\code{dskit/pipeline/libs/pyomo.py} (\code{ScenarioUtilitySolve}). The equity
+subclass lives in
+\code{children/intraday_equities/intraday_equities/nodes_capital.py}
+(\code{EquityKellyMIO}). The per-tick driver lives in
+\code{children/intraday_equities/intraday_equities/simulation.py}
+(\code{MioDecider}). Section~\ref{sec:values} lists the exact parameter
+values the backtest uses. Every MIO risk value there is a
+\emph{developmental placeholder}, not an owner ruling.
+\end{abstract}
+
+\tableofcontents
+
+%----------------------------------------------------------------------------
+\section{Scope and runtime placement}\label{sec:scope}
+
+The staged document runs these stages in order:
+\code{calendar} $\to$ \code{memory} $\to$ \code{hpo_document}, \code{hpo}
+(warmup search) $\to$ \code{winners} $\to$ \code{walk_document},
+\code{walk} (20 frozen-winner releases) $\to$ \code{inventory} $\to$
+\code{gates} $\to$ \code{simulate}. The optimizer runs only inside
+\code{simulate}, and it runs through this chain:
+\begin{enumerate}
+\item \code{RetrainedSimulation.run} binds the template
+  \code{configs/run-retrain-simulation-template.json} to this run's
+  inventory and gates, then executes it with \code{run_document}.
+\item Inside that graph, \code{ForecastPublisher} (node \code{publish}) emits
+  the \code{releases} (one per fold $k=2,\dots,19$) and the \code{bundles}.
+  There is one \code{ForecastBundle} per (30-minute lattice tick, lead group).
+\item \code{MioDeciderNode} (node \code{decide}) validates the MIO
+  parameters. It sizes nothing.
+\item \code{DevelopmentSimulation.run} (node \code{simulate}) replays one
+  \code{EquityReplay} segment per release. At every tick it calls
+  \code{MioDecider.decide}, and that call solves one \code{EquityKellyMIO}
+  per lead group (Section~\ref{sec:integration}).
+\end{enumerate}
+The optimizer decides \emph{target positions}. Fills, forced exits, fees and
+cash are applied by \code{EquityReplay}, outside the optimizer.
+
+%----------------------------------------------------------------------------
+\section{Sets and indices}
+
+\begin{tabular}{@{}p{3.2cm}p{12.2cm}@{}}
+$t$ & decision tick (a 30-minute lattice instant, epoch ms) \\
+$L$ & a lead group: the holding horizon in 1-minute bars \\
+$\N$ & instruments in the solve: gate-admitted, surviving bundle rows for
+       this $(t,L)$, $\cup$ held names \\
+$\Om=\{1,\dots,S\}$ & joint return scenarios, $S \le$ \code{n_scenarios_max} \\
+$\mathcal{J}=\{1,\dots,K\}$ & tangent knots, $K=$ \code{n_tangents} \\
+\end{tabular}
+
+%----------------------------------------------------------------------------
+\section{Inputs, units and provenance}\label{sec:inputs}
+
+\begin{longtable}{@{}p{2.3cm}p{4.2cm}p{7.6cm}@{}}
+\toprule
+Symbol & Meaning (unit) & Source and point-in-time rule \\
+\midrule
+$p_i$ & decision price (USD/share) & the tick bar's \code{close}. It must
+equal the bar the replay sees (\code{_refuse_price_disagreement}). \\
+$h_i$ & held shares (int) & \code{portfolio.positions}. In this backtest
+$h_i=0$ always (Section~\ref{sec:integration}). \\
+$\hat y_i$ & label-unit forecast & the fold-$k$ model's stored OOS
+\code{yhat} at $t$. That model was fitted in this run on
+$[c_k-5\text{d}-730\text{d},\,c_k-5\text{d})$. \\
+$\sigma_i$ & causal residual scale & the fold's own label array at $t$
+(\code{_Walk.market}). \\
+$\mu_i$ & gross simple return & $\mu_i=\operatorname{expm1}(\hat y_i\sigma_i\sqrt{L})$
+(\code{gross_return}, zero-drift SPY reference, ADR-0121). \\
+$e_{io}$ & residual draws & \code{BlockConformalInterval.scenarios}:
+$S$ whole joint rows of $y-\hat y$, resampled by UTC-day block. The rows
+come from folds $<k$ in $[c_k-730\text{d},c_k)$ \\
+$\omega_o$ & scenario weight & uniform $1/S$ \\
+$\hat\pi_i,\tilde\pi_i$ & false-signal point estimate, and
+\code{pi_widened} & \code{GrenanderLocalFdr} over session-flip nulls,
+computed from folds $<k$ \\
+$W^{0}$ & mark wealth (USD) & $W^{0}=c_0+\sum_i p_ih_i$ \\
+$c_0, B_0$ & cash, buying power (USD) & the replay's live cash after this
+tick's funding, exits and entries; $B_0=c_0$ \\
+$G$ & gross limit (USD) & \code{portfolio.gross_limit} $=$ replay NAV \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Scenario returns.}
+\impl{\code{ForecastBundle._recentered_scenarios}}
+With $\tilde r_{io}=\operatorname{expm1}\big((\hat y_i+e_{io})\sigma_i\sqrt{L}\big)$,
+the scenario gross returns are recentered so their weighted mean equals the
+false-signal-haircut mean:
+\begin{equation}
+r_{io}=\tilde r_{io}-\sum_{o'}\omega_{o'}\tilde r_{io'}+(1-\hat\pi_i)\,\mu_i,
+\qquad r_{io}>-1 .\label{eq:recenter}
+\end{equation}
+
+\paragraph{Per-share costs.} These come from the same fill-policy knobs the
+replay bills with.
+\impl{\code{SchwabCostModel.buy_per_share / sell_per_share}}
+\begin{equation}
+\kappa^{b}_i=\beta_s p_i,\qquad
+\kappa^{s}_i=\beta_s p_i+\tau+\beta_{31}p_i,
+\label{eq:costs}
+\end{equation}
+where $\beta_s=\text{\code{spread_bps}}\cdot10^{-4}$,
+$\beta_{31}=\text{\code{sec31_bps}}\cdot10^{-4}$ and
+$\tau=\text{\code{taf_per_share}}$ (USD per share, uncapped).
+The exit cost per share at the horizon is $\kappa^{x}_i=\kappa^{s}_i$, priced
+at $p_i$.
+
+%----------------------------------------------------------------------------
+\section{Parameters}\label{sec:params}
+
+\begin{tabular}{@{}p{3.2cm}p{12.2cm}@{}}
+$\gamma$ & \code{risk_aversion_gamma} ($\ge 1$) \\
+$K$, $S_{\max}$ & \code{n_tangents}, \code{n_scenarios_max} ($\le 256$) \\
+$\alpha$, $C$ & \code{cvar_alpha}; \code{cvar_limit} (or none) \\
+$M$ & \code{cardinality} \\
+$m$ & \code{min_ticket} (USD) \\
+$q$ & \code{hfdr_q} \\
+$\beta$ & \code{band_bps}; $\ell=$ \code{lot_size} (default 1) \\
+$\bar x_i$ & per-name notional ceiling: \code{max_position_notional}, or 0 for a mandatory exit \\
+$R$, $\theta$ & cash reserve; sale credit $\in[0,1]$ \\
+\end{tabular}
+
+%----------------------------------------------------------------------------
+\section{Decision variables}
+\impl{\code{ScenarioUtilitySolve.build_model}; \code{EquityKellyMIO.domain_constraints}}
+
+\begin{tabular}{@{}p{4.6cm}p{10.8cm}@{}}
+$b_i\in\mathbb{Z}_{\ge0}$ & shares bought \\
+$s_i\in\{0,\dots,h_i\}$ & shares sold \\
+$y_i\in\{0,1\}$ & held-at-all indicator \\
+$d_i\in\{0,1\}$ & direction (1 buys, 0 sells or holds) \\
+$a_i\in\{0,1\}$ & trade-active indicator (no-trade band) \\
+$W_o\in[\underline W,\overline W]$ & terminal wealth in scenario $o$ \\
+$t_o\in\mathbb{R}$ & tangent-plane utility bound \\
+$\eta\in\mathbb{R}$, $z_o\ge0$ & Rockafellar--Uryasev CVaR auxiliaries \\
+\end{tabular}
+
+\noindent Derived expressions:
+$Q_i=h_i+b_i-s_i$ (target shares), $x_i=p_iQ_i$ (target notional).
+
+%----------------------------------------------------------------------------
+\section{Constraints}
+
+\subsection{Inventory, direction and eligibility}
+\impl{\code{ScenarioUtilitySolve.build_model}}
+\begin{align}
+& Q_i \ge 0 && \text{(\code{nonneg_q}, long only)}\\
+& b_i \le U_i\,d_i,\quad U_i=\lfloor \bar x_i/p_i\rfloor+h_i+1 && \text{(\code{buy_only})}\\
+& s_i \le h_i\,(1-d_i) && \text{(\code{sell_only}: no same-tick buy and sell)}\\
+& x_i \le \bar x_i\, y_i && \text{(\code{elig_hi}: position cap, gates } y_i)\\
+& x_i \ge m\, d_i && \text{(\code{elig_lo}: minimum ticket, binds only on a buy)}\\
+& \textstyle\sum_i y_i \le M && \text{(\code{cardinality})}
+\end{align}
+Eligibility is decided \emph{before} the program is built
+(\code{EquityKellyMIO.instruments}). A row enters $\N$ only if it passes
+every one of these checks:
+\begin{itemize}
+\item it is a survivor;
+\item its capped horizon exists, is at least 1 and is at least $L$;
+\item its age $t_{\text{portfolio}}-t_{\text{bundle}}$ is between 0 and
+  \code{bundle_max_staleness_ms};
+\item $p_i\ge$ \code{min_price}.
+\end{itemize}
+A held name with no surviving row enters as a mandatory exit
+($\bar x_i=0$, $\tilde\pi_i=0$, $r_{io}=0$).
+
+\subsection{Cash, reserve and buying power}
+\impl{\code{ScenarioUtilitySolve.build_model: cash_after, cash_floor, buying_power}}
+\begin{align}
+c^{+} &= c_0+\textstyle\sum_i\big[(p_i-\kappa^s_i)s_i-(p_i+\kappa^b_i)b_i\big]\\
+c^{+} &\ge R\\
+\textstyle\sum_i (p_i+\kappa^b_i)\,b_i &\le B_0+\theta\sum_i (p_i-\kappa^s_i)\,s_i
+\end{align}
+The sale credit $\theta$ is the fraction of this tick's sale proceeds that
+counts as buying power in the same tick.
+
+\subsection{Gross exposure}
+\begin{equation}
+\textstyle\sum_i x_i \le G\qquad\text{(only when } G \text{ is given; \code{gross_exposure})}
+\end{equation}
+
+\subsection{Scenario terminal wealth}
+\impl{\code{_wealth_rule}}
+\begin{equation}
+W_o = c^{+}+\sum_i Q_i\big(p_i(1+r_{io})-\kappa^{x}_i\big),\qquad o\in\Om .
+\end{equation}
+Entry cost enters through $c^{+}$, and exit cost through $\kappa^{x}_i$.
+
+\subsection{Tangent-plane utility}
+\impl{\code{tangent_utility}; \code{model.tangent}}
+The concave utility is taken relative to $W^0$:
+\begin{equation}
+u(w)=\begin{cases}\ln(w/W^0), & \gamma\le 1,\\[2pt]
+\dfrac{(w/W^0)^{1-\gamma}-1}{1-\gamma}, & \gamma>1,\end{cases}
+\qquad u'(w)=\begin{cases}1/w,&\gamma\le1\\ (w/W^0)^{-\gamma}/W^0,&\gamma>1.\end{cases}
+\end{equation}
+The knots $k_j$ are $K$ equally spaced points on $[\underline W,\overline W]$. Each
+scenario's utility is bounded by every tangent:
+\begin{equation}
+t_o \le u(k_j)+u'(k_j)\,(W_o-k_j),\qquad o\in\Om,\ j\in\mathcal J .
+\end{equation}
+The wealth envelope is \impl{\code{EquityKellyMIO.instruments}}
+\begin{align*}
+N^{\text{cap}}&=\min\big(\textstyle\sum_i \bar x_i,\ G\big),\\
+\text{span}&=1.5\cdot\max\Big(N^{\text{cap}}\max\big(|\min r|,|\max r|,0.05\big),\ 0.05\max(W^0,1)\Big),\\
+\underline W&=\max(0.01\,W^0,\ W^0-\text{span}),\qquad \overline W=W^0+\text{span}.
+\end{align*}
+Because $W_o$ is bounded to $[\underline W,\overline W]$, the envelope is
+also a constraint.
+
+\subsection{CVaR (Rockafellar--Uryasev)}
+\impl{\code{model.cvar_row, model.cvar_cap}}
+The loss in scenario $o$ is $\ell_o=W^0-W_o$.
+\begin{align}
+z_o &\ge \ell_o-\eta,\quad z_o\ge 0 \\
+\eta+\tfrac{1}{1-\alpha}\textstyle\sum_o\omega_o z_o &\le C \qquad\text{(only when \code{cvar_limit} is not null)}
+\end{align}
+
+\subsection{HFDR row}
+\impl{\code{EquityKellyMIO.domain_constraints: model.hfdr}}
+\begin{equation}
+\sum_{i\in\N}\big(\tilde\pi_i-q\big)\,x_i \le 0 .
+\end{equation}
+$\tilde\pi_i$ is \code{pi_widened}
+(\code{HFDR_COEFFICIENT_FIELD}). It is a \emph{widened point estimate}. It is
+not an upper bound, and this row is \emph{not} a chance constraint: ADR-0152
+measured 0.53--0.82 attainment against a 0.95 nominal and withdrew the
+\code{pi_upper} bound. The attestation records the measured floor 0.53 as a
+synthetic value that was not measured on this panel.
+
+\subsection{No-trade band}
+\impl{\code{EquityKellyMIO.domain_constraints: band_*}}
+The band size and sell floor are
+\begin{equation*}
+n_i=\ell\Big\lceil\frac{\beta\cdot10^{-4}\max(p_ih_i,\,m)}{p_i\,\ell}\Big\rceil\ \ (0\text{ for a mandatory exit}),\qquad
+f_i=\min(n_i,h_i).
+\end{equation*}
+With the trade room $T_i=\max(\lfloor\bar x_i/p_i\rfloor+h_i,\,n_i,\,1)$, the
+band constraints are
+\begin{align}
+n_i a_i-n_i(1-d_i) &\le b_i && \text{(buy floor)}\\
+f_i a_i-f_i d_i &\le s_i && \text{(sell floor)}\\
+b_i+s_i &\le T_i a_i && \text{(no trade unless active)}
+\end{align}
+
+\subsection{Objective}
+\begin{equation}
+\max\ \sum_{o\in\Om}\omega_o\,t_o .
+\end{equation}
+
+%----------------------------------------------------------------------------
+\section{Post-solve recomputation and refusals}
+\impl{\code{ScenarioUtilitySolve.extract}; \code{EquityKellyMIO.validate_inputs}}
+
+\paragraph{Before the solve.} \code{EquityKellyMIO.validate_inputs}
+refuses the solve if any of the following holds:
+\begin{itemize}
+\item the bundle digest, producer or model manifest does not match its pin;
+\item the portfolio is malformed, for example fractional or negative
+  holdings;
+\item an uncertainty envelope is not admitted for $t$ and the release (stale,
+  from after the decision, the wrong unit or model, or coverage below
+  \code{uncertainty_min_coverage});
+\item the cap artifact fails \code{ConfirmedCaps.problems} or its pins;
+\item \code{deployment_mode} and \code{deployment_eligible} are
+  inconsistent;
+\item the cap is stale;
+\item the cap's release differs from the bundle's.
+\end{itemize}
+The two cap-timing refusals (the cap is from the future, and the cap was
+generated after the decision) are skipped only under
+\code{cap_evidence_look_ahead} $=$ true, which is allowed only when
+\code{deployment_mode} is false. Before building the program,
+\code{build_model} also refuses:
+\begin{itemize}
+\item $W^0\le 0$;
+\item $\underline W\le 0$, or $\underline W\ge\overline W$;
+\item weights that do not sum to 1;
+\item more than $S_{\max}$ scenarios;
+\item a non-finite $r_{io}$.
+\end{itemize}
+If no name is eligible and nothing is held, the solver is not called and the
+target is zero.
+
+\paragraph{After the solve.} The solve runs on HiGHS (\code{appsi_highs})
+with \code{mip_rel_gap}$=0$, \code{threads}$=1$ and
+\code{random_seed}$=0$. Any termination other than \code{optimal} refuses,
+and so does an integer variable that comes back fractional. From the integer
+solution, \code{extract} recomputes $c^+$, the buying power, the gross
+exposure, the cardinality, the minimum ticket (buys only) and every $W_o$,
+and refuses any violation. It also refuses any $W_o\le 0$. CVaR is recomputed
+exactly as a weighted $\alpha$-quantile $\eta^\star$, with
+$\text{CVaR}=\eta^\star+\sum_o\omega_o(\ell_o-\eta^\star)^+/(1-\alpha)$
+(\code{_weighted_cvar}), and checked against $C$ when a cap is set.
+
+\paragraph{Outputs.} The solve returns:
+\begin{itemize}
+\item \code{target} $\{i:Q_i\}$;
+\item \code{trades} $\{i:(b_i,s_i)\}$;
+\item \code{cash_after} $=c^+$;
+\item \code{metrics}: objective, exact expected utility, holding and trade
+  counts, gross exposure, CVaR and its $\eta$, and the minimum and maximum
+  $W_o$;
+\item \code{evidence}: routing reasons, the uncertainty admission, the
+  look-ahead disclosure, and the \code{SolveRecord} (status, gap, seconds,
+  binding rows).
+\end{itemize}
+A refusal becomes a \code{mio_refused} row in the simulation, and that lead
+group trades nothing at that tick.
+
+%----------------------------------------------------------------------------
+\section{Backtest integration}\label{sec:integration}
+\impl{\code{MioDecider.decide}; \code{EquityReplay.read_entry / evaluate}}
+
+\begin{enumerate}
+\item \textbf{Per tick.} At each 30-minute lattice instant $t$ carrying a
+  bundle, \code{EquityReplay.read_entry} first books any cash flow due
+  by $t$. A contribution is available to a decision at the same instant.
+  \code{evaluate} then applies all forced exits, then all entries due
+  at this bar, and finally calls \code{MioDecider.decide}$(t,\text{portfolio})$.
+\item \textbf{Per lead group.} Lead groups are solved one at a time in
+  \emph{ascending} $L$ (\code{MioDeciderNode}). Each group gets its own
+  \code{EquityKellyMIO}, pinned to that group's bundle digest and the
+  release's cap and manifest.
+\item \textbf{Shared cash.} The first group sees $c_0=B_0=$ live replay
+  cash. Each later group sees the previous group's \code{cash_after}, the
+  planned cash after that group's buys. This order is a disclosed allocation
+  bias toward short leads. A refused group leaves the cash unchanged.
+\item \textbf{Open lots.} Every bundle row whose name holds an open lot is
+  dropped (skip reason \code{open_lot_at_decision}). The MIO therefore
+  always sees \code{positions}$=\{\}$, so $h_i=0$, $s_i=0$, $f_i=0$, and
+  the inventory and sell-side path is not exercised. Orders are buys only;
+  a sell raises.
+\item \textbf{Fills.} Fills happen at the next bar's \code{open}
+  (\code{fill_bar_offset}$=1$), as market orders with no partial fills.
+  The fee is $\kappa^b$ or $\kappa^s$ at the fill price times the quantity.
+  A buy whose price times quantity plus fee exceeds the replay's cash is
+  refused as \code{insufficient_cash}. That can happen because the MIO
+  priced at the decision close.
+\item \textbf{Exits.} A lot is force-exited at the \code{open} of the bar
+  $L$ bars after its fill bar, at the sell cost. This is not decided by the
+  optimizer.
+\item \textbf{Releases.} Each fold $k$ is a new \code{EquityReplay}
+  segment, and its cash carries forward through
+  \code{CashFlowPolicy.segment}. The biweekly phase is global across
+  segments. A segment that ends with an open lot refuses.
+\end{enumerate}
+
+%----------------------------------------------------------------------------
+\section{Exact values in the final backtest}\label{sec:values}
+
+These are the values in \code{run-retrain-simulation-template.json} (node
+\code{decide}), \code{fill-policy.json}, \code{cash-flow-policy-biweekly.json}
+and the \code{MioDecider} portfolio. \textbf{P} marks an ADR-0184
+\emph{developmental placeholder} that is not an owner ruling (MIO plan
+\S10 is open).
+
+\begin{longtable}{@{}p{3.6cm}p{7.6cm}p{3.0cm}@{}}
+\toprule
+Quantity & Value & Status \\
+\midrule
+$\gamma$ & 2.0 (CRRA; half-Kelly) & P \\
+$K$ / $S_{\max}$ / $S$ & 32 / 64 / 64 & P \\
+$\alpha$ / $C$ & 0.95 / none (CVaR reported, not capped) & P \\
+$M$ & 5 & P \\
+$m$ & 0 (so \code{elig_lo} is inactive) & P \\
+$q$ & 0.30 & P \\
+$\beta$ & 10 bps (inactive: $h_i=0,\ m=0\Rightarrow n_i=0$) & P \\
+$\bar x_i$ & $10^{12}$ (no per-name cap beyond cash) & P \\
+bundle staleness & 0 ms & P \\
+cap / calibration max age & 5\,529\,600\,000 ms (64 days) & P \\
+\code{uncertainty_min_coverage} & 0.50 & P \\
+\code{cap_evidence_look_ahead} & true (disclosed look-ahead) & P \\
+$R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
+spread / TAF / Sec.\,31 & 2.2 bps / \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\
+\code{min_price} & \$5 & fill policy \\
+interval / false-signal calibration & coverage 0.95, \code{window_blocks} 10 (UTC-day blocks), 999 session-flip nulls, seed 0 & ADR-0184 \\
+calibration window & trailing 730 days, folds $<k$ & ADR-0184 \\
+funding & \$10{,}000 on day 1; \$500 every other Friday 09:30 ET & owner (ADR-0185) \\
+solver & HiGHS, gap 0, 1 thread, seed 0 & base default \\
+\bottomrule
+\end{longtable}
+
+\noindent With these values the program in the backtest reduces to:
+\begin{itemize}
+\item buys only, from an empty book;
+\item at most 5 names;
+\item self-financed from live cash;
+\item total notional at most NAV;
+\item the HFDR row;
+\item CRRA($\gamma=2$) tangent utility over 64 recentered joint scenarios.
+\end{itemize}
+The CVaR and no-trade-band rows are present but inert.
+
+%----------------------------------------------------------------------------
+\section{Known unimplemented or unrealistic assumptions}
+\begin{itemize}
+\item Not modelled: T+1 settlement, good-faith violations, freeriding, PDT
+  and wash sales. Sale proceeds are reusable at once.
+\item Halts are not modelled (\code{halted}$=$false). An absent minute is an
+  absent bar.
+\item Prices are split-adjusted, so integer-share sizing is distorted before
+  later splits.
+\item The costs are illustrative Schwab figures, not broker pins. The
+  optimizer prices at the decision close, and fills happen at the next
+  open.
+\item There is no slippage beyond the half-spread, no market impact, no
+  latency and no partial fills.
+\item The gate admission (tradable set, leads, caps) uses all 20 folds, so
+  the results are developmental post-selection and
+  \code{deployment_eligible}$=$false.
+\item $\tilde\pi_i$ is not a bound, and its attested attainment floor is
+  synthetic.
+\item The sequential lead-group allocation is myopic. There is no joint
+  multi-lead solve.
+\item Forecasts are the release models' batch predictions over their
+  validation window. They are not per-tick calls to a persisted model.
+\item The inventory, sell-side and no-trade-band logic is not exercised,
+  because every decision starts from an empty book.
+\end{itemize}
+
+\end{document}

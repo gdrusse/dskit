@@ -304,7 +304,9 @@ on it without breaking its rulings.
   compute class. `BenchmarkPlan` must remain read-only and reject duplicate
   identities, contract drift, and generic search nodes under walk-forward;
   `BenchmarkApproval` must bind the exact reviewed inventory hash before
-  `BenchmarkRun`, the only candidate-executing stage; `BenchmarkCompare` reads
+  `BenchmarkRun`, the only zoo-executing stage (`DocumentWalkRun`, ADR-0185,
+  runs ONE walk a prior stage materialized through `BenchmarkRun._execute` —
+  never a second execution path); `BenchmarkCompare` reads
   paired outer folds and never promotes a winner. Disabled candidates name a
   prerequisite and do not count as attempts. Until walk-forward records a
   portable resource contract, call `compute_rank` declared—not measured.

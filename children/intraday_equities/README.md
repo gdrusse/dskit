@@ -88,6 +88,15 @@ python -m dskit.pipeline run configs/run-train.json \
 python -m dskit.pipeline run configs/run-replay-report.json \
     --asof 2026-09-24 --adapter intraday_equities
 
+# 4c. retrain simulation (ADR-0185), ONE staged document: warmup HPO (24
+#     candidates per lead, one-SE rule, before 2022-05-01) -> 20 frozen-winner
+#     releases (730d train, 5d embargo, every 63 days) -> gates -> per-tick
+#     EquityKellyMIO over 2022-09-09..2025-10-16, $10,000 + $500 every other
+#     Friday 09:30 ET. Developmental post-selection; MIO knobs are placeholders.
+#     A rerun resumes finished stages; outputs land in the run's stages/simulate/.
+python -m dskit.pipeline staged configs/run-retrain-simulation.json \
+    --asof 2026-02-28 --adapter intraday_equities
+
 # 5. paper intents (reads the shipped documents; refuses real money)
 python -m intraday_equities.live --run-doc configs/run-train.json \
     --source-config configs/source-schwab-live.json --qty 1
@@ -180,7 +189,7 @@ intraday_equities/
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
 │   ├── forecast_bundle.py # ruled label inverse + confirmed-cap contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
-│   ├── simulation.py    # ADR-0184 publisher, per-tick MIO decider, simulate + report nodes
+│   ├── simulation.py    # ADR-0184 publisher, per-tick MIO decider, simulate + report nodes; ADR-0185 RetrainedSimulation stage
 │   ├── evaluation.py    # ReplayEvents: replay outputs -> dskit-eval-v1 events
 │   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration
@@ -190,7 +199,7 @@ intraday_equities/
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation, replay-report
+├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, cash-flow policies, development-replay/-simulation, retrain-simulation (+ template), replay-report
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/plans/          # owner-reviewed implementation plans and hard stops

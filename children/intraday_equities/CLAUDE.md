@@ -58,6 +58,19 @@ Agent orientation — see README.md for operator commands.
   `configs/fill-policy.json`. Neither are ADR-0184's
   `configs/run-development-simulation.json` (folds 2..19) and its one-segment
   `-smoke` twin: developmental post-selection, no tracking sink.
+- `configs/run-retrain-simulation.json` (ADR-0185) is the ONE staged
+  document that trains, retrains and trades: warmup HPO (`WarmupHpoCandidate`
+  + `DocumentWalkRun`, the locked lean recipe's 24-candidate one-SE search on
+  fold 0's training window) -> `FrozenWinners` -> `FrozenWalkCandidate` +
+  `DocumentWalkRun` (20 releases refit with frozen winners on the calendar
+  schedule) -> `RetrainedWalkInventory` -> `RetrainedWalkGates` ->
+  `RetrainedSimulation`, which binds `run-retrain-simulation-template.json`
+  (ADR-0184's graph; its `BOUND-BY-STAGE` values are the only ones it binds)
+  and funds from `configs/cash-flow-policy-biweekly.json`
+  (`ScheduledCashFlowPolicy`: $10,000 day one, $500 every other Friday 09:30
+  ET, holiday -> next trading day, one global phase across releases). No
+  tracking sink on the template; the staged document carries it. Formulation:
+  `docs/explanations/mio-optimizer-formulation.tex`.
 - `configs/run-replay-report.json` (ADR-0183) is the real-data development
   replay rendered by `dskit.evaluation`: `select.candidates` + the replay's
   fills/refused/skipped/cash_flows -> `evaluation.ReplayEvents` (schema-v1
@@ -139,7 +152,7 @@ Agent orientation — see README.md for operator commands.
 
 ```
 intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay, evaluation, simulation
-configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay/-simulation, replay-report
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, cash-flow policies, development-replay/-simulation, retrain-simulation (+ template), replay-report
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes
