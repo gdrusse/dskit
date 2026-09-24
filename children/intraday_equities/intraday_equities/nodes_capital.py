@@ -1391,6 +1391,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             }
             if self.params.get("cap_evidence_look_ahead", False) is True:
                 out["evidence"]["cap_evidence_look_ahead"] = CAP_LOOK_AHEAD_DISCLOSURE
+            # The doorway's record of this solve (ADR-0183 phase 2); None on
+            # the empty-gate short circuit, which never wakes the solver.
+            record = self.solve_record
+            out["evidence"]["solve"] = None if record is None else record.to_obj()
             return out
         finally:
             self._pi_widened = self._band_shares = self._payoffs = None

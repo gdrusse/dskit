@@ -49,6 +49,15 @@ whether the solver is available on this machine — is only knowable
 against the installed pyomo, so those refuse at run, by name, before any
 model is solved.
 
+Solve record doctrine
+---------------------
+Every solve the base lifecycle runs leaves a :class:`SolveRecord` on
+``PyomoSolve.solve_record`` (ADR-0183 phase 2): status, termination,
+objective, bound, relative gap, wall seconds, model size and one binding
+row per constraint component. It is read AFTER the solve, off the model
+and the results, so no subclass writes a line for it; ``None`` means
+this instance has not solved (or took a no-solve short circuit).
+
 Import cost: stdlib + toolkit only. pyomo is imported strictly inside
 run-path methods — this module must import (and its documents must
 plan) on a machine with no pyomo installed.
@@ -58,13 +67,16 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from abc import abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass, fields
 
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param
 from dskit.pipeline.records import number_ok
 
 __all__ = [
+    "BINDING_TOLERANCE",
     "DEFAULT_N_SCENARIOS_MAX",
     "DEFAULT_N_TANGENTS",
     "DEFAULT_SOLVER",
@@ -73,6 +85,7 @@ __all__ = [
     "BudgetedSelect",
     "PyomoSolve",
     "ScenarioUtilitySolve",
+    "SolveRecord",
     "register",
     "tangent_utility",
 ]
@@ -175,6 +188,222 @@ def _weighted_cvar(losses, weights, alpha):
     return cvar, eta
 
 
+#: A constraint row BINDS when its slack is within this of zero — the
+#: feasibility tolerance HiGHS itself applies by default (1e-7) with an
+#: order of headroom, so a row the solver left exactly tight is never
+#: reported slack over float noise.
+BINDING_TOLERANCE = 1e-6
+
+#: The smallest objective magnitude the relative gap divides by, so an
+#: optimum at zero reports a finite gap rather than dividing by zero.
+_GAP_FLOOR = 1e-10
+
+
+def _finite(value):
+    """Coerce a pyomo numeric (bound, value, dual) to a float by ``records.number_ok``, else None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number_ok(number) else None
+
+
+@dataclass(frozen=True)
+class SolveRecord:
+    """What one pyomo solve did: outcome, bounds, time, size and binding rows.
+
+    Built by :meth:`from_solve` inside :meth:`PyomoSolve.run` for every
+    subclass; :meth:`to_obj` is the JSON body an evaluation ``solve``
+    event carries (the key set is pinned to that event's fields by a
+    test).
+
+    Parameters
+    ----------
+    solver : str
+        The solver name the node resolved.
+    status : str
+        The solver status (``ok``, ``warning``, ``aborted``, ...).
+    termination : str
+        The termination condition (``optimal``, ``maxTimeLimit``, ...).
+    objective : float or None
+        The active objective's value at the loaded solution.
+    bound : float or None
+        The solver's best bound on the objective (upper when maximizing,
+        lower when minimizing); None when it reported no finite bound.
+    gap : float or None
+        ``|objective - bound| / |objective|`` (the divisor floored at a
+        tiny positive value); None when either is missing.
+    seconds : float
+        Wall time of ``solver.solve`` (``time.perf_counter``).
+    variables, constraints : int
+        Variable and active constraint rows in the model.
+    binding : tuple of dict
+        One row per active constraint COMPONENT: ``name``, ``rows``,
+        ``binding`` (rows with ``|slack| <= BINDING_TOLERANCE``),
+        ``min_slack`` (None when no row could be evaluated) and, only
+        when the model carries an imported ``dual`` Suffix with values,
+        ``dual`` (the component's largest-magnitude row dual).
+
+    Examples
+    --------
+    ::
+
+        record = SolveRecord("appsi_highs", "ok", "optimal", 12.0, 12.0, 0.0, 0.01,
+                             3, 1, ({"name": "budget", "rows": 1, "binding": 1,
+                                     "min_slack": 0.0},))
+        record.to_obj()["termination"]  # 'optimal'
+    """
+
+    solver: str
+    status: str
+    termination: str
+    objective: object
+    bound: object
+    gap: object
+    seconds: float
+    variables: int
+    constraints: int
+    binding: tuple
+
+    @classmethod
+    def field_names(cls):
+        """Return the record's field names, in :meth:`to_obj` order.
+
+        Returns
+        -------
+        tuple of str
+        """
+        return tuple(f.name for f in fields(cls))
+
+    @classmethod
+    def from_solve(cls, model, results, solver, seconds, tolerance=BINDING_TOLERANCE):
+        """Read a finished solve off its model and results.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            The solved model (a solution loaded, or none).
+        results : object
+            What ``solver.solve(model)`` returned.
+        solver : str
+            The solver name.
+        seconds : float
+            Wall time of the solve.
+        tolerance : float
+            The binding tolerance on a row's slack.
+
+        Returns
+        -------
+        SolveRecord
+        """
+        from pyomo.environ import Constraint, Var
+
+        objective, sense = cls._objective(model)
+        bound = cls._bound(results, sense)
+        gap = (None if objective is None or bound is None
+               else abs(objective - bound) / max(abs(objective), _GAP_FLOOR))
+        duals = cls._duals(model)
+        binding = tuple(
+            cls._component_row(component, duals, tolerance)
+            for component in model.component_objects(Constraint, active=True,
+                                                     descend_into=True)
+        )
+        outcome = getattr(results, "solver", None)
+        return cls(
+            solver=str(solver),
+            status=str(getattr(outcome, "status", None) or "unknown"),
+            termination=str(getattr(outcome, "termination_condition", None) or "unknown"),
+            objective=objective,
+            bound=bound,
+            gap=gap,
+            seconds=float(seconds),
+            variables=sum(1 for _ in model.component_data_objects(Var, descend_into=True)),
+            constraints=sum(row["rows"] for row in binding),
+            binding=binding,
+        )
+
+    @staticmethod
+    def _objective(model):
+        """The single active objective's value (or None) and its sense (1 min, -1 max)."""
+        from pyomo.environ import Objective, value
+
+        active = list(model.component_data_objects(Objective, active=True, descend_into=True))
+        if len(active) != 1:
+            return None, None
+        return _finite(value(active[0], exception=False)), int(active[0].sense)
+
+    @staticmethod
+    def _bound(results, sense):
+        """The results' finite bound on the objective's side, or None."""
+        problem = getattr(results, "problem", None)
+        try:
+            problem = problem[0]
+        except (TypeError, IndexError, KeyError):
+            pass
+        if problem is None or sense is None:
+            return None
+        return _finite(getattr(problem, "upper_bound" if sense < 0 else "lower_bound", None))
+
+    @staticmethod
+    def _duals(model):
+        """The imported ``dual`` Suffix as ``{row: value}``, or None when absent or empty."""
+        from pyomo.environ import Suffix
+
+        suffix = model.component("dual")
+        if not isinstance(suffix, Suffix) or not suffix.import_enabled() or not len(suffix):
+            return None
+        return dict(suffix.items())
+
+    @classmethod
+    def _component_row(cls, component, duals, tolerance):
+        """One constraint component's binding row."""
+        slacks, row_duals, rows = [], [], 0
+        for data in component.values():
+            if not data.active:
+                continue
+            rows += 1
+            slack = cls._row_slack(data)
+            if slack is not None:
+                slacks.append(slack)
+            if duals is not None and _finite(duals.get(data)) is not None:
+                row_duals.append(float(duals[data]))
+        out = {
+            "name": component.name,
+            "rows": rows,
+            "binding": sum(1 for s in slacks if abs(s) <= tolerance),
+            "min_slack": min(slacks) if slacks else None,
+        }
+        if row_duals:
+            out["dual"] = max(row_duals, key=abs)
+        return out
+
+    def to_obj(self):
+        """Return the record as a JSON-ready dict over :meth:`field_names`.
+
+        Returns
+        -------
+        dict
+        """
+        obj = {name: getattr(self, name) for name in self.field_names()}
+        obj["binding"] = [dict(row) for row in self.binding]
+        return obj
+
+    @staticmethod
+    def _row_slack(data):
+        """A constraint row's slack to its nearest bound, or None when unevaluable."""
+        from pyomo.environ import value
+
+        body = _finite(value(data.body, exception=False))
+        if body is None:
+            return None
+        gaps = []
+        if data.has_lb():
+            gaps.append(body - float(value(data.lower)))
+        if data.has_ub():
+            gaps.append(float(value(data.upper)) - body)
+        return min(gaps) if gaps else None
+
+
 class PyomoSolve(Node):
     """The abstract doorway: one pyomo program as one pipeline Node.
 
@@ -208,6 +437,13 @@ class PyomoSolve(Node):
     #: The base's own knobs. Subclasses EXTEND this tuple; validate_params
     #: default-denies anything outside it by name.
     _PARAMS = ("solver", "solver_options")
+
+    #: The :class:`SolveRecord` of this instance's last solve, set by
+    #: :meth:`run` between ``solve`` and ``extract`` (so ``extract`` may
+    #: read it, and a non-optimal solve ``extract`` refuses is still
+    #: recorded). ``None`` before a solve, when the solve itself raised,
+    #: and after a subclass's no-solve short circuit.
+    solve_record = None
 
     @classmethod
     def validate_params(cls, params):
@@ -276,10 +512,15 @@ class PyomoSolve(Node):
                 "so its run() return is checkable (an undeclared contract is "
                 "a contract nothing can check)"
             )
+        self.solve_record = None
         model = self.build_model(inputs, self.params)
         solver = self._resolve_solver()
-        self.log.info("solving with %r", self.params.get("solver", DEFAULT_SOLVER))
+        name = self.params.get("solver", DEFAULT_SOLVER)
+        self.log.info("solving with %r", name)
+        started = time.perf_counter()
         results = solver.solve(model)
+        seconds = time.perf_counter() - started
+        self.solve_record = SolveRecord.from_solve(model, results, name, seconds)
         extracted = self.extract(model, results)
         if not isinstance(extracted, dict):
             raise TypeError(
@@ -472,6 +713,7 @@ class BudgetedSelect(PyomoSolve):
             # The gate cleared no one: deploy NOTHING, and never wake the
             # solver — an empty program solved anyway is capital treating
             # its gate as decoration.
+            self.solve_record = None
             self.log.info(
                 "gate cleared none of %d candidate(s) — zero outlay, "
                 "solver not invoked",
@@ -749,6 +991,7 @@ class ScenarioUtilitySolve(PyomoSolve):
     def run(self, ctx, inputs):
         names, rows, account = self.instruments(inputs)
         if not names:
+            self.solve_record = None
             self.log.info(
                 "%s: no eligible or held instrument — zero target, solver not invoked", self.key
             )

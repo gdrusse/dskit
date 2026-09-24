@@ -14,7 +14,14 @@ import dskit
 from dskit.evaluation.events import EventLog
 from dskit.evaluation.nodes import EvaluationReport
 from dskit.evaluation.report import FILENAMES, BacktestReport
-from dskit.evaluation.sections import DECISION_COLUMNS, DEFAULT_SECTIONS, Section
+from dskit.evaluation.sections import (
+    DECISION_COLUMNS,
+    DEFAULT_SECTIONS,
+    DecisionLogSection,
+    OptimizerSection,
+    Section,
+)
+from dskit.evaluation.statistics import SolveSummary
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import NodeSpec, OutputsConfig, PipelineDocument
 from dskit.pipeline.driver import run_document
@@ -131,6 +138,64 @@ def test_a_log_with_no_trading_still_renders():
     report = BacktestReport(EventLog(b.events))
     assert "Verdict: <b>UNJUDGED</b>" in report.html()
     assert report.metrics()["verdict"] == "UNJUDGED"
+
+
+def _solves_log():
+    b = Builder()
+    b.add("run_start", 0, run_id="solves", tz="UTC")
+    rows = [{"name": "budget", "rows": 1, "binding": 1, "min_slack": 0.0},
+            {"name": "cap", "rows": 3, "binding": 0, "min_slack": 2.5}]
+    b.add("solve", DAY1, solver="appsi_highs", status="ok", termination="optimal",
+          objective=10.0, bound=10.0, gap=0.0, seconds=0.5, variables=4, constraints=4,
+          binding=rows, model="mio_h01")
+    b.add("solve", DAY1 + MIN, solver="appsi_highs", status="ok", termination="optimal",
+          objective=12.0, bound=12.0, gap=0.0, seconds=1.5, variables=4, constraints=4,
+          binding=[{**rows[0], "binding": 0, "min_slack": 0.25}, rows[1]])
+    b.add("solve", DAY1 + 2 * MIN, solver="appsi_highs", status="aborted",
+          termination="maxTimeLimit", objective=None, gap=None, seconds=3.0)
+    b.add("run_end", DAY1 + 2 * MIN, status="ok")
+    return EventLog(b.events)
+
+
+def test_the_solve_summary_counts_measures_and_binding_frequency():
+    summary = SolveSummary(_solves_log())
+    assert len(summary) == 3
+    assert summary.outcomes() == [
+        {"status": "ok", "termination": "optimal", "solves": 2},
+        {"status": "aborted", "termination": "maxTimeLimit", "solves": 1},
+    ]
+    measures = {row["measure"]: row for row in summary.measures()}
+    assert measures["seconds"] == {"measure": "seconds", "n": 3, "median": 1.5,
+                                   "p90": pytest.approx(2.7), "max": 3.0}
+    assert measures["objective"]["n"] == 2 and measures["gap"]["max"] == 0.0
+    assert summary.constraints() == [
+        {"constraint": "budget", "solves": 2, "binding_solves": 1, "binding_rows": 1,
+         "min_slack": 0.0},
+        {"constraint": "cap", "solves": 2, "binding_solves": 0, "binding_rows": 0,
+         "min_slack": 2.5},
+    ]
+    assert summary.seconds_series() == [(DAY1, 0.5), (DAY1 + MIN, 1.5), (DAY1 + 2 * MIN, 3.0)]
+
+
+def test_the_optimizer_section_renders_counts_and_a_time_chart():
+    report = BacktestReport(_solves_log())
+    page = report.html()
+    assert 'id="optimizer"' in page
+    section = page.split('id="optimizer"')[1].split("</section>")[0]
+    assert "maxTimeLimit" in section and "budget" in section
+    assert section.count("<svg") == 1  # seconds over time: three solves
+    assert "Optimizer: 3 solves (ok/optimal 2, aborted/maxTimeLimit 1)" in (
+        report.summary_markdown())
+
+
+def test_an_empty_log_says_no_solves_were_recorded(report):
+    page = report.html()
+    section = page.split('id="optimizer"')[1].split("</section>")[0]
+    assert "No optimizer solves recorded." in section and "<svg" not in section
+    assert "No optimizer solves recorded." in report.summary_markdown()
+    assert OptimizerSection in DEFAULT_SECTIONS
+    assert DEFAULT_SECTIONS.index(OptimizerSection) == (
+        DEFAULT_SECTIONS.index(DecisionLogSection) + 1)
 
 
 def test_a_week_of_minutes_stays_small(tmp_path):

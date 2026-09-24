@@ -2998,7 +2998,7 @@ class PortfolioSelect(PyomoSolve):
     """
 
     role = "score"
-    outputs = ("picks", "metrics", "candidates")
+    outputs = ("picks", "metrics", "candidates", "solves")
     _PARAMS = PyomoSolve._PARAMS + ("split", "tradable")
 
     @classmethod
@@ -3146,13 +3146,19 @@ class PortfolioSelect(PyomoSolve):
         -------
         dict
             ``picks`` plus decision metrics (IC, hit rate, no-cost
-            return, drawdown, turnover), and ``candidates`` — every scored
+            return, drawdown, turnover), ``candidates`` — every scored
             symbol per stamp with its score, rank and chosen flag (ADR-0183
-            item 12; the "why" behind each pick). Fill rate and delay
-            decay wait on a fill model.
+            item 12; the "why" behind each pick) — and ``solves``: the one
+            whole-window solve as ``[{"asof_ms", **SolveRecord.to_obj()}]``
+            (ADR-0183 phase 2). Its ``asof_ms`` is the EARLIEST scored
+            stamp: the program spans the whole window and is solved before
+            any of its picks can be read, so no later stamp may claim it.
+            Fill rate and delay decay wait on a fill model.
         """
         out = super().run(ctx, inputs)
         out["metrics"] = _decision_metrics(out.get("picks") or [], inputs)
+        first = min(row["asof_ms"] for row in out["candidates"])
+        out["solves"] = [{"asof_ms": first, **self.solve_record.to_obj()}]
         return out
 
 

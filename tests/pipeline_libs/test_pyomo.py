@@ -947,3 +947,136 @@ class TestScenarioUtilityRealSolve:
         node = _su_node()
         with pytest.raises(ValueError, match="wealth_lo"):
             node.run(_ctx(tmp_path), fixture)
+
+
+# ---------------------------------------------------------------------------
+# SolveRecord (ADR-0183 phase 2 item 1) — what every PyomoSolve solve records
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from dskit.pipeline.libs.pyomo import BINDING_TOLERANCE, SolveRecord  # noqa: E402
+
+
+class ToyLP(PyomoSolve):
+    """A two-variable LP carrying an imported ``dual`` Suffix."""
+
+    role = "transform"
+    outputs = ("x",)
+
+    def build_model(self, inputs, params):
+        from pyomo.environ import (
+            ConcreteModel,
+            Constraint,
+            NonNegativeReals,
+            Objective,
+            Suffix,
+            Var,
+            maximize,
+        )
+
+        model = ConcreteModel()
+        model.x = Var([1, 2], domain=NonNegativeReals)
+        model.value = Objective(expr=3 * model.x[1] + 2 * model.x[2], sense=maximize)
+        model.total = Constraint(expr=model.x[1] + model.x[2] <= 4)
+        model.cap = Constraint([1, 2], rule=lambda m, i: m.x[i] <= 3)
+        model.dual = Suffix(direction=Suffix.IMPORT)
+        return model
+
+    def extract(self, model, results):
+        return {"x": {i: float(model.x[i].value) for i in (1, 2)}}
+
+
+def _binding(record):
+    return {row["name"]: row for row in record.binding}
+
+
+class TestSolveRecord:
+    def test_no_record_before_a_solve(self):
+        assert _node().solve_record is None
+        assert PyomoSolve.solve_record is None
+
+    def test_the_knapsack_solve_is_recorded(self, tmp_path):
+        node = _node()
+        node.run(_ctx(tmp_path), _inputs())
+        record = node.solve_record
+        assert isinstance(record, SolveRecord)
+        assert record.solver == DEFAULT_SOLVER
+        assert record.status == "ok"
+        assert record.termination == "optimal"
+        assert record.objective == pytest.approx(12.0)
+        assert record.bound == pytest.approx(12.0)
+        assert record.gap == pytest.approx(0.0)
+        assert record.seconds >= 0.0
+        assert record.variables == 3  # one binary per surviving candidate
+        assert record.constraints == 1
+        budget = _binding(record)["budget"]
+        # BRAVO + GAMMA spend exactly the budget: the one row binds, no slack.
+        assert budget["rows"] == 1 and budget["binding"] == 1
+        assert budget["min_slack"] == pytest.approx(0.0, abs=BINDING_TOLERANCE)
+        assert "dual" not in budget  # a MIP carries no dual Suffix
+
+    def test_a_slack_row_is_counted_but_not_binding(self, tmp_path):
+        node = _node(budget=17.0)
+        node.run(_ctx(tmp_path), _inputs())
+        budget = _binding(node.solve_record)["budget"]
+        assert budget["rows"] == 1 and budget["binding"] == 0
+        assert budget["min_slack"] == pytest.approx(1.0)
+
+    def test_an_lp_with_a_dual_suffix_records_duals_per_component(self, tmp_path):
+        node = ToyLP("lp", {})
+        node.run(_ctx(tmp_path), {})
+        rows = _binding(node.solve_record)
+        assert set(rows) == {"total", "cap"}
+        assert rows["total"] == {"name": "total", "rows": 1, "binding": 1,
+                                 "min_slack": pytest.approx(0.0), "dual": pytest.approx(2.0)}
+        # x1 = 3 binds cap[1]; x2 = 1 leaves cap[2] two units of slack.
+        assert rows["cap"]["rows"] == 2 and rows["cap"]["binding"] == 1
+        assert rows["cap"]["min_slack"] == pytest.approx(0.0)
+        assert rows["cap"]["dual"] == pytest.approx(1.0)  # the largest-magnitude row dual
+        assert node.solve_record.constraints == 3 and node.solve_record.variables == 2
+
+    def test_the_gap_is_relative_and_none_without_a_bound(self):
+        from pyomo.environ import ConcreteModel, Objective, Var, maximize
+
+        model = ConcreteModel()
+        model.x = Var(initialize=10.0)
+        model.value = Objective(expr=model.x, sense=maximize)
+
+        def results(lower, upper, termination="maxTimeLimit"):
+            return SimpleNamespace(
+                problem=[SimpleNamespace(lower_bound=lower, upper_bound=upper)],
+                solver=SimpleNamespace(status="aborted", termination_condition=termination),
+            )
+
+        record = SolveRecord.from_solve(model, results(10.0, 12.0), "highs", 0.5)
+        assert record.objective == 10.0 and record.bound == 12.0
+        assert record.gap == pytest.approx(0.2)
+        assert record.status == "aborted" and record.termination == "maxTimeLimit"
+        open_bound = SolveRecord.from_solve(model, results(10.0, float("inf")), "highs", 0.5)
+        assert open_bound.bound is None and open_bound.gap is None
+        model.x.set_value(None)
+        unsolved = SolveRecord.from_solve(model, results(None, None, "infeasible"), "highs", 0.1)
+        assert unsolved.objective is None and unsolved.gap is None
+
+    def test_to_obj_is_every_field_and_json_ready(self, tmp_path):
+        node = _node()
+        node.run(_ctx(tmp_path), _inputs())
+        obj = node.solve_record.to_obj()
+        assert tuple(obj) == SolveRecord.field_names()
+        assert json.loads(json.dumps(obj)) == obj
+        assert isinstance(obj["binding"], list)
+
+    def test_the_empty_gate_short_circuit_records_nothing(self, tmp_path):
+        node = _node()
+        node.run(_ctx(tmp_path), _inputs())
+        assert node.solve_record is not None
+        node.run(_ctx(tmp_path), _inputs(survivors=[]))
+        assert node.solve_record is None
+
+    def test_the_scenario_utility_short_circuit_records_nothing(self, tmp_path):
+        node = _su_node()
+        node.run(_ctx(tmp_path), _su_fixture())
+        assert node.solve_record is not None and node.solve_record.termination == "optimal"
+        node.run(_ctx(tmp_path), _su_fixture(names=[], rows={}, account={"cash": 1.0}))
+        assert node.solve_record is None

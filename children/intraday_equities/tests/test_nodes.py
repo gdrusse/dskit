@@ -490,7 +490,7 @@ def test_portfolio_candidates_rank_every_scored_symbol_and_flag_the_pick(tmp_pat
     ]
     node = PortfolioSelect("select", {"split": "val", "tradable": ["AAPL", "JPM"]})
     out = node.run(_ctx(tmp_path), {"signal": _FakeSignal(), "records": rows})
-    assert PortfolioSelect.outputs == ("picks", "metrics", "candidates")
+    assert PortfolioSelect.outputs == ("picks", "metrics", "candidates", "solves")
     # picks/metrics keep their contract; SPY scores highest but is not tradable.
     assert [(p["asof_ms"], p["symbol"]) for p in out["picks"]] == [
         (_ms(1), "AAPL"),
@@ -516,6 +516,22 @@ def test_portfolio_candidates_rank_every_scored_symbol_and_flag_the_pick(tmp_pat
             key=lambda r: (r["asof_ms"], -signal.predict(r), r["symbol"]),
         )
     ]
+
+
+def test_portfolio_select_records_its_one_whole_window_solve(tmp_path):
+    """ADR-0183 phase 2: one solve row, stamped at the earliest scored stamp."""
+    if not HAVE_SOLVER:
+        return
+    rows = [
+        {"symbol": "AAPL", "asof_ms": _ms(2), "ret_lag_0": -0.01, "y_next": 0.0},
+        {"symbol": "JPM", "asof_ms": _ms(2), "ret_lag_0": 0.03, "y_next": 0.0},
+        {"symbol": "SPY", "asof_ms": _ms(1), "ret_lag_0": 0.05, "y_next": 0.0},
+        {"symbol": "AAPL", "asof_ms": _ms(1), "ret_lag_0": 0.02, "y_next": 0.0},
+    ]
+    node = PortfolioSelect("select", {"split": "val", "tradable": ["AAPL", "JPM"]})
+    out = node.run(_ctx(tmp_path), {"signal": _FakeSignal(), "records": rows})
+    assert out["solves"] == [{"asof_ms": _ms(1), **node.solve_record.to_obj()}]
+    assert out["solves"][0]["termination"] == "optimal"
 
 
 def test_portfolio_candidates_without_a_scored_book_are_empty():

@@ -364,6 +364,7 @@ class TestEmptyGate:
         assert out["metrics"]["objective"] == 0.0
         assert out["cash_after"] == 500.0
         assert out["evidence"]["n_bundle_rows"] == 0
+        assert out["evidence"]["solve"] is None  # the short circuit never solved
 
     def test_an_unpinned_empty_bundle_refuses(self):
         problems = _node().validate_inputs(
@@ -481,6 +482,16 @@ class TestRealSolve:
         ticket = 190.0 * 100
         band_shares = int(-(-(1000.0 * 1e-4 * ticket) // 190.0))
         assert total == 0 or total >= band_shares
+
+    def test_the_evidence_carries_the_solve_record(self, tmp_path):
+        node = _node()
+        out = node.run(
+            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
+        )
+        solve = out["evidence"]["solve"]
+        assert solve == node.solve_record.to_obj()
+        assert solve["termination"] == "optimal" and solve["gap"] == pytest.approx(0.0, abs=1e-6)
+        assert {row["name"] for row in solve["binding"]} >= {"wealth", "cardinality"}
 
     def test_identical_inputs_give_identical_output_twice(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}

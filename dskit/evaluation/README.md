@@ -40,7 +40,7 @@ Unknown fields are refused, every problem listed at once.
 | `mark` | `price` |
 | `cashflow` | `amount` (+ in, - out); optional `rule`, `detail` |
 | `outcome` | `decision_id`, `realized`; optional `horizon` (never rendered beside its decision) |
-| `solve` | `solver`, `status`; optional `objective`, `bound`, `gap`, `binding`, `seconds` (phase 2) |
+| `solve` | `solver`, `status`; optional `termination`, `objective`, `bound`, `gap`, `seconds`, `variables`, `constraints`, `model`, `binding` (`name, rows, binding, min_slack, dual`; the body of `libs.pyomo.SolveRecord.to_obj()`, rendered by `OptimizerSection`) |
 | `run_end` | `status`; optional `wall_s` |
 
 `EventLog.emit(kind, ts_ms, known_ms, instrument, **fields)` assigns `seq`

@@ -713,6 +713,21 @@ def test_mio_refusal_trades_nothing_and_is_recorded(sim):
         (tick, 1, "mio_refused"), (tick, 2, "mio_refused"),
     ]
     assert all("coverage" in r["detail"] for r in decider.refused)
+    # Refused in validation, before any solve: there is no record to keep.
+    assert decider.solves == []
+
+
+def test_every_mio_solve_is_kept_with_its_tick_and_lead(sim):
+    from dskit.pipeline.libs.pyomo import SolveRecord
+
+    decider = sim["spy"].inner
+    assert decider.solves, "the fixture must solve for this test to mean anything"
+    ticks = {asof for asof, _, _ in sim["spy"].calls}
+    for row in decider.solves:
+        assert row["asof_ms"] in ticks and row["lead"] in (1, 2)
+        assert set(row) == {"asof_ms", "lead", *SolveRecord.field_names()}
+        assert row["solver"] == "appsi_highs" and row["termination"] == "optimal"
+    assert len({(row["asof_ms"], row["lead"]) for row in decider.solves}) == len(decider.solves)
 
 
 def test_cash_never_negative_over_a_funded_multi_day_tape(sim):
@@ -878,7 +893,9 @@ def test_simulate_and_report_are_registered_nodes_with_json_outputs(sim7):
     assert DEFAULT_NODE_KINDS.get(SIM_KIND)[0] is DevelopmentSimulation
     assert DEFAULT_NODE_KINDS.get(REPORT_KIND)[0] is SimulationReport
     assert issubclass(DevelopmentSimulation, DevelopmentReplay)
-    assert set(DevelopmentSimulation.outputs) == {"fills", "skipped", "refused", "cash", "metadata"}
+    assert set(DevelopmentSimulation.outputs) == {
+        "fills", "skipped", "refused", "cash", "metadata", "solves",
+    }
     assert set(SimulationReport.outputs) == {"daily", "summary"}
     for value in (sim7["out"], sim7["report"]):
         assert json.loads(json.dumps(value)) == value
@@ -993,8 +1010,9 @@ def test_report_attribution_and_counts_sum_to_the_totals(sim7):
 
 def test_every_output_row_and_the_run_metadata_carry_the_disclosure(sim7):
     out, report = sim7["out"], sim7["report"]
-    rows = out["fills"] + out["skipped"] + out["refused"] + out["cash"] + report["daily"]
-    assert rows and out["fills"]
+    rows = (out["fills"] + out["skipped"] + out["refused"] + out["cash"] + out["solves"]
+            + report["daily"])
+    assert rows and out["fills"] and out["solves"]
     for row in rows:
         assert {k: row[k] for k in DISCLOSURE} == DISCLOSURE
         assert row["fold"] in (2, 3) and row["release_id"]

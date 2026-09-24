@@ -15,6 +15,7 @@ from dskit.evaluation.events import (
     Fill,
     LocalTime,
     RunStart,
+    Solve,
 )
 from tests.evaluation.conftest import DAY1, Builder, build_scenario
 
@@ -30,11 +31,61 @@ def test_every_kind_round_trips_through_to_obj(scenario):
         assert Event.from_obj(obj).to_obj() == obj
 
 
-def test_solve_is_accepted():
-    solve = Event.from_obj({"schema": SCHEMA, "seq": 1, "kind": "solve", "ts_ms": 5,
-                            "known_ms": 5, "instrument": None, "solver": "highs",
-                            "status": "optimal", "gap": 0.0, "binding": ["cap"]})
-    assert solve.get("binding") == ["cap"]
+def _solve(**fields):
+    return {"schema": SCHEMA, "seq": 1, "kind": "solve", "ts_ms": 5, "known_ms": 5,
+            "instrument": None, "solver": "highs", "status": "ok", **fields}
+
+
+def test_solve_is_accepted_with_every_phase_2_field():
+    row = {"name": "cap", "rows": 3, "binding": 1, "min_slack": 0.0, "dual": -1.5}
+    solve = Event.from_obj(_solve(termination="optimal", model="mio_h02", objective=1.0,
+                                  bound=1.0, gap=0.0, seconds=0.01, variables=4,
+                                  constraints=3, binding=[row]))
+    assert solve.get("binding") == [row]
+    assert solve.get("termination") == "optimal" and solve.get("constraints") == 3
+    bare = {"name": "cap", "rows": 0, "binding": 0, "min_slack": None}
+    assert Event.from_obj(_solve(binding=[bare], objective=None)).get("binding") == [bare]
+
+
+@pytest.mark.parametrize(("binding", "needle"), [
+    (["cap"], "binding[0] must be an object"),
+    ([{"name": "cap", "rows": 1}], "missing required field 'binding'"),
+    ([{"name": "", "rows": 1, "binding": 0}], "binding[0].name must be a non-empty string"),
+    ([{"name": "cap", "rows": -1, "binding": 0}], "binding[0].rows must be an int >= 0"),
+    ([{"name": "cap", "rows": 1, "binding": True}], "binding[0].binding must be an int >= 0"),
+    ([{"name": "cap", "rows": 1, "binding": 0, "min_slack": "x"}], "min_slack"),
+    ([{"name": "cap", "rows": 1, "binding": 0, "dual": float("nan")}], "dual"),
+    ([{"name": "cap", "rows": 1, "binding": 0, "shadow": 1}], "unknown field(s) ['shadow']"),
+])
+def test_solve_binding_rows_are_default_deny(binding, needle):
+    with pytest.raises(EvaluationError) as caught:
+        Event.from_obj(_solve(binding=binding))
+    assert any(needle in p for p in caught.value.problems), caught.value.problems
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("termination", 3), ("model", None), ("variables", -1), ("constraints", 1.5),
+])
+def test_solve_size_and_label_fields_are_typed(field, value):
+    with pytest.raises(EvaluationError, match=field):
+        Event.from_obj(_solve(**{field: value}))
+
+
+def test_a_solve_record_is_a_solve_event_body():
+    """Pin: the pack's SolveRecord keys are Solve fields, and a real record validates."""
+    pytest.importorskip("pyomo")
+    from dskit.pipeline.libs.pyomo import BudgetedSelect, SolveRecord
+    from dskit.pipeline.node import NodeContext
+
+    names = {field.name for field in Solve.FIELDS}
+    assert set(SolveRecord.field_names()) <= names
+    node = BudgetedSelect("select", {"budget": 10.0})
+    node.run(NodeContext(name="t", asof="2026-01-01", run_dir="unused"),
+             {"candidates": [{"id": "A", "cost": 6.0, "value": 9.0},
+                             {"id": "B", "cost": 5.0, "value": 6.0}],
+              "survivors": ["A", "B"]})
+    obj = node.solve_record.to_obj()
+    assert Event.from_obj(_solve(**obj, model="select")).get("binding") == obj["binding"]
 
 
 @pytest.mark.parametrize("kind", sorted(EVENT_KINDS))

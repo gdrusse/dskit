@@ -193,3 +193,47 @@ def test_events_validate_against_the_schema_when_the_evaluator_is_present():
     for obj in _events(inputs):
         events_mod.Event.from_obj(obj)
     events_mod.EventLog(_events(inputs))
+
+
+def _solve_row(asof_ms, **extra):
+    """A solve row as the simulation emits it: tick, lead, record keys, stamps."""
+    return {
+        "asof_ms": asof_ms, "lead": 2, "solver": "appsi_highs", "status": "ok",
+        "termination": "optimal", "objective": 1.5, "bound": 1.5, "gap": 0.0,
+        "seconds": 0.02, "variables": 9, "constraints": 4,
+        "binding": [{"name": "cardinality", "rows": 1, "binding": 1, "min_slack": 0.0}],
+        "fold": 2, "release_id": "r2", "deployment_eligible": False, **extra,
+    }
+
+
+def test_each_solve_row_becomes_one_solve_event_at_its_tick():
+    inputs, _ = _scenario()
+    solves = [_solve_row(_t(0)), _solve_row(_t(1), model="mio_h01", objective=None)]
+    events = _events(dict(inputs, solves=solves))
+    found = [e for e in events if e["kind"] == "solve"]
+    assert [(e["ts_ms"], e["known_ms"], e["instrument"]) for e in found] == [
+        (_t(0), _t(0), None), (_t(1), _t(1), None),
+    ]
+    first, second = found
+    # Only the record's keys cross; the row's fold/release/lead stamps do not.
+    assert {k: first[k] for k in ("solver", "status", "termination", "gap", "binding")} == {
+        "solver": "appsi_highs", "status": "ok", "termination": "optimal", "gap": 0.0,
+        "binding": solves[0]["binding"],
+    }
+    assert "fold" not in first and "lead" not in first
+    assert first["model"] == "ridge" and second["model"] == "mio_h01"  # the row's own wins
+    assert second["objective"] is None
+    assert "solve" in KIND_ORDER
+    events_mod = pytest.importorskip("dskit.evaluation.events")
+    events_mod.EventLog(events)
+
+
+def test_solves_are_optional_and_refused_when_not_a_list():
+    inputs, _ = _scenario()
+    assert not [e for e in _events(inputs) if e["kind"] == "solve"]
+    node = ReplayEvents("events", PARAMS)
+    assert any("solves" in p for p in node.validate_inputs(dict(inputs, solves={})))
+    unlabelled = ReplayEvents("events", {k: v for k, v in PARAMS.items() if k != "model"})
+    solve = next(e for e in unlabelled.run(None, dict(inputs, solves=[_solve_row(_t(0))]))[
+        "events"] if e["kind"] == "solve")
+    assert "model" not in solve

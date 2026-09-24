@@ -4,8 +4,8 @@ A :class:`Section` renders its HTML body from a :class:`ReportContext` (the
 log, the book, the statistics table, the scorecard and the census, built
 once) and may contribute lines to ``summary.md``. The default order is the
 reader's: what happened in plain words first, then the card and verdict,
-trading P&L, trades on price, the decision log, cash and exposure,
-distributions, per-day stability, and provenance last.
+trading P&L, trades on price, the decision log, the optimizer's solves,
+cash and exposure, distributions, per-day stability, and provenance last.
 
 Two rules every section keeps. **No look-ahead in the render**: a section
 that shows a decision reads only what the decision, its orders and its
@@ -35,6 +35,7 @@ from functools import cached_property
 
 from dskit.evaluation.diagnostics import ForecastDiagnostics
 from dskit.evaluation.narrative import HOW_TO_READ, Narrative
+from dskit.evaluation.statistics import SolveSummary
 from dskit.evaluation.svg import (
     BarChart,
     Histogram,
@@ -59,6 +60,7 @@ __all__ = [
     "DistributionSection",
     "EquitySection",
     "InferenceSection",
+    "OptimizerSection",
     "OverviewSection",
     "PeriodSection",
     "ProvenanceSection",
@@ -1001,6 +1003,61 @@ class DecisionLogSection(Section):
                 + "\n".join(body) + "</tbody></table></div>")
 
 
+class OptimizerSection(Section):
+    """What the optimizer did: outcomes, objective / gap / time, binding constraints.
+
+    Reads only ``solve`` events through
+    :class:`~dskit.evaluation.statistics.SolveSummary`: counts by
+    (status, termination), the objective, relative gap and solve seconds
+    (n, median, p90, max), and per constraint component how often it
+    bound. Solve time is drawn over time when there are at least two
+    solves. A log with no solve says so in one line.
+
+    Examples
+    --------
+    ::
+
+        OptimizerSection().markdown(context)
+        # -> ['Optimizer: 3 solves (ok/optimal 3).', '']
+    """
+
+    title, anchor = "Optimizer", "optimizer"
+
+    #: What a log with no ``solve`` event renders, in both outputs.
+    EMPTY = "No optimizer solves recorded."
+    #: How the measures table displays each column.
+    FORMATS = {"n": "count", "median": "ratio", "p90": "ratio", "max": "ratio"}
+
+    def html(self, context):
+        """Return the outcome counts, the measures, the binding table and the time chart."""
+        summary = SolveSummary(context.log)
+        if not len(summary):
+            return _note(self.EMPTY)
+        parts = [_html_table(("status", "termination", "solves"), summary.outcomes()),
+                 _html_table(("measure", "n", "median", "p90", "max"), summary.measures(),
+                             formats=self.FORMATS),
+                 "<h3>Binding constraints</h3>"]
+        constraints = summary.constraints()
+        parts.append(_html_table(("constraint", "solves", "binding_solves", "binding_rows",
+                                  "min_slack"), constraints)
+                     if constraints else _note("No solve recorded its constraints."))
+        series = summary.seconds_series()
+        if len(series) >= 2:
+            parts.append(LineChart("Solve time", [Series("seconds", tuple(series), "s0")],
+                                   local=context.local, y_label="seconds",
+                                   height=180).render())
+        return "".join(parts)
+
+    def markdown(self, context):
+        """Return one line: the solve count by outcome, or that there were none."""
+        summary = SolveSummary(context.log)
+        if not len(summary):
+            return [self.EMPTY, ""]
+        outcomes = ", ".join(f"{row['status']}/{row['termination'] or DASH} {row['solves']}"
+                             for row in summary.outcomes())
+        return [f"Optimizer: {count(len(summary))} solves ({outcomes}).", ""]
+
+
 def _reasons_table(log):
     """Render the top refusal/skip reasons, or say there were none."""
     reasons = _top_reasons(log)
@@ -1317,5 +1374,6 @@ class ProvenanceSection(Section):
 
 #: The default section order — the reader's order.
 DEFAULT_SECTIONS = (OverviewSection, SummarySection, EquitySection, TradesOnPriceSection,
-                    DecisionLogSection, CashSection, DistributionSection, InferenceSection,
+                    DecisionLogSection, OptimizerSection, CashSection, DistributionSection,
+                    InferenceSection,
                     PeriodSection, ProvenanceSection)

@@ -78,14 +78,6 @@ SIDES = ("buy", "sell")
 #: The envelope every event carries, in rendering order.
 _ENVELOPE = ("schema", "seq", "kind", "ts_ms", "known_ms", "instrument")
 
-#: A candidate row's closed field set (``instrument`` required).
-_CANDIDATE_FIELDS = ("instrument", "score", "rank", "eligible", "reason")
-
-#: A guard finding's fields on an ``order`` (ADR-0183 phase 2): the
-#: production ledger's ``Finding`` with ``value``/``bound`` as numbers.
-_FINDING_FIELDS = ("guard", "measure", "value", "bound", "verdict", "reason", "window",
-                   "scope_key")
-
 #: A side's sign on quantity — a table, never a side branch.
 _SIGN = {"buy": 1, "sell": -1}
 
@@ -547,45 +539,52 @@ class Decision(Event):
         return next((row for row in self.candidates if row["instrument"] != chosen), None)
 
 
-def _candidate_problems(row, where):
-    """Problems with one candidate row (default-deny, instrument required)."""
+def _row_problems(row, where, rules):
+    """Problems with one nested row object: default-deny over ``rules``, then each rule."""
     if not isinstance(row, dict):
         return [f"{where} must be an object, got {row!r}"]
+    allowed = [rule.name for rule in rules]
     problems = []
-    unknown = sorted(set(row) - set(_CANDIDATE_FIELDS))
+    unknown = sorted(set(row) - set(allowed))
     if unknown:
-        problems.append(f"{where}: unknown field(s) {unknown} — allowed: {list(_CANDIDATE_FIELDS)}")
-    rules = (
-        _id("instrument"),
-        _number("score", required=False, nullable=True),
-        _count("rank", 1, required=False, nullable=True),
-        _flag("eligible", required=False),
-        _text("reason", required=False, nullable=True),
-    )
+        problems.append(f"{where}: unknown field(s) {unknown} — allowed: {allowed}")
     problems.extend(p for rule in rules if (p := rule.problem(where, row)) is not None)
     return problems
+
+
+#: A candidate row's closed rule set (``instrument`` required) — the
+#: allowed keys ARE these rules' names.
+_CANDIDATE_RULES = (
+    _id("instrument"),
+    _number("score", required=False, nullable=True),
+    _count("rank", 1, required=False, nullable=True),
+    _flag("eligible", required=False),
+    _text("reason", required=False, nullable=True),
+)
+
+
+def _candidate_problems(row, where):
+    """Problems with one candidate row (default-deny, instrument required)."""
+    return _row_problems(row, where, _CANDIDATE_RULES)
+
+
+#: A guard finding's closed rule set on an ``order`` (ADR-0183 phase 2): the
+#: production ledger's ``Finding`` with ``value``/``bound`` as numbers.
+_FINDING_RULES = (
+    _id("guard"),
+    _id("measure"),
+    _number("value", required=False, nullable=True),
+    _number("bound", required=False, nullable=True),
+    _choice("verdict", VERDICTS),
+    _text("reason", required=False, nullable=True),
+    _text("window", required=False, nullable=True),
+    _text("scope_key", required=False, nullable=True),
+)
 
 
 def _finding_problems(row, where):
     """Problems with one guard finding (default-deny; guard, measure, verdict required)."""
-    if not isinstance(row, dict):
-        return [f"{where} must be an object, got {row!r}"]
-    problems = []
-    unknown = sorted(set(row) - set(_FINDING_FIELDS))
-    if unknown:
-        problems.append(f"{where}: unknown field(s) {unknown} — allowed: {list(_FINDING_FIELDS)}")
-    rules = (
-        _id("guard"),
-        _id("measure"),
-        _number("value", required=False, nullable=True),
-        _number("bound", required=False, nullable=True),
-        _choice("verdict", VERDICTS),
-        _text("reason", required=False, nullable=True),
-        _text("window", required=False, nullable=True),
-        _text("scope_key", required=False, nullable=True),
-    )
-    problems.extend(p for rule in rules if (p := rule.problem(where, row)) is not None)
-    return problems
+    return _row_problems(row, where, _FINDING_RULES)
 
 
 def _candidate_order(row):
@@ -797,7 +796,17 @@ class Outcome(Event):
 
 
 class Solve(Event):
-    """An optimizer call's status (ADR-0183 phase 2; accepted, not yet rendered).
+    """One optimizer call: outcome, bounds, time, size and binding constraints.
+
+    Rendered by :class:`~dskit.evaluation.sections.OptimizerSection`
+    (ADR-0183 phase 2). The body is what
+    ``dskit.pipeline.libs.pyomo.SolveRecord.to_obj`` produces (pinned by
+    a test), plus an optional ``model`` label naming the solving node.
+    ``termination``, ``model``, ``variables`` and ``constraints`` are
+    optional ADDITIVE fields, so an older v1 log still reads. Each
+    ``binding`` row is one constraint component, default-deny:
+    ``name``, ``rows``, ``binding`` (rows at zero slack) and optional
+    ``min_slack`` and ``dual``.
 
     Examples
     --------
@@ -805,20 +814,44 @@ class Solve(Event):
 
         solve = Event.from_obj({"schema": "dskit-eval-v1", "seq": 2, "kind": "solve",
                                 "ts_ms": 60000, "known_ms": 60000, "instrument": None,
-                                "solver": "highs", "status": "optimal"})
-        solve.get("status")  # 'optimal'
+                                "solver": "highs", "status": "ok",
+                                "termination": "optimal",
+                                "binding": [{"name": "budget", "rows": 1, "binding": 1,
+                                             "min_slack": 0.0}]})
+        solve.get("termination")  # 'optimal'
     """
 
     kind = "solve"
     FIELDS = (
         _id("solver"),
         _id("status"),
+        _text("termination", required=False),
         _number("objective", required=False, nullable=True),
         _number("bound", required=False, nullable=True),
         _number("gap", required=False, nullable=True),
         _sequence("binding", required=False),
         _number("seconds", required=False),
+        _count("variables", 0, required=False),
+        _count("constraints", 0, required=False),
+        _text("model", required=False),
     )
+
+    #: A ``binding`` row's closed rule set — the allowed keys ARE these names.
+    BINDING_RULES = (
+        _id("name"),
+        _count("rows", 0),
+        _count("binding", 0),
+        _number("min_slack", required=False, nullable=True),
+        _number("dual", required=False, nullable=True),
+    )
+
+    @classmethod
+    def extra_problems(cls, obj, where):
+        """Refuse a malformed binding row, every problem listed."""
+        problems = []
+        for position, row in enumerate(obj.get("binding", ())):
+            problems.extend(_row_problems(row, f"{where}.binding[{position}]", cls.BINDING_RULES))
+        return problems
 
 
 class RunEnd(Event):
