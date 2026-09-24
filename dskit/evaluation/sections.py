@@ -46,6 +46,7 @@ from dskit.evaluation.svg import (
     StepChart,
 )
 from dskit.evaluation.units import DASH, Units, count, percent, ratio, sig
+from dskit.pipeline.base import ConfigError
 from dskit.pipeline.runs import render_cell
 from dskit.production.guards import max_verdict
 
@@ -53,6 +54,8 @@ __all__ = [
     "DEFAULT_MAX_MARKERS",
     "DEFAULT_MAX_PANELS",
     "DEFAULT_SECTIONS",
+    "PINNED_SECTIONS",
+    "SECTIONS",
     "DECISION_COLUMNS",
     "STAT_FORMATS",
     "CashSection",
@@ -68,6 +71,8 @@ __all__ = [
     "Section",
     "SummarySection",
     "TradesOnPriceSection",
+    "chosen_sections",
+    "section_problems",
 ]
 
 #: The most trades-on-price panels a report draws; the rest are named.
@@ -1403,3 +1408,59 @@ DEFAULT_SECTIONS = (OverviewSection, SummarySection, EquitySection, TradesOnPric
                     DecisionLogSection, OptimizerSection, CashSection, DistributionSection,
                     InferenceSection,
                     PeriodSection, ProvenanceSection)
+
+#: Every default section by its anchor: the names a document's ``sections``
+#: param and the CLI's ``--sections`` select from (ADR-0183 phase 3a).
+SECTIONS = {cls.anchor: cls for cls in DEFAULT_SECTIONS}
+
+#: Rendered whatever a selection names: the verdict card and where the
+#: numbers came from are what make any subset readable.
+PINNED_SECTIONS = ("summary", "provenance")
+
+
+def section_problems(names):
+    """Return every problem with a section selection; empty when acceptable.
+
+    Parameters
+    ----------
+    names : object
+        The selection as written: a non-empty list of anchors from
+        :data:`SECTIONS`.
+
+    Returns
+    -------
+    list of str
+    """
+    if not isinstance(names, list) or not names:
+        return [f"sections must be a non-empty list of section names, got {names!r}"]
+    unknown = [n for n in names if n not in SECTIONS]
+    if unknown:
+        return [f"unknown section(s) {unknown} — allowed: {sorted(SECTIONS)}"]
+    return []
+
+
+def chosen_sections(names):
+    """Return the selected section classes in the default reading order.
+
+    Parameters
+    ----------
+    names : list of str or None
+        Anchors from :data:`SECTIONS`; None selects every default section.
+        :data:`PINNED_SECTIONS` are always included.
+
+    Returns
+    -------
+    tuple of type
+
+    Raises
+    ------
+    ConfigError
+        On a selection :func:`section_problems` refuses.
+    """
+    if names is None:
+        return DEFAULT_SECTIONS
+    problems = section_problems(names)
+    if problems:
+        raise ConfigError(problems)
+    wanted = set(names) | set(PINNED_SECTIONS)
+    return tuple(cls for cls in DEFAULT_SECTIONS if cls.anchor in wanted)

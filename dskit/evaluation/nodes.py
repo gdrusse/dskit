@@ -23,6 +23,7 @@ import os
 from dskit.evaluation.events import EventLog
 from dskit.evaluation.provenance import fill_provenance
 from dskit.evaluation.report import BacktestReport
+from dskit.evaluation.sections import chosen_sections, section_problems
 from dskit.pipeline.node import Node, reject_unknown_params
 
 __all__ = ["RUNS_DIR_NAME", "EvaluationReport"]
@@ -45,6 +46,9 @@ class EvaluationReport(Node):
         ``pipeline_runs`` is refused because it would nest a second runs
         directory inside the run. An absolute (or ``~``) path is used as
         given. ``title`` (str, optional) — overrides ``run_start.title``.
+        ``sections`` (list of str, optional) — which sections to render, by
+        anchor (:data:`~dskit.evaluation.sections.SECTIONS`); ``summary``
+        and ``provenance`` always render; omitted renders all of them.
 
     Inputs
     ------
@@ -69,7 +73,7 @@ class EvaluationReport(Node):
 
     role = "report"
     outputs = ("metrics", "paths")
-    _PARAMS = ("out_dir", "title", "notes")
+    _PARAMS = ("out_dir", "title", "sections", "notes")
 
     @classmethod
     def validate_params(cls, params):
@@ -97,6 +101,8 @@ class EvaluationReport(Node):
                     f"use e.g. 'report'")
         if "title" in params and not isinstance(params["title"], str):
             problems.append(f"title must be a string, got {params['title']!r}")
+        if "sections" in params:
+            problems.extend(section_problems(params["sections"]))
         return problems
 
     def validate_inputs(self, inputs):
@@ -130,7 +136,8 @@ class EvaluationReport(Node):
         """
         run_dir = getattr(ctx, "run_dir", None)
         log = EventLog(fill_provenance(inputs["events"], run_dir))
-        report = BacktestReport(log, title=self.params.get("title"))
+        report = BacktestReport(log, chosen_sections(self.params.get("sections")),
+                                title=self.params.get("title"))
         out_dir = os.path.expanduser(self.params["out_dir"])
         if not os.path.isabs(out_dir):
             out_dir = os.path.join(run_dir, out_dir)
