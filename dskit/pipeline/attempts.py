@@ -65,6 +65,7 @@ __all__ = [
     "implied_trials",
     "max_bar",
     "merge_session_totals",
+    "session_flip_nulls",
     "session_totals",
     "tier2_plan",
     "tier2_verdict",
@@ -780,6 +781,90 @@ def _stepdown(np, replicates, order, observed, alpha, n_boot):
     return adjusted
 
 
+def _session_flip_family(np, cells, n_boot, seed, chunk):
+    """Validate a family, then draw its shared session-flip replicates.
+
+    The one home of the resample :func:`max_bar` and
+    :func:`session_flip_nulls` both read: ``(sessions, columns, order,
+    replicates)``, where ``order`` is the sorted cells with a defined
+    statistic and ``replicates[:, j]`` is cell ``order[j]``'s draws.
+    """
+    if not isinstance(cells, dict) or not cells:
+        raise ValueError("cells must be a non-empty mapping of cell -> totals")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 100:
+        raise ValueError(f"n_boot must be an int >= 100, got {n_boot!r}")
+    if isinstance(chunk, bool) or not isinstance(chunk, int) or chunk < 1:
+        raise ValueError(f"chunk must be an int >= 1, got {chunk!r}")
+    sessions = sorted({s for totals in cells.values() for s in totals})
+    if not sessions:
+        raise ValueError("no cell carried a single session — nothing to resample")
+    columns = _cell_columns(cells, sessions)
+    order = [name for name in sorted(columns) if columns[name]["t"] is not None]
+    if not order:
+        raise ValueError(
+            "every cell's gaps are constant across sessions — no studentised "
+            "statistic exists, so no bar can be built"
+        )
+    replicates = _replicate_matrix(
+        np, columns, order, len(sessions), n_boot, seed, chunk
+    )
+    return sessions, columns, order, replicates
+
+
+def session_flip_nulls(cells, n_boot, seed=0, chunk=500):
+    """Hand back each cell's observed t beside its session-flip null draws.
+
+    Exactly the draws :func:`max_bar` takes its maximum over — the same
+    shared per-session coins, seed and chunking — kept per cell instead
+    of discarded, so a per-signal false-discovery estimate
+    (:class:`dskit.pipeline.false_signal.SignalEvidence`) can read them.
+
+    Parameters
+    ----------
+    cells : mapping
+        ``{cell_id: {session: (sum, count)}}``, as for :func:`max_bar`.
+    n_boot : int
+        Replicates, ``>= 100``.
+    seed : int
+        Seeds the coin draws.
+    chunk : int
+        Replicates drawn per matrix product, ``>= 1``.
+
+    Returns
+    -------
+    dict
+        ``{cell_id: (t_observed, null_draws)}`` with ``null_draws`` a
+        tuple of ``n_boot`` floats, for every cell whose statistic is
+        defined; a cell with fewer than two rows or no variance across
+        sessions is absent (it takes no part in :func:`max_bar` either).
+
+    Raises
+    ------
+    ValueError
+        On an empty family, a bad ``n_boot`` or ``chunk``, or no cell with
+        a defined statistic.
+    ImportError
+        When numpy is not installed.
+
+    Examples
+    --------
+    One cell's statistic and its 200 null draws::
+
+        t_obs, draws = session_flip_nulls(
+            {"a": {0: (1.0, 1), 1: (3.0, 1)}}, n_boot=200
+        )["a"]
+        len(draws)  # 200
+    """
+    np = _require_numpy()
+    _sessions, columns, order, replicates = _session_flip_family(
+        np, cells, n_boot, seed, chunk
+    )
+    return {
+        name: (columns[name]["t"], tuple(replicates[:, j].tolist()))
+        for j, name in enumerate(order)
+    }
+
+
 def max_bar(
     cells,
     n_boot=10000,
@@ -867,30 +952,14 @@ def max_bar(
         bar["pass_mark"] >= 3.0  # True
     """
     np = _require_numpy()
-    if not isinstance(cells, dict) or not cells:
-        raise ValueError("cells must be a non-empty mapping of cell -> totals")
-    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 100:
-        raise ValueError(f"n_boot must be an int >= 100, got {n_boot!r}")
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must lie in (0, 1), got {alpha!r}")
     if not number_ok(floor_t):
         raise ValueError(f"floor_t must be a finite number, got {floor_t!r}")
-    if isinstance(chunk, bool) or not isinstance(chunk, int) or chunk < 1:
-        raise ValueError(f"chunk must be an int >= 1, got {chunk!r}")
-    sessions = sorted({s for totals in cells.values() for s in totals})
-    if not sessions:
-        raise ValueError("no cell carried a single session — nothing to resample")
-    columns = _cell_columns(cells, sessions)
-    order = [name for name in sorted(columns) if columns[name]["t"] is not None]
-    if not order:
-        raise ValueError(
-            "every cell's gaps are constant across sessions — no studentised "
-            "statistic exists, so no bar can be built"
-        )
-    observed = [columns[name]["t"] for name in order]
-    replicates = _replicate_matrix(
-        np, columns, order, len(sessions), n_boot, seed, chunk
+    sessions, columns, order, replicates = _session_flip_family(
+        np, cells, n_boot, seed, chunk
     )
+    observed = [columns[name]["t"] for name in order]
     c_star = float(np.quantile(replicates.max(axis=1), 1.0 - alpha))
     adjusted = _stepdown(np, replicates, order, observed, alpha, n_boot)
     rows = [
