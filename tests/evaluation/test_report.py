@@ -58,7 +58,9 @@ def test_the_html_has_every_section_and_the_why_tooltips(report):
     for section in DEFAULT_SECTIONS:
         assert f'id="{section.anchor}"' in page
     assert "ENTRY buy 10 @ 100.05" in page and "EXIT sell 4 @ 101" in page
-    assert "reason edge_above_threshold; forecast 0.002 rank 1/2; edge 0.0015; thr 0.0005" in page
+    # no declared units: scores at three significant figures, signed edges
+    assert ("reason edge_above_threshold; forecast 0.00200 rank 1/2; edge +0.00150; "
+            "thr 0.000500") in page
     assert "REFUSAL: max_exposure" in page
     # the skip names no instrument and no chosen name: said, not silently dropped
     assert "1 refusal/skip event(s) name no instrument" in page

@@ -1462,7 +1462,11 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
     report = pipe["report"]
     assert report["uses"] == "dskit.evaluation.nodes:EvaluationReport"
     assert report["inputs"] == {"events": "$events.events"}
-    assert report["params"]["out_dir"].startswith("pipeline_runs/")
+    # A relative out_dir resolves against the run directory (ADR-0183
+    # amendment): "report" lands at pipeline_runs/<run>/report/, never a
+    # nested pipeline_runs/ inside the run.
+    assert report["params"]["out_dir"] == "report"
+    assert events["params"]["units"] == {"score": "log_return", "money": "USD"}
     document = load_document(_path("run-replay-report.json"))
     assert document.hash
     if importlib.util.find_spec("dskit.evaluation.nodes") is None:

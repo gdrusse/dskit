@@ -21,11 +21,19 @@ spikes survive and a week of one-minute marks costs a few thousand
 points, not tens of thousands. The time axis formats ticks in the run's
 zone through :class:`~dskit.evaluation.events.LocalTime`.
 
+Market-closed time is not drawn. By default a timed chart uses a
+:class:`SessionScale`: gaps between observations longer than a threshold
+(declared, or :func:`auto_gap_ms`) collapse to a thin break line with the
+next session's date under it, series paths lift the pen across every
+break, and ticks read as session dates plus intraday clock times -- so an
+overnight or a weekend never shows as a straight line through nothing.
+
 Import cost: stdlib only.
 """
 
 from __future__ import annotations
 
+import bisect
 import html
 import math
 from abc import ABC, abstractmethod
@@ -41,8 +49,10 @@ __all__ = [
     "Marker",
     "MarkerLayer",
     "Series",
+    "SessionScale",
     "StepChart",
     "TimeScale",
+    "auto_gap_ms",
     "XYChart",
     "downsample",
 ]
@@ -71,6 +81,9 @@ svg.chart .axis { stroke: var(--ev-muted); stroke-width: 1; }
 svg.chart .grid { stroke: var(--ev-grid); stroke-width: 1; }
 svg.chart .zero { stroke: var(--ev-muted); stroke-width: 1; }
 svg.chart .boundary { stroke: var(--ev-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+svg.chart .break { stroke: var(--ev-muted); stroke-width: 1.5; }
+svg.chart text.session { fill: var(--ev-fg); font-weight: 600; }
+svg.chart text.mklabel { font-size: 10px; fill: var(--ev-muted); }
 svg.chart .line { fill: none; stroke-width: 1.5; }
 svg.chart .s0 { stroke: var(--ev-s0); } svg.chart .s1 { stroke: var(--ev-s1); }
 svg.chart .s2 { stroke: var(--ev-s2); } svg.chart .s3 { stroke: var(--ev-s3); }
@@ -101,7 +114,14 @@ _TIME_STEPS = (
 DEFAULT_WIDTH, DEFAULT_HEIGHT = 900, 260
 
 #: Plot-area margins: top, right, bottom, left.
-_MARGIN = (30, 18, 38, 70)
+_MARGIN = (30, 18, 46, 70)
+
+#: The auto gap threshold's floor, and its multiple of the median step.
+_GAP_FLOOR_MS = 30 * _MINUTE_MS
+_GAP_STEPS = 20
+
+#: The fewest pixels between two intraday tick labels.
+_TICK_PX = 56
 
 
 def _esc(text):
@@ -119,6 +139,29 @@ def _number_label(value):
     if magnitude and magnitude < 1e-3:
         return f"{value:.2e}"
     return f"{value:.4g}"
+
+
+def auto_gap_ms(xs):
+    """Return the gap above which a time axis breaks: 20 median steps, at least 30 minutes.
+
+    Parameters
+    ----------
+    xs : sequence of int
+        Epoch ms, sorted.
+
+    Returns
+    -------
+    int
+
+    Examples
+    --------
+    ::
+
+        auto_gap_ms([0, 60_000, 120_000])  # 1800000 (the 30-minute floor)
+    """
+    steps = sorted(b - a for a, b in zip(xs, xs[1:]) if b > a)
+    median = steps[len(steps) // 2] if steps else 0
+    return max(_GAP_FLOOR_MS, _GAP_STEPS * median)
 
 
 def downsample(points, buckets):
@@ -229,6 +272,14 @@ class LinearScale:
         """Return the tick label of ``value``."""
         return _number_label(value)
 
+    def segment_of(self, value):
+        """Return the index of the contiguous segment holding ``value``; one here."""
+        return 0
+
+    def breaks(self):
+        """Return ``[(pixel_x, label)]`` per session start; none on a linear scale."""
+        return []
+
 
 class TimeScale(LinearScale):
     """A linear scale over epoch ms whose ticks sit on local clock boundaries.
@@ -282,6 +333,104 @@ class TimeScale(LinearScale):
         return self.local.label(value, "%H:%M")
 
 
+class SessionScale(TimeScale):
+    """A time scale that collapses gaps longer than ``gap_ms`` (market-closed time).
+
+    The observed instants split into sessions wherever two neighbours are
+    more than ``gap_ms`` apart. Each session gets pixels in proportion to
+    its duration; each gap gets :attr:`GAP_PX`. An instant inside a gap
+    maps to the end of the session before it. Ticks are clock times inside
+    each session; :meth:`breaks` gives each session's start pixel and date
+    for the break line and the date label.
+
+    Parameters
+    ----------
+    xs : sequence of int
+        Every instant the chart will place, any order.
+    start, stop : float
+        Pixel range.
+    local : LocalTime
+    gap_ms : int or None
+        The break threshold; None uses :func:`auto_gap_ms`.
+
+    Examples
+    --------
+    ::
+
+        day = 86_400_000
+        scale = SessionScale([0, 60_000, day, day + 60_000], 0.0, 100.0, LocalTime("UTC"))
+        len(scale.sessions)  # 2
+    """
+
+    #: Pixels a collapsed gap occupies.
+    GAP_PX = 10
+
+    def __init__(self, xs, start, stop, local, gap_ms=None):
+        values = sorted({int(x) for x in xs})
+        super().__init__(values[0], values[-1], start, stop, local)
+        self.gap_ms = auto_gap_ms(values) if gap_ms is None else gap_ms
+        sessions, first = [], values[0]
+        for before, after in zip(values, values[1:]):
+            if after - before > self.gap_ms:
+                sessions.append((first, before))
+                first = after
+        sessions.append((first, values[-1]))
+        total = sum(hi - lo for lo, hi in sessions)
+        floor = max(total // 100, _MINUTE_MS)
+        spans = [max(hi - lo, floor) for lo, hi in sessions]
+        usable = (stop - start) - self.GAP_PX * (len(sessions) - 1)
+        per_ms = usable / sum(spans)
+        self.sessions, pixel = [], start
+        for (lo, hi), span in zip(sessions, spans):
+            self.sessions.append((lo, hi, span, pixel, pixel + span * per_ms))
+            pixel += span * per_ms + self.GAP_PX
+        self.per_ms = per_ms
+        self._starts = [session[0] for session in self.sessions]
+
+    def segment_of(self, value):
+        """Return the index of the session holding ``value`` (or the one before its gap)."""
+        return max(0, bisect.bisect_right(self._starts, value) - 1)
+
+    def __call__(self, value):
+        """Return the pixel position of ``value``."""
+        lo, hi, span, left, right = self.sessions[self.segment_of(value)]
+        clamped = min(max(value, lo), hi)
+        return left + (clamped - lo) / span * (right - left)
+
+    def ticks(self, count=6):
+        """Return clock-aligned instants inside each session, at least ``_TICK_PX`` apart.
+
+        Parameters
+        ----------
+        count : int
+            Ignored; spacing is set by pixels, not by a count.
+
+        Returns
+        -------
+        list of int
+        """
+        self.step = next((s for s in _TIME_STEPS if s * self.per_ms >= _TICK_PX),
+                         _TIME_STEPS[-1])
+        if self.step >= _DAY_MS:
+            return []
+        out = []
+        for lo, hi, _span, left, _right in self.sessions:
+            offset = self.local.offset_ms(lo)
+            first = math.ceil((lo + offset) / self.step) * self.step - offset
+            out.extend(t for t in range(int(first), int(hi) + 1, self.step)
+                       if self(t) - left >= _TICK_PX / 2)
+        return out
+
+    def label(self, value):
+        """Return ``value`` as local ``HH:MM`` (the date rides on the session label)."""
+        return self.local.label(value, "%H:%M")
+
+    def breaks(self):
+        """Return ``[(pixel_x, "Mon 10-13")]`` for every session, the first included."""
+        return [(left, self.local.label(lo, "%a %m-%d"))
+                for lo, _hi, _span, left, _right in self.sessions]
+
+
 # ---------------------------------------------------------------------------
 # Data carriers
 # ---------------------------------------------------------------------------
@@ -326,6 +475,8 @@ class Marker:
         The tooltip text.
     hollow : bool
         Draw the outline only.
+    label : str
+        Short text drawn beside the marker (a cash-flow amount); empty for none.
 
     Examples
     --------
@@ -340,6 +491,7 @@ class Marker:
     css: str
     title: str
     hollow: bool = False
+    label: str = ""
 
 
 class MarkerLayer:
@@ -382,6 +534,9 @@ class MarkerLayer:
             css = f"mk {marker.css}" + (" hollow" if marker.hollow else "")
             out.append(f'<path class="{css}" d="{self._shape(marker.shape, x, y)}">'
                        f"<title>{_esc(marker.title)}</title></path>")
+            if marker.label:
+                out.append(f'<text class="mklabel" x="{x + self.SIZE + 2:.1f}" '
+                           f'y="{y - self.SIZE:.1f}">{_esc(marker.label)}</text>')
         return out
 
     def _shape(self, shape, x, y):
@@ -465,9 +620,12 @@ class XYChart(Chart):
         Given, x is epoch ms rendered as local time; else plain numbers.
     y_label : str
     boundaries : sequence of float
-        x positions of dashed vertical lines (session changes).
+        x positions of dashed vertical lines (used on an uncompressed axis).
     zero_line : bool
         Draw y = 0 when it is in range.
+    gap_ms : int or None or False
+        Timed charts only: collapse gaps longer than this (None = auto,
+        :func:`auto_gap_ms`); ``False`` keeps the plain linear time axis.
 
     Examples
     --------
@@ -478,17 +636,18 @@ class XYChart(Chart):
         svg = chart.render()
     """
 
+    #: Pixels per downsampling bucket (four points kept per bucket).
+    BUCKET_PX = 2
+
     def __init__(self, title, series=(), layers=(), *, local=None, y_label="",
-                 boundaries=(), zero_line=False, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+                 boundaries=(), zero_line=False, gap_ms=None, width=DEFAULT_WIDTH,
+                 height=DEFAULT_HEIGHT):
         super().__init__(title, width, height)
-        buckets = int(self.x1 - self.x0)
         self.series = tuple(
-            Series(s.name, tuple(downsample([p for p in s.points if p[1] is not None], buckets)),
-                   s.css)
-            for s in series
+            Series(s.name, tuple(p for p in s.points if p[1] is not None), s.css) for s in series
         )
         self.layers, self.local, self.y_label = tuple(layers), local, y_label
-        self.boundaries, self.zero_line = tuple(boundaries), zero_line
+        self.boundaries, self.zero_line, self.gap_ms = tuple(boundaries), zero_line, gap_ms
 
     @abstractmethod
     def path(self, points, xs, ys):
@@ -519,10 +678,21 @@ class XYChart(Chart):
         if self.zero_line and ys.lo < 0 < ys.hi:
             parts.append(f'<line class="zero" x1="{self.x0}" x2="{self.x1}" '
                          f'y1="{ys(0):.1f}" y2="{ys(0):.1f}"/>')
+        buckets = max(1, int((self.x1 - self.x0) / self.BUCKET_PX))
         for s in self.series:
-            if s.points:
-                parts.append(f'<path class="line {s.css}" d="{self.path(s.points, xs, ys)}">'
-                             f"<title>{_esc(s.name)}</title></path>")
+            if not s.points:
+                continue
+            # Thin in PIXEL space, so a collapsed gap costs no buckets.
+            thin = [(x, y) for _px, y, x in
+                    downsample([(xs(x), y, x) for x, y in s.points], buckets)]
+            runs = [[]]
+            for point in thin:
+                if runs[-1] and xs.segment_of(point[0]) != xs.segment_of(runs[-1][-1][0]):
+                    runs.append([])
+                runs[-1].append(point)
+            d = "".join(self.path(run, xs, ys) for run in runs)
+            parts.append(f'<path class="line {s.css}" d="{d}">'
+                         f"<title>{_esc(s.name)}</title></path>")
         for layer in self.layers:
             parts.extend(layer.render(xs, ys))
         parts.extend(self._legend())
@@ -533,6 +703,10 @@ class XYChart(Chart):
         lo, hi = min(ys_all), max(ys_all)
         pad = (hi - lo) * 0.05
         ys = LinearScale(lo - pad, hi + pad, self.y1, self.y0)
+        if self.local is not None and self.gap_ms is not False:
+            scale = SessionScale(xs_all, self.x0, self.x1, self.local, self.gap_ms)
+            if len(scale.sessions) > 1:
+                return scale, ys
         if self.local is not None:
             return TimeScale(min(xs_all), max(xs_all), self.x0, self.x1, self.local), ys
         return LinearScale(min(xs_all), max(xs_all), self.x0, self.x1), ys
@@ -552,11 +726,20 @@ class XYChart(Chart):
                          f'y1="{self.y0}" y2="{self.y1}"/>')
             parts.append(f'<text class="muted" x="{x:.1f}" y="{self.y1 + 14}" '
                          f'text-anchor="middle">{_esc(xs.label(value))}</text>')
+        for index, (x, text) in enumerate(xs.breaks()):
+            if index:
+                gap = x - SessionScale.GAP_PX / 2
+                parts.append(f'<line class="break" x1="{gap:.1f}" x2="{gap:.1f}" '
+                             f'y1="{self.y0}" y2="{self.y1 + 4}"/>')
+            parts.append(f'<text class="session" x="{x:.1f}" y="{self.y1 + 27}">'
+                         f"{_esc(text)}</text>")
         parts.append(f'<line class="axis" x1="{self.x0}" x2="{self.x0}" '
                      f'y1="{self.y0}" y2="{self.y1}"/>')
         parts.append(f'<line class="axis" x1="{self.x0}" x2="{self.x1}" '
                      f'y1="{self.y1}" y2="{self.y1}"/>')
         caption = f"time ({self.local.tz})" if self.local is not None else ""
+        if xs.breaks():
+            caption += "; market-closed gaps collapsed at the breaks"
         parts.append(f'<text class="muted" x="{self.x1}" y="{self.height - 4}" '
                      f'text-anchor="end">{_esc(caption)}</text>')
         if self.y_label:
@@ -564,7 +747,9 @@ class XYChart(Chart):
         return parts
 
     def _boundaries(self, xs):
-        """Dashed vertical lines at the declared x positions inside the domain."""
+        """Dashed vertical lines at the declared x positions; a session axis draws breaks instead."""
+        if xs.breaks():
+            return []
         return [
             f'<line class="boundary" x1="{xs(b):.1f}" x2="{xs(b):.1f}" '
             f'y1="{self.y0}" y2="{self.y1}"/>'

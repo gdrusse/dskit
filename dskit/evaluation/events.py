@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dskit.evaluation.criteria import Criterion
+from dskit.evaluation.units import SCORE_UNITS
 from dskit.pipeline.node import atomic_write
 from dskit.pipeline.records import number_ok
 from dskit.production.base import canonical_bytes
@@ -61,7 +62,10 @@ __all__ = [
     "Solve",
 ]
 
-#: The schema tag every v1 event carries; a new field moves it.
+#: The schema tag every v1 event carries. A new REQUIRED field or a changed
+#: meaning moves it; an optional additive field (``run_start.units``,
+#: ``run_start.sources`` — ADR-0183 amendment) does not, so every older v1
+#: log still reads.
 SCHEMA = "dskit-eval-v1"
 
 #: A decision's closed action set.
@@ -388,12 +392,31 @@ class RunStart(Event):
         _mapping("env", required=False),
         _sequence("criteria", required=False),
         _count("trials", 1, required=False),
+        _mapping("units", required=False),
+        _mapping("sources", required=False),
     )
+
+    #: The keys ``units`` may declare.
+    UNIT_KEYS = ("score", "money")
 
     @classmethod
     def extra_problems(cls, obj, where):
-        """Refuse an unknown zone and any malformed criterion."""
+        """Refuse an unknown zone, malformed criteria, units or sources."""
         problems = []
+        units = obj.get("units", {})
+        unknown = sorted(set(units) - set(cls.UNIT_KEYS))
+        if unknown:
+            problems.append(f"{where}.units: unknown key(s) {unknown} — allowed: "
+                            f"{list(cls.UNIT_KEYS)}")
+        if "score" in units and units["score"] not in SCORE_UNITS:
+            problems.append(f"{where}.units.score must be one of {sorted(SCORE_UNITS)}, "
+                            f"got {units['score']!r}")
+        if "money" in units and not (isinstance(units["money"], str) and units["money"]):
+            problems.append(f"{where}.units.money must be a currency code, "
+                            f"got {units['money']!r}")
+        bad = sorted(k for k, v in obj.get("sources", {}).items() if not isinstance(v, str))
+        if bad:
+            problems.append(f"{where}.sources values must be strings; not for {bad}")
         try:
             ZoneInfo(obj["tz"])
         except (ZoneInfoNotFoundError, ValueError):
@@ -1303,6 +1326,30 @@ class EventLog:
         Census
         """
         return Census(self._events, self.links)
+
+    def span(self, *kinds):
+        """Return the first and last instant of the given kinds, or None when there are none.
+
+        Parameters
+        ----------
+        *kinds : str
+            Event kinds; none means every event but ``run_start`` / ``run_end``.
+
+        Returns
+        -------
+        tuple of (int, int) or None
+
+        Examples
+        --------
+        ::
+
+            log.span("decision")  # the decision window, (first_ms, last_ms)
+        """
+        if kinds:
+            stamps = [e.ts_ms for e in self._events if e.kind in kinds]
+        else:
+            stamps = [e.ts_ms for e in self._events if e.kind not in ("run_start", "run_end")]
+        return (min(stamps), max(stamps)) if stamps else None
 
     def instruments(self):
         """Return every instrument the log names, sorted.

@@ -52,6 +52,11 @@ TOP_SCORE = "top_score"
 NOT_SUBMITTED = "not_submitted"
 
 _MARK_MODES = ("traded", "all")
+
+#: The replay's display units: ``PortfolioSelect`` scores are the model's
+#: forecast of ``y_next``, the next bar's LOG return (``ReturnWindows.
+#: return_kind``), and the account is in US dollars.
+DEFAULT_UNITS = {"score": "log_return", "money": "USD"}
 _RESOLVED_FILE = "resolved.json"
 
 
@@ -81,7 +86,8 @@ class ReplayEvents(Node):
         were chosen or filled; ``all``: every bar). Optional: ``criteria``
         (list of pre-registered criterion objects, ADR-0183),
         ``trials`` (int >= 1, configurations tried), ``model`` (label
-        stamped on each decision).
+        stamped on each decision), ``units`` (``run_start.units``,
+        default :data:`DEFAULT_UNITS`).
 
     Examples
     --------
@@ -98,7 +104,7 @@ class ReplayEvents(Node):
     role = "transform"
     outputs = ("events",)
     _PARAMS = ("title", "project", "tz", "price_field", "mark_symbols")
-    _OPTIONAL = ("criteria", "trials", "model")
+    _OPTIONAL = ("criteria", "trials", "model", "units")
     _LISTS = ("candidates", "fills", "refused", "skipped", "cash_flows", "bars")
 
     @classmethod
@@ -144,6 +150,9 @@ class ReplayEvents(Node):
         model = params.get("model", "")
         if not isinstance(model, str):
             problems.append(f"model must be a string, got {model!r}")
+        units = params.get("units", DEFAULT_UNITS)
+        if not isinstance(units, dict) or not all(isinstance(v, str) for v in units.values()):
+            problems.append(f"units must be an object of strings, got {units!r}")
         return problems
 
     def validate_inputs(self, inputs):
@@ -403,6 +412,7 @@ class ReplayEvents(Node):
             "tz": params["tz"],
             "criteria": list(params.get("criteria", [])),
             "trials": params.get("trials", 1),
+            "units": dict(params.get("units", DEFAULT_UNITS)),
         }
         run_dir = getattr(ctx, "run_dir", None)
         if run_dir:

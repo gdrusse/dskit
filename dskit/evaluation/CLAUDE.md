@@ -25,8 +25,15 @@ package. Importing it registers nothing; the node is used by dotted path.
   `pipeline.runs.render_cell`; runtime capture is
   `production.release.RuntimeFingerprint`.
 - **Default-deny events.** A kind declares its `FIELDS`; anything else is
-  refused with every problem listed. A new field is a schema change
-  (`SCHEMA`).
+  refused with every problem listed. A new REQUIRED field or a changed
+  meaning is a schema change (`SCHEMA`); an optional additive field
+  (`run_start.units`, `run_start.sources`) is not.
+- **Numbers display through `units.py`.** Money, counts, ratios, percents
+  and declared score units have one formatter each; the CSVs stay raw.
+- **Market-closed time is not drawn.** Timed charts default to
+  `svg.SessionScale`; pass `gap_ms=False` only for a truly continuous axis.
+- **The narrative is rules, not prose generation.** Add a sentence as a
+  new `Narrative._rule` over numbers the report already shows.
 - **No look-ahead in a render.** A section showing a decision never reads
   an `outcome` event.
 - **Nothing silently dropped.** The census reports unaccounted decisions
@@ -54,8 +61,11 @@ dskit/evaluation/
 ├── book.py        EvaluationBook (WindowBook adapter, FIFO trips, days, TWR)
 ├── statistics.py  StatisticsTable over STAT_NAMES
 ├── criteria.py    Criterion / Verdict / Scorecard
-├── svg.py         stdlib SVG charts + CHART_CSS + downsample
-├── sections.py    Section ABC + the eight default sections
+├── units.py       money / count / ratio / percent / declared score units
+├── narrative.py   Narrative ("What happened" by explicit rules) + HOW_TO_READ
+├── provenance.py  git_revision, fill_provenance
+├── svg.py         stdlib SVG charts + SessionScale + CHART_CSS + downsample
+├── sections.py    Section ABC + the nine default sections
 ├── report.py      BacktestReport -> events.jsonl, summary.md, report.html, CSVs
 ├── nodes.py       EvaluationReport pipeline node
 ├── README.md

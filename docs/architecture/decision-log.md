@@ -22795,3 +22795,54 @@ ridge fit), exempted narrowly in `test_configs.py` (development replay,
 criteria: `net_pnl > 0`, `trade_t >= 2`, `daily_sharpe > 0` (min_n 20 days —
 INCONCLUSIVE on a 4-session run by design). Child review (Sonnet): 0
 Critical; the only Major was this missing amendment.
+
+**Amendment (2026-09-24, readability after the first real report).** The
+first real run (`intraday-equities-replay-report`, 1,290 trips, 2.1 MB
+`report.html` the browser struggled with) printed forecasts as
+`1.82016e-07`, drew lines across closed markets, led with a deposit-inflated
+equity curve and left provenance blank. Changes, all generic in
+`dskit/evaluation/` (the child stays a mapper): (1) `narrative.py` — a
+rule-written "What happened" paragraph (activity and both windows; gross,
+fees, net and cost multiple; the biggest driver; mean chosen forecast vs
+round-trip fee in bp when scores are returns; hit rate and win/loss sizes;
+best/worst instrument; drawdown; external cash never profit; refusals by
+reason; census; verdict per failed/inconclusive criterion) plus a fixed
+"How to read" note, first in `summary.md` and `report.html`
+(`OverviewSection`); (2) `units.py` — one formatter each for money (2dp,
+currency sign, separators, half-up from the written decimal), counts,
+ratios (3 s.f., no e-notation), percents and declared score units;
+`run_start.units` = `{score: return|log_return|bp|prob|usd|z|raw, money:
+<ISO>}` is an optional ADDITIVE v1 field (the `SCHEMA` comment now says only
+a required field or changed meaning bumps the tag); returns render in bp in
+tooltips, tables and the decision log, while `decisions.csv` keeps raw
+values plus `score_unit` and a new `trip_pnl`; (3) `svg.SessionScale` —
+gaps longer than `gap_ms` (default `auto_gap_ms`: 20 median steps, floor 30
+min) collapse to a 10 px break line with the next session's date, paths
+lift the pen at every break, ticks are intraday clock times; default for
+every timed chart (`gap_ms=False` opts out); (4) `EquitySection` leads
+with trading P&L net and gross (external flows excluded), then drawdown,
+then account equity with each cash flow marked and labelled (amount,
+rule); (5) `provenance.py` — `fill_provenance`, called by the
+`EvaluationReport` node, fills only a missing `code` (`git_revision`: `git
+rev-parse HEAD` + `status --porcelain` in the run directory's repository,
+None when absent), `env` (`RunStart.capture_env` -> `RuntimeFingerprint`)
+and `run_end.wall_s` (now minus `config.json` mtime) and names each source
+in the additive `run_start.sources`; the only other git call
+(`libs/kronos.py`) verifies a pin and raises, so it was not reusable; the
+CLI re-render does not fill (it cannot know the run's commit); (6) the card
+shows the decision window and the data window with session counts
+(`EventLog.span`); (7) a relative `out_dir` resolves against the run
+directory and one starting `pipeline_runs` is refused; the child config now
+says `"report"`; (8) trades-on-price draws only instrument-days with a fill
+or rejection, groups panels per instrument in `<details>` (first open) and
+thins each panel to `max_markers` (40) fills — open fills and the 6
+largest wins and losses always kept, the rest evenly spaced, every
+refusal/skip drawn — and says how many it cut; series thin at 2 px per
+bucket; (9) the decision log leads with a by-(action, reason) summary
+(count, names, mean forecast, trip P&L) and the most consequential
+decisions (largest losing/winning entries, an even sample of refusals),
+then the full log as a light table in `<details>`. The child's
+`ReplayEvents` declares `units` (default `{score: log_return, money:
+USD}`: its scores forecast `y_next`, a log return). Re-rendering the real
+run's `events.jsonl`: 2,129,885 -> 817,527 bytes (824,096 with units
+declared), ~1.2 s.

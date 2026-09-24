@@ -9,8 +9,9 @@ hands it to each :class:`~dskit.evaluation.sections.Section`, and writes:
     The log, canonical and re-readable — the source of truth travels with
     the report.
 ``summary.md``
-    The card, verdict, statistics, census, provenance and top refusal
-    reasons, for a terminal or a PR.
+    The plain-English "What happened" paragraph and reader's note, then
+    the card, verdict, statistics, census, top refusal reasons and
+    provenance, for a terminal or a PR.
 ``report.html``
     Every section, one self-contained file: inline CSS and SVG, no
     script, no URL of any kind.
@@ -31,6 +32,7 @@ from dskit.evaluation.book import EvaluationBook, RoundTrip
 from dskit.evaluation.criteria import Scorecard
 from dskit.evaluation.sections import (
     DECISION_COLUMNS,
+    DEFAULT_MAX_MARKERS,
     DEFAULT_MAX_PANELS,
     DEFAULT_SECTIONS,
     DecisionLogSection,
@@ -40,6 +42,7 @@ from dskit.evaluation.statistics import DEFAULT_MIN_N, StatisticsTable
 from dskit.evaluation.svg import CHART_CSS
 from dskit.pipeline.kinds_report import csv_text
 from dskit.pipeline.node import atomic_write
+from dskit.pipeline.runs import render_cell
 
 __all__ = ["FILENAMES", "KEY_STATS", "PAGE_CSS", "BacktestReport"]
 
@@ -74,6 +77,10 @@ th { position: sticky; top: 0; background: var(--ev-bg); }
 .verdict { font-size: 16px; padding: 6px 10px; border-left: 4px solid var(--ev-muted); }
 .v-pass { border-color: var(--ev-win); } .v-fail { border-color: var(--ev-loss); }
 .v-inconclusive { border-color: var(--ev-rej); }
+p.story { font-size: 15px; line-height: 1.55; max-width: 860px; }
+table.stats td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+table.log { font-size: 12px; } table.log td { white-space: nowrap; padding: 1px 6px; }
+h4 { font-size: 13.5px; margin: 14px 0 4px; }
 ul.problems { color: var(--ev-loss); }
 details summary { cursor: pointer; margin: 8px 0; }
 pre { overflow-x: auto; font-size: 12px; }
@@ -95,6 +102,8 @@ class BacktestReport:
         The "insufficient n" floor for sample-dependent statistics.
     max_panels : int
         The trades-on-price panel cap.
+    max_markers : int
+        The fill-marker cap per trades-on-price panel.
 
     Raises
     ------
@@ -112,7 +121,7 @@ class BacktestReport:
     """
 
     def __init__(self, log, sections=None, *, title=None, min_n=DEFAULT_MIN_N,
-                 max_panels=DEFAULT_MAX_PANELS):
+                 max_panels=DEFAULT_MAX_PANELS, max_markers=DEFAULT_MAX_MARKERS):
         self.log = log
         chosen = DEFAULT_SECTIONS if sections is None else sections
         self.sections = tuple(s() if isinstance(s, type) else s for s in chosen)
@@ -127,6 +136,7 @@ class BacktestReport:
             scorecard=Scorecard(start.criteria, table),
             census=log.census(),
             max_panels=max_panels,
+            max_markers=max_markers,
         )
 
     def html(self):
@@ -148,13 +158,13 @@ class BacktestReport:
         )
 
     def summary_markdown(self):
-        """Return ``summary.md``: every section's markdown lines, in order.
+        """Return ``summary.md``: the title, then every section's markdown lines, in order.
 
         Returns
         -------
         str
         """
-        lines = []
+        lines = [f"# {render_cell(self.context.title)}", ""]
         for section in self.sections:
             lines.extend(section.markdown(self.context))
         return "\n".join(lines).rstrip() + "\n"

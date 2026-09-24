@@ -3,19 +3,22 @@
 A :class:`Section` renders its HTML body from a :class:`ReportContext` (the
 log, the book, the statistics table, the scorecard and the census, built
 once) and may contribute lines to ``summary.md``. The default order is the
-research spec's reading order (ADR-0183 item 7): the summary card and
-verdict first, then equity, trades on price, the decision log, cash and
-exposure, distributions, per-day stability, and provenance last.
+reader's: what happened in plain words first, then the card and verdict,
+trading P&L, trades on price, the decision log, cash and exposure,
+distributions, per-day stability, and provenance last.
 
 Two rules every section keeps. **No look-ahead in the render**: a section
 that shows a decision reads only what the decision, its orders and its
 fills recorded — never an ``outcome`` event. **Nothing is silently
-dropped**: where a render is capped (trade panels), the section says how
-many were cut and where the full record lives (``trades.csv``,
-``decisions.csv``, ``events.jsonl``).
+dropped**: where a render is thinned or capped (markers, panels, the
+decision sample), the section says how many were cut and where the full
+record lives (``trades.csv``, ``decisions.csv``, ``events.jsonl``).
 
-HTML is escaped with ``html.escape``; markdown cells go through
-:func:`dskit.pipeline.runs.render_cell`, the one owner of the pipe rule.
+Numbers display through :mod:`dskit.evaluation.units` — money with its
+sign and separators, scores in the run's declared unit — while the CSVs
+keep every raw value. HTML is escaped with ``html.escape``; markdown cells
+go through :func:`dskit.pipeline.runs.render_cell`, the one owner of the
+pipe rule.
 
 Import cost: stdlib plus ``dskit.pipeline`` and ``dskit.production``.
 """
@@ -29,6 +32,7 @@ from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
+from dskit.evaluation.narrative import HOW_TO_READ, Narrative
 from dskit.evaluation.svg import (
     BarChart,
     Histogram,
@@ -38,16 +42,20 @@ from dskit.evaluation.svg import (
     Series,
     StepChart,
 )
+from dskit.evaluation.units import DASH, Units, count, percent, ratio, sig
 from dskit.pipeline.runs import render_cell
 
 __all__ = [
+    "DEFAULT_MAX_MARKERS",
     "DEFAULT_MAX_PANELS",
     "DEFAULT_SECTIONS",
     "DECISION_COLUMNS",
+    "STAT_FORMATS",
     "CashSection",
     "DecisionLogSection",
     "DistributionSection",
     "EquitySection",
+    "OverviewSection",
     "PeriodSection",
     "ProvenanceSection",
     "ReportContext",
@@ -59,18 +67,38 @@ __all__ = [
 #: The most trades-on-price panels a report draws; the rest are named.
 DEFAULT_MAX_PANELS = 24
 
+#: The most fill markers one trades-on-price panel draws (refusals and
+#: skips are never thinned; see :meth:`TradesOnPriceSection.thin`).
+DEFAULT_MAX_MARKERS = 40
+
 #: How many reasons a "top reasons" table lists.
 _TOP_REASONS = 10
 
-#: The decision table's columns, in order (``decisions.csv`` too).
+#: How many decisions each "most consequential" list shows.
+_SAMPLE = 8
+
+#: The winners and losers per panel that thinning always keeps.
+_EXTREMES = 6
+
+#: The decision table's columns, in order (``decisions.csv`` too). Scores,
+#: edges and thresholds are RAW here; ``score_unit`` names their unit.
 DECISION_COLUMNS = (
     "time", "ts_ms", "decision_id", "candidates", "chosen", "chosen_score", "chosen_rank",
-    "runner_up", "runner_up_score", "threshold", "edge", "action", "reason", "detail",
-    "model", "orders", "ref_price", "fill_price", "filled_qty", "slippage_bp", "fees",
-    "rejections",
+    "runner_up", "runner_up_score", "threshold", "edge", "score_unit", "action", "reason",
+    "detail", "model", "orders", "ref_price", "fill_price", "filled_qty", "slippage_bp", "fees",
+    "trip_pnl", "rejections",
 )
 
-_DASH = "—"
+#: How each statistic displays — a table, never a branch.
+STAT_FORMATS = {
+    **dict.fromkeys(("net_pnl", "gross_pnl", "fees", "max_drawdown", "avg_win", "avg_loss",
+                     "trade_mean", "trade_es95"), "money"),
+    **dict.fromkeys(("twr", "max_drawdown_pct", "hit_rate", "daily_mean_return", "fill_ratio",
+                     "refusal_rate", "skip_rate", "time_in_market"), "percent"),
+    **dict.fromkeys(("trades", "days", "decisions", "orders", "fills"), "count"),
+    **dict.fromkeys(("max_drawdown_minutes", "holding_median_minutes", "holding_p90_minutes"),
+                    "minutes"),
+}
 
 
 @dataclass(frozen=True)
@@ -87,6 +115,8 @@ class ReportContext:
     census : Census
     max_panels : int
         The trades-on-price panel cap.
+    max_markers : int
+        The fill-marker cap per trades-on-price panel.
 
     Examples
     --------
@@ -103,6 +133,7 @@ class ReportContext:
     scorecard: object
     census: object
     max_panels: int = DEFAULT_MAX_PANELS
+    max_markers: int = DEFAULT_MAX_MARKERS
 
     @property
     def local(self):
@@ -114,26 +145,66 @@ class ReportContext:
         """The log's id graph."""
         return self.log.links
 
+    @property
+    def units(self):
+        """The run's declared :class:`~dskit.evaluation.units.Units`."""
+        start = self.log.run_start
+        return Units(start.get("units") if start is not None else None)
+
+    def format(self, kind, value):
+        """Display ``value`` as ``kind`` (see :func:`display`)."""
+        return display(kind, value, self.units)
+
 
 # ---------------------------------------------------------------------------
 # Rendering helpers
 # ---------------------------------------------------------------------------
 
 
-def _display(value):
-    """Return a cell's HTML text before escaping: dashes for absence, grouped money."""
+def display(kind, value, units):
+    """Return ``value`` as display text of ``kind``, a dash for None.
+
+    Parameters
+    ----------
+    kind : str or None
+        ``money``, ``pnl`` (signed money), ``count``, ``ratio``,
+        ``percent``, ``minutes``, ``score``, ``edge`` (signed score),
+        ``bp``, ``text``; None picks by type.
+    value : object
+    units : Units
+
+    Returns
+    -------
+    str
+    """
     if value is None:
-        return _DASH
+        return DASH
     if isinstance(value, bool):
         return "yes" if value else "no"
+    formats = {
+        "money": lambda v: units.money(v),
+        "pnl": lambda v: units.money(v, signed=True),
+        "count": count,
+        "ratio": ratio,
+        "percent": percent,
+        "minutes": lambda v: f"{sig(v, 3)} min",
+        "score": lambda v: units.score(v),
+        "edge": lambda v: units.score(v, signed=True),
+        "bp": lambda v: f"{sig(v, 3)} bp",
+        "text": str,
+    }
+    if kind in formats and not isinstance(value, str):
+        return formats[kind](value)
+    if isinstance(value, int):
+        return count(value)
     if isinstance(value, float):
-        value = value + 0.0  # -0.0 reads as 0
-        return f"{value:,.2f}" if abs(value) >= 1e5 else f"{value:.6g}"
+        return ratio(value)
     return str(value)
 
 
-def _html_table(columns, rows, css=""):
-    """Render an escaped HTML table; numbers right-aligned."""
+def _html_table(columns, rows, css="", formats=None, units=None):
+    """Render an escaped HTML table; numbers right-aligned, formatted by column."""
+    formats, units = formats or {}, units or Units()
     head = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
     body = []
     for row in rows:
@@ -142,18 +213,20 @@ def _html_table(columns, rows, css=""):
             value = row.get(column)
             numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
             cells.append(f'<td{" class=num" if numeric else ""}>'
-                         f"{html.escape(_display(value))}</td>")
+                         f"{html.escape(display(formats.get(column), value, units))}</td>")
         body.append(f"<tr>{''.join(cells)}</tr>")
     klass = f' class="{css}"' if css else ""
     return (f"<div class=scroll><table{klass}><thead><tr>{head}</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table></div>")
 
 
-def _md_table(columns, rows):
-    """Render a markdown table, every cell through ``render_cell``."""
+def _md_table(columns, rows, formats=None, units=None):
+    """Render a markdown table, every cell formatted then passed through ``render_cell``."""
+    formats, units = formats or {}, units or Units()
     lines = ["| " + " | ".join(render_cell(c) for c in columns) + " |",
              "|" + "---|" * len(columns)]
-    lines += ["| " + " | ".join(render_cell(row.get(c)) for c in columns) + " |"
+    lines += ["| " + " | ".join(render_cell(display(formats.get(c), row.get(c), units))
+                                for c in columns) + " |"
               for row in rows]
     return lines
 
@@ -166,26 +239,59 @@ def _note(text):
 def _top_reasons(log, limit=_TOP_REASONS):
     """Count the commonest refusal/skip reasons: ``[{kind, reason, count}]``."""
     counts = Counter((e.kind, e.get("reason")) for e in log.of_kind("refusal", "skip"))
-    return [{"kind": kind, "reason": reason, "count": count}
-            for (kind, reason), count in counts.most_common(limit)]
+    return [{"kind": kind, "reason": reason, "count": n}
+            for (kind, reason), n in counts.most_common(limit)]
 
 
-def _why(decision):
+def _why(decision, units):
     """One-line account of a decision: reason, chosen forecast/rank, edge vs threshold."""
     if decision is None:
         return "no linked decision"
     parts = [f"reason {decision.get('reason')}"]
     row = decision.chosen_row()
     if row is not None:
-        parts.append(f"forecast {_display(row.get('score'))} rank "
-                     f"{_display(row.get('rank'))}/{len(decision.candidates)}")
+        parts.append(f"forecast {units.score(row.get('score'))} rank "
+                     f"{display(None, row.get('rank'), units)}/{len(decision.candidates)}")
     if decision.get("edge") is not None:
-        parts.append(f"edge {_display(decision.get('edge'))}")
+        parts.append(f"edge {units.score(decision.get('edge'), signed=True)}")
     if decision.get("threshold") is not None:
-        parts.append(f"thr {_display(decision.get('threshold'))}")
+        parts.append(f"thr {units.score(decision.get('threshold'))}")
     if decision.get("detail"):
         parts.append(decision.get("detail"))
     return "; ".join(parts)
+
+
+def _window(log, local, *kinds):
+    """``first → last (n sessions)`` for the given kinds, or a dash."""
+    span = log.span(*kinds)
+    if span is None:
+        return DASH
+    days = {local.day(e.ts_ms) for e in log.events
+            if (e.kind in kinds if kinds else e.kind not in ("run_start", "run_end"))}
+    return (f"{local.stamp(span[0])[:16]} → {local.stamp(span[1])[:16]} "
+            f"({len(days)} session{'s' if len(days) != 1 else ''})")
+
+
+def _trips_by_decision(book):
+    """``{decision_id: [RoundTrip]}`` for the trips each decision opened or closed."""
+    out = defaultdict(list)
+    for trip in book.round_trips:
+        if trip.entry_decision_id is not None:
+            out[trip.entry_decision_id].append(trip)
+        if trip.exit_decision_id is not None and trip.exit_decision_id != trip.entry_decision_id:
+            out[trip.exit_decision_id].append(trip)
+    return out
+
+
+def _even(items, limit):
+    """Up to ``limit`` items evenly spaced through ``items``, first and last kept."""
+    items = list(items)
+    if len(items) <= limit:
+        return items
+    if limit <= 1:
+        return items[:limit]
+    step = (len(items) - 1) / (limit - 1)
+    return [items[round(i * step)] for i in range(limit)]
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +367,37 @@ class Section(ABC):
 # ---------------------------------------------------------------------------
 
 
+class OverviewSection(Section):
+    """What happened, in plain words, and how to read the rest of the report.
+
+    The paragraph is :class:`~dskit.evaluation.narrative.Narrative` — explicit
+    rules over the statistics, census and verdict, never generated prose.
+
+    Examples
+    --------
+    ::
+
+        OverviewSection().markdown(context)[0]  # '## What happened'
+    """
+
+    title, anchor = "What happened", "overview"
+
+    def html(self, context):
+        """Return the verdict banner, the paragraph and the reader's note."""
+        status = context.scorecard.status
+        sentences = " ".join(html.escape(s) for s in Narrative(context).sentences())
+        tips = "".join(f"<li>{html.escape(t)}</li>" for t in HOW_TO_READ)
+        return (f'<p class="verdict v-{status.lower()}">Verdict: <b>{status}</b></p>'
+                f"<p class=story>{sentences}</p>"
+                f"<details><summary>How to read this report</summary><ul>{tips}</ul></details>")
+
+    def markdown(self, context):
+        """Return the paragraph and the reader's note."""
+        return (["## What happened", "", " ".join(Narrative(context).sentences()), "",
+                 "### How to read this report", ""]
+                + [f"- {tip}" for tip in HOW_TO_READ] + [""])
+
+
 class SummarySection(Section):
     """The card, the verdict with each criterion, the statistics and the census.
 
@@ -286,18 +423,32 @@ class SummarySection(Section):
         """
         log, local = context.log, context.local
         start, end = log.run_start, log.run_end
-        events = log.events
-        inner = [e for e in events if e.kind not in ("run_start", "run_end")] or events
+        units = context.units
         return [
             {"field": "run", "value": start.get("run_id")},
             {"field": "project", "value": start.get("project")},
-            {"field": "window", "value": f"{local.stamp(inner[0].ts_ms)} → "
-                                         f"{local.stamp(inner[-1].ts_ms)} ({local.tz})"},
-            {"field": "instruments", "value": ", ".join(log.instruments()) or _DASH},
-            {"field": "events", "value": len(events)},
+            {"field": "decision window", "value": _window(log, local, "decision")},
+            {"field": "data window", "value": _window(log, local)},
+            {"field": "time zone", "value": local.tz},
+            {"field": "instruments", "value": ", ".join(log.instruments()) or DASH},
+            {"field": "score unit", "value": units.score_label},
+            {"field": "currency", "value": units.currency or "undeclared"},
+            {"field": "events", "value": count(len(log))},
             {"field": "run status", "value": end.get("status") if end else "no run_end"},
             {"field": "bar stamps", "value": "ts_ms = the instant a mark was observed (UTC ms)"},
         ]
+
+    @staticmethod
+    def _verdict_rows(context):
+        """Criterion rows with the observed value formatted as its statistic."""
+        rows = []
+        for verdict in context.scorecard.verdicts:
+            row = verdict.to_obj()
+            kind = STAT_FORMATS.get(row["stat"], "ratio")
+            row["observed"] = context.format(kind, row["observed"])
+            row["value"] = f"{row['value']:g}"
+            rows.append(row)
+        return rows
 
     def html(self, context):
         """Return card, verdict, criteria, statistics and census."""
@@ -305,24 +456,30 @@ class SummarySection(Section):
         status = context.scorecard.status
         parts = [_html_table(("field", "value"), card, "card"),
                  f'<p class="verdict v-{status.lower()}">Verdict: <b>{status}</b></p>']
-        verdicts = [v.to_obj() for v in context.scorecard.verdicts]
+        verdicts = self._verdict_rows(context)
         if verdicts:
             parts.append(_html_table(("name", "stat", "op", "value", "min_n", "observed", "n",
                                       "status", "reason"), verdicts))
         else:
             parts.append(_note("No criteria were pre-registered in run_start."))
         parts.append("<h3>Statistics</h3>")
-        parts.append(_html_table(("name", "value", "n", "min_n", "flag", "note"),
-                                 self._stat_rows(context)))
+        parts.append(self._stats_html(context))
         parts.append("<h3>Census</h3>")
         parts.append(self._census_html(context.census))
         return "".join(parts)
 
     @staticmethod
     def _stat_rows(context):
-        """Statistic rows with an ``insufficient n`` flag."""
-        return [{**row.to_obj(), "flag": "" if row.sufficient else "insufficient n"}
+        """Statistic rows, the value formatted, with an ``insufficient n`` flag."""
+        return [{**row.to_obj(), "value": context.format(STAT_FORMATS.get(row.name, "ratio"),
+                                                         row.value),
+                 "flag": "" if row.sufficient else "insufficient n"}
                 for row in context.table.rows]
+
+    def _stats_html(self, context):
+        """Render the statistics table; values right-aligned although they are text."""
+        return _html_table(("name", "value", "n", "min_n", "flag", "note"),
+                           self._stat_rows(context), "stats")
 
     @staticmethod
     def _census_rows(census):
@@ -346,10 +503,10 @@ class SummarySection(Section):
 
     def markdown(self, context):
         """Return the summary card, verdict, statistics, census and top reasons."""
-        lines = [f"# {render_cell(context.title)}", ""]
+        lines = ["## Run", ""]
         lines += _md_table(("field", "value"), self.card(context)) + [""]
         lines += [f"**Verdict: {context.scorecard.status}**", ""]
-        verdicts = [v.to_obj() for v in context.scorecard.verdicts]
+        verdicts = self._verdict_rows(context)
         if verdicts:
             lines += _md_table(("name", "stat", "op", "value", "min_n", "observed", "n",
                                 "status", "reason"), verdicts) + [""]
@@ -367,7 +524,12 @@ class SummarySection(Section):
 
 
 class EquitySection(Section):
-    """Net and gross-before-costs equity with session boundaries, and the drawdown.
+    """Trading P&L (net and gross, deposits excluded), its drawdown, then account equity.
+
+    The primary chart is trading P&L — equity minus every external cash
+    flow — so a deposit can never look like profit. Account equity, which
+    does include deposits, is drawn second with each cash flow marked and
+    labelled by its amount and rule.
 
     Examples
     --------
@@ -376,50 +538,55 @@ class EquitySection(Section):
         EquitySection().render(context)
     """
 
-    title, anchor = "Equity & P&L", "equity"
+    title, anchor = "Trading P&L & equity", "equity"
 
     def html(self, context):
-        """Return the equity chart and the drawdown chart."""
+        """Return the P&L chart, the drawdown chart and the account-equity chart."""
         points = context.book.points
         if not points:
             return _note("No fills, marks or cash flows: nothing to value.")
-        boundaries = _day_boundaries(points, context.local)
-        equity = LineChart(
-            "Equity (net of fees) vs gross before costs",
-            [Series("net", tuple((p.ts_ms, float(p.equity)) for p in points), "s0"),
-             Series("gross", tuple((p.ts_ms, float(p.gross_equity)) for p in points), "s1")],
-            local=context.local, y_label="equity", boundaries=boundaries,
+        units, local = context.units, context.local
+        pnl = LineChart(
+            "Trading P&L (deposits and withdrawals excluded)",
+            [Series("net of fees", tuple((p.ts_ms, float(p.trading_pnl)) for p in points), "s0"),
+             Series("gross before costs",
+                    tuple((p.ts_ms, float(p.gross_equity - p.external)) for p in points), "s1")],
+            local=local, y_label="P&L", zero_line=True,
         )
         drawdown = context.book.drawdowns()["series"]
         under = LineChart(
             "Drawdown of trading P&L",
             [Series("drawdown", tuple((t, -d) for t, d in drawdown), "s2")],
-            local=context.local, y_label="below peak", boundaries=boundaries, zero_line=True,
-            height=180,
+            local=local, y_label="below peak", zero_line=True, height=180,
         )
-        return (equity.render() + under.render()
-                + _note("Equity includes external cash flows (see Cash); P&L and returns "
-                        "exclude them. Dashed lines mark session-day changes."))
-
-
-def _day_boundaries(points, local):
-    """Return the first instant of each local day after the first."""
-    out, last = [], None
-    for point in points:
-        day = local.day(point.ts_ms)
-        if last is not None and day != last:
-            out.append(point.ts_ms)
-        last = day
-    return out
+        equity_at = {p.ts_ms: float(p.equity) for p in points}
+        flows = [Marker(f.ts_ms, equity_at.get(f.ts_ms, 0.0), "dot", "open",
+                        f"{local.stamp(f.ts_ms)}  external cash flow "
+                        f"{units.money(f.get('amount'), signed=True)} "
+                        f"({f.get('rule') or 'no rule'}) — not profit",
+                        label=f"{units.money(f.get('amount'), signed=True)} "
+                              f"{f.get('rule') or ''}".strip())
+                 for f in context.log.of_kind("cashflow")]
+        account = StepChart(
+            "Account equity (includes deposits — not a performance measure)",
+            [Series("equity", tuple((p.ts_ms, float(p.equity)) for p in points), "s3")],
+            [MarkerLayer("◇ cash flow", flows)], local=local, y_label="equity", height=200,
+        )
+        return (pnl.render() + under.render()
+                + _note("P&L and returns exclude external cash flows; a thin break with a date "
+                        "marks each new session (market-closed time is collapsed).")
+                + account.render())
 
 
 class TradesOnPriceSection(Section):
-    """Per instrument and session day: the price with every entry, exit and rejection.
+    """Per instrument and session day: the price with entries, exits and rejections.
 
     Entries are ▲, exits ▼, coloured by their round trips' P&L (open trips
     grey); refusals and skips are hollow diamonds. Each marker's tooltip is
     the time, the action, the decision's reason, forecast, rank, edge and
-    threshold, the price and the fee.
+    threshold, the price and the fee. Only instrument-days with a fill or
+    a rejection get a panel; panels group per instrument in a collapsible
+    block (the first open). A busy panel is thinned by :meth:`thin`.
 
     Examples
     --------
@@ -431,26 +598,46 @@ class TradesOnPriceSection(Section):
     title, anchor = "Trades on price", "trades"
 
     def html(self, context):
-        """Return one chart per (instrument, day), capped at the context's limit."""
-        prices = self._prices(context)
+        """Return one chart per active (instrument, day), grouped per instrument."""
         fills = self._by_panel(context, context.log.of_kind("fill"), lambda e: e.instrument)
         rejected = self._by_panel(context, context.log.of_kind("refusal", "skip"),
                                   lambda e: self._instrument_of(context, e))
-        keys = sorted(set(prices) | set(fills) | set(rejected))
+        keys = sorted(set(fills) | set(rejected))
         if not keys:
-            return _note("No marks or fills to draw.")
-        parts = []
+            return _note("No fills or refusals to draw.")
+        prices = self._prices(context, set(keys))
+        drawn, thinned, total = defaultdict(list), 0, 0
         for key in keys[:context.max_panels]:
             instrument, day = key
-            layers = [MarkerLayer("▲ entry  ▼ exit",
-                                  [self._fill_marker(context, f) for f in fills.get(key, ())]),
+            panel_fills = fills.get(key, ())
+            kept = self.thin(context, panel_fills)
+            total += len(panel_fills)
+            thinned += len(panel_fills) - len(kept)
+            shown = (f" — {len(kept)} of {len(panel_fills)} fills drawn"
+                     if len(kept) < len(panel_fills) else "")
+            layers = [MarkerLayer("▲ entry  ▼ exit", [self._fill_marker(context, f) for f in kept]),
                       MarkerLayer("◇ refused/skipped",
                                   [self._rejection_marker(context, e, prices.get(key, ()))
                                    for e in rejected.get(key, ())])]
-            chart = LineChart(f"{instrument} — {day}",
+            chart = LineChart(f"{instrument} — {day}{shown}",
                               [Series(instrument, tuple(prices.get(key, ())), "s0")],
                               layers, local=context.local, y_label="price", height=220)
-            parts.append(chart.render())
+            drawn[instrument].append((day, chart, len(panel_fills), len(rejected.get(key, ()))))
+        parts = []
+        if thinned:
+            parts.append(_note(
+                f"{thinned} of {total} fill markers thinned (at most {context.max_markers} per "
+                f"panel; every refusal/skip and the {_EXTREMES} largest wins and losses per "
+                "panel are always drawn, the rest evenly spaced in time). Every fill is in "
+                "trades.csv and events.jsonl."))
+        for index, (instrument, panels) in enumerate(drawn.items()):
+            n_fills = sum(p[2] for p in panels)
+            n_rej = sum(p[3] for p in panels)
+            summary = (f"{instrument} — {len(panels)} session(s), {count(n_fills)} fills, "
+                       f"{count(n_rej)} refused/skipped")
+            body = "".join(chart.render() for _day, chart, _f, _r in panels)
+            parts.append(f"<details{' open' if index == 0 else ''}><summary>"
+                         f"{html.escape(summary)}</summary>{body}</details>")
         if len(keys) > context.max_panels:
             parts.append(_note(f"{len(keys) - context.max_panels} more instrument-day panel(s) "
                                f"not drawn (limit {context.max_panels}); every trade is in "
@@ -463,12 +650,46 @@ class TradesOnPriceSection(Section):
         return "".join(parts)
 
     @staticmethod
-    def _prices(context):
-        """Mark points per (instrument, day)."""
+    def thin(context, fills):
+        """Return the fills a panel draws, in time order, at most ``context.max_markers``.
+
+        Deterministic: open-position fills and the fills of the
+        ``_EXTREMES`` largest winning and losing round trips are always
+        kept; the remaining budget is filled evenly through time.
+
+        Parameters
+        ----------
+        context : ReportContext
+        fills : sequence of Fill
+
+        Returns
+        -------
+        list of Fill
+        """
+        fills = list(fills)
+        if len(fills) <= context.max_markers:
+            return fills
+        book = context.book
+
+        def pnl(fill):
+            return sum(trip.pnl for trip in book.trips_of_fill.get(fill.get("fill_id"), ()))
+
+        keep = {id(f) for f in fills if not book.trips_of_fill.get(f.get("fill_id"))}
+        ranked = sorted(fills, key=lambda f: (pnl(f), f.seq))
+        keep |= {id(f) for f in ranked[:_EXTREMES] if pnl(f) < 0}
+        keep |= {id(f) for f in ranked[-_EXTREMES:] if pnl(f) > 0}
+        rest = [f for f in fills if id(f) not in keep]
+        keep |= {id(f) for f in _even(rest, max(0, context.max_markers - len(keep)))}
+        return [f for f in fills if id(f) in keep]
+
+    @staticmethod
+    def _prices(context, keys):
+        """Mark points per (instrument, day), only for the panels that will be drawn."""
         out = defaultdict(list)
         for mark in context.log.of_kind("mark"):
-            out[(mark.instrument, context.local.day(mark.ts_ms))].append(
-                (mark.ts_ms, float(mark.get("price"))))
+            key = (mark.instrument, context.local.day(mark.ts_ms))
+            if key in keys:
+                out[key].append((mark.ts_ms, float(mark.get("price"))))
         return out
 
     @staticmethod
@@ -495,7 +716,7 @@ class TradesOnPriceSection(Section):
     @staticmethod
     def _fill_marker(context, fill):
         """Build an entry ▲ or exit ▼ marker coloured by its trips' P&L, with the full "why"."""
-        book, links = context.book, context.links
+        book, links, units = context.book, context.links, context.units
         fill_id = fill.get("fill_id")
         role = book.role_of_fill.get(fill_id, "entry")
         trips = book.trips_of_fill.get(fill_id, ())
@@ -504,10 +725,10 @@ class TradesOnPriceSection(Section):
         slip = fill.slippage_bp(links.ref_price(fill))
         title = "\n".join([
             f"{context.local.stamp(fill.ts_ms)}  {role.upper()} {fill.get('side')} "
-            f"{_display(fill.get('qty'))} @ {_display(fill.get('price'))}",
-            _why(links.decision_of_fill(fill)),
-            f"fee {_display(fill.fee)}; slippage {_display(slip)} bp",
-            f"round-trip P&L {_display(pnl) if trips else 'open'}",
+            f"{display(None, fill.get('qty'), units)} @ {units.money(fill.get('price'))}",
+            _why(links.decision_of_fill(fill), units),
+            f"fee {units.money(fill.fee)}; slippage {display('bp', slip, units)}",
+            f"round-trip P&L {units.money(pnl, signed=True) if trips else 'open'}",
         ])
         shape = "down" if role == "exit" else "up"
         return Marker(fill.ts_ms, float(fill.get("price")), shape, css, title)
@@ -527,15 +748,21 @@ class TradesOnPriceSection(Section):
         decision = context.links.decision_of_rejection(event)
         title = "\n".join([
             f"{context.local.stamp(event.ts_ms)}  {event.kind.upper()}: {event.get('reason')}",
-            event.get("detail", "") or _DASH,
-            _why(decision),
-            f"price {_display(price)}",
+            event.get("detail", "") or DASH,
+            _why(decision, context.units),
+            f"price {context.units.money(price)}",
         ])
         return Marker(event.ts_ms, price, "dot", "rej", title, hollow=True)
 
 
 class DecisionLogSection(Section):
-    """Every decision, what it saw and what became of it — table and CSV.
+    """What was decided, in three depths: by reason, the consequential few, then all.
+
+    First a summary per (action, reason) — how many, on which names, the
+    mean forecast and the P&L of the round trips those decisions opened or
+    closed. Then the most consequential decisions: the largest losing and
+    winning entries and an even sample of refusals and skips. Then every
+    decision in a collapsed table (``decisions.csv`` has every column raw).
 
     Examples
     --------
@@ -545,6 +772,12 @@ class DecisionLogSection(Section):
     """
 
     title, anchor = "Decision log", "decisions"
+
+    #: The compact columns of the in-page tables, and how each displays.
+    COLUMNS = ("time", "action", "chosen", "chosen_score", "chosen_rank", "edge", "reason",
+               "fill_price", "fees", "trip_pnl", "rejections")
+    FORMATS = {"chosen_score": "score", "edge": "edge", "fill_price": "money", "fees": "money",
+               "trip_pnl": "pnl", "chosen_rank": "count"}
 
     def rows(self, context):
         """Return one row per decision, in time order, over :data:`DECISION_COLUMNS`.
@@ -558,11 +791,13 @@ class DecisionLogSection(Section):
         list of dict
         """
         links = context.links
+        trips = _trips_by_decision(context.book)
+        unit = context.units.score_label
         decisions = sorted(context.log.of_kind("decision"), key=lambda d: (d.ts_ms, d.seq))
-        return [self._row(context, links, decision) for decision in decisions]
+        return [self._row(context, links, trips, unit, decision) for decision in decisions]
 
     @staticmethod
-    def _row(context, links, decision):
+    def _row(context, links, trips, unit, decision):
         """One decision's row: candidates, choice, action, and its linked execution."""
         decision_id = decision.get("decision_id")
         chosen, runner = decision.chosen_row() or {}, decision.runner_up() or {}
@@ -572,6 +807,7 @@ class DecisionLogSection(Section):
         slips = [(f.get("qty"), f.slippage_bp(links.ref_price(f))) for f in fills]
         slips = [(q, s) for q, s in slips if s is not None]
         slip_qty = sum(q for q, _ in slips)
+        linked = trips.get(decision_id)
         return {
             "time": context.local.stamp(decision.ts_ms),
             "ts_ms": decision.ts_ms,
@@ -584,6 +820,7 @@ class DecisionLogSection(Section):
             "runner_up_score": runner.get("score"),
             "threshold": decision.get("threshold"),
             "edge": decision.get("edge"),
+            "score_unit": unit,
             "action": decision.get("action"),
             "reason": decision.get("reason"),
             "detail": decision.get("detail"),
@@ -595,27 +832,110 @@ class DecisionLogSection(Section):
             "filled_qty": qty if fills else None,
             "slippage_bp": sum(q * s for q, s in slips) / slip_qty if slip_qty else None,
             "fees": sum(f.fee for f in fills) if fills else None,
+            "trip_pnl": sum(t.pnl for t in linked) if linked else None,
             "rejections": "; ".join(f"{r.kind}:{r.get('reason')}"
                                     for r in links.rejections_of(decision_id)) or None,
         }
 
+    @staticmethod
+    def summary(rows):
+        """Group decisions by (action, reason): count, names, mean forecast, trip P&L.
+
+        Parameters
+        ----------
+        rows : list of dict
+            From :meth:`rows`.
+
+        Returns
+        -------
+        list of dict
+            ``action``, ``reason``, ``count``, ``instruments``,
+            ``mean_forecast``, ``trip_pnl`` (sum over the trips those
+            decisions opened or closed), most frequent first.
+        """
+        groups = defaultdict(list)
+        for row in rows:
+            groups[(row["action"], row["reason"])].append(row)
+        out = []
+        for (action, reason), group in groups.items():
+            scores = [r["chosen_score"] for r in group if r["chosen_score"] is not None]
+            pnls = [r["trip_pnl"] for r in group if r["trip_pnl"] is not None]
+            names = Counter(r["chosen"] for r in group if r["chosen"])
+            out.append({
+                "action": action, "reason": reason, "count": len(group),
+                "instruments": ", ".join(f"{n} {c}" for n, c in sorted(
+                    names.items(), key=lambda kv: (-kv[1], kv[0]))[:5]) or DASH,
+                "mean_forecast": sum(scores) / len(scores) if scores else None,
+                "trip_pnl": sum(pnls) if pnls else None,
+            })
+        return sorted(out, key=lambda r: (-r["count"], r["action"], str(r["reason"])))
+
+    @staticmethod
+    def consequential(rows, limit=_SAMPLE):
+        """Return the largest losing and winning entries and a sample of rejections.
+
+        Parameters
+        ----------
+        rows : list of dict
+        limit : int
+            Per list.
+
+        Returns
+        -------
+        list of (str, list of dict, int)
+            ``(heading, rows, out_of)`` per list.
+        """
+        entries = [r for r in rows if r["action"] == "enter" and r["trip_pnl"] is not None]
+        losses = sorted((r for r in entries if r["trip_pnl"] < 0),
+                        key=lambda r: (r["trip_pnl"], r["ts_ms"]))
+        wins = sorted((r for r in entries if r["trip_pnl"] > 0),
+                      key=lambda r: (-r["trip_pnl"], r["ts_ms"]))
+        rejected = [r for r in rows if r["action"] in ("refuse", "skip")]
+        return [
+            ("Largest losing entries", losses[:limit], len(losses)),
+            ("Largest winning entries", wins[:limit], len(wins)),
+            ("Refused or skipped (evenly spaced in time)", _even(rejected, limit), len(rejected)),
+        ]
+
     def html(self, context):
-        """Return the action counts, top reasons and the full table in ``<details>``."""
+        """Return the summary, the consequential decisions and the full log in ``<details>``."""
         rows = self.rows(context)
         if not rows:
             return _note("No decision events.")
-        actions = Counter(row["action"] for row in rows)
-        counts = [{"action": a, "count": n} for a, n in sorted(actions.items())]
-        by_reason = Counter((row["action"], row["reason"]) for row in rows)
-        reasons = [{"action": a, "reason": r, "count": n}
-                   for (a, r), n in by_reason.most_common(_TOP_REASONS)]
-        return (_html_table(("action", "count"), counts)
-                + "<h3>Commonest decision reasons</h3>"
-                + _html_table(("action", "reason", "count"), reasons)
-                + "<h3>Commonest refusal / skip reasons</h3>"
-                + _reasons_table(context.log)
-                + f"<details><summary>All {len(rows)} decisions (also decisions.csv)</summary>"
-                + _html_table(DECISION_COLUMNS, rows, "decisions") + "</details>")
+        units = context.units
+        parts = ["<h3>Decisions by action and reason</h3>",
+                 _html_table(("action", "reason", "count", "instruments", "mean_forecast",
+                              "trip_pnl"), self.summary(rows),
+                             formats={"mean_forecast": "score", "trip_pnl": "pnl"}, units=units),
+                 _note("trip_pnl sums the round trips those decisions opened (enter) or closed "
+                       "(exit), so the enter and exit rows each total the run's round-trip P&L."),
+                 "<h3>Most consequential decisions</h3>"]
+        for heading, sample, out_of in self.consequential(rows):
+            if not sample:
+                continue
+            parts.append(f"<h4>{html.escape(heading)} — {len(sample)} of {count(out_of)}</h4>")
+            parts.append(_html_table(self.COLUMNS, sample, "decisions", self.FORMATS, units))
+        parts.append("<h3>Commonest refusal / skip reasons</h3>")
+        parts.append(_reasons_table(context.log))
+        parts.append(f"<details><summary>All {count(len(rows))} decisions (every column raw in "
+                     "decisions.csv)</summary>" + self._compact(context, rows) + "</details>")
+        return "".join(parts)
+
+    def _compact(self, context, rows):
+        """Render the full log as a light table: formatted cells, no per-cell attributes."""
+        units = context.units
+        head = "".join(f"<th>{html.escape(c)}</th>" for c in self.COLUMNS)
+        body = []
+        for row in rows:
+            cells = []
+            for column in self.COLUMNS:
+                value = row[column]
+                if column == "time":
+                    value = value[5:]
+                cells.append(html.escape(display(self.FORMATS.get(column), value, units)))
+            body.append("<tr><td>" + "<td>".join(cells))
+        return (f"<div class=scroll><table class=log><thead><tr>{head}</tr></thead><tbody>"
+                + "\n".join(body) + "</tbody></table></div>")
 
 
 def _reasons_table(log):
@@ -625,7 +945,7 @@ def _reasons_table(log):
 
 
 class CashSection(Section):
-    """Cash and equity, gross exposure, and every external cash flow.
+    """Cash balance with every external flow marked, gross exposure, and the flow table.
 
     Examples
     --------
@@ -637,29 +957,31 @@ class CashSection(Section):
     title, anchor = "Cash & exposure", "cash"
 
     def html(self, context):
-        """Return the cash/equity steps with flow markers, exposure, and the flow table."""
+        """Return the cash steps with flow markers, exposure, and the flow table."""
         points = context.book.points
         if not points:
             return _note("Nothing to value.")
+        units, local = context.units, context.local
         flows = context.log.of_kind("cashflow")
         cash_at = {p.ts_ms: float(p.cash) for p in points}
         markers = [Marker(f.ts_ms, cash_at.get(f.ts_ms, 0.0), "dot", "open",
-                          f"{context.local.stamp(f.ts_ms)}  cash flow "
-                          f"{_display(f.get('amount'))} ({f.get('rule') or 'no rule'})")
+                          f"{local.stamp(f.ts_ms)}  cash flow "
+                          f"{units.money(f.get('amount'), signed=True)} "
+                          f"({f.get('rule') or 'no rule'})",
+                          label=units.money(f.get("amount"), signed=True))
                    for f in flows]
-        cash = StepChart("Cash and equity",
-                         [Series("cash", tuple((p.ts_ms, float(p.cash)) for p in points), "s0"),
-                          Series("equity", tuple((p.ts_ms, float(p.equity)) for p in points),
-                                 "s3")],
-                         [MarkerLayer("◇ cash flow", markers)], local=context.local,
-                         y_label="money")
+        cash = StepChart("Cash balance (deposits in, purchases and fees out)",
+                         [Series("cash", tuple((p.ts_ms, float(p.cash)) for p in points), "s0")],
+                         [MarkerLayer("◇ cash flow", markers)], local=local,
+                         y_label="cash", height=200)
         exposure = StepChart("Gross exposure (gross notional / equity)",
                              [Series("exposure", tuple((p.ts_ms, p.exposure) for p in points),
                                      "s2")],
-                             local=context.local, y_label="× equity", height=180)
-        rows = [{"time": context.local.stamp(f.ts_ms), "amount": f.get("amount"),
+                             local=local, y_label="× equity", height=180)
+        rows = [{"time": local.stamp(f.ts_ms), "amount": f.get("amount"),
                  "rule": f.get("rule"), "detail": f.get("detail")} for f in flows]
-        table = (_html_table(("time", "amount", "rule", "detail"), rows) if rows
+        table = (_html_table(("time", "amount", "rule", "detail"), rows,
+                             formats={"amount": "pnl"}, units=units) if rows
                  else _note("No external cash flows."))
         return cash.render() + exposure.render() + "<h3>Cash flows</h3>" + table
 
@@ -682,30 +1004,35 @@ class DistributionSection(Section):
         links = context.links
         slips = [s for f in context.log.of_kind("fill")
                  if (s := f.slippage_bp(links.ref_price(f))) is not None]
+        units = context.units
         parts = [
-            Histogram("Round-trip P&L", [t.pnl for t in trips]).render(),
+            Histogram("Round-trip P&L (net of fees)", [t.pnl for t in trips]).render(),
             Histogram("Holding time", [t.holding_ms / 60_000 for t in trips],
                       unit="m").render(),
             Histogram("Slippage vs reference", slips, unit="bp").render(),
         ]
         parts.append("<h3>P&amp;L by instrument</h3>")
-        parts.append(self._attribution(trips, lambda t: t.instrument, "instrument"))
+        parts.append(self._attribution(trips, lambda t: t.instrument, "instrument", units))
         parts.append("<h3>P&amp;L by entry reason</h3>")
-        parts.append(self._attribution(trips, lambda t: t.entry_reason, "entry_reason"))
+        parts.append(self._attribution(trips, lambda t: t.entry_reason, "entry_reason", units))
         return "".join(parts)
 
     @staticmethod
-    def _attribution(trips, key_of, name):
-        """Tabulate trips, gross, fees and net P&L grouped by ``key_of``."""
+    def _attribution(trips, key_of, name, units):
+        """Tabulate trips, hit rate, gross, fees and net P&L grouped by ``key_of``."""
         groups = defaultdict(list)
         for trip in trips:
             groups[key_of(trip)].append(trip)
-        rows = [{name: key, "trips": len(group), "gross_pnl": sum(t.gross_pnl for t in group),
+        rows = [{name: key, "trips": len(group),
+                 "won": sum(1 for t in group if t.pnl > 0) / len(group),
+                 "gross_pnl": sum(t.gross_pnl for t in group),
                  "fees": sum(t.fees for t in group), "pnl": sum(t.pnl for t in group)}
                 for key, group in sorted(groups.items(), key=lambda kv: str(kv[0]))]
         if not rows:
             return _note("No closed round trips.")
-        return _html_table((name, "trips", "gross_pnl", "fees", "pnl"), rows)
+        return _html_table((name, "trips", "won", "gross_pnl", "fees", "pnl"), rows,
+                           formats={"won": "percent", "gross_pnl": "pnl", "fees": "money",
+                                    "pnl": "pnl"}, units=units)
 
 
 class PeriodSection(Section):
@@ -730,11 +1057,17 @@ class PeriodSection(Section):
         return bars.render() + _html_table(
             ("day", "pnl", "gross_pnl", "fees", "flows", "end_equity", "ret", "fills", "trips"),
             days,
+            formats={"pnl": "pnl", "gross_pnl": "pnl", "fees": "money", "flows": "pnl",
+                     "end_equity": "money", "ret": "percent"},
+            units=context.units,
         )
 
 
 class ProvenanceSection(Section):
     """Where the run came from: ids, config, code, data, environment, event counts.
+
+    A fact the report node filled (rather than the producer) says so in
+    its ``source`` column, from ``run_start.sources``.
 
     Examples
     --------
@@ -746,7 +1079,7 @@ class ProvenanceSection(Section):
     title, anchor = "Provenance", "provenance"
 
     def rows(self, context):
-        """Return the provenance facts as ``[{field, value}]``.
+        """Return the provenance facts as ``[{field, value, source}]``.
 
         Parameters
         ----------
@@ -758,17 +1091,21 @@ class ProvenanceSection(Section):
         """
         start, end = context.log.run_start, context.log.run_end
         code, env = start.get("code", {}), start.get("env", {})
+        sources = start.get("sources", {})
+        wall = end.get("wall_s") if end else None
         return [
             {"field": "schema", "value": start.to_obj()["schema"]},
             {"field": "run_id", "value": start.get("run_id")},
             {"field": "config_hash", "value": start.get("config_hash")},
-            {"field": "code commit", "value": code.get("commit")},
-            {"field": "code dirty", "value": code.get("dirty")},
+            {"field": "code commit", "value": code.get("commit"), "source": sources.get("code")},
+            {"field": "code dirty", "value": code.get("dirty"), "source": sources.get("code")},
             {"field": "trials", "value": start.get("trials", 1)},
-            {"field": "python", "value": env.get("python")},
-            {"field": "platform", "value": env.get("platform")},
-            {"field": "packages", "value": len(env.get("packages", {}))},
-            {"field": "wall_s", "value": end.get("wall_s") if end else None},
+            {"field": "python", "value": env.get("python"), "source": sources.get("env")},
+            {"field": "platform", "value": env.get("platform"), "source": sources.get("env")},
+            {"field": "packages", "value": len(env.get("packages", {})),
+             "source": sources.get("env")},
+            {"field": "wall time", "value": None if wall is None else f"{sig(wall, 4)} s",
+             "source": sources.get("wall_s")},
             {"field": "events", "value": ", ".join(
                 f"{k}={n}" for k, n in sorted(context.census.kinds.items()))},
         ]
@@ -780,7 +1117,7 @@ class ProvenanceSection(Section):
         packages = [{"package": k, "version": v}
                     for k, v in sorted(start.get("env", {}).get("packages", {}).items())]
         config = json.dumps(start.get("config", {}), indent=2, sort_keys=True)
-        return (_html_table(("field", "value"), self.rows(context))
+        return (_html_table(("field", "value", "source"), self.rows(context))
                 + "<h3>Data</h3>"
                 + (_html_table(("name", "fingerprint"), data) if data
                    else _note("No data fingerprints recorded."))
@@ -791,9 +1128,11 @@ class ProvenanceSection(Section):
 
     def markdown(self, context):
         """Return the provenance table."""
-        return ["## Provenance", "", *_md_table(("field", "value"), self.rows(context)), ""]
+        return ["## Provenance", "",
+                *_md_table(("field", "value", "source"), self.rows(context)), ""]
 
 
-#: The default section order — the research spec's reading order.
-DEFAULT_SECTIONS = (SummarySection, EquitySection, TradesOnPriceSection, DecisionLogSection,
-                    CashSection, DistributionSection, PeriodSection, ProvenanceSection)
+#: The default section order — the reader's order.
+DEFAULT_SECTIONS = (OverviewSection, SummarySection, EquitySection, TradesOnPriceSection,
+                    DecisionLogSection, CashSection, DistributionSection, PeriodSection,
+                    ProvenanceSection)

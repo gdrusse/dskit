@@ -83,7 +83,7 @@ python -m dskit.pipeline run configs/run-train.json \
 
 # 4b. development replay report (ADR-0183): ridge one-pick replay of
 #     2025-10-13..16 with the $1,000 + $20/day cash-flow policy, rendered by
-#     dskit.evaluation into pipeline_runs/replay-report-20251013/
+#     dskit.evaluation into pipeline_runs/<run>/report/
 #     (report.html, summary.md, events.jsonl, decisions.csv, trades.csv)
 python -m dskit.pipeline run configs/run-replay-report.json \
     --asof 2026-09-24 --adapter intraday_equities

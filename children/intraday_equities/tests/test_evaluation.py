@@ -91,6 +91,8 @@ def test_params_are_validated():
     problems = " ".join(ReplayEvents.validate_params(bad))
     for word in ("tz", "mark_symbols", "trials", "extra"):
         assert word in problems
+    assert any("units must be" in p
+               for p in ReplayEvents.validate_params(dict(PARAMS, units={"score": 1})))
     assert ReplayEvents("events", PARAMS).validate_inputs({}) != []
 
 
@@ -105,6 +107,8 @@ def test_envelope_seq_and_kind_order():
     start = events[0]
     assert start["criteria"] == PARAMS["criteria"] and start["trials"] == 3
     assert start["tz"] == "America/New_York"
+    # scores are the ridge forecast of y_next, a LOG return; the account is USD
+    assert start["units"] == {"score": "log_return", "money": "USD"}
 
 
 def test_each_decision_names_candidates_edge_action_and_the_replays_reason():

@@ -290,6 +290,10 @@
         "price_field": "close",
         "mark_symbols": "traded",
         "model": "ridge-alpha1-lags30",
+        "units": {
+          "score": "log_return",
+          "money": "USD"
+        },
         "trials": 1,
         "criteria": [
           {
@@ -323,10 +327,10 @@
         "events": "$events.events"
       },
       "params": {
-        "out_dir": "pipeline_runs/replay-report-20251013",
+        "out_dir": "report",
         "title": "intraday_equities development replay 2025-10-13..16"
       },
-      "notes": "Writes events.jsonl, summary.md, report.html, decisions.csv, trades.csv under the invoking cwd's pipeline_runs/ (gitignored). Re-render from events.jsonl alone with python -m dskit.evaluation render."
+      "notes": "Writes events.jsonl, summary.md, report.html, decisions.csv, trades.csv into report/ inside this run's directory (pipeline_runs/<run>/report/, gitignored): a relative out_dir resolves against the run directory, so it must not repeat pipeline_runs/. The node fills git revision, environment and wall time the replay does not record. Re-render from events.jsonl alone with python -m dskit.evaluation render."
     }
   },
   "splits": {
