@@ -23770,6 +23770,34 @@ Pre-existing and disclosed: `BenchmarkRun._execute`'s checkpoint hash-drift,
 `latest_asof` and previously-failed-row checks have been untested since
 before this change.
 
+Round 3 ran on candidate `dea9e6b` and closed it. Correctness found 0
+Critical, 0 Major, 1 Minor and 1 Nit. Tests/integration (18 re-run and 86
+fresh mutations) found 0 Critical, 0 Major, 5 Minor and 4 Nit. Both lenses
+reported zero unresolved Critical and Major. The candidate is locked at
+`dea9e6b`, with 729 focused child tests and 40 dskit benchmark tests
+passing (the 6 known base failures aside).
+
+Recorded Minor backlog, deferred after the lock:
+
+- The config test does not pin stage `uses`/`inputs` wiring or the walk's
+  `objective`/`select`. Miswiring `inventory` to `$hpo.run` fails closed,
+  but only at the publisher, after every fit.
+- `ScheduledCashFlowPolicy.segment` does not refuse a negative carry
+  (unreachable while segments end flat).
+- The combined rule name `initial_capital+scheduled_contribution` is never
+  asserted.
+- Scheduled-policy validation for the `local_time` hour bound, ISO-date
+  length, currency and timezone is untested.
+- Also untested: the FrozenWinners `state=="ran"` check, the frozen stage's
+  required `winners` input, the preflight/caches gates, and the
+  DocumentWalkRun checkpoint signature.
+- `one_off` was used in code and notes but missing from this ADR's list;
+  the list is now corrected.
+
+Nits: the carried-cash label on a zero carry, `_SUFFIX`,
+`evidence.heads[].selection`, the inventory `walk_row` sha, and extra input
+keys accepted by two stages.
+
 **Context.** ADR-0184's simulation replays stored out-of-fold `yhat` from an
 earlier P16 walk. It says so itself: "no in-loop refit". It also
 tunes per fold (4 trials) and funds $1,000 + $20/day. The final-model plan
@@ -23838,7 +23866,7 @@ hand.
 hash is unchanged. Its params: `currency`, `initial_capital_amount`,
 `contribution_amount`, `interval_days`, `first_weekday`, `local_time`,
 `timezone`, `holiday_rule`, and dated `overrides` (skip, move, replace,
-withdrawal).
+one_off, withdrawal).
 
 - It keeps the daily ADR-0176/0178 occurrence grid and the core
   primitives: the recurring amount is $500 at `local_time`, and every
