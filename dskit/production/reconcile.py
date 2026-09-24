@@ -65,6 +65,7 @@ from dskit.production.base import (
     check_credentials,
     pin_members,
 )
+from dskit.production.guards import max_verdict
 from dskit.production.records import (
     Balance,
     DecidedLeg,
@@ -1002,12 +1003,62 @@ class LedgerHistory:
             If ``since_ms`` is not a non-negative int, or a leg entry is
             not shaped like §6's ``decision.legs[]``.
         """
+        return tuple(
+            _decided_leg(entry, tick_id, decided_at_ms)
+            for entry, tick_id, decided_at_ms in self._decided_entries(since_ms)
+        )
+
+    def leg_findings(self, since_ms):
+        """Return every decided leg's guard findings and composite verdict, in ledger order.
+
+        The same tick join as :meth:`legs` — one private walk serves both,
+        so a leg is reported here exactly when it is reported there (a
+        decision whose tick never landed is dropped by both). ``DecidedLeg``
+        deliberately carries no findings; this is the reader that does.
+
+        Parameters
+        ----------
+        since_ms : int
+            Epoch-ms lower bound on ``decided_at_ms``, inclusive; ``0`` for
+            all time.
+
+        Returns
+        -------
+        tuple of dict
+            One plain row per leg: ``leg_id``, ``tick_id``, ``instrument``,
+            ``decided_at_ms``, ``client_ref``, ``proposal_id`` (the final
+            proposal's ``id``, ``None`` when the entry's proposal carries
+            none), ``final``, ``verdict`` (:func:`guards.max_verdict` over
+            the findings, so a leg no guard judged reads ``"allow"``, the
+            lattice floor) and ``findings`` (the ``Finding.to_obj()`` dicts
+            exactly as stored).
+
+        Raises
+        ------
+        ProductionError
+            If ``since_ms`` is not a non-negative int, a leg entry is not
+            an object, or a stored finding's verdict is outside the lattice.
+
+        Examples
+        --------
+        ::
+
+            rows = LedgerHistory(ledger).leg_findings(0)
+            rows[0]["verdict"]  # 'allow'
+            rows[0]["findings"][0]["guard"]  # 'size'
+        """
+        return tuple(
+            _leg_findings_row(entry, tick_id, decided_at_ms)
+            for entry, tick_id, decided_at_ms in self._decided_entries(since_ms)
+        )
+
+    def _decided_entries(self, since_ms):
+        """Yield ``(entry, tick_id, decided_at_ms)`` per ``decision.legs[]`` entry whose tick landed."""
         _check_since(since_ms)
         observed = {
             envelope["body"].get(_TICK_ID): envelope["body"].get(_OBSERVED_AT)
             for envelope in self._ledger.scan(kind=_TICK)
         }
-        found = []
         for envelope in self._ledger.scan(kind=_DECISION):
             tick_id = envelope["body"].get(_TICK_ID)
             decided_at_ms = observed.get(tick_id)
@@ -1015,17 +1066,36 @@ class LedgerHistory:
                 continue
             if decided_at_ms < since_ms:
                 continue
-            found.extend(
-                _decided_leg(entry, tick_id, decided_at_ms)
-                for entry in envelope["body"].get("legs") or ()
-            )
-        return tuple(found)
+            for entry in envelope["body"].get("legs") or ():
+                yield _leg_object(entry), tick_id, decided_at_ms
+
+
+def _leg_object(entry):
+    """Return a ``decision.legs[]`` entry, refusing one that is not an object."""
+    if not isinstance(entry, dict):
+        raise ProductionError([f"decision.legs entry must be an object, got {entry!r}"])
+    return entry
+
+
+def _leg_findings_row(entry, tick_id, decided_at_ms):
+    """Build one ``leg_findings`` row from a ``decision.legs[]`` entry and its tick's instant."""
+    proposal = entry.get("proposal")
+    findings = list(entry.get("findings") or ())
+    return {
+        "leg_id": entry.get("leg_id"),
+        "tick_id": tick_id,
+        "instrument": entry.get("instrument"),
+        "decided_at_ms": decided_at_ms,
+        "client_ref": entry.get("client_ref"),
+        "proposal_id": proposal.get("id") if isinstance(proposal, dict) else None,
+        "final": entry.get("final"),
+        "verdict": max_verdict(findings),
+        "findings": findings,
+    }
 
 
 def _decided_leg(entry, tick_id, decided_at_ms):
     """Build one ``DecidedLeg`` from a §6 ``decision.legs[]`` entry and its tick's instant."""
-    if not isinstance(entry, dict):
-        raise ProductionError([f"decision.legs entry must be an object, got {entry!r}"])
     proposal = entry.get("proposal")
     return DecidedLeg(
         leg_id=entry.get("leg_id"),
