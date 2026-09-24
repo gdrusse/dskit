@@ -300,10 +300,32 @@ def _worst_verdict(orders):
     return max_verdict(findings) if findings else None
 
 
+def _distinct(findings):
+    """Return ``findings`` with exact repeats dropped, first-seen order kept.
+
+    A hard guard checks the proposal and then the final leg, so a ledger
+    leg often stores the same finding twice; it is one fact on the page.
+    """
+    seen, out = set(), []
+    for finding in findings or ():
+        key = tuple(sorted(finding.items()))
+        if key not in seen:
+            seen.add(key)
+            out.append(finding)
+    return out
+
+
+def _finding_number(value):
+    """Return a finding's value or bound as text: a whole number without decimals."""
+    if value is None:
+        return DASH
+    return count(value) if float(value).is_integer() else ratio(value)
+
+
 def _finding_text(finding):
-    """``guard measure value/bound verdict`` for one finding."""
-    return (f"{finding['guard']} {finding['measure']} {display(None, finding.get('value'), None)}"
-            f"/{display(None, finding.get('bound'), None)} {finding['verdict']}")
+    """Return ``guard measure value/bound verdict`` for one finding."""
+    return (f"{finding['guard']} {finding['measure']} {_finding_number(finding.get('value'))}"
+            f"/{_finding_number(finding.get('bound'))} {finding['verdict']}")
 
 
 def _even(items, limit):
@@ -860,7 +882,7 @@ class DecisionLogSection(Section):
                                     for r in links.rejections_of(decision_id)) or None,
             "guard_verdict": _worst_verdict(orders),
             "findings": "; ".join(_finding_text(f) for o in orders
-                                  for f in o.get("findings") or ()) or None,
+                                  for f in _distinct(o.get("findings"))) or None,
         }
 
     @staticmethod
@@ -962,10 +984,12 @@ class DecisionLogSection(Section):
         list of dict
             ``guard``, ``measure``, ``verdict``, ``count``, ``min_value``,
             ``max_value``, ``bound`` (the tightest one seen) — commonest first.
+            ``count`` is orders carrying the finding: an exact repeat on one
+            order (a hard guard re-checking the final leg) counts once.
         """
         groups = defaultdict(list)
         for order in log.of_kind("order"):
-            for finding in order.get("findings") or ():
+            for finding in _distinct(order.get("findings")):
                 groups[(finding["guard"], finding["measure"], finding["verdict"])].append(finding)
         out = []
         for (guard, measure, verdict), group in groups.items():
@@ -983,8 +1007,10 @@ class DecisionLogSection(Section):
         if not rows:
             return _note("No guard findings: the producer recorded no pre-trade checks "
                          "(no guards declared, or no ledger mapped into the log).")
+        shown = [dict(row, **{key: _finding_number(row[key])
+                              for key in ("min_value", "max_value", "bound")}) for row in rows]
         return _html_table(("guard", "measure", "verdict", "count", "min_value", "max_value",
-                            "bound"), rows, units=context.units)
+                            "bound"), shown, units=context.units)
 
     def _compact(self, context, rows):
         """Render the full log as a light table: formatted cells, no per-cell attributes."""
@@ -1052,10 +1078,11 @@ class OptimizerSection(Section):
         """Return one line: the solve count by outcome, or that there were none."""
         summary = SolveSummary(context.log)
         if not len(summary):
-            return [self.EMPTY, ""]
+            return ["", f"**Optimizer:** {self.EMPTY}", ""]
         outcomes = ", ".join(f"{row['status']}/{row['termination'] or DASH} {row['solves']}"
                              for row in summary.outcomes())
-        return [f"Optimizer: {count(len(summary))} solves ({outcomes}).", ""]
+        noun = "solve" if len(summary) == 1 else "solves"
+        return ["", f"**Optimizer:** {count(len(summary))} {noun} ({outcomes}).", ""]
 
 
 def _reasons_table(log):
@@ -1221,8 +1248,9 @@ class InferenceSection(Section):
             return _note("Calibration needs at least two scored forecasts.")
         unit = context.units.score_unit
         points = [(b.mean_score * unit.scale, b.mean_realized * unit.scale) for b in buckets]
-        lo = min(min(p) for p in points)
-        hi = max(max(p) for p in points)
+        # The diagonal spans the FORECAST range only: stretching it to the
+        # realised range would squash an under-scaled forecast onto the axis.
+        lo, hi = points[0][0], points[-1][0]
         chart = LineChart(
             f"Calibration: mean realised vs mean forecast per bucket ({unit.suffix or 'raw'})",
             [Series("realised", tuple(points), "s0"),
@@ -1266,13 +1294,13 @@ class InferenceSection(Section):
         """Return one line: pairs, hit rate and the pooled rank IC."""
         diagnostics = context.diagnostics
         if not diagnostics.pairs:
-            return ["", f"**Inference:** {self._missing(diagnostics)}"]
+            return ["", f"**Inference:** {self._missing(diagnostics)}", ""]
         summary = diagnostics.rank_ic_summary() or {}
         return ["", f"**Inference:** {count(len(diagnostics.pairs))} scored forecasts; hit rate "
                     f"{percent(diagnostics.hit_rate())} (chosen "
                     f"{percent(diagnostics.hit_rate(chosen_only=True))}); mean rank IC "
                     f"{ratio(summary.get('ic'), signed=True)} "
-                    f"(t {ratio(summary.get('ic_t'), signed=True)})."]
+                    f"(t {ratio(summary.get('ic_t'), signed=True)}).", ""]
 
 
 class PeriodSection(Section):

@@ -184,7 +184,7 @@ def test_the_optimizer_section_renders_counts_and_a_time_chart():
     section = page.split('id="optimizer"')[1].split("</section>")[0]
     assert "maxTimeLimit" in section and "budget" in section
     assert section.count("<svg") == 1  # seconds over time: three solves
-    assert "Optimizer: 3 solves (ok/optimal 2, aborted/maxTimeLimit 1)" in (
+    assert "**Optimizer:** 3 solves (ok/optimal 2, aborted/maxTimeLimit 1)." in (
         report.summary_markdown())
 
 
@@ -329,7 +329,7 @@ def test_findings_reach_the_decision_row_with_the_worst_verdict():
     report = BacktestReport(EventLog(_with_findings()))
     rows = {r["decision_id"]: r for r in DecisionLogSection().rows(report.context)}
     assert rows["d1"]["guard_verdict"] == "warn"
-    assert rows["d1"]["findings"] == ("size quantity 10.0/100 allow; "
+    assert rows["d1"]["findings"] == ("size quantity 10/100 allow; "
                                       "cap notional 1,000/900 warn")
     assert rows["d2"]["guard_verdict"] == "allow"
     assert rows["d6"]["guard_verdict"] is None and rows["d6"]["findings"] is None
@@ -365,3 +365,16 @@ def test_a_malformed_finding_is_refused():
     text = str(err.value)
     assert "findings[0].verdict" in text and "unknown field(s) ['extra']" in text
     assert "missing required field 'guard'" in text
+
+
+def test_an_exact_repeat_finding_shows_and_counts_once():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import DecisionLogSection
+
+    events = _with_findings()
+    o2 = next(e for e in events if e.get("order_id") == "o2")
+    o2["findings"] = o2["findings"] * 2  # proposal check + final-leg re-check
+    log = EventLog(events)
+    rows = {r["decision_id"]: r for r in DecisionLogSection().rows(BacktestReport(log).context)}
+    assert rows["d2"]["findings"] == "size quantity 4/100 allow"
+    assert DecisionLogSection.findings_summary(log)[0]["count"] == 2  # o1 and o2, once each
