@@ -2474,6 +2474,70 @@ def test_the_bars_node_bounds_its_read_by_start_ms_and_by_session(tmp_path):
     assert _run(sessions=["closed"]) == []
 
 
+def _bars_node(tmp_path, **extra):
+    """A fresh BarsFromStore over a two-name, six-minute store (class cache cleared)."""
+    import intraday_equities.nodes as nodes
+
+    root = str(tmp_path / "ob")
+    if not os.path.isdir(root):
+        _write_store(root, "alpaca-sip", n_minutes=6, symbols=("AAPL", "SPY"))
+    universe_path = _write_universe(str(tmp_path / "universe.json"))
+    nodes.BarsFromStore._cached_key = None
+    nodes.BarsFromStore._cached_snap = None
+    nodes.BarsFromStore._cached_fingerprint = None
+    return nodes.BarsFromStore(
+        "bars", {"root": root, "source": "alpaca-sip", "universe": universe_path, **extra}
+    )
+
+
+def test_bars_from_store_end_ms_excludes_at_and_after(tmp_path):
+    """ADR-0182 S4: ``end_ms`` is an EXCLUSIVE upper bound applied at the read."""
+    import intraday_equities.nodes as nodes
+
+    whole = _bars_node(tmp_path).run(_ctx(tmp_path), {})["records"]
+    cut = _ms(3)
+    seen = {}
+    real_scan = nodes.scan_stream
+
+    def _spy(*args, **kwargs):
+        seen["list"] = real_scan(*args, **kwargs)
+        return seen["list"]
+
+    nodes.scan_stream = _spy
+    try:
+        node = _bars_node(tmp_path, end_ms=cut)
+        bounded = node.run(_ctx(tmp_path), {})["records"]
+    finally:
+        nodes.scan_stream = real_scan
+    assert bounded is seen["list"]  # dropped at intake, not filtered after
+    assert [(r["symbol"], r["asof_ms"]) for r in bounded] == [
+        (r["symbol"], r["asof_ms"]) for r in whole if r["asof_ms"] < cut
+    ]
+    assert all(r["session"] == "rth" for r in bounded)
+    assert node.fingerprint()["end_ms"] == cut
+    window = _bars_node(tmp_path, start_ms=_ms(1), end_ms=cut).run(_ctx(tmp_path), {})
+    assert sorted({r["asof_ms"] for r in window["records"]}) == [_ms(1), _ms(2)]
+
+    base = {"root": "./ob", "source": "alpaca-sip-split", "universe": UNIVERSE_PATH}
+    assert nodes.BarsFromStore.validate_params({**base, "end_ms": cut}) == []
+    for bad in (-1, True, 1.5, "1"):
+        assert any(
+            "end_ms" in p for p in nodes.BarsFromStore.validate_params({**base, "end_ms": bad})
+        )
+    problems = nodes.BarsFromStore.validate_params({**base, "start_ms": cut, "end_ms": cut})
+    assert any("end_ms must be greater than start_ms" in p for p in problems)
+
+
+def test_bars_from_store_without_end_ms_fingerprint_unchanged(tmp_path):
+    """ADR-0182 S4: an undeclared ``end_ms`` moves no existing identity."""
+    plain = _bars_node(tmp_path)
+    assert set(plain.fingerprint()) == {"kind", "rows", "sha256", "universe", "start_ms"}
+    assert len(plain._cache_key()) == 14
+    bounded = _bars_node(tmp_path, end_ms=_ms(3))
+    assert bounded._cache_key()[:14] == plain._cache_key()
+    assert bounded._cache_key() != plain._cache_key()
+
+
 def test_sessions_is_refused_unless_it_names_real_buckets():
     from intraday_equities.nodes import BarsFromStore as Bars
 
