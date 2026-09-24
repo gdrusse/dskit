@@ -22776,3 +22776,22 @@ of the figure pack).
 - DSR without a recorded cross-trial Sharpe variance uses the estimator's own sampling variance (se^2).
 - TWR anchors its first observation at the external capital, so trading in the same instant as the first deposit is not absorbed (`production.report.PerformanceCalculator` does the chaining).
 - FIFO round-trip P&L is attribution; it equals `WindowBook`'s average-cost realised total only when flat (pinned by a test).
+
+**Amendment (2026-09-24, build of items 12-15).** `PortfolioSelect` keeps
+its scores on `model._portfolio` (the `BudgetedSelect` precedent) and emits
+`candidates` without re-predicting; `picks`/`metrics` unchanged. The replay
+adds `cash_flows` and `cash` (running balance; empty without a cash-flow
+policy) and, additively, `decision_ms` on entry fills and on every
+decision-driven refusal/skip, plus `reason` (`horizon_expiry` |
+`same_lead_override`) on exit fills — fill-stage refusals (`min_price`,
+`insufficient_cash`, `same_lead_open`) are stamped at the FILL bar, so a
+bar+symbol join would mislink them. Decision-less lot closures
+(`expiry_past_tape`, lot-expiry `halted`) become their own exit decisions.
+At one instant `cashflow` sorts before `mark`/`decision` (the replay funds
+before that tick's fills). `configs/run-replay-report.json` keeps the
+2025-06-02 training start of the 2026-09-23 replay it reproduces (same
+ridge fit), exempted narrowly in `test_configs.py` (development replay,
+`deployment_eligible=false`, never model-selection evidence). Pre-registered
+criteria: `net_pnl > 0`, `trade_t >= 2`, `daily_sharpe > 0` (min_n 20 days —
+INCONCLUSIVE on a 4-session run by design). Child review (Sonnet): 0
+Critical; the only Major was this missing amendment.
