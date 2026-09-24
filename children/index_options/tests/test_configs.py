@@ -39,7 +39,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "pyproject.toml", "AGENTS.md", "CLAUDE.md", "README.md", ".gitignore", "journal.json",
         "index_options/__init__.py", "index_options/contracts.py",
         "index_options/observations.py", "index_options/nodes.py",
-        "index_options/distribution.py", "index_options/pricing.py",
+        "index_options/distribution.py",
         "configs/source-fixture.json", "configs/suite-fixture.json", "configs/run-fixture.json",
         "configs/run-synthetic-distribution.json", "configs/run-synthetic-har.json",
         "configs/run-synthetic-lightgbm.json", "configs/run-distribution-zoo.json",
@@ -68,8 +68,9 @@ def test_exact_manifest_and_agent_parity(child_root):
               if p.is_file() and not any(part in ignored or part.endswith(".egg-info")
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
-    # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8
-    assert len(actual) == 55
+    # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8,
+    # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement)
+    assert len(actual) == 54
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

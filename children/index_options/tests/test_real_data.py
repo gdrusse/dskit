@@ -1,4 +1,9 @@
-"""ADR-0182 real-data track: index reader, VIX-proxy pricing, condor backtest, configs."""
+"""ADR-0182 real-data track: index reader, condor backtest, configs.
+
+Black-76 and the smile quote model are dskit's (``dskit.pipeline.option_pricing``)
+and tested in ``tests/pipeline/test_option_pricing.py``; this file keeps only
+the child's use of them (the configs' calibration, the backtest's prices).
+"""
 
 import copy
 import json
@@ -12,12 +17,12 @@ import pytest
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.driver import run_walk_forward
-from dskit.pipeline.kinds_flow import Join
+from dskit.pipeline.kinds_flow import Join, KeyBy
+from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76
 from dskit.pipeline.planner import plan
 
 from index_options.nodes import CondorBacktest
 from index_options.observations import IndexCloseRows
-from index_options.pricing import VixProxyQuotes, black76
 
 YEARS = 21 / 252
 REAL = ("run-real-distribution.json", "run-real-har.json", "run-real-lightgbm.json",
@@ -85,37 +90,19 @@ def test_index_reader_and_join_over_a_real_onboarding_store(store_factory):
     vix = IndexCloseRows("vix", store.node_params(symbol="VIX")).run(None, {})
     assert [r["date"] for r in spx["records"]] == [_day(i) for i in range(6)]
     assert all(type(r["asof_ms"]) is int for r in spx["records"])
-    assert _day(1) not in vix["by_date"] and len(vix["by_date"]) == 5
+    assert set(IndexCloseRows.outputs) == {"records"}  # keying is dskit's keyby now
+    by_date = KeyBy("vix_by_date", {"key": "date", "value": "close"}).run(
+        SimpleNamespace(), {"records": vix["records"]})["table"]
+    assert _day(1) not in by_date and len(by_date) == 5
     joined = Join("market", {"key": "date", "how": "left",
                              "unmatched_fill": {"iv_index": None}}).run(
-        None, {"records": spx["records"], "iv_index": vix["by_date"]})["records"]
-    assert [r["iv_index"] for r in joined][:2] == [vix["by_date"][_day(0)], None]
+        None, {"records": spx["records"], "iv_index": by_date})["records"]
+    assert [r["iv_index"] for r in joined][:2] == [by_date[_day(0)], None]
     assert {k for r in joined for k in r} == {"instrument", "contract", "group", "close",
                                               "asof_ms", "date", "iv_index"}
 
 
 # -- pricing ------------------------------------------------------------------------------
-
-
-def test_black76_known_value_and_put_call_parity():
-    # ATM, F=K=100, vol 20%, 1y: 100 * (2 N(0.1) - 1)
-    assert black76("call", 100.0, 100.0, 0.2, 1.0) == pytest.approx(7.965567, abs=1e-6)
-    for strike in (80.0, 100.0, 125.0):
-        call = black76("call", 100.0, strike, 0.3, 0.5, rate=0.04)
-        put = black76("put", 100.0, strike, 0.3, 0.5, rate=0.04)
-        assert call - put == pytest.approx(math.exp(-0.02) * (100.0 - strike))
-
-
-def test_black76_monotonicity_and_refusals():
-    calls = [black76("call", 100.0, k, 0.2, YEARS) for k in (90, 95, 100, 105, 110)]
-    puts = [black76("put", 100.0, k, 0.2, YEARS) for k in (90, 95, 100, 105, 110)]
-    assert calls == sorted(calls, reverse=True) and puts == sorted(puts)
-    assert black76("put", 100.0, 95.0, 0.3, YEARS) > black76("put", 100.0, 95.0, 0.2, YEARS)
-    for args in (("fwd", 100.0, 100.0, 0.2, 1.0), ("call", 0.0, 100.0, 0.2, 1.0),
-                 ("call", 100.0, 100.0, 0.0, 1.0), ("call", 100.0, 100.0, 0.2, -1.0),
-                 ("call", 100.0, float("nan"), 0.2, 1.0)):
-        with pytest.raises(ValueError):
-            black76(*args)
 
 
 #: (atm_ratio, put_skew_per_z, call_skew_per_z, smile_curvature) for the proxy tests.
@@ -125,7 +112,7 @@ CHAIN_VIX, CHAIN_FORWARD, CHAIN_YEARS = 14.21, 7795.8, 30 / 365
 
 
 def _smile_iv(z, vix=20.0, atm_ratio=0.8, put=0.2, call=-0.05, curvature=0.04):
-    """The proxy IV written out independently of ``VixProxyQuotes``."""
+    """The proxy IV written out independently of ``VolIndexSmileQuotes``."""
     wing = put * -z if z < 0 else call * z
     return vix / 100 * (atm_ratio + wing + curvature * z ** 2)
 
@@ -134,80 +121,14 @@ def _strike(z, forward=1000.0, vix=20.0, years=YEARS):
     return forward * math.exp(z * vix / 100 * math.sqrt(years))
 
 
-def test_proxy_atm_iv_is_atm_ratio_times_vix():
-    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
-    assert quotes.iv(1000.0, 1000.0, 20.0, YEARS) == pytest.approx(0.8 * 0.20)
-    assert quotes.iv(5000.0, 5000.0, 35.0, 0.25) == pytest.approx(0.8 * 0.35)
-
-
-def test_proxy_put_wing_rises_with_depth():
-    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
-    zs = (-0.5, -1.0, -2.0, -3.0)
-    ivs = [quotes.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
-    assert ivs == pytest.approx([_smile_iv(z) for z in zs])
-    assert ivs == sorted(ivs) and ivs[0] > quotes.iv(1000.0, 1000.0, 20.0, YEARS)
-    # z = -2: 0.2 * (0.8 + 0.4 + 0.16) = 0.272
-    assert ivs[2] == pytest.approx(0.272)
-
-
-def test_proxy_call_wing_follows_call_skew_and_curvature():
-    zs = (0.5, 1.0, 2.0, 3.0)
-    straight = VixProxyQuotes(0.8, 0.2, -0.05, 0.0, 0.05, 0.05, 0.03, 0.0)
-    ivs = [straight.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
-    assert ivs == pytest.approx([0.2 * (0.8 - 0.05 * z) for z in zs])
-    assert ivs == sorted(ivs, reverse=True)  # negative call skew, no curvature: dips
-    curved = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
-    ivs = [curved.iv(1000.0, _strike(z), 20.0, YEARS) for z in zs]
-    assert ivs == pytest.approx([_smile_iv(z) for z in zs])
-    # the quadratic lifts the far wing back above ATM: z = 3 -> 0.2 * (0.8 - 0.15 + 0.36)
-    assert ivs[-1] == pytest.approx(0.202)
-    assert ivs[-1] > curved.iv(1000.0, 1000.0, 20.0, YEARS)
-    flat = VixProxyQuotes(1.0, 0.2, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0)
-    assert flat.iv(1000.0, _strike(2.0), 20.0, YEARS) == pytest.approx(0.2)
-
-
-def test_proxy_floor_applies():
-    assert VixProxyQuotes(0.1, 0, 0, 0, 0.3, 0, 0, 0).iv(1000.0, 1000.0, 20.0, YEARS) == 0.3
-    steep = VixProxyQuotes(0.8, 0.2, -1.0, 0.0, 0.05, 0.05, 0.03, 0.0)
-    # z = 1: 0.2 * (0.8 - 1.0) < 0, so the floor decides
-    assert steep.iv(1000.0, _strike(1.0), 20.0, YEARS) == 0.05
-
-
-def test_proxy_spread():
-    quotes = VixProxyQuotes(*SMILE, 0.05, 0.05, 0.03, 0.0)
-    bid, mid, ask = quotes.quote("put", 1000.0, 950.0, 20.0, YEARS)
-    z = math.log(950 / 1000) / (0.2 * math.sqrt(YEARS))
-    assert mid == pytest.approx(black76("put", 1000.0, 950.0, _smile_iv(z), YEARS))
-    assert ask - mid == pytest.approx(max(0.05, 0.03 * mid)) == pytest.approx(mid - bid)
-    far_bid, far_mid, far_ask = quotes.quote("call", 1000.0, 1400.0, 20.0, YEARS)
-    assert far_bid == 0.0 and far_ask == pytest.approx(far_mid + 0.05)
-
-
 def test_config_smile_matches_the_recorded_chain(child_root):
     params = _load(child_root, REAL[0])["pipeline"]["backtest"]["params"]
-    quotes = VixProxyQuotes(*(params[k] for k in VixProxyQuotes.KNOBS))
+    quotes = VolIndexSmileQuotes(*(params[k] for k in VolIndexSmileQuotes.KNOBS))
+    assert params["iv_ceiling"] == 2.0
     for z, real in ((-2.0, 0.190), (1.0, 0.105)):
         strike = _strike(z, CHAIN_FORWARD, CHAIN_VIX, CHAIN_YEARS)
         iv = quotes.iv(CHAIN_FORWARD, strike, CHAIN_VIX, CHAIN_YEARS)
         assert abs(iv - real) < 0.01, (z, iv)
-
-
-@pytest.mark.parametrize("knobs", [
-    (0.8, -0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0), (0.8, 0.1, 0.0, 0.0, 0.0, 0.05, 0.03, 0.0),
-    (0.8, 0.1, 0.0, 0.0, 0.05, -1, 0.03, 0.0), (0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 1.0, 0.0),
-    (0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, float("inf")),
-    (0.8, True, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
-    (0.0, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0), (-0.8, 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
-    (float("nan"), 0.1, 0.0, 0.0, 0.05, 0.05, 0.03, 0.0),
-    (0.8, 0.1, float("inf"), 0.0, 0.05, 0.05, 0.03, 0.0),
-    (0.8, 0.1, "-0.1", 0.0, 0.05, 0.05, 0.03, 0.0),
-    (0.8, 0.1, 0.0, -0.01, 0.05, 0.05, 0.03, 0.0),
-    (0.8, 0.1, 0.0, float("nan"), 0.05, 0.05, 0.03, 0.0),
-])
-def test_proxy_knob_refusal(knobs):
-    assert VixProxyQuotes.problems(*knobs)
-    with pytest.raises(ValueError):
-        VixProxyQuotes(*knobs)
 
 
 # -- CondorBacktest -----------------------------------------------------------------------
@@ -217,7 +138,7 @@ DRAWS = [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
 BT = {"split": "val", "hold_steps": 3, "short_q": 0.1, "wing_points": 25,
       "strike_increment": 5, "multiplier": 100, "fee_per_leg": 0.65,
       **dict(zip(("atm_ratio", "put_skew_per_z", "call_skew_per_z", "smile_curvature"), SMILE)),
-      "iv_floor": 0.05, "half_spread_min": 0.0, "half_spread_frac": 0.0,
+      "iv_floor": 0.05, "iv_ceiling": 2.0, "half_spread_min": 0.0, "half_spread_frac": 0.0,
       "trading_days_per_year": 252 * 3 // 21}  # T = 3 / 36 = 21 / 252
 
 
@@ -352,6 +273,8 @@ def test_no_usable_entry_refuses():
     {"atm_ratio": 0}, {"call_skew_per_z": float("nan")}, {"smile_curvature": -1},
     {"skew_per_z": 0.1},  # the pre-smile name is gone, no alias
     {"iv_floor": 0}, {"half_spread_frac": 1}, {"rate": "0"}, {"surprise": 1},
+    {"iv_ceiling": 0.05},  # not above the floor
+    {"call_skew_per_z": -1.0},  # the call wing would dip below zero before the floor
 ])
 def test_backtest_knob_refusal(change):
     with pytest.raises(ConfigError):
@@ -360,7 +283,7 @@ def test_backtest_knob_refusal(change):
 
 def test_backtest_requires_wings_and_proxy_knobs():
     for missing in ("wing_points", "atm_ratio", "put_skew_per_z", "call_skew_per_z",
-                    "smile_curvature", "multiplier", "split"):
+                    "smile_curvature", "iv_ceiling", "multiplier", "split"):
         with pytest.raises(ConfigError):
             CondorBacktest("bt", {k: v for k, v in BT.items() if k != missing})
 
@@ -376,8 +299,8 @@ def _load(child_root, name):
 def test_real_configs_plan(child_root, monkeypatch, name):
     monkeypatch.chdir(child_root)
     planned = plan(load_document(str(child_root / "configs" / name)))
-    assert {"spx", "vix", "market", "rv", "labels", "fwd", "model", "score", "condor",
-            "backtest"} == set(planned.order)
+    assert {"spx", "vix", "vix_by_date", "market", "rv", "labels", "fwd", "model", "score",
+            "condor", "backtest"} == set(planned.order)
 
 
 def test_real_zoo_plans_and_lists_every_real_rung(child_root, monkeypatch):
@@ -385,8 +308,8 @@ def test_real_zoo_plans_and_lists_every_real_rung(child_root, monkeypatch):
     zoo = _load(child_root, "run-real-zoo.json")
     candidates = zoo["stages"]["plan"]["params"]["candidates"]
     assert sorted(c["path"] for c in candidates) == sorted(REAL)
-    assert {"pipeline.spx", "pipeline.vix", "pipeline.market", "pipeline.backtest",
-            "walkforward"} <= set(zoo["stages"]["plan"]["params"]["contract_paths"])
+    assert {"pipeline.spx", "pipeline.vix", "pipeline.vix_by_date", "pipeline.market",
+            "pipeline.backtest", "walkforward"} <= set(zoo["stages"]["plan"]["params"]["contract_paths"])
     assert zoo["stages"]["approval"]["params"]["approved_by"] == "PENDING-PLAN-REVIEW"
     PipelineDocument.from_obj(zoo)
 
@@ -420,7 +343,11 @@ def test_real_config_agreements(child_root):
     assert doc["walkforward"]["embargo_days"] >= 35
     assert backtest["split"] == pipe["score"]["params"]["split"] != \
         pipe["model"]["params"]["fit_split"]
-    assert pipe["market"]["inputs"] == {"records": "$spx.records", "iv_index": "$vix.by_date"}
+    assert pipe["market"]["inputs"] == {"records": "$spx.records",
+                                        "iv_index": "$vix_by_date.table"}
+    assert pipe["vix_by_date"] == {
+        "uses": "dskit.pipeline.kinds_flow:KeyBy", "inputs": {"records": "$vix.records"},
+        "params": {"key": "date", "value": "close"}, "notes": pipe["vix_by_date"]["notes"]}
 
 
 def test_source_configs_check_against_the_cboe_pack(child_root):

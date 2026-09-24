@@ -244,10 +244,10 @@ class IndexCloseRows(ObservationRows):
     ``contracts.py`` — those still validate the fixture track and are not
     loosened here. It projects the declared ``symbol`` into the envelope
     the numpy feature nodes read (``instrument``/``contract``/``group`` =
-    the symbol, ``close``, ``asof_ms``, ``date``) and also emits
-    ``by_date`` — ``{date: close}`` — the keyed side table dskit's
-    ``Join`` needs, so a second instance (``symbol: "VIX"``) joins onto
-    the first as ``iv_index`` with no child join code.
+    the symbol, ``close``, ``asof_ms``, ``date``). A second instance
+    (``symbol: "VIX"``) joins onto the first as ``iv_index`` through
+    dskit's ``keyby`` (``key: date``, ``value: close``) and ``join`` kinds,
+    with no child join or keying code.
 
     ``asof_ms`` is the date's UTC midnight: every daily feature and label
     shares that stamp, so the walk-forward cut is consistent; it is not a
@@ -264,14 +264,12 @@ class IndexCloseRows(ObservationRows):
 
     Examples
     --------
-    SPX closes and VIX as a side table::
+    SPX closes::
 
         spx = IndexCloseRows("spx", {"root": "./ob", "source": "cboe-index", "symbol": "SPX"})
-        vix = IndexCloseRows("vix", {"root": "./ob", "source": "cboe-index", "symbol": "VIX"})
-        rows, table = spx.run(None, {})["records"], vix.run(None, {})["by_date"]
+        rows = spx.run(None, {})["records"]
     """
 
-    outputs = ("records", "by_date")
     _PARAMS = narrow_params(
         ObservationRows._PARAMS, "stream", "key_fields", "ts_field", "ts_unit",
         "ts_out", "shared_fields",
@@ -405,21 +403,3 @@ class IndexCloseRows(ObservationRows):
                         "close": float(close), "asof_ms": record["asof_ms"],
                         "date": record["date"]})
         return sorted(out, key=lambda row: row["asof_ms"])
-
-    def run(self, ctx, inputs):
-        """Emit the rows and the ``{date: close}`` side table.
-
-        Parameters
-        ----------
-        ctx : NodeContext or None
-            Unused.
-        inputs : dict
-            Empty.
-
-        Returns
-        -------
-        dict
-            ``records`` and ``by_date``.
-        """
-        records = super().run(ctx, inputs)["records"]
-        return {"records": records, "by_date": {row["date"]: row["close"] for row in records}}

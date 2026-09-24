@@ -1,4 +1,4 @@
-"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby.
+"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby.
 
 Two verbs read a single stream; the RELATIONAL four combine, project or
 reduce streams instead of reading one.
@@ -23,7 +23,10 @@ venue is privileged, and nothing here may special-case a pair).
 record per group of declared keys, each carrying declared aggregates over
 a closed op table — and it refuses like the three: a mean over the rows
 that happened to carry a field is a different number from the one the
-document declared.
+document declared. ``keyby`` is the SHAPE change ADR-0086 ruled a
+separate, later kind (it called it ``pivot``): a record stream becomes a
+mapping keyed by one field's values — the side table ``join`` reads —
+and it refuses like the rest.
 
 Record tolerance — the rule for the single-stream verbs, here and in
 :mod:`dskit.pipeline.kinds_banking`: records flowing through them are
@@ -77,6 +80,7 @@ __all__ = [
     "Filter",
     "GroupBy",
     "Join",
+    "KeyBy",
     "clause_holds",
     "clause_problems",
     "register",
@@ -2230,12 +2234,220 @@ class GroupBy(Node):
         return {"records": out, "metrics": {"rows_in": len(records), "groups": len(out)}}
 
 
+class KeyBy(Node):
+    """Turn a record stream into a keyed side table — the ``keyby`` kind.
+
+    Role ``transform``: the SHAPE change ADR-0086 ruled a separate, later
+    kind (named there ``pivot``; ``keyby`` because a pandas-style pivot is
+    a long-to-wide reshape, which this is not). :class:`Join` reads side
+    tables as ``{key: value}`` mappings and nothing produced one from a
+    stream, so a reader that fed a join grew its own ``by_<key>`` output.
+    This is that output, once.
+
+    Each row contributes ``{row[key]: row[value]}``; wired onto a
+    :class:`Join` port, the port's name becomes the joined field. The key
+    is ONE field: a composite key has no JSON-object spelling (ADR-0086).
+    It refuses like the other relational verbs: a row missing ``key`` or
+    ``value``, a key value that is not finite or not hashable, and — unless
+    ``allow_fanout`` is declared — a key seen twice. Declared, EVERY value
+    is a list of the key's values in input order, which is exactly the
+    one-to-many shape :class:`Join` accepts under its own ``allow_fanout``.
+    Rows may be mappings or attribute-bearing records (:func:`_field`).
+    Keys keep first-seen input order.
+
+    Outputs: ``table`` (the mapping) and ``metrics`` (``rows_in`` /
+    ``keys`` — the census that shows a stream collapsing to few keys).
+
+    Parameters
+    ----------
+    params : dict
+        ``key`` (REQUIRED, one field name) — the field whose values index
+        the table; ``value`` (REQUIRED, one field name) — the field each
+        entry holds; ``allow_fanout`` (bool, default ``False``) — keep
+        every row of a repeated key as a list instead of refusing.
+
+    Examples
+    --------
+    A vol-index close per date, joined onto an index stream as
+    ``iv_index``::
+
+        table = KeyBy("iv_by_date", {"key": "date", "value": "close"}).run(
+            ctx, {"records": vol_rows})["table"]
+        Join("market", {"key": "date", "how": "left",
+                        "unmatched_fill": {"iv_index": None}}).run(
+            ctx, {"records": index_rows, "iv_index": table})
+    """
+
+    role = "transform"
+    outputs = ("table", "metrics")
+
+    #: The class's own knobs — anything else is refused by name.
+    _PARAMS = ("allow_fanout", "key", "value")
+
+    #: The two required field-name knobs, with what each one says.
+    _FIELDS = (
+        ("key", "which field indexes the table"),
+        ("value", "which field each entry holds"),
+    )
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — it reads the wired stream, nothing else (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        _bool_problems(problems, params, ("allow_fanout",))
+        for name, why in cls._FIELDS:
+            field = params.get(name)
+            if field is None:
+                problems.append(f"{name} is required — say {why}")
+            elif not is_node_ref(field) and (not isinstance(field, str) or not field):
+                problems.append(
+                    f"{name} must be ONE non-empty field name, got {field!r} — a "
+                    "composite key has no JSON-object spelling (ADR-0086)"
+                )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with the materialized inputs, empty when none.
+
+        Container shape only — the stream is never walked here, because a
+        one-shot iterable consumed by validation would reach ``run``
+        exhausted.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` — a list or tuple of rows; the only port.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
+        records = inputs.get("records")
+        if isinstance(records, (str, bytes, dict)) or not isinstance(
+            records, (list, tuple)
+        ):
+            return [
+                "records must be a list or tuple of rows (a one-shot iterable "
+                f"would be consumed by validation), got {records!r}"
+            ]
+        return []
+
+    def _cell(self, index, row, name):
+        """One row's value for a declared field, refusing an absent one by name."""
+        value = _field(row, name)
+        if value is _MISSING:
+            raise ValueError(
+                f"{self.key}: row {index} carries no {name!r} — a keyed table "
+                "built from the rows that happened to carry a field is not the "
+                "table the document declared"
+            )
+        return value
+
+    def _identity(self, index, row):
+        """One row's key value, refusing one nothing can be keyed by."""
+        name = self.params["key"]
+        value = self._cell(index, row, name)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(
+                f"{self.key}: row {index} has an unusable key value {value!r} "
+                f"for {name!r} — NaN and Infinity have no stable identity"
+            )
+        try:
+            hash(value)
+        except TypeError as exc:
+            raise ValueError(
+                f"{self.key}: row {index} has an unusable key value {value!r} "
+                f"for {name!r} — a key must be something a mapping can be "
+                f"keyed by ({exc})"
+            ) from exc
+        return value
+
+    def run(self, ctx, inputs):
+        """Key the stream's ``value`` fields by their ``key`` fields.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            ``records`` — the rows to key (list or tuple).
+
+        Returns
+        -------
+        dict
+            ``table`` — ``{key: value}``, or ``{key: [values]}`` under
+            ``allow_fanout``, in first-seen key order; ``metrics`` —
+            ``rows_in`` and ``keys``.
+
+        Raises
+        ------
+        ValueError
+            On a row missing ``key`` or ``value``, an unusable key value,
+            or — without ``allow_fanout`` — a repeated key.
+        """
+        records = inputs["records"]
+        fanout = self.params.get("allow_fanout", False)
+        table = {}
+        for index, row in enumerate(records):
+            identity = self._identity(index, row)
+            value = self._cell(index, row, self.params["value"])
+            if fanout:
+                table.setdefault(identity, []).append(value)
+            elif identity in table:
+                raise ValueError(
+                    f"{self.key}: row {index} repeats {self.params['key']}="
+                    f"{identity!r} — a keyed table holds one value per key, so "
+                    "a repeat is refused rather than silently overwritten; "
+                    "declare allow_fanout to keep every value as a list"
+                )
+            else:
+                table[identity] = value
+        self.log.info(
+            "keyby %s: %d record(s) to %d key(s)",
+            self.params["key"],
+            len(records),
+            len(table),
+        )
+        return {"table": table, "metrics": {"rows_in": len(records), "keys": len(table)}}
+
 # ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------
 
 #: The kinds this module ships, in registration order — the
-#: single-stream verbs, then the four relational ones. The banking chain
+#: single-stream verbs, then the five relational ones. The banking chain
 #: registers separately, from :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
     ("filter", Filter),
@@ -2244,11 +2456,12 @@ _KINDS = (
     ("join", Join),
     ("derive", Derive),
     ("groupby", GroupBy),
+    ("keyby", KeyBy),
 )
 
 
 def register(registry=None):
-    """Register the six record-flow kinds, ``owned=False``.
+    """Register the seven record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the

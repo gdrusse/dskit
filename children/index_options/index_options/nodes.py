@@ -12,8 +12,10 @@ from dskit.pipeline.distribution_scores import (
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.option_pricing import VolIndexSmileQuotes
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
+from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import (
     CashIndexContract,
@@ -26,8 +28,7 @@ from .contracts import (
     _integer,
     _text,
 )
-from .distribution import _LEGS, CondorGeometry, condor_payoff, tail_mean
-from .pricing import VixProxyQuotes
+from .distribution import _LEGS, CondorGeometry, condor_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic"]
 
@@ -354,16 +355,6 @@ class CondorDistributionReport(Node):
         return {"metrics": metrics, "report": JsonArtifact(report)}
 
 
-def _max_drawdown(pnls):
-    """Return the largest peak-to-trough fall of the cumulative P&L, baseline 0."""
-    total = peak = worst = 0.0
-    for pnl in pnls:
-        total += pnl
-        peak = max(peak, total)
-        worst = max(worst, peak - total)
-    return worst
-
-
 class CondorBacktest(Node):
     """Non-overlapping iron condors over one split, priced by the VIX proxy.
 
@@ -392,7 +383,12 @@ class CondorBacktest(Node):
     declared); every strike rounds to ``strike_increment``. Short legs sell
     at the proxy bid, long legs buy at the proxy ask; credit is
     ``(short bids - long asks) * multiplier - 4 * fee_per_leg`` USD, fees
-    at entry only (cash settlement). A condor whose rounded strikes are not
+    at entry only (cash settlement). Pricing, tail mean and drawdown are
+    dskit's (:class:`~dskit.pipeline.option_pricing.VolIndexSmileQuotes`
+    with the VIX close as its vol-index level,
+    :func:`~dskit.pipeline.stats.lower_tail_mean`,
+    :func:`~dskit.pipeline.stats.max_drawdown`); this node owns only the
+    condor. A condor whose rounded strikes are not
     strictly increasing, or whose credit is not positive, is skipped and
     counted. Role ``score``; ``decision_eligible`` is false while pricing
     is the proxy.
@@ -405,10 +401,10 @@ class CondorBacktest(Node):
         Required: ``split``, ``short_q`` (in (0, 0.5)), one of
         ``wing_points`` / ``wing_z`` (positive), ``strike_increment``
         (positive), ``multiplier`` (int >= 1), ``fee_per_leg`` (>= 0) and
-        the :class:`~index_options.pricing.VixProxyQuotes` knobs
-        ``atm_ratio``, ``put_skew_per_z``, ``call_skew_per_z``,
-        ``smile_curvature``, ``iv_floor``, ``half_spread_min``,
-        ``half_spread_frac``. Optional: ``hold_steps`` (21),
+        the :class:`~dskit.pipeline.option_pricing.VolIndexSmileQuotes`
+        knobs ``atm_ratio``, ``put_skew_per_z``, ``call_skew_per_z``,
+        ``smile_curvature``, ``iv_floor``, ``iv_ceiling``,
+        ``half_spread_min``, ``half_spread_frac``. Optional: ``hold_steps`` (21),
         ``trading_days_per_year`` (252; ``T = hold_steps / it``),
         ``min_edge_usd`` (0), ``cvar_alpha`` (0.95), ``rate`` (0).
 
@@ -420,7 +416,8 @@ class CondorBacktest(Node):
             "split": "val", "short_q": 0.1, "wing_z": 0.5, "strike_increment": 5,
             "multiplier": 100, "fee_per_leg": 0.65, "atm_ratio": 0.794,
             "put_skew_per_z": 0.176, "call_skew_per_z": -0.064, "smile_curvature": 0.045,
-            "iv_floor": 0.05, "half_spread_min": 0.20, "half_spread_frac": 0.005,
+            "iv_floor": 0.05, "iv_ceiling": 2.0, "half_spread_min": 0.20,
+            "half_spread_frac": 0.005,
         })
         out = node.run(ctx, {"forecasts": rows})
         out["metrics"]["model_total_pnl_usd"]
@@ -437,7 +434,7 @@ class CondorBacktest(Node):
                 "cvar_alpha": 0.95, "rate": 0.0}
     _REQUIRED = ("split", "short_q", "strike_increment", "multiplier", "fee_per_leg",
                  "atm_ratio", "put_skew_per_z", "call_skew_per_z", "smile_curvature",
-                 "iv_floor", "half_spread_min", "half_spread_frac")
+                 "iv_floor", "iv_ceiling", "half_spread_min", "half_spread_frac")
     _WINGS = ("wing_points", "wing_z")
     _PARAMS = tuple(sorted(_REQUIRED + _WINGS + tuple(DEFAULTS)))
     FORWARD_FIELD = "close"
@@ -485,8 +482,8 @@ class CondorBacktest(Node):
         alpha = params.get("cvar_alpha", cls.DEFAULTS["cvar_alpha"])
         if not number_ok(alpha) or not 0 < alpha < 1:
             problems.append(f"cvar_alpha must be in (0, 1), got {alpha!r}")
-        problems.extend(VixProxyQuotes.problems(
-            *(params.get(k, cls.DEFAULTS.get(k)) for k in VixProxyQuotes.KNOBS)))
+        problems.extend(VolIndexSmileQuotes.problems(
+            *(params.get(k, cls.DEFAULTS.get(k)) for k in VolIndexSmileQuotes.KNOBS)))
         return problems
 
     def validate_inputs(self, inputs):
@@ -626,8 +623,8 @@ class CondorBacktest(Node):
                 f"{book}_total_pnl_usd": sum(pnls),
                 f"{book}_mean_pnl_usd": sum(pnls) / n if n else 0.0,
                 f"{book}_hit_rate": sum(p > 0 for p in pnls) / n if n else 0.0,
-                f"{book}_cvar_usd": tail_mean(pnls, alpha) if n else 0.0,
-                f"{book}_max_drawdown_usd": _max_drawdown(pnls),
+                f"{book}_cvar_usd": lower_tail_mean(pnls, alpha) if n else 0.0,
+                f"{book}_max_drawdown_usd": max_drawdown(pnls),
                 f"{book}_mean_credit_usd":
                     sum(c["credit_usd"] for c in traded) / n if n else 0.0,
             })
@@ -659,7 +656,7 @@ class CondorBacktest(Node):
         ValueError
             When no in-split row can be an entry.
         """
-        quotes = VixProxyQuotes(*(self._knob(k) for k in VixProxyQuotes.KNOBS))
+        quotes = VolIndexSmileQuotes(*(self._knob(k) for k in VolIndexSmileQuotes.KNOBS))
         years = self._knob("hold_steps") / self._knob("trading_days_per_year")
         entries, skipped, n_in_split = self._entries(ctx, inputs["forecasts"])
         if not entries:

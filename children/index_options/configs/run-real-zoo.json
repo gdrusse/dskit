@@ -1,6 +1,6 @@
 {
   "name": "index-options-real-zoo",
-  "notes": "ADR-0182 zoo over the REAL rungs (Cboe SPX + VIX): empirical (R0a), log-HAR (R1), LightGBM, the VIX-only market scale and HAR/LightGBM with VIX, identical except 'model' (contract_paths pin the readers, join, features, scores, condor report, backtest and walkforward). Run: python -m dskit.pipeline staged configs/run-real-zoo.json --asof <today>. First run is plan-only: paste the printed inventory sha256 into approval, set approved_by, run again. Primary score is twCRPS; the backtest metrics ride along per fold.",
+  "notes": "ADR-0182 zoo over the REAL rungs (Cboe SPX + VIX): empirical (R0a), log-HAR (R1), LightGBM, the VIX-only market scale and HAR/LightGBM with VIX, identical except 'model' (contract_paths pin the readers, keyby, join, features, scores, condor report, backtest and walkforward). Run: python -m dskit.pipeline staged configs/run-real-zoo.json --asof <today>. First run is plan-only: paste the printed inventory sha256 into approval, set approved_by, run again. Primary score is twCRPS; the backtest metrics ride along per fold.",
   "pipeline": {
     "market": {
       "uses": "index_options.observations:IndexCloseRows",
@@ -93,6 +93,7 @@
         "contract_paths": [
           "pipeline.spx",
           "pipeline.vix",
+          "pipeline.vix_by_date",
           "pipeline.market",
           "pipeline.rv",
           "pipeline.labels",

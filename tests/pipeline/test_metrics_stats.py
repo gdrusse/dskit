@@ -23,6 +23,8 @@ from dskit.pipeline.stats import (
     cluster_bootstrap_pvalue,
     cluster_bootstrap_t,
     correction,
+    lower_tail_mean,
+    max_drawdown,
     max_informative_horizon,
     newey_west_mean,
     no_correction,
@@ -661,3 +663,36 @@ class TestStudentTailEnforcesItsPreconditions:
 
     def test_an_ordinary_call_still_works(self):
         assert student_t_sf(0.0, 8) == pytest.approx(0.5)
+
+
+class TestPnlSeriesSummaries:
+    """``lower_tail_mean`` / ``max_drawdown`` (moved from index_options, ADR-0182)."""
+
+    def test_lower_tail_mean_is_the_worst_share(self):
+        assert lower_tail_mean([5, 1, 2, 3, 4, -1, 0, 6, 7, 8], 0.8) == pytest.approx(-0.5)
+        assert lower_tail_mean([3.0], 0.95) == 3.0  # the tail is never empty
+
+    def test_lower_tail_mean_counts_the_tail_exactly(self):
+        # (1 - 0.95) * 200 is 10.000000000000009 in floating point: 10 values, not 11
+        assert lower_tail_mean(list(range(200)), 0.95) == pytest.approx(4.5)
+        # 5% of 3 rounds UP to one value
+        assert lower_tail_mean([10.0, -7.0, 2.0], 0.95) == -7.0
+
+    @pytest.mark.parametrize("values, alpha", [
+        ([], 0.95), ([1.0, float("nan")], 0.95), ([1.0], 0.0), ([1.0], 1.0),
+        ([1.0], True), ([1.0], float("nan")),
+    ])
+    def test_lower_tail_mean_refusals(self, values, alpha):
+        with pytest.raises(ValueError):
+            lower_tail_mean(values, alpha)
+
+    def test_max_drawdown_from_a_zero_baseline(self):
+        assert max_drawdown([10.0, -25.0, 5.0]) == pytest.approx(25.0)
+        assert max_drawdown([-3.0, -2.0, 4.0, -1.0]) == pytest.approx(5.0)
+        assert max_drawdown([1.0, 2.0, 3.0]) == 0.0
+        assert max_drawdown([]) == 0.0
+        assert max_drawdown(iter([5.0, -1.0])) == pytest.approx(1.0)
+
+    def test_max_drawdown_refuses_a_non_finite_increment(self):
+        with pytest.raises(ValueError, match="finite"):
+            max_drawdown([1.0, float("inf")])

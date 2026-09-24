@@ -18,13 +18,24 @@
         "source": "cboe-index",
         "symbol": "VIX"
       },
-      "notes": "VIX closes; only its by_date side table is used."
+      "notes": "VIX closes, keyed by date in vix_by_date for the join."
+    },
+    "vix_by_date": {
+      "uses": "dskit.pipeline.kinds_flow:KeyBy",
+      "inputs": {
+        "records": "$vix.records"
+      },
+      "params": {
+        "key": "date",
+        "value": "close"
+      },
+      "notes": "dskit keyby: {date: VIX close}, the side table the join reads (one close per date; a repeated date refuses)."
     },
     "market": {
       "uses": "dskit.pipeline.kinds_flow:Join",
       "inputs": {
         "records": "$spx.records",
-        "iv_index": "$vix.by_date"
+        "iv_index": "$vix_by_date.table"
       },
       "params": {
         "key": "date",
@@ -204,11 +215,12 @@
         "call_skew_per_z": -0.064,
         "smile_curvature": 0.045,
         "iv_floor": 0.05,
+        "iv_ceiling": 2.0,
         "half_spread_min": 0.2,
         "half_spread_frac": 0.005,
         "rate": 0.0
       },
-      "notes": "ADR-0182 VIX-proxy condor backtest over val: one condor every 21 trading days (hold_steps = the label horizon, so entries never overlap and settle at close x exp(label)). Shorts at the forecast's 10%/90% quantiles; wings wing_z = 0.5 of each book's own scale beyond the shorts rather than fixed points, because SPX ran ~460 in 1995 and ~6600+ in 2026 and a fixed 50-point wing is ~11% of spot in one era and <1% in the other. SPX strikes list every 5 points; $0.65/leg is a retail commission. The proxy smile (IV = VIX/100 x (0.794 + 0.176 per z below the forward - 0.064 per z above + 0.045 z^2), 5% IV floor, zero rate) and the 0.20 pt / 0.5% half-spread are a least-squares fit to ONE recorded SPXW chain (2026-09-23, 30 DTE, VIX 14.21; ADR-0182 amendment); skew moves with the regime, so absolute P&L is indicative, the model vs always vs implied comparison on identical prices is the signal. Never decision-eligible."
+      "notes": "ADR-0182 VIX-proxy condor backtest over val: one condor every 21 trading days (hold_steps = the label horizon, so entries never overlap and settle at close x exp(label)). Shorts at the forecast's 10%/90% quantiles; wings wing_z = 0.5 of each book's own scale beyond the shorts rather than fixed points, because SPX ran ~460 in 1995 and ~6600+ in 2026 and a fixed 50-point wing is ~11% of spot in one era and <1% in the other. SPX strikes list every 5 points; $0.65/leg is a retail commission. The proxy smile (IV = VIX/100 x (0.794 + 0.176 per z below the forward - 0.064 per z above + 0.045 z^2), 5% IV floor, 200% IV ceiling, zero rate) and the 0.20 pt / 0.5% half-spread are a least-squares fit to ONE recorded SPXW chain (2026-09-23, 30 DTE, VIX 14.21; ADR-0182 amendment); skew moves with the regime, so absolute P&L is indicative, the model vs always vs implied comparison on identical prices is the signal. Never decision-eligible."
     }
   },
   "walkforward": {

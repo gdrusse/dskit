@@ -143,6 +143,7 @@ from dskit.pipeline.kinds_flow import (
     Filter,
     GroupBy,
     Join,
+    KeyBy,
 )
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
@@ -235,6 +236,7 @@ __all__ = [
     "HpoGrid",
     "OneStandardErrorSelector",
     "Join",
+    "KeyBy",
     "Node",
     "NodeContext",
     "NodeKindRegistry",

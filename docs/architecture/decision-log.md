@@ -22582,3 +22582,54 @@ stream: adding a symbol needs a new source — documented). Child on
 cuts (EOD convention, not a leak). Child suite: all new tests pass; 6
 `test_integration.py` CLI failures reproduce unchanged on `3204d2b` (their
 subprocess resolves the stale `~/dskit` install) — environmental.
+
+**Amendment (2026-09-23, tier placement; owner rule "If it needs to be in
+dskit, build there. If specific to this project, have it as A WRAPPER in
+the child").** Generic code the manifest put in the child moves to tier-1
+dskit (stdlib only, purity gate green); the child keeps thin domain
+wrappers. Reuse check first (origin/main, branches, children): no option
+pricing existed anywhere; `kinds_report.RunReport._drawdown` reads a level
+curve (negative, first-point baseline) and `production/accounting.py`'s is
+Decimal/book-bound; `libs/pyomo._weighted_cvar` is the weighted
+Rockafellar-Uryasev form inside the optimizer pack; `TableFile` keys a
+FILE, `GroupBy` reduces to rows and `Join` only consumes `{key: value}` —
+so nothing turned a stream into a side table, which ADR-0086 had ruled a
+separate later kind (`pivot`).
+
+- `dskit/pipeline/option_pricing.py` (new): `black76` and
+  `VolIndexSmileQuotes` — the former child `VixProxyQuotes`, renamed
+  venue-neutral (the level is any vol index in percent: VIX/SPX, VXN/NDX,
+  RVX/RUT), same knobs plus two review fixes. (Major) a REQUIRED
+  `iv_ceiling`, above `iv_floor`, clamps IV from above; the configs use
+  2.0. Measured, not the review's figure: at VIX 15 and T = 1/365 the
+  calibrated smile prices a 10% OTM put at ~169% (under 2.0) and a 15% OTM
+  put at ~356% (clamped); the test pins both. (Minor) `problems()` refuses
+  a knob set whose pre-floor smile reaches zero or below on either wing
+  (minimum of `atm + slope z + curvature z^2` over z >= 0; a negative
+  slope with no curvature is unbounded), so the floor never masks a bad
+  calibration; the 2026-09-23 fit's call-wing minimum is ~0.771. The
+  one-day calibration evidence moved into the module docstring. Tests:
+  `tests/pipeline/test_option_pricing.py`.
+- `dskit/pipeline/stats.py`: `lower_tail_mean` (the child `tail_mean`,
+  now refusing an empty series, a non-finite value and alpha outside
+  (0, 1)) and `max_drawdown` (the child `_max_drawdown`, zero baseline,
+  refusing a non-finite increment) — descriptive summaries of an ordered
+  P&L series beside the tests; `metrics.py` is per-observation losses, so
+  it was not the home.
+- `dskit/pipeline/kinds_flow.py`: kind `keyby` (`KeyBy`, role transform,
+  serving `pure`, `owned=False`) — ADR-0086's deferred pivot, named
+  `keyby` because a pandas pivot is a long-to-wide reshape. Params `key`
+  and `value` (ONE field each: a composite key has no JSON-object
+  spelling) and `allow_fanout` (default false: a repeated key refuses;
+  declared, every value is a list — the one-to-many shape `join` accepts
+  under its own `allow_fanout`). Refuses by name a row missing either
+  field and a NaN/Infinity or unhashable key. Outputs `table`, `metrics`
+  (`rows_in`, `keys`). Added to the conformance, serving-effect, export
+  and registration pins.
+- Child: `pricing.py` deleted; `nodes.py`/`distribution.py` import the
+  above; `CondorBacktest` requires `iv_ceiling`. `IndexCloseRows` loses
+  its `by_date` output (back to `records` only). All six
+  `run-real-*.json` wire `vix` -> `vix_by_date` (`kinds_flow:KeyBy`, key
+  `date`, value `close`) -> `market` (`Join`, port `iv_index`) and add
+  `iv_ceiling: 2.0`; `run-real-zoo.json` pins `pipeline.vix_by_date`. The
+  six stay identical outside `model` (tested). Manifest 55 -> 54 files.

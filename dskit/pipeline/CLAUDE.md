@@ -713,7 +713,8 @@ dskit/pipeline/
 ├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
 │                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby —
+│                      flow verbs (keyby: records -> the keyed side table join reads)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
@@ -735,7 +736,12 @@ dskit/pipeline/
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
-│                      registry; no-information vs mean (Clark–West, h*)
+│                      registry; no-information vs mean (Clark–West, h*);
+│                      P&L series summaries lower_tail_mean + max_drawdown
+├── option_pricing.py black76 (European on a forward) + VolIndexSmileQuotes:
+│                      proxy leg bid/ask from a vol-index close, IV clamped
+│                      to [floor, ceiling], a smile that dips below zero refused
+│                      (ADR-0182 tier placement)
 ├── false_signal.py    pi_hat + a widened pi_widened per signal, from
 │                      out-of-fold evidence and a scramble null (ADR-0152);
 │                      pi_widened is a widened point estimate, not a bound

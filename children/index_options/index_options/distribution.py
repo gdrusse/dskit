@@ -16,10 +16,11 @@ synthetic research diagnostic: no quotes, no fills, never decision-eligible.
 import math
 
 from dskit.pipeline.records import number_ok
+from dskit.pipeline.stats import lower_tail_mean
 
 from .contracts import leg_intrinsic
 
-__all__ = ["CondorGeometry", "condor_payoff", "strike_z", "tail_mean"]
+__all__ = ["CondorGeometry", "condor_payoff", "strike_z"]
 
 #: Leg order and signed quantities, matching ``DefinedRiskCondor``.
 _LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
@@ -45,27 +46,6 @@ def condor_payoff(level, strikes):
     """
     return sum(sign * leg_intrinsic(right, k, level)
                for (right, sign), k in zip(_LEGS, strikes))
-
-
-def tail_mean(values, alpha):
-    """Return the mean of the worst ``1 - alpha`` share of ``values``.
-
-    Parameters
-    ----------
-    values : sequence of float
-        At least one value; lower is worse.
-    alpha : float
-        Tail level in ``(0, 1)``.
-
-    Returns
-    -------
-    float
-        The lower-tail mean (CVaR of a P&L series).
-    """
-    ordered = sorted(values)
-    # round first: (1 - 0.95) * 200 is 10.000000000000009 in binary floating point
-    tail = max(1, math.ceil(round((1 - alpha) * len(ordered), 9)))
-    return sum(ordered[:tail]) / tail
 
 
 def strike_z(strike, forward, reference_scale):
@@ -193,9 +173,10 @@ class CondorGeometry:
         Returns
         -------
         float
-            The tail mean (lower is worse).
+            The tail mean (lower is worse), dskit's
+            :func:`~dskit.pipeline.stats.lower_tail_mean`.
         """
-        return tail_mean(pnls, self.cvar_alpha)
+        return lower_tail_mean(pnls, self.cvar_alpha)
 
     def evaluate(self, draws_z, outcome_z, forward, scale):
         """Evaluate one entry under its forecast and, if known, its outcome.

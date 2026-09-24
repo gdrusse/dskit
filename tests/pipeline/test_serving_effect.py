@@ -82,6 +82,7 @@ KIND_EFFECTS = {
     "groupby": ("pure", "pure"),
     "hpo-grid": ("forbidden", "forbidden"),
     "join": ("pure", "pure"),
+    "keyby": ("pure", "pure"),
     "records-write": ("forbidden", "forbidden"),
     "replay": ("forbidden", "forbidden"),
     "run-report": ("forbidden", "forbidden"),

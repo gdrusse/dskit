@@ -42,7 +42,7 @@ from dskit.pipeline.synthetic_nodes import SynthClip
 #: The kinds each module owns after the split — the pin that catches a
 #: class drifting back across the boundary.
 BANKING_KINDS = ("event-bank", "eligibility", "banking-report")
-FLOW_KINDS = ("filter", "event-grid", "concat", "join", "derive", "groupby")
+FLOW_KINDS = ("filter", "event-grid", "concat", "join", "derive", "groupby", "keyby")
 
 
 def _rec(instrument, contract, asof_ms, **extra):
@@ -81,6 +81,7 @@ class TestModuleHome:
             "Filter",
             "GroupBy",
             "Join",
+            "KeyBy",
             "clause_holds",
             "clause_problems",
             "register",

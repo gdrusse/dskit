@@ -14,6 +14,9 @@ Use README.md for installation, the temporary demo and focused tests.
   synthetic-only; IndexCloseRows bypasses it because closes are not option rows.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
+- Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
+  lower_tail_mean/max_drawdown (stats) and keyby (kinds_flow) live in
+  dskit.pipeline; this child keeps only condor/index domain code.
 - Reuse parent acquisition, deduplication, vintage, fingerprint, artifacts and
   journal seams. Generic gaps require an approved upstream proposal, not local
   plumbing. Do not add registries, readers, fit loops or execution loops.
@@ -41,8 +44,8 @@ Use README.md for installation, the temporary demo and focused tests.
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
-                           # distribution.py (condor under a forecast, ADR-0168),
-                           # pricing.py (Black-76 + VIX proxy quotes, ADR-0182)
+                           # distribution.py (condor under a forecast, ADR-0168);
+                           # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),

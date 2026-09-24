@@ -154,8 +154,9 @@ python -m dskit.pipeline staged configs/run-real-zoo.json --asof 2026-09-23
 ```
 
 - `IndexCloseRows` projects one symbol of `index_daily` into the envelope the
-  feature nodes read and emits a `by_date` side table; the configs join VIX onto
-  SPX with dskit's `Join` (`how: left`), so a pre-1990 row keeps `iv_index` null.
+  feature nodes read; the configs key the VIX rows by date with dskit's `keyby`
+  (node `vix_by_date`) and join them onto SPX with dskit's `join` (`how: left`),
+  so a pre-1990 row keeps `iv_index` null.
 - `CondorBacktest` (node `backtest`) reads each rung's forecast rows over val:
   one condor every `hold_steps` = 21 rows (the label horizon, non-overlapping),
   settled at `close x exp(label)`. Books `model` (forecast quantile strikes,
@@ -163,7 +164,8 @@ python -m dskit.pipeline staged configs/run-real-zoo.json --asof 2026-09-23
   `always` (same strikes, every entry) and `implied` (VIX-lognormal strikes).
   Metrics are flat (`model_total_pnl_usd`, `implied_cvar_usd`, ...) per fold
   in `carry.json`; the report holds the per-trade ledger.
-- Pricing is `vix_proxy` (`pricing.py`: Black-76 at VIX with a put skew and a
+- Pricing is `vix_proxy` (dskit's `option_pricing.VolIndexSmileQuotes` at the
+  VIX close: Black-76 on a calibrated smile clamped to [5%, 200%] IV, plus a
   half-spread), never a quote, so the report is never decision-eligible;
   absolute P&L is indicative and the model/always/implied comparison on
   identical prices is the signal. Recorded chains later calibrate the proxy.
@@ -177,8 +179,8 @@ python -m dskit.pipeline staged configs/run-real-zoo.json --asof 2026-09-23
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
-                           # distribution.py (condor under a forecast, ADR-0168),
-                           # pricing.py (Black-76 + VIX proxy quotes, ADR-0182)
+                           # distribution.py (condor under a forecast, ADR-0168);
+                           # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
