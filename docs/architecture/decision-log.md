@@ -22928,6 +22928,43 @@ while the findings are read before the scratch copy goes, so the report
 has them either way. Reviews (Sonnet): correctness 0 Critical/Major (1
 Minor, fixed: size bound pinned against `dec_qty`); tests/reuse 0 findings.
 
+**Amendment (2026-09-24, phase 3a: plug the evaluator in from JSON alone).**
+Accepted under the owner's instruction ("if it is needed let's do it … build
+it and merge and push"). Sweep (main + both other remote branches + all
+children): the only event producer is the child `ReplayEvents`; no generic
+rows -> `dskit-eval-v1` node and no JSON section selection exist. Closest
+precedents reused in shape: `production.decider._RowProposer` (a closed
+`{target: source}` field map), `kinds_report.RunReport.sections` (a closed
+name list validated in `validate_params`).
+
+1. `EvaluationReport` gains optional `sections` (list of section anchors;
+   unknown names refused with the allowed list; `summary` and `provenance`
+   always rendered); `sections.SECTIONS` = `{anchor: class}` over
+   `DEFAULT_SECTIONS` is the one registry; the CLI takes `--sections`.
+   CSVs and `metrics` are unaffected.
+2. New tier-1 `evaluation/mapping.py`: `RowMap` (one port's `{ts, known,
+   instrument, explode, fields}`; each field is a row field name,
+   `{"const": v}` or `{"template": "d-{asof_ms}"}`; targets are the event
+   class's own `FIELDS` names, so the list is closed for free; a required
+   field left unmapped is refused at plan time; a missing source field
+   fails loudly at run time) and `EventMapping` (every port -> events,
+   candidates grouped into their decision by `decision_id`, sorted by
+   `ts_ms` then `events.KIND_ORDER`, bracketed by `run_start`/`run_end`,
+   validated once through `EventLog`). `explode` fans a row out over a
+   list field, or a dict field as `{key, **value}` rows. Flat field names
+   only (dotted paths would need a fourth private path reader; an upstream
+   `derive`/`join` shapes rows instead).
+3. New node `dskit.evaluation.nodes:RowsToEvents` (role transform, by
+   dotted path): one optional input port per event kind + `candidates`;
+   params `run_start` (the `RunStart` body minus what the run directory
+   supplies) and `map`. Run-directory provenance (`run_id`, `config_hash`,
+   `data`, `config` from `resolved.json`/`config.json`) moves from the
+   child into `provenance.run_dir_provenance`; `KIND_ORDER` and `SCHEMA`
+   are imported by the child from `events` (one owner each).
+4. Out of scope: domain joins (intraday_equities' decision/fill join and
+   action inference stay in `ReplayEvents`), index_options/pmquant wiring
+   (their rows need a plain list port / exploded evidence first).
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
