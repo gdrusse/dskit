@@ -263,7 +263,25 @@ def test_segment_artifacts_ignore_rows_at_or_after_cutoff(fx):
     assert _canon(_run(fx)["releases"]) != _canon(before["releases"])
 
 
-def test_tick_path_never_reads_realized_y(fx):
+def test_tick_path_never_reads_realized_y(fx, monkeypatch):
+    import pyarrow.parquet as pq
+
+    walk = _Walk(fx["params"])
+    requested = []
+    real = pq.read_table
+
+    def spy(path, **kwargs):
+        requested.append(kwargs.get("columns"))
+        return real(path, **kwargs)
+
+    try:
+        monkeypatch.setattr(pq, "read_table", spy)
+        assert walk.yhat(2)
+    finally:
+        monkeypatch.undo()
+        walk.close()
+    assert requested and all(cols is not None and "y" not in cols for cols in requested)
+
     before = _run(fx)
     _repin(fx, lambda i, n, lead, s, y, yhat: ([v * -7.0 for v in y] if i == 2 else y, yhat))
     after = _run(fx)
