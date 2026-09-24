@@ -1265,3 +1265,64 @@ def test_document_runs_end_to_end_through_the_pipeline_driver(sim7, tmp_path, mo
     assert summary["trading_days"] == len(daily)
     with open(written["development-simulation-fills.jsonl"], encoding="utf-8") as handle:
         assert sum(1 for _ in handle) == sum(summary["fills_by_kind"].values())
+
+
+# --- ADR-0185: a scheduled (biweekly-style) policy through the segmented simulation ---
+
+
+@pytest.fixture(scope="module")
+def sim_scheduled(tmp_path_factory):
+    """Folds 2 and 3 under a 3-day scheduled policy: its phase must not reset at the 4-day boundary."""
+    root = str(tmp_path_factory.mktemp("s7s"))
+    fx = _build_fx(os.path.join(root, "fx"), count=4)
+    fx["params"]["last_fold"] = 3
+    published = _run(fx)
+    bars = _thin_bars(published, fx)
+    days = sorted({date.fromisoformat(_local_day(bar["asof_ms"])) for bar in bars})
+    weekday = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")[
+        (days[0].weekday() + 1) % 7
+    ]
+    path = os.path.join(root, "cash-flow-policy-scheduled.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({
+            "kind": "scheduled", "currency": "USD", "initial_capital_amount": "10000",
+            "contribution_amount": "500", "interval_days": 3, "first_weekday": weekday,
+            "local_time": "09:30", "timezone": "America/New_York", "holiday_rule": "next_trading_day",
+        }, fh)
+    policy = CashFlowPolicy.from_path(path)
+    node = DevelopmentSimulation("simulate", _sim_params(
+        cash_flow_policy=path, cash_flow_policy_sha256=policy.digest(),
+    ))
+    out = node.run(fx["ctx"], _sim_inputs(published, list(bars), fx))
+    ports = ("fills", "skipped", "refused", "cash", "metadata")
+    report = SimulationReport("report", {}).run(
+        fx["ctx"], {**{port: out[port] for port in ports}, "releases": published["releases"]}
+    )
+    return {"days": days, "out": out, "report": report}
+
+
+def test_scheduled_contributions_follow_one_global_phase_across_segments(sim_scheduled):
+    days = sim_scheduled["days"]
+    phase = days[0] + timedelta(days=1)
+    expected = {days[0]: Decimal("10000")}
+    target = phase
+    while target <= days[-1]:
+        rolled = next(day for day in days if day >= target)
+        expected[rolled] = expected.get(rolled, Decimal("0")) + Decimal("500")
+        target += timedelta(days=3)
+    rows = sim_scheduled["out"]["cash"]
+    assert [row["date"] for row in rows] == [day.isoformat() for day in days]
+    assert [Decimal(row["contribution"]) for row in rows] == [
+        expected.get(day, Decimal("0")) for day in days
+    ]
+    assert Decimal(rows[-1]["contributions_to_date"]) == sum(expected.values())
+    assert sim_scheduled["report"]["summary"]["total_contributed"] == pytest.approx(float(sum(expected.values())))
+
+
+def test_scheduled_segment_carry_is_not_a_contribution(sim_scheduled):
+    first, second = sim_scheduled["out"]["metadata"]["segments"]
+    rows = [row for row in sim_scheduled["out"]["cash"] if row["fold"] == 3]
+    assert rows[0]["carried_in"] == first["closing_cash"]
+    assert Decimal(rows[0]["booked"]) - Decimal(rows[0]["carried_in"]) == Decimal(rows[0]["contribution"])
+    for row in sim_scheduled["report"]["daily"]:
+        assert row["nav"] - row["contributions_to_date"] == pytest.approx(row["net_pnl"], abs=1e-9)

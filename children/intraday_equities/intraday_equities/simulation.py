@@ -86,7 +86,7 @@ from .nodes import (
     _resolve_path,
     _tapes_from_bars,
 )
-from .replay import CashFlowPolicy, DevelopmentReplay, EquityReplay
+from .replay import DevelopmentReplay, EquityReplay
 
 __all__ = [
     "DISCLOSURE",
@@ -1175,11 +1175,12 @@ class DevelopmentSimulation(DevelopmentReplay):
     ``halted`` false where the source carries no halt flag), and each
     segment runs ``EquityReplay(fill policy, cash policy,
     decider=MioDecider(...))`` -- the production release lifecycle: new
-    model, new release, restart, account carried. Cash carries through a
-    derived ``CashFlowPolicy`` whose ``initial_capital_amount`` is the
-    previous segment's closing cash, so the pinned seed is booked once and
-    every trading date gets exactly one daily contribution; a segment that
-    ends with an open lot refuses. Every output row, and the metadata,
+    model, new release, restart, account carried. Cash carries through the
+    policy's :meth:`~intraday_equities.replay.CashFlowPolicy.segment` hook,
+    bound to the previous segment's closing cash and the whole run's trading
+    calendar, so the pinned seed is booked once and a scheduled policy
+    (ADR-0185) keeps one global phase across releases; a trading date with
+    no contribution reports 0. A segment that ends with an open lot refuses. Every output row, and the metadata,
     carry :data:`DISCLOSURE`.
 
     Parameters
@@ -1283,6 +1284,9 @@ class DevelopmentSimulation(DevelopmentReplay):
         if self.params.get("consume_bars", False):
             inputs["bars"].clear()
         tz = self._cash_flow_policy.timezone
+        calendar = frozenset(
+            date.fromisoformat(_local_date(bar["asof_ms"], tz)) for segment in segments for bar in segment
+        )
         out = {"fills": [], "skipped": [], "refused": [], "cash": [], "solves": []}
         summaries = []
         carried = Decimal("0")
@@ -1290,9 +1294,7 @@ class DevelopmentSimulation(DevelopmentReplay):
         for index, release in enumerate(releases):
             bars, segments[index] = segments[index], None
             self._refuse_price_disagreement(release, bundles, bars)
-            policy = self._cash_flow_policy
-            if index:
-                policy = CashFlowPolicy({**policy.to_obj(), "initial_capital_amount": str(carried)})
+            policy = self._cash_flow_policy.segment(carried if index else None, calendar)
             decider = MioDecider(release, bundles, inputs["mio"], self._policy, ctx)
             recorder = _DayCloses(decider, tz)
             replay = EquityReplay(self._policy, policy, decider=recorder)
@@ -1386,14 +1388,15 @@ class DevelopmentSimulation(DevelopmentReplay):
         for body in replay.booked_cash_flows:
             day = _local_date(body["effective_at_ms"], tz)
             booked[day] = booked.get(day, Decimal("0")) + Decimal(body["amount"])
-        if set(booked) != set(recorder.closes):
+        if not set(booked) <= set(recorder.closes):
             raise ConfigError([
-                f"funded dates {sorted(set(booked) ^ set(recorder.closes))} disagree with the "
-                "dates the replay ticked"
+                f"funded dates {sorted(set(booked) - set(recorder.closes))} are not dates "
+                "the replay ticked"
             ])
         rows = []
-        for position, day in enumerate(sorted(booked)):
+        for position, day in enumerate(sorted(recorder.closes)):
             carry = carried if carried is not None and position == 0 else Decimal("0")
+            booked.setdefault(day, Decimal("0"))
             contribution = booked[day] - carry
             contributed += contribution
             close = recorder.closes[day]

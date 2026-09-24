@@ -23,7 +23,8 @@ import tempfile
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from bisect import bisect_left
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -45,6 +46,7 @@ from dskit.production.cashflows import (
     RecurringCashFlowSchedule,
     ReplaceCashFlow,
     SkipCashFlow,
+    WithdrawalCashFlow,
 )
 from dskit.production.compose import ReplayCashFlowComposer, bundles_for, guard_chain
 from dskit.production.document import ServeDocument
@@ -78,6 +80,7 @@ __all__ = [
     "FillPolicy",
     "HorizonBook",
     "ReplayAdapter",
+    "ScheduledCashFlowPolicy",
 ]
 
 
@@ -311,9 +314,88 @@ class CashFlowPolicy:
 
     @classmethod
     def from_path(cls, path):
-        """Load and validate one JSON cash-flow-policy document."""
+        """Load and validate one JSON cash-flow-policy document.
+
+        The document's optional ``kind`` names the policy class
+        (:data:`_CASH_FLOW_POLICY_KINDS`); a document without one is this
+        daily policy, so the shipped ADR-0176 file keeps its identity.
+
+        Parameters
+        ----------
+        path : str
+            The JSON document.
+
+        Returns
+        -------
+        CashFlowPolicy
+            The class the document's ``kind`` names, validated.
+
+        Raises
+        ------
+        ConfigError
+            The ``kind`` is unknown or the document is malformed.
+        """
         with open(path, encoding="utf-8") as fh:
-            return cls(json.load(fh))
+            obj = json.load(fh)
+        kind = obj.get("kind") if isinstance(obj, dict) else None
+        policy_cls = _CASH_FLOW_POLICY_KINDS.get(kind)
+        if policy_cls is None:
+            raise ConfigError([
+                f"cash-flow policy kind {kind!r} is unknown; known: "
+                f"{sorted(str(name) for name in _CASH_FLOW_POLICY_KINDS)}"
+            ])
+        return policy_cls(obj)
+
+    def segment(self, carried, calendar_dates):
+        """Return the policy one release segment of a longer run books under.
+
+        Parameters
+        ----------
+        carried : Decimal or None
+            The previous segment's closing cash, or ``None`` for the first
+            segment (which books the initial capital itself).
+        calendar_dates : frozenset of datetime.date
+            Every trading date of the WHOLE run. The daily policy needs
+            none of them: each segment re-anchors at its own first bar.
+
+        Returns
+        -------
+        CashFlowPolicy
+            ``self`` for the first segment; otherwise a policy whose
+            initial capital is ``carried`` (ADR-0184).
+        """
+        del calendar_dates
+        if carried is None:
+            return self
+        return CashFlowPolicy({**self.to_obj(), "initial_capital_amount": str(carried)})
+
+    def describe_flow(self, body, first):
+        """Name the rule behind one booked cash-flow record (ADR-0183 item 13).
+
+        Parameters
+        ----------
+        body : dict
+            The booked record's body.
+        first : bool
+            Whether it is the first record this replay booked, which
+            :meth:`composer_for` replaced with initial capital plus that
+            day's contribution.
+
+        Returns
+        -------
+        tuple of str
+            ``(rule, detail)``.
+        """
+        if first:
+            return "initial_capital", (
+                f"initial_capital_amount {self.initial_capital_amount} + "
+                f"daily_contribution_amount {self.daily_contribution_amount} "
+                f"{body['currency']}"
+            )
+        return "daily_contribution", (
+            f"daily_contribution_amount {self.daily_contribution_amount} "
+            f"{body['currency']}"
+        )
 
     @classmethod
     def validate_params(cls, params):
@@ -433,6 +515,364 @@ class CashFlowPolicy:
                 f"{anchor.isoformat()} ({self.timezone.key}): {exc}"
             ]) from exc
         return ReplayCashFlowComposer(schedule), tuple(funding_instants_ms)
+
+
+
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+#: The only holiday rule ruled so far (ADR-0185 ruling 3).
+_HOLIDAY_RULES = ("next_trading_day",)
+#: Dated override kinds: the first three edit one SCHEDULED date, the last
+#: two add a flow on any date.
+_SCHEDULED_OVERRIDES = ("skip", "move", "replace")
+#: The rule each booked amount reports (``describe_flow``).
+_RULE_NAMES = {
+    "scheduled": "scheduled_contribution",
+    "move": "moved_contribution",
+    "replace": "replaced_contribution",
+}
+_OVERRIDE_FIELDS = {
+    "skip": ("kind", "date"),
+    "move": ("kind", "date", "to"),
+    "replace": ("kind", "date", "amount"),
+    "one_off": ("kind", "date", "amount"),
+    "withdrawal": ("kind", "date", "amount"),
+}
+
+
+def _iso_date_ok(value):
+    """Whether ``value`` is a ``YYYY-MM-DD`` string."""
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return len(value) == 10
+
+
+class ScheduledCashFlowPolicy(CashFlowPolicy):
+    """Initial capital plus a recurring weekday contribution with dated overrides (ADR-0185).
+
+    ``kind: "scheduled"``. The first contribution falls on the first
+    ``first_weekday`` on or after the run's first trading date, then every
+    ``interval_days``, at ``local_time`` in ``timezone``. A contribution
+    date without a session rolls to the next trading date
+    (``holiday_rule: "next_trading_day"``). The initial capital is booked
+    at ``local_time`` on the first trading date. A funding instant is
+    booked before a decision at that same instant (``read_entry`` funds
+    first). External flows are ledger ``cash_flow`` records and never
+    trading P&L.
+
+    The phase is GLOBAL: :meth:`segment` binds the whole run's trading
+    calendar, so a release boundary never re-anchors the alternation and a
+    holiday roll that crosses a boundary is booked once, in the segment
+    holding its target date.
+
+    It rides the same core primitives as the daily policy: one daily
+    ``RecurringCashFlowSchedule`` at ``local_time`` whose non-funded dates
+    are skipped, whose funded dates are the schedule amount or a
+    ``ReplaceCashFlow``, and whose withdrawals are ``WithdrawalCashFlow``.
+
+    Parameters
+    ----------
+    params : dict
+        Every name in :attr:`_PARAMS` is required; ``overrides`` (a list of
+        ``{kind, date, ...}`` rows: ``skip``/``move`` (``to``)/``replace``
+        (``amount``) edit a scheduled date, ``one_off``/``withdrawal``
+        (``amount``) add a flow) and ``notes`` are optional.
+
+    Examples
+    --------
+    Load the ADR-0185 policy and build one replay's composer::
+
+        policy = CashFlowPolicy.from_path("configs/cash-flow-policy-biweekly.json")
+        composer, instants = policy.composer_for("series", start_ms, trading_dates)
+        policy.contribution_amount
+        # -> Decimal('500')
+    """
+
+    _PARAMS = (
+        "kind",
+        "currency",
+        "initial_capital_amount",
+        "contribution_amount",
+        "interval_days",
+        "first_weekday",
+        "local_time",
+        "timezone",
+        "holiday_rule",
+    )
+    _OPTIONAL_PARAMS = ("overrides",)
+
+    def __init__(self, params):
+        problems = self.validate_params(params)
+        if problems:
+            raise ConfigError(problems)
+        self._params = dict(params)
+        self.currency = params["currency"]
+        self.initial_capital_amount = _decimal_param(
+            params["initial_capital_amount"], "initial_capital_amount"
+        )
+        self.contribution_amount = _decimal_param(
+            params["contribution_amount"], "contribution_amount"
+        )
+        self.interval_days = params["interval_days"]
+        self.weekday = _WEEKDAYS.index(params["first_weekday"])
+        hour, minute = (int(part) for part in params["local_time"].split(":"))
+        self.local_hour, self.local_minute = hour, minute
+        self.timezone = ZoneInfo(params["timezone"])
+        self.overrides = tuple(dict(row) for row in params["overrides"]) if "overrides" in params else ()
+        self._carried = None
+        self._calendar = None
+        self._rules = {}
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + cls._OPTIONAL_PARAMS + ("notes",))
+        for name in cls._PARAMS:
+            if name not in params:
+                problems.append(f"{name} is required")
+        if problems:
+            return problems
+        if params["kind"] != "scheduled":
+            problems.append(f"kind must be 'scheduled', got {params['kind']!r}")
+        if not isinstance(params["currency"], str) or not params["currency"]:
+            problems.append(f"currency must be a non-empty string, got {params['currency']!r}")
+        for name in ("contribution_amount", "initial_capital_amount"):
+            try:
+                _decimal_param(params[name], name)
+            except ConfigError as exc:
+                problems.extend(exc.errors)
+        interval = params["interval_days"]
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
+            problems.append(f"interval_days must be a positive int, got {interval!r}")
+        if params["first_weekday"] not in _WEEKDAYS:
+            problems.append(f"first_weekday must be one of {list(_WEEKDAYS)}, got {params['first_weekday']!r}")
+        problems.extend(cls._local_time_problems(params["local_time"]))
+        if params["holiday_rule"] not in _HOLIDAY_RULES:
+            problems.append(f"holiday_rule must be one of {list(_HOLIDAY_RULES)}, got {params['holiday_rule']!r}")
+        if not isinstance(params["timezone"], str) or not params["timezone"]:
+            problems.append(f"timezone must be a non-empty string, got {params['timezone']!r}")
+        else:
+            try:
+                ZoneInfo(params["timezone"])
+            except (ZoneInfoNotFoundError, ValueError):
+                problems.append(f"timezone is not a known zoneinfo key: {params['timezone']!r}")
+        problems.extend(cls._override_problems(params["overrides"] if "overrides" in params else []))
+        return problems
+
+    @staticmethod
+    def _local_time_problems(value):
+        """Problems with an ``HH:MM`` wall time."""
+        parts = value.split(":") if isinstance(value, str) else ()
+        if (
+            len(parts) != 2 or not all(len(part) == 2 and part.isdigit() for part in parts)
+            or not (0 <= int(parts[0]) <= 23 and 0 <= int(parts[1]) <= 59)
+        ):
+            return [f"local_time must be HH:MM, got {value!r}"]
+        return []
+
+    @staticmethod
+    def _override_problems(overrides):
+        """Problems with the dated override rows."""
+        if not isinstance(overrides, list):
+            return [f"overrides must be a list, got {overrides!r}"]
+        problems = []
+        seen = set()
+        for index, row in enumerate(overrides):
+            fields = _OVERRIDE_FIELDS.get(row.get("kind")) if isinstance(row, dict) else None
+            if fields is None:
+                problems.append(f"overrides[{index}] kind must be one of {sorted(_OVERRIDE_FIELDS)}")
+                continue
+            if set(row) != set(fields):
+                problems.append(f"overrides[{index}] must have exactly {list(fields)}")
+                continue
+            for name in ("date", "to"):
+                if name in row and not _iso_date_ok(row[name]):
+                    problems.append(f"overrides[{index}].{name} must be YYYY-MM-DD, got {row[name]!r}")
+            if "amount" in row:
+                try:
+                    _decimal_param(row["amount"], f"overrides[{index}].amount")
+                except ConfigError as exc:
+                    problems.extend(exc.errors)
+            if row["kind"] in _SCHEDULED_OVERRIDES:
+                if row["date"] in seen:
+                    problems.append(f"overrides[{index}] edits {row['date']} twice")
+                seen.add(row["date"])
+        return problems
+
+    def segment(self, carried, calendar_dates):
+        """Bind the whole run's calendar (the global phase) and this segment's carry.
+
+        Parameters
+        ----------
+        carried : Decimal or None
+            The previous segment's closing cash; ``None`` books the initial
+            capital instead.
+        calendar_dates : frozenset of datetime.date
+            Every trading date of the whole run.
+
+        Returns
+        -------
+        ScheduledCashFlowPolicy
+            A copy with the same document identity.
+        """
+        bound = ScheduledCashFlowPolicy(self._params)
+        bound._carried = carried
+        bound._calendar = frozenset(calendar_dates)
+        return bound
+
+    def funding_plan(self, trading_dates):
+        """Every date's deposit and withdrawal over ``trading_dates``, with its rules.
+
+        Parameters
+        ----------
+        trading_dates : frozenset of datetime.date
+            The dates this replay holds bars on.
+
+        Returns
+        -------
+        tuple of dict
+            Ascending ``{date, deposit, withdrawal, rules}`` rows (Decimals;
+            ``rules`` a tuple of rule names), only for dates in
+            ``trading_dates`` that book something.
+
+        Raises
+        ------
+        ConfigError
+            A ``skip``/``move``/``replace`` override names a date that is
+            not a scheduled contribution date.
+        """
+        calendar = sorted(self._calendar if self._calendar is not None else trading_dates)
+        first = calendar[0]
+        deposits, withdrawals, rules = defaultdict(Decimal), defaultdict(Decimal), defaultdict(list)
+        edits = {row["date"]: row for row in self.overrides if row["kind"] in _SCHEDULED_OVERRIDES}
+        scheduled = self._scheduled_dates(first, calendar[-1])
+        stray = sorted(set(edits) - {day.isoformat() for day in scheduled})
+        if stray:
+            raise ConfigError([f"cash-flow overrides name dates that are not scheduled contributions: {stray}"])
+        for day in scheduled:
+            edit = edits.get(day.isoformat(), {})
+            if edit.get("kind") == "skip":
+                continue
+            target = date.fromisoformat(edit["to"]) if edit.get("kind") == "move" else day
+            amount = Decimal(edit["amount"]) if edit.get("kind") == "replace" else self.contribution_amount
+            self._book(deposits, rules, calendar, target, amount, edit.get("kind") or "scheduled", day)
+        for row in self.overrides:
+            if row["kind"] == "one_off":
+                self._book(deposits, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "one_off", None)
+            elif row["kind"] == "withdrawal":
+                self._book(withdrawals, rules, calendar, date.fromisoformat(row["date"]), Decimal(row["amount"]), "withdrawal", None)
+        if self._carried is None:
+            deposits[first] += self.initial_capital_amount
+            rules[first].insert(0, "initial_capital")
+        else:
+            opening = min(trading_dates)
+            deposits[opening] += Decimal(self._carried)
+            rules[opening].insert(0, "carried_cash")
+        return tuple(
+            {"date": day, "deposit": deposits.get(day, Decimal("0")),
+             "withdrawal": withdrawals.get(day, Decimal("0")), "rules": tuple(rules[day])}
+            for day in sorted(set(deposits) | set(withdrawals))
+            if day in trading_dates and (deposits.get(day) or withdrawals.get(day))
+        )
+
+    def _scheduled_dates(self, first, last):
+        """Return the contribution dates from the first ``first_weekday`` on or after ``first`` through ``last``."""
+        day = first + timedelta(days=(self.weekday - first.weekday()) % 7)
+        dates = []
+        while day <= last:
+            dates.append(day)
+            day += timedelta(days=self.interval_days)
+        return dates
+
+    @staticmethod
+    def _book(ledger, rules, calendar, target, amount, rule, scheduled):
+        """Add ``amount`` on ``target`` rolled to the next trading date; drop one past the calendar."""
+        del scheduled
+        index = bisect_left(calendar, target)
+        if index == len(calendar):
+            return
+        booked = calendar[index]
+        ledger[booked] += amount
+        name = _RULE_NAMES.get(rule, rule)
+        if booked != target:
+            name = f"{name}(rolled from {target.isoformat()})"
+        rules[booked].append(name)
+
+    def _instant(self, day):
+        """``local_time`` on ``day`` in the policy timezone."""
+        return datetime(day.year, day.month, day.day, self.local_hour, self.local_minute, tzinfo=self.timezone)
+
+    def composer_for(self, series_id, start_ms, trading_dates):
+        """Build one replay's composer over its own trading dates (see the class docstring).
+
+        Parameters
+        ----------
+        series_id : str
+            The replay's own fresh identity, the schedule id.
+        start_ms : int
+            ``tape.start_ms()``; the replay's funding window opens there.
+        trading_dates : frozenset of datetime.date
+            Local dates with at least one bar.
+
+        Returns
+        -------
+        tuple
+            ``(composer, funding_instants_ms)``, one instant per booking date.
+            A first instant before ``start_ms`` (a tape opening after
+            ``local_time``) is booked before the first decision:
+            ``EquityReplay`` opens its window at the earlier of the two.
+
+        Raises
+        ------
+        ConfigError
+            An empty tape or an unschedulable local instant.
+        """
+        if start_ms == 0:
+            raise ConfigError(["cash-flow policy: the replay tape is empty (start_ms == 0); there is nothing to fund"])
+        plan = self.funding_plan(trading_dates)
+        instants = tuple(int(self._instant(row["date"]).timestamp() * 1000) for row in plan)
+        self._rules = {row["date"]: row["rules"] for row in plan}
+        deposits = {row["date"]: row["deposit"] for row in plan}
+        anchor = self._instant(min(trading_dates))
+        overrides = []
+        day = anchor.date()
+        while day <= max(trading_dates):
+            amount = deposits.get(day, Decimal("0"))
+            at = self._instant(day)
+            if amount <= 0:
+                overrides.append(SkipCashFlow(f"unfunded-{day.isoformat()}", at))
+            elif amount != self.contribution_amount:
+                overrides.append(ReplaceCashFlow(f"amount-{day.isoformat()}", at, amount))
+            day += timedelta(days=1)
+        overrides.extend(
+            WithdrawalCashFlow(f"withdrawal-{row['date'].isoformat()}", self._instant(row["date"]), row["withdrawal"])
+            for row in plan if row["withdrawal"]
+        )
+        try:
+            schedule = RecurringCashFlowSchedule(
+                schedule_id=series_id, anchor=anchor, interval_days=1, currency=self.currency,
+                amount=self.contribution_amount, timezone=self.timezone, overrides=tuple(overrides),
+            )
+        except ValueError as exc:
+            raise ConfigError([f"cash-flow policy: could not build the schedule at {anchor.isoformat()}: {exc}"]) from exc
+        return ReplayCashFlowComposer(schedule), instants
+
+    def describe_flow(self, body, first):
+        """``(rule, detail)`` from the funding plan's rules for the booked date."""
+        del first
+        day = datetime.fromtimestamp(body["effective_at_ms"] / 1000, tz=timezone.utc).astimezone(self.timezone).date()
+        if body["flow_kind"] == "withdrawal":
+            return "withdrawal", f"withdrawal {body['amount']} {body['currency']}"
+        names = [name for name in self._rules.get(day, ()) if name != "withdrawal"]
+        return "+".join(name.split("(")[0] for name in names), f"{' + '.join(names)} {body['currency']}"
+
+
+#: ``kind`` -> cash-flow policy class; a document without a ``kind`` is the daily policy.
+_CASH_FLOW_POLICY_KINDS = {None: CashFlowPolicy, "scheduled": ScheduledCashFlowPolicy}
 
 
 class HorizonBook:
@@ -978,7 +1418,13 @@ class EquityReplay:
             if cash_flow_composer is not None:
                 self._cash_flow_ledger = recording.ledger
                 self._cash_flow_composer = cash_flow_composer
-                self._cash_flow_window_ms = tape.start_ms()
+                # A scheduled policy's first instant can precede a tape that
+                # opens late; the window opens at whichever comes first, so
+                # that deposit is booked before the first decision. The daily
+                # policy's first instant IS the tape start (a no-op there).
+                self._cash_flow_window_ms = min(
+                    [tape.start_ms(), *cash_flow_funding_instants[:1]]
+                )
                 self._cash_flow_funding_instants = cash_flow_funding_instants
                 self._cash_flow_funding_index = 0
             else:
@@ -1119,25 +1565,10 @@ class EquityReplay:
     def _cash_flow_row(self, body):
         """One submitted cash-flow record as an output row (ADR-0183 item 13).
 
-        The first record a run submits is the schedule's first occurrence,
-        which :meth:`CashFlowPolicy.composer_for` replaces with initial
-        capital plus that day's contribution; every later one is a plain
-        daily contribution.
+        The policy names the rule (:meth:`CashFlowPolicy.describe_flow`):
+        the replay only knows whether this is the first record it booked.
         """
-        policy = self._cash_flow_policy
-        if not self.cash_flows:
-            rule = "initial_capital"
-            detail = (
-                f"initial_capital_amount {policy.initial_capital_amount} + "
-                f"daily_contribution_amount {policy.daily_contribution_amount} "
-                f"{body['currency']}"
-            )
-        else:
-            rule = "daily_contribution"
-            detail = (
-                f"daily_contribution_amount {policy.daily_contribution_amount} "
-                f"{body['currency']}"
-            )
+        rule, detail = self._cash_flow_policy.describe_flow(body, not self.cash_flows)
         return {
             "asof_ms": body["effective_at_ms"],
             "amount": float(Decimal(body["amount"])),

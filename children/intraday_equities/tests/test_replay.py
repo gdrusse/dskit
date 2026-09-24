@@ -29,6 +29,7 @@ from intraday_equities.replay import (
     EquityReplay,
     FillPolicy,
     ReplayAdapter,
+    ScheduledCashFlowPolicy,
 )
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2091,3 +2092,191 @@ def test_development_replay_accepts_a_sound_guard_map():
 def test_development_replay_keep_ledger_must_be_a_bool(value):
     problems = DevelopmentReplay.validate_params(_shipped_replay_params(keep_ledger=value))
     assert any("keep_ledger must be a bool" in problem for problem in problems)
+
+
+# --- ADR-0185: the scheduled (biweekly Friday) cash-flow policy --------------
+
+_SCHEDULED = {
+    "kind": "scheduled",
+    "currency": "USD",
+    "initial_capital_amount": "10000",
+    "contribution_amount": "500",
+    "interval_days": 14,
+    "first_weekday": "friday",
+    "local_time": "09:30",
+    "timezone": "America/New_York",
+    "holiday_rule": "next_trading_day",
+}
+
+
+def _scheduled(**overrides):
+    return ScheduledCashFlowPolicy({**_SCHEDULED, **overrides})
+
+
+def _weekdays(first, last, drop=()):
+    days, day = [], first
+    while day <= last:
+        if day.weekday() < 5 and day not in drop:
+            days.append(day)
+        day += timedelta(days=1)
+    return frozenset(days)
+
+
+def _at_930(day):
+    return _local_ms(day.year, day.month, day.day, 9, 30)
+
+
+def _plan(policy, dates, start=None):
+    """``(date, amount)`` of every flow the composer books over ``dates``."""
+    first = min(dates)
+    composer, instants = policy.composer_for(
+        "series-s", start if start is not None else _at_930(first), dates
+    )
+    last = max(dates) + timedelta(days=1)
+    due = composer.due(_utc(_at_930(first)), _utc(_local_ms(last.year, last.month, last.day, 0, 0)))
+    rows = [(record["body"]["effective_at_ms"], Decimal(record["body"]["amount"])) for record in due]
+    return [(_utc(ms).astimezone(_CF_TZ).date(), amount) for ms, amount in sorted(rows)], instants
+
+
+def test_scheduled_first_contribution_is_the_first_friday_on_or_after_day_one_then_every_14_days():
+    dates = _weekdays(date(2026, 1, 5), date(2026, 2, 6))  # Monday .. Friday
+    plan, instants = _plan(_scheduled(), dates)
+    assert plan == [
+        (date(2026, 1, 5), Decimal("10000")),
+        (date(2026, 1, 9), Decimal("500")),
+        (date(2026, 1, 23), Decimal("500")),
+        (date(2026, 2, 6), Decimal("500")),
+    ]
+    assert instants == tuple(_at_930(day) for day, _ in plan)
+
+
+def test_scheduled_a_friday_first_day_books_seed_plus_contribution_at_once():
+    dates = _weekdays(date(2026, 1, 9), date(2026, 1, 23))
+    plan, _ = _plan(_scheduled(), dates)
+    assert plan == [(date(2026, 1, 9), Decimal("10500")), (date(2026, 1, 23), Decimal("500"))]
+
+
+def test_scheduled_a_holiday_friday_rolls_to_the_next_trading_day_at_0930():
+    dates = _weekdays(date(2026, 1, 5), date(2026, 1, 30), drop={date(2026, 1, 23)})
+    plan, instants = _plan(_scheduled(), dates)
+    assert (date(2026, 1, 26), Decimal("500")) in plan
+    assert all(day != date(2026, 1, 23) for day, _ in plan)
+    assert _at_930(date(2026, 1, 26)) in instants
+
+
+def test_scheduled_dated_overrides_skip_move_replace_add_and_withdraw():
+    dates = _weekdays(date(2026, 1, 5), date(2026, 2, 20))
+    policy = _scheduled(overrides=[
+        {"kind": "skip", "date": "2026-01-09"},
+        {"kind": "move", "date": "2026-01-23", "to": "2026-01-21"},
+        {"kind": "replace", "date": "2026-02-06", "amount": "750"},
+        {"kind": "one_off", "date": "2026-01-14", "amount": "125"},
+        {"kind": "withdrawal", "date": "2026-02-11", "amount": "300"},
+    ])
+    plan, _ = _plan(policy, dates)
+    assert plan == [
+        (date(2026, 1, 5), Decimal("10000")),
+        (date(2026, 1, 14), Decimal("125")),
+        (date(2026, 1, 21), Decimal("500")),
+        (date(2026, 2, 6), Decimal("750")),
+        (date(2026, 2, 11), Decimal("-300")),
+        (date(2026, 2, 20), Decimal("500")),
+    ]
+
+
+def test_scheduled_segments_keep_the_global_phase_across_a_63_day_release_boundary():
+    everything = _weekdays(date(2026, 1, 5), date(2026, 4, 3))
+    policy = _scheduled()
+    boundary = date(2026, 3, 9)  # a Monday, 63 days after the first day
+    second = frozenset(day for day in everything if day >= boundary)
+    segment = policy.segment(Decimal("1234.5"), everything)
+    plan, _ = _plan(segment, second)
+    # The global phase funds Fri 2026-03-06, 03-20, 04-03; a re-anchored
+    # phase would fund 03-13 and 03-27 instead.
+    assert plan == [
+        (date(2026, 3, 9), Decimal("1234.5")),
+        (date(2026, 3, 20), Decimal("500")),
+        (date(2026, 4, 3), Decimal("500")),
+    ]
+
+
+def test_scheduled_a_holiday_roll_crosses_into_the_next_segment_exactly_once():
+    everything = _weekdays(date(2026, 1, 5), date(2026, 2, 6), drop={date(2026, 1, 23)})
+    first = frozenset(day for day in everything if day < date(2026, 1, 26))
+    second = frozenset(day for day in everything if day >= date(2026, 1, 26))
+    policy = _scheduled()
+    plan_one, _ = _plan(policy.segment(None, everything), first)
+    plan_two, _ = _plan(policy.segment(Decimal("9000"), everything), second)
+    assert plan_one == [(date(2026, 1, 5), Decimal("10000")), (date(2026, 1, 9), Decimal("500"))]
+    assert plan_two == [(date(2026, 1, 26), Decimal("9500")), (date(2026, 2, 6), Decimal("500"))]
+
+
+def test_scheduled_a_zero_carry_on_a_non_contribution_day_books_nothing():
+    everything = _weekdays(date(2026, 1, 5), date(2026, 1, 30))
+    second = frozenset(day for day in everything if day >= date(2026, 1, 12))
+    plan, instants = _plan(_scheduled().segment(Decimal("0"), everything), second)
+    assert plan == [(date(2026, 1, 23), Decimal("500"))]
+    assert instants == (_at_930(date(2026, 1, 23)),)
+
+
+def test_scheduled_a_tape_opening_after_0930_books_the_0930_seed_before_its_first_decision():
+    first = date(2026, 1, 5)
+    late = _at_930(first) + 60 * 60_000
+    seen = []
+
+    class _Spy:
+        def decide(self, asof_ms, portfolio):
+            seen.append((asof_ms, portfolio["cash"]))
+            return []
+
+    replay = EquityReplay(_policy(), _scheduled(), decider=_Spy())
+    replay.run([_bar("AAA", late, 10.0, 10.1), _bar("AAA", late + 60_000, 10.1, 10.2)])
+    assert [(row["asof_ms"], row["amount"]) for row in replay.cash_flows] == [(_at_930(first), 10000.0)]
+    assert seen[0] == (late, 10000.0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("kind", "weekly", "kind"),
+        ("interval_days", 0, "interval_days"),
+        ("interval_days", True, "interval_days"),
+        ("first_weekday", "fri", "first_weekday"),
+        ("local_time", "9:30am", "local_time"),
+        ("holiday_rule", "skip", "holiday_rule"),
+        ("contribution_amount", "-5", "contribution_amount"),
+        ("overrides", [{"kind": "skip"}], "overrides"),
+        ("overrides", [{"kind": "grow", "date": "2026-01-09"}], "overrides"),
+        ("bogus", 1, "unknown"),
+    ],
+)
+def test_scheduled_policy_refuses_a_malformed_knob(field, value, expected):
+    problems = ScheduledCashFlowPolicy.validate_params({**_SCHEDULED, field: value})
+    assert problems and any(expected in problem for problem in problems)
+
+
+def test_the_loader_dispatches_on_kind_and_the_daily_file_is_untouched():
+    assert type(CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH)) is CashFlowPolicy
+    assert CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH).digest() == (
+        "501e27afca2ecae6aeb7a3d66136001aafa4d52dab9c98409496d0c446f0c878"
+    )
+    loaded = CashFlowPolicy.from_path(os.path.join(CONFIGS, "cash-flow-policy-biweekly.json"))
+    assert type(loaded) is ScheduledCashFlowPolicy
+    assert loaded.initial_capital_amount == Decimal("10000")
+    assert loaded.contribution_amount == Decimal("500")
+
+
+def test_a_replay_books_the_scheduled_flows_and_names_their_rules():
+    first, friday = date(2026, 1, 5), date(2026, 1, 9)
+    bars = [
+        _bar("AAA", _at_930(first), 10.0, 10.1),
+        _bar("AAA", _at_930(first) + 60_000, 10.1, 10.2),
+        _bar("AAA", _at_930(date(2026, 1, 6)), 10.0, 10.1),
+        _bar("AAA", _at_930(friday), 11.0, 11.1),
+    ]
+    replay = _CapturingEquityReplay(_policy(), _scheduled())
+    out = replay.run(bars, [])
+    assert [(row["rule"], row["amount"]) for row in out["cash_flows"]] == [
+        ("initial_capital", 10000.0), ("scheduled_contribution", 500.0),
+    ]
+    assert replay._cash_balance == Decimal("10500")
