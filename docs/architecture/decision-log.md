@@ -22847,6 +22847,76 @@ USD}`: its scores forecast `y_next`, a log return). Re-rendering the real
 run's `events.jsonl`: 2,129,885 -> 817,527 bytes (824,096 with units
 declared), ~1.2 s.
 
+**Amendment (2026-09-24, phase 2: solves, inference diagnostics, ledger findings).**
+Accepted under the same delegation ("you have my permission to write and
+accept ADRs"). Base: phase 1 (`1cff88d`) merged with `origin/main`
+(`efdf153`, ADR-0184). Sweep (main, both unmerged branches, all modules):
+`evaluation.events.Solve` exists but nothing produces it; `PyomoSolve.run`
+reads only the termination condition; `PortfolioSelect.extract` ignores
+`results`; `MioDecider` drops `EquityKellyMIO`'s metrics/evidence;
+`production/vocab.EVENT_FIELDS["mio"]` names MIO telemetry with no producer;
+`ordering.spearman`/`cross_section_by_stamp`/`per_timestamp_ic`/
+`calibration_slope` cover rank IC and slope; no decile or bucket helper
+exists outside private `production.monitors._quantile_edges`; the replay's
+serve document declares `guards: {}` and deletes its `JsonlLedger`;
+`reconcile.LedgerHistory` is the one ledger reader and its `DecidedLeg`
+drops findings. Neither unmerged branch overlaps.
+
+1. *Solves (tier 2 + tier 1).* `libs/pyomo.SolveRecord` — built by the
+   `PyomoSolve.run` lifecycle for EVERY subclass (no subclass change):
+   `solver`, `status`, `termination`, `objective`, `bound`, `gap`
+   (relative, from the results' problem bounds), `seconds` (perf_counter
+   around `solve`), `variables`, `constraints`, `binding` — one row per
+   constraint COMPONENT (`name`, `rows`, `binding` count, `min_slack`,
+   `dual` only when the model carries an imported `dual` Suffix; a MIP has
+   none). The last record is `PyomoSolve.solve_record` (`None` before a
+   solve and on a subclass's no-solve short circuit). Its keys are the
+   `Solve` event's body, pinned by a test. `Solve` gains optional
+   additive `termination`, `model`, `variables`, `constraints`; `binding`
+   rows are validated. Child: `PortfolioSelect` adds a `solves` output;
+   `EquityKellyMIO.evidence["solve"]`; `MioDecider.solves` and a
+   `solves` output on `DevelopmentSimulation` (additive). `ReplayEvents`
+   takes an optional `solves` port -> `solve` events. `OptimizerSection`
+   renders counts by status/termination, objective/gap/seconds, and
+   binding frequency per constraint; "none recorded" when empty.
+2. *Inference diagnostics (tier 1).* `stats.quantile_edges` +
+   `stats.quantile_bin` become the public owner of the equal-count rule
+   (`production.monitors` imports them; its private copy goes).
+   `evaluation/diagnostics.py` `ForecastDiagnostics` pairs every decision
+   candidate's `score` with its `outcome` (`decision_id`, `instrument`):
+   calibration by score decile (mean score vs mean realised, n), hit rate
+   by bucket (sign agreement), rank IC per stamp and per day
+   (`ordering.cross_section_by_stamp`), the pooled summary
+   (`ordering.per_timestamp_ic`) and the Mincer-Zarnowitz slope
+   (`ordering.calibration_slope`). `InferenceSection` renders them; it
+   never touches decision rows (`decisions.csv` is byte-identical with or
+   without outcomes — pinned). Child: `ReplayEvents` takes an optional
+   `labeled` port and `realized_field` / `outcome_lead_bars` params: one
+   `outcome` per candidate at the symbol's `outcome_lead_bars`-th later
+   bar (no later bar -> none, counted). `outcome_lead_bars` restates
+   `window.label_lead` — pinned by a config test.
+3. *Ledger findings (tier 1 + tier 3).* `LedgerHistory.leg_findings(since_ms)`
+   returns every decided leg's `findings` and composite verdict
+   (`guards.max_verdict`) with the same tick join as `legs()` (one shared
+   helper). `EquityReplay(ledger_dir=None)` copies its ledger there before
+   the scratch dir is removed and exposes `findings` rows keyed by
+   (`symbol`, `lead`, `kind`, fill `asof_ms`). `DevelopmentReplay` gains
+   optional `keep_ledger` (-> `<run>/artifacts/<node>/ledger`) and
+   `guards` (the serve document's guard map, default `{}` so existing
+   identities hold) and a `findings` output. A guard BREACH still fails
+   the replay loudly (its fill model forbids rejections). `order` gains an
+   optional `findings` list (`guard, measure, value, bound, verdict,
+   reason`); the decision log shows the worst verdict and each finding,
+   and summarises by (guard, verdict); `run_start.data.ledger` names the
+   ledger head. `production.report.Report` is NOT used: it needs a serve
+   document and release and refolds `WindowBook` per tick (a second P&L
+   fold), and the replay's zeroed predictions would make its attribution
+   empty.
+4. `configs/run-replay-report.json` wires `labeled`, `solves`, `findings`,
+   `keep_ledger: true` and two observational limits (quantity, notional).
+
+Non-goals unchanged; no trading or serving behaviour changes.
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
