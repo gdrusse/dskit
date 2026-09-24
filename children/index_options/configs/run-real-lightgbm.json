@@ -1,0 +1,239 @@
+{
+  "name": "index-options-real-lightgbm",
+  "notes": "ADR-0182 real-data rung (lightgbm): Cboe SPX daily closes with the VIX close joined as iv_index -> the ADR-0181 features/label/model/scores -> the VIX-proxy condor backtest. Identical to the other run-real-*.json except the 'model' node. Needs a pulled ./ob (README runbook). Run: python -m dskit.pipeline walkforward configs/run-real-lightgbm.json --asof <today>.",
+  "pipeline": {
+    "spx": {
+      "uses": "index_options.observations:IndexCloseRows",
+      "params": {
+        "root": "./ob",
+        "source": "cboe-index",
+        "symbol": "SPX"
+      },
+      "notes": "SPX daily closes (Cboe index_daily). ./ob is the onboarding root; symlink it to the durable store (README)."
+    },
+    "vix": {
+      "uses": "index_options.observations:IndexCloseRows",
+      "params": {
+        "root": "./ob",
+        "source": "cboe-index",
+        "symbol": "VIX"
+      },
+      "notes": "VIX closes, keyed by date in vix_by_date for the join."
+    },
+    "vix_by_date": {
+      "uses": "dskit.pipeline.kinds_flow:KeyBy",
+      "inputs": {
+        "records": "$vix.records"
+      },
+      "params": {
+        "key": "date",
+        "value": "close"
+      },
+      "notes": "dskit keyby: {date: VIX close}, the side table the join reads (one close per date; a repeated date refuses)."
+    },
+    "market": {
+      "uses": "dskit.pipeline.kinds_flow:Join",
+      "inputs": {
+        "records": "$spx.records",
+        "iv_index": "$vix_by_date.table"
+      },
+      "params": {
+        "key": "date",
+        "how": "left",
+        "unmatched_fill": {
+          "iv_index": null
+        }
+      },
+      "notes": "Same-date VIX close as iv_index; SPX rows before 1990 (or on a date VIX lacks) keep iv_index null and are skipped by the backtest (n_skipped_no_iv), never dropped from training."
+    },
+    "rv": {
+      "uses": "dskit.pipeline.libs.numpy:RealizedVolFeatures",
+      "inputs": {
+        "records": "$market.records"
+      },
+      "params": {
+        "fields": [
+          "close"
+        ],
+        "windows": [
+          1,
+          5,
+          22
+        ],
+        "drop_incomplete": true,
+        "carry_fields": [
+          "instrument",
+          "contract",
+          "asof_ms",
+          "group",
+          "close",
+          "date",
+          "iv_index"
+        ]
+      },
+      "notes": "HAR-style daily/weekly/monthly realized vol, backward-only. rv_22 is the reference scale; all three are inputs for a later HAR rung."
+    },
+    "labels": {
+      "uses": "dskit.pipeline.libs.numpy:HorizonLogReturn",
+      "inputs": {
+        "records": "$rv.rows"
+      },
+      "params": {
+        "fields": [
+          "close"
+        ],
+        "horizon": 21,
+        "carry_fields": [
+          "instrument",
+          "contract",
+          "asof_ms",
+          "group",
+          "close",
+          "rv_1",
+          "rv_5",
+          "rv_22",
+          "date",
+          "iv_index"
+        ]
+      },
+      "notes": "ln(S_{t+21}/S_t): 21 steps; steps are trading days here (SPXW PM expiry ~21 trading days out); the walkforward embargo covers the calendar reach. Rows whose horizon runs past the data keep a null label and are forecast but not scored."
+    },
+    "fwd": {
+      "uses": "dskit.pipeline.libs.numpy:ForwardRealizedVol",
+      "inputs": {
+        "records": "$labels.rows"
+      },
+      "params": {
+        "fields": [
+          "close"
+        ],
+        "horizon": 21,
+        "carry_fields": [
+          "instrument",
+          "contract",
+          "asof_ms",
+          "group",
+          "close",
+          "rv_1",
+          "rv_5",
+          "rv_22",
+          "label",
+          "date",
+          "iv_index"
+        ]
+      },
+      "notes": "Realized per-step vol over the same 21 steps as the label: the target a scale rung (ADR-0181) regresses on. Every rung shares this pipeline so the zoo compares only the model node."
+    },
+    "model": {
+      "uses": "dskit.pipeline.libs.lightgbm:LightGBMScaleLocationScale",
+      "inputs": {
+        "rows": "$fwd.rows"
+      },
+      "params": {
+        "fit_split": "train",
+        "label": "label",
+        "scale_field": "rv_22",
+        "scale_multiplier": 4.58257569495584,
+        "n_samples": 200,
+        "scale_target": "rv_fwd",
+        "scale_features": [
+          "rv_1",
+          "rv_5",
+          "rv_22"
+        ],
+        "seed": 0,
+        "lgbm_params": {
+          "n_estimators": 200,
+          "learning_rate": 0.05,
+          "num_leaves": 7,
+          "min_child_samples": 50
+        }
+      },
+      "notes": "Research A0004 candidate #1: a shallow, regularized LightGBM on the same HAR inputs. Small effective samples overfit; keep trees shallow and compare against HAR, not the empirical rung alone."
+    },
+    "score": {
+      "uses": "dskit.pipeline.distribution_scores:ScoreDistributions",
+      "inputs": {
+        "forecasts": "$model.rows"
+      },
+      "params": {
+        "split": "val",
+        "weight_intervals": [
+          [
+            -2.5,
+            -0.5
+          ],
+          [
+            0.5,
+            2.5
+          ]
+        ],
+        "thresholds": [
+          -2.0,
+          -1.0,
+          1.0,
+          2.0
+        ]
+      },
+      "notes": "Locked A0002 scores: twCRPS on the strike zones |z| in [0.5, 2.5], Brier at the candidate strikes, PIT KS and Berkowitz. Val labels overlap (21-step horizon on daily rows), so the p-values are diagnostics, not tests."
+    },
+    "condor": {
+      "uses": "index_options.nodes:CondorDistributionReport",
+      "inputs": {
+        "forecasts": "$model.rows"
+      },
+      "params": {
+        "split": "val",
+        "strikes_z": [
+          -2.0,
+          -1.0,
+          1.0,
+          2.0
+        ],
+        "credit_fraction": 0.3
+      },
+      "notes": "Shorts at one reference SD, wings at two, a fixed 30%-of-width credit (no quotes in synthetic data). Forecast vs realized P&L is a sanity check, never a selection criterion (A0003)."
+    },
+    "backtest": {
+      "uses": "index_options.nodes:CondorBacktest",
+      "inputs": {
+        "forecasts": "$model.rows"
+      },
+      "params": {
+        "split": "val",
+        "hold_steps": 21,
+        "trading_days_per_year": 252,
+        "short_q": 0.1,
+        "wing_z": 0.5,
+        "strike_increment": 5,
+        "multiplier": 100,
+        "fee_per_leg": 0.65,
+        "min_edge_usd": 0.0,
+        "cvar_alpha": 0.95,
+        "atm_ratio": 0.794,
+        "put_skew_per_z": 0.176,
+        "call_skew_per_z": -0.064,
+        "smile_curvature": 0.045,
+        "iv_floor": 0.05,
+        "iv_ceiling": 2.0,
+        "half_spread_min": 0.2,
+        "half_spread_frac": 0.005,
+        "rate": 0.0
+      },
+      "notes": "ADR-0182 VIX-proxy condor backtest over val: one condor every 21 trading days (hold_steps = the label horizon, so entries never overlap and settle at close x exp(label)). Shorts at the forecast's 10%/90% quantiles; wings wing_z = 0.5 of each book's own scale beyond the shorts rather than fixed points, because SPX ran ~460 in 1995 and ~6600+ in 2026 and a fixed 50-point wing is ~11% of spot in one era and <1% in the other. SPX strikes list every 5 points; $0.65/leg is a retail commission. The proxy smile (IV = VIX/100 x (0.794 + 0.176 per z below the forward - 0.064 per z above + 0.045 z^2), 5% IV floor, 200% IV ceiling, zero rate) and the 0.20 pt / 0.5% half-spread are a least-squares fit to ONE recorded SPXW chain (2026-09-23, 30 DTE, VIX 14.21; ADR-0182 amendment); skew moves with the regime, so absolute P&L is indicative, the model vs always vs implied comparison on identical prices is the signal. Never decision-eligible."
+    }
+  },
+  "walkforward": {
+    "objective": "$score.metrics.twcrps",
+    "select": "min",
+    "first": "1995-01-01",
+    "step_days": 365,
+    "count": 32,
+    "val_days": 365,
+    "embargo_days": 35,
+    "notes": "Expanding train windows on TRADING-day rows: SPX from the 1970s trains, VIX (1990+) is only needed at val entries, so the first val year is 1995. 32 yearly folds put the last val window at 2025-12-24 onward (partial: data ends at the pull date). 21 trading days span up to ~31 calendar days (more across multi-day closures such as 2001-09-11), so the 35-day embargo keeps every train label's reach before the val cut."
+  },
+  "outputs": {
+    "run_root": ""
+  }
+}

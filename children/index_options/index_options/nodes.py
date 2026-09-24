@@ -1,4 +1,8 @@
-"""One thin, non-serving Node binding exact references to condor diagnostics."""
+"""Thin, non-serving Nodes binding condor diagnostics and the proxy backtest."""
+
+import math
+from collections import Counter
+from statistics import NormalDist
 
 from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
 from dskit.pipeline.distribution_scores import (
@@ -7,9 +11,11 @@ from dskit.pipeline.distribution_scores import (
     forecast_pair,
     row_in_split,
 )
-from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
-from dskit.pipeline.records import price_ok
+from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.option_pricing import VolIndexSmileQuotes
+from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
+from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import (
     CashIndexContract,
@@ -22,9 +28,9 @@ from .contracts import (
     _integer,
     _text,
 )
-from .distribution import CondorGeometry
+from .distribution import _LEGS, CondorGeometry, condor_payoff
 
-__all__ = ["CondorDistributionReport", "CondorPayoffDiagnostic"]
+__all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic"]
 
 
 class CondorPayoffDiagnostic(Node):
@@ -346,4 +352,323 @@ class CondorDistributionReport(Node):
                   "units": "narrower wing width", "strikes_z": list(geometry.strikes_z),
                   "credit_fraction": geometry.credit_fraction,
                   "cvar_alpha": geometry.cvar_alpha, "metrics": metrics}
+        return {"metrics": metrics, "report": JsonArtifact(report)}
+
+
+class CondorBacktest(Node):
+    """Non-overlapping iron condors over one split, priced by the VIX proxy.
+
+    ADR-0182 item 5. Entries are the split's rows in ``asof_ms`` order (per
+    instrument): a row carrying a forecast, a realized outcome, a ``close``
+    forward, an ``iv_index`` (VIX) and a reference scale is an entry, and
+    the next ``hold_steps - 1`` rows are passed over so no two condors
+    overlap; a row missing any of those is counted by reason and the next
+    row is tried. Each entry settles at ``S_T = F exp(scale * outcome)`` —
+    the forecast row's outcome is the standardized label
+    ``ln(S_T / F) / scale``, so this is ``close * exp(label)``, the SPXW PM
+    expiry ``hold_steps`` trading days out that the proxy assumes.
+
+    Three books share every entry and every price:
+
+    * ``model`` — short put at the forecast's ``short_q`` quantile, short
+      call at ``1 - short_q``; entered only when the condor's expected P&L
+      under the forecast draws, at proxy prices net of fees, exceeds
+      ``min_edge_usd``;
+    * ``always`` — the same strikes, every entry;
+    * ``implied`` — shorts at the VIX-lognormal ``short_q`` quantiles
+      (``ln(K/F) = -s^2/2 + s z_q``, ``s = VIX/100 sqrt(T)``), every entry.
+
+    Wings sit ``wing_points`` index points beyond each short, or
+    ``wing_z`` units of the book's own scale beyond it (exactly one is
+    declared); every strike rounds to ``strike_increment``. Short legs sell
+    at the proxy bid, long legs buy at the proxy ask; credit is
+    ``(short bids - long asks) * multiplier - 4 * fee_per_leg`` USD, fees
+    at entry only (cash settlement). Pricing, tail mean and drawdown are
+    dskit's (:class:`~dskit.pipeline.option_pricing.VolIndexSmileQuotes`
+    with the VIX close as its vol-index level,
+    :func:`~dskit.pipeline.stats.lower_tail_mean`,
+    :func:`~dskit.pipeline.stats.max_drawdown`); this node owns only the
+    condor. A condor whose rounded strikes are not
+    strictly increasing, or whose credit is not positive, is skipped and
+    counted. Role ``score``; ``decision_eligible`` is false while pricing
+    is the proxy.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        Required: ``split``, ``short_q`` (in (0, 0.5)), one of
+        ``wing_points`` / ``wing_z`` (positive), ``strike_increment``
+        (positive), ``multiplier`` (int >= 1), ``fee_per_leg`` (>= 0) and
+        the :class:`~dskit.pipeline.option_pricing.VolIndexSmileQuotes`
+        knobs ``atm_ratio``, ``put_skew_per_z``, ``call_skew_per_z``,
+        ``smile_curvature``, ``iv_floor``, ``iv_ceiling``,
+        ``half_spread_min``, ``half_spread_frac``. Optional: ``hold_steps`` (21),
+        ``trading_days_per_year`` (252; ``T = hold_steps / it``),
+        ``min_edge_usd`` (0), ``cvar_alpha`` (0.95), ``rate`` (0).
+
+    Examples
+    --------
+    Ten-percent shorts, wings half a reference SD further out::
+
+        node = CondorBacktest("backtest", {
+            "split": "val", "short_q": 0.1, "wing_z": 0.5, "strike_increment": 5,
+            "multiplier": 100, "fee_per_leg": 0.65, "atm_ratio": 0.794,
+            "put_skew_per_z": 0.176, "call_skew_per_z": -0.064, "smile_curvature": 0.045,
+            "iv_floor": 0.05, "iv_ceiling": 2.0, "half_spread_min": 0.20,
+            "half_spread_frac": 0.005,
+        })
+        out = node.run(ctx, {"forecasts": rows})
+        out["metrics"]["model_total_pnl_usd"]
+    """
+
+    role = "score"
+    outputs = ("metrics", "report")
+    BOOKS = ("model", "always", "implied")
+    #: Why an in-split row cannot be an entry, in the order they are checked.
+    ROW_REASONS = ("no_outcome", "no_forecast", "no_forward", "no_scale", "no_iv")
+    #: Why a book skips an entry.
+    BOOK_REASONS = ("degenerate_strikes", "nonpositive_credit", "below_min_edge")
+    DEFAULTS = {"hold_steps": 21, "trading_days_per_year": 252, "min_edge_usd": 0.0,
+                "cvar_alpha": 0.95, "rate": 0.0}
+    _REQUIRED = ("split", "short_q", "strike_increment", "multiplier", "fee_per_leg",
+                 "atm_ratio", "put_skew_per_z", "call_skew_per_z", "smile_curvature",
+                 "iv_floor", "iv_ceiling", "half_spread_min", "half_spread_frac")
+    _WINGS = ("wing_points", "wing_z")
+    _PARAMS = tuple(sorted(_REQUIRED + _WINGS + tuple(DEFAULTS)))
+    FORWARD_FIELD = "close"
+    IV_FIELD = "iv_index"
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the declaration; every problem is reported.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        missing = [k for k in cls._REQUIRED if k not in params]
+        if missing:
+            problems.append(f"missing params: {missing}")
+        if params.get("split") not in SPLIT_NAMES:
+            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
+        q = params.get("short_q")
+        if not number_ok(q) or not 0 < q < 0.5:
+            problems.append(f"short_q must be in (0, 0.5), got {q!r}")
+        wings = [k for k in cls._WINGS if k in params]
+        if len(wings) != 1:
+            problems.append(f"declare exactly one of {list(cls._WINGS)}, got {wings}")
+        for knob in wings + ["strike_increment"]:
+            if not price_ok(params.get(knob)):
+                problems.append(f"{knob} must be a positive number, got {params.get(knob)!r}")
+        check_int_param(problems, "multiplier", params.get("multiplier"), ge=1)
+        for knob in ("hold_steps", "trading_days_per_year"):
+            check_int_param(problems, knob, params.get(knob, cls.DEFAULTS[knob]), ge=1)
+        fee = params.get("fee_per_leg")
+        if not number_ok(fee) or fee < 0:
+            problems.append(f"fee_per_leg must be a nonnegative number, got {fee!r}")
+        edge = params.get("min_edge_usd", cls.DEFAULTS["min_edge_usd"])
+        if not number_ok(edge):
+            problems.append(f"min_edge_usd must be a finite number, got {edge!r}")
+        alpha = params.get("cvar_alpha", cls.DEFAULTS["cvar_alpha"])
+        if not number_ok(alpha) or not 0 < alpha < 1:
+            problems.append(f"cvar_alpha must be in (0, 1), got {alpha!r}")
+        problems.extend(VolIndexSmileQuotes.problems(
+            *(params.get(k, cls.DEFAULTS.get(k)) for k in VolIndexSmileQuotes.KNOBS)))
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require a list of forecast rows.
+
+        Parameters
+        ----------
+        inputs : dict
+            The wired inputs.
+
+        Returns
+        -------
+        list of str
+            Empty when usable.
+        """
+        if not isinstance(inputs.get("forecasts"), list):
+            return ["forecasts must be a list of forecast rows"]
+        return []
+
+    def _knob(self, name):
+        """Return a declared knob or its default."""
+        return self.params.get(name, self.DEFAULTS.get(name))
+
+    def _row_reason(self, row):
+        """Say why a scorable forecast row cannot be priced, or ``None``."""
+        if not price_ok(row.get(self.FORWARD_FIELD)):
+            return "no_forward"
+        if not price_ok(row.get(REFERENCE_SCALE_FIELD)):
+            return "no_scale"
+        if not price_ok(row.get(self.IV_FIELD)):
+            return "no_iv"
+        return None
+
+    def _entries(self, ctx, rows):
+        """Pick non-overlapping entry rows per instrument, counting skips."""
+        hold = int(self._knob("hold_steps"))
+        by_instrument = {}
+        for row in rows:
+            if row_in_split(ctx, row, self.params["split"]):
+                by_instrument.setdefault(str(row.get("instrument")), []).append(row)
+        entries, skipped = [], Counter()
+        for instrument in sorted(by_instrument):
+            ordered = sorted(by_instrument[instrument], key=lambda r: r["asof_ms"])
+            next_entry = 0
+            for index, row in enumerate(ordered):
+                if index < next_entry:
+                    continue
+                reason, dist, outcome_z = forecast_pair(
+                    row, DEFAULT_SAMPLES_FIELD, DEFAULT_OUTCOME_FIELD)
+                reason = reason or self._row_reason(row)
+                if reason:
+                    skipped[reason] += 1
+                    continue
+                entries.append((row, dist, outcome_z))
+                next_entry = index + hold
+        return entries, skipped, sum(len(v) for v in by_instrument.values())
+
+    def _strikes(self, forward, z_put, z_call, scale):
+        """Round a condor's four strikes, or ``None`` when they degenerate."""
+        short_put, short_call = (forward * math.exp(scale * z) for z in (z_put, z_call))
+        if "wing_points" in self.params:
+            long_put = short_put - self.params["wing_points"]
+            long_call = short_call + self.params["wing_points"]
+        else:
+            wing = self.params["wing_z"]
+            long_put = forward * math.exp(scale * (z_put - wing))
+            long_call = forward * math.exp(scale * (z_call + wing))
+        step = self.params["strike_increment"]
+        # outward, never toward the money: puts down, calls up, so a listed
+        # strike is never riskier than the quantile asked for
+        strikes = (math.floor(long_put / step) * step, math.floor(short_put / step) * step,
+                   math.ceil(short_call / step) * step, math.ceil(long_call / step) * step)
+        if not 0 < strikes[0] < strikes[1] < strikes[2] < strikes[3]:
+            return None
+        return strikes
+
+    def _credit_usd(self, quotes, forward, strikes, vix, years):
+        """Sell shorts at the bid, buy wings at the ask, net of entry fees."""
+        per_share = 0.0
+        for (right, sign), strike in zip(_LEGS, strikes):
+            bid, _mid, ask = quotes.quote(right, forward, strike, vix, years)
+            per_share += bid if sign < 0 else -ask
+        return per_share * self.params["multiplier"] - 4 * self.params["fee_per_leg"]
+
+    def _evaluate(self, quotes, row, dist, outcome_z, years):
+        """Price and settle all three books at one entry."""
+        forward, scale = row[self.FORWARD_FIELD], row[REFERENCE_SCALE_FIELD]
+        vix = row[self.IV_FIELD]
+        settlement = forward * math.exp(scale * outcome_z)
+        q, multiplier = self.params["short_q"], self.params["multiplier"]
+        implied_scale = vix / 100.0 * math.sqrt(years)
+        z_implied = NormalDist().inv_cdf(q)
+        model = self._strikes(forward, dist.quantile(q), dist.quantile(1 - q), scale)
+        candidates = {"model": model, "always": model, "implied": self._strikes(
+            forward, z_implied - implied_scale / 2, -z_implied - implied_scale / 2,
+            implied_scale)}
+        books, expected = {}, None
+        for book in self.BOOKS:
+            strikes = candidates[book]
+            if strikes is None:
+                books[book] = {"strikes": None, "credit_usd": None, "pnl_usd": None,
+                               "entered": False, "reason": "degenerate_strikes"}
+                continue
+            credit = self._credit_usd(quotes, forward, strikes, vix, years)
+            cell = {"strikes": list(strikes), "credit_usd": credit, "pnl_usd": None,
+                    "entered": False, "reason": None}
+            if credit <= 0:
+                cell["reason"] = "nonpositive_credit"
+            elif book == "model":
+                expected = credit + multiplier * sum(
+                    condor_payoff(forward * math.exp(scale * z), strikes)
+                    for z in dist.samples) / len(dist.samples)
+                if not expected > self._knob("min_edge_usd"):
+                    cell["reason"] = "below_min_edge"
+            if cell["reason"] is None:
+                cell["entered"] = True
+                cell["pnl_usd"] = credit + multiplier * condor_payoff(settlement, strikes)
+            books[book] = cell
+        return {"date": row.get("date"), "asof_ms": row["asof_ms"],
+                "instrument": row.get("instrument"), "forward": forward,
+                "iv_index": vix, "reference_scale": scale, "settlement": settlement,
+                "model_expected_pnl_usd": expected, "books": books}
+
+    def _metrics(self, ledger, skipped, n_in_split):
+        """Flatten per-book summaries into objective-addressable numbers."""
+        metrics = {"n_rows_in_split": n_in_split, "n_entries": len(ledger)}
+        for reason in self.ROW_REASONS:
+            metrics[f"n_skipped_{reason}"] = skipped.get(reason, 0)
+        alpha = self._knob("cvar_alpha")
+        for book in self.BOOKS:
+            cells = [entry["books"][book] for entry in ledger]
+            traded = [c for c in cells if c["entered"]]
+            pnls = [c["pnl_usd"] for c in traded]
+            n = len(pnls)
+            metrics.update({
+                f"{book}_n_trades": n,
+                f"{book}_total_pnl_usd": sum(pnls),
+                f"{book}_mean_pnl_usd": sum(pnls) / n if n else 0.0,
+                f"{book}_hit_rate": sum(p > 0 for p in pnls) / n if n else 0.0,
+                f"{book}_cvar_usd": lower_tail_mean(pnls, alpha) if n else 0.0,
+                f"{book}_max_drawdown_usd": max_drawdown(pnls),
+                f"{book}_mean_credit_usd":
+                    sum(c["credit_usd"] for c in traded) / n if n else 0.0,
+            })
+            for reason in self.BOOK_REASONS:
+                metrics[f"{book}_n_skipped_{reason}"] = sum(
+                    c["reason"] == reason for c in cells)
+        return metrics
+
+    def run(self, ctx, inputs):
+        """Backtest the three books over the split.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Its splits decide membership.
+        inputs : dict
+            ``forecasts``: sample-set forecast rows carrying ``close``,
+            ``iv_index`` and the reference scale.
+
+        Returns
+        -------
+        dict
+            ``metrics`` (flat numbers, ``<book>_<stat>``; a book with no
+            trades reports zeros beside ``<book>_n_trades = 0``) and
+            ``report`` (a JsonArtifact with the per-trade ledger).
+
+        Raises
+        ------
+        ValueError
+            When no in-split row can be an entry.
+        """
+        quotes = VolIndexSmileQuotes(*(self._knob(k) for k in VolIndexSmileQuotes.KNOBS))
+        years = self._knob("hold_steps") / self._knob("trading_days_per_year")
+        entries, skipped, n_in_split = self._entries(ctx, inputs["forecasts"])
+        if not entries:
+            raise ValueError(f"{self.key}: no in-split row carries a forecast, outcome, "
+                             f"forward, scale and iv_index in split "
+                             f"{self.params['split']!r} (skipped {dict(skipped)})")
+        ledger = [self._evaluate(quotes, row, dist, z, years) for row, dist, z in entries]
+        metrics = self._metrics(ledger, skipped, n_in_split)
+        report = {"kind": "vix_proxy_condor_backtest", "pricing": "vix_proxy",
+                  "decision_eligible": False,
+                  "units": "USD per condor, one contract per leg",
+                  "params": {k: self._knob(k) for k in self._PARAMS if k in self.params
+                             or k in self.DEFAULTS},
+                  "years_to_expiry": years, "metrics": metrics, "ledger": ledger}
         return {"metrics": metrics, "report": JsonArtifact(report)}

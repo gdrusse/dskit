@@ -1,0 +1,33 @@
+{
+  "notes": "ADR-0182 wide daily index history: underlyings plus the volatility term structure and tail indices Cboe publishes as free CSVs. SPX (1975), OEX (1983), DJX (1997), XSP/RUT/MRUT; VIX1D/VIX9D/VIX/VIX3M/VIX6M/VIX1Y (term structure), VVIX (vol of VIX), SKEW (tail), VXN/RVX/VXD (Nasdaq/Russell/Dow vol), GVZ/OVX/VXEEM/VXSLV/VXTLT (gold, oil, EM, silver, bonds) and single-stock VXAPL/VXAZN/VXGOG/VXGS/VXIBM. NDX/XND history is not served by Cboe (403). A separate source from 'cboe-index' because the pack keeps one cursor per stream (adding symbols to a backfilled source would skip them). Register as 'cboe-index-wide'; backfill once, then acquire daily.",
+  "symbols": [
+    "SPX",
+    "OEX",
+    "DJX",
+    "XSP",
+    "RUT",
+    "MRUT",
+    "VIX1D",
+    "VIX9D",
+    "VIX",
+    "VIX3M",
+    "VIX6M",
+    "VIX1Y",
+    "VVIX",
+    "SKEW",
+    "VXN",
+    "RVX",
+    "VXD",
+    "GVZ",
+    "OVX",
+    "VXEEM",
+    "VXSLV",
+    "VXTLT",
+    "VXAPL",
+    "VXAZN",
+    "VXGOG",
+    "VXGS",
+    "VXIBM"
+  ],
+  "pace_s": 0.5
+}

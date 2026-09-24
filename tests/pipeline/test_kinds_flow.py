@@ -1,5 +1,5 @@
 """The flow kinds: filter / event-bank / eligibility / banking-report,
-and the relational four: concat / join / derive / groupby.
+and the relational five: concat / join / derive / groupby / keyby.
 
 The banking three now ship from ``dskit/pipeline/kinds_banking.py``
 (TODO 3e) and their behaviour is still tested here, next to the ★BANKING
@@ -40,6 +40,7 @@ from dskit.pipeline.kinds_flow import (
     Filter,
     GroupBy,
     Join,
+    KeyBy,
     clause_holds,
     clause_problems,
     register,
@@ -1264,18 +1265,102 @@ class TestGroupBy:
         assert problems and "one-shot" in problems[0]
 
 
-class TestRegister:
-    def test_registers_all_six_unowned(self):
-        reg = register(NodeKindRegistry())
-        assert {"filter", "concat", "join", "derive", "event-grid", "groupby"} <= set(
-            reg.kinds()
+# ---------------------------------------------------------------------------
+# keyby — records -> the keyed side table join reads (ADR-0086's pivot)
+# ---------------------------------------------------------------------------
+
+
+class TestKeyBy:
+    ROWS = [
+        {"date": "2020-01-02", "close": 13.0, "symbol": "V"},
+        {"date": "2020-01-03", "close": 14.5, "symbol": "V"},
+    ]
+
+    def test_keys_one_value_per_row_in_first_seen_order(self, ctx):
+        out = KeyBy("k", {"key": "date", "value": "close"}).run(
+            ctx, {"records": list(reversed(self.ROWS))}
         )
+        assert out["table"] == {"2020-01-03": 14.5, "2020-01-02": 13.0}
+        assert list(out["table"]) == ["2020-01-03", "2020-01-02"]
+        assert out["metrics"] == {"rows_in": 2, "keys": 2}
+
+    def test_reads_record_objects_through_the_one_accessor(self, ctx):
+        rows = [mrec("A", "A-1", 1), mrec("B", "B-1", 2)]
+        out = KeyBy("k", {"key": "contract", "value": "asof_ms"}).run(ctx, {"records": rows})
+        assert out["table"] == {"A-1": 1, "B-1": 2}
+
+    def test_feeds_join_as_a_scalar_side_table(self, ctx):
+        table = KeyBy("k", {"key": "date", "value": "close"}).run(
+            ctx, {"records": self.ROWS[:1]}
+        )["table"]
+        joined = Join(
+            "j", {"key": "date", "how": "left", "unmatched_fill": {"iv": None}}
+        ).run(ctx, {"records": [{"date": d} for d in ("2020-01-02", "2020-01-03")],
+                    "iv": table})["records"]
+        assert joined == [{"date": "2020-01-02", "iv": 13.0},
+                          {"date": "2020-01-03", "iv": None}]
+
+    def test_a_repeated_key_refuses_unless_fanout_is_declared(self, ctx):
+        rows = self.ROWS + [{"date": "2020-01-02", "close": 99.0}]
+        with pytest.raises(ValueError, match="repeats date='2020-01-02'"):
+            KeyBy("k", {"key": "date", "value": "close"}).run(ctx, {"records": rows})
+        out = KeyBy("k", {"key": "date", "value": "close", "allow_fanout": True}).run(
+            ctx, {"records": rows}
+        )
+        assert out["table"] == {"2020-01-02": [13.0, 99.0], "2020-01-03": [14.5]}
+        joined = Join("j", {"key": "date", "how": "strict", "allow_fanout": True}).run(
+            ctx, {"records": [{"date": "2020-01-02"}], "iv": out["table"]}
+        )["records"]
+        assert [r["iv"] for r in joined] == [13.0, 99.0]
+
+    @pytest.mark.parametrize("row, match", [
+        ({"close": 1.0}, "carries no 'date'"),
+        ({"date": "d"}, "carries no 'close'"),
+        ({"date": float("nan"), "close": 1.0}, "unusable key"),
+        ({"date": float("inf"), "close": 1.0}, "unusable key"),
+        ({"date": ["d"], "close": 1.0}, "unusable key"),
+    ])
+    def test_row_refusals_name_the_row(self, ctx, row, match):
+        with pytest.raises(ValueError, match=match):
+            KeyBy("k", {"key": "date", "value": "close"}).run(ctx, {"records": [row]})
+
+    @pytest.mark.parametrize("params, match", [
+        ({"value": "close"}, "key is required"),
+        ({"key": "date"}, "value is required"),
+        ({"key": ["date", "symbol"], "value": "close"}, "ONE non-empty field"),
+        ({"key": "", "value": "close"}, "ONE non-empty field"),
+        ({"key": "date", "value": "close", "allow_fanout": "yes"}, "bool"),
+        ({"key": "date", "value": "close", "how": "left"}, "how"),
+    ])
+    def test_param_refusals(self, params, match):
+        problems = KeyBy.validate_params(params)
+        assert any(match in p for p in problems), problems
+        with pytest.raises(ConfigError):
+            KeyBy("k", params)
+
+    def test_references_wait_for_materialization(self):
+        assert KeyBy.validate_params({"key": "$a.b", "value": "$c.d"}) == []
+
+    def test_container_shape_and_serving(self):
+        node = KeyBy("k", {"key": "date", "value": "close"})
+        assert node.validate_inputs({"records": []}) == []
+        assert node.validate_inputs({"records": {}}) != []
+        assert "one-shot" in node.validate_inputs({"records": iter(())})[0]
+        assert KeyBy.serving_effect({}, {}) == "pure"
+
+
+class TestRegister:
+    def test_registers_all_seven_unowned(self):
+        reg = register(NodeKindRegistry())
+        assert {"filter", "concat", "join", "derive", "event-grid", "groupby",
+                "keyby"} <= set(reg.kinds())
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)
         assert reg.get("derive") == (Derive, False)
         assert reg.get("event-grid") == (EventGrid, False)
         assert reg.get("groupby") == (GroupBy, False)
+        assert reg.get("keyby") == (KeyBy, False)
 
     def test_idempotent_and_never_shadows(self):
         reg = NodeKindRegistry()

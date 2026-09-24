@@ -28,6 +28,27 @@ Next bounded action: owner rules on (9). Then either model T+1 settlement in
 `EquityReplay` cash, or run the same document on an untouched window after
 2025-10-16.
 
+## Index-options real data, zoo and live chain recorder (2026-09-24, ADR-0182)
+
+Real data end to end: tier-2 Cboe pack (`onboarding/libs/cboe.py`: index
+history CSVs + delayed chains), tier-1 `pipeline/option_pricing.py`
+(`black76`, `VolIndexSmileQuotes`), `stats.max_drawdown`/`lower_tail_mean`,
+`keyby` kind; child wrappers `IndexCloseRows` + `CondorBacktest`, six
+`run-real-*` rungs and `run-real-zoo.json`. Zoo on SPX 1995-2026 (32 folds):
+every conditional rung beats the naive rung (p <= 0.0005) but none beats
+VIX alone; condor strikes from any rung do not beat VIX-implied strikes
+(implied +$79/trade, t 1.3; model books ~$0-40). A flat-VIX proxy's
++$400/trade was a pricing artifact, removed by a smile fitted to the real
+SPXW chain. Wide recorder live: 20 underlyings, all expiries, weekdays
+10:30/15:50/16:20 ET (Windows task `dskit-index-options-chain-recorder`,
+root `~/data/index_options/ob`, ~130 GB/yr) plus 27 daily vol/index
+histories. Memo:
+`children/index_options/docs/memos/2026-09-24-real-data-backtest-and-recorder.md`.
+
+Next bounded action: time-varying skew (SKEW) + weekly recalibration from
+recorded chains; VIX term-structure/VVIX/SKEW feature rungs; real-quote
+backtest once recorded expiries settle (~6 weeks).
+
 ## Index-options scale rungs + distribution zoo landed (2026-09-23, ADR-0181)
 
 Research A0004 (ML/DL/transformers): a GBM volatility scale ranks first,

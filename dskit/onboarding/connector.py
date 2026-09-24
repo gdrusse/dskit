@@ -114,6 +114,7 @@ DEFAULT_BACKOFF_S = 0.5
 DEFAULT_CONNECTORS = {
     "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
     "alpaca_quotes": "dskit.onboarding.libs.alpaca_quotes:AlpacaQuoteMinutesConnector",
+    "cboe": "dskit.onboarding.libs.cboe:CboeConnector",
     "huggingface": "dskit.onboarding.libs.huggingface:HuggingFaceHubConnector",
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",

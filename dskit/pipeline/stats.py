@@ -34,6 +34,11 @@ depend on iteration order, process hash randomization, or each other —
 and both methods consume the identical draw stream, so switching method
 never perturbs the resampling itself.
 
+Two descriptive summaries of an ordered P&L series ride beside the tests
+(:func:`lower_tail_mean`, :func:`max_drawdown`): they are the tail and
+path numbers a backtest reports next to its mean, stated once here so a
+second backtest cannot drift from the first's tail rule.
+
 Import cost: stdlib only.
 """
 
@@ -59,6 +64,8 @@ __all__ = [
     "diebold_mariano_test",
     "dm_lags",
     "dm_loss_series",
+    "lower_tail_mean",
+    "max_drawdown",
     "max_informative_horizon",
     "newey_west_mean",
     "no_correction",
@@ -1344,6 +1351,87 @@ def register_correction(name, fn, *, needs_weights=False, doc=""):
     if name in CORRECTIONS:
         raise ValueError(f"correction {name!r} is already registered")
     CORRECTIONS[name] = {"fn": fn, "needs_weights": needs_weights, "doc": doc}
+
+
+def lower_tail_mean(values, alpha):
+    """Return the mean of the worst ``1 - alpha`` share of ``values``.
+
+    The empirical CVaR / expected shortfall of a P&L series, lower is
+    worse. The tail holds ``ceil((1 - alpha) * n)`` values, at least one;
+    the product is rounded to 9 places first, because ``(1 - 0.95) * 200``
+    is ``10.000000000000009`` in binary floating point and must count 10.
+
+    Parameters
+    ----------
+    values : sequence of float
+        At least one finite number.
+    alpha : float
+        Tail level in ``(0, 1)``.
+
+    Returns
+    -------
+    float
+        The lower-tail mean.
+
+    Raises
+    ------
+    ValueError
+        On an empty series, a non-finite value or ``alpha`` outside
+        ``(0, 1)``.
+
+    Examples
+    --------
+    The worst 20% of ten values::
+
+        lower_tail_mean([5, 1, 2, 3, 4, -1, 0, 6, 7, 8], 0.8)  # -0.5
+    """
+    if not number_ok(alpha) or not 0 < alpha < 1:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("lower_tail_mean needs at least one value")
+    if not all(number_ok(v) for v in ordered):
+        raise ValueError("lower_tail_mean needs finite numbers")
+    tail = max(1, math.ceil(round((1 - alpha) * len(ordered), 9)))
+    return sum(ordered[:tail]) / tail
+
+
+def max_drawdown(pnls):
+    """Return the largest peak-to-trough fall of a cumulative P&L path.
+
+    The path starts at 0 before the first increment, so a series that only
+    loses draws down from 0. Reported as a nonnegative size.
+
+    Parameters
+    ----------
+    pnls : iterable of float
+        Per-period P&L increments, in time order; empty is legal.
+
+    Returns
+    -------
+    float
+        ``max over t of (running peak - cumulative P&L)``, 0.0 for an
+        empty or never-falling path.
+
+    Raises
+    ------
+    ValueError
+        On a non-finite increment.
+
+    Examples
+    --------
+    Up 10, down 25, up 5::
+
+        max_drawdown([10.0, -25.0, 5.0])  # 25.0
+    """
+    total = peak = worst = 0.0
+    for pnl in pnls:
+        if not number_ok(pnl):
+            raise ValueError(f"max_drawdown needs finite numbers, got {pnl!r}")
+        total += pnl
+        peak = max(peak, total)
+        worst = max(worst, peak - total)
+    return worst
 
 
 def correction(name):

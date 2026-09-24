@@ -16,13 +16,36 @@ synthetic research diagnostic: no quotes, no fills, never decision-eligible.
 import math
 
 from dskit.pipeline.records import number_ok
+from dskit.pipeline.stats import lower_tail_mean
 
 from .contracts import leg_intrinsic
 
-__all__ = ["CondorGeometry", "strike_z"]
+__all__ = ["CondorGeometry", "condor_payoff", "strike_z"]
 
 #: Leg order and signed quantities, matching ``DefinedRiskCondor``.
 _LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+
+
+def condor_payoff(level, strikes):
+    """Return a long-wing condor's settlement payoff per unit, credit excluded.
+
+    The one owner of the four-leg payoff sum: the standardized geometry
+    and the USD backtest (ADR-0182) both call it.
+
+    Parameters
+    ----------
+    level : float
+        Settlement level.
+    strikes : sequence of float
+        Long put, short put, short call, long call.
+
+    Returns
+    -------
+    float
+        Between ``-max(wing)`` and ``0``.
+    """
+    return sum(sign * leg_intrinsic(right, k, level)
+               for (right, sign), k in zip(_LEGS, strikes))
 
 
 def strike_z(strike, forward, reference_scale):
@@ -137,9 +160,7 @@ class CondorGeometry:
             ``credit_fraction``.
         """
         narrower = min(strikes[1] - strikes[0], strikes[3] - strikes[2])
-        payoff = sum(sign * leg_intrinsic(right, k, level)
-                     for (right, sign), k in zip(_LEGS, strikes))
-        return self.credit_fraction + payoff / narrower
+        return self.credit_fraction + condor_payoff(level, strikes) / narrower
 
     def cvar(self, pnls):
         """Return the mean of the worst ``1 - cvar_alpha`` share of P&L.
@@ -152,12 +173,10 @@ class CondorGeometry:
         Returns
         -------
         float
-            The tail mean (lower is worse).
+            The tail mean (lower is worse), dskit's
+            :func:`~dskit.pipeline.stats.lower_tail_mean`.
         """
-        ordered = sorted(pnls)
-        # round first: (1 - 0.95) * 200 is 10.000000000000009 in binary floating point
-        tail = max(1, math.ceil(round((1 - self.cvar_alpha) * len(ordered), 9)))
-        return sum(ordered[:tail]) / tail
+        return lower_tail_mean(pnls, self.cvar_alpha)
 
     def evaluate(self, draws_z, outcome_z, forward, scale):
         """Evaluate one entry under its forecast and, if known, its outcome.

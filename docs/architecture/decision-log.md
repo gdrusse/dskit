@@ -22462,6 +22462,183 @@ Final lens on `e16e465`: 0 Critical/Major (7 of 9 mutants killed). Minor
 backlog: the signature pin checks key names, not per-key types; defaults are
 not tested against `LGBM_KEY_TYPES`; numeric ranges refuse only at fit.
 
+## ADR-0182 — Index-options real data: Cboe pack, chain recorder, VIX-proxy condor backtest
+
+**Status:** Approved by Russell 2026-09-23 ("confirm and finish all the machinery needed for an initial backtest ... run it with real numbers ... data pulling and setting up a live recorder ... kick off training"; premiums: VIX proxy; "we need an ADR and merge"). Scope is the manifest below.
+**Owner:** Russell. **Base:** `3204d2b`.
+
+**Context.** ADR-0167/0168/0181 left the child synthetic-only: `contracts.py`
+refuses non-synthetic provenance, the zoo reads `SynthGjrPaths`, and
+`CondorDistributionReport` prices a fixed 30%-of-width credit over
+overlapping daily rows. Free-data diligence (2026-09-23): Cboe serves, with
+no credential, daily index history CSVs (SPX closes since 1975, VIX OHLC
+since 1990) and a 15-minute-delayed full option chain JSON per underlying
+(SPX ~30k contracts, XSP) with bid/ask/sizes/IV/greeks. No free source of
+HISTORICAL option quotes exists (the Theta key is unset; paid data is out
+by owner rule). Inventory: no connector covers Cboe or any option chain;
+`onboarding watch` / `acquire --mode live` is the recorder pattern (pmquant
+Kalshi books); `ObservationRows.project` is the reader seam; no options
+backtest ledger exists anywhere (EquityReplay is equities-only).
+
+**Decision.**
+
+dskit:
+1. `dskit/onboarding/libs/cboe.py` (new pack, stdlib only, no credential) —
+   `CboeConnector`, two provider-shaped streams:
+   - `index_daily` — one row per `(symbol, date)` from
+     `cdn.cboe.com/api/global/us_indices/daily_prices/{SYMBOL}_History.csv`:
+     `symbol`, `date` (ISO), `open/high/low` (null when the file has only a
+     close), `close`, `effective_date` (the date). Knob `symbols`.
+   - `option_chain` — one row per `(option, quote_time)` from
+     `cdn.cboe.com/api/global/delayed_quotes/options/_{SYMBOL}.json`:
+     OCC `option` parsed into `root`, `expiry`, `right`, `strike`; `bid`,
+     `bid_size`, `ask`, `ask_size`, `iv`, `open_interest`, `volume`,
+     greeks, `last_trade_price/time`, `underlying_price`, `quote_time`
+     (provider timestamp, America/New_York -> UTC), `effective_date` =
+     `quote_time`. Knobs `symbols`, `roots` (allowlist), `max_dte`.
+   Same transport contract as `kalshi.py`: one injectable getter, pacing,
+   capped retry/backoff, tests with a scripted getter and no network.
+2. `tests/onboarding/test_cboe.py` (new). Pack docs trees.
+
+Child `index_options` (supersedes the "all data is explicitly synthetic"
+and "no replay" lines of the child AGENTS.md for this manifest only):
+3. `index_options/observations.py` (edit) — `IndexCloseRows`: reads
+   `index_daily`, projects the declared `symbol` into the
+   `instrument/contract/group/close/asof_ms/date` envelope the numpy
+   features need, and also emits a `by_date` (`{date: close}`) side table.
+   The VIX close joins as `iv_index` through dskit's existing `Join` kind
+   (`how: "left"`, a second `IndexCloseRows` with `symbol: "VIX"` wired on
+   port `iv_index`), not child join code; a row without a same-date VIX
+   keeps `iv_index` null.
+4. `index_options/pricing.py` (new) — Black-76 on a forward, and the
+   `VixProxyQuotes` model: leg IV = VIX/100 x (1 + `skew_per_z` x
+   max(0, -z_K)) floored, mid from Black-76, bid/ask = mid -/+
+   max(`half_spread_min`, `half_spread_frac` x mid). Every knob explicit;
+   the output is labelled `pricing: "vix_proxy"`, never a quote.
+5. `index_options/nodes.py` (edit) — `CondorBacktest` (role score): over
+   the val split, NON-OVERLAPPING entries every `hold_steps` rows; strikes
+   from the forecast's quantiles (`short_q`, wings `wing_points` beyond)
+   rounded to `strike_increment`; short legs at the proxy bid, long legs at
+   the proxy ask; `fee_per_leg`; PM cash settlement at S_T = close x
+   exp(label) (21 trading days = the SPXW PM expiry the proxy assumes).
+   Three books over the same entries: `model` (enter only when the
+   forecast expected P&L at the proxy prices exceeds `min_edge_usd`),
+   `always` (same strikes, every entry) and `implied` (strikes from the
+   VIX-lognormal quantiles, every entry). Reports per-trade ledger,
+   mean/total P&L USD per condor, hit rate, CVaR, max drawdown.
+   `decision_eligible=false` while pricing is the proxy.
+6. `configs/source-cboe.json` (new) — the registered Cboe source.
+   `configs/run-real-{distribution,har,lightgbm}.json` and
+   `configs/run-real-zoo.json` (new) — the ADR-0181 rungs on
+   `IndexCloseRows` (SPX from 1975) with the backtest node; walk-forward
+   on trading-day rows, embargo re-checked against 21 trading days.
+7. `tests/test_real_data.py` (new; scripted rows, no network). Manifest
+   test, AGENTS/CLAUDE layout, README runbook (pull, recorder, zoo,
+   backtest) updated.
+
+**Recorder.** `python -m dskit.onboarding acquire --source cboe --stream
+option_chain --mode live` scheduled twice per trading day (15:50 and 16:20
+ET, delayed quotes ~15:35/16:05) into a durable root outside the repo
+(`~/data/index_options/ob`). Recorded chains later calibrate the proxy's
+skew/spread knobs and, once expiries settle, replace the proxy.
+
+**Non-goals.** Real-quote backtest (needs recorded history), AM-settled
+SPX monthlies, early exit/rolling, sizing/portfolio, rates term structure
+(a constant `rate` knob, default 0), XSP-specific backtest, broker/paper
+trading, optimizer, DL.
+
+**Alternatives.** Extend `restapi` with CSV (the chain needs OCC parsing
+and ET clock handling anyway — provider logic belongs in a pack); Theta
+free tier (no key; unknown entitlement); wait for recorded quotes only
+(owner chose the proxy now, recorded later).
+
+**Risks disclosed.** The proxy has no real skew term structure or spread
+dynamics, so absolute P&L is indicative; the RELATIVE comparison (model vs
+always vs implied on identical prices) is the signal. Pre-2016 SPX had
+no expiry every 21 trading days; the backtest assumes one.
+
+**Amendment (2026-09-23, owner-delegated acceptance).** First real runs
+showed no rung's strikes beat the VIX-implied strikes, so three config-only
+rungs add VIX as a scale feature: `run-real-vix.json` (log VIX alone — the
+market-scale baseline, A0003 R4-lite), `run-real-har-vix.json` (HAR-IV) and
+`run-real-lightgbm-vix.json`; all join the real zoo. Strikes round OUTWARD
+(puts down, calls up) after review. Recorder: a user-level Windows task
+`dskit-index-options-chain-recorder` runs `~/data/index_options/record_chain.sh`
+weekdays 15:50/16:20 ET (~27 MB per snapshot, ~14 GB/year). Smile
+recalibration: the first recorded SPXW chain (30 DTE, VIX 14.21) showed
+the flat-call proxy ~2x rich on OTM calls and ~3x cheap on deep puts, so
+`VixProxyQuotes` now takes `atm_ratio` 0.794, `put_skew_per_z` 0.176
+(renamed from `skew_per_z`, no alias), `call_skew_per_z` -0.064 and
+`smile_curvature` 0.045 (least squares, within ±0.0051 IV on eight points)
+and a 0.20 pt / 0.5% half-spread; one day only — Cboe SKEW history is the
+planned time-varying upgrade.
+
+**Review (2026-09-23).** Sonnet lenses. Cboe pack on `cb761be`: 0 Critical,
+1 Major (a provider `0` bid/ask means "no market" — documented at the pack
+boundary; readers must treat it deliberately), 1 Minor (one cursor per
+stream: adding a symbol needs a new source — documented). Child on
+`cb761be`: 0 Critical/Major; Minor strike rounding toward the money fixed
+(outward); Minor midnight `asof_ms` stamping is consistent with the split
+cuts (EOD convention, not a leak). Child suite: all new tests pass; 6
+`test_integration.py` CLI failures reproduce unchanged on `3204d2b` (their
+subprocess resolves the stale `~/dskit` install) — environmental.
+
+**Amendment (2026-09-23, tier placement; owner rule "If it needs to be in
+dskit, build there. If specific to this project, have it as A WRAPPER in
+the child").** Generic code the manifest put in the child moves to tier-1
+dskit (stdlib only, purity gate green); the child keeps thin domain
+wrappers. Reuse check first (origin/main, branches, children): no option
+pricing existed anywhere; `kinds_report.RunReport._drawdown` reads a level
+curve (negative, first-point baseline) and `production/accounting.py`'s is
+Decimal/book-bound; `libs/pyomo._weighted_cvar` is the weighted
+Rockafellar-Uryasev form inside the optimizer pack; `TableFile` keys a
+FILE, `GroupBy` reduces to rows and `Join` only consumes `{key: value}` —
+so nothing turned a stream into a side table, which ADR-0086 had ruled a
+separate later kind (`pivot`).
+
+- `dskit/pipeline/option_pricing.py` (new): `black76` and
+  `VolIndexSmileQuotes` — the former child `VixProxyQuotes`, renamed
+  venue-neutral (the level is any vol index in percent: VIX/SPX, VXN/NDX,
+  RVX/RUT), same knobs plus two review fixes. (Major) a REQUIRED
+  `iv_ceiling`, above `iv_floor`, clamps IV from above; the configs use
+  2.0. Measured, not the review's figure: at VIX 15 and T = 1/365 the
+  calibrated smile prices a 10% OTM put at ~169% (under 2.0) and a 15% OTM
+  put at ~356% (clamped); the test pins both. (Minor) `problems()` refuses
+  a knob set whose pre-floor smile reaches zero or below on either wing
+  (minimum of `atm + slope z + curvature z^2` over z >= 0; a negative
+  slope with no curvature is unbounded), so the floor never masks a bad
+  calibration; the 2026-09-23 fit's call-wing minimum is ~0.771. The
+  one-day calibration evidence moved into the module docstring. Tests:
+  `tests/pipeline/test_option_pricing.py`.
+- `dskit/pipeline/stats.py`: `lower_tail_mean` (the child `tail_mean`,
+  now refusing an empty series, a non-finite value and alpha outside
+  (0, 1)) and `max_drawdown` (the child `_max_drawdown`, zero baseline,
+  refusing a non-finite increment) — descriptive summaries of an ordered
+  P&L series beside the tests; `metrics.py` is per-observation losses, so
+  it was not the home.
+- `dskit/pipeline/kinds_flow.py`: kind `keyby` (`KeyBy`, role transform,
+  serving `pure`, `owned=False`) — ADR-0086's deferred pivot, named
+  `keyby` because a pandas pivot is a long-to-wide reshape. Params `key`
+  and `value` (ONE field each: a composite key has no JSON-object
+  spelling) and `allow_fanout` (default false: a repeated key refuses;
+  declared, every value is a list — the one-to-many shape `join` accepts
+  under its own `allow_fanout`). Refuses by name a row missing either
+  field and a NaN/Infinity or unhashable key. Outputs `table`, `metrics`
+  (`rows_in`, `keys`). Added to the conformance, serving-effect, export
+  and registration pins.
+- Child: `pricing.py` deleted; `nodes.py`/`distribution.py` import the
+  above; `CondorBacktest` requires `iv_ceiling`. `IndexCloseRows` loses
+  its `by_date` output (back to `records` only). All six
+  `run-real-*.json` wire `vix` -> `vix_by_date` (`kinds_flow:KeyBy`, key
+  `date`, value `close`) -> `market` (`Join`, port `iv_index`) and add
+  `iv_ceiling: 2.0`; `run-real-zoo.json` pins `pipeline.vix_by_date`. The
+  six stay identical outside `model` (tested). Manifest 55 -> 54 files.
+Tier-refactor review (Sonnet, `12646c0`): 0 Critical/Major. `iv_ceiling`
+2.0 is a sanity bound: at the backtest's traded strikes (|z| <= ~3 in VIX
+units) IV stays ~1.1 even at VIX 80; it would first bind near VIX 90 with
+z = -4 (IV 1.996). The put-wing branch of the smile negativity check is
+vacuous while `put_skew_per_z >= 0` (kept for symmetry).
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8

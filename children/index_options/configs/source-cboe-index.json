@@ -1,0 +1,7 @@
+{
+  "notes": "ADR-0182 Cboe daily index history (no credential): one row per (symbol, date) from cdn.cboe.com daily_prices/{SYMBOL}_History.csv. SPX closes reach back to the 1970s, VIX OHLC to 1990. Register as source 'cboe-index' with connector dskit.onboarding.libs.cboe:CboeConnector; acquire stream index_daily. A separate source from the chain recorder because the pack's knobs are per source, not per stream: the index history wants [SPX, VIX], the chain wants [SPX, XSP] and a root allowlist.",
+  "symbols": [
+    "SPX",
+    "VIX"
+  ]
+}

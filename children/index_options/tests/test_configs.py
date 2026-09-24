@@ -43,6 +43,12 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-fixture.json", "configs/suite-fixture.json", "configs/run-fixture.json",
         "configs/run-synthetic-distribution.json", "configs/run-synthetic-har.json",
         "configs/run-synthetic-lightgbm.json", "configs/run-distribution-zoo.json",
+        "configs/source-cboe-index.json", "configs/source-cboe-chain.json",
+        "configs/run-real-distribution.json", "configs/run-real-har.json",
+        "configs/run-real-lightgbm.json", "configs/run-real-zoo.json",
+        "configs/run-real-vix.json", "configs/run-real-har-vix.json",
+        "configs/run-real-lightgbm-vix.json",
+        "configs/source-cboe-chain-wide.json", "configs/source-cboe-index-wide.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
@@ -51,10 +57,12 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/distribution-modeling/2026-09-23-evaluation.md",
         "docs/research/distribution-modeling/2026-09-23-model-ladder.md",
         "docs/research/distribution-modeling/2026-09-23-ml-dl-transformers.md",
+        "docs/research/real-data-backtest/2026-09-24-zoo-vs-vix.md",
+        "docs/memos/2026-09-24-real-data-backtest-and-recorder.md",
         "tests/conftest.py", "tests/test_contracts.py", "tests/test_observations.py",
         "tests/test_nodes.py", "tests/test_configs.py", "tests/test_integration.py",
         "tests/test_distribution.py", "tests/test_synthetic_distribution_run.py",
-        "tests/test_distribution_zoo.py",
+        "tests/test_distribution_zoo.py", "tests/test_real_data.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -62,7 +70,9 @@ def test_exact_manifest_and_agent_parity(child_root):
               if p.is_file() and not any(part in ignored or part.endswith(".egg-info")
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
-    assert len(actual) == 42  # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes
+    # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8,
+    # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement)
+    assert len(actual) == 56
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

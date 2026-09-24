@@ -3,6 +3,8 @@
 Offline, synthetic-only index-options research scaffold. S0 proves ingestion,
 instrument matching and exact expiry cashflows, **not an edge or an executable
 strategy**. No models, broker, vendor adapter, real market data or serving loop.
+ADR-0182 adds a separate real-data research track (Cboe index history, a chain
+recorder, VIX-proxy condor backtest; see below) — still no broker or serving.
 
 ## Install and test (WSL2)
 
@@ -113,6 +115,61 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   configs/run-distribution-zoo.json --asof 1978-06-01` plans them, waits for
   the pasted inventory hash in `approval`, then runs and compares all three.
 
+## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
+
+Cboe serves daily SPX/VIX history and a 15-minute-delayed option chain with no
+credential (`dskit.onboarding.libs.cboe:CboeConnector`). Two sources, because
+the pack's knobs are per source: `cboe-index` (`index_daily`, SPX + VIX) and
+`cboe-chain` (`option_chain`, SPX + XSP, roots SPXW/XSP, 70 DTE). The run
+configs read `./ob` relative to the working directory; keep the store durable
+outside the repo and symlink it (`ob/` is git-ignored and outside the manifest).
+
+```bash
+# once: durable store, both sources registered and active
+mkdir -p ~/data/index_options
+python -m dskit.onboarding init --root ~/data/index_options/ob
+python -m dskit.onboarding register-source cboe-index --catalog-source cboe-index \
+  --connector cboe \
+  --config @configs/source-cboe-index.json --activate --root ~/data/index_options/ob
+python -m dskit.onboarding register-source cboe-chain --catalog-source cboe-chain \
+  --connector cboe \
+  --config @configs/source-cboe-chain.json --activate --root ~/data/index_options/ob
+ln -s ~/data/index_options/ob ob
+
+# pull (repeat any day to extend the history; the cursor resumes)
+python -m dskit.onboarding acquire --source cboe-index --stream index_daily \
+  --mode backfill --root ./ob
+
+# recorder: schedule twice per trading day, 15:50 and 16:20 ET (cron/Task Scheduler)
+python -m dskit.onboarding acquire --source cboe-chain --stream option_chain \
+  --mode live --root ~/data/index_options/ob
+
+# one rung (walk-forward: yearly val folds 1995 -> the pull date)
+python -m dskit.journal init --root .     # once per working directory
+python -m dskit.pipeline walkforward configs/run-real-har.json --asof 2026-09-23
+
+# the zoo: first call plans only; paste the printed inventory sha256 and
+# approved_by into run-real-zoo.json's approval stage, then run it again
+python -m dskit.pipeline staged configs/run-real-zoo.json --asof 2026-09-23
+```
+
+- `IndexCloseRows` projects one symbol of `index_daily` into the envelope the
+  feature nodes read; the configs key the VIX rows by date with dskit's `keyby`
+  (node `vix_by_date`) and join them onto SPX with dskit's `join` (`how: left`),
+  so a pre-1990 row keeps `iv_index` null.
+- `CondorBacktest` (node `backtest`) reads each rung's forecast rows over val:
+  one condor every `hold_steps` = 21 rows (the label horizon, non-overlapping),
+  settled at `close x exp(label)`. Books `model` (forecast quantile strikes,
+  entered when forecast expected P&L at proxy prices beats `min_edge_usd`),
+  `always` (same strikes, every entry) and `implied` (VIX-lognormal strikes).
+  Metrics are flat (`model_total_pnl_usd`, `implied_cvar_usd`, ...) per fold
+  in `carry.json`; the report holds the per-trade ledger.
+- Pricing is `vix_proxy` (dskit's `option_pricing.VolIndexSmileQuotes` at the
+  VIX close: Black-76 on a calibrated smile clamped to [5%, 200%] IV, plus a
+  half-spread), never a quote, so the report is never decision-eligible;
+  absolute P&L is indicative and the model/always/implied comparison on
+  identical prices is the signal. Recorded chains later calibrate the proxy.
+
 [Explanation](docs/explanations/README.md) defines the instrument and example.
 [Plan](docs/plans/README.md) describes the separately gated data/ML/MIO work.
 
@@ -122,10 +179,13 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
-                           # distribution.py (condor under a forecast, ADR-0168)
+                           # distribution.py (condor under a forecast, ADR-0168);
+                           # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
-                           # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181)
+                           # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
+                           # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json
+                           # + run-real-zoo.json (ADR-0182)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
@@ -134,7 +194,7 @@ docs/memos/README.md        # execution-evidence convention
 docs/research/              # README.md, .gitkeep; distribution-modeling/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
-                           # synthetic_distribution_run, distribution_zoo (.py)
+                           # synthetic_distribution_run, distribution_zoo, real_data (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or
