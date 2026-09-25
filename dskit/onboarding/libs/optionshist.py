@@ -59,9 +59,10 @@ emitted>}}``; a pull emits only days whose close is strictly after it,
 in ``(quote_time, underlying, option)`` order, and whole days only, so a
 cursor never splits a day. ``max_days`` bounds a pull to that many
 trading days (the union across tickers): repeated backfill pulls walk the
-archive forward in bounded chunks. A year whose last possible close is
-not after the cursor is never opened. The logic is identical in both
-modes (the platform keys the cursors apart, ADR-0014). One cursor spans
+archive forward in bounded chunks. A year is skipped unopened once the
+cursor reaches its December 31 close; a year whose last session is earlier
+is re-opened (hashed, its dates read) but emits nothing. The logic is
+identical in both modes (the platform keys the cursors apart, ADR-0014). One cursor spans
 every ticker, so a ticker added to an already-walked source would be
 skipped before the cursor — register a new source to add one.
 
