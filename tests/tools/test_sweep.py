@@ -301,3 +301,70 @@ def test_budget_bounds_many_slow_worktrees(repo, tmp_path):
     assert elapsed < budget + 1.5, elapsed
     assert "not searched (budget)" in done.stderr
     assert done.returncode != 0 and "REFUSED" in done.stderr  # rule holds
+
+
+def _fake_git_hook(repo, tmp_path, case_body, **overrides):
+    """Point the hook at a sweep.json with ``overrides`` and a fake git.
+
+    ``case_body`` is the inside of a ``case " $* " in ... esac`` that runs
+    before the real git; git puts its exec-path first on a hook's PATH,
+    so the fake is prepended inside the hook itself.
+    """
+    import json
+
+    with open(os.path.join(SWEEP_DIR, "sweep.json")) as fh:
+        cfg = json.load(fh)
+    cfg.update(overrides)
+    cfg_path = tmp_path / "sweep-test.json"
+    cfg_path.write_text(json.dumps(cfg))
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    real = shutil.which("git")
+    (fake / "git").write_text(
+        f'#!/bin/sh\ncase " $* " in\n{case_body}\nesac\nexec "{real}" "$@"\n')
+    (fake / "git").chmod(0o755)
+    hook = tmp_path / "hooks" / "commit-msg"
+    hook.write_text(f'#!/bin/sh\nPATH="{fake}:$PATH" exec "{sys.executable}" '
+                    f'"{SWEEP}" --config "{cfg_path}" --commit-msg "$1"\n')
+    return cfg
+
+
+def test_skip_is_recorded_even_when_git_hangs(repo, tmp_path):
+    import time
+
+    cfg = _fake_git_hook(
+        repo, tmp_path,
+        '  *" --abbrev-ref "*|*" var "*|*" --git-common-dir "*) sleep 60 ;;',
+        budget_s=2, skip_git_timeout_s=1)
+    repo.write("pkg/urgent.py", "def urgent():\n    pass\n")
+    env = dict(repo.env, SWEEP_SKIP="prod down")
+    t0 = time.monotonic()
+    done = repo.commit("urgent", env=env)
+    elapsed = time.monotonic() - t0
+    assert done.returncode == 0, done.stderr
+    assert "Traceback" not in done.stderr
+    assert elapsed < cfg["budget_s"] + 4, elapsed  # inside the outer cap
+    body = repo.git("log", "-1", "--format=%B").stdout
+    assert "Sweep-Skipped: prod down" in body
+    with open(os.path.join(repo.path, ".git", "sweep-skips.log")) as fh:
+        assert "prod down" in fh.read()
+
+
+def test_unexpected_error_fails_open_without_traceback(repo, tmp_path):
+    _fake_git_hook(repo, tmp_path,
+                   '  *" diff "*) echo "boom" >&2; exit 2 ;;')
+    repo.write("pkg/other.py", "def other():\n    pass\n")
+    done = repo.commit("no trailer, but git is broken")
+    assert done.returncode == 0, done.stderr
+    assert "internal error, commit NOT checked" in done.stderr
+    assert "Traceback" not in done.stderr
+
+
+def test_inventory_failure_still_enforces_the_trailer(repo, tmp_path):
+    _fake_git_hook(repo, tmp_path,
+                   '  *" for-each-ref "*) echo "boom" >&2; exit 2 ;;')
+    repo.write("pkg/third.py", "def third():\n    pass\n")
+    done = repo.commit("no trailer")
+    assert done.returncode != 0 and "REFUSED" in done.stderr
+    assert "matches unavailable" in done.stderr
+    assert "Traceback" not in done.stderr

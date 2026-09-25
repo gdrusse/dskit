@@ -138,7 +138,10 @@ def _run(cmd, timeout=None, env=None, bounded=True):
             except OSError:
                 pass
         proc.kill()
-        proc.communicate()
+        try:
+            proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass  # a stray holder of the pipes; the deadline wins
         raise
     return proc.returncode, out, err
 
@@ -310,7 +313,7 @@ class RepoInventory:
                 timeout=timeout if left is None else min(timeout, left),
                 env=_clean_env(),
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             return wt, None
         return wt, sorted(set(out.splitlines())) if code == 0 else []
 
@@ -340,7 +343,11 @@ class RepoInventory:
             if fut in pending or fut.cancelled():
                 budget += 1
                 continue
-            wt, files = fut.result()
+            try:
+                wt, files = fut.result()
+            except Exception:
+                slow += 1
+                continue
             if files is None:
                 if BUDGET.expired(self._reserve):
                     budget += 1
@@ -658,26 +665,43 @@ def trailer_ok(text, config):
     return False
 
 
+def _quiet_git(root, *args, config):
+    """Git stdout, or "" when git is slow, hung, missing or failing."""
+    try:
+        return _git(root, *args, check=False, bounded=False,
+                    timeout=config["skip_git_timeout_s"]).strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
 def _skip(root, msg_path, text, reason, items, config):
-    """Honour SWEEP_SKIP: log it locally and stamp it into the message."""
-    # After the budget: the skip MUST be recorded, so these are unbounded.
-    common = _git(root, "rev-parse", "--git-common-dir", timeout=10,
-                  bounded=False).strip()
-    if not os.path.isabs(common):
-        common = os.path.join(root, common)
-    who = _git(root, "var", "GIT_AUTHOR_IDENT", check=False, timeout=10,
-               bounded=False).strip()
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False,
-                  timeout=10, bounded=False).strip()
-    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(
-        timespec="seconds")
-    names = ",".join(i["name"] for i in items[:20])
-    with open(os.path.join(common, config["skip_log"]), "a",
-              encoding="utf-8") as fh:
-        fh.write(f"{stamp}\t{branch}\t{who}\t{reason}\t{names}\n")
+    """Honour SWEEP_SKIP: stamp the message, then log it where possible.
+
+    The stamp is a plain file write and always happens. The log line's
+    branch and author are best effort: each git call is capped at
+    ``skip_git_timeout_s`` (so the whole skip stays inside the hook's
+    outer cap) and a slow or hung git just leaves the field empty.
+    """
     body = text.rstrip("\n")
     with open(msg_path, "w", encoding="utf-8") as fh:
         fh.write(f"{body}\n\nSweep-Skipped: {reason}\n")
+    common = _quiet_git(root, "rev-parse", "--git-common-dir", config=config)
+    if not common:
+        common = os.path.join(root, ".git")
+    elif not os.path.isabs(common):
+        common = os.path.join(root, common)
+    who = _quiet_git(root, "var", "GIT_AUTHOR_IDENT", config=config)
+    branch = _quiet_git(root, "rev-parse", "--abbrev-ref", "HEAD",
+                        config=config)
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="seconds")
+    names = ",".join(i["name"] for i in items[:20])
+    try:
+        with open(os.path.join(common, config["skip_log"]), "a",
+                  encoding="utf-8") as fh:
+            fh.write(f"{stamp}\t{branch}\t{who}\t{reason}\t{names}\n")
+    except OSError as exc:
+        print(f"sweep: skip stamped but not logged ({exc}).", file=sys.stderr)
 
 
 def commit_msg(root, msg_path, config):
@@ -703,7 +727,6 @@ def commit_msg(root, msg_path, config):
     # Autosquash folds fixup!/squash!/amend! into a commit that was swept.
     if re.match(r'(Merge |Revert "|fixup! |squash! |amend! )', first):
         return 0
-    BUDGET.start(config["budget_s"])
     try:
         if _in_progress(root):
             return 0
@@ -714,16 +737,20 @@ def commit_msg(root, msg_path, config):
         return 0
     if not items:
         return 0
-    report, _ = Sweep(RepoInventory(root, config), config).report(items)
-    print(report, file=sys.stderr)
+    reason = os.environ.get(config["skip_env"], "").strip()
+    if reason and not trailer_ok(text, config):
+        _skip(root, msg_path, text, reason, items, config)
+        print(f"sweep: SKIPPED ({reason}) -- stamped as Sweep-Skipped and "
+              "logged.", file=sys.stderr)
+        return 0
+    try:
+        report, _ = Sweep(RepoInventory(root, config), config).report(items)
+        print(report, file=sys.stderr)
+    except Exception as exc:  # the matches are advice; the rule still holds
+        print(f"sweep: matches unavailable ({type(exc).__name__}: {exc}).",
+              file=sys.stderr)
     if trailer_ok(text, config):
         print("sweep: acknowledged by the Sweep: trailer.", file=sys.stderr)
-        return 0
-    reason = os.environ.get(config["skip_env"], "").strip()
-    if reason:
-        _skip(root, msg_path, text, reason, items, config)
-        print(f"sweep: SKIPPED ({reason}) -- logged and stamped as "
-              "Sweep-Skipped.", file=sys.stderr)
         return 0
     print(
         "\nsweep: REFUSED. This commit adds new files/symbols/kinds.\n"
@@ -754,6 +781,19 @@ def _mentions(root, term, config):
     return "\n".join(lines)
 
 
+def _hook(args):
+    """Run hook mode: only a missing trailer refuses; failures fail open."""
+    try:
+        config = _load_config(args.config)
+        BUDGET.start(config["budget_s"])
+        root = _git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
+        return commit_msg(root, args.commit_msg, config)
+    except Exception as exc:
+        print(f"sweep: internal error, commit NOT checked "
+              f"({type(exc).__name__}: {exc}).", file=sys.stderr)
+        return 0
+
+
 def main(argv=None):
     """CLI entry; see the module docstring for the three modes.
 
@@ -776,12 +816,11 @@ def main(argv=None):
                     help="commit-msg hook mode")
     ap.add_argument("--config", help="alternate sweep.json")
     args = ap.parse_args(argv)
-    config = _load_config(args.config)
-    if not args.commit_msg:
-        BUDGET.start(config["budget_s"])
-    root = _git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
     if args.commit_msg:
-        return commit_msg(root, args.commit_msg, config)
+        return _hook(args)
+    config = _load_config(args.config)
+    BUDGET.start(config["budget_s"])
+    root = _git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
     if args.staged:
         items = staged_items(root, config)
         if not items:

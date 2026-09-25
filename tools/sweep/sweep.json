@@ -1,5 +1,5 @@
 {
-  "notes": "Tunables for tools/sweep/sweep.py (the SWEEP THE REPO BEFORE BUILDING guard). exempt_globs: paths that never need a Sweep: trailer (docs, tests, data) -- fnmatch, where * also crosses '/'. generic_*: names too common to compare by similarity (an exact same-path hit is still reported). similarity is a difflib ratio on lower-cased, separator-free names; token_overlap is a Jaccard over CamelCase/snake tokens and only counts with 2+ shared tokens. Raise either to cut noise, lower to catch more. budget_s is the hard wall-clock cap for one sweep (every git call shares it; worktrees still unscanned when it runs out are reported as not searched (budget), never a refusal); budget_reserve_s of it is kept back for scoring. The hook shell adds an outer kill at budget_s + 4 s for a hung interpreter.",
+  "notes": "Tunables for tools/sweep/sweep.py (the SWEEP THE REPO BEFORE BUILDING guard). exempt_globs: paths that never need a Sweep: trailer (docs, tests, data) -- fnmatch, where * also crosses '/'. generic_*: names too common to compare by similarity (an exact same-path hit is still reported). similarity is a difflib ratio on lower-cased, separator-free names; token_overlap is a Jaccard over CamelCase/snake tokens and only counts with 2+ shared tokens. Raise either to cut noise, lower to catch more. budget_s is the hard wall-clock cap for one sweep (every git call shares it; worktrees still unscanned when it runs out are reported as not searched (budget), never a refusal); budget_reserve_s of it is kept back for scoring. The hook shell adds an outer kill at budget_s + 4 s for a hung interpreter; the SWEEP_SKIP path adds at most 3 x skip_git_timeout_s after the budget, so keep that under 4 s.",
   "exempt_globs": [
     "*.md", "*.rst", "*.txt", "*.tex", "*.pdf",
     "docs/*", "*/docs/*",
@@ -24,6 +24,7 @@
   "worktree_workers": 8,
   "budget_s": 8,
   "budget_reserve_s": 1.5,
+  "skip_git_timeout_s": 1,
   "trailer": "Sweep",
   "min_trailer_words": 6,
   "skip_env": "SWEEP_SKIP",
