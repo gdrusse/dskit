@@ -64,10 +64,10 @@ the affected approval and needs review before landing.
 
 For remaining work, select a bounded packet from the
 [closeout plan index](../plans/closeout-2026-09-14/README.md). For the active
-historical backtester, preserve the controlling master DAG. F5a's stopped
-consume-once Major remains open; its
-driver-only revised design needs a clean Phase 0. Do not claim whole-F5a closure
-from its earlier partial exits, or start dependent F3/F5b prematurely. Reconcile
+historical backtester, preserve the controlling master DAG. Whole-F5a is closed
+(F5A-R23's durable consume-once gate landed via ADR-0147, two clean skeptic
+lenses, zero unresolved Critical/Major); F3/F5b may now start per their own
+stated dependency once their own design work is approved. Reconcile
 the replay V2 plan/ADR collision before its implementation. Clustering/RL is
 separate and has its own approvals. Development approval never authorizes real
 HPO/refit, market replay, lockbox, backtests, paper/live actions, or deployment.
