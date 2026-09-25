@@ -53,8 +53,39 @@ MODELABILITY_DOCS = {
     "run-p10-modelability.json": ("configs/universe-p10.json", 25),
     "run-p11-modelability.json": ("configs/universe-p10.json", 25),
     "run-p12-modelability.json": ("configs/universe-p12.json", 65),
+    # The P12 Gate-3 follow-ons and the stopped asset-local P13 zoo ask
+    # about P12's own cohort.
+    "run-p12-gate3-continuation.json": ("configs/universe-p12.json", 65),
+    "run-p12-gate3-recovery-inventory.json": ("configs/universe-p12.json", 65),
+    "run-p13-model-zoo.json": ("configs/universe-p12.json", 65),
     "run-p13-pooled-model-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    # P13's pooled cohort carries forward: the exploratory zoos (P14-P17),
+    # the P16 gate documents, model selection and the final_hpo phase.
+    "run-model-select.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p14-recurrent-fusion-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p15-temporal-fusion-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p16-feature-mask-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p16-final-model-gate-inventory.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p16-final-model-gates.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p16-tft-fusion-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p17-randomforest-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-final-hpo.json": ("configs/universe-p13-pooled.json", 26),
     "run-p18-modelability.json": ("configs/universe-p18.json", 109),
+    "run-p18-modelability-tjx-onward.json": ("configs/universe-p18.json", 109),
+    "run-p18-modelability-unh-nke.json": ("configs/universe-p18.json", 109),
+    "run-p19-eligible-fixed-model-zoo.json": (
+        "configs/universe-p19-expanded-pooled.json",
+        92,
+    ),
+    "run-p19-expanded-pooled-model-zoo.json": (
+        "configs/universe-p19-expanded-pooled.json",
+        92,
+    ),
+    "run-p19-final-hpo.json": ("configs/universe-p19-expanded-pooled.json", 92),
+    "run-p19-lightgbm-lag-feature-study.json": (
+        "configs/universe-p19-expanded-pooled.json",
+        92,
+    ),
     # ADR-0185: the staged retrain run reads P16's pooled cohort from the study start.
     "run-retrain-simulation.json": ("configs/universe-p13-pooled.json", 26),
 }
@@ -513,6 +544,13 @@ def _universe_path(raw, name):
 def test_run_docs_do_not_restate_the_cohort():
     for name in _market_run_docs():
         raw = _raw(name)
+        if name in COHORT_FREE_DOCS:
+            assert "universe" not in raw["pipeline"], name
+            assert not any(
+                isinstance(node, dict) and node.get("uses") == "intraday_equities-bars"
+                for node in raw["pipeline"].values()
+            ), name
+            continue
         path = _universe_path(raw, name)
         if path != "configs/universe.json":
             if name in MODELABILITY_DOCS:
@@ -628,7 +666,37 @@ SIMULATION_START_MS = 1662681600000  # 2022-09-09T00:00:00Z, the fold-2 cutoff
 #: ADR-0185: the decision graph the staged retrain run binds and executes;
 #: its enclosing staged document carries the tracking sink.
 RETRAIN_TEMPLATE = "run-retrain-simulation-template.json"
-_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json", *SIMULATION_DOCS, RETRAIN_TEMPLATE})
+#: ADR-0111's MIO demo runs on SyntheticMioSource: no universe, no bars, no
+#: fit, nothing to track. Its capital pins are checked by the mio_demo tests.
+MIO_DEMO = "run-mio-demo.json"
+_NON_MARKET_RUN_DOCS = frozenset(
+    {"run-development-replay.json", *SIMULATION_DOCS, RETRAIN_TEMPLATE, MIO_DEMO}
+)
+#: ADR-0166's final refit is a non-executable contract: it tracks like any
+#: market run but names no universe and reads no bars, so it cannot restate
+#: the cohort. The cohort test asserts that absence rather than skipping it.
+COHORT_FREE_DOCS = frozenset({"run-final-refit.json"})
+#: ADR-0110's P16 gate documents bind sealed outer-fold evidence from the
+#: approved P16 run: developmental post-selection, no bars read, nothing fit.
+#: They declare ``"tracking": null`` on purpose; the tracking tests pin that
+#: rather than skip them, and the cohort test still checks their universe.
+UNTRACKED_RUN_DOCS = frozenset(
+    {"run-p16-final-model-gate-inventory.json", "run-p16-final-model-gates.json"}
+)
+
+
+def _tracked_run_docs():
+    return [name for name in _market_run_docs() if name not in UNTRACKED_RUN_DOCS]
+
+
+def test_untracked_run_docs_declare_null_tracking_and_read_no_bars():
+    for name in sorted(UNTRACKED_RUN_DOCS):
+        raw = _raw(name)
+        assert "tracking" in raw and raw["tracking"] is None, name
+        assert not any(
+            isinstance(node, dict) and node.get("uses") == "intraday_equities-bars"
+            for node in raw["pipeline"].values()
+        ), name
 
 
 def _market_run_docs():
@@ -637,7 +705,7 @@ def _market_run_docs():
 
 def test_every_run_uses_one_local_mlflow_experiment():
     """Cadence and HPO compare in one local store, not per-run dirs."""
-    for name in _market_run_docs():
+    for name in _tracked_run_docs():
         sinks = _raw(name)["tracking"]["sinks"]
         assert len(sinks) == 1, name
         sink = sinks[0]
@@ -651,7 +719,7 @@ def test_the_child_installs_what_its_tracking_sinks_need():
 
     with open(os.path.join(CHILD_ROOT, "pyproject.toml"), "rb") as fh:
         declared = tomllib.load(fh)["project"]["dependencies"]
-    for name in _market_run_docs():
+    for name in _tracked_run_docs():
         for sink in _raw(name)["tracking"]["sinks"]:
             module = sink["kind"].split(":")[0]
             pack = module.rsplit(".", 1)[1]
@@ -690,6 +758,19 @@ QUOTED_NAMES = ["LLY", "XOM"]
 # study-start rule's purpose (every FOLD reads the same history) does not
 # bind it; the split-adjusted source still does.
 REPLAY_REPORT_START_MS = {"run-replay-report.json": 1748822400000}  # 2025-06-02
+# The one-minute feature-block arm (P2/P3 'cross', 29c8a10) was executed
+# (journal A0203 onward) with a 2020-01-01 start. Later than the study start
+# is safe for ADR-0066 (moving the start FORWARD cannot undo it), and it is
+# NON-BINDING: every fold trains on a bounded 730-day window that begins
+# after it, so each fold reads exactly the history a 2018 start gives. The
+# test proves that from the document's own walkforward rather than trusting
+# this comment, and pins the exact start and file set.
+BLOCKS_S01_DOCS = frozenset(
+    f"run-pb-s01-h{h:02d}-{model}-cross.json"
+    for h in (1, 2, 3, 5, 10)
+    for model in ("lgbm", "ridge")
+)
+BLOCKS_S01_START_MS = 1577836800000  # 2020-01-01T00:00:00Z
 
 
 def _quoted_family():
@@ -714,6 +795,7 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
     the whole reason ``alpaca-sip`` still exists — so it is the single
     documented exception.
     """
+    assert BLOCKS_S01_DOCS <= set(_run_docs())
     seen = 0
     for name in _run_docs():
         for node in _raw(name)["pipeline"].values():
@@ -737,6 +819,19 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert params["source"] == SPLIT_SOURCE, name
                 assert params["start_ms"] == REPLAY_REPORT_START_MS[name], name
                 assert params["start_ms"] > STUDY_START_MS, name
+                continue
+            if name in BLOCKS_S01_DOCS:
+                assert params["source"] == SPLIT_SOURCE, name
+                assert params["start_ms"] == BLOCKS_S01_START_MS > STUDY_START_MS, name
+                walk = _raw(name)["walkforward"]
+                first_val = datetime.datetime.fromisoformat(walk["first"]).replace(
+                    tzinfo=datetime.timezone.utc
+                )
+                first_train = first_val - datetime.timedelta(
+                    days=walk["embargo_days"] + walk["train_days"]
+                )
+                assert isinstance(walk["train_days"], int), name
+                assert params["start_ms"] <= first_train.timestamp() * 1000, name
                 continue
             if name in (*SIMULATION_DOCS, RETRAIN_TEMPLATE):
                 # Split-adjusted, and bounded to the replay window on both
@@ -1331,6 +1426,9 @@ def test_run_final_refit_refuses_to_plan_while_pins_are_pending():
         plan_stages(document)
 
 
+P16_APPROVED_INVENTORY_SHA256 = "e8bdc03ce62626b6104932a3b2051b1454bfda91aa22c041fb79efc32740d23c"
+
+
 def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
     """ADR-0108: five candidates, one estimator family, one hpo_space —
     the declared column mask is the only thing that differs between them.
@@ -1416,11 +1514,19 @@ def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
     kwarg_sets = [_lgbm_kwargs(row["model"]) for row in templates]
     assert all(kwargs == kwarg_sets[0] for kwargs in kwarg_sets[1:])
 
-    # Plan-only: the approval stage carries the pending placeholder, never
-    # a real (or fabricated) hash — nothing here may run un-reviewed.
+    # The owner approved this exact inventory on 2026-09-07 (88e1d11). The
+    # hash is the inventory_sha256 the staged plan produced for document
+    # identity 98635601…, the approved run the results memo records; pin it
+    # and the approver exactly, so no other inventory can ride this approval.
     approval = raw["stages"]["approval"]["params"]
-    assert approval["approved_inventory_sha256"] == "PENDING-PLAN-REVIEW"
-    assert approval["approved_by"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_inventory_sha256"] == P16_APPROVED_INVENTORY_SHA256
+    assert approval["approved_by"] == "owner, 2026-09-07"
+    memo = os.path.join(
+        CHILD_ROOT, "docs", "memos", "p16-feature-mask-and-final-gate-results.md"
+    )
+    with open(memo, encoding="utf-8") as fh:
+        assert f"inventory approval `{P16_APPROVED_INVENTORY_SHA256}`" in fh.read()
+    # A P16 approval is never P13's approval reused.
     assert approval["approved_inventory_sha256"] != (
         p13["stages"]["approval"]["params"]["approved_inventory_sha256"]
     )

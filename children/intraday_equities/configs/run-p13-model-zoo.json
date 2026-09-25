@@ -10,6 +10,19 @@
       "notes": "Structural node only; materialized candidates read the pinned P12 group caches."
     }
   },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
   "outputs": {
     "run_root": ""
   },
