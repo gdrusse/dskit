@@ -7,10 +7,11 @@ landed; this wraps both sessions.
 
 **MIO policy (ADR-0185 retrain simulation only).**
 
-- **v1** (codex, `10c2f13`; skeptic C0/M0 x2, recorded in ADR-0185): gamma 2,
-  32 tangents, 128 scenarios, 95% CVaR <= $500 per lead-group solve, HFDR q
-  0.20, 10 bp band, $5,000 per name, 64-day cap/calibration age, and a 0.53
-  coverage floor.
+- **v1** (codex, `8127eb5`; follow-ups `15ea4b1`, `1a2749f`, `fe4f497`; merged
+  in via `10c2f13`; skeptic C0/M0 x2 on `fe4f497`, recorded in ADR-0185):
+  gamma 2, 32 tangents, 128 scenarios, 95% CVaR <= $500 per lead-group solve,
+  cardinality 5, $500 minimum ticket, HFDR q 0.20, 10 bp band, $5,000 per
+  name, 64-day cap/calibration age, and a 0.53 coverage floor.
 - **v1.1** (`085d98d`, `f08d32b`): no cardinality cap and no minimum ticket.
   This is the owner's ruling: hard caps shrink the feasible set, and costs
   belong in the objective. `ScenarioUtilitySolve` accepts `cardinality: null`
