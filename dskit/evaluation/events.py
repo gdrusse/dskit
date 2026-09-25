@@ -41,8 +41,12 @@ from dskit.production.vocab import VERDICTS
 
 __all__ = [
     "ACTIONS",
+    "CANDIDATE_FIELDS",
+    "ENVELOPE",
     "EVENT_KINDS",
+    "KIND_ORDER",
     "SCHEMA",
+    "instant_ok",
     "SIDES",
     "Cashflow",
     "Census",
@@ -69,6 +73,14 @@ __all__ = [
 #: log still reads.
 SCHEMA = "dskit-eval-v1"
 
+#: The order kinds take within one instant when a producer merges its rows
+#: into one log. A cash flow funds before that instant's fills; a solve is
+#: what a decision at the same instant reads, so it precedes it; a decision
+#: precedes its orders, an order its rejections and fills; an outcome comes
+#: last (it is only ever logged after its decision).
+KIND_ORDER = ("run_start", "cashflow", "mark", "solve", "decision", "order", "refusal", "skip",
+              "fill", "outcome", "run_end")
+
 #: A decision's closed action set.
 ACTIONS = ("enter", "exit", "hold", "skip", "refuse")
 
@@ -77,6 +89,9 @@ SIDES = ("buy", "sell")
 
 #: The envelope every event carries, in rendering order.
 _ENVELOPE = ("schema", "seq", "kind", "ts_ms", "known_ms", "instrument")
+
+#: The envelope field names, for producers that must not let a body override them.
+ENVELOPE = _ENVELOPE
 
 #: A side's sign on quantity — a table, never a side branch.
 _SIGN = {"buy": 1, "sell": -1}
@@ -111,6 +126,23 @@ class EvaluationError(ValueError):
 # ---------------------------------------------------------------------------
 # Field rules
 # ---------------------------------------------------------------------------
+
+
+def instant_ok(value):
+    """Return whether ``value`` is a valid envelope instant or ``seq``: an int >= 0, not a bool.
+
+    The one rule for ``seq``, ``ts_ms`` and ``known_ms``; producers that
+    read instants from rows (``mapping.RowMap``) ask it too.
+
+    Parameters
+    ----------
+    value : object
+
+    Returns
+    -------
+    bool
+    """
+    return _is_int(value) and value >= 0
 
 
 def _is_int(value):
@@ -296,7 +328,7 @@ class Event:
         if obj.get("kind") != cls.kind:
             problems.append(f"{where}.kind must be {cls.kind!r}, got {obj.get('kind')!r}")
         for name in ("seq", "ts_ms", "known_ms"):
-            if not _is_int(obj.get(name)) or obj[name] < 0:
+            if not instant_ok(obj.get(name)):
                 problems.append(f"{where}.{name} must be an int >= 0, got {obj.get(name)!r}")
         instrument = obj.get("instrument")
         if instrument is not None and (not isinstance(instrument, str) or not instrument):
@@ -561,6 +593,9 @@ _CANDIDATE_RULES = (
     _flag("eligible", required=False),
     _text("reason", required=False, nullable=True),
 )
+
+#: A candidate row's field names, for producers mapping rows onto them.
+CANDIDATE_FIELDS = tuple(rule.name for rule in _CANDIDATE_RULES)
 
 
 def _candidate_problems(row, where):

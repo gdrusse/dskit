@@ -28,14 +28,15 @@ Import cost: stdlib plus ``dskit.pipeline`` and ``dskit.production``.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
 
-from dskit.evaluation.events import RunStart
-from dskit.pipeline.runs import CONFIG_FILE
+from dskit.evaluation.events import EvaluationError, RunStart
+from dskit.pipeline.runs import CONFIG_FILE, RESOLVED_FILE
 
-__all__ = ["GIT_TIMEOUT_S", "fill_provenance", "git_revision"]
+__all__ = ["GIT_TIMEOUT_S", "fill_provenance", "git_revision", "run_dir_provenance"]
 
 #: How long a git probe may take before it is treated as absent.
 GIT_TIMEOUT_S = 10
@@ -134,3 +135,50 @@ def fill_provenance(events, run_dir, now=None):
         start["sources"] = sources
     events[0] = start
     return events
+
+
+def _read_json(run_dir, name):
+    """Return the JSON object in ``run_dir/name``, or None when the file is absent."""
+    path = os.path.join(run_dir, name)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        try:
+            return json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise EvaluationError([f"{path} is not valid JSON: {exc}"]) from None
+
+
+def run_dir_provenance(run_dir):
+    """Return the ``run_start`` facts a pipeline run directory records.
+
+    ``run_id`` is the driver's ``run_hash``, ``config_hash`` its
+    ``document_hash`` and ``data`` its ``data_fingerprint`` (all from
+    ``resolved.json``); ``config`` is the run's ``config.json``. Only the
+    facts present are returned, so an event producer merges them over its
+    own defaults without inventing any.
+
+    Parameters
+    ----------
+    run_dir : str or None
+        The run directory (``NodeContext.run_dir``); None returns ``{}``.
+
+    Returns
+    -------
+    dict
+        A subset of ``run_id``, ``config_hash``, ``data``, ``config``.
+    """
+    if not run_dir:
+        return {}
+    resolved = _read_json(run_dir, RESOLVED_FILE) or {}
+    config = _read_json(run_dir, CONFIG_FILE)
+    out = {}
+    if resolved.get("run_hash"):
+        out["run_id"] = resolved["run_hash"]
+    if resolved.get("document_hash"):
+        out["config_hash"] = resolved["document_hash"]
+    if isinstance(resolved.get("data_fingerprint"), dict):
+        out["data"] = resolved["data_fingerprint"]
+    if isinstance(config, dict):
+        out["config"] = config
+    return out

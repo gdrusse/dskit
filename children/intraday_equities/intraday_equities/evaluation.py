@@ -7,9 +7,11 @@ skips, cash flows, bars and optimizer solves (ADR-0183 phase 2: each
 ``libs.pyomo.SolveRecord`` keys) — onto the event schema ``dskit.evaluation``
 renders. It computes no statistic, folds no P&L and invents no reason
 code: every refusal/skip reason and every exit reason is the replay's own
-string. The events are plain dicts so this module does not import
-``dskit.evaluation``; the document wires ``events`` into
-``dskit.evaluation.nodes:EvaluationReport`` by dotted path.
+string. The schema tag, the within-instant kind order and the run
+directory's provenance are ``dskit.evaluation``'s (one owner each); the
+document wires ``events`` into ``dskit.evaluation.nodes:EvaluationReport``
+by dotted path. A project whose rows need no domain join maps them with
+the generic ``dskit.evaluation.nodes:RowsToEvents`` instead.
 
 Joins are exact, never inferred from bar adjacency: the replay stamps
 every entry fill and every decision-derived refusal/skip with
@@ -19,35 +21,14 @@ its ``reason``.
 
 from __future__ import annotations
 
-import json
-import os
 from collections import defaultdict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from dskit.evaluation.events import KIND_ORDER, SCHEMA
+from dskit.evaluation.provenance import run_dir_provenance
 from dskit.pipeline.libs.pyomo import SolveRecord
 from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
-from dskit.pipeline.runs import CONFIG_FILE
 
-#: The schema tag every emitted event carries.
-SCHEMA = "dskit-eval-v1"
-
-#: Kind order within one instant. A cash flow the policy funds at an
-#: instant is credited before that tick's fills (``EquityReplay.read_entry``
-#: funds, then ``evaluate`` fills), so it sorts ahead of them. A solve is
-#: what a decision at the same instant is read from, so it precedes it.
-KIND_ORDER = (
-    "run_start",
-    "cashflow",
-    "mark",
-    "solve",
-    "decision",
-    "order",
-    "refusal",
-    "skip",
-    "fill",
-    "outcome",
-    "run_end",
-)
 _RANK = {kind: i for i, kind in enumerate(KIND_ORDER)}
 
 #: A candidate outside the tradable list is scored but cannot be chosen.
@@ -63,19 +44,10 @@ _MARK_MODES = ("traded", "all")
 #: forecast of ``y_next``, the next bar's LOG return (``ReturnWindows.
 #: return_kind``), and the account is in US dollars.
 DEFAULT_UNITS = {"score": "log_return", "money": "USD"}
-_RESOLVED_FILE = "resolved.json"
 
 
 def _int_ms(value):
     return None if value is None else int(value)
-
-
-def _read_json(run_dir, name):
-    path = os.path.join(run_dir, name)
-    if not os.path.isfile(path):
-        return None
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 class ReplayEvents(Node):
@@ -512,18 +484,7 @@ class ReplayEvents(Node):
             "trials": params.get("trials", 1),
             "units": dict(params.get("units", DEFAULT_UNITS)),
         }
-        run_dir = getattr(ctx, "run_dir", None)
-        if run_dir:
-            resolved = _read_json(run_dir, _RESOLVED_FILE) or {}
-            config = _read_json(run_dir, CONFIG_FILE)
-            if resolved.get("run_hash"):
-                event["run_id"] = resolved["run_hash"]
-            if resolved.get("document_hash"):
-                event["config_hash"] = resolved["document_hash"]
-            if isinstance(resolved.get("data_fingerprint"), dict):
-                event["data"] = resolved["data_fingerprint"]
-            if isinstance(config, dict):
-                event["config"] = config
+        event.update(run_dir_provenance(getattr(ctx, "run_dir", None)))
         if ledger:
             event.setdefault("data", {})["ledger"] = f"seq {ledger['seq']} {ledger['hash']}"
         return event

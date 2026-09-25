@@ -1,5 +1,16 @@
 # Re-entry
 
+## Evaluator from JSON alone (2026-09-24, ADR-0183 phase 3a)
+
+Any pipeline can now plug the evaluator in with two dotted-path nodes:
+`dskit.evaluation.nodes:RowsToEvents` (rows -> events from a closed JSON
+field map: ts/known/instrument/explode, `{"const"}`/`{"template"}` sources;
+candidates grouped into decisions) and `EvaluationReport` (new `sections`
+param; CLI `--sections`). Recipe in `dskit/evaluation/README.md`.
+
+Next bounded action: index_options/pmquant wiring (expose a plain ledger
+list port / explode KellyMIO evidence), then run the real replay report.
+
 ## Backtest evaluator phase 2 (2026-09-24, ADR-0183 amendment)
 
 `dskit.evaluation` reports now carry an Optimizer section (`SolveRecord`

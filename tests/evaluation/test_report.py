@@ -386,3 +386,44 @@ def test_findings_table_numbers_stay_numeric_cells():
 
     body = DecisionLogSection().html(BacktestReport(EventLog(_with_findings())).context)
     assert "<td class=num>100</td>" in body and "<td class=num>4</td>" in body
+
+
+# --- ADR-0183 phase 3a: sections chosen from JSON / the CLI -------------------
+
+
+def test_sections_param_renders_only_the_named_ones_plus_the_pinned(tmp_path, scenario):
+    params = {"out_dir": "evaluation", "sections": ["equity", "trades"]}
+    assert EvaluationReport.validate_params(params) == []
+    node = EvaluationReport("report", params)
+    ctx = NodeContext(name="t", asof="2026-09-02", run_dir=str(tmp_path))
+    full = EvaluationReport("report", {"out_dir": "full"}).run(ctx, {"events": scenario})
+    out = node.run(ctx, {"events": scenario})
+    page = (tmp_path / "evaluation" / "report.html").read_text(encoding="utf-8")
+    ids = re.findall(r'<section id="([a-z]+)"', page)
+    assert ids == ["summary", "equity", "trades", "provenance"]
+    # CSVs and metrics do not depend on which sections render.
+    assert out["metrics"] == full["metrics"]
+    for name in ("decisions", "trades"):
+        assert (open(out["paths"][name], encoding="utf-8").read()
+                == open(full["paths"][name], encoding="utf-8").read())
+
+
+def test_sections_param_refuses_unknown_and_empty_names():
+    problems = EvaluationReport.validate_params({"out_dir": "e", "sections": ["equity", "pnl"]})
+    assert problems == [
+        "unknown section(s) ['pnl'] — allowed: ['cash', 'decisions', 'distributions', "
+        "'equity', 'inference', 'optimizer', 'overview', 'periods', 'provenance', "
+        "'summary', 'trades']"]
+    assert EvaluationReport.validate_params({"out_dir": "e", "sections": []}) != []
+    assert EvaluationReport.validate_params({"out_dir": "e", "sections": "equity"}) != []
+
+
+def test_the_cli_takes_sections(tmp_path, scenario):
+    source = tmp_path / "in.jsonl"
+    EventLog(scenario).write(str(source))
+    done = _cli("render", str(source), "--out", str(tmp_path / "r"), "--sections", "decisions")
+    assert done.returncode == 0, done.stderr
+    page = (tmp_path / "r" / "report.html").read_text(encoding="utf-8")
+    assert re.findall(r'<section id="([a-z]+)"', page) == ["summary", "decisions", "provenance"]
+    bad = _cli("render", str(source), "--out", str(tmp_path / "b"), "--sections", "nope")
+    assert bad.returncode == 1 and "unknown section(s) ['nope']" in bad.stderr
