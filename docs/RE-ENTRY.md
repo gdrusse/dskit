@@ -1,5 +1,68 @@
 # Re-entry
 
+## MIO growth policy v1/v1.1 and Cboe chain-zone fix (2026-09-25 wrap)
+
+Handover: Claude took over from the lost codex session. Its work had already
+landed; this wraps both sessions.
+
+**MIO policy (ADR-0185 retrain simulation only).**
+
+- **v1** (codex, `10c2f13`; skeptic C0/M0 x2, recorded in ADR-0185): gamma 2,
+  32 tangents, 128 scenarios, 95% CVaR <= $500 per lead-group solve, HFDR q
+  0.20, 10 bp band, $5,000 per name, 64-day cap/calibration age, and a 0.53
+  coverage floor.
+- **v1.1** (`085d98d`, `f08d32b`): no cardinality cap and no minimum ticket.
+  This is the owner's ruling: hard caps shrink the feasible set, and costs
+  belong in the objective. `ScenarioUtilitySolve` accepts `cardinality: null`
+  (no row, no recompute check), like `cvar_limit: null`. The cost model is
+  unchanged (Schwab per-share/bps, no fixed fee).
+- **Superseded:** the "MIO knobs are still ADR-0184 placeholders" line in
+  the ADR-0185 entry below.
+- **Caveat:** 0.53 equals the attested attainment, so that gate cannot bind.
+  `cap_evidence_look_ahead` is still true, so this is developmental only.
+
+**Cboe chain zone** (`ef46c75`, `8d1d802`, `36722e0`; memo addendum
+`3bf5978`, `1614122`). Cboe switched the chain `timestamp` from NY to UTC
+without notice on 2026-09-24. The recorder was refused for about 23.5 h, and
+3 snapshots were lost. The pack now decides the zone by the fetch window;
+stale chains take the pull's decided zone, and an undecidable pull refuses.
+There are 4,348 XND rows with a +4 h `quote_time` in snapshot `f7fae4ff`,
+which readers must filter; see the index_options memo addendum. The recorder
+(`~/data/index_options/record_chain.sh`, outside Git) now logs full error
+messages.
+
+**Reviews.** Each slice passed two independent Sonnet lenses: correctness,
+then test quality and integration.
+
+- **Cboe:** 3 correctness rounds, then a Minor that the window edges were
+  untested. Fixed in `a392ba9` and clean.
+- **MIO v1.1:** 2 correctness rounds, then a Major that no child-level test
+  covered the shipped values. Fixed in `a392ba9` (mutation-checked) and clean.
+- **Memo addendum and recorder script:** 2 rounds each.
+
+**Known failures (pre-existing, not from this work):** 6 child
+`test_configs` tests. Five failed at `842d226`:
+
+- cohort restatement
+- mlflow experiment
+- tracking installs
+- split-adjusted store
+- P16 feature mask
+
+The sixth, `test_mio_demo_source_emits_a_release_matched_nonproduction_cap`
+(a stale `bundle_artifact_sha256` pin in `run-mio-demo.json`), was bisected
+to `ad09deb` (2026-09-19).
+
+**Next bounded actions:**
+
+1. Run the retrain simulation under v1.1:
+   `python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities`
+   from `children/intraday_equities`, in WSL. Then write its results memo.
+2. Fix the six stale config tests (separate task).
+3. Price the no-trade band in the objective instead of hard-coding it (the
+   owner deferred cost-model work).
+4. Write an upstream ADR for snapshot row retraction (for the XND rows).
+
 ## Retrain-in-run simulation + biweekly funding + MIO formulation (2026-09-24, ADR-0185)
 
 Built. Not run: this cloud container has no `./ob` bars and no Alpaca keys.
