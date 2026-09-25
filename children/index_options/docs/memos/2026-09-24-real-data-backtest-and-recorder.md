@@ -66,3 +66,48 @@ One-day smile calibration; proxy spreads; pre-2016 expiry cadence. Next:
 time-varying skew; (2) rungs with VIX term structure / VVIX / SKEW features
 (the only plausible way to beat VIX); (3) after ~6 weeks, rerun the backtest
 on recorded quotes for expiries that have settled.
+
+## Addendum 2026-09-25: recorder outage and chain data quality
+
+**What the store actually holds** (`~/data/index_options/ob`, audited
+2026-09-25). Index history is complete: SPX 1975 and VIX 1990 through
+2026-09-24, plus 27 wide series. Chains are thinner than "collecting"
+above implied. Only **three distinct chain states** exist:
+
+| `cboe-chain-wide` snapshot | Served state |
+|---|---|
+| 20260924T020407Z, T020505Z, T023753Z, T143037Z | One Cboe state, stamped 2026-09-23 overnight (last trades 2026-09-22), served unchanged by Cboe's CDN through 2026-09-24 10:30 ET. Rows are identical, so dedup keeps one. |
+| 20260925T191624Z (`f7fae4ff`) | Fresh, **except XND** (see below). |
+| 20260925T192402Z (`28df744e`) | Fresh and correct. |
+
+The two `cboe-chain` (SPXW/XSP) snapshots hold the same 2026-09-23 state.
+
+**Outage.** Cboe switched the chain `timestamp` from New York to UTC
+without notice between 2026-09-24 10:30 and 15:50 ET. The pack read it
+as New York, which put `quote_time` about 4 h after `acquired_at`, and
+the validator refused every scheduled pull from 15:50 ET 2026-09-24
+through the 10:30 ET 2026-09-25 run. Recording resumed at about 15:16 ET
+2026-09-25, when the fix was deployed, so the outage lasted about 23.5 h
+and three scheduled snapshots were lost. Fixed on main
+(`ef46c75`, `8d1d802`, `36722e0`): the zone is decided per stamp by the
+fetch window, a stale chain takes the zone the same pull decided, and a
+pull that no chain decides is refused. So a fully stale CDN state like
+the one on 2026-09-24 is now refused rather than stored again.
+
+**Known-bad rows (no retraction mechanism exists).** Snapshot
+`cboe-chain-wide-20260925T191624Z-live-f7fae4ff` holds 4,348 XND rows (its only mis-zoned underlying) stamped
+`quote_time` 2026-09-25T07:00:47Z. The true instant is 03:00:47Z (UTC
+stamp, 16 h stale). They were written by the interim fix `ef46c75`, which
+kept the New York reading of stale stamps. The same XND state is stored
+correctly in `28df744e`. The mislabel is 4 h *late*, so there is no
+look-ahead. Readers of chain history must drop
+`underlying == "XND" and quote_time == "2026-09-25T07:00:47+00:00"`.
+The zone of the 2026-09-23 state (overnight stamps, fetched 18 h or
+more later) cannot be decided from the stamps; treat its instants as
++/- 4 h.
+Retracting rows from a content-hashed snapshot is a generic onboarding
+gap and needs an upstream proposal, not local plumbing.
+
+**Recorder log.** The log's grep kept only the `error:` line and hid the
+message on the next line. `record_chain.sh` (outside Git) now keeps the
+three message lines after any error.

@@ -8,6 +8,7 @@ so the stub binds its scripted transport in ``__init__``.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 import urllib.error
 
 import pytest
@@ -97,11 +98,16 @@ class Script:
         return handler
 
 
-def connector(routes):
+#: The fetch clock a minute after chain()'s default New York stamp, 16:05 EDT.
+FETCHED = datetime(2026, 9, 23, 20, 6, tzinfo=timezone.utc)
+
+
+def connector(routes, clock=FETCHED):
     """A connector over a scripted transport; returns (connector, script, sleeps)."""
     script = Script(routes)
     sleeps = []
-    return CboeConnector(getter=script, sleeper=sleeps.append), script, sleeps
+    conn = CboeConnector(getter=script, sleeper=sleeps.append, clock=lambda: clock)
+    return conn, script, sleeps
 
 
 def read(conn, streams, config=CONFIG, state=None, mode="backfill"):
@@ -399,9 +405,76 @@ def test_chain_tolerates_absent_or_junk_numbers():
     ("2026-09-23 23:30:00", "2026-09-24T03:30:00+00:00"),  # crosses the UTC date
 ])
 def test_quote_time_is_new_york_wall_clock_across_dst(stamp, utc):
-    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)})
+    fetched = datetime.fromisoformat(utc) + timedelta(minutes=1)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, fetched)
     assert records(read(conn, ["option_chain"]))[0]["data"]["quote_time"] == utc
 
+
+
+@pytest.mark.parametrize("stamp, fetched, utc", [
+    # Cboe's 2026-09-24 switch: a UTC stamp read as New York lands 4 h ahead of the fetch
+    ("2026-09-25 19:13:09", "2026-09-25T19:13:22+00:00", "2026-09-25T19:13:09+00:00"),
+    # a New York stamp fetched at once keeps its New York reading
+    ("2026-09-24 10:30:00", "2026-09-24T14:30:05+00:00", "2026-09-24T14:30:00+00:00"),
+    # within CLOCK_SKEW_S of the fetch the New York reading still stands
+    ("2026-09-24 10:34:00", "2026-09-24T14:30:05+00:00", "2026-09-24T14:34:00+00:00"),
+    # up to MAX_STALENESS_S stale, each reading still resolves
+    ("2026-09-25 17:15:00", "2026-09-25T19:13:22+00:00", "2026-09-25T17:15:00+00:00"),
+    ("2026-09-24 08:40:00", "2026-09-24T14:30:05+00:00", "2026-09-24T12:40:00+00:00"),
+])
+def test_quote_time_zone_resolved_against_the_fetch_clock(stamp, fetched, utc):
+    clock = datetime.fromisoformat(fetched)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, clock)
+    rec = records(read(conn, ["option_chain"]))[0]
+    assert rec["data"]["quote_time"] == rec["effective_date"] == utc
+
+
+@pytest.mark.parametrize("stamp, fetched", [
+    ("2026-09-25 20:00:00", "2026-09-25T19:13:00+00:00"),  # future as both
+    # a UTC stamp served 19 h stale reads plausibly as New York; refused, not guessed
+    ("2026-09-25 20:00:00", "2026-09-26T15:00:00+00:00"),
+    ("2026-09-25 16:00:00", "2026-09-25T22:30:00+00:00"),  # stale beyond the window as both
+])
+def test_quote_time_zone_undecidable_refuses(stamp, fetched):
+    clock = datetime.fromisoformat(fetched)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, clock)
+    with pytest.raises(AssetError, match="zone cannot be told"):
+        read(conn, ["option_chain"])
+
+
+
+def _pull_two(spx_stamp, xsp_stamp, fetched):
+    conn, _, _ = connector({
+        SPX_CHAIN: chain([option("SPXW261016C07000000")], spx_stamp),
+        XSP_CHAIN: chain([option("XSP261016P00575500")], xsp_stamp, price=661.2),
+    }, datetime.fromisoformat(fetched))
+    return read(conn, ["option_chain"], {"symbols": ["SPX", "XSP"], "base_url": BASE})
+
+
+@pytest.mark.parametrize("spx_stamp, xsp_stamp, xsp_utc", [
+    # fresh UTC SPX decides UTC for a 16 h stale XSP (seen live on XND, 2026-09-25)
+    ("2026-09-25 19:21:40", "2026-09-25 03:00:47", "2026-09-25T03:00:47+00:00"),
+    # a stale chain listed first waits for the fresh one; New York decided
+    ("2026-09-25 01:00:00", "2026-09-25 15:21:40", "2026-09-25T19:21:40+00:00"),
+])
+def test_stale_chain_takes_the_zone_the_pull_decided(spx_stamp, xsp_stamp, xsp_utc):
+    msgs = _pull_two(spx_stamp, xsp_stamp, "2026-09-25T19:22:00+00:00")
+    xsp = [r for r in records(msgs) if r["data"]["option"].startswith("XSP")]
+    assert [r["data"]["quote_time"] for r in xsp] == [xsp_utc]
+    assert xsp[0]["effective_date"] == xsp_utc
+
+
+@pytest.mark.parametrize("spx_stamp, xsp_stamp, match", [
+    ("2026-09-25 03:00:00", "2026-09-25 04:00:00", "no chain of the pull decided"),
+    ("2026-09-25 19:21:40", "2026-09-25 15:21:40", "in the same pull"),  # UTC vs New York
+])
+def test_undecided_or_conflicting_pull_refuses(spx_stamp, xsp_stamp, match):
+    with pytest.raises(AssetError, match=match):
+        _pull_two(spx_stamp, xsp_stamp, "2026-09-25T19:22:00+00:00")
+
+def test_clock_must_be_callable():
+    with pytest.raises(AssetError, match="clock must be callable"):
+        CboeConnector(clock="now")
 
 def test_chain_ignores_the_cursor_and_keeps_it_monotone():
     conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")])})
@@ -420,11 +493,12 @@ def test_roots_and_max_dte_filter_the_chain():
         option("SPXW261024P06000000"),  # dte 31
         option("SPX261023P06000000"),   # dte 30, root not allowed
     ]
-    conn, _, _ = connector({SPX_CHAIN: chain(options, "2026-09-23 23:30:00")})
+    late = datetime(2026, 9, 24, 3, 31, tzinfo=timezone.utc)  # fetched a minute later
+    conn, _, _ = connector({SPX_CHAIN: chain(options, "2026-09-23 23:30:00")}, late)
     config = {**CONFIG, "roots": ["SPXW"], "max_dte": 30}
     kept = [r["data"]["option"] for r in records(read(conn, ["option_chain"], config))]
     assert kept == ["SPXW260923C07000000", "SPXW261023P06000000"]
-    conn, _, _ = connector({SPX_CHAIN: chain(options, "2026-09-23 23:30:00")})
+    conn, _, _ = connector({SPX_CHAIN: chain(options, "2026-09-23 23:30:00")}, late)
     everything = records(read(conn, ["option_chain"]))
     assert len(everything) == 5  # absent knobs keep every root and expiry
 
