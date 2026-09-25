@@ -803,7 +803,8 @@ class ScenarioUtilitySolve(PyomoSolve):
     Sizes a PORTFOLIO of named instruments at one decision tick: how many
     of each to hold, funded by buys and sells from current inventory,
     maximizing expected tangent-plane-approximated concave utility of
-    terminal wealth subject to cardinality, a minimum ticket size, gross
+    terminal wealth subject to an optional cardinality cap (``null`` =
+    explicitly unconstrained, like ``cvar_limit``), a minimum ticket size, gross
     exposure, self-financing cash, buying power, and an optional
     Rockafellar-Uryasev CVaR cap. It names no market: the same class
     could size an ad-spend allocation or a project portfolio exactly as
@@ -935,10 +936,11 @@ class ScenarioUtilitySolve(PyomoSolve):
             )
         if "cardinality" not in params:
             problems.append(
-                "cardinality is required — the maximum number of names held at once is an "
-                "owner risk decision, there is no default"
+                "cardinality is required — declare the maximum number of names held at "
+                "once, or null for explicitly unconstrained (an owner risk decision either "
+                "way, there is no default)"
             )
-        else:
+        elif params["cardinality"] is not None:
             check_int_param(problems, "cardinality", params["cardinality"], ge=1)
         if "min_ticket" not in params:
             problems.append(
@@ -1127,7 +1129,7 @@ class ScenarioUtilitySolve(PyomoSolve):
 
         gamma = float(params["risk_aversion_gamma"])
         n_tangents = int(params.get("n_tangents", DEFAULT_N_TANGENTS))
-        cardinality = int(params["cardinality"])
+        cardinality = None if params["cardinality"] is None else int(params["cardinality"])
         min_ticket = float(params["min_ticket"])
         cvar_alpha = float(params["cvar_alpha"])
         cvar_limit = params["cvar_limit"]
@@ -1187,7 +1189,10 @@ class ScenarioUtilitySolve(PyomoSolve):
         model.elig_lo = Constraint(
             names, rule=lambda m, i: m.x[i] >= min_ticket * m.d[i]
         )
-        model.cardinality = Constraint(expr=sum(model.y[i] for i in names) <= cardinality)
+        if cardinality is not None:
+            model.cardinality = Constraint(
+                expr=sum(model.y[i] for i in names) <= cardinality
+            )
 
         model.cash_after = Expression(
             expr=cash0
@@ -1359,7 +1364,7 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"{self.key}: gross exposure violated on exact recompute: {gross!r} exceeds "
                 f"{meta['gross_limit']!r}"
             )
-        if len(target) > meta["cardinality"]:
+        if meta["cardinality"] is not None and len(target) > meta["cardinality"]:
             raise AssertionError(
                 f"{self.key}: cardinality violated on exact recompute: {len(target)} held "
                 f"exceeds {meta['cardinality']!r}"

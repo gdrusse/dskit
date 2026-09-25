@@ -144,7 +144,7 @@ at $p_i$.
 $\gamma$ & \code{risk_aversion_gamma} ($\ge 1$) \\
 $K$, $S_{\max}$ & \code{n_tangents}, \code{n_scenarios_max} ($\le 256$) \\
 $\alpha$, $C$ & \code{cvar_alpha}; \code{cvar_limit} (or none) \\
-$M$ & \code{cardinality} \\
+$M$ & \code{cardinality} (or none: no cap row) \\
 $m$ & \code{min_ticket} (USD) \\
 $q$ & \code{hfdr_q} \\
 $\beta$ & \code{band_bps}; $\ell=$ \code{lot_size} (default 1) \\
@@ -181,7 +181,7 @@ $Q_i=h_i+b_i-s_i$ (target shares), $x_i=p_iQ_i$ (target notional).
 & s_i \le h_i\,(1-d_i) && \text{(\code{sell_only}: no same-tick buy and sell)}\\
 & x_i \le \bar x_i\, y_i && \text{(\code{elig_hi}: position cap, gates } y_i)\\
 & x_i \ge m\, d_i && \text{(\code{elig_lo}: minimum ticket, binds only on a buy)}\\
-& \textstyle\sum_i y_i \le M && \text{(\code{cardinality})}
+& \textstyle\sum_i y_i \le M && \text{(\code{cardinality}; omitted when none)}
 \end{align}
 Eligibility is decided \emph{before} the program is built
 (\code{EquityKellyMIO.instruments}). A row enters $\N$ only if it passes
@@ -389,7 +389,8 @@ aborts the whole simulation run.
 These are the values in \code{run-retrain-simulation-template.json} (node
 \code{decide}), \code{fill-policy.json}, \code{cash-flow-policy-biweekly.json}
 and the \code{MioDecider} portfolio. \textbf{V1} marks the owner-delegated
-growth policy chosen on 2026-09-25. These values express a growth-oriented
+growth policy chosen on 2026-09-25; \textbf{V1.1} marks the same-day owner
+ruling that removed the cardinality cap and the minimum ticket. These values express a growth-oriented
 tolerance for some risk, but they were not selected by maximizing this backtest.
 
 \begin{longtable}{@{}p{3.6cm}p{7.6cm}p{3.0cm}@{}}
@@ -399,8 +400,8 @@ Quantity & Value & Status \\
 $\gamma$ & 2.0 (growth-oriented CRRA) & V1 \\
 $K$ / $S_{\max}$ / $S$ & 32 / 128 / 128 & V1 \\
 $\alpha$ / $C$ & 0.95 / \$500 per lead-group solve & V1 \\
-$M$ & 5 & V1 \\
-$m$ & \$500 & V1 \\
+$M$ & none (no cap) & V1.1 \\
+$m$ & \$0 (no floor) & V1.1 \\
 $q$ & 0.20 & V1 \\
 $\beta$ & 10 bps (inactive because $h_i=0$) & V1 \\
 $\bar x_i$ & \$5,000 per name & V1 \\
@@ -421,8 +422,8 @@ solver & HiGHS, gap 0, 1 thread, seed 0 & base default \\
 \noindent With these values the program in the backtest reduces to:
 \begin{itemize}
 \item buys only, from an empty book;
-\item at most 5 names, at least \$500 for an active buy, and at most
-  \$5,000 per name;
+\item no cap on the number of names and no minimum ticket; at most
+  \$5,000 per name, in whole shares;
 \item self-financed from live cash;
 \item total notional at most NAV \emph{per lead-group solve} (each group gets
   $G=$ NAV; across groups only the shared cash bounds the total);

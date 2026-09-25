@@ -23898,6 +23898,17 @@ their original placeholder settings. `cap_evidence_look_ahead=true`, missing
 T+1/GFV/PDT handling, and developmental post-selection still prohibit any
 deployment claim.
 
+**Owner amendment 2 (2026-09-25): growth policy v1.1.** The owner removed
+the cardinality cap and the minimum ticket. Both shrink the feasible set
+for a reason the objective should price, not a hard rule: a cap on the
+number of names forces concentration, and a ticket floor exists only to
+avoid fixed per-order fees, which this cost model does not have (Schwab
+per-share/bps terms only). `ScenarioUtilitySolve` now accepts
+`cardinality: null` as explicitly unconstrained, the same convention as
+`cvar_limit: null`: the cap row is omitted and the exact recompute skips
+it. v1.1 sets `cardinality=null` and `min_ticket=0.0`. Every other v1
+value is unchanged, and so is every limitation above.
+
 **Amendment review evidence (2026-09-25).** Two sequential, independent
 skeptic reviews examined candidate `fe4f497`. The correctness/authority lens
 reported C0/M0/m0/N0. The integration/runtime lens reported C0/M0 and one

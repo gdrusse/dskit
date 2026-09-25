@@ -665,6 +665,14 @@ class TestScenarioUtilityParams:
         problems = TwoNameSolve.validate_params(params)
         assert any(name in p and "required" in p for p in problems)
 
+    def test_null_cardinality_is_explicitly_unconstrained(self):
+        assert TwoNameSolve.validate_params({**SU_PARAMS, "cardinality": None}) == []
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, True, "5"])
+    def test_a_non_null_cardinality_must_be_a_positive_int(self, bad):
+        problems = TwoNameSolve.validate_params({**SU_PARAMS, "cardinality": bad})
+        assert any("cardinality" in p for p in problems)
+
     def test_gamma_below_one_is_refused(self):
         problems = TwoNameSolve.validate_params({**SU_PARAMS, "risk_aversion_gamma": 0.5})
         assert any("risk_aversion_gamma" in p for p in problems)
@@ -774,6 +782,24 @@ class TestScenarioUtilityRealSolve:
         node = _su_node(cardinality=1)
         out = node.run(_ctx(tmp_path), fixture)
         assert len(out["target"]) <= 1
+
+    def test_null_cardinality_adds_no_cap_row(self, tmp_path):
+        # null must mean "no row at all", so it solves exactly like a cap
+        # that can never bind (one slot per candidate name).
+        fixture = _su_fixture()
+        free = _su_node(cardinality=None).run(_ctx(tmp_path), fixture)
+        loose = _su_node(cardinality=len(fixture["names"])).run(_ctx(tmp_path), fixture)
+        assert free["target"] == loose["target"]
+        assert free["trades"] == loose["trades"]
+        built = []
+
+        class Spy(TwoNameSolve):
+            def build_model(self, inputs, params):
+                built.append(super().build_model(inputs, params))
+                return built[-1]
+
+        Spy("size", {**SU_PARAMS, "cardinality": None}).run(_ctx(tmp_path), fixture)
+        assert built and not hasattr(built[0], "cardinality")
 
     def test_identical_inputs_give_identical_shares_twice(self, tmp_path):
         fixture = _su_fixture()
