@@ -31,8 +31,10 @@ import fnmatch
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -67,20 +69,87 @@ def _load_config(path=None):
         return json.load(fh)
 
 
-def _git(root, *args, env=None, timeout=None, check=True):
-    """Run git in ``root``; return stdout text."""
-    proc = subprocess.run(
-        ["git", "-C", root, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        timeout=timeout,
+class Budget:
+    """One wall-clock deadline shared by every subprocess of a sweep.
+
+    Parameters
+    ----------
+    seconds : float or None
+        Total allowance from :meth:`start`; ``None`` means unbounded.
+
+    Examples
+    --------
+    Bound a whole hook run to eight seconds::
+
+        BUDGET.start(8)
+        BUDGET.left()  # 8.0 at first, never below 0.05
+    """
+
+    def __init__(self, seconds=None):
+        self.deadline = None
+        if seconds is not None:
+            self.start(seconds)
+
+    def start(self, seconds):
+        """Begin counting down ``seconds`` from now."""
+        self.deadline = time.monotonic() + float(seconds)
+
+    def left(self, reserve=0.0):
+        """Seconds remaining (less ``reserve``), floored at 0.05; None if off."""
+        if self.deadline is None:
+            return None
+        return max(0.05, self.deadline - time.monotonic() - reserve)
+
+    def expired(self, reserve=0.0):
+        """Tell whether the deadline (less ``reserve``) has passed."""
+        return (self.deadline is not None
+                and time.monotonic() >= self.deadline - reserve)
+
+
+BUDGET = Budget()
+
+
+def _bounded(timeout):
+    """Return the tighter of ``timeout`` and the shared budget's remainder."""
+    left = BUDGET.left()
+    if left is None:
+        return timeout
+    return left if timeout is None else min(timeout, left)
+
+
+def _run(cmd, timeout=None, env=None, bounded=True):
+    """Run ``cmd`` -> (returncode, stdout, stderr); kill its group on timeout.
+
+    The whole process group dies, so a hung grandchild cannot hold the
+    pipes open past the deadline.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", env=env,
+        start_new_session=hasattr(os, "killpg"),
     )
-    if check and proc.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)}: {proc.stderr.strip()}")
-    return proc.stdout
+    try:
+        out, err = proc.communicate(
+            timeout=_bounded(timeout) if bounded else timeout)
+    except subprocess.TimeoutExpired:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        proc.kill()
+        proc.communicate()
+        raise
+    return proc.returncode, out, err
+
+
+def _git(root, *args, env=None, timeout=None, check=True, bounded=True):
+    """Run git in ``root``; return stdout text (bounded by :data:`BUDGET`)."""
+    code, out, err = _run(["git", "-C", root, *args], timeout=timeout,
+                          env=env, bounded=bounded)
+    if check and code != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {err.strip()}")
+    return out
 
 
 def _clean_env():
@@ -137,8 +206,12 @@ class RepoInventory:
         self.symbols = {}  # name -> {path: (line, set(labels))}
         self.kinds = {}  # name -> {path: (line, set(labels))}
         self.sources = []
-        trees = self._trees()
-        self._scan_trees(trees)
+        self._reserve = config["budget_reserve_s"]
+        try:
+            trees = self._trees()
+            self._scan_trees(trees)
+        except subprocess.TimeoutExpired:
+            self.sources.append("branches only partly searched (budget)")
         self._scan_worktrees()
 
     # -- committed state: HEAD, origin/main, every branch ---------------
@@ -151,14 +224,18 @@ class RepoInventory:
         )
         refs += [r for r in out.split() if not r.endswith("/HEAD")]
         trees = {}
-        for ref in refs:
-            proc = subprocess.run(
-                ["git", "-C", self.root, "rev-parse", "-q", "--verify",
-                 ref + "^{tree}"],
-                capture_output=True, text=True,
-            )
-            if proc.returncode == 0:
-                trees.setdefault(proc.stdout.strip(), set()).add(ref)
+        out = _git(self.root, "rev-parse", *[r + "^{tree}" for r in refs],
+                   check=False).split()
+        if len(out) == len(refs) and all(
+                re.fullmatch(r"[0-9a-f]{40,64}", t) for t in out):
+            for ref, tree in zip(refs, out):
+                trees.setdefault(tree, set()).add(ref)
+        else:  # one ref failed to resolve: fall back to one call each
+            for ref in refs:
+                code, tree, _ = _run(["git", "-C", self.root, "rev-parse",
+                                      "-q", "--verify", ref + "^{tree}"])
+                if code == 0:
+                    trees.setdefault(tree.strip(), set()).add(ref)
         self.sources.append(f"{len(refs)} refs")
         return trees
 
@@ -185,15 +262,12 @@ class RepoInventory:
     def _grep(self, ids, trees, pattern, sink):
         """Grep the .py files of every tree; feed matches to ``sink``."""
         for flavour in ("-P", "-E"):
-            proc = subprocess.run(
+            code, out, _ = _run(
                 ["git", "-C", self.root, "grep", "-n", "-I", flavour, "-e",
                  pattern[flavour], *ids, "--", "*.py"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace",
             )
-            if proc.returncode in (0, 1):  # 1 = no match, not an error
+            if code in (0, 1):  # 1 = no match, not an error
                 break
-        out = proc.stdout
         for raw in out.splitlines():
             parts = raw.split(":", 3)
             if len(parts) == 4 and parts[0] in trees:
@@ -211,7 +285,10 @@ class RepoInventory:
     # -- uncommitted state of every OTHER worktree ----------------------
     def _worktrees(self):
         """Paths of every other live worktree."""
-        out = _git(self.root, "worktree", "list", "--porcelain")
+        try:
+            out = _git(self.root, "worktree", "list", "--porcelain")
+        except subprocess.TimeoutExpired:
+            return []
         here = os.path.realpath(self.root)
         found = []
         for line in out.splitlines():
@@ -222,32 +299,63 @@ class RepoInventory:
         return found
 
     def _dirty(self, wt):
-        """(worktree, [untracked-or-modified paths]); [] on timeout."""
+        """(worktree, [untracked-or-modified paths]); None on timeout."""
+        if BUDGET.expired(self._reserve):
+            return wt, None
+        timeout = self.config["worktree_timeout_s"]
+        left = BUDGET.left(self._reserve)
         try:
-            out = _git(wt, "ls-files", "-o", "-m", "--exclude-standard",
-                       env=_clean_env(),
-                       timeout=self.config["worktree_timeout_s"], check=False)
+            code, out, _ = _run(
+                ["git", "-C", wt, "ls-files", "-o", "-m", "--exclude-standard"],
+                timeout=timeout if left is None else min(timeout, left),
+                env=_clean_env(),
+            )
         except subprocess.TimeoutExpired:
             return wt, None
-        return wt, sorted(set(out.splitlines()))
+        return wt, sorted(set(out.splitlines())) if code == 0 else []
+
+    def _fold(self, wt, files):
+        """Add one worktree's dirty files to the inventory."""
+        label = "wt:" + os.path.basename(wt.rstrip("/"))
+        for path in files:
+            self.paths.setdefault(path, set()).add(label)
+            if path.endswith(".py"):
+                self._scan_file(os.path.join(wt, path), path, label)
 
     def _scan_worktrees(self):
-        """Fold every other worktree's dirty files into the inventory."""
+        """Fold every other worktree's dirty files in, within the budget.
+
+        Each scan is capped by ``worktree_timeout_s`` AND by what the shared
+        budget has left (less ``budget_reserve_s`` for scoring), so the total
+        is bounded no matter how many worktrees or how slow their mounts.
+        """
         wts = self._worktrees()
-        skipped = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for wt, files in pool.map(self._dirty, wts):
-                if files is None:
-                    skipped += 1
-                    continue
-                label = "wt:" + os.path.basename(wt.rstrip("/"))
-                for path in files:
-                    self.paths.setdefault(path, set()).add(label)
-                    if path.endswith(".py"):
-                        self._scan_file(os.path.join(wt, path), path, label)
+        slow = budget = 0
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.config["worktree_workers"])
+        futures = [pool.submit(self._dirty, wt) for wt in wts]
+        done, pending = concurrent.futures.wait(
+            futures, timeout=BUDGET.left(self._reserve))
+        for fut in futures:
+            if fut in pending or fut.cancelled():
+                budget += 1
+                continue
+            wt, files = fut.result()
+            if files is None:
+                if BUDGET.expired(self._reserve):
+                    budget += 1
+                else:
+                    slow += 1
+                continue
+            self._fold(wt, files)
+        # Running scans are already bounded by the deadline; never wait on
+        # them, and drop the queued ones.
+        pool.shutdown(wait=False, cancel_futures=True)
         note = f"{len(wts)} other worktrees"
-        if skipped:
-            note += f" ({skipped} timed out, not searched)"
+        if slow:
+            note += f" ({slow} timed out, not searched)"
+        if budget:
+            note += f" ({budget} not searched (budget))"
         self.sources.append(note)
 
     def _scan_file(self, full, path, label):
@@ -425,19 +533,18 @@ def _exempt(path, config):
 
 def _base(root):
     """HEAD, or the empty tree before the first commit."""
-    proc = subprocess.run(["git", "-C", root, "rev-parse", "-q", "--verify",
-                           "HEAD"], capture_output=True, text=True)
-    return "HEAD" if proc.returncode == 0 else EMPTY_TREE
+    code, _, _ = _run(["git", "-C", root, "rev-parse", "-q", "--verify",
+                       "HEAD"])
+    return "HEAD" if code == 0 else EMPTY_TREE
 
 
 def _head_names(root, base, path):
     """Symbol and kind names the committed version of ``path`` has."""
     if base == EMPTY_TREE:
         return set()
-    proc = subprocess.run(["git", "-C", root, "show", f"{base}:{path}"],
-                          capture_output=True, text=True, errors="replace")
+    _, out, _ = _run(["git", "-C", root, "show", f"{base}:{path}"])
     names = set()
-    for text in proc.stdout.splitlines():
+    for text in out.splitlines():
         m = _SYMBOL.match(text)
         if m:
             names.add(m.group(1))
@@ -553,11 +660,15 @@ def trailer_ok(text, config):
 
 def _skip(root, msg_path, text, reason, items, config):
     """Honour SWEEP_SKIP: log it locally and stamp it into the message."""
-    common = _git(root, "rev-parse", "--git-common-dir").strip()
+    # After the budget: the skip MUST be recorded, so these are unbounded.
+    common = _git(root, "rev-parse", "--git-common-dir", timeout=10,
+                  bounded=False).strip()
     if not os.path.isabs(common):
         common = os.path.join(root, common)
-    who = _git(root, "var", "GIT_AUTHOR_IDENT", check=False).strip()
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    who = _git(root, "var", "GIT_AUTHOR_IDENT", check=False, timeout=10,
+               bounded=False).strip()
+    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False,
+                  timeout=10, bounded=False).strip()
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds")
     names = ",".join(i["name"] for i in items[:20])
@@ -589,9 +700,18 @@ def commit_msg(root, msg_path, config):
     with open(msg_path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     first = next((ln for ln in _message_lines(text) if ln.strip()), "")
-    if _in_progress(root) or re.match(r'(Merge |Revert ")', first):
+    # Autosquash folds fixup!/squash!/amend! into a commit that was swept.
+    if re.match(r'(Merge |Revert "|fixup! |squash! |amend! )', first):
         return 0
-    items = staged_items(root, config)
+    BUDGET.start(config["budget_s"])
+    try:
+        if _in_progress(root):
+            return 0
+        items = staged_items(root, config)
+    except subprocess.TimeoutExpired:
+        print("sweep: git did not answer within the budget; commit NOT "
+              "checked.", file=sys.stderr)
+        return 0
     if not items:
         return 0
     report, _ = Sweep(RepoInventory(root, config), config).report(items)
@@ -621,8 +741,7 @@ def commit_msg(root, msg_path, config):
 def _mentions(root, term, config):
     """Files on origin/main (else HEAD) whose TEXT mentions ``term``."""
     ref = "origin/main"
-    if subprocess.run(["git", "-C", root, "rev-parse", "-q", "--verify", ref],
-                      capture_output=True).returncode != 0:
+    if _run(["git", "-C", root, "rev-parse", "-q", "--verify", ref])[0]:
         ref = "HEAD"
     out = _git(root, "grep", "-l", "-I", "-i", "-F", "-e", term, ref,
                check=False).splitlines()
@@ -658,6 +777,8 @@ def main(argv=None):
     ap.add_argument("--config", help="alternate sweep.json")
     args = ap.parse_args(argv)
     config = _load_config(args.config)
+    if not args.commit_msg:
+        BUDGET.start(config["budget_s"])
     root = _git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
     if args.commit_msg:
         return commit_msg(root, args.commit_msg, config)

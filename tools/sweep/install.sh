@@ -50,7 +50,18 @@ tmp=\$(mktemp -d) || exit 0
 rc=0
 if git show origin/main:tools/sweep/sweep.py >"\$tmp/sweep.py" 2>/dev/null &&
    git show origin/main:tools/sweep/sweep.json >"\$tmp/sweep.json" 2>/dev/null; then
-    python3 "\$tmp/sweep.py" --commit-msg "\$1" || rc=\$?
+    budget=\$(sed -n 's/.*"budget_s": *\([0-9]*\).*/\1/p' "\$tmp/sweep.json" | head -1)
+    cap=\$(( \${budget:-8} + 4 ))
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 1 "\$cap" python3 "\$tmp/sweep.py" --commit-msg "\$1" || rc=\$?
+    else
+        python3 "\$tmp/sweep.py" --commit-msg "\$1" || rc=\$?
+    fi
+    # The hard cap never blocks: past it the commit goes through unchecked.
+    if [ "\$rc" -eq 124 ] || [ "\$rc" -eq 137 ]; then
+        echo "sweep: exceeded the \${cap}s hard cap; commit NOT checked." >&2
+        rc=0
+    fi
 fi
 rm -rf "\$tmp"
 exit \$rc

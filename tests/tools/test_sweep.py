@@ -255,3 +255,49 @@ def test_remind_script_emits_context_only_for_dskit(tmp_path):
     assert run("write", existing) == ""  # editing, not creating
     out = run("session", '{"cwd":"/elsewhere"}')
     assert "additionalContext" in out
+
+
+@pytest.mark.parametrize("subject", ["fixup! add widget", "squash! add widget",
+                                     "amend! add widget"])
+def test_autosquash_subjects_pass(repo, subject):
+    repo.write("pkg/widget.py", "class Widget:\n    pass\n")
+    done = repo.commit(subject)
+    assert done.returncode == 0, done.stderr
+
+
+def test_budget_bounds_many_slow_worktrees(repo, tmp_path):
+    import json
+    import time
+
+    budget = 2.0
+    with open(os.path.join(SWEEP_DIR, "sweep.json")) as fh:
+        cfg = json.load(fh)
+    cfg.update(budget_s=budget, budget_reserve_s=0.5,
+               worktree_timeout_s=30, worktree_workers=4)
+    cfg_path = tmp_path / "sweep-budget.json"
+    cfg_path.write_text(json.dumps(cfg))
+    for i in range(20):
+        repo.git("worktree", "add", "-q", "-b", f"lane{i}",
+                 str(tmp_path / f"wt{i}"))
+    # A git whose ls-files hangs in a CHILD process (the worst case: the
+    # grandchild holds the pipe), everything else real.
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    real = shutil.which("git")
+    (fake / "git").write_text(
+        "#!/bin/sh\n"
+        'case " $* " in *" ls-files "*) sleep 60 ;; esac\n'
+        f'exec "{real}" "$@"\n')
+    (fake / "git").chmod(0o755)
+    # git puts its exec-path first on a hook's PATH, so set ours inside it.
+    hook = tmp_path / "hooks" / "commit-msg"
+    hook.write_text(f'#!/bin/sh\nPATH="{fake}:$PATH" exec "{sys.executable}" '
+                    f'"{SWEEP}" --config "{cfg_path}" --commit-msg "$1"\n')
+    repo.write("pkg/slow.py", "class SlowThing:\n    pass\n")
+    repo.git("add", "-A")
+    t0 = time.monotonic()
+    done = repo.git("commit", "-q", "-m", "add slow", check=False)
+    elapsed = time.monotonic() - t0
+    assert elapsed < budget + 1.5, elapsed
+    assert "not searched (budget)" in done.stderr
+    assert done.returncode != 0 and "REFUSED" in done.stderr  # rule holds
