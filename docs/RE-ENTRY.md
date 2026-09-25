@@ -31,6 +31,15 @@ The formulation is
 `children/intraday_equities/docs/explanations/mio-optimizer-formulation.tex`
 (compiled clean). The MIO knobs are still ADR-0184 placeholders.
 
+Review and landing:
+
+- **Candidate:** `dea9e6b` was locked after three review rounds. The final
+  lenses found 0 Critical and 0 Major. The Minor/Nit backlog is in ADR-0185's
+  review record.
+- **Landed:** on `main` at `4e7cfda`.
+- **Focused tests:** 729 child tests and 335 dskit tests passed. The known
+  failures are 6 child tests and 1 root-permission test in `test_runs`.
+
 Next bounded action, in WSL from the child root:
 `python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities`,
 then write the results memo.
