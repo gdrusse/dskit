@@ -1,5 +1,26 @@
 # Re-entry
 
+## Per-name spread cost in SchwabCostModel (2026-09-25 wrap)
+
+- **Change** (`4ee8201`, on the measurement `15787c3`/`2c37644`):
+  the flat `spread_bps` 2.2 is replaced with each name's quoted half-spread
+  x `eq_ratio` per side. TAF/SEC are unchanged and not scaled. Per-name values
+  are in `configs/fill-policy.json` (13 names; default 5.62 bp = LITE, the
+  cohort max). A name that is not listed raises `ConfigError` when no default
+  is set. Sizing (EquityKellyMIO) and replay fills use the same cost.
+  New pins: fill identity `e078b15b`, retrain template `e4aadf0c`. ADR-0185
+  owner amendment 3 (points to ADR-0120).
+- **Numbers:** LLY/XOM/JPM use measured medians; the other 10 use modelled
+  values (`tools/spread-cost-results.json`). **EQ = 0.25** is a proxy from
+  HRT's Rule 605 effective/quoted ratio. The owner approved it.
+- **Reviews:** Sonnet correctness/authority lens MERGE-READY with 0 findings.
+  Sonnet test/integration lens MERGE-READY with 0 findings (5 mutations, all
+  killed). Focused tests: 451 passed.
+- **Caveat:** ADR-0184/0185 results under the flat cost cannot be compared
+  with new ones until they are rerun.
+- **Next:** re-run the retrain simulation; replace EQ with Schwab's own
+  Rule 605 figure.
+
 ## MIO growth policy v1/v1.1 and Cboe chain-zone fix (2026-09-25 wrap)
 
 Handover: Claude took over from the lost codex session. Its work had already
