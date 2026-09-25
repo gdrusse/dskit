@@ -516,7 +516,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         TAF-argument floor, §3.4), ``hfdr_q`` (required, in (0, 1) — ADR-0088's false-
         discovery threshold), ``band_bps`` (required, >= 0 — the no-trade
         band as basis points of the larger of current ticket or
-        ``min_ticket``), ``max_position_notional`` (required, > 0 — a
+        ``min_ticket``; so ``min_ticket`` also floors the band, and at 0 an
+        unheld name has no band: any whole-share buy clears it),
+        ``max_position_notional`` (required, > 0 — a
         UNIFORM per-name dollar ceiling; a bundle-declared per-name cap is a
         follow-up, not built here), ``bundle_max_staleness_ms`` and
         ``cap_max_staleness_ms`` (required ints >= 0),
