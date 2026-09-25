@@ -442,6 +442,36 @@ def test_quote_time_zone_undecidable_refuses(stamp, fetched):
         read(conn, ["option_chain"])
 
 
+
+def _pull_two(spx_stamp, xsp_stamp, fetched):
+    conn, _, _ = connector({
+        SPX_CHAIN: chain([option("SPXW261016C07000000")], spx_stamp),
+        XSP_CHAIN: chain([option("XSP261016P00575500")], xsp_stamp, price=661.2),
+    }, datetime.fromisoformat(fetched))
+    return read(conn, ["option_chain"], {"symbols": ["SPX", "XSP"], "base_url": BASE})
+
+
+@pytest.mark.parametrize("spx_stamp, xsp_stamp, xsp_utc", [
+    # fresh UTC SPX decides UTC for a 16 h stale XSP (seen live on XND, 2026-09-25)
+    ("2026-09-25 19:21:40", "2026-09-25 03:00:47", "2026-09-25T03:00:47+00:00"),
+    # a stale chain listed first waits for the fresh one; New York decided
+    ("2026-09-25 01:00:00", "2026-09-25 15:21:40", "2026-09-25T19:21:40+00:00"),
+])
+def test_stale_chain_takes_the_zone_the_pull_decided(spx_stamp, xsp_stamp, xsp_utc):
+    msgs = _pull_two(spx_stamp, xsp_stamp, "2026-09-25T19:22:00+00:00")
+    xsp = [r for r in records(msgs) if r["data"]["option"].startswith("XSP")]
+    assert [r["data"]["quote_time"] for r in xsp] == [xsp_utc]
+    assert xsp[0]["effective_date"] == xsp_utc
+
+
+@pytest.mark.parametrize("spx_stamp, xsp_stamp, match", [
+    ("2026-09-25 03:00:00", "2026-09-25 04:00:00", "no chain of the pull decided"),
+    ("2026-09-25 19:21:40", "2026-09-25 15:21:40", "in the same pull"),  # UTC vs New York
+])
+def test_undecided_or_conflicting_pull_refuses(spx_stamp, xsp_stamp, match):
+    with pytest.raises(AssetError, match=match):
+        _pull_two(spx_stamp, xsp_stamp, "2026-09-25T19:22:00+00:00")
+
 def test_clock_must_be_callable():
     with pytest.raises(AssetError, match="clock must be callable"):
         CboeConnector(clock="now")

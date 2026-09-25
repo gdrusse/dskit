@@ -39,9 +39,11 @@ notice (``last_trade_time`` stayed New York). The zone is therefore
 resolved against the pull's own clock: of the New York and UTC readings
 (4-5 hours apart), the one inside the window from ``MAX_STALENESS_S``
 before to ``CLOCK_SKEW_S`` after the fetch instant is taken. The window
-is shorter than the gap, so at most one reading fits; a stamp that fits
-neither (a snapshot served stale by hours) is refused rather than
-guessed, since its zone cannot be told. The result becomes both ``quote_time``
+is shorter than the gap, so at most one reading fits. A stamp that fits
+neither (a chain served stale by hours, as thin underlyings such as XND
+are) takes the zone the pull's fresh chains decided — the convention is
+venue-wide — and a pull where no chain decides it, or chains disagree,
+is refused rather than guessed. The result becomes both ``quote_time``
 and the row's ``effective_date``. Two pulls of one unchanged delayed
 snapshot therefore collide on their key and dedup keeps one — a re-pull,
 not a duplicate. In the repeated hour of a DST fall-back the earlier
@@ -189,13 +191,8 @@ def parse_occ(symbol):
     return root, expiry.isoformat(), _RIGHTS[right], int(strike) / 1000.0
 
 
-def _quote_instant(stamp, where, fetched):
-    """Return the aware UTC instant of a zoneless ``YYYY-MM-DD HH:MM:SS`` stamp.
-
-    Of the New York and UTC readings, the one within ``MAX_STALENESS_S``
-    before to ``CLOCK_SKEW_S`` after ``fetched`` (the aware UTC fetch
-    instant) is returned; a stamp neither reading places there is refused.
-    """
+def _stamp_readings(stamp, where):
+    """Return ``[(zone, aware UTC instant)]`` of a zoneless stamp, New York first."""
     try:
         naive = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError) as exc:
@@ -203,23 +200,22 @@ def _quote_instant(stamp, where, fetched):
             [f"{where}: timestamp must be 'YYYY-MM-DD HH:MM:SS' "
              f"({QUOTE_TZ} or UTC), got {stamp!r}"]
         ) from exc
+    return [
+        (zone, naive.replace(tzinfo=ZoneInfo(zone)).astimezone(timezone.utc))
+        for zone in (QUOTE_TZ, "UTC")
+    ]
+
+
+def _decided_zone(readings, fetched):
+    """Return the one zone whose reading lies in the fetch window, else None.
+
+    The window runs ``MAX_STALENESS_S`` before to ``CLOCK_SKEW_S`` after
+    ``fetched`` (aware UTC); it is shorter than the New York-UTC gap.
+    """
     earliest = fetched - timedelta(seconds=MAX_STALENESS_S)
     latest = fetched + timedelta(seconds=CLOCK_SKEW_S)
-    fits = [
-        instant
-        for instant in (
-            naive.replace(tzinfo=zone).astimezone(timezone.utc)
-            for zone in (ZoneInfo(QUOTE_TZ), timezone.utc)
-        )
-        if earliest <= instant <= latest
-    ]
-    if len(fits) != 1:
-        raise AssetError(
-            [f"{where}: timestamp {stamp!r} is not within {MAX_STALENESS_S} s before "
-             f"to {CLOCK_SKEW_S} s after the fetch instant {fetched.isoformat()} "
-             f"as exactly one of {QUOTE_TZ} or UTC time; its zone cannot be told"]
-        )
-    return fits[0]
+    fits = [zone for zone, instant in readings if earliest <= instant <= latest]
+    return fits[0] if len(fits) == 1 else None
 
 
 def _body_text(body):
@@ -571,8 +567,13 @@ class CboeConnector(Connector):
                 yield row["date"], row
 
     def _pull_chain(self, knobs, cursor_dt):
-        """Yield ``(effective_date, row)`` per option of every chain — never cursor-filtered."""
+        """Yield ``(effective_date, row)`` per option of every chain — never cursor-filtered.
+
+        A chain whose stamp the fetch window cannot place waits until a
+        fresh chain of the pull has decided the venue's zone.
+        """
         roots = None if knobs["roots"] is None else set(knobs["roots"])
+        zone, decided_by, stale = None, None, []
         for symbol in knobs["symbols"]:
             path = _EQUITY_CHAIN_PATH if symbol in knobs["equity_symbols"] else _CHAIN_PATH
             url, text = self._get(knobs, path.format(urllib.parse.quote(symbol)))
@@ -584,21 +585,50 @@ class CboeConnector(Connector):
             data = body.get("data") if isinstance(body, dict) else None
             if not isinstance(data, dict) or not isinstance(data.get("options"), list):
                 raise AssetError([f"{url}: payload lacks a 'data.options' list"])
-            quoted = _quote_instant(body.get("timestamp"), url, fetched)
-            quote_time = quoted.isoformat()
-            quote_day = quoted.astimezone(ZoneInfo(QUOTE_TZ)).date()
-            underlying_price = _finite(data.get("current_price"))
-            for i, raw in enumerate(data["options"]):
-                row = _chain_row(
-                    symbol, raw, quote_time, underlying_price, f"{url} option {i}"
+            readings = _stamp_readings(body.get("timestamp"), url)
+            decided = _decided_zone(readings, fetched)
+            if decided is None:
+                stale.append((symbol, url, data, readings, fetched))
+                continue
+            if zone is not None and decided != zone:
+                raise AssetError(
+                    [f"{url}: timestamp reads as {decided} but {decided_by} read as "
+                     f"{zone} in the same pull; the venue's zone cannot be told"]
                 )
-                if roots is not None and row["root"] not in roots:
+            zone, decided_by = decided, url
+            yield from self._chain_rows(knobs, roots, symbol, url, data, dict(readings)[zone])
+        for symbol, url, data, readings, fetched in stale:
+            if zone is None:
+                raise AssetError(
+                    [f"{url}: timestamp is not within {MAX_STALENESS_S} s before to "
+                     f"{CLOCK_SKEW_S} s after the fetch instant {fetched.isoformat()} "
+                     f"as exactly one of {QUOTE_TZ} or UTC time, and no chain of the "
+                     f"pull decided the zone; its zone cannot be told"]
+                )
+            quoted = dict(readings)[zone]
+            if quoted > fetched + timedelta(seconds=CLOCK_SKEW_S):
+                raise AssetError(
+                    [f"{url}: timestamp read as {zone} ({quoted.isoformat()}) is after "
+                     f"the fetch instant {fetched.isoformat()}"]
+                )
+            yield from self._chain_rows(knobs, roots, symbol, url, data, quoted)
+
+    def _chain_rows(self, knobs, roots, symbol, url, data, quoted):
+        """Yield ``(quote_time, row)`` per kept option of one chain quoted at ``quoted``."""
+        quote_time = quoted.isoformat()
+        quote_day = quoted.astimezone(ZoneInfo(QUOTE_TZ)).date()
+        underlying_price = _finite(data.get("current_price"))
+        for i, raw in enumerate(data["options"]):
+            row = _chain_row(
+                symbol, raw, quote_time, underlying_price, f"{url} option {i}"
+            )
+            if roots is not None and row["root"] not in roots:
+                continue
+            if knobs["max_dte"] is not None:
+                dte = (date.fromisoformat(row["expiry"]) - quote_day).days
+                if not 0 <= dte <= knobs["max_dte"]:
                     continue
-                if knobs["max_dte"] is not None:
-                    dte = (date.fromisoformat(row["expiry"]) - quote_day).days
-                    if not 0 <= dte <= knobs["max_dte"]:
-                        continue
-                yield quote_time, row
+            yield quote_time, row
 
     def _pullers(self):
         """Stream name -> the generator that pulls it."""
