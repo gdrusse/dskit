@@ -23897,6 +23897,17 @@ not a backtest-tuned optimum. The historical ADR-0184 run and its report keep
 their original placeholder settings. `cap_evidence_look_ahead=true`, missing
 T+1/GFV/PDT handling, and developmental post-selection still prohibit any
 deployment claim.
+
+**Amendment review evidence (2026-09-25).** Two sequential, independent
+skeptic reviews examined candidate `fe4f497`. The correctness/authority lens
+reported C0/M0/m0/N0. The integration/runtime lens reported C0/M0 and one
+accepted minor test gap: the shipped-policy guard compares the 0.53 floor to
+the publisher's attestation constant rather than reconstructing publisher
+envelopes. That reviewer separately exercised the public admission path and
+confirmed equality at 0.53 is admitted. Focused config, coverage-refusal,
+capital, and simulation tests passed, as did Ruff, JSON/hash consistency,
+`git diff --check`, and the LaTeX build. The full staged backtest, realized
+all-fold outcome coverage, and 128-scenario runtime remain unverified here.
 ### Decision
 
 One staged document, `children/intraday_equities/configs/run-retrain-simulation.json`,
