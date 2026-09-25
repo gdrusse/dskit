@@ -609,8 +609,8 @@ def commit_msg(root, msg_path, config):
         "\nsweep: REFUSED. This commit adds new files/symbols/kinds.\n"
         "Check the matches above (and run tools/sweep/sweep <term> for\n"
         "anything else it might duplicate), then add a trailer such as:\n\n"
-        "  Sweep: searched <terms> on origin/main, branches, worktrees;\n"
-        "         <why the new thing is not a duplicate>\n\n"
+        "  Sweep: searched <terms> on origin/main+branches+worktrees; "
+        "<why it is not a duplicate>\n\n"
         f"(one line, >= {config['min_trailer_words']} words). Emergency only: "
         f"{config['skip_env']}=\"<reason>\" git commit ... (logged).",
         file=sys.stderr,
