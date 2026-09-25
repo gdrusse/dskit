@@ -27,8 +27,8 @@ landed; this wraps both sessions.
 without notice on 2026-09-24. The recorder was refused for about 23.5 h, and
 3 snapshots were lost. The pack now decides the zone by the fetch window;
 stale chains take the pull's decided zone, and an undecidable pull refuses.
-There are 4,348 XND rows with a +4 h `quote_time` in snapshot `f7fae4ff`,
-which readers must filter; see the index_options memo addendum. The recorder
+Snapshot `f7fae4ff` (4,348 XND rows with a +4 h `quote_time`) was removed
+from the store on 2026-09-25; see the index_options memo addendum. The recorder
 (`~/data/index_options/record_chain.sh`, outside Git) now logs full error
 messages.
 
