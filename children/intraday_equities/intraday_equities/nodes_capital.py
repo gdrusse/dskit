@@ -187,45 +187,66 @@ def _ceil_div(numerator, denominator):
 
 
 class SchwabCostModel:
-    """Per-share Schwab half-spread, TAF, and Section-31 costs.
+    """Per-share Schwab half-spread, TAF, and Section-31 costs, per name.
 
-    The one owner of the formula ``EquityKellyMIO`` already uses: buy
-    pays half-spread; sell pays half-spread plus uncapped TAF plus
-    Section 31. ``min_price`` is the routing floor, not a fee input.
+    The one owner of the formula ``EquityKellyMIO`` sizes with and the
+    replay bills with: each side pays the name's QUOTED half-spread times
+    ``eq_ratio`` (the broker's effective/quoted spread ratio, i.e. price
+    improvement); a sell also pays uncapped TAF plus Section 31 (owner
+    ruling 2026-09-25, ADR-0120/ADR-0185 amendment). ``min_price`` is the
+    routing floor, not a fee input.
 
     Parameters
     ----------
     params : dict
-        ``spread_bps`` (finite >= 0), ``taf_per_share`` (finite >= 0),
-        ``sec31_bps`` (finite >= 0), ``min_price`` (finite > 0). All
-        required; ``notes`` is allowed.
+        ``half_spread_bps`` (mapping of non-empty symbol -> finite >= 0,
+        the quoted half-spread in bp), ``default_half_spread_bps`` (finite
+        >= 0 for any unlisted name, or ``None``: an unlisted name then
+        refuses), ``eq_ratio`` (finite > 0, effective/quoted),
+        ``taf_per_share`` (finite >= 0), ``sec31_bps`` (finite >= 0),
+        ``min_price`` (finite > 0). All required; ``notes`` is allowed.
 
     Examples
     --------
-    Per-share buy and sell costs at $11::
+    Per-share buy and sell costs for LLY at $800::
 
         costs = SchwabCostModel({
-            "spread_bps": 2.2, "taf_per_share": 0.000195,
+            "half_spread_bps": {"LLY": 4.51}, "default_half_spread_bps": None,
+            "eq_ratio": 1.0, "taf_per_share": 0.000195,
             "sec31_bps": 0.0206, "min_price": 5.0,
         })
-        costs.buy_per_share(11.0)  # 0.00242
-        costs.sell_per_share(11.0)  # 0.00242 + 0.000195 + 0.0002266
+        costs.buy_per_share("LLY", 800.0)  # 0.3608
+        costs.sell_per_share("LLY", 800.0)  # 0.3608 + 0.000195 + 0.001648
+        costs.buy_per_share("XOM", 110.0)  # ConfigError: no half-spread for XOM
     """
 
-    _PARAMS = ("spread_bps", "taf_per_share", "sec31_bps", "min_price")
+    _PARAMS = (
+        "half_spread_bps",
+        "default_half_spread_bps",
+        "eq_ratio",
+        "taf_per_share",
+        "sec31_bps",
+        "min_price",
+    )
 
     def __init__(self, params):
         problems = self.validate_params(params)
         if problems:
             raise ConfigError(problems)
-        self._knobs = {name: float(params[name]) for name in self._PARAMS}
+        self._spreads = {symbol: float(bps) for symbol, bps in params["half_spread_bps"].items()}
+        default = params["default_half_spread_bps"]
+        self._default = None if default is None else float(default)
+        self._knobs = {
+            name: float(params[name]) for name in ("eq_ratio", "taf_per_share", "sec31_bps", "min_price")
+        }
 
     @classmethod
     def validate_params(cls, params):
         """Problems with ``params``, empty when none."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
-        for name in ("spread_bps", "taf_per_share", "sec31_bps"):
+        problems.extend(cls.spread_problems(params))
+        for name in ("taf_per_share", "sec31_bps"):
             if name not in params:
                 problems.append(f"{name} is required")
             elif not number_ok(params[name]) or params[name] < 0.0:
@@ -238,15 +259,74 @@ class SchwabCostModel:
             )
         return problems
 
-    def buy_per_share(self, price):
-        """Half-spread in quote currency per share at ``price``."""
-        return self._knobs["spread_bps"] * 1e-4 * float(price)
+    @staticmethod
+    def spread_problems(params):
+        """Problems with the three spread knobs in ``params``, empty when none."""
+        problems = []
+        if "half_spread_bps" not in params:
+            problems.append(
+                "half_spread_bps is required — a {symbol: quoted half-spread bp} map, "
+                "no default"
+            )
+        elif not isinstance(params["half_spread_bps"], dict):
+            problems.append(
+                f"half_spread_bps must be a mapping of symbol -> bp, got "
+                f"{type(params['half_spread_bps']).__name__}"
+            )
+        else:
+            for symbol, bps in params["half_spread_bps"].items():
+                if not isinstance(symbol, str) or not symbol:
+                    problems.append(f"half_spread_bps keys must be non-empty symbols, got {symbol!r}")
+                elif not number_ok(bps) or bps < 0.0:
+                    problems.append(
+                        f"half_spread_bps[{symbol!r}] must be a finite number >= 0, got {bps!r}"
+                    )
+        if "default_half_spread_bps" not in params:
+            problems.append(
+                "default_half_spread_bps is required — a finite bp for unlisted names, or "
+                "null to refuse them"
+            )
+        elif params["default_half_spread_bps"] is not None and (
+            not number_ok(params["default_half_spread_bps"])
+            or params["default_half_spread_bps"] < 0.0
+        ):
+            problems.append(
+                f"default_half_spread_bps must be null or a finite number >= 0, got "
+                f"{params['default_half_spread_bps']!r}"
+            )
+        if "eq_ratio" not in params:
+            problems.append(
+                "eq_ratio is required — the broker's effective/quoted spread ratio, no default"
+            )
+        elif not number_ok(params["eq_ratio"]) or params["eq_ratio"] <= 0.0:
+            problems.append(f"eq_ratio must be a finite number > 0, got {params['eq_ratio']!r}")
+        return problems
 
-    def sell_per_share(self, price):
-        """Half-spread plus uncapped TAF plus Section 31, per share."""
+    def half_spread_bps(self, symbol):
+        """The half-spread ``symbol`` pays per side, in bp: quoted x ``eq_ratio``.
+
+        Raises
+        ------
+        ConfigError
+            ``symbol`` is not listed and no default is declared.
+        """
+        quoted = self._spreads.get(symbol, self._default)
+        if quoted is None:
+            raise ConfigError([
+                f"no half-spread for {symbol!r}: it is not in half_spread_bps and "
+                "default_half_spread_bps is null — an unpriced name refuses"
+            ])
+        return quoted * self._knobs["eq_ratio"]
+
+    def buy_per_share(self, symbol, price):
+        """Effective half-spread in quote currency per share of ``symbol`` at ``price``."""
+        return self.half_spread_bps(symbol) * 1e-4 * float(price)
+
+    def sell_per_share(self, symbol, price):
+        """Effective half-spread plus uncapped TAF plus Section 31, per share."""
         price = float(price)
         return (
-            self.buy_per_share(price)
+            self.buy_per_share(symbol, price)
             + self._knobs["taf_per_share"]
             + self._knobs["sec31_bps"] * 1e-4 * price
         )
@@ -508,8 +588,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         The doorway's knobs (``risk_aversion_gamma``, ``n_tangents``,
         ``n_scenarios_max``, ``cvar_alpha``, ``cvar_limit``, ``cardinality``,
         ``min_ticket``, ``solver``, ``solver_options``) plus this kind's own:
-        ``spread_bps`` (required, >= 0 — half-spread charged on entry AND
-        exit, both sides), ``taf_per_share`` (required, >= 0 — FINRA TAF,
+        ``half_spread_bps`` / ``default_half_spread_bps`` / ``eq_ratio``
+        (required — :class:`SchwabCostModel`'s per-name quoted half-spread
+        map, its default for unlisted names or null to refuse them, and the
+        effective/quoted ratio; each side pays quoted x ``eq_ratio``, on
+        entry AND exit), ``taf_per_share`` (required, >= 0 — FINRA TAF,
         sell-only, charged UNCAPPED — see the module docstring on why the
         per-order cap is not modeled), ``sec31_bps`` (required, >= 0 — SEC
         Section 31, sell-only), ``min_price`` (required, > 0 — the per-share
@@ -559,7 +642,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         node = EquityKellyMIO("size", {
             "risk_aversion_gamma": 2.0, "n_tangents": 32, "n_scenarios_max": 256,
             "cvar_alpha": 0.95, "cvar_limit": 5000.0, "cardinality": 5,
-            "min_ticket": 500.0, "spread_bps": 2.2, "taf_per_share": 0.000195,
+            "min_ticket": 500.0, "half_spread_bps": {"LLY": 4.51},
+            "default_half_spread_bps": 5.62, "eq_ratio": 1.0, "taf_per_share": 0.000195,
             "sec31_bps": 0.0206, "min_price": 5.0,
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
@@ -582,7 +666,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     outputs = ("target", "trades", "cash_after", "metrics", "evidence")
 
     _PARAMS = ScenarioUtilitySolve._PARAMS + (
-        "spread_bps",
+        "half_spread_bps",
+        "default_half_spread_bps",
+        "eq_ratio",
         "taf_per_share",
         "sec31_bps",
         "min_price",
@@ -618,7 +704,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     def validate_params(cls, params):
         """Problems with ``params``, empty when none — the doorway's, then this kind's."""
         problems = super().validate_params(params)
-        for name in ("spread_bps", "taf_per_share", "sec31_bps"):
+        problems.extend(SchwabCostModel.spread_problems(params))
+        for name in ("taf_per_share", "sec31_bps"):
             if name not in params:
                 problems.append(
                     f"{name} is required — the Schwab cost model has no default "
@@ -1201,6 +1288,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
 
         rows, pi_widened, band_shares, payoffs_r = {}, {}, {}, {}
         worst_r, best_r = 0.0, 0.0
+        costs = SchwabCostModel({name: self.params[name] for name in SchwabCostModel._PARAMS})
         for name in names:
             row = by_name.get(name)
             h = held.get(name, 0)
@@ -1228,10 +1316,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 x_max = max_notional
                 scenarios = [float(v) for v in row["scenarios"]]
             # Uncapped TAF lives in SchwabCostModel (see that class and the
-            # module docstring) — never a size-referenced rate.
-            costs = SchwabCostModel({name: self.params[name] for name in SchwabCostModel._PARAMS})
-            spread = costs.buy_per_share(price)
-            sell_cost = costs.sell_per_share(price)
+            # module docstring) — never a size-referenced rate. The per-name
+            # half-spread is the SAME one the replay bills this name's fills.
+            spread = costs.buy_per_share(name, price)
+            sell_cost = costs.sell_per_share(name, price)
             rows[name] = {
                 "price": price,
                 "held": h,

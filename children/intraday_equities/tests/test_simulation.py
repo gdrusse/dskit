@@ -628,7 +628,10 @@ def _by_symbol(bars):
 def _zero_fee_policy():
     with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
         raw = json.load(handle)
-    return FillPolicy({**raw, "spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0})
+    return FillPolicy({
+        **raw, "half_spread_bps": {}, "default_half_spread_bps": 0.0,
+        "taf_per_share": 0.0, "sec31_bps": 0.0,
+    })
 
 
 def _minute(i):
@@ -769,6 +772,35 @@ def test_lead_groups_share_one_cash_budget_in_ascending_order(sim, monkeypatch):
     assert seen[1][1] == seen[0][2]
 
 
+def test_sizing_and_fills_charge_the_same_per_name_cost(sim, monkeypatch):
+    """The MIO prices each name with exactly the replay's per-share cost (owner ruling 2026-09-25)."""
+    seen = {}
+    real = EquityKellyMIO.instruments
+
+    def spy(self, inputs):
+        out = real(self, inputs)
+        seen.update(out[1])
+        return out
+
+    monkeypatch.setattr(EquityKellyMIO, "instruments", spy)
+    decider = _decider(sim["published"], sim["fx"])
+    for tick in _ticks(sim["published"]):
+        decider.decide(tick, _book(sim["fx"], tick))
+    assert len(seen) >= 2, "the fixture must size several names for this test to mean anything"
+    rates = {name: FILL_POLICY.costs.half_spread_bps(name) for name in seen}
+    assert len(set(rates.values())) >= 2, rates
+    for name, row in seen.items():
+        assert row["cost_buy"] == FILL_POLICY.costs.buy_per_share(name, row["price"])
+        assert row["cost_sell"] == FILL_POLICY.costs.sell_per_share(name, row["price"])
+        assert row["exit_cost_per_share"] == row["cost_sell"]
+    fills = [f for f in sim["out"]["fills"] if f["kind"] == "entry"]
+    assert fills
+    for fill in fills:
+        assert fill["fee"] == pytest.approx(
+            FILL_POLICY.costs.buy_per_share(fill["symbol"], fill["price"]) * fill["qty"]
+        )
+
+
 def test_lot_expires_before_next_lattice_decision_for_max_lead_10():
     bars = [
         {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
@@ -820,7 +852,10 @@ def test_decide_node_emits_only_json_params(sim):
 def test_decide_node_refuses_bound_or_undeclared_params():
     check = MioDeciderNode.validate_params
     assert check({"mio": MIO}) == []
-    for bound in ({"spread_bps": 2.2}, {"cap_artifact_sha256": "a" * 64}, {"bundle_producer_node": "x"}):
+    for bound in (
+        {"half_spread_bps": {"LLY": 2.2}}, {"default_half_spread_bps": 2.2}, {"eq_ratio": 0.9},
+        {"cap_artifact_sha256": "a" * 64}, {"bundle_producer_node": "x"},
+    ):
         assert any("must not carry" in p for p in check({"mio": {**MIO, **bound}}))
     undeclared = {k: v for k, v in MIO.items() if k != "cap_evidence_look_ahead"}
     assert any("declared true" in p for p in check({"mio": undeclared}))

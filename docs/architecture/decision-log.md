@@ -7696,6 +7696,9 @@ ruling changes `_VOCAB` and the book, not a silent code default. Phase 5
 items 3–5 (crash/restart ledger identity, post-fill solvency, observable
 unfunded candidates on a live graph) remain unbuilt.
 
+**Amended 2026-09-25 (owner):** the flat `spread_bps` is replaced by a per-name
+quoted half-spread x EQ; see ADR-0185's Owner amendment 3.
+
 ## ADR-0121 — Gate 4: real forecast bundle and confirmed caps over the ruled §11 item 3 zero-drift inverse (ADR-0114 Phase 4)
 
 **Status:** accepted (2026-09-11; the user explicitly approved this Gate 4 ADR and design).
@@ -24049,3 +24052,44 @@ refit; 2026 windows; any change to `EquityKellyMIO`, `dskit/production` or
   trading window;
 - the BenchmarkPlan/Approval barrier, since this ADR's approval is the
   review of the single fixed recipe.
+
+
+**Owner amendment 3 (2026-09-25): per-name spread cost, with ADR-0120.**
+The owner ruled that each side of a fill pays the name's QUOTED
+half-spread times EQ, the broker's effective/quoted spread ratio (its price
+improvement). This replaces the flat `spread_bps` 2.2 in the ADR-0120 fill
+bundle. TAF and Section 31 are unchanged.
+
+- `SchwabCostModel` takes `half_spread_bps` (a `{symbol: bp}` map),
+  `default_half_spread_bps` (a bp for unlisted names, or null to refuse
+  them) and `eq_ratio`, all required, with no Python default. The old
+  `spread_bps` is refused by name. `buy_per_share`/`sell_per_share` take
+  the symbol. `EquityKellyMIO` (sizing) and the replay's entry, forced-exit
+  and override-exit fees read the same model, so sizing and fills charge
+  identical per-share costs for a name (tested).
+- Values (`configs/fill-policy.json`, from `tools/spread-cost-results.json`,
+  window 2024-11-01..2026-02-27): measured all-minute medians for LLY 4.51,
+  XOM 0.77 and JPM 1.54 bp; modelled medians for the ADR-0185 cohort (XLK
+  0.59, LRCX 1.40, NOW 1.96, PANW 2.13, ADBE 2.72, MSTR 2.96, TER 3.54,
+  LULU 4.07, CIEN 4.12, LITE 5.62). The default is 5.62 bp, the cohort
+  maximum.
+- EQ is 0.25, a PROXY (range 0.10-0.40). Its source is HRT's Rule 605
+  report for July 2026 (100-499-share S&P 500 market orders; E/Q about 0.25
+  overall, 0.16-0.24 for the cohort names, LLY 0.36). HRT takes about 8% of
+  Schwab's S&P 500 market-order flow (Schwab Rule 606, Q1 2026; Citadel
+  42.5%). Fidelity self-reports about 0.25, and Schwarz et al. (JF 2025)
+  measured about 0.06 for TD Ameritrade's tiny orders. **Pending:** replace
+  it with Schwab's own amended Rule 605 figure (the first report is due at
+  the end of September 2026 at public.s3.com/rule605/chas/), then validate
+  it against live fills.
+- No time-of-day multiplier. Sizing prices at the decision bar and fills at
+  the next bar, so a multiplier keyed on the time would break the
+  sizing/fill identity.
+- Identity moved: fill-policy digest
+  `e078b15bdc66231edd84fb4a1f1bc80204733aaf74e8250f62ffe27dfd2c285d`
+  (was `696b1bcf...`), repinned in the five documents that pin
+  it; `run-retrain-simulation.json`'s `template_sha256` is now
+  `e4aadf0c39b6e5e481e8da0310f7faa19d28f8fa0b1cdb994d3a63fab78ce2f3`
+  (was `643c3bd2...`). Earlier ADR-0184/0185 results were
+  produced under the flat 2.2 bp and EQ 1 cost, and are not comparable
+  without a rerun.

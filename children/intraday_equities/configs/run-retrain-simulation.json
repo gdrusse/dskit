@@ -622,7 +622,7 @@
       },
       "params": {
         "template": "run-retrain-simulation-template.json",
-        "template_sha256": "643c3bd27b56f703cc1d353ca0534e4f19fa5c50f53c3346bd4982b027cb3808",
+        "template_sha256": "e4aadf0c39b6e5e481e8da0310f7faa19d28f8fa0b1cdb994d3a63fab78ce2f3",
         "inventory_stage": "inventory",
         "gates_stage": "gates"
       },

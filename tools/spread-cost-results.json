@@ -1,0 +1,536 @@
+{
+  "cohort": {
+    "ADBE": {
+      "median_dollar_volume": 1072717983.207011,
+      "median_price": 366.02125,
+      "median_sigma_1m_bps": 7.281100949961507,
+      "predicted_half_spread_bps": 2.7178105565449258,
+      "sessions": 330,
+      "tick_floor_bps": 0.1366040906094933
+    },
+    "CIEN": {
+      "median_dollar_volume": 190047384.70039648,
+      "median_price": 87.79625,
+      "median_sigma_1m_bps": 12.226243130176869,
+      "predicted_half_spread_bps": 4.123893192176395,
+      "sessions": 330,
+      "tick_floor_bps": 0.5695004057690392
+    },
+    "LITE": {
+      "median_dollar_volume": 244706451.365154,
+      "median_price": 94.12062499999999,
+      "median_sigma_1m_bps": 17.193506927490503,
+      "predicted_half_spread_bps": 5.623141952145791,
+      "sessions": 330,
+      "tick_floor_bps": 0.5312331914498019
+    },
+    "LLY": {
+      "median_dollar_volume": 2184749817.082546,
+      "median_price": 811.65375,
+      "median_sigma_1m_bps": 8.445210233535622,
+      "predicted_half_spread_bps": 4.472375139136336,
+      "sessions": 330,
+      "tick_floor_bps": 0.06160262303968903
+    },
+    "LRCX": {
+      "median_dollar_volume": 795081803.4697375,
+      "median_price": 96.48055,
+      "median_sigma_1m_bps": 9.60926888237239,
+      "predicted_half_spread_bps": 1.3987240128592535,
+      "sessions": 330,
+      "tick_floor_bps": 0.5182391684127008
+    },
+    "LULU": {
+      "median_dollar_volume": 529807713.48938596,
+      "median_price": 233.37875,
+      "median_sigma_1m_bps": 9.956218132349889,
+      "predicted_half_spread_bps": 4.0682554046779575,
+      "sessions": 330,
+      "tick_floor_bps": 0.2142440132188556
+    },
+    "MSTR": {
+      "median_dollar_volume": 3762588911.8342776,
+      "median_price": 329.49625000000003,
+      "median_sigma_1m_bps": 18.197360833458387,
+      "predicted_half_spread_bps": 2.962713079979234,
+      "sessions": 330,
+      "tick_floor_bps": 0.1517467952973668
+    },
+    "NOW": {
+      "median_dollar_volume": 1067989795.175,
+      "median_price": 186.365,
+      "median_sigma_1m_bps": 9.226902508874295,
+      "predicted_half_spread_bps": 1.95590598939532,
+      "sessions": 330,
+      "tick_floor_bps": 0.2682907198240013
+    },
+    "PANW": {
+      "median_dollar_volume": 781147485.3481345,
+      "median_price": 189.96125,
+      "median_sigma_1m_bps": 8.369230809947695,
+      "predicted_half_spread_bps": 2.1268174691974053,
+      "sessions": 330,
+      "tick_floor_bps": 0.26321157604511447
+    },
+    "TER": {
+      "median_dollar_volume": 254106784.45154,
+      "median_price": 115.66265000000001,
+      "median_sigma_1m_bps": 10.959362309313281,
+      "predicted_half_spread_bps": 3.5437117671200458,
+      "sessions": 330,
+      "tick_floor_bps": 0.4322916689181857
+    },
+    "XLK": {
+      "median_dollar_volume": 1383026622.6599998,
+      "median_price": 127.05,
+      "median_sigma_1m_bps": 4.5727932115953145,
+      "predicted_half_spread_bps": 0.5886595310806119,
+      "sessions": 330,
+      "tick_floor_bps": 0.3935458480913026
+    }
+  },
+  "flat_bps": 2.2,
+  "model": {
+    "coef": {
+      "b0": 5.1124008138833785,
+      "log_dollar_volume": -0.5438359834595516,
+      "log_price": 0.8589947083189365,
+      "log_sigma": 1.0718525269092583
+    },
+    "form": "log hs_bps = b0 + b1 log price + b2 log $vol + b3 log sigma_1m; hs = max(0.5c/price, fit)",
+    "in_sample_resid_sd": 0.28639280916312354,
+    "leave_one_name_out": {
+      "JPM": {
+        "actual_median_bps": 1.5386390737389715,
+        "predicted_median_bps": 1.1637094851485357
+      },
+      "LLY": {
+        "actual_median_bps": 4.508598541504122,
+        "predicted_median_bps": 8.020991973642854
+      },
+      "XOM": {
+        "actual_median_bps": 0.7714263673525346,
+        "predicted_median_bps": 1.0599907996706743
+      }
+    },
+    "name_days": 759
+  },
+  "own_fill_cost_vs_mid_bps": {
+    "ADBE": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 4,
+      "sell": {
+        "n": 0
+      }
+    },
+    "CIEN": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 14,
+      "sell": {
+        "n": 0
+      }
+    },
+    "LITE": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 142,
+      "sell": {
+        "n": 0
+      }
+    },
+    "LULU": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 34,
+      "sell": {
+        "n": 0
+      }
+    },
+    "MSTR": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 678,
+      "sell": {
+        "n": 0
+      }
+    },
+    "NOW": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 18,
+      "sell": {
+        "n": 0
+      }
+    },
+    "TER": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 24,
+      "sell": {
+        "n": 0
+      }
+    }
+  },
+  "symbols": {
+    "JPM": {
+      "bar_minutes_without_quote_row": 7,
+      "first_day": "2024-11-01",
+      "half_spread_bps": {
+        "all": {
+          "mean": 1.7904371795364808,
+          "median": 1.5386390737389715,
+          "n": 38301,
+          "p90": 3.0624119556558105
+        },
+        "close30": {
+          "mean": 1.0691962268772723,
+          "median": 0.9612798121699799,
+          "n": 2916,
+          "p90": 1.803752795608736
+        },
+        "midday": {
+          "mean": 1.7113308320509564,
+          "median": 1.5128593040844194,
+          "n": 32415,
+          "p90": 2.8274220473537497
+        },
+        "open30": {
+          "mean": 3.3619425235423828,
+          "median": 3.106369871303163,
+          "n": 2970,
+          "p90": 5.226682770195262
+        }
+      },
+      "last_day": "2025-03-27",
+      "median_features": {
+        "dollar_volume": 1688097244.7499745,
+        "price": 286.83124999999995,
+        "sigma_1m_bps": 5.7142424760857224
+      },
+      "median_quote_age_ms": 182.0,
+      "open_minus_mid_after_close_above_mid": {
+        "mean": 0.11365992729175506,
+        "median": 0.0,
+        "n": 13327,
+        "p90": 1.6978136952076086
+      },
+      "open_minus_mid_after_close_below_mid": {
+        "mean": -0.23715212765772156,
+        "median": 0.0,
+        "n": 16662,
+        "p90": 1.2614529416989084
+      },
+      "open_minus_mid_bps": {
+        "all": {
+          "abs_mean": 0.8846714107372634,
+          "abs_median": 0.6265271599530011,
+          "frac_at_or_above_ask": 0.13998218122739897,
+          "frac_at_or_below_bid": 0.17231801268277344,
+          "n": 38162,
+          "signed_mean": -0.07305141841438305,
+          "signed_median": 0.0
+        },
+        "close30": {
+          "abs_mean": 0.6162388633781597,
+          "abs_median": 0.5429766041114373,
+          "frac_at_or_above_ask": 0.18350515463917524,
+          "frac_at_or_below_bid": 0.2288659793814433,
+          "n": 2910,
+          "signed_mean": -0.058712642428651936,
+          "signed_median": 0.0
+        },
+        "midday": {
+          "abs_mean": 0.8492956344466023,
+          "abs_median": 0.6265795024953051,
+          "frac_at_or_above_ask": 0.1398968530928631,
+          "frac_at_or_below_bid": 0.17142768907692782,
+          "n": 32381,
+          "signed_mean": -0.07128069144768785,
+          "signed_median": 0.0
+        },
+        "open30": {
+          "abs_mean": 1.5557413253603531,
+          "abs_median": 1.2343647136274332,
+          "frac_at_or_above_ask": 0.09683037269244166,
+          "frac_at_or_below_bid": 0.1250435388366423,
+          "n": 2871,
+          "signed_mean": -0.10755638115455533,
+          "signed_median": 0.0
+        }
+      },
+      "rows_dropped_crossed_locked_zero": 0,
+      "rows_whose_minute_saw_crossed": 411,
+      "rows_whose_minute_saw_locked": 2176,
+      "rth_bar_minutes_on_quoted_days": 38275,
+      "scale_mismatch_days": [],
+      "sessions_quoted": 99,
+      "unquoted_bar_days": 231
+    },
+    "LLY": {
+      "bar_minutes_without_quote_row": 29,
+      "first_day": "2024-11-01",
+      "half_spread_bps": {
+        "all": {
+          "mean": 5.099179913599786,
+          "median": 4.508598541504122,
+          "n": 128085,
+          "p90": 8.44458289421955
+        },
+        "close30": {
+          "mean": 3.239163778801423,
+          "median": 2.9111624023121534,
+          "n": 9788,
+          "p90": 5.3620993425491275
+        },
+        "midday": {
+          "mean": 4.953426558990504,
+          "median": 4.491468524992603,
+          "n": 108397,
+          "p90": 7.966230187871342
+        },
+        "open30": {
+          "mean": 8.534034894103696,
+          "median": 7.65476838283327,
+          "n": 9900,
+          "p90": 14.07349288764063
+        }
+      },
+      "last_day": "2026-02-27",
+      "median_features": {
+        "dollar_volume": 2184749817.082546,
+        "price": 811.65375,
+        "sigma_1m_bps": 8.445210233535622
+      },
+      "median_quote_age_ms": 600.0,
+      "open_minus_mid_after_close_above_mid": {
+        "mean": 0.6630996984191565,
+        "median": 1.3827067181738865e-12,
+        "n": 48574,
+        "p90": 4.718846829658747
+      },
+      "open_minus_mid_after_close_below_mid": {
+        "mean": -0.7234685434145012,
+        "median": -1.460266240074191e-12,
+        "n": 53185,
+        "p90": 2.8411683896103748
+      },
+      "open_minus_mid_bps": {
+        "all": {
+          "abs_mean": 2.1146150873127456,
+          "abs_median": 1.335673942910434,
+          "frac_at_or_above_ask": 0.07887980408421219,
+          "frac_at_or_below_bid": 0.0900817632420903,
+          "n": 126585,
+          "signed_mean": -0.05996478426527403,
+          "signed_median": 0.0
+        },
+        "close30": {
+          "abs_mean": 1.4890884261231883,
+          "abs_median": 1.00166371764844,
+          "frac_at_or_above_ask": 0.09848173984407058,
+          "frac_at_or_below_bid": 0.10945835043085761,
+          "n": 9748,
+          "signed_mean": -0.022797431270285766,
+          "signed_median": 0.0
+        },
+        "midday": {
+          "abs_mean": 2.0475208160936784,
+          "abs_median": 1.315304035110856,
+          "frac_at_or_above_ask": 0.0772930648769575,
+          "frac_at_or_below_bid": 0.08944817300521998,
+          "n": 107280,
+          "signed_mean": -0.06870392869661916,
+          "signed_median": 0.0
+        },
+        "open30": {
+          "abs_mean": 3.5057950925086474,
+          "abs_median": 2.3689836482339777,
+          "frac_at_or_above_ask": 0.07669770848592655,
+          "frac_at_or_below_bid": 0.07743015590666527,
+          "n": 9557,
+          "signed_mean": 0.00022440246691824835,
+          "signed_median": 0.0
+        }
+      },
+      "rows_dropped_crossed_locked_zero": 0,
+      "rows_whose_minute_saw_crossed": 929,
+      "rows_whose_minute_saw_locked": 1713,
+      "rth_bar_minutes_on_quoted_days": 126950,
+      "scale_mismatch_days": [],
+      "sessions_quoted": 330,
+      "unquoted_bar_days": 0
+    },
+    "XOM": {
+      "bar_minutes_without_quote_row": 57,
+      "first_day": "2024-11-01",
+      "half_spread_bps": {
+        "all": {
+          "mean": 0.8624507125240943,
+          "median": 0.7714263673525346,
+          "n": 128046,
+          "p90": 1.3848497438028498
+        },
+        "close30": {
+          "mean": 0.5660620875226239,
+          "median": 0.4513042702574946,
+          "n": 9780,
+          "p90": 0.9142522794614392
+        },
+        "midday": {
+          "mean": 0.7675670816982982,
+          "median": 0.6850722751244026,
+          "n": 108367,
+          "p90": 1.3382700628987438
+        },
+        "open30": {
+          "mean": 2.1939928050802533,
+          "median": 1.4224076620359933,
+          "n": 9899,
+          "p90": 3.4814766855232535
+        }
+      },
+      "last_day": "2026-02-27",
+      "median_features": {
+        "dollar_volume": 1264362406.8707554,
+        "price": 112.3475,
+        "sigma_1m_bps": 5.440627626774485
+      },
+      "median_quote_age_ms": 40.0,
+      "open_minus_mid_after_close_above_mid": {
+        "mean": 0.07178097082033442,
+        "median": 0.0,
+        "n": 42300,
+        "p90": 0.8992077985837494
+      },
+      "open_minus_mid_after_close_below_mid": {
+        "mean": -0.07257721159931346,
+        "median": 0.0,
+        "n": 48870,
+        "p90": 0.8421788333252586
+      },
+      "open_minus_mid_bps": {
+        "all": {
+          "abs_mean": 0.5028564427299635,
+          "abs_median": 0.4350852767138403,
+          "frac_at_or_above_ask": 0.2487532540852492,
+          "frac_at_or_below_bid": 0.251834833610388,
+          "n": 127532,
+          "signed_mean": -0.003599995883515065,
+          "signed_median": 0.0
+        },
+        "close30": {
+          "abs_mean": 0.3321601807439788,
+          "abs_median": 0.4209640075781657,
+          "frac_at_or_above_ask": 0.2771911840082009,
+          "frac_at_or_below_bid": 0.26704254228600716,
+          "n": 9755,
+          "signed_mean": 0.004352489388923608,
+          "signed_median": 0.0
+        },
+        "midday": {
+          "abs_mean": 0.4602321098947985,
+          "abs_median": 0.43385830187821184,
+          "frac_at_or_above_ask": 0.2514301028565092,
+          "frac_at_or_below_bid": 0.2554685839440342,
+          "n": 108209,
+          "signed_mean": -0.0019043329573736859,
+          "signed_median": 0.0
+        },
+        "open30": {
+          "abs_mean": 1.1589474196774603,
+          "abs_median": 0.8373806732544897,
+          "frac_at_or_above_ask": 0.18948578595317725,
+          "frac_at_or_below_bid": 0.1952341137123746,
+          "n": 9568,
+          "signed_mean": -0.030884954433627074,
+          "signed_median": 0.0
+        }
+      },
+      "rows_dropped_crossed_locked_zero": 0,
+      "rows_whose_minute_saw_crossed": 3730,
+      "rows_whose_minute_saw_locked": 114162,
+      "rth_bar_minutes_on_quoted_days": 127941,
+      "scale_mismatch_days": [],
+      "sessions_quoted": 330,
+      "unquoted_bar_days": 0
+    }
+  },
+  "trades": {
+    "by_symbol": {
+      "ADBE": {
+        "fees": 0.8318749632000002,
+        "gross": -0.8999999999999999,
+        "notional": 3758.34,
+        "spread_cost_flat": 0.8268348000000002,
+        "spread_cost_model": 1.0214456127085059,
+        "trips": 2
+      },
+      "CIEN": {
+        "fees": 22.51608528540001,
+        "gross": -183.98409999999998,
+        "notional": 101030.7641,
+        "spread_cost_flat": 22.226768102,
+        "spread_cost_model": 41.664008027236925,
+        "trips": 7
+      },
+      "LITE": {
+        "fees": 316.32567035657,
+        "gross": 1023.1427000000001,
+        "notional": 1420038.5763,
+        "spread_cost_flat": 312.4084867860001,
+        "spread_cost_model": 798.5078492057912,
+        "trips": 71
+      },
+      "LULU": {
+        "fees": 100.82119581616001,
+        "gross": 186.31930000000003,
+        "notional": 455365.35270000005,
+        "spread_cost_flat": 100.18037759400002,
+        "spread_cost_model": 185.25425572248596,
+        "trips": 17
+      },
+      "MSTR": {
+        "fees": 940.1491264871106,
+        "gross": 1231.1544,
+        "notional": 4222714.7826,
+        "spread_cost_flat": 928.997252172,
+        "spread_cost_model": 1251.0692319430684,
+        "trips": 339
+      },
+      "NOW": {
+        "fees": 28.3890487596,
+        "gross": 100.75999999999999,
+        "notional": 128040.56000000001,
+        "spread_cost_flat": 28.16892320000001,
+        "spread_cost_model": 25.043529818953086,
+        "trips": 9
+      },
+      "TER": {
+        "fees": 54.20793501420001,
+        "gross": 592.9050000000001,
+        "notional": 244046.235,
+        "spread_cost_flat": 53.69017170000001,
+        "spread_cost_model": 86.4829514690844,
+        "trips": 12
+      }
+    },
+    "fees": 1463.2409366822405,
+    "file": "children/intraday_equities/docs/reports/2026-09-25-full-training-execution-evaluation/trades.csv",
+    "gross": 2949.3973,
+    "spread_cost_flat": 1446.4988143540002,
+    "spread_cost_model": 2389.0432717993285
+  },
+  "window": [
+    "2024-11-01",
+    "2026-02-28"
+  ]
+}

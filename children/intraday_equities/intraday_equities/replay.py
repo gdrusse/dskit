@@ -132,7 +132,9 @@ class FillPolicy:
         "forced_exit_at",
         "forced_exit_horizon_basis",
         "forced_exit_price_field",
-        "spread_bps",
+        "half_spread_bps",
+        "default_half_spread_bps",
+        "eq_ratio",
         "taf_per_share",
         "sec31_bps",
         "min_price",
@@ -1776,7 +1778,8 @@ class EquityReplay:
         for lead, lot in self._book.expiring(symbol, index):
             side = "sell" if lot["side"] == "buy" else "buy"
             fee = (
-                policy.costs.sell_per_share(price) if side == "sell" else policy.costs.buy_per_share(price)
+                policy.costs.sell_per_share(symbol, price) if side == "sell"
+                else policy.costs.buy_per_share(symbol, price)
             ) * lot["qty"]
             self._queue_fill(
                 "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index,
@@ -1805,8 +1808,8 @@ class EquityReplay:
                 exit_side = "sell" if lot["side"] == "buy" else "buy"
                 exit_px = bar[policy.forced_exit_price_field]
                 exit_fee = (
-                    policy.costs.sell_per_share(exit_px) if exit_side == "sell"
-                    else policy.costs.buy_per_share(exit_px)
+                    policy.costs.sell_per_share(symbol, exit_px) if exit_side == "sell"
+                    else policy.costs.buy_per_share(symbol, exit_px)
                 ) * lot["qty"]
                 self._queue_fill(
                     "exit", symbol, lead, exit_side, lot["qty"], exit_px, bar["asof_ms"],
@@ -1820,7 +1823,8 @@ class EquityReplay:
                 })
                 continue
             fee = (
-                policy.costs.buy_per_share(price) if side == "buy" else policy.costs.sell_per_share(price)
+                policy.costs.buy_per_share(symbol, price) if side == "buy"
+                else policy.costs.sell_per_share(symbol, price)
             ) * qty
             if self._cash_flow_composer is not None and side == "buy":
                 cost = Decimal(str(price)) * Decimal(str(qty)) + Decimal(str(fee))
