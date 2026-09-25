@@ -115,6 +115,71 @@
     },
     "name_days": 759
   },
+  "own_fill_cost_vs_mid_bps": {
+    "ADBE": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 4,
+      "sell": {
+        "n": 0
+      }
+    },
+    "CIEN": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 14,
+      "sell": {
+        "n": 0
+      }
+    },
+    "LITE": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 142,
+      "sell": {
+        "n": 0
+      }
+    },
+    "LULU": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 34,
+      "sell": {
+        "n": 0
+      }
+    },
+    "MSTR": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 678,
+      "sell": {
+        "n": 0
+      }
+    },
+    "NOW": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 18,
+      "sell": {
+        "n": 0
+      }
+    },
+    "TER": {
+      "buy": {
+        "n": 0
+      },
+      "fills_without_quote": 24,
+      "sell": {
+        "n": 0
+      }
+    }
+  },
   "symbols": {
     "JPM": {
       "bar_minutes_without_quote_row": 7,

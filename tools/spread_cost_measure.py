@@ -329,6 +329,31 @@ def main(argv=None):
             item["spread_cost_flat"] = item["notional"] * FLAT_BPS * 1e-4
             item["spread_cost_model"] = (
                 None if hs is None else item["notional"] * hs * 1e-4)
+        # The cost our OWN fills pay against the mid, by side: a buy pays
+        # (fill - mid)/mid, a sell (mid - fill)/mid, with the mid read at
+        # the fill bar's opening boundary (the row stamped fill - 60s).
+        # Only trades in quoted symbols join; the rest are counted.
+        side_cost = {}
+        for r in rows:
+            buy_first = r["direction"] == "long"
+            for stamp, price, is_buy in (
+                (r["entry_ms"], r["entry_price"], buy_first),
+                (r["exit_ms"], r["exit_price"], not buy_first),
+            ):
+                key = r["instrument"]
+                cell = side_cost.setdefault(key, {"buy": [], "sell": [],
+                                                  "unjoined": 0})
+                q = quotes.get((key, int(stamp) - MINUTE_MS))
+                if q is None:
+                    cell["unjoined"] += 1
+                    continue
+                off = (float(price) - q["mid"]) / q["mid"] * 1e4
+                cell["buy" if is_buy else "sell"].append(off if is_buy else -off)
+        report["own_fill_cost_vs_mid_bps"] = {
+            key: {"buy": _stats(v["buy"]), "sell": _stats(v["sell"]),
+                  "fills_without_quote": v["unjoined"]}
+            for key, v in side_cost.items()
+        }
         report["trades"] = {
             "file": args.trades,
             "by_symbol": by,
