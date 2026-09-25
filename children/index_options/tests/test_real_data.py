@@ -358,6 +358,29 @@ def test_source_configs_check_against_the_cboe_pack(child_root):
         check_config(cboe.CboeConnector(), _load(child_root, name))
 
 
+def test_archive_source_config_pins_the_whole_mirror(child_root):
+    """The options-dataset-hist source: the pack's own gate, and a pin per published file."""
+    hist = pytest.importorskip("dskit.onboarding.libs.optionshist")
+    from dskit.onboarding.connector import check_config
+
+    config = _load(child_root, "source-optionshist-chain.json")
+    check_config(hist.OptionsHistConnector(), config)
+    knobs = hist.OptionsHistConnector().resolve_knobs(
+        {k: v for k, v in config.items() if k not in ("notes", "storage")})
+    # restated from the mirror's tree at the pinned commit, not read from the pack
+    assert knobs["source_url"] == "https://github.com/anahatsingh-ui/options-dataset-hist"
+    assert knobs["source_commit"] == "37f6c456fe1a4775c875673fb8ef907d5cd2fd66"
+    assert knobs["symbols"] == ["SPY", "QQQ", "IWM"]
+    first = {"spy": 2008, "qqq": 2011, "iwm": 2008}
+    expected = {f"{sub}/options_{year}.parquet"
+                for sub, start in first.items() for year in range(start, 2026)}
+    expected |= {f"{sub}/underlying_prices.parquet" for sub in first}
+    assert set(knobs["files"]) == expected and len(expected) == 54
+    assert len(set(knobs["files"].values())) == 54  # no two files share a digest
+    assert isinstance(knobs["max_days"], int) and 1 <= knobs["max_days"] <= 126
+    assert config["storage"] == {"payload_codec": "gzip", "observations_codec": "gzip"}
+
+
 def test_real_har_rung_runs_over_a_scripted_store(child_root, store_factory, tmp_path):
     rows = _index_rows(700, missing_vix=set(range(400, 420)))
     store = store_factory({"index_daily": rows}, source="cboe-index",

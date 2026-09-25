@@ -182,6 +182,7 @@ def test_a_spec_may_not_declare_the_reserved_keys():
         "kalshi",
         "localfiles",
         "localtables",
+        "optionshist",
         "polymarket",
         "predexon",
         "restapi",

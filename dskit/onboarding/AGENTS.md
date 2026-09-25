@@ -146,6 +146,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)
+│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)

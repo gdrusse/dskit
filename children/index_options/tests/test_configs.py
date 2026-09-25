@@ -49,6 +49,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-real-vix.json", "configs/run-real-har-vix.json",
         "configs/run-real-lightgbm-vix.json",
         "configs/source-cboe-chain-wide.json", "configs/source-cboe-index-wide.json",
+        "configs/source-optionshist-chain.json",
         "fixtures/contracts.jsonl", "fixtures/quotes.jsonl", "fixtures/settlements.jsonl",
         "docs/decisioning/actions.csv", "docs/decisioning/path.csv", "docs/decisioning/README.md",
         "docs/explanations/README.md", "docs/plans/README.md", "docs/memos/README.md",
@@ -71,8 +72,9 @@ def test_exact_manifest_and_agent_parity(child_root):
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
     # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8,
-    # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement)
-    assert len(actual) == 56
+    # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement),
+    # plus the options-dataset-hist source config (ADR-0182 amendment, 2026-09-25)
+    assert len(actual) == 57
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

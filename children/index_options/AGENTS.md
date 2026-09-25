@@ -9,8 +9,9 @@ Use README.md for installation, the temporary demo and focused tests.
 - All data is explicitly synthetic. No provider pulls, training, HPO, replay,
   broker connection, paper/live execution, or serving without separate approval.
   ADR-0182 supersedes the synthetic-only and no-replay lines for its manifest
-  only: the Cboe index/chain pulls, IndexCloseRows, the run-real-* rungs and the
-  CondorBacktest VIX-proxy replay (never decision-eligible). contracts.py stays
+  only: the Cboe index/chain pulls, the options-dataset-hist archive import,
+  IndexCloseRows, the run-real-* rungs and the CondorBacktest VIX-proxy replay
+  (never decision-eligible). contracts.py stays
   synthetic-only; IndexCloseRows bypasses it because closes are not option rows.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
@@ -53,6 +54,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # + run-real-zoo.json (ADR-0182); run-real-vix/-har-vix/
                            # -lightgbm-vix.json (VIX as a scale feature); source-cboe-chain-wide/
                            # -index-wide.json (wide recorder + vol indices)
+                           # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
+                           # sha256-pinned, ADR-0182 amendment)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

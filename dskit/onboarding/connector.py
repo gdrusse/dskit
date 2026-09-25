@@ -119,6 +119,7 @@ DEFAULT_CONNECTORS = {
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
     "localtables": "dskit.onboarding.libs.localtables:LocalTablesConnector",
+    "optionshist": "dskit.onboarding.libs.optionshist:OptionsHistConnector",
     "polymarket": "dskit.onboarding.libs.polymarket:PolymarketConnector",
     "predexon": "dskit.onboarding.libs.predexon:PredexonConnector",
     "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",

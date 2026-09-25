@@ -22639,6 +22639,45 @@ units) IV stays ~1.1 even at VIX 80; it would first bind near VIX 90 with
 z = -4 (IV 1.996). The put-wing branch of the smile negativity check is
 vacuous while `put_skew_per_z >= 0` (kept for symmetry).
 
+**Amendment (2026-09-25, historical chain archive; owner: "ingest the free
+SPY/QQQ/IWM option-chain archive ... everything needs to be tdd and skeptic
+reviewed and merged/pushed to main ... DONT GO OUT OF SCOPE").** The
+context's "no free source of HISTORICAL option quotes" no longer holds:
+Philipp D. Dubach's MIT-licensed `options-dataset-hist` publishes end-of-day
+(16:00 ET) chains for SPY 2008-2025, QQQ 2011-2025 and IWM 2008-2025 as
+yearly Parquet, 53,407,120 contract-day rows. The original repository is
+gone; the preservation mirror `github.com/anahatsingh-ui/options-dataset-hist`
+at commit `37f6c456fe1a4775c875673fb8ef907d5cd2fd66` states byte-for-byte
+verification against the original LFS pointers; its 54 Parquet files are
+pinned by sha256 (a fresh clone at that commit equals its blobs).
+Reuse check: `localtables` imports Parquet but emits rows as they are,
+so it can neither parse OCC, join the daily close nor stamp the close
+instant; the Cboe pack is network-only. Tier placement: provider logic
+belongs in a pack, so the mapping is dskit's, not the child's.
+- `dskit/onboarding/libs/optionshist.py` (new, tier-2: pyarrow inside the
+  verbs, `parquet` extra), kind `optionshist`: one stream, `option_chain`,
+  in the Cboe pack's 21 fields and key (imported, not restated). `option` =
+  `contract_id`; root/expiry/right/strike from `cboe.parse_occ`, the
+  archive's expiration/type/strike cross-checked (strike within 0.005: the
+  column rounds adjusted strikes) and a mismatch refused; `iv` =
+  `implied_volatility` (decimal, as Cboe's); `last_trade_price` = `last`;
+  `last_trade_time` None; `underlying_price` = the same-date close from
+  `underlying_prices.parquet` (None, with a LOG, where absent: SPY
+  2024-01-15); `quote_time` = `effective_date` = the date at 16:00
+  America/New_York in UTC; `in_the_money`, `mark`, `rho` never read. Knobs
+  `path`, `symbols`, `files` (relpath -> sha256), `source_url`,
+  `source_commit`, `max_days`. Fail closed: an unpinned, missing or changed
+  file, a missing column, a repeated `(contract_id, date)`, a row outside
+  its file's year. Cursor = last close emitted; whole days only; `max_days`
+  bounds a pull so backfills walk forward in chunks; one cursor across
+  tickers. Tests: `tests/onboarding/test_optionshist.py` (synthetic Parquet).
+- Child: `configs/source-optionshist-chain.json` (new; manifest 56 -> 57),
+  `max_days` 63, gzip storage, store `~/data/index_options/ob`; README
+  runbook; config test in `tests/test_real_data.py`.
+Clocks: `effective_date` is the market close the row describes; this
+history became known at `acquired_at` (2026), never earlier. Non-goals:
+modelling, backtest changes, multi-horizon labels (later, separate work).
+
 ## ADR-0183 — `dskit.evaluation`: a centralized backtest evaluator (event log -> standalone report)
 
 **Status:** Accepted 2026-09-24 under Russell's delegation ("I give you permission to create and write ADRs and build and implement them overnight"; "You can start a new subpackage if that makes sense"). Scope is the manifest below.

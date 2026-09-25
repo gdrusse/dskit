@@ -173,6 +173,30 @@ python -m dskit.pipeline staged configs/run-real-zoo.json --asof 2026-09-23
 [Explanation](docs/explanations/README.md) defines the instrument and example.
 [Plan](docs/plans/README.md) describes the separately gated data/ML/MIO work.
 
+
+### Historical end-of-day chains: options-dataset-hist (ADR-0182 amendment)
+
+The MIT-licensed archive (SPY 2008-2025, QQQ 2011-2025, IWM 2008-2025; one
+row per contract per day at the 16:00 ET close) enters the same
+`option_chain` stream as the recorder through dskit's `optionshist` pack.
+`configs/source-optionshist-chain.json` pins the mirror's commit and every
+file's sha256; the pack refuses an unpinned, missing or changed file.
+
+```bash
+git clone https://github.com/anahatsingh-ui/options-dataset-hist.git   ~/data/options_archives/philippdubach_full
+git -C ~/data/options_archives/philippdubach_full checkout 37f6c456fe1a4775c875673fb8ef907d5cd2fd66
+python -m dskit.onboarding register-source optionshist-chain   --catalog-source optionshist-chain --connector optionshist   --config @configs/source-optionshist-chain.json --activate --root ~/data/index_options/ob
+# each pull emits at most max_days (63) trading days after the cursor;
+# repeat until a pull reports 0 records
+python -m dskit.onboarding acquire --source optionshist-chain --stream option_chain   --mode backfill --root ~/data/index_options/ob
+```
+
+`quote_time` is the date's 16:00 New York close in UTC (early closes too);
+`underlying_price` is the archive's daily close (None for SPY 2024-01-15, a
+holiday with two stray rows); `last_trade_time` is None; the archive's
+`in_the_money` column is wrong and never read. `acquired_at`, not
+`quote_time`, is when this history became known.
+
 ## Layout
 
 ```text

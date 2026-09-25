@@ -195,6 +195,18 @@ optional `roots` allowlist and `max_dte`; current state, never
 cursor-filtered) — through one injectable getter with pacing and 429/5xx
 retry; `libs/cboe.py` is the knob reference.
 
+The `optionshist` kind (ADR-0182 amendment) imports the MIT-licensed
+`options-dataset-hist` end-of-day archive (SPY/QQQ/IWM, 2008-2025, yearly
+Parquet) from a local copy into the SAME `option_chain` stream the `cboe`
+kind records: OCC `contract_id` parsed by `cboe.parse_occ` (the archive's
+expiration/type/strike columns cross-checked, never trusted), the daily
+close from `underlying_prices.parquet`, `quote_time` the date's 16:00
+New York close in UTC, `in_the_money` never read. `source_url`,
+`source_commit` and a sha256 per file (`files`) pin the provenance; an
+unpinned, missing or changed file refuses. The cursor is the last close
+emitted and `max_days` bounds a pull, so repeated backfills walk the
+archive in whole-day chunks; `libs/optionshist.py` is the knob reference.
+
 The `predexon` kind (ADR-0075) pulls Predexon's Kalshi L2 order-book
 history as one `l2_snapshots` record per sequenced snapshot, keyed
 `(ticker, timestamp, sequence)`: ladders normalized to
@@ -334,6 +346,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)
+│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
