@@ -77,7 +77,7 @@ above implied. Only **three distinct chain states** exist:
 | `cboe-chain-wide` snapshot | Served state |
 |---|---|
 | 20260924T020407Z, T020505Z, T023753Z, T143037Z | One Cboe state, stamped 2026-09-23 overnight (last trades 2026-09-22), served unchanged by Cboe's CDN through 2026-09-24 10:30 ET. Rows are identical, so dedup keeps one. |
-| 20260925T191624Z (`f7fae4ff`) | Fresh, **except XND** (see below). |
+| 20260925T191624Z (`f7fae4ff`) | **Removed 2026-09-25** (bad XND rows, see below). |
 | 20260925T192402Z (`28df744e`) | Fresh and correct. |
 
 The two `cboe-chain` (SPXW/XSP) snapshots hold the same 2026-09-23 state.
@@ -94,14 +94,19 @@ fetch window, a stale chain takes the zone the same pull decided, and a
 pull that no chain decides is refused. So a fully stale CDN state like
 the one on 2026-09-24 is now refused rather than stored again.
 
-**Known-bad rows (no retraction mechanism exists).** Snapshot
-`cboe-chain-wide-20260925T191624Z-live-f7fae4ff` holds 4,348 XND rows (its only mis-zoned underlying) stamped
+**Known-bad rows: snapshot removed 2026-09-25.** Snapshot
+`cboe-chain-wide-20260925T191624Z-live-f7fae4ff` held 4,348 XND rows (its only mis-zoned underlying) stamped
 `quote_time` 2026-09-25T07:00:47Z. The true instant is 03:00:47Z (UTC
 stamp, 16 h stale). They were written by the interim fix `ef46c75`, which
 kept the New York reading of stale stamps. The same XND state is stored
-correctly in `28df744e`. The mislabel is 4 h *late*, so there is no
-look-ahead. Readers of chain history must drop
-`underlying == "XND" and quote_time == "2026-09-25T07:00:47+00:00"`.
+correctly in `28df744e`. With owner approval, the whole snapshot was
+removed from the store on 2026-09-25: its `observations/` and `raw/`
+directories, its `snapshot` and `acquisition_job` records, and their two
+`events.jsonl` lines. The other 19 underlyings' 15:16 ET quotes went with
+it; `28df744e` holds them 7 minutes later. The live cursor was not
+touched, and `verify` and the `ObservationRows` reader pass afterwards.
+Readers no longer need to filter anything. Backup, paths preserved:
+`~/dskit-cleanup-backup-2026-09-25/ob-snapshot-f7fae4ff.tgz`.
 The zone of the 2026-09-23 state (overnight stamps, fetched 18 h or
 more later) cannot be decided from the stamps; treat its instants as
 +/- 4 h.
