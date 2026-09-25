@@ -95,11 +95,11 @@
           "cap_max_staleness_ms": 5529600000,
           "deployment_mode": false,
           "uncertainty_max_calibration_age_ms": 5529600000,
-          "uncertainty_min_coverage": 0.5,
+          "uncertainty_min_coverage": 0.53,
           "cap_evidence_look_ahead": true
         }
       },
-      "notes": "ADR-0185 growth policy v1, owner delegated to best judgement on 2026-09-25: growth-oriented CRRA gamma 2.0; 32 tangents; 128 scenarios; 95% CVaR capped at $500 per lead-group solve; at most 5 names per solve; $500 minimum ticket; HFDR q 0.20 on pi_widened (a widened point estimate, not a bound); 10 bp band; $5,000 per-name ceiling; zero bundle staleness; 64-day cap/calibration age; 0.50 uncertainty coverage floor (below the publisher's attested 0.53 false-signal attainment). cap_evidence_look_ahead remains true because gate admission uses all 20 folds, so this remains developmental post-selection and is not deployment evidence. These are explicit policy choices, not tuned optima."
+      "notes": "ADR-0185 growth policy v1, owner delegated to best judgement on 2026-09-25: growth-oriented CRRA gamma 2.0; 32 tangents; 128 scenarios; 95% CVaR capped at $500 per lead-group solve; at most 5 names per solve; $500 minimum ticket; HFDR q 0.20 on pi_widened (a widened point estimate, not a bound); 10 bp band; $5,000 per-name ceiling; zero bundle staleness; 64-day cap/calibration age; 0.53 uncertainty coverage floor (equal to the publisher's attested false-signal attainment). cap_evidence_look_ahead remains true because gate admission uses all 20 folds, so this remains developmental post-selection and is not deployment evidence. These are explicit policy choices, not tuned optima."
     },
     "simulate": {
       "uses": "intraday_equities-development-simulation",

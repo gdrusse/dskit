@@ -389,8 +389,8 @@ aborts the whole simulation run.
 These are the values in \code{run-retrain-simulation-template.json} (node
 \code{decide}), \code{fill-policy.json}, \code{cash-flow-policy-biweekly.json}
 and the \code{MioDecider} portfolio. \textbf{V1} marks the owner-delegated
-growth policy chosen on 2026-09-25. These values express a willingness to
-take material risk, but they were not selected by maximizing this backtest.
+growth policy chosen on 2026-09-25. These values express a growth-oriented
+tolerance for some risk, but they were not selected by maximizing this backtest.
 
 \begin{longtable}{@{}p{3.6cm}p{7.6cm}p{3.0cm}@{}}
 \toprule
@@ -406,7 +406,7 @@ $\beta$ & 10 bps (inactive because $h_i=0$) & V1 \\
 $\bar x_i$ & \$5,000 per name & V1 \\
 bundle staleness & 0 ms & V1 \\
 cap / calibration max age & 5\,529\,600\,000 ms (64 days) & V1 \\
-\code{uncertainty_min_coverage} & 0.50 (admits the attested 0.53 false-signal floor) & V1 \\
+\code{uncertainty_min_coverage} & 0.53 (equals the attested false-signal floor) & V1 \\
 \code{cap_evidence_look_ahead} & true (disclosed look-ahead) & developmental \\
 $R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
 spread / TAF / Sec.\,31 & 2.2 bps / \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\

@@ -23890,8 +23890,8 @@ ADR-0185 retrain simulation only, ruling 4 is superseded by growth policy v1:
 `risk_aversion_gamma=2.0`, 32 tangents, 128 scenarios, 95% CVaR capped at
 $500 per lead-group solve, cardinality 5, $500 minimum ticket, `hfdr_q=0.20`,
 10 bp band, $5,000 per-name ceiling, zero bundle staleness, 64-day cap and
-calibration maximum age, and a 0.50 uncertainty-coverage floor (below the
-publisher's attested 0.53 false-signal attainment). The policy
+calibration maximum age, and a 0.53 uncertainty-coverage floor (equal to the
+publisher's attested false-signal attainment). The policy
 keeps cash-only buying power and no leverage. It is an explicit risk policy,
 not a backtest-tuned optimum. The historical ADR-0184 run and its report keep
 their original placeholder settings. `cap_evidence_look_ahead=true`, missing

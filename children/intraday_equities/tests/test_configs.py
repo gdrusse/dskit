@@ -1652,7 +1652,7 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
         "cap_max_staleness_ms": 5529600000,
         "deployment_mode": False,
         "uncertainty_max_calibration_age_ms": 5529600000,
-        "uncertainty_min_coverage": 0.50,
+        "uncertainty_min_coverage": 0.53,
         "cap_evidence_look_ahead": True,
     }
     from intraday_equities.simulation import _FALSE_SIGNAL_ATTAINMENT_FLOOR
