@@ -15,7 +15,8 @@
   HRT's Rule 605 effective/quoted ratio. The owner approved it.
 - **Reviews:** Sonnet correctness/authority lens MERGE-READY with 0 findings.
   Sonnet test/integration lens MERGE-READY with 0 findings (5 mutations, all
-  killed). Focused tests: 451 passed.
+  killed). Focused tests (test_nodes_capital, test_replay, test_simulation,
+  test_configs, test_evaluation): 451 passed; the first four alone: 438.
 - **Caveat:** ADR-0184/0185 results under the flat cost cannot be compared
   with new ones until they are rerun.
 - **Next:** re-run the retrain simulation; replace EQ with Schwab's own
