@@ -33,8 +33,15 @@ normalizes into its own vocabulary):
   verbatim — the venue's naive America/New_York wall clock, or None.
 
 **The quote instant.** The payload's top-level ``timestamp``
-(``YYYY-MM-DD HH:MM:SS``) is America/New_York wall-clock time; it is
-converted to UTC with stdlib ``zoneinfo`` and becomes both ``quote_time``
+(``YYYY-MM-DD HH:MM:SS``) carries no zone. It was America/New_York
+wall-clock time until 2026-09-24, when Cboe switched it to UTC without
+notice (``last_trade_time`` stayed New York). The zone is therefore
+resolved against the pull's own clock: the stamp is read as New York
+time unless that reading lies more than ``CLOCK_SKEW_S`` after the
+moment the chain was fetched, in which case it is read as UTC (a
+snapshot is stamped when served, so the New York reading of a UTC stamp
+is 4-5 hours in the future); a stamp in the future under both readings
+is refused. The result becomes both ``quote_time``
 and the row's ``effective_date``. Two pulls of one unchanged delayed
 snapshot therefore collide on their key and dedup keeps one — a re-pull,
 not a duplicate. In the repeated hour of a DST fall-back the earlier
@@ -72,7 +79,7 @@ import re
 import time
 import urllib.error
 import urllib.parse
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ..base import AssetError, MODES, _raise_if, parse_utc
@@ -111,6 +118,9 @@ CHAIN_FIELDS = (
 )
 #: The zone Cboe's chain ``timestamp`` is written in.
 QUOTE_TZ = "America/New_York"
+
+#: Seconds a chain stamp may lie after the fetch clock before its reading is rejected.
+CLOCK_SKEW_S = 300
 DEFAULT_BASE_URL = "https://cdn.cboe.com"
 DEFAULT_PACE_S = 0.5
 DEFAULT_RETRIES = 4
@@ -175,16 +185,29 @@ def parse_occ(symbol):
     return root, expiry.isoformat(), _RIGHTS[right], int(strike) / 1000.0
 
 
-def _quote_instant(stamp, where):
-    """Return the aware UTC instant of a New York ``YYYY-MM-DD HH:MM:SS`` stamp."""
+def _quote_instant(stamp, where, fetched):
+    """Return the aware UTC instant of a zoneless ``YYYY-MM-DD HH:MM:SS`` stamp.
+
+    The New York reading wins unless it lies more than ``CLOCK_SKEW_S``
+    after ``fetched`` (the aware UTC fetch instant); then the UTC reading
+    is used, and a stamp in the future under both readings is refused.
+    """
     try:
         naive = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError) as exc:
         raise AssetError(
             [f"{where}: timestamp must be 'YYYY-MM-DD HH:MM:SS' "
-             f"({QUOTE_TZ}), got {stamp!r}"]
+             f"({QUOTE_TZ} or UTC), got {stamp!r}"]
         ) from exc
-    return naive.replace(tzinfo=ZoneInfo(QUOTE_TZ)).astimezone(timezone.utc)
+    latest = fetched + timedelta(seconds=CLOCK_SKEW_S)
+    for zone in (ZoneInfo(QUOTE_TZ), timezone.utc):
+        instant = naive.replace(tzinfo=zone).astimezone(timezone.utc)
+        if instant <= latest:
+            return instant
+    raise AssetError(
+        [f"{where}: timestamp {stamp!r} is after the fetch instant "
+         f"{fetched.isoformat()} as both {QUOTE_TZ} and UTC time"]
+    )
 
 
 def _body_text(body):
@@ -316,6 +339,9 @@ class CboeConnector(Connector):
     sleeper : callable or None
         ``sleeper(seconds)`` for pacing and backoff; ``None`` means
         ``time.sleep``.
+    clock : callable or None
+        ``clock() -> datetime`` (aware) read right after each chain fetch
+        to resolve the stamp's zone; ``None`` means the UTC wall clock.
 
     Examples
     --------
@@ -330,15 +356,16 @@ class CboeConnector(Connector):
         messages[1]["data"]["close"]  # 70.23
     """
 
-    def __init__(self, getter=None, sleeper=None):
+    def __init__(self, getter=None, sleeper=None, clock=None):
         problems = [
             f"{name} must be callable, got {type(value).__name__}"
-            for name, value in (("getter", getter), ("sleeper", sleeper))
+            for name, value in (("getter", getter), ("sleeper", sleeper), ("clock", clock))
             if value is not None and not callable(value)
         ]
         _raise_if(problems)
         self._getter = getter
         self._sleeper = time.sleep if sleeper is None else sleeper
+        self._clock = (lambda: datetime.now(timezone.utc)) if clock is None else clock
         self._paced = False
 
     def spec(self):
@@ -537,6 +564,7 @@ class CboeConnector(Connector):
         for symbol in knobs["symbols"]:
             path = _EQUITY_CHAIN_PATH if symbol in knobs["equity_symbols"] else _CHAIN_PATH
             url, text = self._get(knobs, path.format(urllib.parse.quote(symbol)))
+            fetched = self._clock().astimezone(timezone.utc)
             try:
                 body = json.loads(text)
             except ValueError as exc:
@@ -544,7 +572,7 @@ class CboeConnector(Connector):
             data = body.get("data") if isinstance(body, dict) else None
             if not isinstance(data, dict) or not isinstance(data.get("options"), list):
                 raise AssetError([f"{url}: payload lacks a 'data.options' list"])
-            quoted = _quote_instant(body.get("timestamp"), url)
+            quoted = _quote_instant(body.get("timestamp"), url, fetched)
             quote_time = quoted.isoformat()
             quote_day = quoted.astimezone(ZoneInfo(QUOTE_TZ)).date()
             underlying_price = _finite(data.get("current_price"))

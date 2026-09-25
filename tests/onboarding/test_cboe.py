@@ -8,6 +8,7 @@ so the stub binds its scripted transport in ``__init__``.
 """
 
 import json
+from datetime import datetime, timezone
 import urllib.error
 
 import pytest
@@ -97,11 +98,16 @@ class Script:
         return handler
 
 
-def connector(routes):
+#: A fetch clock after every fixture stamp, so the New York reading always stands.
+LATE_CLOCK = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+
+def connector(routes, clock=LATE_CLOCK):
     """A connector over a scripted transport; returns (connector, script, sleeps)."""
     script = Script(routes)
     sleeps = []
-    return CboeConnector(getter=script, sleeper=sleeps.append), script, sleeps
+    conn = CboeConnector(getter=script, sleeper=sleeps.append, clock=lambda: clock)
+    return conn, script, sleeps
 
 
 def read(conn, streams, config=CONFIG, state=None, mode="backfill"):
@@ -402,6 +408,34 @@ def test_quote_time_is_new_york_wall_clock_across_dst(stamp, utc):
     conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)})
     assert records(read(conn, ["option_chain"]))[0]["data"]["quote_time"] == utc
 
+
+
+@pytest.mark.parametrize("stamp, fetched, utc", [
+    # Cboe's 2026-09-24 switch: a UTC stamp read as New York lands 4 h ahead of the fetch
+    ("2026-09-25 19:13:09", "2026-09-25T19:13:22+00:00", "2026-09-25T19:13:09+00:00"),
+    # a New York stamp fetched at once keeps its New York reading
+    ("2026-09-24 10:30:00", "2026-09-24T14:30:05+00:00", "2026-09-24T14:30:00+00:00"),
+    # within CLOCK_SKEW_S of the fetch the New York reading still stands
+    ("2026-09-24 10:34:00", "2026-09-24T14:30:05+00:00", "2026-09-24T14:34:00+00:00"),
+])
+def test_quote_time_zone_resolved_against_the_fetch_clock(stamp, fetched, utc):
+    clock = datetime.fromisoformat(fetched)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, clock)
+    rec = records(read(conn, ["option_chain"]))[0]
+    assert rec["data"]["quote_time"] == rec["effective_date"] == utc
+
+
+def test_quote_time_in_the_future_under_both_zones_refuses():
+    clock = datetime(2026, 9, 25, 19, 13, tzinfo=timezone.utc)
+    conn, _, _ = connector(
+        {SPX_CHAIN: chain([option("SPXW261016C07000000")], "2026-09-25 20:00:00")}, clock)
+    with pytest.raises(AssetError, match="after the fetch instant"):
+        read(conn, ["option_chain"])
+
+
+def test_clock_must_be_callable():
+    with pytest.raises(AssetError, match="clock must be callable"):
+        CboeConnector(clock="now")
 
 def test_chain_ignores_the_cursor_and_keeps_it_monotone():
     conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")])})
