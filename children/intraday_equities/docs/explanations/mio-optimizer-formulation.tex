@@ -131,17 +131,28 @@ replay bills with.
 \kappa^{s}_i=\beta_i p_i+\tau+\beta_{31}p_i,
 \label{eq:costs}
 \end{equation}
-where $\beta_i=\eta\,\delta_i\cdot10^{-4}$ is name $i$'s effective half-spread:
+where $\beta_i=\eta\,\delta_i\,\phi(t^{f}_i)\cdot10^{-4}$ is name $i$'s
+effective half-spread:
 $\delta_i$ is its quoted half-spread in bp (\code{half_spread_bps}[$i$], or
 \code{default_half_spread_bps} for an unlisted name; a null default refuses
-the name) and $\eta=$ \code{eq_ratio} is the broker's effective/quoted
-ratio (owner ruling 2026-09-25). The optimizer and the replay read the same
-$\beta_i$, so sizing and fills charge the same cost for the same name.
+the name), $\eta=$ \code{eq_ratio} is the broker's effective/quoted
+ratio (owner ruling 2026-09-25), and $\phi(t^{f}_i)$ is the time-of-day
+multiplier of name $i$'s \emph{fill} minute $t^{f}_i$ (owner ruling
+2026-09-25, option B; \code{spread_time_of_day}). $t^{f}_i$ is the
+\code{asof_ms} of the bar \code{fill_bar_offset} bars after the decision bar
+on that name's tape; the replay hands it to the optimizer as
+\code{portfolio.fill_ms}[$i$]. $\phi$ is the multiplier of the one
+America/New\_York wall-clock window $[\text{start},\text{end})$ that contains
+the minute (DST-aware), and \code{default_multiplier} otherwise. The optimizer
+and the replay read the same $\beta_i$ at the same $t^{f}_i$, so sizing and
+fills charge the same per-share rate for the same name and fill minute.
 $\beta_{31}$ and $\tau$ are unchanged:
 $\beta_{31}=\text{\code{sec31_bps}}\cdot10^{-4}$ and
 $\tau=\text{\code{taf_per_share}}$ (USD per share, uncapped).
 The exit cost per share at the horizon is $\kappa^{x}_i=\kappa^{s}_i$, priced
-at $p_i$.
+at $p_i$ and at the entry fill minute $t^{f}_i$. The replay bills the actual
+horizon exit at its own fill minute, so an exit that lands in a different
+window than its entry is charged that window's $\phi$.
 
 %----------------------------------------------------------------------------
 \section{Parameters}\label{sec:params}
@@ -376,12 +387,14 @@ aborts the whole simulation run.
   a sell raises.
 \item \textbf{Fills.} Fills happen at the next bar's \code{open}
   (\code{fill_bar_offset}$=1$), as market orders with no partial fills.
-  The fee is $\kappa^b$ or $\kappa^s$ at the fill price times the quantity.
+  The fee is $\kappa^b$ or $\kappa^s$ at the fill price and the fill bar's
+  minute, times the quantity.
   A buy whose price times quantity plus fee exceeds the replay's cash is
   refused as \code{insufficient_cash}. That can happen because the MIO
   priced at the decision close.
 \item \textbf{Exits.} A lot is force-exited at the \code{open} of the bar
-  $L$ bars after its fill bar, at the sell cost. This is not decided by the
+  $L$ bars after its fill bar, at the sell cost of that bar's minute. This is
+  not decided by the
   optimizer.
 \item \textbf{Releases.} Each fold $k$ is a new \code{EquityReplay}
   segment, and its cash carries forward through
@@ -418,6 +431,7 @@ cap / calibration max age & 5\,529\,600\,000 ms (64 days) & V1 \\
 $R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
 quoted half-spread $\delta_i$ & per name, 0.59--5.62 bp (LLY/XOM/JPM measured, cohort modelled); default 5.62 bp & \code{tools/spread-cost-results.json} \\
 $\eta$ (EQ) & 0.25 (range 0.10--0.40) & proxy: HRT Rule 605, July 2026; pending Schwab's own 605 \\
+time of day $\phi$ & 1.84 in 09:30--10:00, 0.62 in 15:30--16:00 New York (fill minute); 1.0 elsewhere & \code{tools/spread-cost-results.json} (LLY/XOM/JPM median ratio to the all-minute median) \\
 TAF / Sec.\,31 & \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\
 \code{min_price} & \$5 & fill policy \\
 interval / false-signal calibration & coverage 0.95, \code{window_blocks} 10 (UTC-day blocks), 999 session-flip nulls, seed 0 & ADR-0184 \\
@@ -453,9 +467,9 @@ solve with no open lot.
   later splits.
 \item The TAF/Sec.\,31 costs are illustrative Schwab figures, not broker
   pins. EQ is a proxy from another venue's Rule 605 report, and most names'
-  half-spreads are modelled, not measured. There is no time-of-day spread
-  multiplier (spreads are about 2x in the first 30 minutes and 0.65x in the
-  last 30). The
+  half-spreads are modelled, not measured. The time-of-day multiplier is
+  measured on three names only and assumed for the rest, and it has two
+  30-minute windows, not a curve. The
   optimizer prices at the decision close, and fills happen at the next
   open.
 \item There is no slippage beyond the half-spread, no market impact, no

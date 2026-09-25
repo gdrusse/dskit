@@ -1125,6 +1125,7 @@ _BOUND_PLACEHOLDERS = {
     "half_spread_bps": {},
     "default_half_spread_bps": 0.0,
     "eq_ratio": 1.0,
+    "spread_time_of_day": {"timezone": "UTC", "default_multiplier": 1.0, "windows": []},
     "taf_per_share": 0.0,
     "sec31_bps": 0.0,
     "min_price": 1.0,
@@ -1236,6 +1237,9 @@ class MioDecider:
                     "gross_limit": portfolio["gross_limit"],
                     "cash_reserve": 0.0,
                     "sale_credit": 1.0,
+                    # Each name's fill-bar instant: the time-of-day spread
+                    # is keyed on it in sizing exactly as the replay bills.
+                    "fill_ms": portfolio["fill_ms"],
                 },
                 "survivors": list(self._release["survivors"]),
                 "cap": self._release["cap"],

@@ -14,6 +14,7 @@ import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -342,6 +343,7 @@ def test_schwab_fees_are_the_cost_model_applied_to_the_fill_price():
         "half_spread_bps": policy.half_spread_bps,
         "default_half_spread_bps": policy.default_half_spread_bps,
         "eq_ratio": policy.eq_ratio,
+        "spread_time_of_day": policy.spread_time_of_day,
         "taf_per_share": policy.taf_per_share,
         "sec31_bps": policy.sec31_bps,
         "min_price": policy.min_price,
@@ -356,8 +358,8 @@ def test_schwab_fees_are_the_cost_model_applied_to_the_fill_price():
     )
     entry = next(row for row in out["fills"] if row["kind"] == "entry")
     exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
-    assert entry["fee"] == pytest.approx(costs.buy_per_share("AAA", 11.0) * 10)
-    assert exit_row["fee"] == pytest.approx(costs.sell_per_share("AAA", 12.0) * 10)
+    assert entry["fee"] == pytest.approx(costs.buy_per_share("AAA", 11.0, 2_000) * 10)
+    assert exit_row["fee"] == pytest.approx(costs.sell_per_share("AAA", 12.0, 3_000) * 10)
 
 
 def test_each_fill_pays_its_own_names_half_spread_times_eq():
@@ -397,9 +399,126 @@ def test_the_shipped_fill_policy_prices_the_measured_and_cohort_names():
     assert policy.eq_ratio == 0.25
     # The default is the cohort maximum: no unlisted name is priced below a listed one.
     assert policy.default_half_spread_bps == max(spreads.values())
-    assert policy.costs.half_spread_bps("NOT-LISTED") == pytest.approx(
+    midday = _ny_ms(date(2025, 1, 15), 12, 0)
+    assert policy.costs.half_spread_bps("NOT-LISTED", midday) == pytest.approx(
         policy.default_half_spread_bps * policy.eq_ratio
     )
+
+
+# --- Owner ruling 2026-09-25 (option B): the time-of-day spread multiplier ---
+
+_NY = ZoneInfo("America/New_York")
+SPREAD_RESULTS_PATH = os.path.join(CHILD_ROOT, "..", "..", "tools", "spread-cost-results.json")
+
+#: A test schedule: 2.0 in 09:30-10:00, 0.5 in 15:30-16:00, 1.0 elsewhere.
+_TOD = {
+    "timezone": "America/New_York",
+    "default_multiplier": 1.0,
+    "windows": [
+        {"start_minute": 570, "end_minute": 600, "multiplier": 2.0},
+        {"start_minute": 930, "end_minute": 960, "multiplier": 0.5},
+    ],
+}
+_TOD_FEES = {
+    "half_spread_bps": {"AAA": 10.0}, "default_half_spread_bps": None, "eq_ratio": 1.0,
+    "taf_per_share": 0.0, "sec31_bps": 0.0, "spread_time_of_day": _TOD,
+}
+
+
+def _ny_ms(day, hour, minute):
+    """Epoch ms of a New York wall-clock minute on ``day`` (DST-aware)."""
+    return int(datetime(day.year, day.month, day.day, hour, minute, tzinfo=_NY).timestamp() * 1000)
+
+
+def test_the_shipped_time_of_day_schedule_is_the_measured_open_and_close_ratios():
+    """Each window multiplier is the median, over the measured names, of that
+    bucket's median quoted half-spread over the all-minute median (the base
+    ``half_spread_bps`` is itself an all-minute median), rounded to 0.01."""
+    policy = FillPolicy.from_path(FILL_POLICY_PATH)
+    schedule = policy.spread_time_of_day
+    with open(SPREAD_RESULTS_PATH, encoding="utf-8") as handle:
+        measured = json.load(handle)["symbols"]
+
+    def ratio(bucket):
+        ratios = sorted(
+            row["half_spread_bps"][bucket]["median"] / row["half_spread_bps"]["all"]["median"]
+            for row in measured.values()
+        )
+        return round(ratios[len(ratios) // 2], 2)
+
+    assert schedule["timezone"] == "America/New_York"
+    assert schedule["default_multiplier"] == 1.0
+    assert schedule["windows"] == [
+        {"start_minute": 570, "end_minute": 600, "multiplier": ratio("open30")},
+        {"start_minute": 930, "end_minute": 960, "multiplier": ratio("close30")},
+    ]
+    assert sorted(measured) == ["JPM", "LLY", "XOM"]
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        None,
+        {"timezone": "America/New_York", "default_multiplier": 1.0},
+        {**_TOD, "windows": [{"start_minute": 600, "end_minute": 570, "multiplier": 2.0}]},
+        {**_TOD, "windows": _TOD["windows"] + [{"start_minute": 590, "end_minute": 620, "multiplier": 1.5}]},
+        {**_TOD, "timezone": "Not/AZone"},
+    ],
+)
+def test_the_fill_policy_refuses_a_bad_time_of_day_schedule(schedule):
+    raw = _raw_fill_policy()
+    raw["spread_time_of_day"] = schedule
+    assert any("spread_time_of_day" in p for p in FillPolicy.validate_params(raw))
+    with pytest.raises(ConfigError):
+        FillPolicy(raw)
+    del raw["spread_time_of_day"]
+    assert any("spread_time_of_day" in p for p in FillPolicy.validate_params(raw))
+
+
+def test_entry_and_forced_exit_fees_key_on_their_own_fill_minutes():
+    # Decision 09:28, entry fill 09:29 (default 1.0); lead 2 -> exit 09:31 (window 2.0).
+    # Decision 15:28, entry fill 15:29 (1.0); lead 1 -> exit 15:30 (window 0.5).
+    day = date(2025, 7, 15)  # EDT
+    policy = _policy(_TOD_FEES)
+    minutes = [(9, 28), (9, 29), (9, 30), (9, 31), (15, 28), (15, 29), (15, 30)]
+    bars = [_bar("AAA", _ny_ms(day, h, m), 20.0, 20.0) for h, m in minutes]
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", _ny_ms(day, 9, 28), lead=2, qty=10),
+        _decision("AAA", _ny_ms(day, 15, 28), lead=1, qty=10),
+    ])
+    fees = {(row["kind"], row["asof_ms"]): row["fee"] for row in out["fills"]}
+    base = 10.0e-4 * 20.0 * 10
+    assert fees == {
+        ("entry", _ny_ms(day, 9, 29)): pytest.approx(base * 1.0),
+        ("exit", _ny_ms(day, 9, 31)): pytest.approx(base * 2.0),
+        ("entry", _ny_ms(day, 15, 29)): pytest.approx(base * 1.0),
+        ("exit", _ny_ms(day, 15, 30)): pytest.approx(base * 0.5),
+    }
+
+
+def test_an_entry_in_a_window_pays_that_windows_multiplier_not_the_decisions():
+    day = date(2025, 1, 15)  # EST
+    policy = _policy(_TOD_FEES)
+    bars = [_bar("AAA", _ny_ms(day, 9, m), 20.0, 20.0) for m in (29, 30, 31)]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", _ny_ms(day, 9, 29), lead=1, qty=10)])
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    assert entry["asof_ms"] == _ny_ms(day, 9, 30)
+    assert entry["fee"] == pytest.approx(10.0e-4 * 2.0 * 20.0 * 10)
+
+
+def test_a_same_lead_override_exit_keys_on_its_fill_minute():
+    day = date(2025, 1, 15)
+    policy = _policy({**_TOD_FEES, "same_lead_overlap": "override"})
+    bars = [_bar("AAA", _ny_ms(day, 9, m), 20.0, 20.0) for m in range(27, 40)]
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", _ny_ms(day, 9, 27), lead=5, qty=10),   # entry 09:28 (1.0)
+        _decision("AAA", _ny_ms(day, 9, 29), lead=5, qty=10),   # override at 09:30 (2.0)
+    ])
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    assert entry["fee"] == pytest.approx(10.0e-4 * 1.0 * 20.0 * 10)
+    override = next(row for row in out["fills"] if row.get("reason") == "same_lead_override")
+    assert override["asof_ms"] == _ny_ms(day, 9, 30)
+    assert override["fee"] == pytest.approx(10.0e-4 * 2.0 * 20.0 * 10)
 
 
 def test_a_temp_fill_policy_copy_changes_the_fill_without_editing_python():
@@ -436,6 +555,7 @@ def test_replay_py_does_not_hardcode_fill_model_values():
         "half_spread_bps",
         "default_half_spread_bps",
         "eq_ratio",
+        "spread_time_of_day",
         "taf_per_share",
         "sec31_bps",
     }

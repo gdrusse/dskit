@@ -501,6 +501,8 @@ class SyntheticMioSource(Node):
             "cash_reserve": 0.0,
             "gross_limit": 12000.0,
             "sale_credit": 1.0,
+            # Each name fills one minute after the decision tick (a next-bar fill).
+            "fill_ms": {name: self._ASOF_MS + 60_000 for name in self._NAMES},
         }
         cap = {
             "schema_version": 2,

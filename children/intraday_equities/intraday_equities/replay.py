@@ -135,6 +135,7 @@ class FillPolicy:
         "half_spread_bps",
         "default_half_spread_bps",
         "eq_ratio",
+        "spread_time_of_day",
         "taf_per_share",
         "sec31_bps",
         "min_price",
@@ -1387,11 +1388,18 @@ class EquityReplay:
         shares of lots that are still open at each name's fill bar (a lot
         expiring at or before it is exited before that bar's entries);
         ``mark_prices`` are each name's latest decision-price close;
-        ``gross_limit`` is NAV (cash plus every open lot at its mark); and
+        ``gross_limit`` is NAV (cash plus every open lot at its mark);
         ``pending`` lists the entries queued for a later fill bar and not
         filled yet (``symbol``, ``lead``, ``qty``, ``side``,
         ``decision_ms``), which a per-minute decider must neither repeat
-        nor spend the cash of (ADR-0186).
+        nor spend the cash of (ADR-0186); and
+        ``fill_ms`` is each name's fill instant, the ``asof_ms`` of the bar
+        ``fill_bar_offset`` bars after its decision bar here, which keys the
+        time-of-day spread for sizing exactly as the fill is billed (owner
+        ruling 2026-09-25). A name with no such bar (no decision bar at
+        ``asof``, or the fill bar is past the tape) gets ``asof`` itself: the
+        replay refuses any decision for it (``unknown_decision_bar`` /
+        ``fill_bar_past_tape``), so no fee is ever billed at that key.
         """
         policy = self._policy
         marks = {}
@@ -1400,6 +1408,11 @@ class EquityReplay:
             price = bar.get(policy.decision_price_field)
             if number_ok(price) and not isinstance(price, bool) and price > 0:
                 marks[symbol] = float(price)
+        fill_ms = {}
+        for symbol, seq in self._by_symbol.items():
+            index = self._index_of[symbol].get(asof)
+            fill = None if index is None else index + policy.fill_bar_offset
+            fill_ms[symbol] = int(seq[fill]["asof_ms"]) if fill is not None and fill < len(seq) else asof
         cash = float(self._cash_balance)
         nav = cash
         positions = {}
@@ -1418,6 +1431,7 @@ class EquityReplay:
             "mark_prices": marks,
             "gross_limit": nav,
             "pending": self._pending_entries(),
+            "fill_ms": fill_ms,
         }
 
     def _pending_entries(self):
@@ -1849,8 +1863,8 @@ class EquityReplay:
         for lead, lot in self._book.expiring(symbol, index):
             side = "sell" if lot["side"] == "buy" else "buy"
             fee = (
-                policy.costs.sell_per_share(symbol, price) if side == "sell"
-                else policy.costs.buy_per_share(symbol, price)
+                policy.costs.sell_per_share(symbol, price, bar["asof_ms"]) if side == "sell"
+                else policy.costs.buy_per_share(symbol, price, bar["asof_ms"])
             ) * lot["qty"]
             self._queue_fill(
                 "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index,
@@ -1879,8 +1893,8 @@ class EquityReplay:
                 exit_side = "sell" if lot["side"] == "buy" else "buy"
                 exit_px = bar[policy.forced_exit_price_field]
                 exit_fee = (
-                    policy.costs.sell_per_share(symbol, exit_px) if exit_side == "sell"
-                    else policy.costs.buy_per_share(symbol, exit_px)
+                    policy.costs.sell_per_share(symbol, exit_px, bar["asof_ms"]) if exit_side == "sell"
+                    else policy.costs.buy_per_share(symbol, exit_px, bar["asof_ms"])
                 ) * lot["qty"]
                 self._queue_fill(
                     "exit", symbol, lead, exit_side, lot["qty"], exit_px, bar["asof_ms"],
@@ -1894,8 +1908,8 @@ class EquityReplay:
                 })
                 continue
             fee = (
-                policy.costs.buy_per_share(symbol, price) if side == "buy"
-                else policy.costs.sell_per_share(symbol, price)
+                policy.costs.buy_per_share(symbol, price, bar["asof_ms"]) if side == "buy"
+                else policy.costs.sell_per_share(symbol, price, bar["asof_ms"])
             ) * qty
             if self._cash_flow_composer is not None and side == "buy":
                 cost = Decimal(str(price)) * Decimal(str(qty)) + Decimal(str(fee))

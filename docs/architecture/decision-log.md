@@ -7699,6 +7699,10 @@ unfunded candidates on a live graph) remain unbuilt.
 **Amended 2026-09-25 (owner):** the flat `spread_bps` is replaced by a per-name
 quoted half-spread x EQ; see ADR-0185's Owner amendment 3.
 
+**Amended 2026-09-25 (owner, option B):** the half-spread also carries a
+time-of-day multiplier keyed on the FILL minute; see ADR-0185's Owner
+amendment 4.
+
 ## ADR-0121 — Gate 4: real forecast bundle and confirmed caps over the ruled §11 item 3 zero-drift inverse (ADR-0114 Phase 4)
 
 **Status:** accepted (2026-09-11; the user explicitly approved this Gate 4 ADR and design).
@@ -24093,6 +24097,48 @@ bundle. TAF and Section 31 are unchanged.
   (was `643c3bd2...`). Earlier ADR-0184/0185 results were
   produced under the flat 2.2 bp and EQ 1 cost, and are not comparable
   without a rerun.
+
+**Owner amendment 4 (2026-09-25): time-of-day spread multiplier keyed on the
+fill minute, with ADR-0120.** The owner approved option B: the per-name
+effective half-spread of amendment 3 is multiplied by the time-of-day factor
+of the minute the order FILLS. Amendment 3 had left the factor out because
+sizing prices at the decision bar and the replay fills at the next bar; the
+fix keys both on the same instant.
+
+- `SchwabCostModel` takes a required `spread_time_of_day`
+  (`{timezone, default_multiplier, windows: [{start_minute, end_minute,
+  multiplier}]}`; wall-clock minutes after local midnight, half-open,
+  DST-aware through zoneinfo). It refuses a missing or malformed schedule:
+  an unknown timezone, non-integer or out-of-range minutes, `start >= end`,
+  overlapping windows, or a multiplier that is not finite and > 0.
+  `half_spread_bps`, `buy_per_share` and `sell_per_share` now take the fill
+  instant (epoch ms, required, refused when not an integer >= 0).
+- The fill instant is the `asof_ms` of the bar `fill_bar_offset` bars after
+  the decision bar on the name's own tape. The replay bills each entry,
+  forced exit and same-lead override exit at its fill bar's instant. The
+  replay's per-tick decider portfolio carries `fill_ms` (`{symbol: that
+  instant}`), `MioDecider` passes it to `EquityKellyMIO`, and the MIO requires
+  `portfolio.fill_ms` for every name it prices. Sizing and the entry fill
+  therefore charge the identical per-share rate (tested end to end). A name
+  with no fill bar gets the decision instant; the replay refuses any decision
+  for it, so no fee is billed at that key. The MIO's horizon exit cost stays
+  `kappa^s` at the entry fill minute (unchanged design); the replay bills the
+  actual exit at its own minute.
+- Values (`configs/fill-policy.json`, from `tools/spread-cost-results.json`):
+  America/New_York, 09:30-10:00 x1.84 and 15:30-16:00 x0.62, 1.0 elsewhere.
+  Each is the median over LLY/XOM/JPM of the bucket's median quoted
+  half-spread divided by the all-minute median, since `half_spread_bps` is an
+  all-minute median. The research note's "about 2x / 0.65x" is relative to
+  midday, which is 0.89-1.00 of the all-minute median. The modelled cohort
+  names are assumed to share the measured names' intraday shape.
+  `run-mio-demo.json` declares an empty window list (factor 1.0).
+- Identity moved: fill-policy digest
+  `e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e`
+  (was `e078b15b...`), repinned in the five documents that pin it;
+  `run-retrain-simulation.json`'s `template_sha256` is now
+  `ca45bb1eeb05599e91ffab3365e0b17e6a0af3e41c73b7b2d43a4107e4855789`
+  (was `e4aadf0c...`). Results produced before this amendment are not
+  comparable without a rerun.
 
 ## ADR-0186 — Per-minute decision cadence for the ADR-0185 retrain simulation
 

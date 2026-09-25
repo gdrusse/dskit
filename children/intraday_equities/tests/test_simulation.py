@@ -631,6 +631,8 @@ def _book(fx, asof_ms, positions=None):
         "positions": dict(positions or {}),
         "mark_prices": {s: float(prices[s][loc]) for s in ("LLY", "LRCX", "NOW")},
         "gross_limit": 1020.0,
+        # The thin tape's next bar: each name's fill instant (fill_bar_offset 1).
+        "fill_ms": {s: asof_ms + 60_000 for s in ("LLY", "LRCX", "NOW")},
     }
 
 
@@ -713,7 +715,7 @@ def test_decider_sees_cash_after_this_bars_fills():
     assert at1 == {
         "asof_ms": _minute(1), "cash": 910.0, "buying_power": 910.0,
         "positions": {"AAA": 10}, "mark_prices": {"AAA": 11.5},
-        "gross_limit": 910.0 + 10 * 11.5, "pending": [],
+        "gross_limit": 910.0 + 10 * 11.5, "pending": [], "fill_ms": {"AAA": _minute(2)},
     }
     # At t3 the lot exits at the next bar (index 4 = fill + lead): no longer a
     # position for the decider, still part of NAV.
@@ -723,6 +725,37 @@ def test_decider_sees_cash_after_this_bars_fills():
     assert [(f["kind"], f["asof_ms"], f["price"]) for f in out["fills"]] == [
         ("entry", _minute(1), 11.0), ("exit", _minute(4), 14.0),
     ]
+
+
+def test_the_decider_portfolio_carries_each_names_own_fill_bar_instant():
+    # AAA trades every minute; BBB skips minutes 1-2, so its next bar after
+    # minute 0 is minute 3. At the tape's last bar no fill bar exists: the
+    # decision instant stands in, and the replay refuses any such decision.
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
+        for i in range(5)
+    ] + [
+        {"symbol": "BBB", "asof_ms": _minute(i), "open": 20.0, "close": 20.0, "halted": False}
+        for i in (0, 3, 4)
+    ]
+    stub = _Scripted({})
+    EquityReplay(_zero_fee_policy(), CASH_POLICY, decider=stub).run(bars)
+    assert stub.seen[_minute(0)]["fill_ms"] == {"AAA": _minute(1), "BBB": _minute(3)}
+    assert stub.seen[_minute(3)]["fill_ms"] == {"AAA": _minute(4), "BBB": _minute(4)}
+    assert stub.seen[_minute(4)]["fill_ms"] == {"AAA": _minute(4), "BBB": _minute(4)}
+    # BBB has no bar at minute 1: no decision bar, so the decision instant stands in.
+    assert stub.seen[_minute(1)]["fill_ms"] == {"AAA": _minute(2), "BBB": _minute(1)}
+
+
+def test_a_fill_offset_of_two_keys_sizing_two_bars_ahead():
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
+        for i in range(5)
+    ]
+    policy = FillPolicy({**_zero_fee_policy().to_obj(), "fill_bar_offset": 2})
+    stub = _Scripted({})
+    EquityReplay(policy, CASH_POLICY, decider=stub).run(bars)
+    assert stub.seen[_minute(0)]["fill_ms"] == {"AAA": _minute(2)}
 
 
 def test_mio_orders_are_integer_shares_filled_next_bar_open(sim):
@@ -832,33 +865,42 @@ def test_lead_groups_share_one_cash_budget_in_ascending_order(sim, monkeypatch):
     assert seen[1][1] == seen[0][2]
 
 
-def test_sizing_and_fills_charge_the_same_per_name_cost(sim, monkeypatch):
-    """The MIO prices each name with exactly the replay's per-share cost (owner ruling 2026-09-25)."""
-    seen = {}
+def test_sizing_and_fills_charge_the_same_cost_keyed_on_the_fill_minute(sim, monkeypatch):
+    """Owner rulings 2026-09-25: per name, and per FILL minute (the time-of-day window).
+
+    The MIO sizes each name at the instant the replay will fill it (the
+    decision bar + ``fill_bar_offset``), so an entry's billed per-share rate
+    is exactly the rate its sizing charged.
+    """
+    sized = {}
     real = EquityKellyMIO.instruments
 
     def spy(self, inputs):
         out = real(self, inputs)
-        seen.update(out[1])
+        portfolio = inputs["portfolio"]
+        for name, row in out[1].items():
+            sized[(portfolio["asof_ms"], name)] = (row, portfolio["fill_ms"][name])
         return out
 
     monkeypatch.setattr(EquityKellyMIO, "instruments", spy)
     decider = _decider(sim["published"], sim["fx"])
-    for tick in _ticks(sim["published"]):
-        decider.decide(tick, _book(sim["fx"], tick))
-    assert len(seen) >= 2, "the fixture must size several names for this test to mean anything"
-    rates = {name: FILL_POLICY.costs.half_spread_bps(name) for name in seen}
-    assert len(set(rates.values())) >= 2, rates
-    for name, row in seen.items():
-        assert row["cost_buy"] == FILL_POLICY.costs.buy_per_share(name, row["price"])
-        assert row["cost_sell"] == FILL_POLICY.costs.sell_per_share(name, row["price"])
+    out = EquityReplay(FILL_POLICY, CASH_POLICY, decider=decider).run(sim["bars"])
+    assert len({name for _, name in sized}) >= 2, "the fixture must size several names"
+    costs = FILL_POLICY.costs
+    multipliers = {costs.time_of_day_multiplier(fill_ms) for _, fill_ms in sized.values()}
+    assert len(multipliers) >= 2, f"the fixture must size inside and outside a window: {multipliers}"
+    for (asof, name), (row, fill_ms) in sized.items():
+        assert fill_ms == asof + 60_000  # the thin tape's next bar
+        assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms)
+        assert row["cost_sell"] == costs.sell_per_share(name, row["price"], fill_ms)
         assert row["exit_cost_per_share"] == row["cost_sell"]
-    fills = [f for f in sim["out"]["fills"] if f["kind"] == "entry"]
-    assert fills
-    for fill in fills:
-        assert fill["fee"] == pytest.approx(
-            FILL_POLICY.costs.buy_per_share(fill["symbol"], fill["price"]) * fill["qty"]
-        )
+    entries = [f for f in out["fills"] if f["kind"] == "entry"]
+    assert entries
+    for fill in entries:
+        row, fill_ms = sized[(fill["decision_ms"], fill["symbol"])]
+        assert fill["asof_ms"] == fill_ms
+        billed_rate = fill["fee"] / (fill["price"] * fill["qty"])
+        assert billed_rate == pytest.approx(row["cost_buy"] / row["price"], rel=1e-12)
 
 
 def test_lot_expires_before_next_lattice_decision_for_max_lead_10():
@@ -914,6 +956,7 @@ def test_decide_node_refuses_bound_or_undeclared_params():
     assert check({"mio": MIO}) == []
     for bound in (
         {"half_spread_bps": {"LLY": 2.2}}, {"default_half_spread_bps": 2.2}, {"eq_ratio": 0.9},
+        {"spread_time_of_day": {"timezone": "UTC", "default_multiplier": 1.0, "windows": []}},
         {"cap_artifact_sha256": "a" * 64}, {"bundle_producer_node": "x"},
     ):
         assert any("must not carry" in p for p in check({"mio": {**MIO, **bound}}))
