@@ -502,6 +502,41 @@ class TestRealSolve:
         assert out_a["trades"] == out_b["trades"]
 
 
+
+class TestGrowthPolicyV11NoCapNoTicket:
+    """ADR-0185 growth policy v1.1 ships ``cardinality: null`` and
+    ``min_ticket: 0.0`` in the retrain template; exercise both through this
+    node, not only through the doorway's own tests."""
+
+    def _inputs(self):
+        return {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
+                "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
+
+    def test_null_cardinality_solves_like_a_cap_that_cannot_bind(self, tmp_path):
+        free = _node(cardinality=None, min_ticket=0.0).run(_ctx(tmp_path), self._inputs())
+        loose = _node(cardinality=len(_bundle()), min_ticket=0.0).run(_ctx(tmp_path), self._inputs())
+        assert free["target"] == loose["target"]
+        assert free["trades"] == loose["trades"]
+        assert free["metrics"]["gross_exposure"] <= 12000.0 + 1e-6
+        for name, shares in free["target"].items():
+            price = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}[name]
+            assert shares * price <= PARAMS["max_position_notional"] + 1e-6
+
+    def test_null_cardinality_lifts_a_cap_that_binds(self, tmp_path):
+        free = _node(cardinality=None, min_ticket=0.0).run(_ctx(tmp_path), self._inputs())
+        capped = _node(cardinality=1, min_ticket=0.0).run(_ctx(tmp_path), self._inputs())
+        assert len(capped["target"]) <= 1
+        assert len(free["target"]) > len(capped["target"])
+
+    def test_zero_min_ticket_gives_an_unheld_name_no_band(self):
+        # band_shares = lot * ceil(band_bps * 1e-4 * max(price * held, min_ticket) / (price * lot))
+        node = _node(cardinality=None, min_ticket=0.0)
+        node.instruments(self._inputs())
+        assert node._band_shares == {"AAPL": 0, "MSFT": 0, "XOM": 0}
+        floored = _node(cardinality=None, min_ticket=200.0)
+        floored.instruments(self._inputs())
+        assert floored._band_shares == {"AAPL": 1, "MSFT": 1, "XOM": 1}
+
 class TestExitCostIsPriced:
     """Regression for a skeptic-review BLOCKER: ``exit_cost_per_share`` was
     never populated by ``instruments()``, so it silently defaulted to the

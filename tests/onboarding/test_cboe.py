@@ -443,6 +443,27 @@ def test_quote_time_zone_undecidable_refuses(stamp, fetched):
 
 
 
+
+@pytest.mark.parametrize("stamp, utc", [
+    ("2026-09-25 17:22:00", "2026-09-25T17:22:00+00:00"),  # exactly MAX_STALENESS_S stale
+    ("2026-09-25 19:27:00", "2026-09-25T19:27:00+00:00"),  # exactly CLOCK_SKEW_S ahead
+])
+def test_the_fetch_window_is_inclusive_at_both_edges(stamp, utc):
+    clock = datetime(2026, 9, 25, 19, 22, tzinfo=timezone.utc)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, clock)
+    assert records(read(conn, ["option_chain"]))[0]["data"]["quote_time"] == utc
+
+
+@pytest.mark.parametrize("stamp", [
+    "2026-09-25 17:21:59",  # one second past MAX_STALENESS_S
+    "2026-09-25 19:27:01",  # one second past CLOCK_SKEW_S
+])
+def test_one_second_outside_the_window_is_undecided(stamp):
+    clock = datetime(2026, 9, 25, 19, 22, tzinfo=timezone.utc)
+    conn, _, _ = connector({SPX_CHAIN: chain([option("SPXW261016C07000000")], stamp)}, clock)
+    with pytest.raises(AssetError, match="zone cannot be told"):
+        read(conn, ["option_chain"])
+
 def _pull_two(spx_stamp, xsp_stamp, fetched):
     conn, _, _ = connector({
         SPX_CHAIN: chain([option("SPXW261016C07000000")], spx_stamp),
