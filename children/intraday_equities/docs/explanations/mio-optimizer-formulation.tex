@@ -396,7 +396,7 @@ take material risk, but they were not selected by maximizing this backtest.
 \toprule
 Quantity & Value & Status \\
 \midrule
-$\gamma$ & 2.0 (CRRA; half-Kelly) & V1 \\
+$\gamma$ & 2.0 (growth-oriented CRRA) & V1 \\
 $K$ / $S_{\max}$ / $S$ & 32 / 128 / 128 & V1 \\
 $\alpha$ / $C$ & 0.95 / \$500 per lead-group solve & V1 \\
 $M$ & 5 & V1 \\
@@ -406,7 +406,7 @@ $\beta$ & 10 bps (inactive because $h_i=0$) & V1 \\
 $\bar x_i$ & \$5,000 per name & V1 \\
 bundle staleness & 0 ms & V1 \\
 cap / calibration max age & 5\,529\,600\,000 ms (64 days) & V1 \\
-\code{uncertainty_min_coverage} & 0.90 & V1 \\
+\code{uncertainty_min_coverage} & 0.50 (admits the attested 0.53 false-signal floor) & V1 \\
 \code{cap_evidence_look_ahead} & true (disclosed look-ahead) & developmental \\
 $R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
 spread / TAF / Sec.\,31 & 2.2 bps / \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\

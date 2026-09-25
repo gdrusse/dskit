@@ -1652,9 +1652,15 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
         "cap_max_staleness_ms": 5529600000,
         "deployment_mode": False,
         "uncertainty_max_calibration_age_ms": 5529600000,
-        "uncertainty_min_coverage": 0.90,
+        "uncertainty_min_coverage": 0.50,
         "cap_evidence_look_ahead": True,
     }
+    from intraday_equities.simulation import _FALSE_SIGNAL_ATTAINMENT_FLOOR
+
+    assert (
+        template["pipeline"]["decide"]["params"]["mio"]["uncertainty_min_coverage"]
+        <= _FALSE_SIGNAL_ATTAINMENT_FLOOR
+    ), "the shipped policy must admit the publisher's false-signal attestation"
     assert set(template["pipeline"]) == set(adr0184["pipeline"])
     bound = {"inventory_manifest", "inventory_manifest_sha256", "gates", "gates_sha256", "walk_root"}
     publish = template["pipeline"]["publish"]["params"]
