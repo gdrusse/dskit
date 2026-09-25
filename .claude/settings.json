@@ -6,6 +6,23 @@
           {
             "type": "command",
             "command": "git -C \"$CLAUDE_PROJECT_DIR\" fetch --prune origin"
+          },
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/tools/sweep/remind.sh\" session SessionStart",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/tools/sweep/remind.sh\" write PreToolUse",
+            "timeout": 5
           }
         ]
       }

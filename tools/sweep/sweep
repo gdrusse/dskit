@@ -1,0 +1,16 @@
+#!/bin/sh
+# SWEEP THE REPO BEFORE BUILDING -- search every branch, origin/main and
+# every worktree for anything like TERM before writing it:
+#
+#   tools/sweep/sweep ReplayDriver replay_driver
+#   tools/sweep/sweep --staged          # what the commit-msg hook will ask about
+#
+# Also the one place that picks an interpreter, for the hook and for you.
+dir=$(dirname "$0")
+for py in python3 python; do
+    if command -v "$py" >/dev/null 2>&1 && "$py" -c "import sys" >/dev/null 2>&1; then
+        exec "$py" "$dir/sweep.py" "$@"
+    fi
+done
+echo "sweep: no python3 on PATH; cannot sweep (commit NOT checked)." >&2
+exit 0

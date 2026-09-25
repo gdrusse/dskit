@@ -1,0 +1,20 @@
+#!/bin/sh
+# SWEEP THE REPO BEFORE BUILDING (tools/sweep). A commit that adds a new
+# file, public top-level class/function or registered kind must carry a
+# `Sweep:` trailer; see tools/sweep/sweep.py. Installed by
+# tools/sweep/install.sh (a shim in the shared hooks dir runs this file).
+#
+# sweep.py keeps itself inside budget_s (sweep.json); this outer kill at
+# budget_s + 4 s only catches a hung interpreter. Hitting it never blocks
+# the commit -- it lets it through unchecked, loudly.
+top=$(git rev-parse --show-toplevel) || exit 0
+budget=$(sed -n 's/.*"budget_s": *\([0-9]*\).*/\1/p' "$top/tools/sweep/sweep.json" 2>/dev/null | head -1)
+cap=$(( ${budget:-8} + 4 ))
+command -v timeout >/dev/null 2>&1 || exec sh "$top/tools/sweep/sweep" --commit-msg "$1"
+timeout -k 1 "$cap" sh "$top/tools/sweep/sweep" --commit-msg "$1"
+rc=$?
+if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    echo "sweep: exceeded the ${cap}s hard cap; commit NOT checked." >&2
+    exit 0
+fi
+exit "$rc"
