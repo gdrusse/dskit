@@ -1,0 +1,28 @@
+{
+  "notes": "Tunables for tools/sweep/sweep.py (the SWEEP THE REPO BEFORE BUILDING guard). exempt_globs: paths that never need a Sweep: trailer (docs, tests, data) -- fnmatch, where * also crosses '/'. generic_*: names too common to compare by similarity (an exact same-path hit is still reported). similarity is a difflib ratio on lower-cased, separator-free names; token_overlap is a Jaccard over CamelCase/snake tokens and only counts with 2+ shared tokens. Raise either to cut noise, lower to catch more.",
+  "exempt_globs": [
+    "*.md", "*.rst", "*.txt", "*.tex", "*.pdf",
+    "docs/*", "*/docs/*",
+    "tests/*", "*/tests/*", "test_*.py", "*/test_*.py", "*_test.py", "conftest.py", "*/conftest.py",
+    "*.csv", "*.tsv", "*.parquet", "*.jsonl", "*.log",
+    "*.png", "*.jpg", "*.svg", "*.html",
+    "*.lock", ".gitignore", ".gitattributes", "*/.gitignore"
+  ],
+  "generic_basenames": [
+    "__init__", "__main__", "conftest", "README", "AGENTS", "CLAUDE", "SKILL",
+    "TODO", "setup", "config", "configs", "utils", "util", "base", "cli", "index",
+    "nodes", "types", "constants", "errors", "pyproject", "package"
+  ],
+  "generic_symbols": [
+    "main", "run", "register", "setup", "build", "load", "save", "validate"
+  ],
+  "similarity": 0.84,
+  "token_overlap": 0.67,
+  "max_hits_per_item": 6,
+  "max_items_reported": 40,
+  "worktree_timeout_s": 3,
+  "trailer": "Sweep",
+  "min_trailer_words": 6,
+  "skip_env": "SWEEP_SKIP",
+  "skip_log": "sweep-skips.log"
+}

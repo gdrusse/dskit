@@ -28,6 +28,12 @@ Wrap the *library*, generically — never a project's use of it.
   pack whose subject matches. **The node registry is not an inventory** —
   packs wired by import path register nothing (`libs/numpy.py` sets
   `NODE_KINDS = ()`), so an empty `registry.kinds()` result proves nothing.
+- **Sweep the repo before building** (owner rule, 2026-09-25: we keep
+  redoing work). Before a new file, public class/function, kind or config,
+  run `tools/sweep/sweep <name> <synonyms>` — it searches origin/main, every
+  branch and every worktree. A commit adding any of those needs a
+  `Sweep: <what you searched; why it is not a duplicate>` trailer; the
+  commit-msg hook (`tools/sweep/install.sh`) refuses it otherwise.
 - **To find what is configurable, read the class's params tuple, never the
   config file.** Usually `_PARAMS`; the torch/model families split it into
   `_BASE_PARAMS` + `_EXTRA_PARAMS`, so check both and walk the base classes.

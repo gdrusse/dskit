@@ -1,0 +1,7 @@
+#!/bin/sh
+# Pass-through, only for a clone that points core.hooksPath at .githooks:
+# that setting makes git ignore the shared hooks dir, which holds the
+# ADR-0109 post-merge re-render (tools/merge/install.sh). Run it from here.
+hook="$(git rev-parse --git-common-dir)/hooks/post-merge"
+[ -x "$hook" ] && exec "$hook" "$@"
+exit 0

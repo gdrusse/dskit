@@ -3,6 +3,9 @@
   "skills": {
     "paths": [".cursor/skills"]
   },
-  "plugin": ["./.opencode/plugin/session-pull.ts"],
+  "plugin": [
+    "./.opencode/plugin/session-pull.ts",
+    "./.opencode/plugin/sweep-reminder.ts"
+  ],
   "permission": "allow"
 }

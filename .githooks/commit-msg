@@ -1,0 +1,7 @@
+#!/bin/sh
+# SWEEP THE REPO BEFORE BUILDING (tools/sweep). A commit that adds a new
+# file, public top-level class/function or registered kind must carry a
+# `Sweep:` trailer; see tools/sweep/sweep.py. Installed by
+# tools/sweep/install.sh (a shim in the shared hooks dir runs this file).
+top=$(git rev-parse --show-toplevel) || exit 0
+exec sh "$top/tools/sweep/sweep" --commit-msg "$1"
