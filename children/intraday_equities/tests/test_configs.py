@@ -1634,6 +1634,7 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
     assert (simulate_stage["inventory_stage"], simulate_stage["gates_stage"]) == ("inventory", "gates")
 
     template, adr0184 = _raw(RETRAIN_TEMPLATE), _raw("run-development-simulation.json")
+    assert template["pipeline"]["publish"]["params"]["uncertainty"]["n_scenarios"] == 128
     # Owner-delegated growth policy v1 (ADR-0185 amendment). These are
     # deliberately pinned independently rather than read from the config.
     assert template["pipeline"]["decide"]["params"]["mio"] == {
@@ -1658,9 +1659,11 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
     bound = {"inventory_manifest", "inventory_manifest_sha256", "gates", "gates_sha256", "walk_root"}
     publish = template["pipeline"]["publish"]["params"]
     assert {name for name in publish if publish[name] == "BOUND-BY-STAGE"} == bound
-    assert {k: v for k, v in publish.items() if k not in bound} == {
+    expected_publish = {
         k: v for k, v in adr0184["pipeline"]["publish"]["params"].items() if k not in bound
     }
+    expected_publish["uncertainty"] = {**expected_publish["uncertainty"], "n_scenarios": 128}
+    assert {k: v for k, v in publish.items() if k not in bound} == expected_publish
     simulate, old = template["pipeline"]["simulate"]["params"], adr0184["pipeline"]["simulate"]["params"]
     policy = CashFlowPolicy.from_path(_path("cash-flow-policy-biweekly.json"))
     assert simulate["cash_flow_policy"] == "configs/cash-flow-policy-biweekly.json"

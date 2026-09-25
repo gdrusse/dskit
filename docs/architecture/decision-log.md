@@ -23885,7 +23885,7 @@ Two sweeps of main and every remote branch found:
 5. The build is done here; the run happens in WSL.
 
 **Owner amendment (2026-09-25).** The owner delegated the open MIO values to
-best judgement and stated a willingness to take material risk. For the
+best judgement and stated a growth-oriented tolerance for some risk. For the
 ADR-0185 retrain simulation only, ruling 4 is superseded by growth policy v1:
 `risk_aversion_gamma=2.0`, 32 tangents, 128 scenarios, 95% CVaR capped at
 $500 per lead-group solve, cardinality 5, $500 minimum ticket, `hfdr_q=0.20`,

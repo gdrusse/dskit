@@ -65,7 +65,7 @@
         "last_fold": 19,
         "calibration_window_days": 730,
         "uncertainty": {
-          "n_scenarios": 64,
+          "n_scenarios": 128,
           "coverage": 0.95,
           "window_blocks": 10,
           "null_draws": 999,
