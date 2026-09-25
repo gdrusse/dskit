@@ -1666,7 +1666,10 @@ def test_config_validates_and_is_ineligible():
         mio = pipeline["decide"]["params"]["mio"]
         assert mio["cap_evidence_look_ahead"] is True
         assert mio["deployment_mode"] is False
-        assert not set(mio) & {"spread_bps", "taf_per_share", "sec31_bps", "min_price"}
+        assert not set(mio) & {
+            "half_spread_bps", "default_half_spread_bps", "eq_ratio",
+            "taf_per_share", "sec31_bps", "min_price",
+        }
         for spec in pipeline.values():
             if spec["uses"] == "intraday_equities-bars":
                 assert spec["params"]["start_ms"] == SIMULATION_START_MS

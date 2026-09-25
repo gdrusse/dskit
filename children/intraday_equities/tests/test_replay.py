@@ -339,7 +339,9 @@ def test_same_tick_processes_forced_exits_before_new_entries():
 def test_schwab_fees_are_the_cost_model_applied_to_the_fill_price():
     policy = _policy()
     costs = SchwabCostModel({
-        "spread_bps": policy.spread_bps,
+        "half_spread_bps": policy.half_spread_bps,
+        "default_half_spread_bps": policy.default_half_spread_bps,
+        "eq_ratio": policy.eq_ratio,
         "taf_per_share": policy.taf_per_share,
         "sec31_bps": policy.sec31_bps,
         "min_price": policy.min_price,
@@ -354,8 +356,50 @@ def test_schwab_fees_are_the_cost_model_applied_to_the_fill_price():
     )
     entry = next(row for row in out["fills"] if row["kind"] == "entry")
     exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
-    assert entry["fee"] == pytest.approx(costs.buy_per_share(11.0) * 10)
-    assert exit_row["fee"] == pytest.approx(costs.sell_per_share(12.0) * 10)
+    assert entry["fee"] == pytest.approx(costs.buy_per_share("AAA", 11.0) * 10)
+    assert exit_row["fee"] == pytest.approx(costs.sell_per_share("AAA", 12.0) * 10)
+
+
+def test_each_fill_pays_its_own_names_half_spread_times_eq():
+    policy = _policy({
+        "half_spread_bps": {"AAA": 10.0, "BBB": 40.0}, "default_half_spread_bps": None,
+        "eq_ratio": 0.5, "taf_per_share": 0.0, "sec31_bps": 0.0,
+    })
+    bars = [
+        _bar(symbol, t, open_, open_ + 0.5)
+        for t, open_ in ((1_000, 10.0), (2_000, 20.0), (3_000, 30.0))
+        for symbol in ("AAA", "BBB")
+    ]
+    out = ReplayAdapter(policy).replay(
+        bars, [_decision("AAA", 1_000, lead=1, qty=10), _decision("BBB", 1_000, lead=1, qty=10)]
+    )
+    fees = {(row["symbol"], row["kind"]): row["fee"] for row in out["fills"]}
+    assert fees[("AAA", "entry")] == pytest.approx(5.0e-4 * 20.0 * 10)
+    assert fees[("BBB", "entry")] == pytest.approx(20.0e-4 * 20.0 * 10)
+    assert fees[("AAA", "exit")] == pytest.approx(5.0e-4 * 30.0 * 10)
+    assert fees[("BBB", "exit")] == pytest.approx(20.0e-4 * 30.0 * 10)
+
+
+def test_a_fill_the_cost_map_cannot_price_refuses_loudly():
+    policy = _policy({"half_spread_bps": {"AAA": 1.0}, "default_half_spread_bps": None})
+    bars = [_bar("ZZZ", t, 10.0, 10.5) for t in (1_000, 2_000, 3_000)]
+    with pytest.raises(ConfigError, match="ZZZ"):
+        ReplayAdapter(policy).replay(bars, [_decision("ZZZ", 1_000, lead=1, qty=10)])
+
+
+def test_the_shipped_fill_policy_prices_the_measured_and_cohort_names():
+    policy = FillPolicy.from_path(FILL_POLICY_PATH)
+    spreads = policy.half_spread_bps
+    measured = {"LLY", "XOM", "JPM"}
+    cohort = {"XLK", "LRCX", "NOW", "PANW", "ADBE", "MSTR", "TER", "LULU", "CIEN", "LLY", "LITE"}
+    assert set(spreads) == measured | cohort
+    # The owner's E/Q proxy (HRT Rule 605, July 2026), pending Schwab's own 605 figure.
+    assert policy.eq_ratio == 0.25
+    # The default is the cohort maximum: no unlisted name is priced below a listed one.
+    assert policy.default_half_spread_bps == max(spreads.values())
+    assert policy.costs.half_spread_bps("NOT-LISTED") == pytest.approx(
+        policy.default_half_spread_bps * policy.eq_ratio
+    )
 
 
 def test_a_temp_fill_policy_copy_changes_the_fill_without_editing_python():
@@ -389,7 +433,9 @@ def test_replay_py_does_not_hardcode_fill_model_values():
         "same_lead_overlap",
         "different_lead_overlap",
         "same_tick_order",
-        "spread_bps",
+        "half_spread_bps",
+        "default_half_spread_bps",
+        "eq_ratio",
         "taf_per_share",
         "sec31_bps",
     }
@@ -1055,7 +1101,9 @@ def test_a_replay_without_a_cash_flow_policy_submits_no_cash_flow_records():
 # --- ADR-0177: a buy entry the replay's own running balance cannot afford is refused ---
 
 
-_ZERO_FEES = {"spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0}
+_ZERO_FEES = {
+    "half_spread_bps": {}, "default_half_spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0,
+}
 
 
 def _cf_bars(opens, symbol="AAA"):

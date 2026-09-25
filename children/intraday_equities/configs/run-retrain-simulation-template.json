@@ -113,7 +113,7 @@
         "deployment_eligible": false,
         "evidence_end": "2025-10-16",
         "fill_policy": "configs/fill-policy.json",
-        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
+        "fill_policy_sha256": "e078b15bdc66231edd84fb4a1f1bc80204733aaf74e8250f62ffe27dfd2c285d",
         "caps": "development-only",
         "cash_flow_policy": "configs/cash-flow-policy-biweekly.json",
         "cash_flow_policy_sha256": "03c31ce2d6bebaaee6eac2f9916ea7e96137f7787e566d45ebfd3acfc25a1a68",

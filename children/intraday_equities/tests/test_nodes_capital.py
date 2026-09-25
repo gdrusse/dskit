@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, node_class_errors
+from dskit.pipeline.node import ConfigError, DEFAULT_NODE_KINDS, NodeContext, node_class_errors
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
@@ -75,7 +75,9 @@ PARAMS = {
     "cvar_limit": None,
     "cardinality": 3,
     "min_ticket": 200.0,
-    "spread_bps": 2.2,
+    "half_spread_bps": {},
+    "default_half_spread_bps": 2.2,
+    "eq_ratio": 1.0,
     "taf_per_share": 0.000195,
     "sec31_bps": 0.0206,
     "min_price": 5.0,
@@ -287,7 +289,8 @@ class TestParams:
     @pytest.mark.parametrize(
         "name",
         [
-            "spread_bps", "taf_per_share", "sec31_bps", "min_price",
+            "half_spread_bps", "default_half_spread_bps", "eq_ratio",
+            "taf_per_share", "sec31_bps", "min_price",
             "hfdr_q", "band_bps", "max_position_notional", "bundle_max_staleness_ms",
             "cap_max_staleness_ms", "cap_artifact_sha256",
             "cap_producer_document_sha256", "cap_producer_node",
@@ -607,14 +610,16 @@ class TestTheDoorwayHooksReadTheDeclaredFields:
             {name: PARAMS[name] for name in SchwabCostModel._PARAMS}
         )
         for name, row in rows.items():
-            assert row["cost_buy"] == costs.buy_per_share(row["price"])
+            assert row["cost_buy"] == costs.buy_per_share(name, row["price"])
         assert any(row["cost_buy"] > 0.0 for row in rows.values())
 
-    def test_cost_buy_tracks_the_configured_rate(self):
-        node = _node(spread_bps=50.0)
+    def test_cost_buy_tracks_each_names_configured_rate(self):
+        rates = {"AAPL": 50.0, "MSFT": 10.0, "XOM": 1.0}
+        node = _node(half_spread_bps=rates, default_half_spread_bps=None)
         _names, rows, _account = node.instruments(_uinputs())
+        assert set(rows) == set(rates)
         for name, row in rows.items():
-            assert row["cost_buy"] == pytest.approx(row["price"] * 50.0 * 1e-4)
+            assert row["cost_buy"] == pytest.approx(row["price"] * rates[name] * 1e-4)
 
     def test_the_payoff_weights_are_the_bundles_declared_weights(self):
         # Uniform weights make their ORDER unobservable, so this case
@@ -640,6 +645,89 @@ class TestTheDoorwayHooksReadTheDeclaredFields:
         _weights_out, matrix = node.payoffs(_uinputs(bundle=bundle))
         for row in bundle:
             assert matrix[row["entity"]] == [float(v) for v in row["scenarios"]]
+
+
+#: The fee knobs every SchwabCostModel case below shares.
+_FEES = {"taf_per_share": 0.000195, "sec31_bps": 0.0206, "min_price": 5.0}
+
+
+def _costs(**spread):
+    """A SchwabCostModel over ``_FEES`` plus the spread knobs given."""
+    params = {"half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0}
+    params.update(spread)
+    return SchwabCostModel({**params, **_FEES})
+
+
+class TestPerNameSpread:
+    """The owner's 2026-09-25 ruling: per side, the name's quoted half-spread x EQ."""
+
+    def test_a_listed_name_pays_its_own_half_spread(self):
+        costs = _costs(half_spread_bps={"LLY": 4.5, "XOM": 0.8}, default_half_spread_bps=5.6)
+        assert costs.buy_per_share("LLY", 800.0) == pytest.approx(4.5e-4 * 800.0)
+        assert costs.buy_per_share("XOM", 110.0) == pytest.approx(0.8e-4 * 110.0)
+
+    def test_an_unlisted_name_pays_the_explicit_default(self):
+        costs = _costs(half_spread_bps={"LLY": 4.5}, default_half_spread_bps=5.6)
+        assert costs.buy_per_share("ZZZ", 100.0) == pytest.approx(5.6e-4 * 100.0)
+
+    def test_an_unlisted_name_without_a_default_refuses(self):
+        costs = _costs(half_spread_bps={"LLY": 4.5}, default_half_spread_bps=None)
+        for price_it in (costs.buy_per_share, costs.sell_per_share):
+            with pytest.raises(ConfigError, match="ZZZ"):
+                price_it("ZZZ", 100.0)
+
+    def test_eq_ratio_scales_the_spread_term_and_nothing_else(self):
+        full = _costs(half_spread_bps={"LLY": 4.0}, eq_ratio=1.0)
+        half = _costs(half_spread_bps={"LLY": 4.0}, eq_ratio=0.5)
+        assert half.buy_per_share("LLY", 100.0) == pytest.approx(0.5 * full.buy_per_share("LLY", 100.0))
+        fees = 0.000195 + 0.0206e-4 * 100.0
+        assert full.sell_per_share("LLY", 100.0) == pytest.approx(4.0e-4 * 100.0 + fees)
+        assert half.sell_per_share("LLY", 100.0) == pytest.approx(2.0e-4 * 100.0 + fees)
+        assert half.half_spread_bps("LLY") == pytest.approx(2.0)
+
+    def test_eq_ratio_scales_the_default_too(self):
+        costs = _costs(default_half_spread_bps=6.0, eq_ratio=0.5)
+        assert costs.buy_per_share("ZZZ", 100.0) == pytest.approx(3.0e-4 * 100.0)
+
+    @pytest.mark.parametrize(
+        "bad, needle",
+        [
+            ({"half_spread_bps": 2.2}, "half_spread_bps"),
+            ({"half_spread_bps": {"LLY": -1.0}}, "half_spread_bps"),
+            ({"half_spread_bps": {"LLY": float("nan")}}, "half_spread_bps"),
+            ({"half_spread_bps": {"LLY": True}}, "half_spread_bps"),
+            ({"half_spread_bps": {"": 1.0}}, "half_spread_bps"),
+            ({"default_half_spread_bps": -0.1}, "default_half_spread_bps"),
+            ({"default_half_spread_bps": "2"}, "default_half_spread_bps"),
+            ({"eq_ratio": 0.0}, "eq_ratio"),
+            ({"eq_ratio": -1.0}, "eq_ratio"),
+            ({"eq_ratio": float("inf")}, "eq_ratio"),
+            ({"eq_ratio": None}, "eq_ratio"),
+        ],
+    )
+    def test_malformed_spread_knobs_refuse(self, bad, needle):
+        params = {"half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0, **_FEES, **bad}
+        problems = SchwabCostModel.validate_params(params)
+        assert any(needle in p for p in problems), problems
+        with pytest.raises(ConfigError):
+            SchwabCostModel(params)
+        assert any(needle in p for p in EquityKellyMIO.validate_params({**PARAMS, **bad}))
+
+    @pytest.mark.parametrize("name", ["half_spread_bps", "default_half_spread_bps", "eq_ratio"])
+    def test_every_spread_knob_is_required(self, name):
+        params = {"half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0, **_FEES}
+        del params[name]
+        assert any(name in p and "required" in p for p in SchwabCostModel.validate_params(params))
+
+    def test_the_old_scalar_spread_bps_is_refused_by_name(self):
+        params = {"half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0, **_FEES}
+        assert any("spread_bps" in p for p in SchwabCostModel.validate_params({**params, "spread_bps": 2.2}))
+        assert any("spread_bps" in p for p in EquityKellyMIO.validate_params({**PARAMS, "spread_bps": 2.2}))
+
+    def test_sizing_refuses_a_name_the_cost_map_cannot_price(self):
+        node = _node(half_spread_bps={"AAPL": 1.0, "MSFT": 1.0}, default_half_spread_bps=None)
+        with pytest.raises(ConfigError, match="XOM"):
+            node.instruments(_uinputs())
 
 
 class TestPositionBookkeeping:

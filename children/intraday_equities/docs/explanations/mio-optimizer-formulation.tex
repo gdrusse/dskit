@@ -127,11 +127,17 @@ r_{io}=\tilde r_{io}-\sum_{o'}\omega_{o'}\tilde r_{io'}+(1-\hat\pi_i)\,\mu_i,
 replay bills with.
 \impl{\code{SchwabCostModel.buy_per_share / sell_per_share}}
 \begin{equation}
-\kappa^{b}_i=\beta_s p_i,\qquad
-\kappa^{s}_i=\beta_s p_i+\tau+\beta_{31}p_i,
+\kappa^{b}_i=\beta_i p_i,\qquad
+\kappa^{s}_i=\beta_i p_i+\tau+\beta_{31}p_i,
 \label{eq:costs}
 \end{equation}
-where $\beta_s=\text{\code{spread_bps}}\cdot10^{-4}$,
+where $\beta_i=\eta\,\delta_i\cdot10^{-4}$ is name $i$'s effective half-spread:
+$\delta_i$ is its quoted half-spread in bp (\code{half_spread_bps}[$i$], or
+\code{default_half_spread_bps} for an unlisted name; a null default refuses
+the name) and $\eta=$ \code{eq_ratio} is the broker's effective/quoted
+ratio (owner ruling 2026-09-25). The optimizer and the replay read the same
+$\beta_i$, so sizing and fills charge the same cost for the same name.
+$\beta_{31}$ and $\tau$ are unchanged:
 $\beta_{31}=\text{\code{sec31_bps}}\cdot10^{-4}$ and
 $\tau=\text{\code{taf_per_share}}$ (USD per share, uncapped).
 The exit cost per share at the horizon is $\kappa^{x}_i=\kappa^{s}_i$, priced
@@ -410,7 +416,9 @@ cap / calibration max age & 5\,529\,600\,000 ms (64 days) & V1 \\
 \code{uncertainty_min_coverage} & 0.53 (equals the attested false-signal floor) & V1 \\
 \code{cap_evidence_look_ahead} & true (disclosed look-ahead) & developmental \\
 $R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
-spread / TAF / Sec.\,31 & 2.2 bps / \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\
+quoted half-spread $\delta_i$ & per name, 0.59--5.62 bp (LLY/XOM/JPM measured, cohort modelled); default 5.62 bp & \code{tools/spread-cost-results.json} \\
+$\eta$ (EQ) & 0.25 (range 0.10--0.40) & proxy: HRT Rule 605, July 2026; pending Schwab's own 605 \\
+TAF / Sec.\,31 & \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\
 \code{min_price} & \$5 & fill policy \\
 interval / false-signal calibration & coverage 0.95, \code{window_blocks} 10 (UTC-day blocks), 999 session-flip nulls, seed 0 & ADR-0184 \\
 calibration window & trailing 730 days, folds $<k$ & ADR-0184 \\
@@ -443,7 +451,11 @@ solve with no open lot.
   absent bar.
 \item Prices are split-adjusted, so integer-share sizing is distorted before
   later splits.
-\item The costs are illustrative Schwab figures, not broker pins. The
+\item The TAF/Sec.\,31 costs are illustrative Schwab figures, not broker
+  pins. EQ is a proxy from another venue's Rule 605 report, and most names'
+  half-spreads are modelled, not measured. There is no time-of-day spread
+  multiplier (spreads are about 2x in the first 30 minutes and 0.65x in the
+  last 30). The
   optimizer prices at the decision close, and fills happen at the next
   open.
 \item There is no slippage beyond the half-spread, no market impact, no
