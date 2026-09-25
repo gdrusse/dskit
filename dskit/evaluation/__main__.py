@@ -12,6 +12,7 @@ import sys
 
 from dskit.evaluation.events import EvaluationError, EventLog
 from dskit.evaluation.report import BacktestReport
+from dskit.evaluation.sections import SECTIONS, chosen_sections
 from dskit.pipeline.base import ConfigError
 
 __all__ = ["main"]
@@ -36,9 +37,14 @@ def main(argv=None):
     render.add_argument("events", help="path to a schema-v1 events.jsonl")
     render.add_argument("--out", required=True, help="output directory")
     render.add_argument("--title", default=None, help="override the run's title")
+    render.add_argument("--sections", default=None,
+                        help=f"comma-separated section names from {sorted(SECTIONS)} "
+                             "(summary and provenance always render)")
     args = parser.parse_args(argv)
     try:
-        report = BacktestReport(EventLog.read(args.events), title=args.title)
+        names = args.sections.split(",") if args.sections is not None else None
+        report = BacktestReport(EventLog.read(args.events), chosen_sections(names),
+                                title=args.title)
         paths = report.write(args.out)
     except (EvaluationError, ConfigError, OSError) as exc:
         print(exc, file=sys.stderr)
