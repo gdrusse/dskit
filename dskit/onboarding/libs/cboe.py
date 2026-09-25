@@ -36,12 +36,12 @@ normalizes into its own vocabulary):
 (``YYYY-MM-DD HH:MM:SS``) carries no zone. It was America/New_York
 wall-clock time until 2026-09-24, when Cboe switched it to UTC without
 notice (``last_trade_time`` stayed New York). The zone is therefore
-resolved against the pull's own clock: the stamp is read as New York
-time unless that reading lies more than ``CLOCK_SKEW_S`` after the
-moment the chain was fetched, in which case it is read as UTC (a
-snapshot is stamped when served, so the New York reading of a UTC stamp
-is 4-5 hours in the future); a stamp in the future under both readings
-is refused. The result becomes both ``quote_time``
+resolved against the pull's own clock: of the New York and UTC readings
+(4-5 hours apart), the one inside the window from ``MAX_STALENESS_S``
+before to ``CLOCK_SKEW_S`` after the fetch instant is taken. The window
+is shorter than the gap, so at most one reading fits; a stamp that fits
+neither (a snapshot served stale by hours) is refused rather than
+guessed, since its zone cannot be told. The result becomes both ``quote_time``
 and the row's ``effective_date``. Two pulls of one unchanged delayed
 snapshot therefore collide on their key and dedup keeps one — a re-pull,
 not a duplicate. In the repeated hour of a DST fall-back the earlier
@@ -121,6 +121,10 @@ QUOTE_TZ = "America/New_York"
 
 #: Seconds a chain stamp may lie after the fetch clock before its reading is rejected.
 CLOCK_SKEW_S = 300
+
+#: Seconds a chain stamp may lie before the fetch clock; with CLOCK_SKEW_S under the
+#: 4 h New York-UTC gap, so at most one reading of a stamp fits the window.
+MAX_STALENESS_S = 7200
 DEFAULT_BASE_URL = "https://cdn.cboe.com"
 DEFAULT_PACE_S = 0.5
 DEFAULT_RETRIES = 4
@@ -188,9 +192,9 @@ def parse_occ(symbol):
 def _quote_instant(stamp, where, fetched):
     """Return the aware UTC instant of a zoneless ``YYYY-MM-DD HH:MM:SS`` stamp.
 
-    The New York reading wins unless it lies more than ``CLOCK_SKEW_S``
-    after ``fetched`` (the aware UTC fetch instant); then the UTC reading
-    is used, and a stamp in the future under both readings is refused.
+    Of the New York and UTC readings, the one within ``MAX_STALENESS_S``
+    before to ``CLOCK_SKEW_S`` after ``fetched`` (the aware UTC fetch
+    instant) is returned; a stamp neither reading places there is refused.
     """
     try:
         naive = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
@@ -199,15 +203,23 @@ def _quote_instant(stamp, where, fetched):
             [f"{where}: timestamp must be 'YYYY-MM-DD HH:MM:SS' "
              f"({QUOTE_TZ} or UTC), got {stamp!r}"]
         ) from exc
+    earliest = fetched - timedelta(seconds=MAX_STALENESS_S)
     latest = fetched + timedelta(seconds=CLOCK_SKEW_S)
-    for zone in (ZoneInfo(QUOTE_TZ), timezone.utc):
-        instant = naive.replace(tzinfo=zone).astimezone(timezone.utc)
-        if instant <= latest:
-            return instant
-    raise AssetError(
-        [f"{where}: timestamp {stamp!r} is after the fetch instant "
-         f"{fetched.isoformat()} as both {QUOTE_TZ} and UTC time"]
-    )
+    fits = [
+        instant
+        for instant in (
+            naive.replace(tzinfo=zone).astimezone(timezone.utc)
+            for zone in (ZoneInfo(QUOTE_TZ), timezone.utc)
+        )
+        if earliest <= instant <= latest
+    ]
+    if len(fits) != 1:
+        raise AssetError(
+            [f"{where}: timestamp {stamp!r} is not within {MAX_STALENESS_S} s before "
+             f"to {CLOCK_SKEW_S} s after the fetch instant {fetched.isoformat()} "
+             f"as exactly one of {QUOTE_TZ} or UTC time; its zone cannot be told"]
+        )
+    return fits[0]
 
 
 def _body_text(body):
