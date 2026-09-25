@@ -1589,7 +1589,8 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
     The recipe is run-final-hpo.json's lean template byte for byte; the walk
     is the calendar's development_outer schedule; the trading graph is
     ADR-0184's except for the stage-bound values, the biweekly cash policy,
-    the bar store root, the writers, the name and the notes.
+    the owner-delegated MIO policy, the bar store root, the writers, the name
+    and the notes.
     """
     import hashlib
 
@@ -1633,7 +1634,26 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
     assert (simulate_stage["inventory_stage"], simulate_stage["gates_stage"]) == ("inventory", "gates")
 
     template, adr0184 = _raw(RETRAIN_TEMPLATE), _raw("run-development-simulation.json")
-    assert template["pipeline"]["decide"]["params"] == adr0184["pipeline"]["decide"]["params"]
+    # Owner-delegated growth policy v1 (ADR-0185 amendment). These are
+    # deliberately pinned independently rather than read from the config.
+    assert template["pipeline"]["decide"]["params"]["mio"] == {
+        "risk_aversion_gamma": 2.0,
+        "n_tangents": 32,
+        "n_scenarios_max": 128,
+        "cvar_alpha": 0.95,
+        "cvar_limit": 500.0,
+        "cardinality": 5,
+        "min_ticket": 500.0,
+        "hfdr_q": 0.20,
+        "band_bps": 10.0,
+        "max_position_notional": 5000.0,
+        "bundle_max_staleness_ms": 0,
+        "cap_max_staleness_ms": 5529600000,
+        "deployment_mode": False,
+        "uncertainty_max_calibration_age_ms": 5529600000,
+        "uncertainty_min_coverage": 0.90,
+        "cap_evidence_look_ahead": True,
+    }
     assert set(template["pipeline"]) == set(adr0184["pipeline"])
     bound = {"inventory_manifest", "inventory_manifest_sha256", "gates", "gates_sha256", "walk_root"}
     publish = template["pipeline"]["publish"]["params"]

@@ -1,6 +1,6 @@
 {
   "name": "retrain-simulation-trade",
-  "notes": "ADR-0185: the decision graph RetrainedSimulation runs as the last stage of run-retrain-simulation.json. It is ADR-0184's graph (bars -> publisher -> per-tick EquityKellyMIO decider -> DevelopmentSimulation -> report -> writers) with two changes: funding is cash-flow-policy-biweekly.json ($10,000 initial, $500 every other Friday 09:30 New York, holiday -> next trading day, booked before a same-instant decision), and every value marked BOUND-BY-STAGE is bound by the stage to THIS staged run: the publisher's inventory/gates artifacts and their sha256 (read at bind time), walk_root (the directory the walk ran from) and the writers' output directory (<run>/stages/simulate/). A template with any other value there is refused, so no stale pin can ride along. The MIO knobs in decide are ADR-0184 development placeholders, NOT owner rulings. Developmental post-selection, deployment_eligible=false. Not runnable on its own: run the staged document.",
+  "notes": "ADR-0185: the decision graph RetrainedSimulation runs as the last stage of run-retrain-simulation.json. It is ADR-0184's graph (bars -> publisher -> per-tick EquityKellyMIO decider -> DevelopmentSimulation -> report -> writers) with three changes: funding is cash-flow-policy-biweekly.json ($10,000 initial, $500 every other Friday 09:30 New York, holiday -> next trading day, booked before a same-instant decision); the owner-delegated growth-policy-v1 MIO values replace ADR-0184's historical placeholders; and every value marked BOUND-BY-STAGE is bound by the stage to THIS staged run: the publisher's inventory/gates artifacts and their sha256 (read at bind time), walk_root (the directory the walk ran from) and the writers' output directory (<run>/stages/simulate/). A template with any other value there is refused, so no stale pin can ride along. Developmental post-selection, deployment_eligible=false; the policy is a judgement call, not a tuned or deployment-validated optimum. Not runnable on its own: run the staged document.",
   "pipeline": {
     "bars_a": {
       "uses": "intraday_equities-bars",
@@ -83,23 +83,23 @@
         "mio": {
           "risk_aversion_gamma": 2.0,
           "n_tangents": 32,
-          "n_scenarios_max": 64,
+          "n_scenarios_max": 128,
           "cvar_alpha": 0.95,
-          "cvar_limit": null,
+          "cvar_limit": 500.0,
           "cardinality": 5,
-          "min_ticket": 0.0,
-          "hfdr_q": 0.3,
+          "min_ticket": 500.0,
+          "hfdr_q": 0.2,
           "band_bps": 10.0,
-          "max_position_notional": 1000000000000.0,
+          "max_position_notional": 5000.0,
           "bundle_max_staleness_ms": 0,
           "cap_max_staleness_ms": 5529600000,
           "deployment_mode": false,
           "uncertainty_max_calibration_age_ms": 5529600000,
-          "uncertainty_min_coverage": 0.5,
+          "uncertainty_min_coverage": 0.9,
           "cap_evidence_look_ahead": true
         }
       },
-      "notes": "ADR-0184 DEVELOPMENT PLACEHOLDERS, not owner rulings (MIO plan Sec.10 is open): risk_aversion_gamma 2.0, n_tangents 32, n_scenarios_max 64, cvar_alpha 0.95 with no cvar_limit, cardinality 5, min_ticket 0, hfdr_q 0.30 on pi_widened (a widened point estimate, not a bound), band_bps 10, max_position_notional 1e12 (no per-name cap beyond cash), staleness 64 days, uncertainty_min_coverage 0.50, cap_evidence_look_ahead true (the gate admission uses all 20 folds, disclosed)."
+      "notes": "ADR-0185 growth policy v1, owner delegated to best judgement on 2026-09-25: half-Kelly CRRA gamma 2.0; 32 tangents; 128 scenarios; 95% CVaR capped at $500 per lead-group solve; at most 5 names per solve; $500 minimum ticket; HFDR q 0.20 on pi_widened (a widened point estimate, not a bound); 10 bp band; $5,000 per-name ceiling; zero bundle staleness; 64-day cap/calibration age; 0.90 uncertainty coverage floor. cap_evidence_look_ahead remains true because gate admission uses all 20 folds, so this remains developmental post-selection and is not deployment evidence. These are explicit policy choices, not tuned optima."
     },
     "simulate": {
       "uses": "intraday_equities-development-simulation",

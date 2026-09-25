@@ -36,8 +36,9 @@ subclass lives in
 (\code{EquityKellyMIO}). The per-tick driver lives in
 \code{children/intraday_equities/intraday_equities/simulation.py}
 (\code{MioDecider}). Section~\ref{sec:values} lists the exact parameter
-values the backtest uses. Every MIO risk value there is a
-\emph{developmental placeholder}, not an owner ruling.
+values the backtest uses. The MIO risk values are the owner-delegated
+growth policy v1: explicit judgement calls for this developmental run, not
+tuned optima or deployment-validated limits.
 \end{abstract}
 
 \tableofcontents
@@ -387,26 +388,26 @@ aborts the whole simulation run.
 
 These are the values in \code{run-retrain-simulation-template.json} (node
 \code{decide}), \code{fill-policy.json}, \code{cash-flow-policy-biweekly.json}
-and the \code{MioDecider} portfolio. \textbf{P} marks an ADR-0184
-\emph{developmental placeholder} that is not an owner ruling (MIO plan
-\S10 is open).
+and the \code{MioDecider} portfolio. \textbf{V1} marks the owner-delegated
+growth policy chosen on 2026-09-25. These values express a willingness to
+take material risk, but they were not selected by maximizing this backtest.
 
 \begin{longtable}{@{}p{3.6cm}p{7.6cm}p{3.0cm}@{}}
 \toprule
 Quantity & Value & Status \\
 \midrule
-$\gamma$ & 2.0 (CRRA; half-Kelly) & P \\
-$K$ / $S_{\max}$ / $S$ & 32 / 64 / 64 & P \\
-$\alpha$ / $C$ & 0.95 / none (CVaR reported, not capped) & P \\
-$M$ & 5 & P \\
-$m$ & 0 (so \code{elig_lo} is inactive) & P \\
-$q$ & 0.30 & P \\
-$\beta$ & 10 bps (inactive: $h_i=0,\ m=0\Rightarrow n_i=0$) & P \\
-$\bar x_i$ & $10^{12}$ (no per-name cap beyond cash) & P \\
-bundle staleness & 0 ms & P \\
-cap / calibration max age & 5\,529\,600\,000 ms (64 days) & P \\
-\code{uncertainty_min_coverage} & 0.50 & P \\
-\code{cap_evidence_look_ahead} & true (disclosed look-ahead) & P \\
+$\gamma$ & 2.0 (CRRA; half-Kelly) & V1 \\
+$K$ / $S_{\max}$ / $S$ & 32 / 128 / 128 & V1 \\
+$\alpha$ / $C$ & 0.95 / \$500 per lead-group solve & V1 \\
+$M$ & 5 & V1 \\
+$m$ & \$500 & V1 \\
+$q$ & 0.20 & V1 \\
+$\beta$ & 10 bps (inactive because $h_i=0$) & V1 \\
+$\bar x_i$ & \$5,000 per name & V1 \\
+bundle staleness & 0 ms & V1 \\
+cap / calibration max age & 5\,529\,600\,000 ms (64 days) & V1 \\
+\code{uncertainty_min_coverage} & 0.90 & V1 \\
+\code{cap_evidence_look_ahead} & true (disclosed look-ahead) & developmental \\
 $R$ / $\theta$ / $B_0$ / $G$ & 0 / 1.0 / cash / NAV & ADR-0184 \\
 spread / TAF / Sec.\,31 & 2.2 bps / \$0.000195 per share / 0.0206 bps & illustrative (plan \S11.9 open) \\
 \code{min_price} & \$5 & fill policy \\
@@ -420,14 +421,17 @@ solver & HiGHS, gap 0, 1 thread, seed 0 & base default \\
 \noindent With these values the program in the backtest reduces to:
 \begin{itemize}
 \item buys only, from an empty book;
-\item at most 5 names;
+\item at most 5 names, at least \$500 for an active buy, and at most
+  \$5,000 per name;
 \item self-financed from live cash;
 \item total notional at most NAV \emph{per lead-group solve} (each group gets
   $G=$ NAV; across groups only the shared cash bounds the total);
 \item the HFDR row;
-\item CRRA($\gamma=2$) tangent utility over 64 recentered joint scenarios.
+\item CRRA($\gamma=2$) tangent utility over 128 recentered joint scenarios;
+\item 95\% CVaR capped at \$500 per lead-group solve.
 \end{itemize}
-The CVaR and no-trade-band rows are present but inert.
+The no-trade-band row is present but inert because the simulation enters each
+solve with no open lot.
 
 %----------------------------------------------------------------------------
 \section{Known unimplemented or unrealistic assumptions}

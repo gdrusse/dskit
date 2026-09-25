@@ -23884,6 +23884,18 @@ Two sweeps of main and every remote branch found:
    placeholders that are not owner-ruled.
 5. The build is done here; the run happens in WSL.
 
+**Owner amendment (2026-09-25).** The owner delegated the open MIO values to
+best judgement and stated a willingness to take material risk. For the
+ADR-0185 retrain simulation only, ruling 4 is superseded by growth policy v1:
+`risk_aversion_gamma=2.0`, 32 tangents, 128 scenarios, 95% CVaR capped at
+$500 per lead-group solve, cardinality 5, $500 minimum ticket, `hfdr_q=0.20`,
+10 bp band, $5,000 per-name ceiling, zero bundle staleness, 64-day cap and
+calibration maximum age, and a 0.90 uncertainty-coverage floor. The policy
+keeps cash-only buying power and no leverage. It is an explicit risk policy,
+not a backtest-tuned optimum. The historical ADR-0184 run and its report keep
+their original placeholder settings. `cap_evidence_look_ahead=true`, missing
+T+1/GFV/PDT handling, and developmental post-selection still prohibit any
+deployment claim.
 ### Decision
 
 One staged document, `children/intraday_equities/configs/run-retrain-simulation.json`,
