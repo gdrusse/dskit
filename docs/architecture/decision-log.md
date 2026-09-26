@@ -24306,7 +24306,8 @@ quote or backtest engine.
       `condor_credit(...)` carry the existing rules: quotes are nonnegative
       and uncrossed, sizes are at least `count`, long legs pay the ask,
       short legs receive the bid, and 0 < credit < the narrower wing.
-      They are extracted from the rules now inlined in
+      `condor_credit` itself does not raise; each caller enforces that
+      bound (see *Credit* below). They are extracted from the rules now inlined in
       `DefinedRiskCondor._credit`, `_check_identity` and
       `_IndexQuote._validate`. After the extraction, `DefinedRiskCondor`
       calls them with `side=None`, which checks both sizes exactly as
@@ -24682,3 +24683,23 @@ the build stops and reports to the owner.
    fold?
 6. `carry_rate`: 0.055 (proposed), or 0 (disclose the carry, do not charge
    it)?
+
+**Design review (2026-09-25).** A skeptic loop checked this text. Each
+round used a fresh, read-only Sonnet reviewer with the design
+correctness/scope lens: look-ahead, pricing realism, reuse, scope creep.
+
+| Round | Candidate | Found | Majors fixed |
+|---|---|---|---|
+| 1 | `2d4667e` | C0 M3 m2 | long-leg ask > 0; SPY read start sourced; VXN/RVX begin 2009-09, so VIX for every cell |
+| 2 | `aa48ccc` | C0 M1 m2 n1 | a missing `underlying_price` is never admitted |
+| 3 | `345b10e` | C0 M1 m3 n2 | an empty fold records zero trades instead of stopping the walk |
+| 4 | `f5c357b` | C0 M1 m2 n1 | an empty whole chain refuses; cell-level acceptance check |
+| 5 | `accab13` | C0 M1 m2 n1 | `no_quotable_strike` for 2008's zero sizes |
+| 6 | `f53b267` | C0 M1 m1 | settlement needs a close within 4 days and a later row; sizes checked on the traded side |
+| 7 | `8c8d9f0` | C0 M1 m1 n1 | the acceptance check skips the backtest-less IWM cells |
+| 8 | `245e229` | C0 M0 m2 n1 | none (clean) |
+| 9 | `bb93607` (delta) | C0 M0 m0 n1 | none (clean) |
+
+The Minors and Nits of every round were fixed in the following commit,
+including round 9's Nit. The clean review is design evidence, not owner
+approval.
