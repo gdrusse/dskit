@@ -197,6 +197,55 @@ holiday with two stray rows); `last_trade_time` is None; the archive's
 `in_the_money` column is wrong and never read. `acquired_at`, not
 `quote_time`, is when this history became known.
 
+The same source's second stream, `index_daily` (ADR-0187), is the archive's
+`underlying_prices.parquet`: one row per (symbol, date) with the raw close,
+`dividend_amount` and `split_coefficient`. Pull it once per source:
+
+```bash
+python -m dskit.onboarding acquire --source optionshist-chain --stream index_daily   --mode backfill --root ~/data/index_options/ob
+```
+
+### Multi-horizon ETF grid, archived-quote backtest, zoo and HPO (ADR-0187)
+
+A cell is one underlying (SPY, QQQ, IWM) and one days-to-settlement bucket
+({1}, {2,3}, {5}, {7..10}, {14}, {21}, {30..45}; no 0DTE). `configs/grid/`
+holds one `har-vix` walk-forward document per cell (`<symbol>-<bucket>.json`),
+generated from `run-real-har-vix.json` by `index_options.grid`: the
+`underlying` reader (`IndexCloseRows` over the archive's `index_daily`, read
+from the first row after the last split), the bucket's label horizon in
+`labels`/`fwd` and `scale_multiplier = sqrt(h)`, yearly folds from the first
+year the archive lists the underlying, and an embargo of `dte_max + 7` days.
+SPY and QQQ cells add `chain` (`ChainQuoteRows`: that symbol's 16:00 ET quotes
+bounded at intake to the bucket, the 0.5 strike grid and a log-moneyness band,
+parsed once per process) and `backtest` (`CondorQuoteBacktest`: the nearest
+listed expiry, strikes snapped outward onto quotable listed strikes, the
+implied book from the chain's ATM iv, settlement on the last close within four
+days of the settlement date, and a conservative early-exercise charge —
+dividends on an in-the-money short call, carry on an in-the-money short put —
+because ETF options are American). IWM has no dividend source, so its cells
+run labels, forecasts and scores only. A fold in which nothing can enter
+records zero trades with every reason counted; the two plumbing refusals are
+a split with no forecast rows and an empty chain.
+
+```bash
+# the cell documents are generated; edit the base rung or the grid table, then
+python -c "from index_options.grid import write_grid; write_grid('configs')"
+python -m dskit.pipeline walkforward configs/grid/spy-30-45.json --asof <today>
+# the worked cell: the other rungs, a zoo over the four, and per-fold HPO
+python -m dskit.pipeline staged configs/grid/spy-30-45-zoo.json --asof <today>
+python -m dskit.pipeline walkforward configs/grid/spy-30-45-hpo-har-vix.json --asof <today>
+```
+
+The zoo is the ADR-0097 protocol (plan-only first; paste the inventory sha256
+into `approval`). A zoo candidate may carry no search node, so tuning is its
+own document: `spy-30-45-hpo-<rung>.json` runs `hpo-grid` over the rung's own
+knobs (`model.ridge_alpha`; `model.lgbm_params.*`) with the val twCRPS as the
+objective, re-tuned per fold — a measurement of the tuning procedure
+(ADR-0043). Ship a winner by pinning it into the cell document.
+`index_options.grid.cell_files(configs_dir, cell)` writes the same set for
+any other cell. Before the grid runs, measure one bounded `ChainQuoteRows` scan
+on the finished ingest (ADR-0187 step 0: at most 30 minutes and 6 GB).
+
 ## Layout
 
 ```text
@@ -204,21 +253,30 @@ pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
                            # distribution.py (condor under a forecast, ADR-0168);
+                           # grid.py (the ADR-0187 cell table + document generator);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
                            # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json
-                           # + run-real-zoo.json (ADR-0182)
+                           # + run-real-zoo.json (ADR-0182); run-real-vix/-har-vix/
+                           # -lightgbm-vix.json (VIX as a scale feature); source-cboe-chain-wide/
+                           # -index-wide.json (wide recorder + vol indices)
+                           # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
+                           # sha256-pinned, ADR-0182 amendment)
+configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
+                           # (har-vix) + the worked cell's spy-30-45-{empirical,vix,lightgbm-vix,
+                           # zoo,hpo-har-vix,hpo-lightgbm-vix}.json
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
 docs/plans/README.md        # gated research stages
-docs/memos/README.md        # execution-evidence convention
-docs/research/              # README.md, .gitkeep; distribution-modeling/ notes
+docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
+docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
-                           # synthetic_distribution_run, distribution_zoo, real_data (.py)
+                           # synthetic_distribution_run, distribution_zoo, real_data,
+                           # quote_backtest (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or
