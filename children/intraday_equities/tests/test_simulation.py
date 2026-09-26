@@ -17,6 +17,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
@@ -756,6 +757,44 @@ def test_a_fill_offset_of_two_keys_sizing_two_bars_ahead():
     stub = _Scripted({})
     EquityReplay(policy, CASH_POLICY, decider=stub).run(bars)
     assert stub.seen[_minute(0)]["fill_ms"] == {"AAA": _minute(2)}
+
+
+def test_a_halt_queued_entry_is_billed_at_the_rate_it_was_sized_at():
+    """Skeptic round 1 (Major): under halt_handling 'queue' the entry lands on a
+    later bar than sizing keyed. The fee keeps the SCHEDULED fill minute's
+    multiplier (decision bar + fill_bar_offset), so the billed rate is still
+    the one the decider was given; the price is the actual fill bar's."""
+    ny = ZoneInfo("America/New_York")
+
+    def at(hour, minute):
+        return int(datetime(2025, 1, 15, hour, minute, tzinfo=ny).timestamp() * 1000)
+
+    raw = _zero_fee_policy().to_obj()
+    policy = FillPolicy({
+        **raw, "halt_handling": "queue", "half_spread_bps": {"AAA": 10.0},
+        "default_half_spread_bps": None, "eq_ratio": 1.0,
+        "spread_time_of_day": {
+            "timezone": "America/New_York", "default_multiplier": 1.0,
+            "windows": [{"start_minute": 570, "end_minute": 600, "multiplier": 2.0}],
+        },
+    })
+    bars = [
+        {"symbol": "AAA", "asof_ms": at(9, 58), "open": 20.0, "close": 20.0, "halted": False},
+        {"symbol": "AAA", "asof_ms": at(9, 59), "open": 20.0, "close": 20.0, "halted": True},
+        {"symbol": "AAA", "asof_ms": at(10, 0), "open": 25.0, "close": 25.0, "halted": False},
+        {"symbol": "AAA", "asof_ms": at(10, 1), "open": 25.0, "close": 25.0, "halted": False},
+    ]
+    buy = {"symbol": "AAA", "asof_ms": at(9, 58), "lead": 1, "qty": 10, "side": "buy"}
+    stub = _Scripted({at(9, 58): [buy]})
+    out = EquityReplay(policy, CASH_POLICY, decider=stub).run(bars)
+    sized_key = stub.seen[at(9, 58)]["fill_ms"]["AAA"]
+    assert sized_key == at(9, 59)
+    entry = next(f for f in out["fills"] if f["kind"] == "entry")
+    assert (entry["asof_ms"], entry["price"]) == (at(10, 0), 25.0)
+    assert entry["fee"] / (entry["price"] * entry["qty"]) == pytest.approx(
+        policy.costs.half_spread_bps("AAA", sized_key) * 1e-4
+    )
+    assert entry["fee"] == pytest.approx(10.0e-4 * 2.0 * 25.0 * 10)
 
 
 def test_mio_orders_are_integer_shares_filled_next_bar_open(sim):

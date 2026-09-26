@@ -24119,7 +24119,10 @@ fix keys both on the same instant.
   replay's per-tick decider portfolio carries `fill_ms` (`{symbol: that
   instant}`), `MioDecider` passes it to `EquityKellyMIO`, and the MIO requires
   `portfolio.fill_ms` for every name it prices. Sizing and the entry fill
-  therefore charge the identical per-share rate (tested end to end). A name
+  therefore charge the identical per-share rate (tested end to end). An
+  entry that `halt_handling: "queue"` moves past a halted fill bar keeps its
+  scheduled fill minute's multiplier (the rate it was sized at) and takes the
+  later bar's price. A name
   with no fill bar gets the decision instant; the replay refuses any decision
   for it, so no fee is billed at that key. The MIO's horizon exit cost stays
   `kappa^s` at the entry fill minute (unchanged design); the replay bills the

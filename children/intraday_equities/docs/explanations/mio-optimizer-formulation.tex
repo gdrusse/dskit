@@ -388,7 +388,8 @@ aborts the whole simulation run.
 \item \textbf{Fills.} Fills happen at the next bar's \code{open}
   (\code{fill_bar_offset}$=1$), as market orders with no partial fills.
   The fee is $\kappa^b$ or $\kappa^s$ at the fill price and the fill bar's
-  minute, times the quantity.
+  minute, times the quantity. (An entry that a halt queues onto a later bar
+  keeps its scheduled fill minute's $\phi$, the one it was sized at.)
   A buy whose price times quantity plus fee exceeds the replay's cash is
   refused as \code{insufficient_cash}. That can happen because the MIO
   priced at the decision close.

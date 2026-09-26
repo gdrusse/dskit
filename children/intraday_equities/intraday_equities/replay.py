@@ -1395,8 +1395,9 @@ class EquityReplay:
         nor spend the cash of (ADR-0186); and
         ``fill_ms`` is each name's fill instant, the ``asof_ms`` of the bar
         ``fill_bar_offset`` bars after its decision bar here, which keys the
-        time-of-day spread for sizing exactly as the fill is billed (owner
-        ruling 2026-09-25). A name with no such bar (no decision bar at
+        time-of-day spread for sizing exactly as the entry is billed (owner
+        ruling 2026-09-25; a halt-queued entry keeps this scheduled key, see
+        :meth:`_scheduled_fill_ms`). A name with no such bar (no decision bar at
         ``asof``, or the fill bar is past the tape) gets ``asof`` itself: the
         replay refuses any decision for it (``unknown_decision_bar`` /
         ``fill_bar_past_tape``), so no fee is ever billed at that key.
@@ -1907,9 +1908,14 @@ class EquityReplay:
                     "decision_ms": decision["asof_ms"],
                 })
                 continue
+            # The time-of-day spread keys on the SCHEDULED fill bar (decision
+            # bar + fill_bar_offset) -- the instant sizing was given as
+            # portfolio.fill_ms. It is this bar unless a halt queued the
+            # entry onto a later one; the price is always this bar's.
+            fill_key = self._scheduled_fill_ms(symbol, decision)
             fee = (
-                policy.costs.buy_per_share(symbol, price, bar["asof_ms"]) if side == "buy"
-                else policy.costs.sell_per_share(symbol, price, bar["asof_ms"])
+                policy.costs.buy_per_share(symbol, price, fill_key) if side == "buy"
+                else policy.costs.sell_per_share(symbol, price, fill_key)
             ) * qty
             if self._cash_flow_composer is not None and side == "buy":
                 cost = Decimal(str(price)) * Decimal(str(qty)) + Decimal(str(fee))
@@ -1929,6 +1935,16 @@ class EquityReplay:
                 "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
                 decision_ms=decision["asof_ms"],
             )
+
+    def _scheduled_fill_ms(self, symbol, decision):
+        """The ``asof_ms`` of ``decision``'s scheduled fill bar: its decision bar + ``fill_bar_offset``.
+
+        :meth:`_enqueue_decision` admitted only decisions whose scheduled
+        fill bar is on the tape, so both lookups hold.
+        """
+        seq = self._by_symbol[symbol]
+        decision_index = self._index_of[symbol][int(decision["asof_ms"])]
+        return int(seq[decision_index + self._policy.fill_bar_offset]["asof_ms"])
 
     def _queue_fill(
         self, kind, symbol, lead, side, qty, price, asof_ms, fee, index,
