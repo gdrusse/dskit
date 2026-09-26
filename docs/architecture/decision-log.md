@@ -25348,5 +25348,71 @@ every vocabulary string and confusable local name (`scale` /
 `horizon_scale`, `settle_date` / `expiry`, `credit` / `per_share`, ...).
 Every survivor is adjudicated: killed by a fixture or proven equivalent on
 every reachable input. The completion criterion is mechanical, and the
-sweep is re-runnable by the tests lens. Round 6's record below carries the
-sweep's counts and the adjudication table.
+sweep is re-runnable by the tests lens.
+
+*The sweep (author side, before the checkpoint review).* 1,843 mutants
+generated from the pristine modules (nodes.py 1,123; contracts.py 249;
+observations.py 260; grid.py 211), each written into a scratch copy of the
+package with the import path proved on every run, the mapped test files
+run with the first failure stopping the run, and the copy restored from
+the pristine package after each; the unparsed, unmutated modules pass
+their tests as the baseline. Against the tests of `caf66a5` (round 5's
+fixtures included) 1,612 were killed, two of them by a bound on running
+time (a settle-date loop that no longer terminates), and 231 survived
+(nodes 145, contracts 35, observations 48, grid 3). Each survivor that
+encodes a rule got a separating fixture, in three tests-only commits
+(`2bdd315`, `4e96116` and the drop-count / parents commit after it): an
+exact-zero credit is nonpositive while half a dollar trades and a settled
++0.50 is a hit, -0.50 and 0.00 are not; every one of the thirteen required
+chain fields refuses when absent; a zero fee, carry and edge, a one-day
+cell and a multiplier of one are accepted; a target exactly on the band
+is inside it (reference scale 1/16, band 3/32, both dyadic); a zero SIZE
+on one side stops that side's leg alone; the holiday settlement keeps the
+ledger's settle_date, its cursor and its charge window on the settle
+date, with the series long enough for a wrongly admitted entry to show;
+a series whose first row is the settlement close settles; a pre-ex close
+between the short put and the short call assigns nothing; every
+statistic of an empty book is zero; the ledger keeps the row's reference
+scale; the misalignment tolerance is relative (5e-8 on 100 passes); the
+refusal messages name the bound they broke; a farther expiry listed
+first, with half-strikes the near one lacks, never reaches the ledger or
+the snap; a strike listed on one right only is no ATM candidate; the
+always and implied cells carry the same fields as a skipped model cell;
+the charge validates its multiplier, dates and strikes by name, ignores
+closes before the entry, refuses a negative dividend, a non-positive
+close and an empty row list; a negative ask alone is "nonnegative"; the
+reader's shared fields, a one-day bucket, the inverted-bounds message, a
+strike a thousandth below a grid point, and the intake's logged drop
+counts by first failing rule (with 0 for a rule that dropped nothing);
+an index row's dividend copied without a split column and its close
+projected as a float; and write_grid regenerating in place and creating
+missing parents. Re-run against the final tests, 108 mutants survive and
+every one is adjudicated equivalent, by class: 39 in the VIX-proxy node
+(`CondorBacktest`, byte-identical to origin/main; its own suite leaves
+its defaults, gate arithmetic, bid/ask credit rule, cell keys, ledger
+fields and report echo unpinned — a pre-existing backlog item, not this
+ADR's rules); 20 message wording only (the refused input is still
+refused); 6 tolerance widths (1e-9 versus 2e-9 relative on the
+misalignment check, whose absolute term is dead at prices above 1; the
+strike grid's 1e-9 on thousandth strikes); 5 `str()` or `float()` of a
+value the contract already types; 4 the base class's `DEFAULTS`, dead
+under both subclasses' own (the recorded Minor); 4 `_PARAMS` order (a
+membership set); 4 a redundant guard or message (the per-knob refusals
+that follow report the same knob; the reader's empty symbol refused by a
+later check); 4 row numbers inside messages; 4 the geometry test (with
+monotone quantiles and strict outward snaps, strikes are degenerate
+exactly when the two short targets coincide, and no ETF strike lies in
+(0, 1]); 4 the always and implied books' unused scale in `_book`; 4 the
+index into the chosen expiry's rows (all share expiry and settle_date);
+2 settlement and sessions taken to the OCC expiry (no weekday between it
+and the settle date); 2 the ATM check's two sizes (judged symmetrically
+with side None); 2 a close below the short put on the settle date
+(carries for tau = 0); 2 the leg sign (never 0); 1 exact equality of a
+float log-moneyness with the reader's band; 1 a slice constant in the
+generator that the shipped documents' byte-equality test proves
+inert. Child suite 534 passed; ruff clean on the branch's files;
+production blobs and all 27 identity hashes those of `00f0579`. The
+sweep's tool, results and adjudication are session scratch, re-runnable
+by the checkpoint and the tests lens.
+
+The independent checkpoint review and round 6 are recorded below.

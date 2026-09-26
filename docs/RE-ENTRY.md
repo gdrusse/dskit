@@ -39,13 +39,14 @@
   the same family (the nearest-expiry rule pinned by name only, the always
   book's scale, mean P&L and hit rate over all cells, a dead `cvar_alpha`).
   That is the family recurring after the first checkpoint, so a SECOND
-  convergence checkpoint is in progress: a generated operator-mutation
-  sweep over every scope this build added (about 1,850 mutants; the tool
-  is session scratch, its counts and survivor adjudication go into the ADR
-  record), every survivor killed by a fixture or proven equivalent, then an
-  independent checkpoint review and two fresh lenses. The fixtures for the
-  round-5 Majors are on the branch (tests only; production blobs and all
-  27 identity hashes unchanged since `00f0579`). The ADR-0187 build record
+  convergence checkpoint changed the approach: a generated
+  operator-mutation sweep over every scope this build added (1,843
+  mutants; 231 survived the round-5 tests; every survivor now killed by a
+  fixture or adjudicated equivalent, 108 in named classes, in the ADR
+  record). The batch is on the branch as tests-only commits (production
+  blobs and all 27 identity hashes unchanged since `00f0579`; child 534
+  passed). Next: the independent checkpoint review of the sweep and its
+  adjudication, then two fresh lenses (round 6). The ADR-0187 build record
   carries every round and the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
   entry settling at its own close, the fresh-object guard bypassable by an
   in-place-mutating projection, a store-token race, non-reader inputs
