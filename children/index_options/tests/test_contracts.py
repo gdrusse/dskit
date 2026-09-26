@@ -430,6 +430,8 @@ def test_the_charge_validates_its_multiplier_dates_and_strikes():
         american_short_charge(flat, **CHARGE)
     with pytest.raises(ValueError, match="dividend"):
         american_short_charge(_series(WINDOW, [("2024-03-05", -0.5)]), **CHARGE)
+    with pytest.raises(ValueError, match="no closes between 2024-03-01 and 2024-03-08"):
+        american_short_charge([], **CHARGE)
 
 
 def test_the_entry_close_is_the_pre_ex_close_of_an_ex_date_on_the_next_session():

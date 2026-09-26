@@ -208,8 +208,9 @@ def test_a_missing_dividend_in_the_window_refuses():
 def test_the_nearest_listed_expiry_is_taken_and_a_day_without_chain_is_skipped():
     # the farther 03-11 expiry carries richer quotes and a higher iv, so pricing any of its
     # rows would move the credit (put 95 at 2.4), the ATM iv (0.4) and the implied strikes
-    far = _set(_chain(ENTRY, "2024-03-11", iv=0.4), put95={"bid": 2.4, "ask": 2.6},
-               call106={"bid": 1.0, "ask": 1.1})
+    # rows, and it lists two half-strikes (94.5, 105.5) the near expiry lacks
+    far = _set(_chain(ENTRY, "2024-03-11", iv=0.4, strikes=[94.5, 105.5] + list(range(88, 113))),
+               put95={"bid": 2.4, "ask": 2.6}, call106={"bid": 1.0, "ask": 1.1})
     chain = far + _chain(ENTRY, "2024-03-08")  # the farther expiry's rows come FIRST
     metrics, report = _run([_row(ENTRY), _row("2024-03-04"), _row("2024-03-11")], chain, FLAT)
     assert [e["expiry"] for e in report["ledger"]] == ["2024-03-08"]
@@ -284,10 +285,13 @@ def test_a_target_outside_the_band_is_counted():
     assert metrics["model_n_skipped_target_outside_band"] == 1
     assert metrics["always_n_skipped_target_outside_band"] == 1
     assert metrics["implied_n_trades"] == 1  # its targets stay within +-0.05
-    # a skipped cell carries exactly the book fields, with the reason and nothing priced
+    # a skipped cell carries exactly the book fields, with the reason and nothing priced;
+    # only the model book reports an expectation, and at the entry level
     cell = report["ledger"][0]["books"]["model"]
     assert cell == {"strikes": None, "credit_usd": None, "american_charge_usd": None,
                     "pnl_usd": None, "entered": False, "reason": "target_outside_band"}
+    assert report["ledger"][0]["books"]["always"] == cell
+    assert set(report["ledger"][0]["books"]["implied"]) == set(cell)
 
 
 def test_a_target_exactly_on_the_band_is_inside_it():
@@ -370,6 +374,10 @@ def test_credit_bounds_are_classified_not_raised():
     lost, report = _run([_row(ENTRY)], zero, _settled_at(94.99), fee_per_leg=37.375)
     assert report["ledger"][0]["books"]["always"]["pnl_usd"] == pytest.approx(-0.5)
     assert lost["always_hit_rate"] == 0.0
+    # a P&L of exactly zero (12.5 credit, 12.5 lost at 94.875, both dyadic) is not a hit
+    flat, report = _run([_row(ENTRY)], zero, _settled_at(94.875), fee_per_leg=34.375)
+    assert report["ledger"][0]["books"]["always"]["pnl_usd"] == 0.0
+    assert flat["always_hit_rate"] == 0.0 and flat["always_n_trades"] == 1
 
 
 #: Every field a chain row must carry (restated here, never read from the node).
@@ -389,9 +397,10 @@ def test_zero_fee_carry_and_edge_are_accepted():
     node = CondorQuoteBacktest("bt", {**PARAMS, "fee_per_leg": 0.0, "carry_rate": 0.0,
                                       "min_edge_usd": 0.0})
     assert (node.params["fee_per_leg"], node.params["carry_rate"]) == (0.0, 0.0)
-    # a one-day bucket with a one-day horizon is the smallest cell
-    one = CondorQuoteBacktest("bt", {**PARAMS, "dte_min": 1, "dte_max": 1, "label_horizon": 1})
-    assert (one.params["dte_min"], one.params["dte_max"]) == (1, 1)
+    # a one-day bucket with a one-day horizon and a multiplier of one is the smallest cell
+    one = CondorQuoteBacktest("bt", {**PARAMS, "dte_min": 1, "dte_max": 1, "label_horizon": 1,
+                                     "multiplier": 1})
+    assert (one.params["dte_min"], one.params["dte_max"], one.params["multiplier"]) == (1, 1, 1)
 
 
 def test_refusal_messages_name_the_bound_they_broke():
@@ -403,10 +412,11 @@ def test_refusal_messages_name_the_bound_they_broke():
     with pytest.raises(ValueError, match=r"2024-03-01 2024-03-05\) has dte 4 outside the "
                                          r"declared \[5, 10\]"):
         _run([_row(ENTRY)], _chain(ENTRY, "2024-03-05"), FLAT)
-    # the chain's underlying_price must match the forecast close within 1e-9 relative
+    # the chain's underlying_price must match the forecast close within 1e-9 RELATIVE
+    # (5e-8 on a price of 100 is inside that; an absolute 1e-9 alone would refuse it)
     close = _chain(ENTRY, EXPIRY)
     for q in close:
-        q["underlying_price"] = 100.0 + 5e-10
+        q["underlying_price"] = 100.0 + 5e-8
     assert _run([_row(ENTRY)], close, FLAT)[0]["model_n_trades"] == 1
     for q in close:
         q["underlying_price"] = 100.0 + 1e-5
@@ -517,9 +527,13 @@ def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
     charge = report["ledger"][0]["books"]["model"]["american_charge_usd"]
     assert charge == pytest.approx(95.0 * (math.exp(0.055 * 4 / 365) - 1) * 100)
     # and so does the cursor: a forecast row on the settlement CLOSE's date (03-07) is
-    # still inside the position, which ends on the settle date
+    # still inside the position, which ends on the settle date (the series runs on so
+    # that a 03-07 entry, were it admitted, could settle and show in the ledger)
     chain = _chain(ENTRY, EXPIRY) + _chain("2024-03-07", "2024-03-14")
-    _, report = _run([_row(ENTRY), _row("2024-03-07")], chain, holiday)
+    longer = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")
+                      if d not in ("2024-03-07", "2024-03-08")] + [("2024-03-07", 96.0)])
+    longer.sort(key=lambda r: r["date"])
+    _, report = _run([_row(ENTRY), _row("2024-03-07")], chain, longer)
     assert [e["date"] for e in report["ledger"]] == ["2024-03-01"]
     # a series whose FIRST row is the settlement close settles (one later row suffices)
     first = _series([("2024-03-08", 97.0), ("2024-03-11", 98.0)])
@@ -822,6 +836,14 @@ def test_a_crossed_quote_on_either_right_disqualifies_the_atm_pair(crossed_right
     for q in chain:
         if q["strike"] == 100.0 and q["right"] == crossed_right:
             q["bid"], q["ask"] = 0.6, 0.5
+    assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("missing_right", ["put", "call"])
+def test_a_strike_listed_on_one_right_only_is_no_atm_candidate(missing_right):
+    # without its put (or call) the 100 strike is no pair; 99 and 101 tie, the lower wins
+    chain = [q for q in _smile(_chain(ENTRY, EXPIRY))
+             if not (q["strike"] == 100.0 and q["right"] == missing_right)]
     assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
 
 

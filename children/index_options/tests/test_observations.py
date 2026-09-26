@@ -12,6 +12,7 @@ def test_knobs_are_narrowed_and_serving_refused(cls):
 
 import copy
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -268,7 +269,12 @@ def test_chain_reader_knobs_are_narrowed_and_serving_refused(tmp_path):
     node = ChainQuoteRows("chain", base)
     assert (node.stream(), node.key_fields(), node.ts_field(), node.ts_unit(), node.ts_out()) == \
         ("option_chain", ("option", "quote_time"), "quote_time", "iso", "asof_ms")
+    assert node.shared_fields() == ("underlying", "root", "expiry", "right", "quote_time")
     assert node.keep_values() == {"underlying": ["SPY"]}
+    # a one-day bucket is legal; an inverted one names both bounds
+    assert ChainQuoteRows("chain", {**base, "dte_min": 45, "dte_max": 45}).params["dte_min"] == 45
+    with pytest.raises(ConfigError, match="dte_min 46 must not exceed dte_max 45"):
+        ChainQuoteRows("chain", {**base, "dte_min": 46})
     for knob, value in [("stream", "x"), ("key_fields", ["option"]), ("ts_field", "x"),
                         ("shared_fields", []), ("symbol", ""), ("symbol", None),
                         ("dte_min", 0), ("dte_min", 46), ("dte_max", 2.5), ("dte_max", True),
@@ -350,6 +356,25 @@ def test_a_put_far_below_the_band_is_dropped_like_a_call_far_above_it(store_fact
     store = _chain_store(store_factory, rows, name="band")
     out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
     assert sorted((r["right"], r["strike"]) for r in out) == [("call", 100.0), ("put", 82.0)]
+
+
+def test_a_strike_a_thousandth_off_the_grid_on_either_side_is_dropped(store_factory):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 100.0),   # kept
+            _chain("SPY250207P00099999", "2025-01-02", 100.0),   # 99.999: below a grid point
+            _chain("SPY250207P00100001", "2025-01-02", 100.0)]   # 100.001: above one
+    store = _chain_store(store_factory, rows, name="grid")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert [r["strike"] for r in out] == [100.0]
+
+
+def test_the_intake_logs_its_drop_counts_by_first_failing_rule(store_factory, caplog):
+    # CHAIN_ROWS: one foreign root, one off-grid strike, three DTEs outside 30..45, one row
+    # without an underlying close, one call beyond the band; QQQ is never offered
+    store = _chain_store(store_factory)
+    with caplog.at_level(logging.INFO):
+        ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})
+    assert ("chain intake for SPY: kept 7 row(s); dropped {'root': 1, 'strike_grid': 1, "
+            "'dte': 3, 'no_underlying_price': 1, 'band': 1}") in caplog.text
 
 
 def test_a_nonpositive_underlying_price_is_dropped_not_divided_by(store_factory):

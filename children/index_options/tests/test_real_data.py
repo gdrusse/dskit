@@ -102,6 +102,11 @@ def test_index_projection_copies_a_dividend_and_refuses_a_split(tmp_path):
     for dividend in (-1.0, "1.4", True):
         with pytest.raises(ValueError, match="dividend_amount"):
             node.project([dict(raw[0], dividend_amount=dividend)])
+    # the dividend is copied whether or not the row carries a split, and the close is a float
+    bare = node.project([{"symbol": "SPY", "date": "2020-03-24", "close": 240, "asof_ms": 4,
+                          "dividend_amount": 0.5}])
+    assert bare[0]["dividend_amount"] == 0.5
+    assert bare[0]["close"] == 240.0 and isinstance(bare[0]["close"], float)
 
 
 def test_index_reader_and_join_over_a_real_onboarding_store(store_factory):

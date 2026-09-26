@@ -166,6 +166,7 @@ def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     assert sorted(written) == sorted(files)
     for relpath in files:
         assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
+    assert grid.write_grid(child_root / "configs", tmp_path) == written  # regenerating in place
 
 
 def _knob_numbers(obj, out):
