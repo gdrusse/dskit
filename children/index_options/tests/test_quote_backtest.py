@@ -406,9 +406,11 @@ def test_zero_fee_carry_and_edge_are_accepted():
 def test_refusal_messages_name_the_bound_they_broke():
     with pytest.raises(ConfigError, match=r"dte_min 5 must not exceed dte_max 4"):
         CondorQuoteBacktest("bt", {**PARAMS, "dte_max": 4})
-    for alpha in (0.0, -0.5):
+    for alpha in (0.0, -0.5, "0.95", None):  # a non-number is a config error, not a crash
         with pytest.raises(ConfigError, match="cvar_alpha"):
             CondorQuoteBacktest("bt", {**PARAMS, "cvar_alpha": alpha})
+    with pytest.raises(ConfigError, match="short_q"):  # the open bound at 0 (0.5 is pinned)
+        CondorQuoteBacktest("bt", {**PARAMS, "short_q": 0})
     with pytest.raises(ValueError, match=r"2024-03-01 2024-03-05\) has dte 4 outside the "
                                          r"declared \[5, 10\]"):
         _run([_row(ENTRY)], _chain(ENTRY, "2024-03-05"), FLAT)
@@ -845,6 +847,54 @@ def test_a_strike_listed_on_one_right_only_is_no_atm_candidate(missing_right):
     chain = [q for q in _smile(_chain(ENTRY, EXPIRY))
              if not (q["strike"] == 100.0 and q["right"] == missing_right)]
     assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("field", ["bid_size", "ask_size"])
+def test_an_atm_pair_with_an_unusable_size_on_either_side_is_no_candidate(field):
+    # the row-level rule reads BOTH sizes: a None on the put at 100 disqualifies the pair
+    chain = _smile(_chain(ENTRY, EXPIRY))
+    for q in chain:
+        if q["strike"] == 100.0 and q["right"] == "put":
+            q[field] = None
+    assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+def test_an_expiry_listing_a_single_row_is_no_quotable_strike_not_a_crash():
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY, strikes=[100])[:1], FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1 and metrics["n_entries"] == 1
+
+
+def test_the_settlement_gap_is_measured_from_the_settle_date_not_the_occ_expiry():
+    # Saturday expiry 03-09 settles Friday 03-08; with no close after Monday 03-04 until
+    # 03-11, Monday's close is 4 days before the settle date (settles) but 5 before the expiry
+    chain = _chain(ENTRY, "2024-03-09", settle="2024-03-08")
+    series = _series([("2024-03-01", 100.0), ("2024-03-04", 96.0), ("2024-03-11", 98.0),
+                      ("2024-03-12", 99.0)])
+    metrics, report = _run([_row(ENTRY)], chain, series)
+    assert metrics["n_entries"] == 1 and metrics["n_skipped_unsettled"] == 0
+    assert (report["ledger"][0]["settlement_date"], report["ledger"][0]["settlement"]) == \
+        ("2024-03-04", 96.0)
+
+
+def test_a_books_american_charge_is_the_sum_over_its_trades():
+    # two traded cells with two DIFFERENT charges: SPY's dividend (100) plus one day of carry,
+    # QQQ's dividend (50); neither the larger nor the first alone is the book's charge
+    dividends = [("2024-03-07", 1.0)]
+    spy_closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                        ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    spy_series = _series(spy_closes, dividends)
+    spy_charge = american_short_charge(spy_series, 95.0, 106.0, ENTRY, EXPIRY, 0.055, 100)["total_usd"]
+    qqq_chain = _set(_chain(ENTRY, EXPIRY, close=50.0, strikes=range(44, 57), instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_closes = [(d, 50.0) for d in SESSIONS[:3]] + [("2024-03-06", 55.0), ("2024-03-07", 50.0),
+                                                       ("2024-03-08", 45.0), ("2024-03-11", 45.0)]
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": c, "asof_ms": _ms(d),
+                   "dividend_amount": 0.5 if d == "2024-03-07" else 0.0} for d, c in qqq_closes]
+    rows = [_row(ENTRY), _row(ENTRY, close=50.0, instrument="QQQ")]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY) + qqq_chain, spy_series + qqq_series)
+    charges = [e["books"]["model"]["american_charge_usd"] for e in report["ledger"]]
+    assert charges == pytest.approx([50.0, spy_charge]) and spy_charge > 100.0
+    assert metrics["model_american_charge_usd"] == pytest.approx(50.0 + spy_charge)
 
 
 def test_two_instruments_are_priced_and_settled_from_their_own_chain_and_closes():

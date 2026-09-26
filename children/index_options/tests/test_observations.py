@@ -207,7 +207,7 @@ from zoneinfo import ZoneInfo  # noqa: E402
 
 from dskit.onboarding.libs.cboe import CHAIN_FIELDS, parse_occ  # noqa: E402
 
-from index_options.observations import ChainQuoteRows  # noqa: E402
+from index_options.observations import ChainQuoteRows, IndexCloseRows  # noqa: E402
 
 
 def _close_utc(day):
@@ -388,3 +388,21 @@ def test_a_nonpositive_underlying_price_is_dropped_not_divided_by(store_factory)
     store = _chain_store(store_factory, rows, name="level")
     out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
     assert [r["strike"] for r in out] == [101.0]
+
+
+def test_one_expiry_quoted_on_two_dates_stamps_each_row_with_its_own_date(store_factory):
+    # the same OCC expiry quoted on 01-02 (DTE 36) and again on 01-03 (DTE 35): the date
+    # and DTE belong to the QUOTE, not to the expiry (a memo keyed by the expiry would hand
+    # the second row the first row's date)
+    rows = CHAIN_ROWS + [_chain("SPY250207C00100000", "2025-01-03", 100.0)]
+    store = _chain_store(store_factory, rows, name="twodates")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    calls_100 = sorted((r["date"], r["dte"]) for r in out
+                       if r["expiry"] == "2025-02-07" and r["right"] == "call"
+                       and r["strike"] == 100.0)
+    assert calls_100 == [("2025-01-02", 36), ("2025-01-03", 35)]
+
+
+def test_the_index_reader_refuses_an_empty_symbol(tmp_path):
+    with pytest.raises(ConfigError, match="symbol"):
+        IndexCloseRows("u", {"root": str(tmp_path), "source": "optionshist-chain", "symbol": ""})
