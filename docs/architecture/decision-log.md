@@ -24154,8 +24154,10 @@ New facts, checked on the pinned archive files on 2026-09-25:
    2020-03-16. Raw prices are the strike basis. SPY and QQQ carry
    `dividend_amount` on each ex-date (71 and 73 in 2008-2025) and a
    `split_coefficient`. IWM's dividend, split and adjusted columns are
-   entirely null. The files reach back before the chains: SPY and QQQ from
-   1999-11-01, IWM from 2000-05-26. The raw series holds QQQ's 2:1 split
+   entirely null. Every file has the columns `symbol`, `date`, `open`,
+   `high`, `low`, `close`, `adjusted_close`, `volume`, `dividend_amount`
+   and `split_coefficient`. The files reach back before the chains: SPY
+   and QQQ from 1999-11-01, IWM from 2000-05-26. The raw series holds QQQ's 2:1 split
    on 2000-03-20 (flagged) and IWM's 2:1 split on 2005-06-09 (not flagged);
    SPY has no split and no close-to-close move above 25%. The pack reads
    only `close`.
@@ -24222,7 +24224,8 @@ and 52. It covers both the label's reach (h_b sessions, at most
 ceil(1.4 h_b) + 4 days) and the settlement's reach; a test pins both.
 Underlying reads start after the last split: SPY at its first row
 (1999-11-01, never split), QQQ at 2000-03-21 and IWM at 2005-07-01. Every
-first fold therefore trains on at least 2.4 years of rows that carry VIX.
+first fold therefore trains on at least 2.3 years of rows that carry VIX
+(the tightest case is IWM 30-45: 862 days).
 
 *dskit: generic, upstream.* This ADR is the "approved upstream proposal"
 the child's rule requires.
@@ -24247,8 +24250,10 @@ the child's rule requires.
 2. **`dskit/onboarding/libs/optionshist.py`, a second stream
    `index_daily`.** It reads the already-pinned `underlying_prices.parquet`
    and emits one row per (symbol, date).
-   - Fields: the imported Cboe `INDEX_FIELDS`, plus `dividend_amount` and
-     `split_coefficient` (`None` where the archive has null).
+   - Fields: the imported Cboe `INDEX_FIELDS` (all present in the file,
+     fact 6), plus `dividend_amount` and `split_coefficient` (`None` where
+     the archive has null). This stream requires those eight columns; the
+     chain stream keeps its three (`UNDERLYING_COLUMNS`).
    - `effective_date` is the date, the cursor is the maximum date, and
      `max_days` does not apply (at most ~6.6K rows per ticker).
    - Nothing else changes: no new knob, pin or source config. The existing
@@ -24266,8 +24271,9 @@ quote or backtest engine.
       whose `split_coefficient` is present and not 1.
    b. New `ChainQuoteRows(ObservationRows)`, forbidden for serving, with
       `reuse_snapshot = True`. The child's "do not add readers" rule is
-      lifted for this one subclass, as ADR-0182 did for `IndexCloseRows`. It reads stream `option_chain` with key
-      `(option, quote_time)` and timestamp `quote_time`. Its params are
+      lifted for this one subclass, as ADR-0182 did for `IndexCloseRows`.
+      It reads stream `option_chain` with key `(option, quote_time)` and
+      timestamp `quote_time`. Its params are
       `root`, `source`, `symbol`, `dte_min`, `dte_max`,
       `max_abs_log_moneyness`, and the parent's `since_ms` and
       `as_of_acquisition_ms`.
@@ -24276,7 +24282,11 @@ quote or backtest engine.
       - `root` equals the symbol;
       - the strike is a multiple of 0.5 (fact 10);
       - the settlement-date calendar DTE is in [`dte_min`, `dte_max`];
-      - |ln(K / `underlying_price`)| is within the band.
+      - `underlying_price` is a positive number, and
+        |ln(K / `underlying_price`)| is within the band.
+      A row with no `underlying_price` (SPY 2024-01-15, the archive's one
+      stray holiday date) is never admitted. The reader logs how many rows
+      each rule dropped.
    d. It projects fresh rows with `instrument`, `date` (the New York date of
       `quote_time`), `expiry`, `settle_date`, `dte`, `right`, `strike`,
       `bid`, `ask`, `bid_size`, `ask_size`, `iv` and `underlying_price`.
@@ -24443,11 +24453,16 @@ conservative bound derived below.
   A one-off parity check against them is a possible follow-up, not in
   scope.
 
-**Memory and runtime.** Step 0 of the build comes before any other code: on
-the finished ingest, measure one bounded `ChainQuoteRows` scan (wall time
-and peak RSS). The build proceeds only if the scan takes at most 30 minutes
-and 6 GB; otherwise it stops and reports. Only one heavy job runs in WSL at
-a time.
+**Step 0 gates.** Two checks come before any other code; if either fails,
+the build stops and reports to the owner.
+
+- **Runtime.** On the finished ingest, measure one bounded `ChainQuoteRows`
+  scan (wall time and peak RSS). The build proceeds only if the scan takes
+  at most 30 minutes and 6 GB. Only one heavy job runs in WSL at a time.
+- **Trading hours.** Confirm from Cboe's published product specifications
+  that SPY, QQQ and IWM options trade until 16:15 ET across 2008-2025. If
+  they do not, entering at the 16:00 snapshot after seeing the 16:00 close
+  is not feasible, and the entry rule goes back to the owner.
 
 **Tests (owner item 6; TDD, RED first).**
 
@@ -24468,7 +24483,8 @@ a time.
   - `quote_problems` and `condor_credit` refusals, with `DefinedRiskCondor`
     unchanged.
   - `ChainQuoteRows` intake: symbol, root, off-grid strike, DTE on a
-    Saturday expiry, band; and its projection.
+    Saturday expiry, band, and a missing `underlying_price`; and its
+    projection.
   - `IndexCloseRows` dividend passthrough and split refusal.
   - Expiry and strike selection:
     - the nearest expiry within the bucket, and none (counted);
@@ -24551,6 +24567,8 @@ a time.
 
 - Fills are the end-of-day touch with zero latency. Wide spreads in early
   years are paid, not modeled away.
+- Entry feasibility rests on the 16:15 ET option close, which step 0
+  confirms before the build.
 - The sqrt-time rescale within a bucket.
 - The weekday count ignores holidays, so n can be overstated by 1-2 and the
   strikes sit slightly wider.
