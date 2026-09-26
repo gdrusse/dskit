@@ -997,9 +997,13 @@ class _MinuteWalk(_Walk):
         return out
 
     def market(self, index):
-        """:meth:`_Walk.market`, built once per fold (the release and its ticks both read it)."""
+        """:meth:`_Walk.market`, built once per fold (the release and its ticks both read it).
+
+        Only the latest fold is kept: each holds whole-tape label arrays for
+        every admitted name, so keeping every fold would hold them all.
+        """
         if index not in self._markets:
-            self._markets[index] = super().market(index)
+            self._markets = {index: super().market(index)}
         return self._markets[index]
 
     def _tapes(self, fold, nodes, needed):
