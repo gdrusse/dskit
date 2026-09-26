@@ -24211,8 +24211,9 @@ per-minute predictions from the same fitted model:
   (b) has an entry queued but unfilled (`pending_entry_at_decision`); that
   entry's estimated cost, qty x decision price + the cost model's buy cost
   per share, is reserved from cash;
-  (c) would force-exit after the close, that is when t + (1 + L) minutes >
-  the date's last tape minute (`exit_after_close`).
+  (c) would force-exit after the close, that is when t + (`fill_bar_offset` + L)
+  minutes > the date's last tape minute (`exit_after_close`). The offset is
+  read from `fill-policy.json`, where it is 1.
   The MIO still sees `positions: {}`.
   `EquityReplay._portfolio` gains `pending`, the queued entries (additive).
   A decision at t reads only the tick row at t: features, close, sigma and
@@ -24342,3 +24343,9 @@ found 0 Critical, 2 Major and 1 Minor:
   directly, and inside both simulations.
 - **Minor (fixed):** the latest-fold `market` memo had no test; one was
   added.
+
+Round 2 ran on `4e899b1`. The correctness lens found 0 Critical, 0 Major and
+1 Minor, and confirmed every round-1 fix. The Minor is fixed: the close rule
+hardcoded the one-minute fill delay instead of reading `fill_bar_offset`,
+and a test now runs it at offset 2. The fix changed code, so both lenses
+re-run on the next candidate.

@@ -1866,6 +1866,26 @@ def test_minute_decider_opens_no_lot_that_would_exit_after_the_close(mfx):
     assert later.solves == [] and len(later.skipped) == 3
 
 
+def test_minute_close_rule_reads_the_fill_offset_from_the_fill_policy(mfx):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    published = _mrun(mfx)
+    with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
+        later_fill = FillPolicy({**json.load(handle), "fill_bar_offset": 2})
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(mfx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(
+        published["releases"][0], published["ticks"], mio, later_fill, mfx["ctx"], _closes(mfx), TZ,
+    )
+    close = _closes(mfx)[_local_day(_open(published["releases"][0]))]
+    t = close - 3 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    # Fill two bars later: lead 1 exits at t+3 = the close (allowed), lead 2 after it.
+    assert sorted((r["symbol"], r["reason"]) for r in decider.skipped) == [
+        ("LLY", "exit_after_close"), ("LRCX", "exit_after_close"),
+    ]
+    assert {row["lead"] for row in decider.solves} == {1}
+
+
 def test_minute_decision_at_t_reads_no_tick_after_t(mfx):
     published = _mrun(mfx)
     t = _open(published["releases"][0]) + 40 * 60_000

@@ -1319,8 +1319,9 @@ class MinuteMioDecider(MioDecider):
     (``pending_entry_at_decision``) -- reserving that entry's cost, qty x
     the tick price it was sized at plus the cost model's buy cost per
     share, from the cash the MIO may spend -- and a unit whose forced exit
-    (fill one minute later, exit ``lead`` minutes after the fill) would fall
-    after the date's close (``exit_after_close``).
+    (fill ``fill_bar_offset`` minutes later, exit ``lead`` minutes after the
+    fill, both read from the fill policy) would fall after the date's close
+    (``exit_after_close``).
 
     Parameters
     ----------
@@ -1346,6 +1347,7 @@ class MinuteMioDecider(MioDecider):
 
     def __init__(self, release, ticks, mio, fill_policy, ctx, closes, tz, keep_solves=True):
         super().__init__(release, [], mio, fill_policy, ctx, keep_solves=keep_solves)
+        self._fill_offset = int(fill_policy.fill_bar_offset)
         self._closes = dict(closes)
         self._tz = tz
         self._cost_model = SchwabCostModel(self._costs)
@@ -1392,7 +1394,7 @@ class MinuteMioDecider(MioDecider):
         if name in context["pending"]:
             return "pending_entry_at_decision"
         close = context["close"]
-        if close is None or asof_ms + (1 + lead) * _MINUTE_MS > close:
+        if close is None or asof_ms + (self._fill_offset + lead) * _MINUTE_MS > close:
             return "exit_after_close"
         return None
 
