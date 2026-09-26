@@ -24219,6 +24219,11 @@ Walk-forward runs yearly validation windows with `step_days` 365 and
 - QQQ starts at 2011-01-01 with 15 folds;
 - IWM starts at 2008-01-01 with 18 folds.
 
+Every cell of an underlying uses the same folds. Before weekly and daily
+expiries were listed (fact 8), a short bucket has no qualifying expiry, so
+its early folds enter nothing. Such a fold must not stop the walk: see
+*Empty folds* under the pricing section.
+
 The embargo is `embargo_days` = hi_b + 7, giving 8, 10, 12, 17, 21, 28
 and 52. It covers both the label's reach (h_b sessions, at most
 ceil(1.4 h_b) + 4 days) and the settlement's reach; a test pins both.
@@ -24236,11 +24241,13 @@ the child's rule requires.
       semantics.
    b. Opt-in snapshot reuse through a class attribute `reuse_snapshot`,
       default `False`. When a subclass sets it, `_scan` keeps a
-      process-local memo (one entry per class) of the deduplicated,
-      pre-projection records and their digest. The memo key is the class,
-      the canonical params and a store token: every (acquisition dir,
-      stream file, size, mtime_ns) under the stream. Any change to the
-      token forces a rescan.
+      process-local memo of the deduplicated, pre-projection records and
+      their digest. The memo holds ONE entry per class: a new key replaces
+      the old one, so memory is bounded by one snapshot per class. The memo
+      key is the class, the canonical params and a store token: every
+      (acquisition dir, stream file, size, mtime_ns) under the stream. Any
+      change to the token forces a rescan. The grid runs one CLI process
+      per document (the README loop), so the memo lives for one walk.
    c. `project` still runs per instance, and a reusing subclass must
       return fresh objects from it (tested), so no downstream node can
       mutate the memo.
@@ -24308,14 +24315,19 @@ quote or backtest engine.
    outputs and tests do not change.
 6. **Configs.** 21 files at `configs/grid/<underlying>-<bucket>.json`, and
    `index_options/grid.py`: a pure table of cells plus
-   `grid_document(base, cell)`. Its only callers are the config test and a
-   README one-liner that rewrites the files.
+   `grid_document(base, cell)`. Each cell row names its underlying, bucket,
+   h_b, band, embargo, folds, `since_ms`, and whether it has a backtest.
+   For IWM the function drops the base's `backtest` node and adds no
+   `chain`; for SPY and QQQ it swaps in `CondorQuoteBacktest` and adds
+   `chain`. Its only callers are the config test and a README one-liner
+   that rewrites the files.
 7. **Tests and docs.** New `tests/test_quote_backtest.py`; edits to
    `test_observations.py`, `test_contracts.py`, `test_configs.py`, and to
    the manifest test in `test_real_data.py`. AGENTS.md, CLAUDE.md and
-   README.md are updated, including their layout trees. The line
-   "Only European-exercise, PM cash-settled ... index condors" is
-   superseded for this track only.
+   README.md are updated, including their layout trees. Their
+   supersession sentence names two lines, for this track only: "Only
+   European-exercise, PM cash-settled ... index condors", and "Do not add
+   ... readers" (for `ChainQuoteRows` alone).
 
 Manifest: 23 new child files (`grid.py`, 21 grid configs,
 `test_quote_backtest.py`); the edited files are the ones named in items
@@ -24380,6 +24392,15 @@ The report is kind `archived_quote_condor_backtest` with pricing
 `archived_eod_quotes`, and `decision_eligible` is false. Metrics stay flat
 as today, plus the reason counts and each book's total American charge.
 
+*Empty folds.* `CondorBacktest` raises when a split has no entry.
+`CondorQuoteBacktest` keeps that refusal only when the split has no
+forecast rows at all, which means miswiring. When forecast rows exist but
+none can enter (for example `no_expiry_in_bucket` before weeklies), it
+returns zero-trade metrics with every reason counted. The walk's objective
+is `score`'s twCRPS, which those folds still produce, so the walk records
+the fold and runs on. A test runs a fold with forecast rows and no
+qualifying expiry.
+
 **Point in time.**
 
 - **Decision inputs at entry date t:**
@@ -24414,7 +24435,8 @@ conservative bound derived below.
     at least -D.
   - Charge D x multiplier for the first ex-date in (entry, `settle_date`]
     whose pre-ex close is above K_sc, and for every later ex-date in the
-    window. Quarterly dividends put at most one ex-date in a 45-day window.
+    window. SPY and QQQ pay quarterly, so a window seldom holds two
+    ex-dates; the rule charges any number.
 - **Short put, carry.** If assigned at a close s before `settle_date` with
   S_s < K_sp, we hold stock bought at K_sp.
   - The terminal difference to the European leg is
