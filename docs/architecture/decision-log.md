@@ -24192,8 +24192,8 @@ so a pre-2015 Saturday expiry settles on the Friday. The buckets are {1},
 has a label horizon h_b, the number of sessions its lower bound spans:
 1, 2, 3, 5, 10, 15 and 22 (owner question 1). Each bucket also has a
 log-moneyness band that bounds the chain read: 0.05, 0.07, 0.08, 0.10,
-0.12, 0.15 and 0.20. A too-narrow band shows up in the `outside_band`
-count rather than silently.
+0.12, 0.15 and 0.20. A too-narrow band shows up in the backtest's
+`target_outside_band` count rather than silently.
 
 *Documents.* Each cell is one walk-forward document per rung. The document
 is the existing `run-real-<rung>.json` with only these changes:
@@ -24358,14 +24358,17 @@ The node indexes everything by (instrument, date) internally. It walks each
 instrument's in-split forecast rows, oldest first.
 
 1. **Entry.** The row reasons are `CondorBacktest`'s (`forecast_pair`,
-   close, scale), plus `no_chain`, `no_expiry_in_bucket` and `unsettled`.
+   close, scale), plus `no_chain` and `unsettled`. `no_chain` means no
+   admitted chain row that date; the reader has already dropped every
+   out-of-bucket expiry, so this also covers "no expiry in the bucket".
    If the chain's `underlying_price` differs from the row's `close`, the
    node refuses: both are the same archive number, so a difference means
    misalignment. Positions do not overlap: the next entry is the first row
    on or after the current settlement date.
 2. **Expiry.** Only the expiries that appear in that date's chain are
-   eligible, so an expiry listed later is invisible. The node takes the
-   smallest DTE within [`dte_min`, `dte_max`].
+   eligible, so an expiry listed later is invisible. Every admitted row is
+   already in the bucket, because the node's DTE bounds are the reader's.
+   The node takes that date's smallest DTE.
 3. **Strikes (model and always books).**
    - n counts weekdays in (entry, `settle_date`]. It uses no calendar
      knowledge from the future.
@@ -24378,10 +24381,11 @@ instrument's in-split forecast rows, oldest first.
      short call is the smallest quotable call at or above its target. The
      long put is the largest quotable put at or below its target and below
      the short put; the long call mirrors it.
-   - A target outside the band is counted as `outside_band`. A leg whose
-     listed strikes on the right side of its target all fail the quote
-     rules is counted as `no_quotable_strike` (e.g. fact 9's zero sizes). A
-     geometry that is not strictly increasing is `degenerate_strikes`.
+   - A target outside the band is counted as `target_outside_band`. A leg
+     whose listed strikes on the right side of its target all fail the
+     quote rules is counted as `no_quotable_strike` (e.g. fact 9's zero
+     sizes). A geometry that is not strictly increasing is
+     `degenerate_strikes`.
    - *Quotable* means `quote_problems` passes for the traded side: a short
      leg (`side="sell"`) needs bid > 0 and `bid_size` >= 1; a long leg
      (`side="buy"`) needs ask > 0 and `ask_size` >= 1. Both need a
@@ -24392,9 +24396,11 @@ instrument's in-split forecast rows, oldest first.
    of VIX. The ATM iv is the mean of the call and put `iv` at the quotable
    strike nearest S on that expiry, and s = iv sqrt(DTE / 365). Without an
    ATM iv the entry is counted as `no_atm_iv`.
-5. **Credit.** `condor_credit` gives the per-share credit; per condor the
-   USD credit is credit x multiplier - 4 x `fee_per_leg`. Failures are
-   counted as `nonpositive_credit` or `credit_not_below_width`.
+5. **Credit.** `condor_credit` returns the per-share credit and both wing
+   widths; it does not raise. `DefinedRiskCondor` keeps raising on a bad
+   credit, and this node classifies it instead: `nonpositive_credit` or
+   `credit_not_below_width`. Per condor the USD credit is
+   credit x multiplier - 4 x `fee_per_leg`.
 6. **Model book gate.** The expected P&L under the forecast draws, scaled by
    s', at these quotes and net of fees, must exceed `min_edge_usd`.
 7. **Settlement.** S_T is the underlying close of the last row dated on or
@@ -24423,21 +24429,24 @@ as today, plus the reason counts and each book's total American charge.
   symbol.
 
 Otherwise a fold where no row can enter returns zero-trade metrics with
-every reason counted. The reader drops out-of-bucket expiries at intake,
-so a date before weeklies shows up as `no_chain` ("no admitted row that
-day"). The walk's objective is `score`'s twCRPS, which those folds still
-produce, so the walk records the fold and runs on. Tests cover both
-refusals and a fold with forecast rows but no qualifying expiry.
+every reason counted. A date before weeklies shows up as `no_chain`. The
+walk's objective is `score`'s twCRPS, which those folds still produce, so
+the walk records the fold and runs on. Tests cover both refusals and a
+fold with forecast rows but no qualifying expiry.
+
 Acceptance adds a cell-level check for the 14 SPY and QQQ cells, which
 carry a backtest. The 7 IWM cells have no backtest, so they are accepted
-on their labels, forecasts and scores alone. A backtest cell that enters
-no trade in any fold fails. A fold that enters nothing passes only when every skip in it
-has a data-coverage reason: `no_chain`, `no_expiry_in_bucket`,
-`no_quotable_strike` or `unsettled`. Those are what the pre-weekly years,
-2008's unrecorded sizes (fact 9, owner question 3) and the archive's end
-produce. Any other reason
-fails the fold. The report carries each cell's first and last chain date
-and the per-fold reason counts, so the check is mechanical.
+on their labels, forecasts and scores alone.
+
+- A backtest cell that enters no trade in any fold fails.
+- A fold that enters nothing passes only when every skip in it has a
+  data-coverage reason: `no_chain`, `no_quotable_strike` or `unsettled`.
+  Those are what the pre-weekly years, 2008's unrecorded sizes (fact 9,
+  owner question 3) and the archive's end produce. Any other reason fails
+  the fold.
+
+The report carries each cell's first and last chain date and the per-fold
+reason counts, so the check is mechanical.
 
 **Point in time.**
 
@@ -24552,7 +24561,7 @@ the build stops and reports to the owner.
     projection.
   - `IndexCloseRows` dividend passthrough and split refusal.
   - Expiry and strike selection:
-    - the nearest expiry within the bucket, and none (counted);
+    - the nearest expiry within the bucket, and none (`no_chain`);
     - outward snapping to quotable strikes;
     - a 0-bid short leg and a long leg with no ask;
     - a long wing with `bid_size` 0 stays quotable, while
