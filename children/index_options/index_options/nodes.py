@@ -1,7 +1,10 @@
-"""Thin, non-serving Nodes binding condor diagnostics and the proxy backtest."""
+"""Thin, non-serving Nodes binding condor diagnostics and the two condor backtests."""
 
 import math
+from abc import ABC, abstractmethod
+from bisect import bisect_right
 from collections import Counter
+from datetime import date, timedelta
 from statistics import NormalDist
 
 from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
@@ -27,10 +30,14 @@ from .contracts import (
     _instant,
     _integer,
     _text,
+    american_short_charge,
+    condor_credit,
+    quote_problems,
 )
 from .distribution import _LEGS, CondorGeometry, condor_payoff
 
-__all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic"]
+__all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
+           "CondorQuoteBacktest"]
 
 
 class CondorPayoffDiagnostic(Node):
@@ -355,7 +362,195 @@ class CondorDistributionReport(Node):
         return {"metrics": metrics, "report": JsonArtifact(report)}
 
 
-class CondorBacktest(Node):
+class _CondorBacktestBase(Node, ABC):
+    """Non-overlapping three-book condor backtests over one split.
+
+    The shared half of :class:`CondorBacktest` (VIX-proxy prices) and
+    :class:`CondorQuoteBacktest` (archived quotes), ADR-0187 item 5: the
+    per-instrument walk in ``asof_ms`` order, the scorable-row rule
+    (:func:`~dskit.pipeline.distribution_scores.forecast_pair` plus the
+    forward and reference scale), the three-book cell vocabulary and the
+    flat ``<book>_<stat>`` metrics. A member supplies how one entry is
+    priced and settled (:meth:`_entry`), where the next position may start
+    (:meth:`_cursor_after` / :meth:`_before_cursor`), what it needs before
+    the walk (:meth:`_prepare`), when a walk is refused (:meth:`_check_walk`)
+    and its report (:meth:`_report`).
+    """
+
+    role = "score"
+    outputs = ("metrics", "report")
+    BOOKS = ("model", "always", "implied")
+    #: Why an in-split row cannot be an entry, in check order; a member extends it.
+    ROW_REASONS = ("no_outcome", "no_forecast", "no_forward", "no_scale")
+    #: Why a book skips an entry; a member declares its own.
+    BOOK_REASONS = ()
+    #: Knobs every member takes with these defaults.
+    DEFAULTS = {"min_edge_usd": 0.0, "cvar_alpha": 0.95}
+    FORWARD_FIELD = "close"
+
+    @classmethod
+    def _shared_problems(cls, problems, params):
+        """Check the knobs every member declares: split, short_q, multiplier, fees, gate, tail."""
+        if params.get("split") not in SPLIT_NAMES:
+            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
+        q = params.get("short_q")
+        if not number_ok(q) or not 0 < q < 0.5:
+            problems.append(f"short_q must be in (0, 0.5), got {q!r}")
+        check_int_param(problems, "multiplier", params.get("multiplier"), ge=1)
+        fee = params.get("fee_per_leg")
+        if not number_ok(fee) or fee < 0:
+            problems.append(f"fee_per_leg must be a nonnegative number, got {fee!r}")
+        edge = params.get("min_edge_usd", cls.DEFAULTS["min_edge_usd"])
+        if not number_ok(edge):
+            problems.append(f"min_edge_usd must be a finite number, got {edge!r}")
+        alpha = params.get("cvar_alpha", cls.DEFAULTS["cvar_alpha"])
+        if not number_ok(alpha) or not 0 < alpha < 1:
+            problems.append(f"cvar_alpha must be in (0, 1), got {alpha!r}")
+
+    def validate_inputs(self, inputs):
+        """Require a list of forecast rows, plus whatever the member needs.
+
+        Parameters
+        ----------
+        inputs : dict
+            The wired inputs.
+
+        Returns
+        -------
+        list of str
+            Empty when usable.
+        """
+        if not isinstance(inputs.get("forecasts"), list):
+            return ["forecasts must be a list of forecast rows"]
+        return self._extra_input_problems(inputs)
+
+    def _extra_input_problems(self, inputs):
+        """Problems with a member's other inputs; none by default."""
+        return []
+
+    def _knob(self, name):
+        """Return a declared knob or its default."""
+        return self.params.get(name, self.DEFAULTS.get(name))
+
+    def _row_reason(self, row):
+        """Say why a scorable forecast row cannot be priced, or ``None``."""
+        if not price_ok(row.get(self.FORWARD_FIELD)):
+            return "no_forward"
+        if not price_ok(row.get(REFERENCE_SCALE_FIELD)):
+            return "no_scale"
+        return None
+
+    @abstractmethod
+    def _prepare(self, inputs):
+        """Build what the walk needs from the inputs; refuse unusable plumbing."""
+
+    @abstractmethod
+    def _entry(self, row, dist, outcome_z):
+        """Price and settle one entry: ``(entry, None)``, or ``(None, reason)``."""
+
+    @abstractmethod
+    def _cursor_after(self, index, entry):
+        """Return where the next position may start after ``entry`` at ``index``."""
+
+    @abstractmethod
+    def _before_cursor(self, index, row, cursor):
+        """Say whether ``row`` at ``index`` still lies inside the open position."""
+
+    @abstractmethod
+    def _check_walk(self, ledger, skipped, n_in_split):
+        """Refuse a walk the member cannot report on."""
+
+    @abstractmethod
+    def _report(self, ledger, metrics):
+        """Return the member's JSON report."""
+
+    def _book_extras(self, traded):
+        """Extra flat metrics per book from its traded cells; none by default."""
+        return {}
+
+    def _walk(self, ctx, rows):
+        """Walk each instrument's in-split rows oldest first, one open position at a time."""
+        by_instrument = {}
+        for row in rows:
+            if row_in_split(ctx, row, self.params["split"]):
+                by_instrument.setdefault(str(row.get("instrument")), []).append(row)
+        ledger, skipped = [], Counter()
+        for instrument in sorted(by_instrument):
+            ordered = sorted(by_instrument[instrument], key=lambda r: r["asof_ms"])
+            cursor = None
+            for index, row in enumerate(ordered):
+                if cursor is not None and self._before_cursor(index, row, cursor):
+                    continue
+                reason, dist, outcome_z = forecast_pair(
+                    row, DEFAULT_SAMPLES_FIELD, DEFAULT_OUTCOME_FIELD)
+                reason = reason or self._row_reason(row)
+                if reason is None:
+                    entry, reason = self._entry(row, dist, outcome_z)
+                if reason is not None:
+                    skipped[reason] += 1
+                    continue
+                ledger.append(entry)
+                cursor = self._cursor_after(index, entry)
+        return ledger, skipped, sum(len(v) for v in by_instrument.values())
+
+    def _metrics(self, ledger, skipped, n_in_split):
+        """Flatten per-book summaries into objective-addressable numbers."""
+        metrics = {"n_rows_in_split": n_in_split, "n_entries": len(ledger)}
+        for reason in self.ROW_REASONS:
+            metrics[f"n_skipped_{reason}"] = skipped.get(reason, 0)
+        alpha = self._knob("cvar_alpha")
+        for book in self.BOOKS:
+            cells = [entry["books"][book] for entry in ledger]
+            traded = [c for c in cells if c["entered"]]
+            pnls = [c["pnl_usd"] for c in traded]
+            n = len(pnls)
+            metrics.update({
+                f"{book}_n_trades": n,
+                f"{book}_total_pnl_usd": sum(pnls),
+                f"{book}_mean_pnl_usd": sum(pnls) / n if n else 0.0,
+                f"{book}_hit_rate": sum(p > 0 for p in pnls) / n if n else 0.0,
+                f"{book}_cvar_usd": lower_tail_mean(pnls, alpha) if n else 0.0,
+                f"{book}_max_drawdown_usd": max_drawdown(pnls),
+                f"{book}_mean_credit_usd":
+                    sum(c["credit_usd"] for c in traded) / n if n else 0.0,
+            })
+            metrics.update({f"{book}_{k}": v for k, v in self._book_extras(traded).items()})
+            for reason in self.BOOK_REASONS:
+                metrics[f"{book}_n_skipped_{reason}"] = sum(
+                    c["reason"] == reason for c in cells)
+        return metrics
+
+    def run(self, ctx, inputs):
+        """Backtest the three books over the split.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Its splits decide membership.
+        inputs : dict
+            ``forecasts`` (sample-set forecast rows) and the member's own
+            inputs.
+
+        Returns
+        -------
+        dict
+            ``metrics`` (flat numbers, ``<book>_<stat>``; a book with no
+            trades reports zeros beside ``<book>_n_trades = 0``) and
+            ``report`` (a JsonArtifact with the per-trade ledger).
+
+        Raises
+        ------
+        ValueError
+            When the member refuses the inputs or the walk (see the class).
+        """
+        self._prepare(inputs)
+        ledger, skipped, n_in_split = self._walk(ctx, inputs["forecasts"])
+        self._check_walk(ledger, skipped, n_in_split)
+        metrics = self._metrics(ledger, skipped, n_in_split)
+        return {"metrics": metrics, "report": JsonArtifact(self._report(ledger, metrics))}
+
+
+class CondorBacktest(_CondorBacktestBase):
     """Non-overlapping iron condors over one split, priced by the VIX proxy.
 
     ADR-0182 item 5. Entries are the split's rows in ``asof_ms`` order (per
@@ -391,7 +586,7 @@ class CondorBacktest(Node):
     condor. A condor whose rounded strikes are not
     strictly increasing, or whose credit is not positive, is skipped and
     counted. Role ``score``; ``decision_eligible`` is false while pricing
-    is the proxy.
+    is the proxy. ``run`` raises when no in-split row can be an entry.
 
     Parameters
     ----------
@@ -423,11 +618,8 @@ class CondorBacktest(Node):
         out["metrics"]["model_total_pnl_usd"]
     """
 
-    role = "score"
-    outputs = ("metrics", "report")
-    BOOKS = ("model", "always", "implied")
     #: Why an in-split row cannot be an entry, in the order they are checked.
-    ROW_REASONS = ("no_outcome", "no_forecast", "no_forward", "no_scale", "no_iv")
+    ROW_REASONS = _CondorBacktestBase.ROW_REASONS + ("no_iv",)
     #: Why a book skips an entry.
     BOOK_REASONS = ("degenerate_strikes", "nonpositive_credit", "below_min_edge")
     DEFAULTS = {"hold_steps": 21, "trading_days_per_year": 252, "min_edge_usd": 0.0,
@@ -437,7 +629,6 @@ class CondorBacktest(Node):
                  "iv_floor", "iv_ceiling", "half_spread_min", "half_spread_frac")
     _WINGS = ("wing_points", "wing_z")
     _PARAMS = tuple(sorted(_REQUIRED + _WINGS + tuple(DEFAULTS)))
-    FORWARD_FIELD = "close"
     IV_FIELD = "iv_index"
 
     @classmethod
@@ -459,87 +650,49 @@ class CondorBacktest(Node):
         missing = [k for k in cls._REQUIRED if k not in params]
         if missing:
             problems.append(f"missing params: {missing}")
-        if params.get("split") not in SPLIT_NAMES:
-            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
-        q = params.get("short_q")
-        if not number_ok(q) or not 0 < q < 0.5:
-            problems.append(f"short_q must be in (0, 0.5), got {q!r}")
+        cls._shared_problems(problems, params)
         wings = [k for k in cls._WINGS if k in params]
         if len(wings) != 1:
             problems.append(f"declare exactly one of {list(cls._WINGS)}, got {wings}")
         for knob in wings + ["strike_increment"]:
             if not price_ok(params.get(knob)):
                 problems.append(f"{knob} must be a positive number, got {params.get(knob)!r}")
-        check_int_param(problems, "multiplier", params.get("multiplier"), ge=1)
         for knob in ("hold_steps", "trading_days_per_year"):
             check_int_param(problems, knob, params.get(knob, cls.DEFAULTS[knob]), ge=1)
-        fee = params.get("fee_per_leg")
-        if not number_ok(fee) or fee < 0:
-            problems.append(f"fee_per_leg must be a nonnegative number, got {fee!r}")
-        edge = params.get("min_edge_usd", cls.DEFAULTS["min_edge_usd"])
-        if not number_ok(edge):
-            problems.append(f"min_edge_usd must be a finite number, got {edge!r}")
-        alpha = params.get("cvar_alpha", cls.DEFAULTS["cvar_alpha"])
-        if not number_ok(alpha) or not 0 < alpha < 1:
-            problems.append(f"cvar_alpha must be in (0, 1), got {alpha!r}")
         problems.extend(VolIndexSmileQuotes.problems(
             *(params.get(k, cls.DEFAULTS.get(k)) for k in VolIndexSmileQuotes.KNOBS)))
         return problems
 
-    def validate_inputs(self, inputs):
-        """Require a list of forecast rows.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired inputs.
-
-        Returns
-        -------
-        list of str
-            Empty when usable.
-        """
-        if not isinstance(inputs.get("forecasts"), list):
-            return ["forecasts must be a list of forecast rows"]
-        return []
-
-    def _knob(self, name):
-        """Return a declared knob or its default."""
-        return self.params.get(name, self.DEFAULTS.get(name))
-
     def _row_reason(self, row):
-        """Say why a scorable forecast row cannot be priced, or ``None``."""
-        if not price_ok(row.get(self.FORWARD_FIELD)):
-            return "no_forward"
-        if not price_ok(row.get(REFERENCE_SCALE_FIELD)):
-            return "no_scale"
-        if not price_ok(row.get(self.IV_FIELD)):
+        """Add the VIX to the shared forward and scale checks."""
+        reason = super()._row_reason(row)
+        if reason is None and not price_ok(row.get(self.IV_FIELD)):
             return "no_iv"
-        return None
+        return reason
 
-    def _entries(self, ctx, rows):
-        """Pick non-overlapping entry rows per instrument, counting skips."""
-        hold = int(self._knob("hold_steps"))
-        by_instrument = {}
-        for row in rows:
-            if row_in_split(ctx, row, self.params["split"]):
-                by_instrument.setdefault(str(row.get("instrument")), []).append(row)
-        entries, skipped = [], Counter()
-        for instrument in sorted(by_instrument):
-            ordered = sorted(by_instrument[instrument], key=lambda r: r["asof_ms"])
-            next_entry = 0
-            for index, row in enumerate(ordered):
-                if index < next_entry:
-                    continue
-                reason, dist, outcome_z = forecast_pair(
-                    row, DEFAULT_SAMPLES_FIELD, DEFAULT_OUTCOME_FIELD)
-                reason = reason or self._row_reason(row)
-                if reason:
-                    skipped[reason] += 1
-                    continue
-                entries.append((row, dist, outcome_z))
-                next_entry = index + hold
-        return entries, skipped, sum(len(v) for v in by_instrument.values())
+    def _prepare(self, inputs):
+        """Build the proxy quote model and the expiry in years."""
+        self._quotes = VolIndexSmileQuotes(*(self._knob(k) for k in VolIndexSmileQuotes.KNOBS))
+        self._years = self._knob("hold_steps") / self._knob("trading_days_per_year")
+
+    def _entry(self, row, dist, outcome_z):
+        """Every priceable row is an entry under the proxy."""
+        return self._evaluate(self._quotes, row, dist, outcome_z, self._years), None
+
+    def _cursor_after(self, index, entry):
+        """Return the index ``hold_steps`` rows on, where the next entry may start."""
+        return index + int(self._knob("hold_steps"))
+
+    def _before_cursor(self, index, row, cursor):
+        """Rows inside the hold window are passed over, uncounted."""
+        return index < cursor
+
+    def _check_walk(self, ledger, skipped, n_in_split):
+        """Refuse a split with no entry at all."""
+        if not ledger:
+            raise ValueError(f"{self.key}: no in-split row carries a forecast, outcome, "
+                             f"forward, scale and iv_index in split "
+                             f"{self.params['split']!r} (skipped {dict(skipped)})")
 
     def _strikes(self, forward, z_put, z_call, scale):
         """Round a condor's four strikes, or ``None`` when they degenerate."""
@@ -607,68 +760,378 @@ class CondorBacktest(Node):
                 "iv_index": vix, "reference_scale": scale, "settlement": settlement,
                 "model_expected_pnl_usd": expected, "books": books}
 
-    def _metrics(self, ledger, skipped, n_in_split):
-        """Flatten per-book summaries into objective-addressable numbers."""
-        metrics = {"n_rows_in_split": n_in_split, "n_entries": len(ledger)}
-        for reason in self.ROW_REASONS:
-            metrics[f"n_skipped_{reason}"] = skipped.get(reason, 0)
-        alpha = self._knob("cvar_alpha")
-        for book in self.BOOKS:
-            cells = [entry["books"][book] for entry in ledger]
-            traded = [c for c in cells if c["entered"]]
-            pnls = [c["pnl_usd"] for c in traded]
-            n = len(pnls)
-            metrics.update({
-                f"{book}_n_trades": n,
-                f"{book}_total_pnl_usd": sum(pnls),
-                f"{book}_mean_pnl_usd": sum(pnls) / n if n else 0.0,
-                f"{book}_hit_rate": sum(p > 0 for p in pnls) / n if n else 0.0,
-                f"{book}_cvar_usd": lower_tail_mean(pnls, alpha) if n else 0.0,
-                f"{book}_max_drawdown_usd": max_drawdown(pnls),
-                f"{book}_mean_credit_usd":
-                    sum(c["credit_usd"] for c in traded) / n if n else 0.0,
-            })
-            for reason in self.BOOK_REASONS:
-                metrics[f"{book}_n_skipped_{reason}"] = sum(
-                    c["reason"] == reason for c in cells)
-        return metrics
+    def _report(self, ledger, metrics):
+        """Return the proxy report; never decision-eligible."""
+        return {"kind": "vix_proxy_condor_backtest", "pricing": "vix_proxy",
+                "decision_eligible": False,
+                "units": "USD per condor, one contract per leg",
+                "params": {k: self._knob(k) for k in self._PARAMS if k in self.params
+                           or k in self.DEFAULTS},
+                "years_to_expiry": self._years, "metrics": metrics, "ledger": ledger}
 
-    def run(self, ctx, inputs):
-        """Backtest the three books over the split.
+
+class CondorQuoteBacktest(_CondorBacktestBase):
+    """Non-overlapping iron condors on one underlying, priced from archived quotes.
+
+    ADR-0187. The sibling of :class:`CondorBacktest` for the ETF track: one
+    cell (an underlying and a days-to-expiry bucket) whose ``chain`` input
+    is :class:`~index_options.observations.ChainQuoteRows` (already bounded
+    to the bucket) and whose ``underlying`` input is the same symbol's
+    :class:`~index_options.observations.IndexCloseRows` (closes and
+    ex-dividend amounts). Everything is indexed by ``(instrument, date)``;
+    the walk is the base's.
+
+    At an entry date ``t``:
+
+    1. **Chain.** No admitted row that date is ``no_chain``. A chain row whose
+       ``underlying_price`` is not the forecast row's ``close`` refuses (one
+       archive number, so a difference is misalignment), as does a row
+       whose ``dte`` lies outside this node's ``dte_min``/``dte_max``.
+    2. **Expiry.** The smallest DTE listed that date; ``settle_date`` is the
+       reader's (the last weekday on or before the OCC expiry).
+    3. **Settlement.** ``S_T`` is the underlying close of the last row dated
+       on or before ``settle_date``, valid only within 4 calendar days of it
+       and when a later row exists; otherwise the entry is ``unsettled`` and
+       never traded.
+    4. **Strikes (model, always).** ``n`` weekdays in ``(t, settle_date]``
+       rescale the reference scale, ``s' = scale sqrt(n / label_horizon)``;
+       targets ``K = S exp(s' Q(q))`` at ``short_q`` / ``1 - short_q`` with
+       wings ``wing_z`` further out, each snapped OUTWARD onto that expiry's
+       QUOTABLE listed strikes (a short leg needs a positive bid and a bid
+       size, a long leg a positive ask and an ask size —
+       :func:`~index_options.contracts.quote_problems`). A target beyond
+       ``max_abs_log_moneyness`` is ``target_outside_band``, a side with no
+       quotable strike is ``no_quotable_strike``, a non-increasing geometry
+       ``degenerate_strikes``.
+    5. **Implied.** The proxy's formula with the chain's own vol: the mean
+       call/put ``iv`` at the valid strike nearest ``S`` (``no_atm_iv``
+       otherwise), ``s = iv sqrt(DTE / 365)``.
+    6. **Credit.** :func:`~index_options.contracts.condor_credit`; the USD
+       credit is ``credit x multiplier - 4 x fee_per_leg``; a book is
+       ``nonpositive_credit`` when that is not positive and
+       ``credit_not_below_width`` when the per-share credit reaches the
+       narrower wing. The model book must also clear ``min_edge_usd`` in
+       expectation under the draws, scaled by ``s'``.
+    7. **P&L.** ``credit_usd + multiplier x condor_payoff(S_T) -``
+       :func:`~index_options.contracts.american_short_charge` at
+       ``carry_rate``; a session in the window with no ``dividend_amount``
+       refuses.
+
+    A split with no forecast row, or an empty ``chain`` across the whole
+    snapshot, refuses; a fold where no row can enter reports zero trades
+    with every reason counted. Role ``score``, forbidden for serving,
+    never decision-eligible: fills are the end-of-day touch at zero latency.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        Required: ``split``, ``short_q`` (in (0, 0.5)), ``wing_z`` (> 0),
+        ``multiplier`` (int >= 1), ``fee_per_leg`` (>= 0), ``dte_min`` /
+        ``dte_max`` (ints, 1 <= min <= max), ``max_abs_log_moneyness``
+        (> 0), ``label_horizon`` (int >= 1) and ``carry_rate`` (>= 0).
+        Optional: ``min_edge_usd`` (0), ``cvar_alpha`` (0.95).
+
+    Examples
+    --------
+    SPY's 30-45 day cell::
+
+        node = CondorQuoteBacktest("backtest", {
+            "split": "val", "short_q": 0.1, "wing_z": 0.5, "multiplier": 100,
+            "fee_per_leg": 0.65, "dte_min": 30, "dte_max": 45,
+            "max_abs_log_moneyness": 0.2, "label_horizon": 22, "carry_rate": 0.055,
+        })
+        out = node.run(ctx, {"forecasts": rows, "chain": quotes, "underlying": closes})
+        out["metrics"]["implied_n_trades"]
+    """
+
+    ROW_REASONS = _CondorBacktestBase.ROW_REASONS + ("no_chain", "unsettled")
+    BOOK_REASONS = ("target_outside_band", "no_quotable_strike", "degenerate_strikes",
+                    "no_atm_iv", "nonpositive_credit", "credit_not_below_width",
+                    "below_min_edge")
+    DEFAULTS = {"min_edge_usd": 0.0, "cvar_alpha": 0.95}
+    #: Calendar days a settlement close may precede the settlement date (Sandy, 2012).
+    MAX_SETTLEMENT_GAP_DAYS = 4
+    _REQUIRED = ("split", "short_q", "wing_z", "multiplier", "fee_per_leg", "dte_min",
+                 "dte_max", "max_abs_log_moneyness", "label_horizon", "carry_rate")
+    _PARAMS = tuple(sorted(_REQUIRED + tuple(DEFAULTS)))
+    _CHAIN_FIELDS = ("instrument", "date", "expiry", "settle_date", "dte", "right", "strike",
+                     "bid", "ask", "bid_size", "ask_size", "iv", "underlying_price")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the declaration; every problem is reported.
 
         Parameters
         ----------
-        ctx : NodeContext
-            Its splits decide membership.
-        inputs : dict
-            ``forecasts``: sample-set forecast rows carrying ``close``,
-            ``iv_index`` and the reference scale.
+        params : dict
+            The candidate configuration.
 
         Returns
         -------
-        dict
-            ``metrics`` (flat numbers, ``<book>_<stat>``; a book with no
-            trades reports zeros beside ``<book>_n_trades = 0``) and
-            ``report`` (a JsonArtifact with the per-trade ledger).
-
-        Raises
-        ------
-        ValueError
-            When no in-split row can be an entry.
+        list of str
+            All problems; empty when usable.
         """
-        quotes = VolIndexSmileQuotes(*(self._knob(k) for k in VolIndexSmileQuotes.KNOBS))
-        years = self._knob("hold_steps") / self._knob("trading_days_per_year")
-        entries, skipped, n_in_split = self._entries(ctx, inputs["forecasts"])
-        if not entries:
-            raise ValueError(f"{self.key}: no in-split row carries a forecast, outcome, "
-                             f"forward, scale and iv_index in split "
-                             f"{self.params['split']!r} (skipped {dict(skipped)})")
-        ledger = [self._evaluate(quotes, row, dist, z, years) for row, dist, z in entries]
-        metrics = self._metrics(ledger, skipped, n_in_split)
-        report = {"kind": "vix_proxy_condor_backtest", "pricing": "vix_proxy",
-                  "decision_eligible": False,
-                  "units": "USD per condor, one contract per leg",
-                  "params": {k: self._knob(k) for k in self._PARAMS if k in self.params
-                             or k in self.DEFAULTS},
-                  "years_to_expiry": years, "metrics": metrics, "ledger": ledger}
-        return {"metrics": metrics, "report": JsonArtifact(report)}
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        missing = [k for k in cls._REQUIRED if k not in params]
+        if missing:
+            problems.append(f"missing params: {missing}")
+        cls._shared_problems(problems, params)
+        for knob in ("wing_z", "max_abs_log_moneyness"):
+            if not price_ok(params.get(knob)):
+                problems.append(f"{knob} must be a positive number, got {params.get(knob)!r}")
+        for knob in ("dte_min", "dte_max", "label_horizon"):
+            check_int_param(problems, knob, params.get(knob), ge=1)
+        lo, hi = params.get("dte_min"), params.get("dte_max")
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in (lo, hi)) and lo > hi:
+            problems.append(f"dte_min {lo} must not exceed dte_max {hi}")
+        rate = params.get("carry_rate")
+        if not number_ok(rate) or rate < 0:
+            problems.append(f"carry_rate must be a finite number >= 0, got {rate!r}")
+        return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Keep the backtest out of served graphs.
+
+        Parameters
+        ----------
+        params, verified_run_evidence : dict
+            Unused.
+
+        Returns
+        -------
+        str
+            Always forbidden.
+        """
+        return "forbidden"
+
+    def _extra_input_problems(self, inputs):
+        """Require the chain and underlying row lists."""
+        return [f"{port} must be a list of rows" for port in ("chain", "underlying")
+                if not isinstance(inputs.get(port), list)]
+
+    # -- preparation --------------------------------------------------------
+
+    def _prepare(self, inputs):
+        """Index the chain by (instrument, date) and the closes by instrument; refuse bad plumbing."""
+        chain = inputs["chain"]
+        if not chain:
+            raise ValueError(f"{self.key}: the chain input is empty across the whole "
+                             "snapshot — a misconfigured reader, an unpulled store or a "
+                             "wrong symbol")
+        lo, hi = self.params["dte_min"], self.params["dte_max"]
+        self._chain, dates = {}, []
+        for n, row in enumerate(chain, start=1):
+            missing = [f for f in self._CHAIN_FIELDS if f not in row]
+            if missing:
+                raise ValueError(f"{self.key}: chain row {n} lacks {missing}")
+            if not lo <= row["dte"] <= hi:
+                raise ValueError(f"{self.key}: chain row {n} ({row['instrument']} "
+                                 f"{row['date']} {row['expiry']}) has dte {row['dte']} "
+                                 f"outside the declared [{lo}, {hi}] — the reader and the "
+                                 "backtest must declare one bucket")
+            self._chain.setdefault((str(row["instrument"]), row["date"]), []).append(row)
+            dates.append(row["date"])
+        self._chain_span = {"first_date": min(dates), "last_date": max(dates),
+                            "n_rows": len(chain)}
+        self._closes = {}
+        for n, row in enumerate(inputs["underlying"], start=1):
+            if not price_ok(row.get("close")) or not isinstance(row.get("date"), str):
+                raise ValueError(f"{self.key}: underlying row {n} needs a date and a "
+                                 f"positive close, got {row!r}")
+            self._closes.setdefault(str(row.get("instrument")), []).append(row)
+        for rows in self._closes.values():
+            rows.sort(key=lambda r: r["date"])
+            if any(a["date"] == b["date"] for a, b in zip(rows, rows[1:])):
+                raise ValueError(f"{self.key}: the underlying series repeats a date")
+
+    # -- the walk's hooks ---------------------------------------------------
+
+    def _cursor_after(self, index, entry):
+        """Return this settlement date: the next entry is the first row on or after it."""
+        return entry["settle_date"]
+
+    def _before_cursor(self, index, row, cursor):
+        """Rows before the open position's settlement date are passed over."""
+        return row["date"] < cursor
+
+    def _check_walk(self, ledger, skipped, n_in_split):
+        """Refuse only a split with no forecast rows; an empty fold is a recorded result."""
+        if n_in_split == 0:
+            raise ValueError(f"{self.key}: no forecast row lies in split "
+                             f"{self.params['split']!r}")
+
+    # -- one entry ----------------------------------------------------------
+
+    def _settlement(self, instrument, settle_date):
+        """Return the ``(date, close)`` the entry settles at, or ``None`` when it cannot."""
+        rows = self._closes.get(instrument, [])
+        dates = [r["date"] for r in rows]
+        at = bisect_right(dates, settle_date) - 1
+        if at < 0 or at + 1 >= len(rows):
+            return None
+        gap = (date.fromisoformat(settle_date) - date.fromisoformat(dates[at])).days
+        if gap > self.MAX_SETTLEMENT_GAP_DAYS:
+            return None
+        return rows[at]["date"], rows[at]["close"]
+
+    @staticmethod
+    def _sessions(day, settle_date):
+        """Count the weekdays in ``(day, settle_date]`` — no calendar knowledge from the future."""
+        start, end = date.fromisoformat(day), date.fromisoformat(settle_date)
+        return sum(1 for k in range(1, (end - start).days + 1)
+                   if (start + timedelta(days=k)).weekday() < 5)
+
+    @staticmethod
+    def _listed(rows):
+        """Return ``{right: {strike: row}}`` for one expiry's chain rows."""
+        listed = {"put": {}, "call": {}}
+        for row in rows:
+            listed[row["right"]][float(row["strike"])] = row
+        return listed
+
+    @staticmethod
+    def _quotable(row, side):
+        """Say whether one leg can be traded on ``side`` for one contract."""
+        return not quote_problems(row["bid"], row["ask"], row["bid_size"], row["ask_size"],
+                                  1, side=side)
+
+    def _atm_iv(self, listed, forward):
+        """Mean call/put ``iv`` at the valid strike nearest the forward, or ``None``."""
+        candidates = []
+        for strike in listed["put"].keys() & listed["call"].keys():
+            ivs = [listed[right][strike].get("iv") for right in ("put", "call")]
+            if all(price_ok(iv) for iv in ivs) and all(
+                not quote_problems(listed[right][strike]["bid"], listed[right][strike]["ask"],
+                                   listed[right][strike]["bid_size"],
+                                   listed[right][strike]["ask_size"], 0)
+                for right in ("put", "call")
+            ):
+                candidates.append((abs(strike - forward), strike, sum(ivs) / 2))
+        if not candidates:
+            return None
+        return min(candidates)[2]
+
+    def _snap(self, listed, forward, scale, z_put, z_call):
+        """Snap four targets outward onto quotable strikes: ``(strikes, None)`` or ``(None, reason)``."""
+        wing, band = self.params["wing_z"], self.params["max_abs_log_moneyness"]
+        exponents = (z_put - wing, z_put, z_call, z_call + wing)
+        if any(abs(scale * z) > band for z in exponents):
+            return None, "target_outside_band"
+        targets = [forward * math.exp(scale * z) for z in exponents]
+        puts, calls = listed["put"], listed["call"]
+        short_put = max((k for k, r in puts.items() if k <= targets[1]
+                         and self._quotable(r, "sell")), default=None)
+        short_call = min((k for k, r in calls.items() if k >= targets[2]
+                          and self._quotable(r, "sell")), default=None)
+        if short_put is None or short_call is None:
+            return None, "no_quotable_strike"
+        long_put = max((k for k, r in puts.items() if k <= targets[0] and k < short_put
+                        and self._quotable(r, "buy")), default=None)
+        long_call = min((k for k, r in calls.items() if k >= targets[3] and k > short_call
+                         and self._quotable(r, "buy")), default=None)
+        if long_put is None or long_call is None:
+            return None, "no_quotable_strike"
+        strikes = (long_put, short_put, short_call, long_call)
+        if not 0 < strikes[0] < strikes[1] < strikes[2] < strikes[3]:
+            return None, "degenerate_strikes"
+        return strikes, None
+
+    def _book(self, book, strikes, reason, listed, forward, scale, dist, settlement, day,
+              settle_date, instrument):
+        """Price, gate and settle one book's cell."""
+        cell = {"strikes": None if strikes is None else list(strikes), "credit_usd": None,
+                "american_charge_usd": None, "pnl_usd": None, "entered": False,
+                "reason": reason, "expected_pnl_usd": None}
+        if strikes is None:
+            return cell
+        multiplier, fee = self.params["multiplier"], self.params["fee_per_leg"]
+        legs = [listed[right][k] for (right, _sign), k in zip(_LEGS, strikes)]
+        per_share, widths = condor_credit(strikes, [(r["bid"], r["ask"]) for r in legs])
+        credit = per_share * multiplier - 4 * fee
+        cell["credit_usd"] = credit
+        if credit <= 0:
+            cell["reason"] = "nonpositive_credit"
+        elif per_share >= min(widths):
+            cell["reason"] = "credit_not_below_width"
+        elif book == "model":
+            expected = credit + multiplier * sum(
+                condor_payoff(forward * math.exp(scale * z), strikes)
+                for z in dist.samples) / len(dist.samples)
+            cell["expected_pnl_usd"] = expected
+            if not expected > self._knob("min_edge_usd"):
+                cell["reason"] = "below_min_edge"
+        if cell["reason"] is None:
+            charge = american_short_charge(
+                self._closes[instrument], strikes[1], strikes[2], day, settle_date,
+                self.params["carry_rate"], multiplier)
+            cell["american_charge_usd"] = charge["total_usd"]
+            cell["entered"] = True
+            cell["pnl_usd"] = (credit + multiplier * condor_payoff(settlement, strikes)
+                               - charge["total_usd"])
+        return cell
+
+    def _entry(self, row, dist, outcome_z):
+        """Price and settle one entry from that date's chain, or say why it cannot enter."""
+        instrument, day = str(row.get("instrument")), row["date"]
+        quotes = self._chain.get((instrument, day))
+        if not quotes:
+            return None, "no_chain"
+        forward, scale = row[self.FORWARD_FIELD], row[REFERENCE_SCALE_FIELD]
+        for q in quotes:
+            if not math.isclose(q["underlying_price"], forward, rel_tol=1e-9, abs_tol=1e-9):
+                raise ValueError(f"{self.key}: {instrument} {day}: the chain's "
+                                 f"underlying_price {q['underlying_price']!r} is not the "
+                                 f"forecast row's close {forward!r} — misaligned inputs")
+        dte = min(q["dte"] for q in quotes)
+        expiry_rows = [q for q in quotes if q["dte"] == dte]
+        expiry, settle_date = expiry_rows[0]["expiry"], expiry_rows[0]["settle_date"]
+        settled = self._settlement(instrument, settle_date)
+        if settled is None:
+            return None, "unsettled"
+        settlement_date, settlement = settled
+        sessions = self._sessions(day, settle_date)
+        horizon_scale = scale * math.sqrt(sessions / self.params["label_horizon"])
+        listed = self._listed(expiry_rows)
+        q = self.params["short_q"]
+        model = self._snap(listed, forward, horizon_scale, dist.quantile(q), dist.quantile(1 - q))
+        atm_iv = self._atm_iv(listed, forward)
+        if atm_iv is None:
+            implied, implied_scale = (None, "no_atm_iv"), None
+        else:
+            implied_scale = atm_iv * math.sqrt(dte / 365)
+            z = NormalDist().inv_cdf(q)
+            implied = self._snap(listed, forward, implied_scale, z - implied_scale / 2,
+                                 -z - implied_scale / 2)
+        candidates = {"model": (model, horizon_scale), "always": (model, horizon_scale),
+                      "implied": (implied, implied_scale)}
+        books = {}
+        for book in self.BOOKS:
+            (strikes, reason), book_scale = candidates[book]
+            books[book] = self._book(book, strikes, reason, listed, forward, book_scale,
+                                     dist, settlement, day, settle_date, instrument)
+        expected = books["model"].pop("expected_pnl_usd")
+        for book in ("always", "implied"):
+            books[book].pop("expected_pnl_usd")
+        return {"date": day, "asof_ms": row["asof_ms"], "instrument": instrument,
+                "forward": forward, "expiry": expiry, "settle_date": settle_date, "dte": dte,
+                "sessions": sessions, "horizon_scale": horizon_scale,
+                "reference_scale": scale, "settlement": settlement,
+                "settlement_date": settlement_date, "atm_iv": atm_iv,
+                "model_expected_pnl_usd": expected, "books": books}, None
+
+    def _book_extras(self, traded):
+        """Each book's total American charge over its trades."""
+        return {"american_charge_usd": sum(c["american_charge_usd"] for c in traded)}
+
+    def _report(self, ledger, metrics):
+        """Return the archived-quote report; never decision-eligible."""
+        return {"kind": "archived_quote_condor_backtest", "pricing": "archived_eod_quotes",
+                "decision_eligible": False,
+                "units": "USD per condor, one contract per leg",
+                "params": {k: self._knob(k) for k in self._PARAMS if k in self.params
+                           or k in self.DEFAULTS},
+                "chain": dict(self._chain_span), "metrics": metrics, "ledger": ledger}

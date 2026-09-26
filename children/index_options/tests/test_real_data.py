@@ -81,6 +81,26 @@ def test_index_projection_keeps_one_symbol_in_time_order():
             node.project([dict(raw[1], close=bad)])
 
 
+def test_index_projection_copies_a_dividend_and_refuses_a_split(tmp_path):
+    """ADR-0187: the optionshist ``index_daily`` rows carry the two corporate-action columns."""
+    node = IndexCloseRows("spy", {"root": str(tmp_path), "source": "optionshist-chain",
+                                  "symbol": "SPY"})
+    raw = [{"symbol": "SPY", "date": "2020-03-16", "close": 239.85, "asof_ms": 1,
+            "dividend_amount": 0.0, "split_coefficient": 1.0},
+           {"symbol": "SPY", "date": "2020-03-20", "close": 228.8, "asof_ms": 2,
+            "dividend_amount": 1.406, "split_coefficient": 1.0},
+           {"symbol": "SPY", "date": "2020-03-23", "close": 222.95, "asof_ms": 3,
+            "dividend_amount": None, "split_coefficient": None}]
+    out = node.project(raw)
+    assert [r["dividend_amount"] for r in out] == [0.0, 1.406, None]
+    assert all("split_coefficient" not in r for r in out)
+    assert set(out[0]) == {"instrument", "contract", "group", "close", "asof_ms", "date",
+                           "dividend_amount"}
+    for coefficient in (2.0, 0.5):
+        with pytest.raises(ValueError, match="split_coefficient"):
+            node.project([dict(raw[0], split_coefficient=coefficient)])
+
+
 def test_index_reader_and_join_over_a_real_onboarding_store(store_factory):
     rows = _index_rows(6, missing_vix={1})
     store = store_factory({"index_daily": rows}, source="cboe-index",

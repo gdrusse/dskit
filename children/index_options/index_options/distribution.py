@@ -18,12 +18,12 @@ import math
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stats import lower_tail_mean
 
-from .contracts import leg_intrinsic
+from .contracts import CONDOR_LEGS, leg_intrinsic
 
 __all__ = ["CondorGeometry", "condor_payoff", "strike_z"]
 
-#: Leg order and signed quantities, matching ``DefinedRiskCondor``.
-_LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+#: Leg order and signed quantities — the cashflow owner's, never restated.
+_LEGS = CONDOR_LEGS
 
 
 def condor_payoff(level, strikes):
