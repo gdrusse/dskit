@@ -774,6 +774,25 @@ class TestPathRows:
         spreads = [max(step) - min(step) for step in out["scenarios_path"]]
         assert spreads[1] < spreads[2] < spreads[3]
 
+    def test_each_step_converts_through_gross_return_before_recentering(self):
+        # Skeptic round 1 (tests lens, M3): the mean-based assertions above
+        # hold by construction of the final shift, so the conversion step
+        # itself is pinned here against an independent computation.
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        sigma = 0.0012
+        for k in range(1, 5):
+            step = min(k, 2)
+            yhat_k = PATH_YHAT[step - 1] * math.sqrt(step / k)
+            converted = [
+                math.expm1((yhat_k + residual) * sigma * math.sqrt(k))
+                for residual in PATH_SCENARIOS[k - 1]
+            ]
+            observed = _weighted_mean(WEIGHTS, converted)
+            target = (1.0 - PATH_PI_HAT[step - 1]) * out["mu_gross_path"][k - 1]
+            expected = [value - observed + target for value in converted]
+            assert out["scenarios_path"][k - 1] == pytest.approx(expected, rel=1e-12, abs=1e-15)
+        assert out["scenarios"] == pytest.approx(out["scenarios_path"][0], rel=1e-12, abs=1e-15)
+
     def test_the_calibrated_rates_carry_forward_past_the_cap(self):
         out = _bundle([_path_row("AAPL")]).rows[0]
         assert out["admitted_horizon"] == 2
