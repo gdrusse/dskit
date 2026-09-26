@@ -25151,3 +25151,36 @@ manifest (57 -> 86 files) and an end-to-end walk of `spy-7-10` over a scripted
 archive store in which the chain is parsed once across two folds (461 passed);
 ruff clean. Real-data acceptance (one SPY 30-45 walk, then the grid) is not
 run.
+
+*Review round 1 (2026-09-26, candidate `bcfb907`, two fresh Fable 5.1
+lenses).* Correctness / point-in-time / authority: C0 M0 m4 n5 — the proxy
+backtest and `DefinedRiskCondor` proven byte-identical to origin/main (only
+refusal message text differs), every American-charge case, the settlement
+gap, the sqrt rescale, the implied formula and the reader's New York date
+verified as designed. Minors, recorded as backlog (owner ruling 2026-09-26:
+Minors and Nits do not block): (1) two OCC expiries sharing one settlement
+date on one quote date are merged by `_entry` (last row per strike wins,
+the ledger names `expiry_rows[0]`); (2) an OCC expiry on an exchange holiday
+the day after a Thursday entry (2008-03-21, 2014-04-18 for the 1-day cells)
+settles at the entry's own close; (3) the fresh-object guard checks the
+list and its first element only, so a projection that mutates memo'd dicts
+in place or returns a filtered shared list is not refused; (4) the
+"ceil(1.4 h) + 4" label-reach bound was false (the shipped embargo still
+covers every measured reach; corrected below). Nits: the store token is read
+before the scan; a charge window lacking the entry close leaves the first
+ex-date uncharged (unreachable from the node); malformed non-reader inputs
+raise TypeError; the node's band is pinned to the reader's by config test
+only; `american_short_charge` re-parses the whole series per book.
+Test quality / integration (47 mutants, 33 killed): C0 M2 m5 — both Majors
+test defects: no losing settlement pinned for `CondorQuoteBacktest` (a
+flipped payoff sign or dropped multiplier survived) and a flat-iv fixture
+that could not distinguish the ATM-iv selection; Minors: the later-ex-date
+clause, DTE == dte_max, the 4-day gap, the dividend refusal and six
+boundary comparisons unpinned. Corrected in `34869d7` (tests only, plus
+`grid.LABEL_REACH_DAYS` and the note wording; every cell document's
+identity hash unchanged): losing settlements through the put wings, between
+a short and its wing and through the call wings with hand-computed P&L,
+CVaR, hit rate and drawdown; the perturbation test asserts exact settled
+P&L per book; a smile fixture pins the ATM pair, the next-nearest valid pair
+and a one-sided strike; the boundaries above. Child suite 468 passed, ruff
+clean. Round 2 (fresh lenses on `34869d7`) is recorded below.
