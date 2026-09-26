@@ -1,5 +1,34 @@
 # Re-entry
 
+## ADR-0187 built on a branch; owner decisions pending (2026-09-26)
+
+- **Owner directive:** build the code needed to run the index-options
+  backtests, sweep dskit first, no rework; the process is HPO plus model zoos.
+- **Where:** branch `claude/index-options-quote-backtest` (worktree
+  `.claude/worktrees/index-options-quote-backtest`), NOT merged: ADR-0187 says
+  nothing lands until Russell approves it, and its six questions are open.
+  Questions 1, 2, 3, 5 and 6 are built at their proposed defaults; question 4
+  is answered by the directive (zoo + HPO on the worked cell `spy-30-45`).
+- **Landed on the branch:** dskit — `ObservationRows.keep_values()/admit()`
+  hooks and opt-in `reuse_snapshot` (one parsed snapshot per class per
+  process), `dskit.onboarding.observations.stream_members`, the optionshist
+  `index_daily` stream (raw closes + dividends + splits). Child —
+  `contracts.quote_problems/condor_credit/american_short_charge` +
+  `CONDOR_LEGS`, `ChainQuoteRows`, `IndexCloseRows` dividend/split rules,
+  `_CondorBacktestBase` + `CondorQuoteBacktest`, `index_options/grid.py` and
+  the 27 generated `configs/grid/` documents (21 har-vix cells; spy-30-45's
+  other rungs, zoo and two `hpo-grid` documents). Docs and trees updated; the
+  ADR carries the build record.
+- **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
+  purity gates); child 461 passed (every suite, manifest, an end-to-end cell
+  walk over a scripted archive store); ruff clean.
+- **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
+  approves; (2) step 0 on the owner's machine: `acquire --stream index_daily`
+  for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan (bound:
+  30 min, 6 GB); (3) the two-lens skeptic review result (see the ADR build
+  record); (4) merge, then `walkforward configs/grid/spy-30-45.json`, the zoo
+  and the HPO documents, then the grid; (5) run the evaluator on the output.
+
 ## F5a source branch retired; its evidence is on main (2026-09-26)
 
 - **Owner decision A (2026-09-26):** `origin/cursor/r5-f5a-private-plan-0f39@c489199`

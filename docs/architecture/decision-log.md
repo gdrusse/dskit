@@ -25088,3 +25088,66 @@ correctness/scope lens: look-ahead, pricing realism, reuse, scope creep.
 The Minors and Nits of every round were fixed in the following commit,
 including round 9's Nit. The clean review is design evidence, not owner
 approval.
+
+**Build record (2026-09-26, owner directive; branch
+`claude/index-options-quote-backtest`, NOT merged).** The owner directed:
+"build out any additional code needed to run the back tests ... I think that we
+should have everything covered in DSKit ... do a thorough sweep of DSKit first
+... our process will involve hyperparameter tuning and model zoos to figure out
+the best architecture ... Do not do any rework." The build follows this ADR's
+manifest. The status stays PROPOSED: the six owner questions are open, and the
+branch waits for the owner. Questions 1, 2, 3, 5 and 6 are built at their
+proposed defaults (calendar-day buckets; IWM without a backtest; the size rule
+kept; snapshot reuse on; `carry_rate` 0.055 as `grid.CARRY_RATE`). Question 4
+is answered by the directive: every cell ships `har-vix`, and the worked cell
+`spy-30-45` also ships the `empirical`, `vix` and `lightgbm-vix` rungs, an
+ADR-0097 zoo over the four (`spy-30-45-zoo.json`) and two ADR-0043 per-fold
+re-tune documents (`hpo-grid` over `model.ridge_alpha` and
+`model.lgbm_params.{num_leaves, learning_rate, min_child_samples}`, objective
+the val twCRPS). ADR-0097 refuses a search node inside a zoo candidate, so
+tuning and comparison are separate documents and a winner is shipped by pinning
+it into the cell document; `grid.cell_files` writes the same set for any cell.
+
+*Sweep (2026-09-26, `tools/sweep/sweep` over origin/main, every branch and
+worktree).* No near match for any new name. `keep_values`/`admit` existed on
+`scan_stream` with a child-side `_scan` override in intraday_equities, which
+the hooks graduate; the HPO and zoo mechanisms exist (`hpo-grid`,
+`optuna-search`, `BenchmarkPlan/Approval/Run/Compare`) and a fitted
+transform's member knobs are searchable (ADR-0044), so the zoo and HPO are
+configuration only; `dskit.evaluation.diagnostics.Bucket` is a calibration
+score bucket, unrelated to the DTE `grid.Bucket`.
+
+*Deviations from the manifest, all additive.* (a)
+`dskit.onboarding.observations.stream_members`: the tier-2 pack may import
+only the read seam at function depth (purity gate), so the memo's store token
+lives there. (b) `contracts.CONDOR_LEGS`: `distribution._LEGS` and
+`DefinedRiskCondor` read one owner of leg order and sign. (c)
+`quote_problems` takes `count >= 0`, so `_IndexQuote`'s row rule and the
+condor rule are one function. (d) A chain row whose `dte` lies outside the
+backtest's declared bucket refuses (the reader's and the backtest's bounds are
+pinned equal by test). (e) The ledger records `settlement_date`, `sessions`,
+`horizon_scale`, `atm_iv` and each book's `american_charge_usd`; the metrics
+carry `<book>_american_charge_usd`. (f) The grid module is
+`index_options/grid.py`: `Bucket`/`Underlying`/`Cell` tables,
+`grid_document(base, cell, rung)`, `hpo_document`, `zoo_document`,
+`cell_files`, `grid_files`, `write_grid`; the config test pins every shipped
+file to its generator and the six base rungs plus the real zoo by sha256. (g)
+`IndexCloseRows` refuses a `dividend_amount` that is present and neither null
+nor a number >= 0.
+
+*Step 0.* (i) Trading hours: Cboe Rule 5.1(b)(1) lets designated ETF options
+trade to 4:15 p.m. ET; Nasdaq's and NYSE Arca/American's per-ticker lists name
+SPY, QQQ and IWM today; CBOE (SR-CBOE-2004-79) and ISE (SR-ISE-2004-39) rules
+permitted 4:15 for ETF options from 2004, naming QQQ; no primary source names
+SPY or IWM per year for 2008-2017 (CBOE's 2017 filing says "certain" ETPs).
+Entry at the 16:00 close is therefore assumed feasible with that gap
+disclosed. (ii) Runtime: the bounded `ChainQuoteRows` scan on the finished
+ingest (30 minutes, 6 GB) is NOT measured — the store lives on the owner's
+machine — and is the first action before any cell runs.
+
+*Tests.* RED then GREEN per slice. dskit: observations pack, read seam,
+optionshist and both purity gates (264 passed); child: every suite, the
+manifest (57 -> 86 files) and an end-to-end walk of `spy-7-10` over a scripted
+archive store in which the chain is parsed once across two folds (461 passed);
+ruff clean. Real-data acceptance (one SPY 30-45 walk, then the grid) is not
+run.
