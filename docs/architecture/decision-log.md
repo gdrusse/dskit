@@ -25395,8 +25395,13 @@ every mechanism here, and the child is a wrapper that names the market:
   ride beside them: `admitted_horizon = H_i`, `plan_horizon = K_i(t)`,
   `yhat_path[1..K_i]`, `pi_hat_path`, `pi_widened_path` (`1..H_i`) and
   `scenarios_path[k][o]` (recentered per step by `_recentered_scenarios`'s
-  rule). `_bundle_problems` refuses missing or withdrawn fields, never extra
-  ones (504-722), and `ForecastBundle.digest` hashes the rows as they are.
+  rule). Two closed sets guard a row: the INPUT set `_INPUT_FIELDS`
+  (`forecast_bundle.py:151-167`), which `_row_problems` enforces by
+  default deny (301-307) and which is therefore extended with the six path
+  names as optional inputs; and the OUTPUT list `BUNDLE_FIELDS`
+  (`nodes_capital.py:128-145`), which `_bundle_problems` checks for missing
+  or withdrawn fields only, never extra ones (504-722), so it is unchanged.
+  `ForecastBundle.digest` hashes the rows as they are.
   A name with `K_i(t) = 0` gets NO row: it is a held name absent from the
   bundle, the existing mandatory-exit route (`nodes_capital.py:1473-1490`).
   A batch whose rows carry no path fields still refuses mixed leads, so
@@ -25409,14 +25414,15 @@ every mechanism here, and the child is a wrapper that names the market:
   | Consumer | Disposition in path mode |
   |---|---|
   | `ForecastBundle.__init__` shared-field loop (`forecast_bundle.py:589-601`) | unchanged: `lead` = `H` on every row |
-  | `_row_problems` (320-390) | unchanged: the single-period fields are valid (`lead` in 1..10, `pi_hat <= pi_widened`, `scenarios` as long as `weights`) |
+  | `_INPUT_FIELDS` (151-167, a default-deny frozenset) and `_row_problems` (280-390; the unknown-field refusal at 301-307) | EXTENDED: the six path names (`admitted_horizon`, `plan_horizon`, `yhat_path`, `pi_hat_path`, `pi_widened_path`, `scenarios_path`) join the set as optional inputs that appear together or not at all; when present `_row_problems` checks `1 <= admitted_horizon <= len(yhat_path)`, `1 <= plan_horizon <= len(yhat_path)`, `len(pi_*_path) == admitted_horizon`, `scenarios_path` is `len(yhat_path) x len(weights)` and finite; the default-deny stays for every other name, and the single-period fields are still checked as today (`lead` in 1..10, `pi_hat <= pi_widened`, `scenarios` as long as `weights`) |
+  | `KNOWN_AT_FIELDS` (117) exactness in `_row_problems` (407-412) and `_bundle_problems` (659-663) | unchanged: no new `known_at` key (the path fields share `yhat`'s and `pi_hat`'s stamps) |
   | `ForecastBundle._assemble` (627-650), `_recentered_scenarios` (653-672) | extended: a row with `yhat_path` builds `scenarios_path` step by step with the same recentering rule and derives `scenarios` from its `plan_horizon` step; rows without a path are assembled exactly as today |
   | `ForecastBundle.digest` (612-625) | unchanged |
   | `ConfirmedCaps.capped_horizon`/`allows` (915-949) | unchanged; the joint `instruments` routes on `admitted_horizon <= capped_horizon` instead of `lead > capped_horizon` |
   | `_bundle_problems` (`nodes_capital.py:504-722`) | unchanged |
   | `EquityKellyMIO.validate_inputs` (1013-1192), `_binding_problems` (1300-1323) | unchanged |
   | `_entity_problems` (1325-1354) | overridden by the subclass: binds `pi_hat_path`/`pi_widened_path` and the outcome band per cell `SYM:hNN` |
-  | `instruments` (1392-1564) | overridden: routing on `admitted_horizon`, `x_max = xeff_i`, steps = `plan_horizon`, path payoffs; the `K_i(t) = 0` name takes the existing mandatory-exit branch (1473-1490) |
+  | `instruments` (1392-1564) | overridden IN FULL, not reused as a body: today's method is one loop that also reads `band_bps` unconditionally (1527-1529), so the refactor extracts `_routed_rows` (the gate/cap/staleness/price routing, 1417-1441) and `_mandatory_exit_row` (1473-1490) as helpers the joint override calls; the joint override routes on `admitted_horizon`, sets `x_max = xeff_i`, steps = `plan_horizon`, builds `[steps x S]` payoffs, never reads `band_bps`, and gives a held name with no row (`K_i(t) = 0`) the mandatory-exit row as a one-step `[1 x S]` zero matrix |
   | `payoffs` (1566-1575) | overridden: `[steps x S]` per name |
   | `validate_params` (879-978) -> helpers; `domain_constraints` (1577-1652) -> `_hfdr_row`/`_band_rows` | the refactor above; the subclass overrides `_policy_problems` and `_band_rows` |
   | `run` (1656-1676) | unchanged |
@@ -25502,7 +25508,27 @@ every mechanism here, and the child is a wrapper that names the market:
   (`replay.py:896-983`, the lot book, untouched in behaviour) and a share
   book that wraps dskit's `PositionBook` (`dskit/production/state.py:694`;
   `net_qty` is the replay's position, `to_obj`/`from_obj` is the carry;
-  cost basis stays the report's `WindowBook` fold as today). `PositionBook`
+  cost basis stays the report's `WindowBook` fold as today). The protocol,
+  in one place:
+
+  ```
+  open(symbol, lead, qty, side, fill_index) -> None | reason   lot book: "same_lead_open"; share book: "oversell" when a sell's qty > net_qty
+  expiring(symbol, index) -> [(lead, lot)]                     lot book: expiry_index <= index; share book: the whole position iff index is the symbol's session-last index
+  close(symbol, lead) -> lot                                   lot book: pop the lot; share book: flatten
+  unclosed() -> ((symbol, lead), lot) pairs                    share book: lead 0, lot = {qty: net_qty, side: "buy", fill_index: None, expiry_index: session-last index}
+  carry(symbol, lead, qty, side, exit_in)                      lot book: carry_lot (expiry at exit_in); share book: seeds net_qty and ignores exit_in
+  ```
+
+  The share book builds one `records.Fill` per fill exactly as
+  `SimulationReport._fill` does (`simulation.py:2077-2093`: `venue_ref
+  "development-replay"`, `liquidity "taker"`, `status "final"`, `Decimal`
+  quantities), with `fill_id = f"{symbol}-{asof_ms}-{kind}"`: `asof_ms` is
+  unique per symbol over the whole tape (duplicates refuse, `replay.py:
+  1294-1298`, and segments are disjoint days) and `kind` separates a
+  backstop exit from an entry on the same bar, so an id can never collide
+  with a live log carried in through `from_obj` (`PositionBook.apply`
+  refuses a repeated `fill_id`, `state.py:745-746`); `client_ref` stays the
+  replay's own (`_queue_fill`, 1967, with `-0-` for the lead). `PositionBook`
   itself allows a fill to cross flat (`_step`, `state.py:677-691`), so the
   wrapper adds the long-only guard: `open(..., side="sell", qty)` refuses
   `oversell` whenever `qty > net_qty` BEFORE calling `apply`; that guard is
@@ -25525,7 +25551,10 @@ every mechanism here, and the child is a wrapper that names the market:
   next minute from the actual book; on a halted last bar the shares stay
   open, are recorded `open_at_session_close`, and are carried to the next
   session through the same `open_lots`/`carried_lots` rows ADR-0186 T7
-  uses, with `lead: 0` and `exit_in: null`. No FIFO tranche queue is built.
+  uses, with `lead: 0` and `exit_in: 0` (an integer, because `_open_lots`
+  computes `exit_in` by subtraction (`replay.py:1338`) and `carry_lot`
+  applies `int()` to it (962); both callers branch on `lead == 0`, and the
+  share book ignores the value). No FIFO tranche queue is built.
   The report's per-lead attribution collapses to the one bucket `0`; it
   adds a holding-time distribution (minutes from a name's entry fill after
   its last flat to its return to flat, from the fills list); the ADR-0183
@@ -25539,21 +25568,23 @@ every mechanism here, and the child is a wrapper that names the market:
   | `FillPolicy._VOCAB` 160-173, `validate_params` 187-231 | `forced_exit_at` | one vocabulary member added; loops unchanged |
   | `EquityReplay.__init__` 1225-1250 | `HorizonBook`, `carried_lots` | picks the book by `forced_exit_at`; `carried_lots` rows carry `lead: 0` |
   | `run` 1283-1324 | `_book.unclosed/close_lot`, `open_lots` | through the protocol; end-of-tape `expiry_past_tape` applies to lots only, a share position is carried or refused `open_at_session_close` |
-  | `_seed_carried_lots` 1326-1332, `_open_lots` 1334-1341 | `carry_lot`, `exit_in`, `expiry_index` | through the protocol; share rows carry `exit_in: null` |
+  | `_seed_carried_lots` 1326-1332, `_open_lots` 1334-1341 | `carry_lot` (1332), `owed = expiry_index - len(tape)` (1338), `exit_in` | CHANGED at the call sites: for a `lead == 0` row `_open_lots` emits `exit_in: 0` instead of the subtraction and `_seed_carried_lots` calls the book's `carry`, whose share implementation ignores `exit_in`; the lot-book arithmetic is untouched |
   | `_enqueue_decision` 1343-1381 | `horizon_field` (1347), `lead < 1` refusal (1354) | mode-aware: `lead` must be `0` (anything else refuses `lead`) |
-  | `_portfolio` 1383-1438 | `_book.unclosed`, `expiry_index` (1425-1427) | through the protocol; the share book exposes the session-last index as `expiry_index`, so the filter is unchanged |
+  | `_portfolio` 1383-1438 | `_book.unclosed` (1422), `expiry_index` (1426-1427) | through the protocol; the share book exposes the session-last index as `expiry_index`, so the filter is unchanged (the position drops out of `positions` at the last decision bar, when the backstop exits it) |
   | `_pending_entries` 1440-1457 | `horizon_field` (1449) | unchanged: `lead: 0` |
   | `_result` 1459-1462 | sorts by `lead` | unchanged: `0` sorts |
   | `_findings_rows` 1626, `_queue_fill` 1954-1976, `_proposal_for` 2017, `_on_ack` 2032-2040, `_fill_row` 2080-2092 | `lead` carried | unchanged: `0` flows through (`client_ref` gains `-0-`) |
   | `evaluate` 1735-1742 | dispatch guard on `forced_exit_at` (1735-1736) | admits both members; `different_lead_overlap`/`mark_source` guards unchanged |
   | `_apply_exits` 1811-1851 | `_book.expiring` (1821), `halt_handling` | through the protocol |
   | `_process_exits` 1865-1879 | `expiring`, `close_lot`, `forced_exit_at` as `reason` | through the protocol; `reason: session_close` rides on the fill |
-  | `_process_entries` 1881-1942 | `horizon_field` (1886), `is_open`/`same_lead_overlap` (1897), `open_lot` (1933) | through the protocol: the share book's `open` adds or reduces and returns `oversell`; the override branch is unreachable (`is_open` is never true for lead 0) |
+  | `_process_entries` 1881-1942 | `horizon_field` (1886), `is_open`/`same_lead_overlap` (1897), `open_lot` (1933), the hardcoded refusal reason `"same_lead_open"` (1934-1937) | CHANGED at the call site: `open` returns `None` or a reason and the refusal row records the reason returned (`same_lead_open` from the lot book, `oversell` from the share book); the override branch is unreachable for lead 0 (`is_open` is never true) |
   | `HorizonBook` 896-983 | all | untouched; the second implementation is new |
   | `simulation.py` `MinuteDevelopmentSimulation._replay` 1900-1902, `_carry` 1904-1907 | `carried_lots`, `open_lots` | unchanged: rows pass through |
   | `simulation.py` `DevelopmentSimulation._segment_bars` 1772-1778 | `forced_exit_price_field` | unchanged |
   | `simulation.py` `SimulationReport.run` 2018-2030, `_fill` 2077-2093, `_summary` 2100-2120 | `lead` | unchanged: one bucket `0`; the holding-time metric is added beside it |
-  | `simulation.py` publisher/decider `lead` reads (688-1369) | forecast leads | the publisher's path mode and the decider's joint mode, above; the lead-group path unchanged |
+  | `simulation.py` `ForecastPublisher.tick_row` 860-906, `bundle_rows` 908-923 | one lead per row | `bundle_rows` unchanged; a NEW `ForecastPublisher.path_row` (the path counterpart of `tick_row`) builds a row with `lead = H` and the six path fields from the tick's per-lead columns |
+  | `simulation.py` `MinuteMioDecider._bundle_rows` 1413-1424, `_names_at` 1397-1399, `__init__` groups 1359-1371 | `lead_map` per name, `tick_constants[lead]` | joint mode: a NEW `_path_rows` builds one `path_row` per admitted name with a tick from `ticks` columns per lead `1..K_i` and the joint `tick_constants`; the lead-group builders and `_keep_solve`'s `lead` record (1286-1293, recorded as `0` for a joint solve) are unchanged |
+  | `simulation.py` publisher `_residual_panel` 682-693, `_outcome` 715-739, `_publish_ticks` 1064-1086, `_MinuteWalk.trade_yhat` 992-1005 | per-lead panels and columns | path mode: one joint panel over cells, per-cell columns for `lead <= K_i` (the Data-contract publisher bullet); the cap mode unchanged |
 
 #### Backtest semantics
 
@@ -25628,10 +25659,25 @@ at the symbol's session-last bar and nowhere else; (T19) the shipped
 `fill-policy.json` still validates, its digest equals the literal
 `e4ffcd13...`, and `horizon_expiry` behaviour is identical through the book
 protocol (existing `test_replay.py`/`test_simulation.py` suites green,
-unedited); (T33) every row of the seam inventory has a test that drives
-that consumer under `session_close` (`_enqueue_decision`, `_pending_entries`,
-`_result`, `evaluate`, `_apply_exits`, `_process_exits`, `_process_entries`,
-`_portfolio`, `run`'s end of tape, the carry rows, the report bucket);
+unedited); (T33) the seam map, one named test per inventory row:
+`evaluate`'s guard admits `session_close` and still refuses an unknown
+member; `_enqueue_decision` accepts `lead: 0` and refuses `lead: 1`;
+`_apply_exits`/`_process_exits` sell the whole position at the session-last
+bar with `reason: session_close` and at no other bar; `_process_entries`
+records `oversell` from the share book and `same_lead_open` from the lot
+book; `_portfolio` excludes the position at the last decision bar and
+includes it before; `_pending_entries` and `_result` carry `lead: 0`;
+(T36) `FillPolicy` validates `session_close` and refuses any other new
+member; (T37) `run`'s end of tape, `_seed_carried_lots` and `_open_lots`
+carry a share position as `{lead: 0, exit_in: 0}` and seed it through
+`from_obj`; (T38) a fill under `session_close` reaches `_queue_fill`,
+`_proposal_for`, `_on_ack`, `_fill_row` and `_findings_rows` with `lead 0`
+and its `reason`, and two carried segments never repeat a `fill_id`;
+(T39) `SimulationReport` buckets every fill under lead `0` and
+`MinuteDevelopmentSimulation._replay`/`_carry` pass the carry rows
+through; the lot-mode rows (`HorizonBook`, `EquityReplay.__init__`'s lot
+branch, the `horizon_expiry` paths of every method above) are covered by
+the unedited existing suites (T19);
 (T20) sizing
 and fills charge the same per-share rate on both sides; (T21) a name with a
 queued buy is skipped, its cost reserved, and its shares absent from `h_i`;
@@ -25639,7 +25685,7 @@ a name with a queued sell is skipped, its shares absent from `h_i`, its
 proceeds uncredited until the fill, and its mark still in NAV and gross;
 (T28) a sell whose fill bar is halted follows
 `halt_handling`; (T29) a halted last bar records `open_at_session_close`
-and carries the shares as `open_lots` rows with `lead: 0`, `exit_in: null`,
+and carries the shares as `open_lots` rows with `lead: 0`, `exit_in: 0`,
 seeded into the next replay's share book.
 Decider and report: (T22) one solve per minute with every admitted name and
 its held shares; (T23) orders on both sides reach the replay; (T24) the
@@ -25818,3 +25864,34 @@ runs before the bar's queued orders (T35); variants for C(b), C(c), H(b);
 CLAUDE.md and the owner's chat note; `dskit.production` non-goal reworded;
 citations `tests/pipeline_libs/test_pyomo.py:743-767` and
 `tests/test_nodes_capital.py:517-542` corrected.
+
+| Round | Candidate | Lens | Result | Majors |
+|---|---|---|---|---|
+| 4 | `044990a` | correctness/authority (Sonnet) | C0 M2 m1 n1; round-3 correctness Majors fixed, tests Majors partially | `_INPUT_FIELDS` refuses the path fields at input; `_open_lots`/`_seed_carried_lots` do integer arithmetic on `exit_in`, so `exit_in: null` cannot be produced or seeded |
+| 4 | `044990a` | tests/integration (Sonnet) | C0 M3 m2 n0; round-3 M1 fixed, M2/M3 partially | `_INPUT_FIELDS` (`forecast_bundle.py:151-167`) refuses the path fields at input; the share book's `Fill`/`fill_id` never specified (cross-segment collision through `from_obj`); `_process_entries` hardcodes `same_lead_open` so `oversell` could not surface |
+
+**Checkpoint, continued (after round 4).** The round-3 inventory reached
+the functions that READ the seam fields but not the closed sets that ADMIT
+them, nor the `records.Fill` boundary, and one disposition was misread.
+Candidate 5 therefore adds a second scripted pass over the eight touched
+modules (`replay.py`, `simulation.py`, `forecast_bundle.py`,
+`nodes_capital.py`, `dskit/pipeline/libs/pyomo.py`, `dskit/production/
+state.py`, `dskit/production/records.py`, `dskit/pipeline/
+outcome_interval.py`) for every closed set and default-deny check
+(`frozenset`, `_FIELDS`, `_PARAMS`, `_VOCAB`, `_OPTIONAL_PARAMS`,
+`reject_unknown_params`, "unknown"): `_INPUT_FIELDS` (extended),
+`KNOWN_AT_FIELDS` (unchanged), `BUNDLE_FIELDS` (unchanged, missing-only),
+`_CAP_SCHEMA_FIELDS` (untouched), `FillPolicy._PARAMS`/`_VOCAB` (one
+member), `MioDeciderNode._PARAMS` (`policy` sibling), `DevelopmentSimulation`
+and `RetrainedSimulation` `_PARAMS` (untouched: the joint document changes
+only the pinned files), `EquityKellyMIO._PARAMS` (the subclass's refusal
+of `band_bps` through `_policy_problems`), `ScenarioUtilitySolve._PARAMS`
+(unchanged). Every "unchanged" disposition in the tables now names the
+line that makes it so; the book protocol is one signature block; the
+wrapper's `Fill` and `fill_id` are spelled out; `_process_entries`,
+`_open_lots` and `_seed_carried_lots` are marked CHANGED at their call
+sites (`exit_in: 0`, an integer, for a share carry); `instruments` is an
+override in full over two extracted helpers, never reading `band_bps`; the
+joint row builders are named (`ForecastPublisher.path_row`,
+`MinuteMioDecider._path_rows`); `_portfolio`'s citation is 1422 and
+1426-1427; T33 is a named map and T36-T39 cover the rows it did not.
