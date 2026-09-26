@@ -25183,4 +25183,26 @@ a short and its wing and through the call wings with hand-computed P&L,
 CVaR, hit rate and drawdown; the perturbation test asserts exact settled
 P&L per book; a smile fixture pins the ATM pair, the next-nearest valid pair
 and a one-sided strike; the boundaries above. Child suite 468 passed, ruff
-clean. Round 2 (fresh lenses on `34869d7`) is recorded below.
+clean.
+
+*Review round 2 (candidate `34869d7`, two fresh lenses).* Correctness:
+C0 M0 m1 n2 — the delta proven test-only plus `grid.py`, all 27 cell
+documents' identity hashes unchanged, the proxy backtest still byte-identical
+to origin/main, every hand value re-derived independently, the measured
+reach table reproduced exactly from an independent NYSE calendar (every
+maximum is a September-2001 window), both round-1 Majors closed. Minor: the
+generator's copy of the reach table was pinned only by its key set; Nits: the
+"Sandy dominates" comment, the stale `ceil(1.4 h) + 4` sentence in the design
+paragraph above (superseded by this record) and RE-ENTRY's test count.
+Tests (14 named mutants re-run, 16 of its own): C0 M1 m4 n3 — the round-1
+Majors closed (their mutants killed), one NEW Major of the same family: every
+forecast fixture settled inside the shorts, so a model gate reading the credit
+survived; Minors: the ATM mean unpinned (put or call iv alone survived), a
+non-positive iv accepted, an OTM ex-date latching the assignment, the reach
+table's second copy. Corrected in `00f0579` (tests only): a hundred-draw
+forecast with one draw beyond each wing pins E[P&L] = credit - 5 and the gate
+on both sides; the ATM pair at 0.18/0.22 pins the mean and a zero iv
+disqualifies a pair; two OTM ex-dates never latch; the two reach tables must
+agree; a long put with no ask is not buyable; the settlement-gap boundary on
+weekday closes; the edge-at-the-gate case reads the reported credit. Round 3
+(fresh lenses on `00f0579`) is recorded below.

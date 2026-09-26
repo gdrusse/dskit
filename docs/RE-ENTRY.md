@@ -20,14 +20,25 @@
   other rungs, zoo and two `hpo-grid` documents). Docs and trees updated; the
   ADR carries the build record.
 - **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
-  purity gates); child 461 passed (every suite, manifest, an end-to-end cell
+  purity gates); child 468 passed (every suite, manifest, an end-to-end cell
   walk over a scripted archive store); ruff clean.
+- **Review (owner ruling 2026-09-26: only Critical/Major block; Minors and
+  Nits are recorded):** round 1 on `bcfb907` found no Critical/Major in
+  correctness and two Major TEST defects; round 2 on `34869d7` closed those
+  and found one more test-defect Major of the same family (a fixture whose
+  value cannot separate two rules); round 3 on `00f0579` (the family fix,
+  tests only) is recorded in the ADR-0187 build record. The Minor/Nit
+  backlog lives there too: an expiry tie merging two OCC series, a holiday-
+  expiry Thursday entry settling at its own close, the fresh-object guard
+  bypassable by an in-place-mutating projection, unpinned boundary
+  comparisons, a store-token race, non-reader inputs raising TypeError.
 - **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
   approves; (2) step 0 on the owner's machine: `acquire --stream index_daily`
   for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan (bound:
-  30 min, 6 GB); (3) the two-lens skeptic review result (see the ADR build
-  record); (4) merge, then `walkforward configs/grid/spy-30-45.json`, the zoo
-  and the HPO documents, then the grid; (5) run the evaluator on the output.
+  30 min, 6 GB) and check that `dividend_amount` is 0, not null, on SPY/QQQ
+  non-ex-dates (a null in a window refuses the entry); (3) merge, then
+  `walkforward configs/grid/spy-30-45.json`, the zoo and the HPO documents,
+  then the grid; (4) run the evaluator on the output; (5) the backlog.
 
 ## F5a source branch retired; its evidence is on main (2026-09-26)
 
