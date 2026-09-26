@@ -75,8 +75,9 @@ policy maximizes long-run growth?
   today's releases.
 - The forecast term structure is discarded. The walk scores every lead with
   the one fitted model (`nodes.py:5804-5806`); the run dir
-  `pipeline_runs/lean-pooled-h10-minute-walk-wf-2024-03-29-2026-02-28-8a51c3e7`
-  holds `scan_h01..scan_h10/trade_predictions.parquet` covering every
+  `~/dskit/children/intraday_equities/pipeline_runs/lean-pooled-h10-minute-walk-wf-2024-03-29-2026-02-28-8a51c3e7`
+  (an untracked run output on the ML box) holds
+  `artifacts/scan_h01..scan_h10/trade_predictions.parquet` covering every
   admitted name at every lead up to its calibrated horizon. `_MinuteWalk.
   trade_yhat` keeps only `(symbol, lead_map[symbol])` (`simulation.py:
   1000-1003`): one lead per name, the cap.
@@ -96,7 +97,11 @@ policy maximizes long-run growth?
   uncapped TAF and Section 31 (`fill-policy.json:15-41`). Sizing keys the
   rate on `portfolio.fill_ms` (1500-1507); the replay bills the same rate at
   the fill (`replay.py:1920-1924`). The horizon exit is priced at the ENTRY
-  fill minute (1519; tex 152-155).
+  fill minute (1519; tex 152-155). Data gap: IWM, an admitted name, is
+  absent from the `half_spread_bps` map (`fill-policy.json:16-28`) and pays
+  the 5.62 bp default (line 30), the cohort maximum, on every side; a liquid
+  ETF's true half-spread is far smaller, so IWM is overcharged in sizing and
+  fills alike (ADR-0188 question J).
 - The band is inert AND hard-coded. `band_shares = lot * ceil(band_bps *
   1e-4 * max(price*held, min_ticket) / (price*lot))` (1527-1529) is 0 with
   `held = 0` and `min_ticket = 0`; the tex says so (457-458). Where it would
@@ -126,7 +131,7 @@ policy maximizes long-run growth?
 | D2 | §5 (345-349): index over held names plus new candidates, with opening shares `h_i` | held names excluded, `h_i = 0` | `simulation.py:1235, 1276-1279` |
 | D3 | §3.3(b) (144-153): signed deltas from current inventory with in-model inaction | inventory withheld; band inert; where active it is the `band_bps` knob | `nodes_capital.py:1527-1529`, template 92 |
 | D4 | §7 (570-572): normalize OR separate horizons | separate (per lead group, sequential cash); owner ruled joint on 2026-09-26 | `simulation.py:1212-1261` |
-| D5 | §5.3 C6/C12 (412-417): one gross row and one CVaR row per tick | one per lead group per tick (up to 4 x $500, 4 x NAV) | template 88; tex 451-455 |
+| D5 | §5.3 C6 (408) and C12 (415-417): one gross row and one CVaR row per tick | one per lead group per tick (up to 4 x $500, 4 x NAV) | template 88; tex 451-455 |
 | D6 | §5 (348-349): a held name needs a scenario row or an explicit forced-exit instruction | exits are the replay's expiry rule; the optimizer never sees them | `replay.py:1865-1879` |
 | D7 | §3.3(a) (118-142) `lambda_t_bps`; §3.3(c) (155-161) counterfactual ledger | not built | `nodes_capital.py:31-34` |
 | D8 | §5.3 (421-432): TAF per-order cap linearized | uncapped flat rate (conservative, disclosed) | `nodes_capital.py:21-30` |
@@ -143,9 +148,9 @@ determinism pins.
 
 ### 1.7 The in-repo evidence on horizons
 
-`pipeline_runs/retrain-simulation-staged-2026-02-28-4bfcaaea/stages/gates.json`
-(the stopped run's own gate stage; Bonferroni over 90 cells, alpha 0.05,
-60 cells passed). Out-of-sample R2 of the vol-scaled cumulative label by
+`~/dskit/children/intraday_equities/pipeline_runs/retrain-simulation-staged-2026-02-28-4bfcaaea/stages/gates.json`
+(the stopped run's own gate stage, an untracked run output on the ML box;
+Bonferroni over 90 cells, alpha 0.05, 60 cells passed). Out-of-sample R2 of the vol-scaled cumulative label by
 horizon, `*` = passed after correction:
 
 | unit | cap | h1 | h2 | h3 | h4 | h5 | h6-h10 |
@@ -264,8 +269,9 @@ no-trade band of the quadratic-risk case. Passerini and Vazquez (2015,
 arXiv 1501.03756) treat general alpha predictors with linear costs plus
 temporary impact and give the no-trade zone with market orders and
 practical recipes. Ma and Smith (2025, arXiv 2502.04284) formulate the
-single-asset alpha-decay problem with costs as a Markov decision process and
-give the small-cost asymptotics of the policy. On the multi-period
+single-asset alpha-decay problem with costs as a Markov decision process,
+solve it by value iteration, and give a first-order approximation of the
+optimal policy for small transaction costs. On the multi-period
 optimization side, Jeet, Sivaramakrishnan and Vandenbussche (Axioma Research
 Report 55, 2015; International Journal of Financial Engineering and Risk
 Management 2(4), 2018) combine a fast-decaying short-term alpha with a
