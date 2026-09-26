@@ -246,6 +246,7 @@ def test_condor_legs_are_the_one_owner_of_leg_order_and_sign():
     (0.4, 0.6, 1, 1, 2, None, ["bid_size", "ask_size"]),
     (0.4, 0.6, 1, 2, 2, "buy", []),
     (-0.1, 0.6, 3, 3, 1, None, ["nonnegative"]),
+    (0.4, -0.1, 3, 3, 1, None, ["nonnegative"]),   # a negative ASK alone, not "uncrossed"
     (0.7, 0.6, 3, 3, 1, None, ["uncrossed"]),
     (float("nan"), 0.6, 3, 3, 1, None, ["bid"]),
     (0.4, None, 3, 3, 1, None, ["ask"]),
@@ -397,6 +398,38 @@ def test_the_charge_reads_rows_in_any_order_and_never_the_entry_days_dividend():
     on_entry = _series(WINDOW)
     on_entry[0]["dividend_amount"] = None  # the entry date's own ex-date is never read
     assert american_short_charge(on_entry, **CHARGE)["total_usd"] == 0.0
+
+
+def test_closes_before_the_entry_never_start_the_carry():
+    early = _series([("2024-02-28", 90.0), ("2024-02-29", 90.0)] + WINDOW)
+    assert american_short_charge(early, **CHARGE)["put_carry_usd"] == 0.0
+
+
+def test_the_charge_validates_its_multiplier_dates_and_strikes():
+    rows = _series(WINDOW)
+    with pytest.raises(ValueError, match="multiplier"):
+        american_short_charge(rows, **dict(CHARGE, multiplier=100.0))
+    with pytest.raises(ValueError, match="multiplier"):
+        american_short_charge(rows, **dict(CHARGE, multiplier=0))
+    assert american_short_charge(rows, **dict(CHARGE, multiplier=1))["total_usd"] == 0.0
+    with pytest.raises(ValueError, match="settle_date"):
+        american_short_charge(rows, **dict(CHARGE, settle_date="2024-03-01"))  # == entry
+    with pytest.raises(ValueError, match="settle_date must be an ISO date"):
+        american_short_charge(rows, **dict(CHARGE, settle_date="2024/03/08"))
+    with pytest.raises(ValueError, match="short_put"):
+        american_short_charge(rows, **dict(CHARGE, short_put=0))
+    with pytest.raises(ValueError, match="short_call"):
+        american_short_charge(rows, **dict(CHARGE, short_call=-1.0))
+    bad = _series(WINDOW)
+    bad[2]["date"] = "2024/03/05"
+    with pytest.raises(ValueError, match="^date must be an ISO date"):
+        american_short_charge(bad, **CHARGE)
+    flat = _series(WINDOW)
+    flat[2]["close"] = 0.0
+    with pytest.raises(ValueError, match="close on 2024-03-05 must be a positive number, got 0.0"):
+        american_short_charge(flat, **CHARGE)
+    with pytest.raises(ValueError, match="dividend"):
+        american_short_charge(_series(WINDOW, [("2024-03-05", -0.5)]), **CHARGE)
 
 
 def test_the_entry_close_is_the_pre_ex_close_of_an_ex_date_on_the_next_session():

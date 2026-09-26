@@ -188,6 +188,11 @@ def test_the_american_charge_is_taken_off_each_book():
     implied = american_short_charge(series, 96.0, 104.0, ENTRY, EXPIRY, 0.055, 100)
     assert books["implied"]["pnl_usd"] == pytest.approx(IMPLIED_CREDIT - implied["total_usd"])
     assert metrics["model_american_charge_usd"] == pytest.approx(expected["total_usd"])
+    # a pre-ex close of 100 sits above the short PUT but below the short CALL: no assignment
+    between = _series([(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", 97.0),
+                                                              ("2024-03-11", 98.0)], dividends)
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), between)
+    assert report["ledger"][0]["books"]["model"]["american_charge_usd"] == 0.0
 
 
 def test_a_missing_dividend_in_the_window_refuses():
@@ -205,7 +210,7 @@ def test_the_nearest_listed_expiry_is_taken_and_a_day_without_chain_is_skipped()
     # rows would move the credit (put 95 at 2.4), the ATM iv (0.4) and the implied strikes
     far = _set(_chain(ENTRY, "2024-03-11", iv=0.4), put95={"bid": 2.4, "ask": 2.6},
                call106={"bid": 1.0, "ask": 1.1})
-    chain = _chain(ENTRY, "2024-03-08") + far
+    chain = far + _chain(ENTRY, "2024-03-08")  # the farther expiry's rows come FIRST
     metrics, report = _run([_row(ENTRY), _row("2024-03-04"), _row("2024-03-11")], chain, FLAT)
     assert [e["expiry"] for e in report["ledger"]] == ["2024-03-08"]
     entry = report["ledger"][0]
@@ -266,6 +271,10 @@ def test_an_expiry_with_no_quotable_strike_records_a_zero_trade_fold():
         assert metrics[f"{book}_n_trades"] == 0
         assert metrics[f"{book}_n_skipped_no_quotable_strike"] == 1
         assert metrics[f"{book}_total_pnl_usd"] == 0.0 and metrics[f"{book}_cvar_usd"] == 0.0
+        # every per-book statistic of an empty book is exactly zero
+        for stat in ("mean_pnl_usd", "hit_rate", "max_drawdown_usd", "mean_credit_usd",
+                     "american_charge_usd"):
+            assert metrics[f"{book}_{stat}"] == 0.0
     assert report["ledger"][0]["books"]["model"]["strikes"] is None
 
 
@@ -275,6 +284,26 @@ def test_a_target_outside_the_band_is_counted():
     assert metrics["model_n_skipped_target_outside_band"] == 1
     assert metrics["always_n_skipped_target_outside_band"] == 1
     assert metrics["implied_n_trades"] == 1  # its targets stay within +-0.05
+    # a skipped cell carries exactly the book fields, with the reason and nothing priced
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell == {"strikes": None, "credit_usd": None, "american_charge_usd": None,
+                    "pnl_usd": None, "entered": False, "reason": "target_outside_band"}
+
+
+def test_a_target_exactly_on_the_band_is_inside_it():
+    # reference scale 1/16 and the +-1 draws put the wings at exactly 1.5/16 = 0.09375 in
+    # log-moneyness (a dyadic product, exact in binary): a band of 0.09375 keeps them
+    # (strict >), one tick below excludes them. Strikes 100 e^{-0.09375} = 91.05 -> 91,
+    # e^{-0.0625} = 93.94 -> 93, e^{0.0625} = 106.45 -> 107, e^{0.09375} = 109.83 -> 110.
+    chain = _set(_chain(ENTRY, EXPIRY), put93={"bid": 1.0, "ask": 1.1},
+                 call107={"bid": 1.0, "ask": 1.1})
+    rows = [_row(ENTRY, reference_scale=0.0625)]
+    metrics, report = _run(rows, chain, FLAT, max_abs_log_moneyness=0.09375)
+    assert report["ledger"][0]["horizon_scale"] == 0.0625
+    assert report["ledger"][0]["books"]["model"]["strikes"] == [91.0, 93.0, 107.0, 110.0]
+    assert metrics["model_n_trades"] == 1
+    metrics, _ = _run(rows, chain, FLAT, max_abs_log_moneyness=0.09374)
+    assert metrics["model_n_skipped_target_outside_band"] == 1
 
 
 def test_the_band_is_classified_before_quotability_and_quotability_before_geometry():
@@ -324,6 +353,65 @@ def test_credit_bounds_are_classified_not_raised():
     wide, report = _run([_row(ENTRY)], rich, FLAT)
     assert wide["model_n_skipped_credit_not_below_width"] == 1
     assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(310 - 2.6)
+    # an EXACT zero is nonpositive: dyadic quotes summing to 1.5 per share (2.0 + 1.5 - 1.25
+    # - 0.75) against fees of 37.5 per leg leave 150 - 150 = 0.0 on every book
+    zero = _set(_chain(ENTRY, EXPIRY), put92={"ask": 1.25}, call108={"ask": 0.75})
+    exact, report = _run([_row(ENTRY)], zero, FLAT, fee_per_leg=37.5)
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == 0.0
+    for book in ("model", "always"):
+        assert exact[f"{book}_n_skipped_nonpositive_credit"] == 1
+    # ... while half a dollar (fees 37.375 per leg: 150 - 149.5) is a credit that trades,
+    # and a settled +0.5 is a hit; settled at 94.99 the same trade loses 1.00 - 0.5 = 0.50,
+    # a miss
+    half, report = _run([_row(ENTRY)], zero, FLAT, fee_per_leg=37.375)
+    assert report["ledger"][0]["books"]["always"]["credit_usd"] == 0.5
+    assert half["always_n_trades"] == 1 and half["model_n_trades"] == 1
+    assert half["always_hit_rate"] == 1.0
+    lost, report = _run([_row(ENTRY)], zero, _settled_at(94.99), fee_per_leg=37.375)
+    assert report["ledger"][0]["books"]["always"]["pnl_usd"] == pytest.approx(-0.5)
+    assert lost["always_hit_rate"] == 0.0
+
+
+#: Every field a chain row must carry (restated here, never read from the node).
+CHAIN_FIELDS = ("instrument", "date", "expiry", "settle_date", "dte", "right", "strike",
+                "bid", "ask", "bid_size", "ask_size", "iv", "underlying_price")
+
+
+@pytest.mark.parametrize("field", CHAIN_FIELDS)
+def test_a_chain_row_lacking_any_required_field_refuses(field):
+    chain = _chain(ENTRY, EXPIRY)
+    del chain[0][field]
+    with pytest.raises(ValueError, match=f"lacks.*{field}"):
+        _run([_row(ENTRY)], chain, FLAT)
+
+
+def test_zero_fee_carry_and_edge_are_accepted():
+    node = CondorQuoteBacktest("bt", {**PARAMS, "fee_per_leg": 0.0, "carry_rate": 0.0,
+                                      "min_edge_usd": 0.0})
+    assert (node.params["fee_per_leg"], node.params["carry_rate"]) == (0.0, 0.0)
+    # a one-day bucket with a one-day horizon is the smallest cell
+    one = CondorQuoteBacktest("bt", {**PARAMS, "dte_min": 1, "dte_max": 1, "label_horizon": 1})
+    assert (one.params["dte_min"], one.params["dte_max"]) == (1, 1)
+
+
+def test_refusal_messages_name_the_bound_they_broke():
+    with pytest.raises(ConfigError, match=r"dte_min 5 must not exceed dte_max 4"):
+        CondorQuoteBacktest("bt", {**PARAMS, "dte_max": 4})
+    for alpha in (0.0, -0.5):
+        with pytest.raises(ConfigError, match="cvar_alpha"):
+            CondorQuoteBacktest("bt", {**PARAMS, "cvar_alpha": alpha})
+    with pytest.raises(ValueError, match=r"2024-03-01 2024-03-05\) has dte 4 outside the "
+                                         r"declared \[5, 10\]"):
+        _run([_row(ENTRY)], _chain(ENTRY, "2024-03-05"), FLAT)
+    # the chain's underlying_price must match the forecast close within 1e-9 relative
+    close = _chain(ENTRY, EXPIRY)
+    for q in close:
+        q["underlying_price"] = 100.0 + 5e-10
+    assert _run([_row(ENTRY)], close, FLAT)[0]["model_n_trades"] == 1
+    for q in close:
+        q["underlying_price"] = 100.0 + 1e-5
+    with pytest.raises(ValueError, match="misaligned"):
+        _run([_row(ENTRY)], close, FLAT)
 
 
 def test_min_edge_gates_only_the_model_book():
@@ -337,6 +425,7 @@ def test_the_horizon_rescale_is_sqrt_sessions_over_label_horizon():
     _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, label_horizon=20)
     entry = report["ledger"][0]
     assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(5 / 20))
+    assert entry["reference_scale"] == 0.05  # the ledger keeps the row's own scale too
     # tighter scale: 100 e^{-0.025} = 97.53 -> 97; 100 e^{-0.0375} = 96.32 -> 96 ...
     assert entry["books"]["model"]["strikes"] == [96.0, 97.0, 103.0, 104.0]
     # the always book shares the model's snap at the SAME horizon scale
@@ -418,8 +507,24 @@ def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
     _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), holiday)
     entry = report["ledger"][0]
     assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-07", 96.0)
+    assert entry["settle_date"] == "2024-03-08"  # the ledger keeps both dates apart
     # the sessions are counted to the settle DATE, not to the close that settled: still 5
     assert entry["sessions"] == 5 and entry["books"]["model"]["strikes"] == MODEL_STRIKES
+    # so does the charge window: a put in the money from 03-04 carries to 03-08, four days,
+    # although the last close is 03-07's
+    itm = [dict(r, close=94.0) if r["date"] == "2024-03-04" else r for r in holiday]
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), itm)
+    charge = report["ledger"][0]["books"]["model"]["american_charge_usd"]
+    assert charge == pytest.approx(95.0 * (math.exp(0.055 * 4 / 365) - 1) * 100)
+    # and so does the cursor: a forecast row on the settlement CLOSE's date (03-07) is
+    # still inside the position, which ends on the settle date
+    chain = _chain(ENTRY, EXPIRY) + _chain("2024-03-07", "2024-03-14")
+    _, report = _run([_row(ENTRY), _row("2024-03-07")], chain, holiday)
+    assert [e["date"] for e in report["ledger"]] == ["2024-03-01"]
+    # a series whose FIRST row is the settlement close settles (one later row suffices)
+    first = _series([("2024-03-08", 97.0), ("2024-03-11", 98.0)])
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), first)
+    assert report["ledger"][0]["settlement"] == 97.0 and report["ledger"][0]["books"]["model"]["entered"]
 
 
 @pytest.mark.parametrize("closes", [
@@ -518,9 +623,10 @@ def test_a_fold_whose_rows_all_lack_a_chain_records_zero_trades():
     {"max_abs_log_moneyness": 0}, {"label_horizon": 0}, {"carry_rate": -0.01},
     {"carry_rate": "0.055"}, {"min_edge_usd": float("nan")}, {"cvar_alpha": 1.0},
     {"hold_steps": 21}, {"atm_ratio": 0.8}, {"iv_index": "x"}, {"surprise": 1},
+    {"dte_max": 10.5},
 ])
 def test_knob_refusals(change):
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError, match=next(iter(change))):  # the message names the knob
         CondorQuoteBacktest("bt", {**PARAMS, **change})
 
 
@@ -651,13 +757,17 @@ def test_a_size_of_exactly_one_contract_is_quotable():
     assert report["ledger"][0]["books"]["model"]["strikes"] == MODEL_STRIKES
 
 
-@pytest.mark.parametrize("right, field", [("put", "bid"), ("call", "bid"), ("put", "ask"),
-                                          ("call", "ask")])
+@pytest.mark.parametrize("right, field", [
+    ("put", "bid"), ("call", "bid"), ("put", "ask"), ("call", "ask"),
+    # a zero SIZE on one side leaves the quote valid, so only that side's leg fails:
+    # no bid size stops the short, no ask size stops the long alone
+    ("put", "bid_size"), ("call", "bid_size"), ("put", "ask_size"), ("call", "ask_size"),
+])
 def test_one_side_with_no_quotable_strike_is_counted_per_leg(right, field):
     chain = _chain(ENTRY, EXPIRY)
     for q in chain:
         if q["right"] == right:
-            q[field] = 0.0
+            q[field] = 0 if field.endswith("size") else 0.0
     metrics, report = _run([_row(ENTRY)], chain, FLAT)
     assert metrics["model_n_skipped_no_quotable_strike"] == 1
     assert report["ledger"][0]["books"]["model"]["strikes"] is None
