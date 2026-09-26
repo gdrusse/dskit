@@ -24304,11 +24304,41 @@ smallest that fit:
   unchanged: every existing S5-S7 test passes.
 - `RetrainedSimulation` binds either publisher kind.
 - The walk's trade-cache node-key prefix, `model_zoo.TRADE_CACHE_PREFIX`,
-  has one owner. The minute walk reads label tapes only from the scored
-  caches.
+  has one owner. `_Walk._tapes` (both walks) reads label tapes only from
+  the scored caches.
 - The per-minute bundle assembly costs about 1 ms per tick (P16 fold 2,
   128 scenarios).
 
 Pins moved: `run-retrain-simulation-template.json` sha256
 `f5392fd5491be5d8dd82013c2ec585fab7ce428a6fd55f28b30d9eacf30d1e46` (was
 `e4aadf0c...`), re-pinned in `run-retrain-simulation.json`.
+
+**Review record.** Round 1 ran on candidate `3a999b2`, with two fresh Sonnet
+lenses run one after the other.
+
+Correctness, look-ahead and accounting found 0 Critical, 1 Major and
+1 Minor:
+
+- **Major (fixed):** the lattice `DevelopmentSimulation` did not pass
+  `keep_solves` to its `MioDecider`. The rows were dropped from the output
+  but stayed in memory.
+- **Minor (disclosed, kept):** the session close is the date's last tape
+  minute. A data gap across every admitted name near the close would move
+  it earlier. The only effect is extra, conservative `exit_after_close`
+  skips.
+
+That lens also checked and could not falsify these: feature causality, one
+model per fold, both refusals, pending reservations, the lot-carry
+arithmetic, the unchanged lattice rows, and the seal compatibility.
+
+Tests and integration ran 17 mutants: 14 were killed and 3 survived. It
+found 0 Critical, 2 Major and 1 Minor:
+
+- **Major (fixed):** no test put a trade-cache node beside a scored one.
+  The filter now lives in `_Walk._tapes`, and the minute fixture carries a
+  trade cache whose tapes differ, so reading it refuses.
+- **Major (fixed):** no test checked that `MinuteMioDecider` with
+  `keep_solves=False` holds no rows. Both deciders are now checked
+  directly, and inside both simulations.
+- **Minor (fixed):** the latest-fold `market` memo had no test; one was
+  added.

@@ -388,11 +388,20 @@ class _Walk:
         return node.run(None, {})["spec"]
 
     def _tapes(self, fold, nodes, needed):
-        """Tape frames for ``needed`` symbols from the fold's verified feature caches."""
+        """Tape frames for ``needed`` symbols from the fold's verified SCORED feature caches.
+
+        A minute walk's trade caches (``TRADE_CACHE_PREFIX`` nodes, ADR-0186)
+        are the same kind but carry no label of their own: their tapes are
+        the scored caches', so they are neither verified nor read here.
+        """
         from .feature_cache import SessionFeatureCache, verify_feature_cache
 
         frames, digests = {}, {}
-        for key in sorted(k for k, spec in nodes.items() if spec.get("uses") == _CACHE_KIND):
+        scored = (
+            k for k, spec in nodes.items()
+            if spec.get("uses") == _CACHE_KIND and not k.startswith(TRADE_CACHE_PREFIX)
+        )
+        for key in sorted(scored):
             params = nodes[key].get("params") or {}
             path = os.path.join(self._params["walk_root"], params.get("path", ""))
             sha = params.get("manifest_sha256")
@@ -950,9 +959,8 @@ class _MinuteWalk(_Walk):
 
     Each manifest fold must carry ``trade_predictions`` pins; they are
     hashed and snapshotted like the scored pins, and the fold's run dir must
-    hold exactly those trade files. The label tapes are read from the scored
-    caches only: a trade cache (``TRADE_CACHE_PREFIX`` node) carries the same
-    tapes and is never re-verified here.
+    hold exactly those trade files. Label tapes come from the scored caches
+    only (:meth:`_Walk._tapes` skips ``TRADE_CACHE_PREFIX`` nodes).
     """
 
     def __init__(self, params):
@@ -1005,11 +1013,6 @@ class _MinuteWalk(_Walk):
         if index not in self._markets:
             self._markets = {index: super().market(index)}
         return self._markets[index]
-
-    def _tapes(self, fold, nodes, needed):
-        """Read the scored caches' tapes; trade caches carry the same tapes and are skipped."""
-        scored = {key: spec for key, spec in nodes.items() if not key.startswith(TRADE_CACHE_PREFIX)}
-        return super()._tapes(fold, scored, needed)
 
 
 class MinuteForecastPublisher(ForecastPublisher):
@@ -1723,7 +1726,9 @@ class DevelopmentSimulation(DevelopmentReplay):
     def _decider(self, release, bundles, mio, ctx, bars, tz):
         """Build the segment's per-tick strategy: the lattice :class:`MioDecider`."""
         del bars, tz
-        return MioDecider(release, bundles, mio, self._policy, ctx)
+        return MioDecider(
+            release, bundles, mio, self._policy, ctx, keep_solves=self.params.get("keep_solves", True),
+        )
 
     def _replay(self, cash_policy, recorder, lots):
         """Build the segment's replay; no lot ever crosses a lattice release boundary."""

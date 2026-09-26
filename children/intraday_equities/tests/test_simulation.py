@@ -30,6 +30,7 @@ import intraday_equities.simulation as simulation_module
 from intraday_equities.feature_cache import write_feature_cache
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
+from intraday_equities.model_zoo import TRADE_CACHE_PREFIX
 from intraday_equities.nodes import Universe, _child_root, _label_from_params, _tapes_from_bars
 from intraday_equities.nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, REQUIRED_INTAKES, EquityKellyMIO
 from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, EquityReplay, FillPolicy
@@ -199,6 +200,16 @@ def _build_fx(root, count=COUNT, minute=False):
         for s in ("SPY",) + NAMES
     ]
     cache_sha = write_feature_cache(cache, {"records": frames, "tape": tapes}, {"fixture": True})
+    trade_sha = None
+    if minute:
+        # A minute walk's fold also names its trade cache (ADR-0186). Its
+        # tapes are deliberately NOT the scored cache's, so a publisher that
+        # read label tapes from it would refuse ("different ... tapes").
+        trade_sha = write_feature_cache(
+            os.path.join(root, "walk", "pipeline_cache", "trade"),
+            {"records": frames, "tape": [{**t, "close": t["close"] * 2.0} for t in tapes]},
+            {"fixture": "trade"},
+        )
     spec = Universe("universe", {"path": UNIVERSE}).run(None, {})["spec"]
     universe_sha = Universe("universe", {"path": UNIVERSE}).fingerprint()["sha256"]
     rng = np.random.default_rng(11)
@@ -220,6 +231,11 @@ def _build_fx(root, count=COUNT, minute=False):
                 "uses": "intraday_equities-no-information-scan",
                 "params": {**LABEL, "lead_start": lead, "val_end_ms": "$splits.val_end_ms"},
             }
+        if trade_sha is not None:
+            pipeline[f"{TRADE_CACHE_PREFIX}a"] = {
+                "uses": "intraday_equities-session-feature-cache",
+                "params": {"path": "./pipeline_cache/trade", "manifest_sha256": trade_sha},
+            }
         config = {"name": f"fixture-wf-{cutoff.isoformat()}", "pipeline": pipeline, "splits": splits}
         resolved = {
             "document_hash": PipelineDocument.from_obj(config).hash,
@@ -228,6 +244,7 @@ def _build_fx(root, count=COUNT, minute=False):
             "data_fingerprint": {
                 "features_a": {"manifest_sha256": cache_sha},
                 "universe": {"sha256": universe_sha},
+                **({f"{TRADE_CACHE_PREFIX}a": {"manifest_sha256": trade_sha}} if trade_sha else {}),
             },
         }
         _dump(os.path.join(run_dir, "config.json"), config)
@@ -1197,7 +1214,7 @@ def test_open_lots_at_segment_end_refuse(sim7, monkeypatch):
     last = max(b["decision_ts"] for b in published["bundles"] if b["release_id"] == release["release_id"])
 
     class Stub:
-        def __init__(self, release, bundles, mio, fill_policy, ctx):
+        def __init__(self, release, bundles, mio, fill_policy, ctx, keep_solves=True):
             self.skipped, self.refused = [], []
 
         def decide(self, asof_ms, portfolio):
@@ -1753,6 +1770,27 @@ def test_minute_publisher_refuses_a_trade_file_that_moved_after_the_inventory(mf
         _mrun(mfx)
 
 
+def test_minute_walk_never_reads_label_tapes_from_a_trade_cache(mfx, monkeypatch):
+    import intraday_equities.feature_cache as feature_cache
+
+    verified = []
+    real = feature_cache.verify_feature_cache
+
+    def spy(path, sha):
+        verified.append(os.path.basename(path))
+        return real(path, sha)
+
+    monkeypatch.setattr(feature_cache, "verify_feature_cache", spy)
+    config = json.load(open(os.path.join(mfx["runs"][2], "config.json"), encoding="utf-8"))
+    assert f"{TRADE_CACHE_PREFIX}a" in config["pipeline"]
+    out = _mrun(mfx)
+    assert out["ticks"] and verified and "trade" not in verified
+    # The lattice walk has no such filter to lean on: its folds carry no trade cache.
+    lattice = _build_fx(os.path.join(os.path.dirname(mfx["runs"][0]), "..", "lattice"))
+    assert not any(k.startswith(TRADE_CACHE_PREFIX) for k in json.load(
+        open(os.path.join(lattice["runs"][2], "config.json"), encoding="utf-8"))["pipeline"])
+
+
 def test_minute_publisher_reads_trade_rows_without_y(mfx, monkeypatch):
     import pyarrow.parquet as pq
 
@@ -1955,7 +1993,43 @@ def test_minute_simulate_trades_off_the_lattice_in_both_segments(msim7):
     assert msim7["report"]["summary"]["max_abs_nav_discrepancy"] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_minute_simulate_without_kept_solves_counts_them_in_the_metadata(msim7):
+def test_minute_decider_without_kept_solves_holds_no_rows_but_counts_them(mfx):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    published = _mrun(mfx)
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(mfx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(
+        published["releases"][0], published["ticks"], mio, FILL_POLICY, mfx["ctx"], _closes(mfx), TZ,
+        keep_solves=False,
+    )
+    start = _open(published["releases"][0])
+    for minute in (5, 6, 7):
+        decider.decide(start + minute * 60_000, _mbook(mfx, start + minute * 60_000))
+    assert decider.solves == [] and decider.n_solves == 6 and decider.solve_seconds > 0.0
+
+
+def test_minute_walk_keeps_only_the_latest_folds_label_arrays(mfx):
+    from intraday_equities.simulation import _MinuteWalk
+
+    walk = _MinuteWalk(mfx["params"])
+    try:
+        first = walk.market(1)
+        assert walk.market(1) is first
+        walk.market(2)
+        assert list(walk._markets) == [2]
+    finally:
+        walk.close()
+
+
+def test_minute_simulate_without_kept_solves_counts_them_in_the_metadata(msim7, monkeypatch):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    built = _spy_deciders(monkeypatch, "MinuteMioDecider")
+    fx, published = msim7["fx"], msim7["published"]
+    MinuteDevelopmentSimulation("simulate", _sim_params(keep_solves=False)).run(
+        fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
+    )
+    assert len(built) == 2 and all(d.solves == [] and d.n_solves > 0 for d in built)
     out = msim7["out"]
     assert out["solves"] == []
     counted = out["metadata"]["solves"]
@@ -1964,14 +2038,31 @@ def test_minute_simulate_without_kept_solves_counts_them_in_the_metadata(msim7):
     assert skips["exit_after_close"] > 0
 
 
-def test_development_simulation_keep_solves_false_drops_the_rows_and_keeps_the_count(sim7):
+def _spy_deciders(monkeypatch, name):
+    """Record every decider the simulation builds under ``simulation_module.<name>``."""
+    built = []
+    real = getattr(simulation_module, name)
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(simulation_module, name, Recording)
+    return built
+
+
+def test_development_simulation_keep_solves_false_drops_the_rows_and_keeps_the_count(sim7, monkeypatch):
     fx, published = sim7["fx"], sim7["published"]
+    built = _spy_deciders(monkeypatch, "MioDecider")
     out = DevelopmentSimulation("simulate", _sim_params(keep_solves=False)).run(
         fx["ctx"], _sim_inputs(published, list(sim7["bars"]), fx)
     )
     assert out["solves"] == [] and out["fills"] == sim7["out"]["fills"]
     assert out["metadata"]["solves"]["count"] == len(sim7["out"]["solves"]) > 0
     assert "solves" not in sim7["out"]["metadata"]
+    # The deciders themselves never held the rows: the flag bounds memory, not just output.
+    assert len(built) == 2 and all(d.solves == [] and d.n_solves > 0 for d in built)
 
 
 def _carry_stub(target):
