@@ -25299,4 +25299,54 @@ recorded as a Minor of `condor_credit` (the cashflow owner sums Decimals;
 the backtest's floats do not; no economic consequence at a zero-max-loss
 boundary).
 
-Round 5 (fresh lenses on the corrected candidate) is recorded below.
+*Review round 5 (candidate `b2fa3dd`, two fresh lenses).* Correctness:
+C0 M0 m3 n2 — the delta proven tests-only against 00f0579's blobs, the
+corrected fixtures re-derived by hand, every invariant probed again with
+its own scripts (a later-listed nearer expiry, Good Friday, a Sunday OCC
+expiry, exact-equality credit and gate, an independent NYSE calendar
+reproducing the reach table, the proxy byte-identical). Minors: a target
+inside the band whose outward snap lands one step beyond the reader's band
+is labelled `no_quotable_strike` (a data-coverage reason) rather than the
+band; an integral-float `multiplier` validates at plan and refuses at run;
+the dte ordering rule is spelled in two modules. Nits: the optionshist
+`check` verifies the underlying file's three columns only; a boolean split
+coefficient passes `!= 1`. Tests (the catalogue, round 4's 25 and the
+author's 5 re-run with identical verdicts; 24 substitutes of its own; 110
+hand values, all agreeing): C0 M4 m4 n5 — four more findings of the
+reviewed family, all test-only: the nearest-expiry rule pinned by the
+recorded NAME alone (both same-date chains carried identical quotes, so a
+node pricing every row of the date passed); the always book's strikes
+never asserted where sessions != label_horizon (an always book at the raw
+scale survived); mean P&L and hit rate never asserted on a book with a
+traded and a skipped cell (dividing by every cell survived); and no
+fixture with more than three trades or an alpha other than 0.95, so the
+CVaR collapsed to the minimum and a dead `cvar_alpha` survived. Minors:
+sessions counted to the settlement close's date (a holiday settlement);
+the entry close as the pre-ex close of a next-session ex-date; every
+losing fixture drawing exactly 100 samples against a multiplier of 100;
+the reader's `underlying_price` rule pinned on None only. Nits: the hit
+rate at a P&L of exactly zero; misalignment checked on the first chain
+row; a close validated before the window filter; the zoo's contract paths
+unguarded for an IWM cell; the node key absent from the memo key.
+
+*Second convergence checkpoint.* Two corrections after the first
+checkpoint each met a fresh round that found the same family again, which
+the skill forbids patching further: the first checkpoint's inventory
+enumerated rules as the author described them, so a lens could always
+name a substitute outside it (a reason's ORDER, a knob's ABSENCE, a
+metric's DENOMINATOR, a filter's DELETION). The changed approach makes the
+catalogue GENERATED, not written: an operator-mutation sweep over the AST
+of every scope this build added or changed — `_CondorBacktestBase`,
+`CondorBacktest`, `CondorQuoteBacktest`, `quote_problems`,
+`condor_credit`, `american_short_charge`, `_settlement_date`,
+`ChainQuoteRows`, `IndexCloseRows.project` and all of `grid.py` —
+swapping every comparison, arithmetic and boolean operator, shifting every
+numeric constant, negating every `if`, deleting every comprehension filter
+and every deletable statement, swapping `min`/`max`, `floor`/`ceil`,
+`bisect_left`/`bisect_right` and identity-wrapping calls, and swapping
+every vocabulary string and confusable local name (`scale` /
+`horizon_scale`, `settle_date` / `expiry`, `credit` / `per_share`, ...).
+Every survivor is adjudicated: killed by a fixture or proven equivalent on
+every reachable input. The completion criterion is mechanical, and the
+sweep is re-runnable by the tests lens. Round 6's record below carries the
+sweep's counts and the adjudication table.

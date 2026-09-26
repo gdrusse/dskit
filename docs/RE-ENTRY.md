@@ -34,9 +34,19 @@
   found three more test-only Majors (the classification order, the
   default gate, a fixture trading at a credit equal to its wing by float
   rounding), corrected in the new tests-only candidate `b2fa3dd` (child
-  503 passed; the catalogue's kills hold). Round 5 (two fresh lenses on
-  `b2fa3dd`) is recorded in the ADR-0187 build record with the Minor/Nit
-  backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
+  503 passed; the catalogue's kills hold). Round 5 on `b2fa3dd`:
+  correctness C0 M0; the tests lens found four more test-only Majors of
+  the same family (the nearest-expiry rule pinned by name only, the always
+  book's scale, mean P&L and hit rate over all cells, a dead `cvar_alpha`).
+  That is the family recurring after the first checkpoint, so a SECOND
+  convergence checkpoint is in progress: a generated operator-mutation
+  sweep over every scope this build added (about 1,850 mutants; the tool
+  is session scratch, its counts and survivor adjudication go into the ADR
+  record), every survivor killed by a fixture or proven equivalent, then an
+  independent checkpoint review and two fresh lenses. The fixtures for the
+  round-5 Majors are on the branch (tests only; production blobs and all
+  27 identity hashes unchanged since `00f0579`). The ADR-0187 build record
+  carries every round and the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
   entry settling at its own close, the fresh-object guard bypassable by an
   in-place-mutating projection, a store-token race, non-reader inputs
   raising TypeError, the ATM tie-break and the row-level ATM rule unstated

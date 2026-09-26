@@ -350,3 +350,12 @@ def test_a_put_far_below_the_band_is_dropped_like_a_call_far_above_it(store_fact
     store = _chain_store(store_factory, rows, name="band")
     out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
     assert sorted((r["right"], r["strike"]) for r in out) == [("call", 100.0), ("put", 82.0)]
+
+
+def test_a_nonpositive_underlying_price_is_dropped_not_divided_by(store_factory):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 0.0),      # dropped
+            _chain("SPY250207P00100000", "2025-01-02", -100.0),   # dropped
+            _chain("SPY250207C00101000", "2025-01-02", 100.0)]    # kept
+    store = _chain_store(store_factory, rows, name="level")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert [r["strike"] for r in out] == [101.0]

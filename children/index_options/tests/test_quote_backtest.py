@@ -201,9 +201,17 @@ def test_a_missing_dividend_in_the_window_refuses():
 
 
 def test_the_nearest_listed_expiry_is_taken_and_a_day_without_chain_is_skipped():
-    chain = _chain(ENTRY, "2024-03-08") + _chain(ENTRY, "2024-03-11")
+    # the farther 03-11 expiry carries richer quotes and a higher iv, so pricing any of its
+    # rows would move the credit (put 95 at 2.4), the ATM iv (0.4) and the implied strikes
+    far = _set(_chain(ENTRY, "2024-03-11", iv=0.4), put95={"bid": 2.4, "ask": 2.6},
+               call106={"bid": 1.0, "ask": 1.1})
+    chain = _chain(ENTRY, "2024-03-08") + far
     metrics, report = _run([_row(ENTRY), _row("2024-03-04"), _row("2024-03-11")], chain, FLAT)
     assert [e["expiry"] for e in report["ledger"]] == ["2024-03-08"]
+    entry = report["ledger"][0]
+    assert entry["dte"] == 7 and entry["atm_iv"] == pytest.approx(0.2)
+    assert entry["books"]["model"]["credit_usd"] == pytest.approx(MODEL_CREDIT)
+    assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
     # 03-04 sits inside the open position (passed over, uncounted); 03-11 has no chain
     assert metrics["n_skipped_no_chain"] == 1 and metrics["n_rows_in_split"] == 3
 
@@ -331,6 +339,8 @@ def test_the_horizon_rescale_is_sqrt_sessions_over_label_horizon():
     assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(5 / 20))
     # tighter scale: 100 e^{-0.025} = 97.53 -> 97; 100 e^{-0.0375} = 96.32 -> 96 ...
     assert entry["books"]["model"]["strikes"] == [96.0, 97.0, 103.0, 104.0]
+    # the always book shares the model's snap at the SAME horizon scale
+    assert entry["books"]["always"]["strikes"] == [96.0, 97.0, 103.0, 104.0]
 
 
 def test_the_implied_book_needs_an_atm_iv_on_both_rights():
@@ -408,6 +418,8 @@ def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
     _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), holiday)
     entry = report["ledger"][0]
     assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-07", 96.0)
+    # the sessions are counted to the settle DATE, not to the close that settled: still 5
+    assert entry["sessions"] == 5 and entry["books"]["model"]["strikes"] == MODEL_STRIKES
 
 
 @pytest.mark.parametrize("closes", [
@@ -564,6 +576,7 @@ def test_the_gate_prices_the_draws_at_the_horizon_scale_not_the_reference_scale(
     entry = report["ledger"][0]
     assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(5 / 4))
     assert entry["books"]["model"]["strikes"] == [90.0, 93.0, 106.0, 109.0]
+    assert entry["books"]["always"]["strikes"] == [90.0, 93.0, 106.0, 109.0]
     assert entry["books"]["model"]["credit_usd"] == pytest.approx(77.4)
     expected = 77.4 - 5 * (93.0 - 100 * math.exp(-1.4 * 0.05 * math.sqrt(5 / 4)))
     assert expected == pytest.approx(74.761, abs=1e-3)
@@ -798,6 +811,11 @@ def test_mean_credit_averages_traded_cells_only():
     assert metrics["model_mean_credit_usd"] == pytest.approx(MODEL_CREDIT)
     assert metrics["always_n_trades"] == 2
     assert metrics["always_mean_credit_usd"] == pytest.approx((MODEL_CREDIT + 77.4) / 2)
+    # the mean P&L and hit rate are over TRADED cells too: both settle inside the shorts
+    assert metrics["model_mean_pnl_usd"] == pytest.approx(MODEL_CREDIT)
+    assert metrics["model_hit_rate"] == 1.0
+    assert metrics["always_mean_pnl_usd"] == pytest.approx((MODEL_CREDIT + 77.4) / 2)
+    assert metrics["always_hit_rate"] == 1.0
 
 
 @pytest.mark.parametrize("draws, strikes", [
@@ -818,3 +836,39 @@ def test_the_next_entry_may_start_on_the_settlement_date_of_a_saturday_expiry():
     series = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")])
     _, report = _run([_row(ENTRY), _row("2024-03-08")], chain, series)
     assert [e["date"] for e in report["ledger"]] == ["2024-03-01", "2024-03-08"]
+
+
+def _three_trades(s1, s2, s3):
+    """Three non-overlapping worked entries (five sessions each) settling at s1 / s2 / s3."""
+    days = ["2024-03-01", "2024-03-11", "2024-03-19"]
+    chain = (_chain("2024-03-01", "2024-03-08") + _chain("2024-03-11", "2024-03-18")
+             + _chain("2024-03-19", "2024-03-26"))
+    closes = {d: 100.0 for d in _weekdays("2024-03-01", "2024-03-29")}
+    closes.update({"2024-03-08": s1, "2024-03-18": s2, "2024-03-26": s3})
+    return [_row(d) for d in days], chain, _series(sorted(closes.items()))
+
+
+def test_cvar_takes_the_declared_tail_and_the_drawdown_follows_time_order():
+    # settlements 80 / 93.5 / 97 through the worked strikes: P&L -142.6 / +7.4 / +157.4
+    # (the 157.4 credit less 300, 150 and 0; no close inside a window is below the short
+    # put, so no carry). At cvar_alpha 0.5 the tail holds ceil(1.5) = 2 values:
+    # (-142.6 + 7.4) / 2 = -67.6, not the worst trade. Mean 22.2 / 3 = 7.4, hit rate 2/3,
+    # drawdown 142.6 from the start.
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    metrics, report = _run(rows, chain, series, cvar_alpha=0.5)
+    assert [e["books"]["model"]["pnl_usd"] for e in report["ledger"]] == pytest.approx(
+        [-142.6, 7.4, 157.4])
+    assert metrics["model_n_trades"] == 3
+    assert metrics["model_cvar_usd"] == pytest.approx(-67.6)
+    assert metrics["model_mean_pnl_usd"] == pytest.approx(7.4)
+    assert metrics["model_hit_rate"] == pytest.approx(2 / 3)
+    assert metrics["model_total_pnl_usd"] == pytest.approx(22.2)
+    assert metrics["model_max_drawdown_usd"] == pytest.approx(142.6)
+    # loss, small win, loss: the path falls 142.6, recovers 7.4 and falls again, 277.8 from
+    # the start; a time-blind (sorted) path would report 285.2. The default 0.95 tail of
+    # three trades is one value, the worst.
+    rows, chain, series = _three_trades(80.0, 93.5, 80.0)
+    metrics, _ = _run(rows, chain, series)
+    assert metrics["model_max_drawdown_usd"] == pytest.approx(277.8)
+    assert metrics["model_cvar_usd"] == pytest.approx(-142.6)
+    assert metrics["model_hit_rate"] == pytest.approx(1 / 3)

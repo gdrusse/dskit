@@ -397,3 +397,12 @@ def test_the_charge_reads_rows_in_any_order_and_never_the_entry_days_dividend():
     on_entry = _series(WINDOW)
     on_entry[0]["dividend_amount"] = None  # the entry date's own ex-date is never read
     assert american_short_charge(on_entry, **CHARGE)["total_usd"] == 0.0
+
+
+def test_the_entry_close_is_the_pre_ex_close_of_an_ex_date_on_the_next_session():
+    # the ex-date is the first session after entry, so its pre-ex close is the ENTRY close
+    # (103 > the 102 short call): charged 1.5 * 100
+    rows = _series([("2024-03-01", 103.0), ("2024-03-04", 101.0), ("2024-03-05", 101.0),
+                    ("2024-03-06", 101.0), ("2024-03-07", 101.0), ("2024-03-08", 101.0)],
+                   [("2024-03-04", 1.5)])
+    assert american_short_charge(rows, **CHARGE)["call_dividend_usd"] == 150.0
