@@ -24160,8 +24160,8 @@ New facts, checked on the pinned archive files on 2026-09-25:
    and QQQ from 1999-11-01, IWM from 2000-05-26. The raw series holds
    QQQ's 2:1 split on 2000-03-20 (flagged) and IWM's 2:1 split on
    2005-06-09 (not flagged);
-   SPY has no split and no close-to-close move above 25%. The pack reads
-   only `close`.
+   SPY has no split. A scan of all three files for close-to-close moves
+   above 25% found only those two dates. The pack reads only `close`.
 7. Before 2015-02, standard monthly options carry a SATURDAY OCC expiry
    (e.g. SPY `2008-07-19`); their last session is the Friday.
 8. Listed expiries within 50 days: SPY 2008 has 2, 2012 has 3, 2016 has 7
@@ -24369,8 +24369,10 @@ instrument's in-split forecast rows, oldest first.
      short call is the smallest quotable call at or above its target. The
      long put is the largest quotable put at or below its target and below
      the short put; the long call mirrors it.
-   - A target outside the band is counted as `outside_band`; a strike with
-     no quotable listing is counted as `degenerate_strikes`.
+   - A target outside the band is counted as `outside_band`. A leg whose
+     listed strikes on the right side of its target all fail the quote
+     rules is counted as `no_quotable_strike` (e.g. fact 9's zero sizes). A
+     geometry that is not strictly increasing is `degenerate_strikes`.
    - "Quotable" means `quote_problems` passes, plus a side rule: a short
      leg needs bid > 0 and a long leg needs ask > 0. A provider 0 on the
      side we trade means no market (ADR-0182 review), and a free long wing
@@ -24409,9 +24411,12 @@ day"). The walk's objective is `score`'s twCRPS, which those folds still
 produce, so the walk records the fold and runs on. Tests cover both
 refusals and a fold with forecast rows but no qualifying expiry.
 Acceptance adds a cell-level check: a cell that enters no trade in any
-fold fails, and so does a cell with a fold that enters nothing after its
-bucket's expiries appear in that cell's chain. The report carries each
-cell's first and last chain date so the check is mechanical.
+fold fails. A fold that enters nothing passes only when every skip in it
+has a data-coverage reason: `no_chain`, `no_expiry_in_bucket` or
+`no_quotable_strike`. Those are what the pre-weekly years and 2008's
+unrecorded sizes (fact 9, owner question 3) produce. Any other reason
+fails the fold. The report carries each cell's first and last chain date
+and the per-fold reason counts, so the check is mechanical.
 
 **Point in time.**
 
@@ -24463,8 +24468,13 @@ conservative bound derived below.
 - **Why the bound is conservative.** Both charges ignore what we would gain:
   forfeited extrinsic value, early exercise of our own long legs, and
   dividends on stock we are assigned into.
-- **Not modeled, disclosed:** pin risk (moves after the close and before
-  the exercise cutoff), borrow fees and exercise fees.
+- **Not modeled, disclosed:**
+  - Every leg that is in the money at expiry is assumed exercised or
+    assigned and the delivered stock flattened at `settle_date`'s close.
+    The real delivery lands after the close, often over a weekend; that
+    gap is not modeled.
+  - Pin risk: moves after the close and before the exercise cutoff.
+  - Borrow fees and exercise fees.
 - **IWM restricted.** The archive has no IWM dividends, so the call charge
   cannot be computed. IWM cells run labels, forecasts and scores, but ship
   no `chain` or `backtest` node until an ex-dividend source is approved
@@ -24524,6 +24534,8 @@ the build stops and reports to the owner.
     - the nearest expiry within the bucket, and none (counted);
     - outward snapping to quotable strikes;
     - a 0-bid short leg and a long leg with no ask;
+    - a listed expiry whose strikes all carry zero sizes, which counts as
+      `no_quotable_strike` and gives a recorded zero-trade fold;
     - the credit bounds.
   - Settlement:
     - on the last session at or before expiry, for a Saturday expiry and a
@@ -24581,6 +24593,8 @@ the build stops and reports to the owner.
 - Reading Alpaca bars.
 - Pooled multi-underlying models (`Concat` and `Filter` can express them
   later).
+- Renaming the child: it stays `index_options`, and the ETF track sits
+  beside the index track.
 
 **Alternatives considered.**
 
