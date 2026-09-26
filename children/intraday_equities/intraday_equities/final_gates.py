@@ -99,8 +99,12 @@ def _pin_problems(params, path_field, sha_field):
     return problems
 
 
-def _verified_prediction_snapshot(pins, cutoff):
-    """Copy and hash each pin from one read, returning an immutable snapshot."""
+def _verified_prediction_snapshot(pins, cutoff, filename="predictions.parquet"):
+    """Copy and hash each pin from one read, returning an immutable snapshot.
+
+    ``filename`` names each copy (ADR-0186: ``trade_predictions.parquet``
+    snapshots per-minute trade rows so the trade reader finds them).
+    """
     import tempfile
 
     guard = tempfile.TemporaryDirectory(prefix="dskit-gate-evidence-")
@@ -123,9 +127,7 @@ def _verified_prediction_snapshot(pins, cutoff):
                 guard.name, "artifacts", f"pin-{index:04d}"
             )
             os.makedirs(target_dir)
-            with open(
-                os.path.join(target_dir, "predictions.parquet"), "wb"
-            ) as handle:
+            with open(os.path.join(target_dir, filename), "wb") as handle:
                 handle.write(raw)
             declared.append(path)
         return guard, declared

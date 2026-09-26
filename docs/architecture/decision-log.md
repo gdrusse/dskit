@@ -24286,3 +24286,29 @@ inventory are both empty). Aborting on a lot open at a release boundary
 - The scoring lattice unchanged.
 - `keep_solves`.
 - The shipped documents validate.
+
+**As built (2026-09-25).** All of T1-T8 above. Deviations, each the
+smallest that fit:
+
+- `MioDecider` gained per-tick hooks (`_context`, `_names_at`,
+  `_exclusion`, `_bundle_rows`), an optional `keep_solves`, and the counters
+  `n_solves` and `solve_seconds`. Its lattice behaviour is unchanged.
+- `DevelopmentSimulation` gained hooks too (`_decision_rows`, `_decider`,
+  `_replay`, `_carry`, `_segment_extras`, `_run_extras`) and the optional
+  `keep_solves`, emitted only when present.
+- `FinalModelGateInventory._fold_extras` is the one seam
+  `RetrainedWalkInventory` overrides. `_verified_prediction_snapshot` takes
+  a `filename`.
+- The bundle builders are `ForecastPublisher.tick_row`/`bundle_rows`, and
+  the lattice path now calls them too. The ADR-0184 bundle rows are
+  unchanged: every existing S5-S7 test passes.
+- `RetrainedSimulation` binds either publisher kind.
+- The walk's trade-cache node-key prefix, `model_zoo.TRADE_CACHE_PREFIX`,
+  has one owner. The minute walk reads label tapes only from the scored
+  caches.
+- The per-minute bundle assembly costs about 1 ms per tick (P16 fold 2,
+  128 scenarios).
+
+Pins moved: `run-retrain-simulation-template.json` sha256
+`f5392fd5491be5d8dd82013c2ec585fab7ce428a6fd55f28b30d9eacf30d1e46` (was
+`e4aadf0c...`), re-pinned in `run-retrain-simulation.json`.

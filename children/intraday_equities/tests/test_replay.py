@@ -2392,3 +2392,86 @@ def test_scheduled_a_rolled_withdrawal_never_relabels_the_deposit_it_lands_on():
         if _utc(r["body"]["effective_at_ms"]).astimezone(_CF_TZ).date() == date(2026, 1, 23)
     )
     assert on_23 == [("scheduled_contribution", "500"), ("withdrawal", "-40")]
+
+
+# --- ADR-0186: pending entries and lots carried across releases -------------
+
+_T0 = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _m(i, day=0):
+    return _T0 + day * 86_400_000 + i * 60_000
+
+
+class _Orders:
+    """A stub per-tick decider: fixed orders per instant; keeps the portfolio it saw."""
+
+    def __init__(self, orders=None):
+        self.orders = orders or {}
+        self.seen = {}
+
+    def decide(self, asof_ms, portfolio):
+        self.seen[asof_ms] = copy.deepcopy(portfolio)
+        return list(self.orders.get(asof_ms, ()))
+
+
+def test_portfolio_reports_a_queued_unfilled_entry_as_pending():
+    bars = [_bar("AAA", _m(i), 10.0, 10.0) for i in range(6)]
+    bars += [_bar("BBB", _m(i), 20.0, 20.0) for i in (0, 3, 4, 5)]
+    stub = _Orders({_m(0): [_decision("BBB", _m(0), 3)]})
+    EquityReplay(_policy(), decider=stub).run(bars)
+    assert stub.seen[_m(0)]["pending"] == []
+    queued = [{"symbol": "BBB", "lead": 3, "qty": 10, "side": "buy", "decision_ms": _m(0)}]
+    # BBB prints no bar at minutes 1-2: the entry is still queued there.
+    assert stub.seen[_m(1)]["pending"] == queued and stub.seen[_m(2)]["pending"] == queued
+    assert "BBB" not in stub.seen[_m(2)]["positions"]
+    assert stub.seen[_m(3)]["pending"] == [] and stub.seen[_m(3)]["positions"] == {"BBB": 10}
+
+
+def test_carry_lots_returns_an_unclosed_lot_with_the_bars_it_still_owes():
+    bars = [_bar("AAA", _m(i), 10.0, 10.0) for i in range(4)]
+    decisions = [_decision("AAA", _m(1), 5)]
+    carried = EquityReplay(_policy(), carry_lots=True).run(bars, decisions)
+    # Fill at index 2, due at index 7; the tape holds indices 0-3, so the
+    # next tape owes the exit at ITS index 7 - 4 = 3.
+    assert carried["open_lots"] == [
+        {"symbol": "AAA", "lead": 5, "qty": 10, "side": "buy", "exit_in": 3},
+    ]
+    assert carried["refused"] == []
+    refused = EquityReplay(_policy()).run(bars, decisions)
+    assert "open_lots" not in refused
+    assert [r["reason"] for r in refused["refused"]] == ["expiry_past_tape"]
+
+
+def test_a_carried_lot_is_held_then_force_exits_at_the_bar_it_owes():
+    lot = {"symbol": "AAA", "lead": 5, "qty": 10, "side": "buy", "exit_in": 3}
+    bars = [_bar("AAA", _m(i, day=1), 11.0 + i, 11.5 + i) for i in range(6)]
+    stub = _Orders()
+    out = EquityReplay(_zero_fee(), decider=stub, carried_lots=[lot], carry_lots=True).run(bars)
+    assert stub.seen[_m(0, 1)]["positions"] == {"AAA": 10}
+    assert stub.seen[_m(0, 1)]["gross_limit"] == pytest.approx(10 * 11.5)
+    assert stub.seen[_m(1, 1)]["positions"] == {"AAA": 10}
+    # At index 2 the lot exits on the fill bar (index 3), so it is no longer
+    # a position a decision there could size against.
+    assert stub.seen[_m(2, 1)]["positions"] == {}
+    assert [(f["kind"], f["asof_ms"], f["price"], f["qty"]) for f in out["fills"]] == [
+        ("exit", _m(3, 1), 14.0, 10),
+    ]
+    assert out["open_lots"] == []
+
+
+def test_a_carried_lot_owed_past_this_tape_too_is_carried_again():
+    lot = {"symbol": "AAA", "lead": 9, "qty": 10, "side": "buy", "exit_in": 7}
+    bars = [_bar("AAA", _m(i, day=1), 11.0, 11.0) for i in range(3)]
+    out = EquityReplay(_policy(), carried_lots=[lot], carry_lots=True).run(bars)
+    assert out["open_lots"] == [{**lot, "exit_in": 4}] and out["fills"] == []
+
+
+def test_a_carried_lot_on_a_name_the_tape_lacks_refuses():
+    lot = {"symbol": "ZZZ", "lead": 2, "qty": 1, "side": "buy", "exit_in": 0}
+    with pytest.raises(ConfigError, match="carried lot"):
+        EquityReplay(_policy(), carried_lots=[lot], carry_lots=True).run([_bar("AAA", _m(0), 1.0, 1.0)])
+
+
+def _zero_fee():
+    return _policy({"half_spread_bps": {}, "default_half_spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0})
