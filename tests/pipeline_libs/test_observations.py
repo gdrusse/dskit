@@ -689,8 +689,9 @@ class TestSnapshotReuse:
         _acquire(acquired)
         grown = _Fresh("obs", params).fingerprint()
         assert len(calls) == 3 and grown["rows"] == len(ROWS) + 1
-        # a touched member (same bytes, new mtime)
-        newest = _members(acquired)[-1]
+        # a touched member (same bytes, new mtime); acquisition dir names are
+        # content ids, not chronological, so the growth member is found by size
+        newest = min(_members(acquired), key=os.path.getsize)
         os.utime(newest, ns=(1, 1))
         assert _Fresh("obs", params).fingerprint() == grown and len(calls) == 4
         # an acquisition removed

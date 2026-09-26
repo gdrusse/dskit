@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
@@ -449,26 +448,10 @@ class ObservationRows(Node):
                 self._store_token())
 
     def _store_token(self):
-        """Every acquisition member of the stream with its size and mtime, or ``None``."""
-        from dskit.onboarding.codec import resolve_stream_file
-        from dskit.onboarding.observations import stream_dir
+        """Return the stream's member inventory — the read seam's, never re-spelled."""
+        from dskit.onboarding.observations import stream_members
 
-        base = stream_dir(self.root(), self.source())
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return None  # the scan itself states the refusal
-        token = []
-        for name in names:
-            directory = os.path.join(base, name)
-            if not os.path.isdir(directory):
-                continue
-            path = resolve_stream_file(directory, self.stream())
-            if path is None:
-                continue
-            info = os.stat(path)
-            token.append((name, os.path.basename(path), info.st_size, info.st_mtime_ns))
-        return tuple(token)
+        return stream_members(self.root(), self.source(), self.stream())
 
     def _read(self):
         """Scan the stream through the seam; stamp and digest the winning rows."""

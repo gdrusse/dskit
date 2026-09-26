@@ -1011,6 +1011,31 @@ def test_stream_dir_is_where_scan_stream_reads(tmp_path):
         scan_stream(root, "nobody", "bars", key_fields=("symbol", "ts"))
 
 
+def test_stream_members_inventories_what_a_scan_would_read(tmp_path):
+    """ADR-0187: the store token a memoized scan keys on — one entry per
+    committed member, moved by a new, removed or touched acquisition."""
+    from dskit.onboarding.observations import stream_members
+
+    root = str(tmp_path)
+    assert stream_members(root, "alpaca", "bars") == ()  # no directory: the scan refuses
+    _write(root, "acq-1", [_row("AAPL", "2026-01-05T14:31:00+00:00", 10.0)])
+    (first,) = stream_members(root, "alpaca", "bars")
+    path = os.path.join(stream_dir(root, "alpaca"), "acq-1", first[1])
+    info = os.stat(path)
+    assert first == ("acq-1", "bars.jsonl", info.st_size, info.st_mtime_ns)
+    assert stream_members(root, "alpaca", "quotes") == ()  # another stream: no member
+    _write(root, "acq-2", [_row("AAPL", "2026-01-06T14:31:00+00:00", 11.0)])
+    assert [m[0] for m in stream_members(root, "alpaca", "bars")] == ["acq-1", "acq-2"]
+    os.utime(path, ns=(1, 1))
+    touched = stream_members(root, "alpaca", "bars")[0]
+    assert touched[:3] == first[:3] and touched[3] == 1
+    # the codec seam resolves the member, so an ambiguous spelling refuses here too
+    with open(path + ".gz", "wb") as fh:
+        fh.write(b"\x1f\x8b")
+    with pytest.raises(AssetError):
+        stream_members(root, "alpaca", "bars")
+
+
 # -- verified_payload_dir (ADR-0083) -------------------------------------------
 
 
