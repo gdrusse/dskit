@@ -2123,6 +2123,59 @@ def msim(tmp_path_factory):
     return {"fx": fx, "published": published, "bars": bars, "spy": spy, "out": out}
 
 
+def test_minute_cadence_sizes_and_bills_every_entry_at_its_fill_minute_not_its_decision_minute(msim, monkeypatch):
+    """Skeptic minor (test quality): a window boundary between EVERY decision
+    minute and its fill minute, so decision-keying and fill-keying disagree on
+    every entry. Odd session minutes 10:31..10:59 New York (the fixture opens
+    10:30 EDT) carry x3.0; even minutes pay the default 1.0."""
+    from intraday_equities.simulation import MinuteMioDecider
+
+    fx, published = msim["fx"], msim["published"]
+    open_minute = 10 * 60 + 30
+    schedule = {
+        "timezone": "America/New_York", "default_multiplier": 1.0,
+        "windows": [
+            {"start_minute": m, "end_minute": m + 1, "multiplier": 3.0}
+            for m in range(open_minute + 1, open_minute + 30, 2)
+        ],
+    }
+    policy = FillPolicy({**FILL_POLICY.to_obj(), "spread_time_of_day": schedule})
+    sized = {}
+    real = EquityKellyMIO.instruments
+
+    def spy(self, inputs):
+        out = real(self, inputs)
+        portfolio = inputs["portfolio"]
+        for name, row in out[1].items():
+            sized[(portfolio["asof_ms"], name)] = (row, portfolio["fill_ms"][name])
+        return out
+
+    monkeypatch.setattr(EquityKellyMIO, "instruments", spy)
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(published["releases"][0], published["ticks"], mio, policy, fx["ctx"], _closes(fx), TZ)
+    out = EquityReplay(policy, CASH_POLICY, decider=decider).run(msim["bars"])
+    costs = policy.costs
+    head = [key for key in sized if costs.time_of_day_multiplier(key[0]) != costs.time_of_day_multiplier(sized[key][1])]
+    assert head, "the head of the session must size names across a window boundary"
+    for (asof, name), (row, fill_ms) in sized.items():
+        assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms)
+    entries = [
+        f for f in out["fills"]
+        if f["kind"] == "entry"
+        and costs.time_of_day_multiplier(f["decision_ms"]) != costs.time_of_day_multiplier(f["asof_ms"])
+    ]
+    assert entries, "the fixture must fill entries across a window boundary"
+    for fill in entries:
+        row, fill_ms = sized[(fill["decision_ms"], fill["symbol"])]
+        # The fill bar is the name's next TAPE bar: the next minute, or the
+        # tail of the session after the thinned tape's gap.
+        assert fill_ms == fill["asof_ms"] > fill["decision_ms"]
+        billed = fill["fee"] / (fill["price"] * fill["qty"])
+        assert billed == pytest.approx(row["cost_buy"] / row["price"], rel=1e-12)
+        assert billed == pytest.approx(costs.half_spread_bps(fill["symbol"], fill["asof_ms"]) * 1e-4, rel=1e-12)
+        assert billed != pytest.approx(costs.half_spread_bps(fill["symbol"], fill["decision_ms"]) * 1e-4, rel=1e-6)
+
+
 def test_minute_replay_consults_the_decider_every_minute_it_ticks(msim):
     ticks = sorted({b["asof_ms"] for b in msim["bars"]})
     assert [asof for asof, _, _ in msim["spy"].calls] == ticks
