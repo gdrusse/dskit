@@ -25204,5 +25204,58 @@ forecast with one draw beyond each wing pins E[P&L] = credit - 5 and the gate
 on both sides; the ATM pair at 0.18/0.22 pins the mean and a zero iv
 disqualifies a pair; two OTM ex-dates never latch; the two reach tables must
 agree; a long put with no ask is not buyable; the settlement-gap boundary on
-weekday closes; the edge-at-the-gate case reads the reported credit. Round 3
-(fresh lenses on `00f0579`) is recorded below.
+weekday closes; the edge-at-the-gate case reads the reported credit.
+
+*Review round 3 (candidate `00f0579`, two fresh lenses).* Correctness:
+C0 M1 m0 n3 — the candidate proven test-only, all 37 new hand values
+re-derived with the stdlib alone, round 2's Major closed (both credit-gate
+mutants killed); one NEW Major of the same family: the gate's s' scaling is
+unpinned, because every gate fixture has n == h, so a gate evaluated at the
+raw reference scale passes all 468 tests and flips the model book's decision
+on any fixture with n != h. Nits: the unbuyable put-92 fixture is also
+crossed; the ATM tie-break (lower strike) is pinned by the smile test but
+stated in neither the ADR nor the docstring; the pricing paragraph above
+says "quotable strike nearest S" where the matrix and code use the row-level
+rule (nonnegative, uncrossed). Tests (7 named mutants re-run and killed, 17
+of its own, 6 surviving and each converted to a finding): C0 M1 m3 n0 — the
+same Major (the expectation never pinned where sessions != label_horizon,
+systematic across every shipped cell); Minors: ATM validity fixtured on the
+put side only, the settle-date-vs-OCC-expiry seam of `_settlement` unpinned,
+the two ITM equality boundaries of `american_short_charge` unpinned.
+
+*Convergence checkpoint.* Three consecutive rounds each found one Major of
+one family — a fixture whose value cannot separate a rule from its plausible
+substitute — and each correction pinned only the reported quantity while
+reusing the worked fixture (Friday to Friday, five sessions, h = 5,
+symmetric draws, flat iv), whose coincidences collapse s' onto the scale,
+E[P&L] onto the credit and the ATM iv onto every iv. Per the skill an
+independent checkpoint reviewer inventoried every rule of
+`CondorQuoteBacktest`, `ChainQuoteRows` and `american_short_charge` against
+its nearest substitute (55 rules), built a 58-mutant catalogue on a scratch
+copy of the package (import path proved on every run; 19 killed and 39
+surviving against `00f0579`), corrected the author's draft batch (values of
+the gate case confirmed, the short-call quotability mis-assessed as pinned,
+the band batch one-sided, one fixture that would not trade, and rules the
+draft missed: the implied book's dte/365 convention and its -s^2/2 drift,
+the settlement `at < 0` guard, dte_min at equality, settle_date versus
+expiry in the cursor and the charge window, ATM validity per right, a size
+of exactly one, the charge's equality boundaries and row order, the mean
+credit over traded cells, the charge summed over trades, the strict snap
+variants, the chain span's last date, the reader's band on the put side)
+and authorised resumption on conditions: the batch as ONE tests-only commit
+whose record cites the catalogue and states the production blobs and the 27
+identity hashes unchanged, then two fresh lenses with the tests lens
+re-running the catalogue plus its own, any further Critical/Major being a
+new candidate. Landed as `45d0d5d` (tests only): 33 tests, one separating
+fixture per rule; against it 55 mutants are killed and 3 survive, each
+equivalent on every reachable input — the band on the long legs alone
+(with Q(0.1) <= Q(0.9) a short leg outside the band puts its own long leg
+outside), sessions counted to the OCC expiry (the reader's settle_date is
+the last weekday on or before it), and a single step back from a weekend
+expiry (OSI expiries are Fridays or Saturdays). Child suite 501 passed. The
+checkpoint's own backlog (Nits, no material consequence): a Sunday OCC
+expiry's settlement, the band comparison at equality, a credit of exactly
+zero, the hit rate at zero trades, the plumbing refusals of the charge, the
+reader's drop counts as observability, and the round-1 expiry tie.
+
+Round 4 (fresh lenses on `45d0d5d`) is recorded below.

@@ -20,18 +20,25 @@
   other rungs, zoo and two `hpo-grid` documents). Docs and trees updated; the
   ADR carries the build record.
 - **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
-  purity gates); child 468 passed (every suite, manifest, an end-to-end cell
-  walk over a scripted archive store); ruff clean.
+  purity gates); child 501 passed (every suite, manifest, an end-to-end cell
+  walk over a scripted archive store); ruff clean on the branch's files.
 - **Review (owner ruling 2026-09-26: only Critical/Major block; Minors and
-  Nits are recorded):** round 1 on `bcfb907` found no Critical/Major in
-  correctness and two Major TEST defects; round 2 on `34869d7` closed those
-  and found one more test-defect Major of the same family (a fixture whose
-  value cannot separate two rules); round 3 on `00f0579` (the family fix,
-  tests only) is recorded in the ADR-0187 build record. The Minor/Nit
-  backlog lives there too: an expiry tie merging two OCC series, a holiday-
+  Nits are recorded):** rounds 1–3 (`bcfb907`, `34869d7`, `00f0579`) found
+  no Critical/Major in production and, each round, one test-defect Major of
+  ONE family (a fixture whose value cannot separate a rule from its
+  substitute), which triggered the skill's convergence checkpoint: an
+  independent reviewer inventoried every rule against its nearest
+  substitute (58-mutant catalogue: 19 killed on `00f0579`) and authorised
+  one tests-only batch, landed as `45d0d5d` (55 killed, 3 equivalent
+  survivors). Round 4 (two fresh lenses on `45d0d5d`, the tests lens
+  re-running the catalogue) is recorded in the ADR-0187 build record with
+  the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-
   expiry Thursday entry settling at its own close, the fresh-object guard
-  bypassable by an in-place-mutating projection, unpinned boundary
-  comparisons, a store-token race, non-reader inputs raising TypeError.
+  bypassable by an in-place-mutating projection, a store-token race,
+  non-reader inputs raising TypeError, the ATM tie-break and the row-level
+  ATM rule unstated in the ADR text, a Sunday OCC expiry's settlement, the
+  band comparison at equality, a credit of exactly zero, the hit rate at
+  zero trades, the reader's drop counts.
 - **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
   approves; (2) step 0 on the owner's machine: `acquire --stream index_daily`
   for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan (bound:
