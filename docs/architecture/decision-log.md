@@ -24093,3 +24093,196 @@ bundle. TAF and Section 31 are unchanged.
   (was `643c3bd2...`). Earlier ADR-0184/0185 results were
   produced under the flat 2.2 bp and EQ 1 cost, and are not comparable
   without a rerun.
+
+## ADR-0186 — Per-minute decision cadence for the ADR-0185 retrain simulation
+
+**Status:** accepted (2026-09-25). **Owner:** Russell. The owner ruled in
+chat (2026-09-25) that the backtest decides EVERY MINUTE, as the MIO plan
+does ("our model considers 1 minute intervals for a reason"), stays in
+scope, is TDD'd and skeptic-reviewed. Claude writes and accepts this ADR
+under that ruling. **Base:** `0ca56a8`. **Branch:** `claude/minute-cadence`.
+
+**Context (verified on the base).**
+
+- Plan §1 (`docs/plans/2026-09-intraday-equities-mio.md`): the MIO solves
+  "at each live decision tick" in under 10 s, target 3 s or less.
+- ADR-0184 decided only on the 30-minute lattice because the P16 stored
+  predictions exist only there (its disclosure (iv)).
+- ADR-0185's retrain walk is lattice-only too, for TWO reasons. The scan
+  keeps validation rows only on `score_period_ms` 1800000 (ADR-0065), and
+  its feature rows exist only every 5 minutes (`universe-p13-pooled.json`
+  `period_ms` 300000; `_grid_columns` drops the other minutes). Models are
+  not saved, so nothing can predict the other minutes later.
+- The fill contract (ADR-0120, `fill-policy.json`): next-bar-open fill;
+  forced exit at fill bar + L of that name's own bars; lot identity
+  `(symbol, lead)`; a new decision on an open lot is REFUSED
+  (`same_lead_overlap: refuse`); no early-exit order exists.
+- ADR-0184's no-overlap argument needed 30-minute spacing. At 1 minute a
+  unit is often held at a later decision, an entry can still be queued (the
+  name printed no bar at t+1), and a lot opened near the close can cross it.
+- Sweep (`tools/sweep/sweep cadence lattice`; grep `score_period_ms`,
+  `lattice`, `decision_ts`, `period_ms` in the child and `dskit/pipeline`):
+  no per-minute inference or decision path exists. The only hits are
+  `dskit/production/cadence.py` (serve scheduling, not inference), the
+  scan's lattice mask, and `Universe` `overrides.period_ms` ("form a row
+  every minute"), which this ADR reuses.
+
+**Feasibility (measured 2026-09-25, this box).** Proxy: ADR-0184's
+publisher on P16 fold 2 with growth policy v1.1 (`cardinality` null, 128
+scenarios, CVaR $500), a flat book, cash $10k/$50k. Each figure is one
+`MioDecider.decide` call: bundle, EquityKellyMIO build, HiGHS solve,
+recompute and solve record, for all lead groups.
+
+| Universe (lead groups) | ticks | median | p95 | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| P16 admission, 11 units (7) | 60 | 1.77 s | 1.89 | 1.91 | 1.93 |
+| 25 names (5) | 80 | 1.38 | 1.56 | 1.60 | 1.62 |
+| 25 names (7) | 150 | 1.89 | 2.06 | 2.14 | 2.19 |
+| 25 names (9, the most P16's cells allow) | 120 | 1.73 | 2.84 | 3.12 | 3.15 |
+| 25 names in one group (1) | 150 | 0.39 | 0.43 | 0.49 | 0.56 |
+
+The solver alone is 0.13 s median and 0.48 s max per solve. The rest is
+per-group model building; `SolveRecord` row slacks are about 28% of a
+tick under cProfile. Prediction per minute: the 26-name feature build over
+11 trailing sessions, non-incremental, is 0.24 s. Ten LightGBM heads on 25
+rows take 4.7 ms (p99 6.2 ms). The worst per-tick total is about 3.4 s,
+inside the 10 s budget; 7 groups or fewer meet the 3 s target.
+
+The empty-gate short circuit (plan §5.1: nothing eligible and nothing held)
+never fired on the lattice: the ADR-0184 run logged 63,710 solves for
+~63.7k bundles. At 1 minute the decider does skip units (below), but
+everything else solves. Projection for folds 2..19: ~304k one-minute ticks
+x ~1.8 s is about 150 h. Add ADR-0184's ~2 h of ServeLoop tick overhead
+(already per minute today): about 6.3 days of wall time. Solve records are
+~1.4 KB of JSON each, ~2M of them, so the minute document keeps none
+(below). The segment chain carries cash, and lead groups share
+`cash_after`, so no parallel split is exact. That was not attempted.
+
+**Decision.** Scoring does not change: the scan's lattice
+`predictions.parquet` still feeds skill, gates, calibration and false
+signal, and none of their readers changes. Trading gets its own
+per-minute predictions from the same fitted model:
+
+- **T1 (features).** `SessionFeatureRows` gets optional `row_window`
+  `[start_ms, end_ms)`, which keeps only rows inside it. Features are still
+  computed over the full tape, so a kept row equals what the grid build
+  computes at that minute. The new stage `TradeFeatureCaches(MemoryPreflightStage)`
+  builds one write-once per-minute cache per group. It uses the document's
+  own `features` params (never restated), `row_window` = [first cutoff,
+  last validation end + 1 ms) read from the calendar walk, and
+  `include_klines` false. The group universe is overridden to `period_ms`
+  60000 (ADR-0065's existing override).
+- **T2 (trade predictions).** `NoInformationScan` gets optional input
+  `trade_records`. After its fit, each score symbol's trade rows with
+  finite features and a stamp inside the validation window are predicted
+  by that SAME model. They stream to `trade_predictions.parquet`, holding
+  `y` and `mu` NaN, because there is no label at decision time. No label
+  is required of a trade row, so ADR-0184's "all head labels finite"
+  filter (iii) no longer touches trading. The scan refuses unless every
+  scored-symbol grid row in the window has a trade row with the same stamp
+  and bit-identical features: that is the proof the two row sets are one
+  feature pipeline.
+  dskit `predictions.py` gets `TRADE_PREDICTIONS_FILE` and a `filename`
+  argument on `PredictionWriter`, `find_predictions` and
+  `read_predictions`; the defaults are unchanged. The walk seal
+  (`driver._walkforward_evidence`) pins these files under
+  `trade_predictions`, emitted only when a fold has one, so existing seals
+  stay byte-identical.
+- **T3 (walk wiring).** `MinuteWalkCandidate(FrozenWalkCandidate)` gets an
+  extra `trade_caches` input. It adds per group a trade-cache node and a
+  symbol filter, a `trade_features` concat, and `trade_records` on every
+  `scan_hNN`.
+- **T4 (inventory).** `RetrainedWalkInventory` carries each fold's sealed
+  trade pins (re-hashed) into its manifest's fold rows. The gates never
+  read them.
+- **T5 (publisher).** `MinuteForecastPublisher(ForecastPublisher)` emits
+  the same releases, plus each lead's scenario weights and draws and the
+  label contract. Its `ticks` output, not bundles, holds per release and
+  admitted unit the columns `ts`, `price`, `yhat`, `sigma` and `beta` from
+  the pinned trade predictions and the fold tape. Materialized bundles
+  would be about 2M x 128 scenarios, roughly 17 GB of JSON. It refuses
+  unless the trade `yhat` equals the scored `yhat` (float32) at every
+  lattice stamp both hold.
+- **T6 (decider).** `MinuteMioDecider(MioDecider)` builds each lead group's
+  `ForecastBundle` rows per tick, through the SAME row and bundle builders
+  the lattice publisher uses (extracted once). Each tick it skips, and
+  records in `skipped`, any unit that:
+  (a) holds an open lot at its fill bar (`open_lot_at_decision`);
+  (b) has an entry queued but unfilled (`pending_entry_at_decision`); that
+  entry's estimated cost, qty x decision price + the cost model's buy cost
+  per share, is reserved from cash;
+  (c) would force-exit after the close, that is when t + (1 + L) minutes >
+  the date's last tape minute (`exit_after_close`).
+  The MIO still sees `positions: {}`.
+  `EquityReplay._portfolio` gains `pending`, the queued entries (additive).
+  A decision at t reads only the tick row at t: features, close, sigma and
+  beta at or before t. It fills at t+1.
+- **Open lots, the explicit rule.** Held units are NOT given to the MIO as
+  inventory h_i. Under ADR-0120 the only action the replay can execute on
+  an open `(symbol, lead)` lot is to hold it to its forced exit. With h_i
+  the MIO would plan buys the replay refuses and sells it cannot place, and
+  `cash_after` would spend the cash of refused buys. An exact h_i needs a
+  locked-inventory knob (b_i = s_i = 0) in `EquityKellyMIO`, which is an
+  MIO change this ruling excludes. It is recorded for the owner.
+- **T7 (lots across releases).** `EquityReplay` gets `carry_lots`.
+  Unclosed lots are then returned as `open_lots` (the bars still owed on
+  that name) rather than refused `expiry_past_tape`, and the constructor's
+  `carried_lots` seeds the next replay's book. A name that misses minutes
+  after a late entry spills past the close. MSTR misses at least one of its
+  last 11 minutes on 7.6% of 2022-09..2025-10 days; LRCX 2.3%; most names
+  0.4-0.9%. ADR-0184's segment-end abort would then kill a multi-day run,
+  so `MinuteDevelopmentSimulation` carries lots into the next release, the
+  way production restarts with positions. At the evidence end, a lot still
+  open stays marked in NAV and is listed in the metadata as
+  `open_at_evidence_end`.
+- **T8 (simulation).** `MinuteDevelopmentSimulation(DevelopmentSimulation)`
+  takes `ticks` instead of `bundles`. It inherits every gate, applies the
+  price-agreement and window checks to ticks, and builds the per-date close
+  map from its own segment slice. `keep_solves` is optional on
+  `DevelopmentSimulation`, default true (unchanged). The minute template
+  declares it false and records solve counts in the metadata.
+- **Documents.** `run-retrain-simulation.json` adds stage `trade_memory`,
+  and `walk_document` becomes `MinuteWalkCandidate` with `trade_caches`.
+  The template uses the minute publisher and simulation, and its
+  `template_sha256` is re-pinned.
+
+**Identity.** Moved: the retrain staged document, its template, and the
+walk's fold documents. The walk has never run. Unmoved: `fill-policy.json`,
+both cash-flow policies, every ADR-0184 document, the warmup HPO document
+(its stage params are unchanged, so a finished `hpo` stage stays reusable),
+and the grid caches.
+
+**Disclosed.** The date's close is the last tape minute across the
+admitted names. That is calendar knowledge published in advance (the child
+already says "Early-close days still end on the tape"); no price is read.
+A missed minute after a late entry holds the lot overnight, and it exits at
+the next session's remaining bars (the fill contract). A reservation
+estimates at the decision price, with `insufficient_cash` as the backstop.
+Cash at decision excludes the proceeds of a lot exiting on the fill bar,
+which is conservative. Decisions start once a session's lag features are
+finite. Held units stay outside the MIO, so its inventory path is still
+not exercised. The lead-group order bias remains.
+
+**Rejected.** Held units as h_i (above). Persisted models with per-tick
+inference (an ADR-0185 non-goal, and features from a truncated tape would
+differ from the scored ones). Materialized per-minute bundles (memory).
+Moving the scoring lattice (it moves every gate statistic). A decider-side
+HFDR skip (plan §5.1 allows a no-solve result only when eligible and
+inventory are both empty). Aborting on a lot open at a release boundary
+(above).
+
+**Tests (RED first).**
+
+- `row_window` keeps equal rows.
+- A trade cache reproduces the grid rows.
+- Trade predictions at every minute, one model.
+- The scan refuses feature drift.
+- Trade pins sealed and carried.
+- `ticks` cover every minute, and the publisher refuses a trade/score mismatch.
+- The decider ticks every minute and skips held, pending and after-close units.
+- Reservations.
+- No look-ahead: mutating any bar after t leaves the decision at t unchanged, and the fill is at t+1.
+- Forced exits; lots carried across releases.
+- The scoring lattice unchanged.
+- `keep_solves`.
+- The shipped documents validate.

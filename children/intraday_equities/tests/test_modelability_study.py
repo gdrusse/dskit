@@ -1048,3 +1048,116 @@ def test_continuation_reruns_inventory_family_then_combines_results(
         ("A", 2),
         ("A", 2),
     ]
+
+
+# -- ADR-0186: per-minute trade caches ------------------------------------------
+
+RETRAIN = CONFIGS / "run-retrain-simulation.json"
+
+
+def _ms_of(day):
+    from datetime import datetime, timezone
+
+    return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _trade_params():
+    return _raw("run-retrain-simulation.json")["stages"]["memory"]["params"]
+
+
+def test_cache_build_document_can_override_the_universe_and_the_feature_params(tmp_path):
+    ctx = _ctx(tmp_path)
+    params = {"lookback": 20, "layout": "columns", "row_window": [1, 2]}
+    doc = study.cache_build_document(
+        ctx.document, "d", ["source_a", "source_d"], "configs/universe-p12-d.json", "./c/d", "2025-08-15",
+        universe_overrides={"period_ms": 60000}, features_params=params,
+    )
+    assert doc.pipeline["universe"].params == {
+        "path": "configs/universe-p12-d.json", "overrides": {"period_ms": 60000},
+    }
+    assert doc.pipeline["features"].params == {**params, "cache_dir": "./c/d"}
+    plain = study.cache_build_document(
+        ctx.document, "d", ["source_a", "source_d"], "configs/universe-p12-d.json", "./c/d", "2025-08-15",
+    )
+    assert plain.pipeline["universe"].params == {"path": "configs/universe-p12-d.json"}
+    assert plain.pipeline["features"].params == {
+        **ctx.document.pipeline["features"].params, "cache_dir": "./c/d",
+    }
+
+
+def _trade_harness(tmp_path, monkeypatch, present):
+    ctx = _ctx(tmp_path, load_document(str(RETRAIN)))
+    ctx.source_path = str(RETRAIN)
+    log = []
+
+    def verified(path, group_universe, features_params):
+        group = os.path.basename(path).split("-")[0]
+        log.append(("verify", group, path, group_universe, features_params))
+        if group in present:
+            return {"manifest_sha256": group * 64, "symbols": group_universe["symbols"]}
+        return None
+
+    def measure(_ctx, document, tag):
+        log.append(("measure", tag, document))
+        present.add(document.name.rsplit("-", 1)[-1])
+        return f"/summary/{tag}", 6_000_000_000
+
+    def run(_ctx, document, tag):
+        log.append(("run", tag, document))
+        present.add(document.name.rsplit("-", 1)[-1])
+        return f"/summary/{tag}"
+
+    monkeypatch.setattr(study, "_verified_cache", verified)
+    monkeypatch.setattr(study.p10, "_measure_walk", measure)
+    monkeypatch.setattr(study.p10, "_run_bounded_walk", run)
+    return ctx, log
+
+
+def test_trade_caches_build_each_group_every_minute_over_the_trading_window(tmp_path, monkeypatch):
+    ctx, log = _trade_harness(tmp_path, monkeypatch, present=set())
+    out = study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+    features = dict(ctx.document.pipeline["features"].params)
+    declared = features.pop("cache_dir")
+    window = [_ms_of("2022-05-06"), _ms_of("2025-10-17")]
+    expected = {**features, "row_window": window, "include_klines": False}
+    builds = [entry for entry in log if entry[0] in ("measure", "run")]
+    assert [entry[0] for entry in builds] == ["measure", "run", "run", "run"]
+    for (_kind, _tag, document), group in zip(builds, ("a", "c", "d", "e")):
+        universe = _trade_params()["groups"][group]["universe"]
+        assert document.pipeline["universe"].params == {"path": universe, "overrides": {"period_ms": 60000}}
+        params = dict(document.pipeline["features"].params)
+        cache = params.pop("cache_dir")
+        assert params == expected
+        assert cache.startswith(declared + "-trade-1m-") and os.path.basename(cache).startswith(group + "-")
+        assert out["groups"][group]["cache"] == cache
+        assert out["groups"][group]["row_window"] == window
+        assert out["groups"][group]["manifest_sha256"] == group * 64
+    for _v, group, path, universe, params in (e for e in log if e[0] == "verify"):
+        assert universe["period_ms"] == 60000 and universe["symbols"] == _raw(
+            os.path.basename(_trade_params()["groups"][group]["universe"])
+        )["symbols"]
+        assert params == expected
+    assert out["measured"]["kind"] == "cache_build" and out["passed"] is True
+
+
+def test_trade_caches_reuse_a_verified_cache_without_measuring(tmp_path, monkeypatch):
+    ctx, log = _trade_harness(tmp_path, monkeypatch, present={"a", "c", "d", "e"})
+    out = study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+    assert not [entry for entry in log if entry[0] in ("measure", "run")]
+    assert out["measured"] == {"kind": "reused", "peak_rss_bytes": 0} and out["passed"] is True
+
+
+def test_trade_caches_refuse_a_first_build_at_or_above_the_limit(tmp_path, monkeypatch):
+    ctx, _log = _trade_harness(tmp_path, monkeypatch, present=set())
+    params = {**_trade_params(), "memory_limit_bytes": 6_000_000_000}
+    with pytest.raises(MemoryError):
+        study.TradeFeatureCaches("trade_memory", params).run(ctx, {})
+
+
+def test_trade_caches_refuse_a_document_without_a_walk_forward(tmp_path, monkeypatch):
+    ctx, _log = _trade_harness(tmp_path, monkeypatch, present=set())
+    ctx.document = SimpleNamespace(
+        pipeline=ctx.document.pipeline, walkforward=None, name=ctx.document.name,
+    )
+    with pytest.raises(ValueError, match="walk-forward"):
+        study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})

@@ -241,6 +241,11 @@ class FinalModelGateInventory(Stage):
         }
         return self._manifest(ctx, identity, selected, candidate, sources)
 
+    def _fold_extras(self, run_dir, sealed_fold, cutoff):
+        """Extra verified pins one manifest fold row carries; none here (see the retrained inventory)."""
+        del run_dir, sealed_fold, cutoff
+        return {}
+
     def _manifest(self, ctx, identity, selected, candidate, sources):
         """Verify the selected candidate's sealed walk and return its content manifest.
 
@@ -370,6 +375,7 @@ class FinalModelGateInventory(Stage):
                     "run_dir": run_dir,
                     "carry": copy.deepcopy(carry),
                     "predictions": copy.deepcopy(pins),
+                    **self._fold_extras(run_dir, sealed_fold, fold["cutoff"]),
                 }
             )
         return {
@@ -728,6 +734,37 @@ class RetrainedWalkInventory(FinalModelGateInventory):
         if not isinstance(row, dict) or row.get("state") != "ran" or not _string(row.get("id")):
             return ["run must be the walk stage's completed row"]
         return []
+
+    def _fold_extras(self, run_dir, sealed_fold, cutoff):
+        """Carry the fold's sealed per-minute trade pins (ADR-0186), re-hashed; none when unsealed.
+
+        A fold whose seal names trade files must still hold exactly those
+        bytes, and exactly those files: a moved file or an unsealed extra
+        one refuses. The gates never read these pins; the minute publisher
+        does.
+        """
+        from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, find_predictions
+
+        pins = sealed_fold.get("trade_predictions")
+        if pins is None:
+            return {}
+        if not isinstance(pins, list) or not pins:
+            raise ValueError(f"fold {cutoff!r} has malformed trade prediction pins")
+        carried = []
+        for pin in pins:
+            path = pin.get("path") if isinstance(pin, dict) else None
+            digest = pin.get("sha256") if isinstance(pin, dict) else None
+            if not _string(path) or not _sha256(digest):
+                raise ValueError(f"fold {cutoff!r} has a malformed trade prediction pin")
+            path = os.path.realpath(path)
+            if _digest(path) != digest:
+                raise ValueError(f"fold {cutoff!r} trade prediction drifted from the original run seal")
+            carried.append({"path": path, "sha256": digest})
+        found = [os.path.realpath(p) for p in find_predictions(run_dir, filename=TRADE_PREDICTIONS_FILE)]
+        declared = [pin["path"] for pin in carried]
+        if sorted(declared) != sorted(found) or len(set(declared)) != len(declared):
+            raise ValueError(f"fold {cutoff!r} trade prediction inventory drifted from the original run seal")
+        return {"trade_predictions": carried}
 
     def run(self, ctx, inputs):
         """Verify the walk's sealed folds and emit the gate manifest."""

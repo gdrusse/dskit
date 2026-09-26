@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -970,3 +971,155 @@ def test_retrained_walk_gates_require_the_stage_that_holds_the_inventory():
     assert RetrainedWalkGates.validate_params(params) == []
     missing = {k: v for k, v in params.items() if k != "manifest_stage"}
     assert any("manifest_stage" in p for p in RetrainedWalkGates.validate_params(missing))
+
+
+# --- ADR-0186: the minute walk wires per-minute trade rows into every scan ---
+
+_TRADE_CACHES = {
+    group: {**entry, "cache": f"/t/{group}", "manifest_sha256": str(5 + i) * 64, "row_window": [10, 20]}
+    for i, (group, entry) in enumerate(_CACHES.items())
+}
+
+
+def _minute_inputs(**changes):
+    return {"preflight": True, "caches": _CACHES, "phase": _phase(), "winners": _winners(),
+            "trade_caches": _TRADE_CACHES, **changes}
+
+
+def test_minute_walk_candidate_feeds_every_scan_the_groups_per_minute_trade_rows(tmp_path, monkeypatch):
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.model_zoo import TRADE_CACHE_PREFIX, FrozenWalkCandidate, MinuteWalkCandidate
+
+    stage, ctx = _retrain_stage(MinuteWalkCandidate, "walk_document", tmp_path, monkeypatch)
+    out = stage.run(ctx, _minute_inputs())
+    document = load_document(out["candidate"]["path"])
+    plan(document)
+    obj = document.to_obj()["pipeline"]
+    for group, entry in _TRADE_CACHES.items():
+        cache = obj[f"{TRADE_CACHE_PREFIX}{group}"]
+        assert cache["uses"] == "intraday_equities-session-feature-cache"
+        assert cache["params"] == {"path": entry["cache"], "manifest_sha256": entry["manifest_sha256"]}
+        chosen = obj[f"trade_{group}"]
+        assert chosen["inputs"] == {"records": f"${TRADE_CACHE_PREFIX}{group}.records"}
+        assert chosen["params"] == obj[f"pooled_features_{group}"]["params"]
+    assert obj["trade_features"]["uses"] == "concat"
+    assert obj["trade_features"]["inputs"] == {group: f"$trade_{group}.records" for group in _TRADE_CACHES}
+    assert obj["trade_features"]["params"] == obj["pooled_features"]["params"]
+    scans = sorted(key for key in obj if key.startswith("scan_h"))
+    assert scans and all(obj[key]["inputs"]["trade_records"] == "$trade_features.merged" for key in scans)
+    # Everything else is the frozen walk's document, byte for byte.
+    frozen_stage, _ = _retrain_stage(FrozenWalkCandidate, "walk_document", tmp_path / "f", monkeypatch)
+    inputs = _minute_inputs()
+    del inputs["trade_caches"]
+    frozen = load_document(frozen_stage.run(ctx, inputs)["candidate"]["path"]).to_obj()["pipeline"]
+    added = {f"{TRADE_CACHE_PREFIX}{g}" for g in _TRADE_CACHES} | {f"trade_{g}" for g in _TRADE_CACHES} | {"trade_features"}
+    assert set(obj) - set(frozen) == added
+    for key in scans:
+        del obj[key]["inputs"]["trade_records"]
+    assert {key: obj[key] for key in frozen} == frozen
+    assert out["provenance"]["trade_caches"] == [
+        {"group": g, "cache": e["cache"], "manifest_sha256": e["manifest_sha256"], "row_window": e["row_window"]}
+        for g, e in _TRADE_CACHES.items()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        (lambda t: {k: v for k, v in t.items() if k != "c"}, "groups"),
+        (lambda t: {**t, "z": t["a"]}, "groups"),
+        (lambda t: {**t, "a": {**t["a"], "symbols": ["LLY"]}}, "symbols"),
+        (lambda t: {**t, "a": {**t["a"], "universe_sha256": "9" * 64}}, "universe"),
+        (lambda t: {**t, "a": {k: v for k, v in t["a"].items() if k != "row_window"}}, "row_window"),
+        (lambda t: {**t, "a": {**t["a"], "manifest_sha256": "x"}}, "manifest_sha256"),
+    ],
+    ids=["missing-group", "extra-group", "symbols", "universe", "no-window", "bad-digest"],
+)
+def test_minute_walk_candidate_refuses_trade_caches_that_are_not_the_scored_groups(tmp_path, monkeypatch, change, expected):
+    from intraday_equities.model_zoo import MinuteWalkCandidate
+
+    stage, ctx = _retrain_stage(MinuteWalkCandidate, "walk_document", tmp_path, monkeypatch)
+    inputs = _minute_inputs(trade_caches=change(_TRADE_CACHES))
+    with pytest.raises(ValueError, match=expected):
+        stage.run(ctx, inputs)
+    assert any("trade_caches" in p for p in stage.validate_inputs({k: v for k, v in inputs.items() if k != "trade_caches"}))
+
+
+# --- ADR-0186: the retrained inventory carries each fold's sealed trade pins ---
+
+
+def _trade_sealed_row(tmp_path, monkeypatch, seal=True):
+    import hashlib
+
+    from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE
+
+    run, _, cutoffs = _inventory_fixture(tmp_path, monkeypatch)
+    row = run["outputs"]["runs"][0]
+    summary = json.loads(Path(row["evidence_manifest_path"]).read_text())
+    for sealed in summary["evidence"]["folds"]:
+        trade = Path(sealed["run_dir"]) / "artifacts" / "scan" / TRADE_PREDICTIONS_FILE
+        trade.write_bytes(("trade-" + sealed["cutoff"]).encode())
+        if seal:
+            sealed["trade_predictions"] = [
+                {"path": str(trade), "sha256": hashlib.sha256(trade.read_bytes()).hexdigest()}
+            ]
+    Path(row["evidence_manifest_path"]).write_text(json.dumps(summary))
+    row["evidence_manifest_sha256"] = hashlib.sha256(Path(row["evidence_manifest_path"]).read_bytes()).hexdigest()
+
+    def found(run_dir, filename="predictions.parquet"):
+        return [str(Path(run_dir) / "artifacts" / "scan" / filename)]
+
+    monkeypatch.setattr("dskit.pipeline.predictions.find_predictions", found)
+    return row, summary
+
+
+def _retrained_ctx(tmp_path):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(source_path=str(tmp_path / "retrain.json"), document=SimpleNamespace(hash="f" * 64))
+
+
+def test_retrained_walk_inventory_carries_each_folds_sealed_trade_pins(tmp_path, monkeypatch):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    row, summary = _trade_sealed_row(tmp_path, monkeypatch)
+    manifest = RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})["manifest"]
+    assert [fold["trade_predictions"] for fold in manifest["folds"]] == [
+        [{"path": os.path.realpath(pin["path"]), "sha256": pin["sha256"]} for pin in fold["trade_predictions"]]
+        for fold in summary["evidence"]["folds"]
+    ]
+    # The scored pins are untouched.
+    assert all(len(fold["predictions"]) == 1 for fold in manifest["folds"])
+
+
+def test_retrained_walk_inventory_refuses_a_trade_file_that_moved_after_the_seal(tmp_path, monkeypatch):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    row, summary = _trade_sealed_row(tmp_path, monkeypatch)
+    Path(summary["evidence"]["folds"][1]["trade_predictions"][0]["path"]).write_bytes(b"moved")
+    with pytest.raises(ValueError, match="trade prediction"):
+        RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})
+
+
+def test_retrained_walk_inventory_refuses_a_trade_inventory_that_drifted(tmp_path, monkeypatch):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    row, _summary = _trade_sealed_row(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "dskit.pipeline.predictions.find_predictions",
+        lambda run_dir, filename="predictions.parquet": [
+            str(Path(run_dir) / "artifacts" / node / filename)
+            for node in (("scan", "scan_extra") if filename != "predictions.parquet" else ("scan",))
+        ],
+    )
+    with pytest.raises(ValueError, match="trade prediction inventory"):
+        RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})
+
+
+def test_retrained_walk_inventory_without_trade_seals_is_unchanged(tmp_path, monkeypatch):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    row, _summary = _trade_sealed_row(tmp_path, monkeypatch, seal=False)
+    manifest = RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})["manifest"]
+    assert all(set(fold) == {"cutoff", "run_dir", "carry", "predictions"} for fold in manifest["folds"])
