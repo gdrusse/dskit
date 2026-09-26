@@ -25158,9 +25158,15 @@ skeptic loop, ADRs and code do (2026-09-26).
   623-628`); `EquityReplay._portfolio` (`replay.py:1383-1438`), which
   already reports `positions`, `pending`, NAV and `fill_ms`; `carry_lots`
   (ADR-0186 T7); the per-cell false-signal estimate over all 90 cells
-  (ADR-0184 S5); the optional-parameter convention (`_OPTIONAL_PARAMS`,
-  `replay.py:610` and `2411`; ADR-0184 S4's `end_ms`, "emitted only when
-  present, so no existing hash moves").
+  (ADR-0184 S5); the closed-vocabulary convention of `FillPolicy._VOCAB`
+  (`replay.py:160-173`), whose required-field and vocabulary loops
+  (187-231) admit a new member without touching an existing file; dskit's
+  own position store
+  `PositionBook` (`dskit/production/state.py:694`: net quantity and
+  average cost folded from fills, `net_qty`, `to_obj`/`from_obj` round
+  trip) and P&L fold `WindowBook` (`dskit/production/accounting.py:536`,
+  averaged cost on an add, realised on a close), which the report already
+  uses.
 - Sweep (2026-09-26, `tools/sweep/sweep JointMioDecider joint_mio
   receding_horizon RecedingHorizon MultiPeriod multi_period position_mode
   target_shares ForecastPathBundle path_bundle session_close`, plus
@@ -25168,9 +25174,13 @@ skeptic loop, ADRs and code do (2026-09-26).
   no_trade_band`; re-swept independently by the round-1 correctness lens):
   no joint, multi-period, receding-horizon, target-shares or
   horizon-normalizing code exists on `origin/main`, any branch or any
-  worktree. Nearest: `MioDecider`, `EquityKellyMIO`, `ForecastBundle` and
-  `HorizonBook`, which this ADR extends. `pmquant.mio` sizes one event at
-  one settlement and is untouched.
+  worktree. Nearest: `MioDecider`, `EquityKellyMIO` and `ForecastBundle`,
+  which this ADR extends. A second sweep (`tranche Tranche FifoBook
+  fifo_book PositionBook position_book ShareBook receding Receding
+  RollingHorizon rolling_horizon plan_steps`) found no tranche or
+  receding-horizon code and found `PositionBook` in dskit, which this ADR
+  reuses instead of building a position store. `pmquant.mio` sizes one
+  event at one settlement and is untouched.
 
 ### Decision
 
@@ -25194,14 +25204,28 @@ lead-group policy, its documents, digests and tests stay as they are.
   calibration for `i` (`n_horizons` of its gate unit: ADBE 5, CIEN 5, IWM 5,
   LITE 5, LLY 3, LRCX 10, LULU 5, MSTR 10, NOW 5, PANW 5, TER 5, XLK 5);
   `n_i(t)` = the number of bars from the name's fill bar (inclusive) to the
-  session's last bar (inclusive); `K_i(t) = min(K_i, n_i(t) - 1) >= 0`, the
-  plan horizon on this tick. `H = max_i K_i(t)` (at most 10).
+  session's last bar (inclusive); `kstar_i` = the largest lead `<= K_i` such
+  that every cell `(i, 1..kstar_i)` passes the per-cell coverage floor
+  (question I(a); `kstar_i = K_i` under I(b)); `K_i(t) = min(K_i, n_i(t) -
+  1, kstar_i) >= 0`, the plan horizon on this tick. `H = max_i K_i(t)` (at
+  most 10). Variants for the answers not recommended, so the design is
+  buildable under any ruling: A(b) overnight allowed: `n_i(t)` is not
+  applied (`K_i(t) = min(K_i, kstar_i)`), positions carry overnight as
+  `h_i`, the `session_close` backstop is off, and the overnight gap is NOT
+  in the scenario set (a disclosed risk); A(c) lead expiry as a backstop:
+  needs lot identity, so it runs on the lot book with `K_i(t)` further
+  capped by the oldest lot's remaining lead, the most expensive variant;
+  B(b) liquidation at the cap: `K_i(t) = min(H_i, n_i(t) - 1, kstar_i)`.
 - Steps `k = 0..K_i(t)-1` are trade steps (step `k` fills at the bar
   `fill_bar_offset + k` bars after `t`); `K_i(t)` is the valuation step.
-  Boundary convention: `q_(i,-1) := h_i`. A name with `K_i(t) = 0` (its fill
-  bar is the session's last bar) has no trade variables: `q_i0 := 0`, the
-  executed order sells all `h_i` shares at `k = 0`, and its terminal term is
-  `h_i (p_i - kappa^x_i)`.
+  Boundary conventions: `q_(i,-1) := h_i` and `c_(-1) := c_open`. A name
+  with `K_i(t) = 0` (its fill bar is the session's last bar) is a MANDATORY
+  EXIT: it keeps its `k = 0` variables, fixed at `s_i0 := h_i`, `b_i0 := 0`
+  (so `q_i0 = 0`), every row (J1)-(J9) applies to it uniformly, its sale
+  proceeds `h_i (p_i - kappa^s_i)` enter this tick's cash rows (J3)/(J4) at
+  `k = 0`, and it has no terminal term. The same mandatory-exit form serves
+  a held name with no path (today's `x_max = 0` route,
+  `nodes_capital.py:1473-1490`) and a lead-1 coverage breach (question I).
 - `h_i >= 0` shares held (every open tranche of the name, no lead identity),
   `c_open` opening cash, `B_0 = c_open` buying power, `theta` sale credit,
   `R` cash reserve, `G` gross limit (NAV), `p_i` the decision close,
@@ -25239,12 +25263,14 @@ s_ik` target shares after step `k` (expression, from `q_(i,-1) = h_i`).
 (J3)  c_k = c_(k-1) + sum_i [ (pbar_i(k) - kappa^s_i) s_ik - (pbar_i(k) + kappa^b_i) b_ik ] >= R,   k = 0..H-1
       expected-path cash, exact at k=0 (names with k >= K_i(t) contribute nothing at step k)
 (J4)  sum_i (p_i + kappa^b_i) b_i0 <= B_0 + theta sum_i (p_i - kappa^s_i) s_i0      existing buying-power row, k=0
-(J5)  sum_i p_i q_i0 <= G ;  p_i q_ik <= max(xbar_i, p_i h_i)  all i, k
+(J5)  sum_i p_i q_i0 <= G ;  p_i q_ik <= xeff_i  all i, k,   xeff_i = max(xbar_i, p_i h_i) for a name with a live
+      path and 0 for a mandatory exit
       gross (no leverage) at k=0; the per-name ceiling binds on BUYS only: a holding already above it is never
-      forced to sell, and cannot be added to (the doorway's own min_ticket-binds-on-a-buy precedent)
-(J6)  W_o = c_open + sum_i sum_{k<K_i(t)} [ (P_io(k) - kappa^s_i) s_ik - (P_io(k) + kappa^b_i) b_ik ]
+      forced to sell and cannot be added to. xeff_i is the per-name x_max the child's instruments() already
+      supplies (the doorway's elig_hi row is unchanged; x_max = 0 stays the forced-exit route, test_pyomo.py:746-767)
+(J6)  W_o = c_open + sum_i sum_{k<max(K_i(t),1)} [ (P_io(k) - kappa^s_i) s_ik - (P_io(k) + kappa^b_i) b_ik ]
             + sum_i q_(i,K_i(t)-1) * ( P_io(K_i(t)) - kappa^x_i )                    terminal wealth, one instant
-      (a K_i(t) = 0 name contributes h_i (p_i - kappa^x_i) and has no trade terms)
+      (a K_i(t) = 0 name has only its fixed k=0 sale, q_i0 = 0, and no terminal term)
 (J7)  t_o <= u(knot_j) + u'(knot_j) (W_o - knot_j),  j = 1..n_tangents        tangent CRRA(gamma) around W^0 (existing)
 (J8)  z_o >= (W^0 - W_o) - eta ;  eta + sum_o w_o z_o / (1 - alpha) <= C   ONE CVaR row for the book (question D)
 (J9)  sum_i (pitilde_i - q) p_i q_i0 <= 0,  pitilde_i = max_{k<=H_i} pi_widened_i(k)   HFDR on the executed target (question E)
@@ -25316,6 +25342,20 @@ Outputs: `target` (`q_i0`), `trades` (`b_i0`, `s_i0`), `plan` (the
   (`k in {0,1,2,3,5,7,10}`), then a persistent `appsi_highs` model with
   coefficient mutation; never the MIP gap.
 
+#### Framework placement (owner rule 2026-09-26: the bones live in dskit)
+
+CLAUDE.md's tiering test: could a project that has never heard of intraday
+equities use it? Tier 2 (dskit) therefore owns every mechanism here, and
+the child is a wrapper that names the market:
+
+| Tier 2, `dskit` | Tier 3, `children/intraday_equities` |
+|---|---|
+| the multi-step scenario-utility program: plan variables, expected-path cash rows (J3), terminal valuation (J6), the step-0 execution semantics, the `plan` output and the extended recompute, all in `ScenarioUtilitySolve` | `JointEquityKellyMIO`: the path-bundle reader, Schwab costs per fill minute, the HFDR row (J9) and its per-name aggregation |
+| the position store (`PositionBook`, existing) and the P&L fold (`WindowBook`, existing) | `EquityReplay` wiring under `session_close`: the share book, the backstop, `oversell`, halt interaction |
+| joint scenario cells (`BlockResiduals`, `BlockConformalInterval`, `ScenarioSet`, existing; a generic cell-stacking helper only if the build finds naming is not enough) | which names, leads and cells the publisher emits (`leads: "path"`) |
+| the per-tick decide seam (`EquityReplay.evaluate` -> `decider.decide`, `replay.py:1750-1752`, on the `ServeLoop` contract): with the multi-step doorway this IS the receding-horizon driver, so no new driver class is built | `MinuteMioDecider` joint mode: assemble the minute's inputs, map step-0 trades to orders |
+| the closed-vocabulary convention | the `forced_exit_at` member, `configs/fill-policy-joint.json`, the `decide` node's `policy` param, the report's holding-time metric |
+
 #### Data contract changes (all additive; the lead-group path is untouched)
 
 - `MinuteForecastPublisher` (extended, param `leads: "path"`, default
@@ -25350,66 +25390,113 @@ Outputs: `target` (`q_i0`), `trades` (`b_i0`, `s_i0`), `plan` (the
   still nullable) are unchanged.
 - `JointEquityKellyMIO(EquityKellyMIO)` (new subclass in `nodes_capital.py`,
   kind `intraday_equities-joint-kelly-mio`): path rows in
-  `instruments`/`payoffs`; (J9) with the per-name `pitilde_i`; no band rows;
-  `band_bps` refused by name (question G). `EquityKellyMIO` itself is
-  byte-identical, so `TestNoTradeBandNeverStrandsAPosition`,
+  `instruments`/`payoffs` (with `x_max = xeff_i`); (J9) with the per-name
+  `pitilde_i`; no band rows; `band_bps` refused by name (question G). The
+  seam this needs does not exist yet: `EquityKellyMIO.validate_params`
+  (`nodes_capital.py:879-978`) requires `band_bps` unconditionally
+  (904-910) and `domain_constraints` (1577-1652) builds the HFDR row and the
+  band rows in one method. So `EquityKellyMIO` is refactored in place,
+  behaviour unchanged, into per-concern helpers the subclass can override:
+  `_cost_problems`, `_policy_problems` (`hfdr_q`, `band_bps`,
+  `max_position_notional`, the staleness knobs), `_provenance_problems`,
+  the existing `_intake_policy_problems`, and `_hfdr_row` / `_band_rows`.
+  Same params, same refusal texts, same rows and solutions; the existing
+  suite is the regression net, so `TestNoTradeBandNeverStrandsAPosition`,
   `TestNoTradeBandFloorsAreLoadBearing` and
   `TestGrowthPolicyV11NoCapNoTicket` (`tests/test_nodes_capital.py:526-542,
-  1076, 1102`) keep pinning it.
-- `MinuteMioDecider` (extended with a `joint` mode selected by the `decide`
-  node's `mio.policy`, default `"lead_groups"` = today): one solve per
-  minute over every admitted name with a tick; `positions` from the replay
-  (`_portfolio`, unchanged); orders for both sides; the only skips are
-  `pending_order_at_decision` (an order queued for a missing bar; its cash
-  reserved as today) and `no_tick`. `open_lot_at_decision` and
-  `exit_after_close` do not apply in joint mode (the plan horizon is
+  1076, 1102`) keep pinning it unchanged (T31). The subclass overrides
+  `_policy_problems` (refuses `band_bps`) and `_band_rows` (none); every
+  other check is inherited, not duplicated.
+- `MioDeciderNode` (extended): an OPTIONAL node param `policy`
+  (`"lead_groups"` | `"joint"`), a sibling of `mio` in `_PARAMS`
+  (`simulation.py:1459`), never a key inside `mio` (which
+  `EquityKellyMIO.validate_params` would refuse by name through
+  `reject_unknown_params`, `tests/test_nodes_capital.py:315`). In joint
+  mode the node validates `mio` against `JointEquityKellyMIO.validate_params`
+  and emits `{"params", "lead_groups", "policy"}`; `policy` is emitted only
+  when declared, so the default output stays `{"params", "lead_groups"}`
+  and `test_decide_node_emits_only_json_params` /
+  `test_decide_node_refuses_bound_or_undeclared_params`
+  (`tests/test_simulation.py:987, 993`) keep pinning it.
+- `MinuteMioDecider` (extended with a `joint` mode read from the `decide`
+  output's `policy`, absent = today): one solve per minute over every
+  admitted name with a tick; orders for both sides; the only skips are
+  `pending_order_at_decision` (an order queued for a missing bar) and
+  `no_tick`. Pending semantics, the ground truth for T21: a name with any
+  queued order is neither sized nor exited this minute and is REMOVED from
+  the `positions` handed to the solve (otherwise the mandatory-exit route
+  would sell it), while its mark still counts in NAV and the gross limit; a
+  queued buy's cost is reserved from cash exactly as today (`_reserved`,
+  `simulation.py:1382-1395`); a queued sell's shares are excluded from
+  `h_i` and its proceeds are not credited until the fill. `open_lot_at_decision`
+  and `exit_after_close` do not apply in joint mode (the plan horizon is
   truncated at the close instead); in the default mode they are unchanged,
   so `test_minute_decider_skips_held_and_pending_units_and_reserves_pending_cash`
   and `test_minute_decider_opens_no_lot_that_would_exit_after_the_close`
   (`tests/test_simulation.py:1979, 2048`) keep pinning it.
-- Fill contract (ADR-0120 amendment, owner acceptance needed): two OPTIONAL
-  `FillPolicy` fields, `position_mode` (`"lots"` | `"target_shares"`) and
-  the new `forced_exit_at` member `"session_close"`, following the
-  `_OPTIONAL_PARAMS` convention (`replay.py:610`, `2411`) and ADR-0184 S4:
-  an absent optional field is not emitted by `to_obj()`, so the shipped
-  `fill-policy.json` keeps digest
-  `e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e` and
-  the five documents that pin it are untouched (test T19 pins the literal
-  digest and the `lots` behaviour). A new `configs/fill-policy-joint.json`
-  declares `position_mode: "target_shares"` and `forced_exit_at:
-  "session_close"`; only the new joint template pins it.
-- Replay position store (`HorizonBook`, extended with a `target_shares`
-  mode): today the book holds at most one lot per `(symbol, lead)` key
-  (`replay.py:896-983`), which cannot serve lead-less FIFO sells. In
-  `target_shares` mode the book holds, per symbol, an ordered queue of
-  tranches `{qty, fill_index, price}`; `open_tranche` appends;
-  `close_shares(symbol, qty)` pops FIFO and splits the last tranche;
-  `expiring` is unused; `unclosed`, `carry_lot` and `_portfolio.positions`
-  read the tranche totals. A decision is `{symbol, asof_ms, qty, side}` with
-  no `lead`; a `buy` adds a tranche, a `sell` closes FIFO shares and never
-  opens a short (`oversell` refuses `qty` above the shares held at the fill
-  bar); fills are next-bar open with the same per-share costs on both sides;
-  the `insufficient_cash` refusal is unchanged. Halts: a queued sell or buy
-  on a halted fill bar follows `halt_handling` exactly as an entry does
-  today (`skip` drops it and records `halted`; `queue` moves it one bar), and
-  the decider re-solves next minute from the actual book. `session_close`
-  sells whatever is still held at the session's last bar, at that bar's
-  open, as a backstop for missing minutes (the program already plans flat);
-  on a halted last bar the shares stay open, are recorded
+- Fill contract (ADR-0120 amendment, owner acceptance needed): NO new
+  field. The existing required field `forced_exit_at` (`replay.py:164`,
+  vocabulary `("horizon_expiry",)`) gains one member, `"session_close"`,
+  and the position store follows from it: `horizon_expiry` means the
+  lead-keyed lot book and lead-carrying decisions (today, unchanged);
+  `session_close` means the share book (`PositionBook`) and lead-less
+  decisions. `FillPolicy`'s unconditional required-field and vocabulary
+  loops (`replay.py:187-231`) are untouched, the shipped `fill-policy.json`
+  is not edited, so its digest
+  `e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e`
+  and the five documents that pin it are untouched by construction (T19
+  pins the literal digest and the lot-book behaviour). A new
+  `configs/fill-policy-joint.json` declares `forced_exit_at:
+  "session_close"` (its other values copied from `fill-policy.json`, plus
+  question J's IWM entry if ruled); only the joint document pins it.
+- Replay position store: today `HorizonBook` holds at most one lot per
+  `(symbol, lead)` key (`replay.py:896-983`), which cannot serve lead-less
+  sells. Under `session_close` `EquityReplay` folds every fill into
+  dskit's `PositionBook` (`dskit/production/state.py:694`, existing, no
+  new class): `net_qty(symbol)` is the `positions` entry `_portfolio`
+  reports, and `to_obj`/`from_obj` carries positions across releases where
+  `carry_lots` carried lots. `HorizonBook` stays untouched for `lots` mode.
+  A decision is `{symbol, asof_ms, qty, side}` with no `lead`; a `buy` adds
+  shares, a `sell` reduces `net_qty` and never crosses flat (`oversell`
+  refuses `qty` above `net_qty` at the fill bar); fills are next-bar open
+  with the same per-share costs on both sides; the `insufficient_cash`
+  refusal is unchanged. No FIFO tranche queue is built: `WindowBook`'s
+  averaged-cost fold is the P&L convention already in force, and
+  `PositionBook` uses the same convention. Halts: a queued sell or buy on a
+  halted fill bar follows `halt_handling` exactly as an entry does today
+  (`skip` drops it and records `halted`; `queue` moves it one bar), and the
+  decider re-solves next minute from the actual book. `session_close`
+  sells whatever `net_qty` is still held at the session's last bar, at that
+  bar's open, as a backstop for missing minutes (the program already plans
+  flat); on a halted last bar the shares stay open, are recorded
   `open_at_session_close`, and are carried to the next session exactly as
   ADR-0186 T7 carries a missed-minute spill. `WindowBook` folds partial
   sells as ordinary fills; the report attributes by name (lead attribution
-  ends in this mode) and adds a holding-time distribution; the ADR-0183
-  evaluator's fill events carry no `lead` and are unchanged.
+  ends in this mode) and adds a holding-time distribution (minutes from a
+  name's entry fill after its last flat to its return to flat, from the
+  fills list); the ADR-0183 evaluator's fill events carry no `lead` and are
+  unchanged.
 
 #### Backtest semantics
 
-Same staged document `configs/run-retrain-simulation.json` with a new
-`simulate` template (`template_sha256` re-pinned; the walk's fold documents
-are unchanged, since the trade predictions already exist at every lead). The
-stage tokens of `calendar` through `gates` depend on their own params and
-inputs, not on the simulate template, so the stopped run's stage outputs
-(journal A54556-A54576) remain valid inputs and only `simulate` runs.
+The stopped run's upstream stages are reused by PINNING, not by resuming.
+A staged stage token is `f"{document.hash}:{key}"` (`dskit/pipeline/
+stages.py:437`) and the run dir carries `document.hash[:8]` (428); the
+document hash covers `stages` (`document.py:164`, `2406-2407`), so
+re-pinning `template_sha256` inside `run-retrain-simulation.json` would
+open a new run dir and rerun every stage, the 20-fold retrain walk
+included. The rerun path is therefore a standalone document,
+`configs/run-joint-simulation.json`, in ADR-0184's shape
+(`run-development-simulation.json:44-47` pins P16's inventory and gates by
+path and sha256): it pins the stopped run's
+`retrain-simulation-staged-2026-02-28-4bfcaaea/stages/inventory.json` and
+`stages/gates.json` (journal A54575-A54576) by sha256, and its `bars`,
+`publish` (path mode), `decide` (joint), `simulate` (`fill-policy-joint.json`)
+and `report` nodes are the joint ones. The walk's fold documents and trade
+predictions are untouched. The staged document keeps its `simulate` stage
+for a future end-to-end rerun; a re-pin there reruns `calendar` through
+`gates` (the stopped run's stages took the morning of 2026-09-26, journal
+A54556-A54576). Question K asks which path to run first.
 Decisions every minute on the minute's tick row; fills at the next bar's
 open; sells and buys; flat by the close; cash-only buying power; sale
 proceeds reusable at once (settlement, GFV and PDT still not modelled,
@@ -25425,10 +25512,13 @@ ADR-0186. The evaluator (ADR-0183) runs on the fills unchanged.
 
 Doorway: (T1) one-step documents give the same solution as today's program
 (solution equality, not model-structure equality); (T2) unchanged inventory
-pays zero cost; (T3) sunk-cost asymmetry: a held name whose expected
-remaining path gain is below `kappa^b + kappa^x` but above its risk premium
-is held, a flat name with the same forecast is not bought, and a held name
-with a zero or negative expected remaining path is sold at `k = 0`; (T4)
+pays zero cost; (T3) sunk-cost asymmetry, built comparatively so no risk
+premium needs a closed form: with a near-riskless scenario set (dispersion
+small enough that the premium is negligible) and one forecast swept over a
+grid of expected path gains, a held name is held for every gain in
+`(0, kappa^b + kappa^x)` while a flat name with the same forecast is not
+bought, the flat name is bought above the round trip, and a held name with
+a zero or negative expected remaining path is sold at `k = 0`; (T4)
 with a near-riskless scenario set (tiny dispersion, built as raw rows the
 way `tests/test_nodes_capital.py`'s `_row` helper does) a flat name is
 bought iff its expected path gain per share exceeds `kappa^b + kappa^x`, to
@@ -25441,9 +25531,11 @@ produce one `W_o` with the short name in cash after its valuation step;
 `W_o > 0`; (T11) identical inputs give identical share vectors twice; (T12)
 the latency benchmark (`N = 12`, `sum K = 68`, `S = 128`, `n_tangents = 32`,
 real scenario matrices, 8 seeds) pins p99 under 3 s and max under 10 s
-before build acceptance; (T27) a holding marked above `xbar_i` is neither
-forced to sell nor addable; (T30) a `K_i(t) = 0` name is sold in full at
-`k = 0` and a `K_i(t) = 1` name has one trade step.
+before build acceptance; (T27) a holding marked above `xbar_i` with a live
+path is neither forced to sell nor addable, while a mandatory exit
+(`x_max = 0`) is still sold in full; (T30) a `K_i(t) = 0` name is sold in
+full at `k = 0`, its proceeds fund the same tick's buys, and a
+`K_i(t) = 1` name has one trade step.
 Publisher: (T13) scenario `o` at lead 2 and lead 5 of one name comes from
 the same calibration row; (T14) the artifact-level coverage floor screens
 as today, per-cell coverage is recorded, and a cell below the per-cell
@@ -25451,21 +25543,27 @@ floor truncates that name's plan at the last passing lead (a lead-1 breach
 leaves the name sell-only) under question I's default; (T15) ticks carry
 `yhat` at every lead `<= K_i` and refuse a missing cell; (T16) mutating
 any bar after `t` leaves the decision at `t` unchanged.
-Replay: (T17) `target_shares`: a sell reduces FIFO shares, never opens a
-short, `oversell` refuses; (T18) the `session_close` backstop; (T19) the
-shipped `fill-policy.json` still validates, its digest equals the literal
-`e4ffcd13...`, and `lots` behaviour is byte-identical (existing
-`test_replay.py`/`test_simulation.py` suites green); (T20) sizing and fills
-charge the same per-share rate on both sides; (T21) reservations for
-queued orders of both sides; (T28) a sell whose fill bar is halted follows
+Replay: (T17) under `session_close` a sell reduces `PositionBook.net_qty`,
+never crosses flat, `oversell` refuses; (T18) the `session_close` backstop;
+(T19) the shipped `fill-policy.json` still validates, its digest equals the
+literal `e4ffcd13...`, and `horizon_expiry` behaviour is byte-identical
+(existing `test_replay.py`/`test_simulation.py` suites green); (T20) sizing
+and fills charge the same per-share rate on both sides; (T21) a name with a
+queued buy is skipped, its cost reserved, and its shares absent from `h_i`;
+a name with a queued sell is skipped, its shares absent from `h_i`, its
+proceeds uncredited until the fill, and its mark still in NAV and gross;
+(T28) a sell whose fill bar is halted follows
 `halt_handling`; (T29) a halted last bar records `open_at_session_close`
-and carries the shares.
+and carries the shares through `PositionBook.to_obj`/`from_obj`.
 Decider and report: (T22) one solve per minute with every admitted name and
 its held shares; (T23) orders on both sides reach the replay; (T24) the
 executed `k = 0` order equals the fill; (T25) `WindowBook` P&L with partial
 sells and the holding-time metric; (T31) the default `lead_groups` mode
 and `EquityKellyMIO` are unchanged: the existing tests named above stay
-green without edits.
+green without edits, and the refactored `EquityKellyMIO` returns the same
+problems list and builds the same rows on the existing fixtures; (T32) the
+standalone joint document pins the stopped run's inventory and gates by
+sha256 and refuses a drifted artifact.
 Plan §11: (T26) a diagnostic records realized return by minutes since the
 entry signal for every fill, so the half-life-versus-latency refusal can be
 applied with a measured number.
@@ -25507,6 +25605,10 @@ applied with a measured number.
 - **J. IWM's spread.** (a) measure IWM's half-spread and add it to the fill
   policy before the rerun (identity moves) [recommended]; (b) keep the
   5.62 bp default.
+- **K. Rerun path.** (a) a standalone `run-joint-simulation.json` pinning
+  the stopped run's inventory and gates by sha256; only the simulation
+  runs [recommended]; (b) re-pin the staged document's template and rerun
+  every stage end to end.
 
 ### Alternatives rejected
 
@@ -25525,6 +25627,10 @@ applied with a measured number.
 - Keeping `band_bps` beside the costed objective: double-counts friction.
 - Replacing the lead-group policy in place: would move every ADR-0184/0185/
   0186 digest and rewrite their tests; the additive mode keeps them.
+- A FIFO tranche queue inside the child's `HorizonBook` (the round-1
+  draft): duplicates dskit's `PositionBook` and puts a mechanism in tier 3.
+- A new receding-horizon driver class: the per-tick decide seam already
+  exists; only the doorway's step dimension is new.
 
 ### Non-goals
 
@@ -25542,10 +25648,11 @@ backtest before approval.
 | step dimension in `ScenarioUtilitySolve` | sweep `MultiPeriod multi_period receding_horizon`; `pmquant.mio` | one-step program only; the extension is in place, one-step documents unchanged |
 | path rows in `ForecastBundle` | sweep `ForecastPathBundle path_bundle`; `forecast_bundle.py:589-605` | refuses mixed leads by design; relaxed only through the path contract |
 | joint cells in the publisher | `ScenarioSet` (`outcome_interval.py:623`), `BlockResiduals`, `_residual_panel` | already joint across names at one lead; the panel widens to cells |
-| `JointEquityKellyMIO(EquityKellyMIO)` | sweep `JointMioDecider joint_mio`; `EquityKellyMIO`, `pmquant.nodes_capital.KellyMIO` | the equity node is single-step and carries band rows; a subclass keeps it byte-identical |
+| `JointEquityKellyMIO(EquityKellyMIO)` | sweep `JointMioDecider joint_mio`; `EquityKellyMIO` (`validate_params` 879-978, `domain_constraints` 1577-1652), `pmquant.nodes_capital.KellyMIO` | the equity node is single-step, requires `band_bps` unconditionally and builds HFDR and band rows in one method; it is refactored into overridable per-concern helpers (behaviour unchanged, suite as regression net) and the subclass overrides two of them |
 | `joint` mode in `MinuteMioDecider` | sweep `JointMioDecider joint_mio`; `MioDecider` hooks | the hooks exist; the joint mode is one more override |
-| `position_mode`, `session_close` in `FillPolicy` | sweep `position_mode target_shares session_close`; `_VOCAB` (`replay.py:160-173`); `_OPTIONAL_PARAMS` (610, 2411) | closed vocabularies with no such member; optional so `lots` stays the default and digests hold |
-| tranche queue in `HorizonBook` | `HorizonBook` (`replay.py:896-983`), `WindowBook` (`dskit/production/accounting.py:536`) | one lot per `(symbol, lead)`; `WindowBook` is the P&L fold, not the position store |
+| `session_close` member of `forced_exit_at` | sweep `position_mode target_shares session_close`; `_VOCAB` (`replay.py:160-173`); the required-field and vocabulary loops (187-231) | one vocabulary member added to an existing required field; no new field, no optional mechanism, no digest moves |
+| position store under `session_close` | sweep `tranche Tranche FifoBook fifo_book PositionBook position_book ShareBook`; `HorizonBook` (`replay.py:896-983`), `PositionBook` (`dskit/production/state.py:694`), `WindowBook` (`accounting.py:536`) | `PositionBook` REUSED as is (net qty, average cost, JSON carry); `HorizonBook` is one lot per `(symbol, lead)`; nothing new |
+| receding-horizon driver | sweep `receding Receding RollingHorizon rolling_horizon plan_steps`; `EquityReplay.evaluate` (`replay.py:1750-1752`) | not built: the existing per-tick decide seam plus the multi-step doorway is the driver |
 | `configs/fill-policy-joint.json` | `fill-policy.json` (digest pinned by five documents) | a new file keeps every existing digest |
 
 ### Review record
@@ -25555,14 +25662,32 @@ backtest before approval.
 | 1 | `fc13009` | correctness/authority (Sonnet) | C0 M4 m1 n2 | per-name ceiling forced sells on held names; F's default vs the caps ruling; `K_i(t)=0` and `c_0` undefined in (J6); `HorizonBook` cannot serve FIFO sells, halts unaddressed |
 | 1 | `fc13009` | tests/integration + literature (Sonnet) | C0 M4 m8 n1 | fill-policy digests would move (required params); existing decider tests unaddressed; band/cardinality tests unaddressed; no ruling on a per-cell coverage breach |
 
-Round-1 dispositions, all in this candidate: (J5) binds on buys only and
+Round-1 dispositions (candidate `f60b879`): (J5) binds on buys only and
 question F is rewritten with (a) recommended; `q_(i,-1) := h_i`, `c_open`
 and the `K_i(t) = 0` rule are stated; the replay position store is its own
-sub-section with halt interaction and tests T28-T29; the two new fill-policy
-fields are optional (`_OPTIONAL_PARAMS` precedent) and T19 pins the literal
+sub-section with halt interaction and tests T28-T29; T19 pins the literal
 digest; the joint policy is additive (`JointEquityKellyMIO`, decider mode,
 publisher mode) and every existing test that pins the removed behaviour is
 named and kept (T31); questions I and J added; Minors and Nits fixed (cash
 rows `H`, `n_tangents` notation, `nodes_capital.py:1634`, D5's plan lines,
 T1 solution equality, question C's partition, the Ma-Smith gloss, the
 absolute run-dir paths, IWM's missing spread).
+
+| Round | Candidate | Lens | Result | Majors |
+|---|---|---|---|---|
+| 2 | `f60b879` | correctness/authority (Sonnet) | C0 M2 m1 n1; all 8 round-1 Majors verified fixed | stage tokens hash the whole staged document, so re-pinning the template reruns every stage; the subclass cannot refuse `band_bps` while inheriting the base's unconditional checks |
+| 2 | `f60b879` | tests/integration + literature (Sonnet) | C0 M5 m2 n0 | `mio.policy` refused by `reject_unknown_params`; stage tokens (same); `_OPTIONAL_PARAMS` is not a vocab-checked-optional precedent; the math hardwired A(a)/B(a); pending sells undefined |
+
+Round-2 dispositions (this candidate): reuse by PINNING in a standalone
+document, question K; `EquityKellyMIO` refactored into overridable
+per-concern helpers (behaviour unchanged, suite as regression net); the
+mode switch is the `decide` node's own optional `policy` param, emitted
+only when declared; `position_mode` dropped, the book follows from the
+existing required `forced_exit_at` field, which gains one vocabulary member
+and touches no file; variants for A(b), A(c) and B(b) written into the
+horizon definition, and `kstar_i` carries question I into the math; pending
+semantics defined (T21); the `K_i(t) = 0` name is a fixed mandatory exit
+whose proceeds enter the same tick; `xeff_i` lives in the child's
+`instruments`, the doorway's `x_max = 0` exit route intact (T27); T3 built
+comparatively; owner tiering rule applied (`PositionBook` reused, no tranche
+queue, no driver class).

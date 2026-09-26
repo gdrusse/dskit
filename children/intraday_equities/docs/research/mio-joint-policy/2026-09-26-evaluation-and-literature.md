@@ -220,7 +220,9 @@ give the constant for CRRA `gamma` with Merton fraction `pi*` and spread
 
     pi_(+/-) = pi* +/- ( 3/(2 gamma) * pi*^2 (1 - pi*)^2 * epsilon )^(1/3)
 
-with `gamma = 1` the growth-optimal case; the liquidity premium is spread
+with `gamma = 1` the growth-optimal case (the paper's main theorem, read
+from the arXiv PDF 1108.1167; Muhle-Karbe, Reppen and Soner 2017 restate
+the same boundaries in their survey); the liquidity premium is spread
 times share turnover times a universal constant. Muhle-Karbe, Reppen and
 Soner (2017, Annual Review of Financial Economics 9) extend the asymptotics
 to mean-reverting expected returns (the closest continuous-time analogue of
