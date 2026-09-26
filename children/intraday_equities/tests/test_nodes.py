@@ -2782,10 +2782,13 @@ def _day_ms(day, minute):
     return int((_BASE + timedelta(days=day, minutes=minute)).timestamp() * 1000)
 
 
-def _window_bars(n=40, sessions=1):
+_WINDOW_NAMES = (("AAPL", 0.001), ("SPY", 0.0005))
+
+
+def _window_bars(n=40, sessions=1, names=_WINDOW_NAMES):
     """``sessions - 1`` whole prior sessions, then ``n`` minutes of the last one."""
     bars = []
-    for symbol, drift in (("AAPL", 0.001), ("SPY", 0.0005)):
+    for symbol, drift in names:
         px = 100.0
         for day in range(sessions):
             for i in range(390 if day < sessions - 1 else n):
@@ -2862,16 +2865,20 @@ def _trade_ms(i):
     return _day_ms(1, i)
 
 
-def _trade_scan_inputs(n=300, window=(150, 299)):
+def _trade_scan_inputs(n=300, window=(150, 299), names=_WINDOW_NAMES):
     """Grid (5-min) and per-minute trade frames from one tape, plus the scan cuts."""
-    bars = _window_bars(n, sessions=2)
+    bars = _window_bars(n, sessions=2, names=names)
+    cohort = {
+        "symbols": [symbol for symbol, _ in names],
+        "tradable": [symbol for symbol, _ in names if symbol != "SPY"],
+    }
     grid = SessionFeatureRows("features", dict(_TRADE_FEATURES)).run(
-        None, {"records": list(bars), "spec": _mini_spec(period_ms=300_000)}
+        None, {"records": list(bars), "spec": _mini_spec(period_ms=300_000, **cohort)}
     )
     trade = SessionFeatureRows(
         "features",
         {**_TRADE_FEATURES, "row_window": [_trade_ms(window[0]), _trade_ms(window[1]) + 1]},
-    ).run(None, {"records": list(bars), "spec": _mini_spec(period_ms=60_000)})
+    ).run(None, {"records": list(bars), "spec": _mini_spec(period_ms=60_000, **cohort)})
     cuts = {
         "split": "val",
         "train_end_ms": _trade_ms(140),
@@ -2879,9 +2886,9 @@ def _trade_scan_inputs(n=300, window=(150, 299)):
         "val_end_ms": _trade_ms(window[1]),
         "lead_start": 2, "lead_step": 2, "lead_stop": 2,
         "score_period_ms": 900_000,
-        "score_symbols": ["AAPL"],
+        "score_symbols": list(cohort["tradable"]),
     }
-    inputs = {"records": grid["records"], "bars": grid["tape"], "spec": _mini_spec(period_ms=300_000)}
+    inputs = {"records": grid["records"], "bars": grid["tape"], "spec": _mini_spec(period_ms=300_000, **cohort)}
     return inputs, trade["records"], cuts
 
 
@@ -2966,3 +2973,43 @@ def test_scan_refuses_trade_records_it_cannot_honour(tmp_path):
         NoInformationScan("scan_h02", {**cuts, "label_scramble_seed": 3}).run(
             ctx, {**inputs, "trade_records": trade}
         )
+
+
+def test_scan_trade_predictions_carry_each_symbols_own_code_and_the_fold(tmp_path):
+    """Two scored names with distinct symbol codes: every lattice minute matches the scored yhat for BOTH."""
+    from dskit.pipeline.predictions import PREDICTIONS_FILE, TRADE_PREDICTIONS_FILE
+
+    names = (("AAPL", 0.001), ("MSFT", -0.0008), ("SPY", 0.0005))
+    inputs, trade, cuts = _trade_scan_inputs(names=names)
+    ctx = NodeContext(name="t", asof="2026-01-06", run_dir=str(tmp_path), fold_index=3)
+    NoInformationScan("scan_h02", cuts).run(ctx, {**inputs, "trade_records": trade})
+    scored = _read(str(tmp_path), PREDICTIONS_FILE)
+    traded = _read(str(tmp_path), TRADE_PREDICTIONS_FILE)
+    assert set(traded["series"]) == {"AAPL", "MSFT"} and set(traded["fold"]) == {3}
+    at = {(s, t): v for s, t, v in zip(traded["series"], traded["ts"], traded["yhat"])}
+    pairs = list(zip(scored["series"], scored["ts"], scored["yhat"]))
+    assert {s for s, _, _ in pairs} == {"AAPL", "MSFT"}
+    assert all(at[(s, t)] == v for s, t, v in pairs)
+
+
+def test_scan_writes_one_trade_row_per_minute_for_every_scored_lead(tmp_path):
+    from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE
+
+    inputs, trade, cuts = _trade_scan_inputs()
+    cuts = {**cuts, "lead_start": 1, "lead_step": 1, "lead_stop": 2}
+    ctx = NodeContext(name="t", asof="2026-01-06", run_dir=str(tmp_path))
+    NoInformationScan("scan", cuts).run(ctx, {**inputs, "trade_records": trade})
+    traded = _read(str(tmp_path), TRADE_PREDICTIONS_FILE)
+    by_lead = {}
+    for lead, stamp, value in zip(traded["horizon"], traded["ts"], traded["yhat"]):
+        by_lead.setdefault(lead, {})[stamp] = value
+    assert set(by_lead) == {1, 2} and by_lead[1] == by_lead[2] and by_lead[1]
+
+
+def test_scan_refuses_trade_frames_missing_a_feature_column(tmp_path):
+    inputs, trade, cuts = _trade_scan_inputs()
+    frame = next(f for f in trade if f["symbol"] == "AAPL")
+    frame["names"] = list(frame["names"][:-1]) + ["not_a_feature"]
+    ctx = NodeContext(name="t", asof="2026-01-06", run_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="lack feature column"):
+        NoInformationScan("scan_h02", cuts).run(ctx, {**inputs, "trade_records": trade})

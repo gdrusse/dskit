@@ -2428,6 +2428,18 @@ def test_portfolio_reports_a_queued_unfilled_entry_as_pending():
     assert stub.seen[_m(3)]["pending"] == [] and stub.seen[_m(3)]["positions"] == {"BBB": 10}
 
 
+def test_pending_reports_each_queued_entry_with_its_own_side_and_lead():
+    bars = [_bar("AAA", _m(i), 10.0, 10.0) for i in range(4)]
+    bars += [_bar("BBB", _m(i), 20.0, 20.0) for i in (0, 3)]
+    bars += [_bar("CCC", _m(i), 30.0, 30.0) for i in (0, 3)]
+    stub = _Orders({_m(0): [_decision("BBB", _m(0), 2, side="sell"), _decision("CCC", _m(0), 4, qty=7)]})
+    EquityReplay(_policy(), decider=stub).run(bars)
+    assert stub.seen[_m(1)]["pending"] == [
+        {"symbol": "BBB", "lead": 2, "qty": 10, "side": "sell", "decision_ms": _m(0)},
+        {"symbol": "CCC", "lead": 4, "qty": 7, "side": "buy", "decision_ms": _m(0)},
+    ]
+
+
 def test_carry_lots_returns_an_unclosed_lot_with_the_bars_it_still_owes():
     bars = [_bar("AAA", _m(i), 10.0, 10.0) for i in range(4)]
     decisions = [_decision("AAA", _m(1), 5)]

@@ -1849,6 +1849,43 @@ def test_minute_publisher_refuses_an_unpinned_trade_file_in_a_fold(mfx):
         _mrun(mfx)
 
 
+def test_minute_publisher_ticks_only_the_segment_even_if_trade_rows_start_earlier(mfx):
+    first = _splits(2)["val_start_ms"]
+    early = [first - 86_400_000 + OPEN_MS + i * 60_000 for i in range(3)]
+
+    def widened(i, n, lead, stamps, yhat):
+        return (early + stamps, [9.0] * len(early) + yhat) if i == 2 else (stamps, yhat)
+
+    _write_trade(mfx, widened)
+    _write_inventory(mfx)
+    out = _mrun(mfx)
+    assert all(min(block["ts"]) >= first for block in out["ticks"])
+    assert all(9.0 not in block["yhat"][:3] for block in out["ticks"])
+
+
+def test_minute_decider_refuses_a_tick_block_that_is_not_an_admitted_unit(mfx):
+    published = json.loads(json.dumps(_mrun(mfx)))
+    block = next(b for b in published["ticks"] if b["symbol"] == "LLY")
+    block["lead"] = 1
+    with pytest.raises(ValueError, match="not one admitted unit"):
+        _minute_decider(published, mfx)
+
+
+def test_minute_decider_opens_nothing_on_a_date_without_a_known_close(mfx):
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx, closes={})
+    t = _open(published["releases"][0]) + 20 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    assert decider.solves == [] and {r["reason"] for r in decider.skipped} == {"exit_after_close"}
+
+
+def test_minute_window_gate_ignores_an_empty_tick_block():
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    rows = MinuteDevelopmentSimulation._decision_rows([{"ts": []}, {"ts": [5, 9, 7]}])
+    assert rows == [{"asof_ms": 9}]
+
+
 def test_minute_decider_solves_at_a_minute_off_the_lattice(mfx):
     published = _mrun(mfx)
     decider = _minute_decider(published, mfx)

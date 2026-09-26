@@ -1161,3 +1161,20 @@ def test_trade_caches_refuse_a_document_without_a_walk_forward(tmp_path, monkeyp
     )
     with pytest.raises(ValueError, match="walk-forward"):
         study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+
+
+
+def test_trade_caches_refuse_a_build_that_left_no_cache(tmp_path, monkeypatch):
+    ctx, _log = _trade_harness(tmp_path, monkeypatch, present=set())
+    monkeypatch.setattr(study, "_verified_cache", lambda path, universe, params: None)
+    with pytest.raises(RuntimeError, match="left no cache"):
+        study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+
+
+def test_trade_caches_refuse_a_cache_whose_membership_is_not_the_group(tmp_path, monkeypatch):
+    ctx, _log = _trade_harness(tmp_path, monkeypatch, present=set())
+    monkeypatch.setattr(
+        study, "_verified_cache", lambda path, universe, params: {"manifest_sha256": "a" * 64, "symbols": ["ZZZ"]}
+    )
+    with pytest.raises(ValueError, match="membership"):
+        study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})

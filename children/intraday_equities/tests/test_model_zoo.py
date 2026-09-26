@@ -1123,3 +1123,32 @@ def test_retrained_walk_inventory_without_trade_seals_is_unchanged(tmp_path, mon
     row, _summary = _trade_sealed_row(tmp_path, monkeypatch, seal=False)
     manifest = RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})["manifest"]
     assert all(set(fold) == {"cutoff", "run_dir", "carry", "predictions"} for fold in manifest["folds"])
+
+
+
+def test_minute_walk_candidate_wires_double_digit_leads(tmp_path, monkeypatch):
+    from intraday_equities.model_zoo import MinuteWalkCandidate
+
+    stage, ctx = _retrain_stage(MinuteWalkCandidate, "walk_document", tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        stage, "resolve", lambda ctx, inputs: ([], [{"asset": "LLY", "horizon": 12}], dict(_CACHES), 12, {})
+    )
+    out = stage.run(ctx, _minute_inputs(winners=_winners(leads=range(1, 13))))
+    pipeline = load_document(out["candidate"]["path"]).to_obj()["pipeline"]
+    # Enumerated independently of the code's own prefix match.
+    for key in [f"scan_h{lead:02d}" for lead in range(1, 13)]:
+        assert pipeline[key]["inputs"]["trade_records"] == "$trade_features.merged", key
+
+
+def test_retrained_walk_inventory_refuses_malformed_trade_pins(tmp_path, monkeypatch):
+    from intraday_equities.final_gates import RetrainedWalkInventory
+
+    row, summary = _trade_sealed_row(tmp_path, monkeypatch)
+    for bad in ([], "x", [{"path": "p"}], [{"path": "", "sha256": "0" * 64}]):
+        summary["evidence"]["folds"][0]["trade_predictions"] = bad
+        Path(row["evidence_manifest_path"]).write_text(json.dumps(summary))
+        row["evidence_manifest_sha256"] = __import__("hashlib").sha256(
+            Path(row["evidence_manifest_path"]).read_bytes()
+        ).hexdigest()
+        with pytest.raises(ValueError, match="malformed trade prediction pin"):
+            RetrainedWalkInventory("inventory", {}).run(_retrained_ctx(tmp_path), {"run": row})

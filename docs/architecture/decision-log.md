@@ -24362,3 +24362,28 @@ fixed, with tests only except one error message:
   minute.
 - **Nit:** a test for the carried-lot collision refusal, and the
   `row_window` message now says half-open.
+
+Round 4 ran on `3492f85`. Correctness found C0/M0/m0/N0. Tests and
+integration ran 25 mutants: 19 were killed, 4 survived as real gaps and 2
+survived as equivalent mutants. It found 2 Major and 2 Minor, all test gaps:
+
+- a trade prediction's per-symbol code column;
+- scans past `scan_h09` getting wired;
+- the trade file's `fold` column;
+- an empty tick block.
+
+**Convergence checkpoint.** The same family has recurred for two cycles:
+Majors in the test-coverage lens, each a branch no test reached. So the
+approach changed from patching the reviewer's examples to one inventory of
+every new ADR-0186 branch, one test per untested branch, and an
+author-side mutation sweep over that inventory before the next review.
+
+- **Tests added:** two scored names with distinct codes, and the fold
+  ordinal; a multi-lead scan; a trade frame missing a column; wiring for
+  leads 1-12, enumerated independently; malformed trade pins; a trade
+  cache build that leaves no cache; a trade cache with the wrong members;
+  trade rows before the cutoff; a decider tick block that is not an
+  admitted unit; a date with no known close; an empty tick block; and the
+  pending side.
+- **Author mutation sweep:** 19 mutants, all killed. The file is
+  `~/mc-measure/mutate.py`, outside the repo.
