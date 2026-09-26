@@ -25432,7 +25432,7 @@ every mechanism here, and the child is a wrapper that names the market:
   | `_bundle_problems` (`nodes_capital.py:504-722`) | unchanged |
   | `EquityKellyMIO.validate_inputs` (1013-1192), `_binding_problems` (1300-1323) | unchanged |
   | `_entity_problems` (1325-1354) | overridden by the subclass: binds `pi_hat_path`/`pi_widened_path` and the outcome band per cell `SYM:hNN` |
-  | `instruments` (1392-1564) | overridden IN FULL, not reused as a body: today's method is one loop that also reads `band_bps` unconditionally (1527-1529), so the refactor extracts `_routed_rows` (the gate/cap/staleness/price routing, 1417-1441), `_mandatory_exit_row` (1473-1490) and `_account_envelope(rows, portfolio, worst_r, best_r)` (the wealth envelope and account dict, 1535-1563, with the return extremes passed in rather than accumulated inside, 1465-1466 and 1530-1531 today) as helpers the joint override calls; the joint override passes `worst_r`/`best_r` as the minimum and maximum of `r_io(k)` over EVERY step and scenario of every name's path, since `W_o` prices intermediate trades at `P_io(k)` and the envelope must bound it (the 1.5 pad and the 5% floor are unchanged); the joint override routes on `admitted_horizon`, sets `x_max = xeff_i`, steps = `plan_horizon`, builds `[steps x S]` payoffs, never reads `band_bps`, and gives a held name that is in the solve with no row (`kstar_i = 0`, or dropped by the publisher) the mandatory-exit row as a one-step `[1 x S]` zero matrix; a last-decision name is outside the solve altogether (Sets) |
+  | `instruments` (1392-1564) | overridden IN FULL, not reused as a body: today's method is one loop that also reads `band_bps` unconditionally (1527-1529), so the refactor extracts `_routed_rows` (the gate/cap/staleness/price routing, 1417-1441), `_mandatory_exit_row` (1473-1490) and `_account_envelope(rows, portfolio, worst_r, best_r)` (the wealth envelope and account dict, 1535-1563, with the return extremes passed in rather than accumulated inside, 1465-1466 and 1530-1531 today) as helpers the joint override calls; the joint override passes `worst_r`/`best_r` as the minimum and maximum of `r_io(k)` over EVERY step and scenario of every name's path AND widens the span by `2H`, which is a proven bound: (J6) telescopes per name into `P_io(0) h_i + sum_k q_ik (P_io(k+1) - P_io(k))` less costs, with `p_i q_ik <= xeff_i` at every step and `|P_io(k+1) - P_io(k)| <= 2 p_i max|r|`, so the path term is bounded by `2H x notional_cap x max|r|` however often the plan reverses; the 1.5 pad and the 5% floor are unchanged, and `model.W`'s bounds (`pyomo.py:1169`) make an envelope breach an infeasible solve, never a silent one; T44 pins the widening with a plan that reverses at every step; the joint override routes on `admitted_horizon`, sets `x_max = xeff_i`, steps = `plan_horizon`, builds `[steps x S]` payoffs, never reads `band_bps`, and gives a held name that is in the solve with no row (`kstar_i = 0`, or dropped by the publisher) the mandatory-exit row as a one-step `[1 x S]` zero matrix; a last-decision name is outside the solve altogether (Sets) |
   | `payoffs` (1566-1575) | overridden: `[steps x S]` per name |
   | `validate_params` (879-978) -> helpers; `domain_constraints` (1577-1652) -> `_hfdr_row`/`_band_rows` | the refactor above; the subclass overrides `_policy_problems` and `_band_rows` |
   | `run` (1656-1676) | unchanged |
@@ -25479,16 +25479,28 @@ every mechanism here, and the child is a wrapper that names the market:
   output's `policy`, absent = today): one solve per minute over every
   admitted name with a tick; orders for both sides; the only skips are
   `pending_order_at_decision` (an order queued for a missing bar) and
-  `no_tick`. Pending semantics, the ground truth for T21: a name with any
-  queued order, and likewise a held name with no tick this minute
-  (`no_tick`), is neither sized nor exited this minute and is REMOVED from
-  the `positions` handed to the solve (otherwise the mandatory-exit route
-  would sell it), while its mark still counts in NAV and the gross limit
-  (the same rule `MinuteMioDecider._context` applies today when it
-  subtracts held and queued names, `simulation.py:1373-1380`); a
-  queued buy's cost is reserved from cash exactly as today (`_reserved`,
-  `simulation.py:1382-1395`); a queued sell's shares are excluded from
-  `h_i` and its proceeds are not credited until the fill. `open_lot_at_decision`
+  `no_tick`. The `positions` handed to the solve are NEW logic (today's
+  decider hands the MIO `positions: {}` unconditionally, `simulation.py:
+  1235`, and its `_context` only builds name sets for row exclusion,
+  1264-1270 and 1373-1380): `positions_solve = {symbol: int(shares)}` over
+  the replay's `positions` (`_portfolio`, which already omits a position
+  exiting at the fill bar) MINUS every name with a queued order and every
+  held name with no tick this minute. A removed name is neither sized nor
+  exited this minute, its mark still counts in NAV and the gross limit, and
+  it is reconsidered next minute; a queued buy's cost is reserved from cash
+  exactly as today (`_reserved`, `simulation.py:1382-1395`), and a queued
+  sell's proceeds are not credited until the fill (its shares are simply
+  part of the removed position). Whether a held name that IS in the solve
+  can lack a row is decided by the routing: `_routed_rows`
+  (`nodes_capital.py:1417-1441`) routes a row out for a permanent reason
+  (not a survivor; no cap or a zero cap: the name left the admitted set at
+  a release boundary) or a transient one (a stale row, a price below
+  `min_price`). Under the joint policy a permanent route-out is the
+  mandatory exit (sold at `k = 0`; the position may not outlive its
+  admission), and a transient route-out removes the name from
+  `positions_solve` like `no_tick` (question L). This is the seam that is
+  dead today (`positions: {}`) and live under the joint policy, so T45
+  drives every branch of it. `open_lot_at_decision`
   and `exit_after_close` do not apply in joint mode (the plan horizon is
   truncated at the close instead); in the default mode they are unchanged,
   so `test_minute_decider_skips_held_and_pending_units_and_reserves_pending_cash`
@@ -25536,7 +25548,8 @@ every mechanism here, and the child is a wrapper that names the market:
   close_lot(symbol, lead) -> lot                                 lot book: pop (969-971); share book: flatten
   unclosed() -> ((symbol, lead), lot) pairs                      lot book: 981-983; share book: lead 0, lot = {qty: int(net_qty), side: "buy", fill_index: None, expiry_index: session-last index}
                                                                  (PositionBook.net_qty returns a Decimal, pinned by tests/production/test_state.py:1965; the wrapper converts
-                                                                 to the whole-share int the replay's float NAV arithmetic (1423-1424) and the MIO's int(v) (nodes_capital.py:1413) expect)
+                                                                 to a whole-share int because _portfolio multiplies it by a float mark (1423-1424), which a Decimal refuses;
+                                                                 the MIO's own int(v) (nodes_capital.py:1413) would accept either)
   carry_lot(symbol, lead, qty, side, exit_in)                    lot book: expiry at exit_in (949-963); share book: seeds net_qty and ignores exit_in
   ```
 
@@ -25697,7 +25710,8 @@ member; `_enqueue_decision` accepts `lead: 0` and refuses `lead: 1`;
 `_apply_exits`/`_process_exits` sell the whole position at the session-last
 bar with `reason: session_close` and at no other bar; `_process_entries`
 records `oversell` from the share book and `same_lead_open` from the lot
-book; `_portfolio` excludes the position at the last decision bar and
+book, and with `same_lead_overlap: "override"` deliberately set under
+`session_close` the override branch still never closes a share position; `_portfolio` excludes the position at the last decision bar and
 includes it before; `_pending_entries` and `_result` carry `lead: 0`;
 (T36) `FillPolicy` validates `session_close` and refuses any other new
 member; (T37) `run`'s end of tape, `_seed_carried_lots` and `_open_lots`
@@ -25712,9 +25726,12 @@ branch, the `horizon_expiry` paths of every method above) are covered by
 the unedited existing suites (T19);
 (T20) sizing
 and fills charge the same per-share rate on both sides; (T21) a name with a
-queued buy is skipped, its cost reserved, and its shares absent from `h_i`;
-a name with a queued sell is skipped, its shares absent from `h_i`, its
-proceeds uncredited until the fill, and its mark still in NAV and gross;
+queued buy is skipped, its cost reserved, and its shares absent from
+`positions_solve`; a name with a queued sell is skipped, its shares absent
+from `positions_solve`, its proceeds uncredited until the fill, and its
+mark still in NAV and gross; a held name with no tick this minute is
+absent from `positions_solve`, is not sold, and is sized again the next
+minute it has a tick (with T45);
 (T28) a sell whose fill bar is halted follows
 `halt_handling`; (T29) a halted last bar records `open_at_session_close`
 and carries the shares as `open_lots` rows with `lead: 0`, `exit_in: 0`,
@@ -25748,8 +25765,29 @@ trip through `PositionBook`'s `Decimal` without a type error; (T43)
 `MioDeciderNode` dispatch: `policy: "joint"` validates the `mio` block
 through `JointEquityKellyMIO.validate_params` (so `band_bps` is refused
 through the node), emits `policy` in its output, an unknown `policy` value
-refuses, and a document without `policy` still emits exactly
-`{"params", "lead_groups"}`.
+refuses, a declared `policy: "lead_groups"` is emitted and behaves as the
+default, and a document without `policy` still emits exactly
+`{"params", "lead_groups"}`; (T44) the joint wealth envelope: a plan that
+buys at step 0 and sells at a later step in a monotone scenario path
+solves feasibly, its `W_o` lies inside `[wealth_lo, wealth_hi]`, the
+single-period span alone would have excluded it, a plan that reverses at
+every step stays inside the `2H` span, and a path whose extreme scenario
+return sits at an interior step (not the terminal one) still yields a
+bracket that contains every `W_o`; (T46) a mandatory exit inside a joint
+solve: `W_o` equals the cash proceeds of its `k = 0` sale plus the other
+names' terms, with no terminal term for it (a hand-computed number that
+the `K_i(t) - 1` index would have doubled); (T47) joint-panel
+feasibility, an acceptance gate beside T12: on the real 12-name universe
+the complete-case intersection over every `(name, lead)` cell reports its
+row and UTC-day-block counts and clears `MIN_CALIBRATION_BLOCKS` and the
+configured `window_blocks` (`outcome_interval.py`) for every release; if
+it does not, the build stops and the fallback (a per-name panel with a
+shared day draw, or a smaller cell set) is an owner question, not an
+agent choice; (T45) `positions_solve`:
+a queued name, a `no_tick` name and a transiently routed-out held name are
+absent from the solve and still marked in NAV, a permanently routed-out
+held name is sold in full at `k = 0`, and every other held name enters with
+its `int` shares.
 Plan §11: (T26) a diagnostic records realized return by minutes since the
 entry signal for every fill, so the half-life-versus-latency refusal can be
 applied with a measured number.
@@ -25797,6 +25835,12 @@ applied with a measured number.
   the stopped run's inventory and gates by sha256; only the simulation
   runs [recommended]; (b) re-pin the staged document's template and rerun
   every stage end to end.
+- **L. A held name whose row is routed out.** (a) a permanent route-out
+  (the name is no longer a survivor, or has no or a zero cap, at a release
+  boundary) is a mandatory exit at `k = 0`; a transient one (a stale row,
+  a price below `min_price`) skips the name this minute, position kept and
+  marked [recommended]; (b) every route-out is a mandatory exit (today's
+  rule, live for the first time); (c) every route-out skips the name.
 
 ### Alternatives rejected
 
@@ -25923,6 +25967,8 @@ citations `tests/pipeline_libs/test_pyomo.py:743-767` and
 | 5 | `ee274c1` | tests/integration (Sonnet) | C0 M4 m1 n1; round-4 `Fill` and `exit_in` Majors fixed, the others partially | `is_open` (same); `_portfolio`'s filter (1425-1427) already omits a position exiting at the fill bar, so the last-decision name never reaches the mandatory-exit route; no test for partial path rows; no producer-side test for the row builders |
 | 6 | `8b65b4f` | correctness/authority (Sonnet) | C0 M3 m1 n0; every round-5 Major verified fixed | a held name with no tick was not removed from `positions` (the mandatory-exit route would sell it); (J6)'s terminal index `K_i(t)-1` double-counted a mandatory exit's sale; the wealth envelope's extremes were unspecified for path payoffs |
 | 6 | `8b65b4f` | tests/integration (Sonnet) | C0 M3 m2 n1; every round-5 item verified fixed | the share book's `unclosed()` would hand `_portfolio` a `Decimal` (`net_qty`, pinned by `test_state.py:1965`) into float NAV arithmetic; the `no_tick` held name (same); no node-level test of the `policy` dispatch |
+| 7 | `066f2bd` | correctness/authority (Sonnet) | C0 M3 m1 n0; (J6) fix verified, the other two partially | the `positions` rule cited a false precedent (today's `_context` builds name sets and the MIO always gets `{}`); a held name routed out for staleness or price would hit the mandatory-exit route, undisclosed; the envelope's sufficiency for multi-step round trips unproven |
+| 7 | `066f2bd` | tests/integration (Sonnet) | C0 M4 m2 n1; every round-6 design fix verified correct | no regression test for the `no_tick` rule, the (J6) index or the envelope extremes; no feasibility gate for the 68-cell complete-case calibration panel |
 
 **Checkpoint, continued (after round 4).** The round-3 inventory reached
 the functions that READ the seam fields but not the closed sets that ADMIT
@@ -25978,3 +26024,15 @@ a backstop only; the share book's `unclosed()` reports `int(net_qty)`;
 `carry_lot` is the one name for the carry method; under F(a) `xeff_i =
 max(G, p_i h_i)`; T42 (a `Decimal`-backed position through `_portfolio`)
 and T43 (the node-level `policy` dispatch) added.
+
+Round-7 dispositions (candidate 8): the false precedent is withdrawn and
+`positions_solve` is specified as new logic (the replay's positions minus
+queued and no-tick names); a held name whose row is routed out is a
+mandatory exit only for a permanent reason and a skip for a transient one
+(question L, T45); the envelope's span is widened by `2H` with the
+telescoped bound written out (T44); the queued-sell sentence is reduced to
+its consequence; regression tests for every round-6 fix are named (T21
+with `no_tick`, T45, T46 for the (J6) index, T44's interior-extreme case
+for the envelope), T43 gains the declared `lead_groups` case, T33 the
+override-guard case, and T47 is the calibration-panel feasibility gate
+beside T12.
