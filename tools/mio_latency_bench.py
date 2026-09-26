@@ -67,7 +67,8 @@ Usage::
 
 The distribution prints as JSON on stdout (one progress line per instance
 on stderr). The exit status is 0 only when every solve was optimal and
-the budget held: end-to-end median < 3 s and p99 < 10 s.
+the budget held: end-to-end median < 3 s, p99 < 3 s and max < 10 s (the
+bound ADR-0188 T12 pins).
 """
 
 from __future__ import annotations
@@ -118,10 +119,11 @@ WARM_UP_SEED = BASE_SEED - 1
 #: The budget (plan item 8), on END-TO-END seconds, over instances that
 #: must all terminate optimal.
 MEDIAN_BUDGET_S = 3.0
-P99_BUDGET_S = 10.0
+P99_BUDGET_S = 3.0
+MAX_BUDGET_S = 10.0
 
 #: The HiGHS ``time_limit`` the benchmark solves under: a hang guard, far
-#: above :data:`P99_BUDGET_S`, never the production halt.
+#: above :data:`MAX_BUDGET_S`, never the production halt.
 HANG_GUARD_S = 60.0
 
 #: The node params every instance shares (``cvar_limit`` is drawn per
@@ -490,6 +492,7 @@ def summarize(records):
         and not failures
         and wall["median"] < MEDIAN_BUDGET_S
         and wall["p99"] < P99_BUDGET_S
+        and wall["max"] < MAX_BUDGET_S
     )
     sizes = {
         key: _span([r[key] for r in records])
@@ -509,7 +512,12 @@ def summarize(records):
         "solve_seconds": solve,
         "sizes": sizes,
         "n_cvar_binding": sum(1 for r in records if r["cvar_binding"]),
-        "budget": {"median_s": MEDIAN_BUDGET_S, "p99_s": P99_BUDGET_S, "on": "wall_seconds"},
+        "budget": {
+            "median_s": MEDIAN_BUDGET_S,
+            "p99_s": P99_BUDGET_S,
+            "max_s": MAX_BUDGET_S,
+            "on": "wall_seconds",
+        },
         "meets_budget": meets,
     }
 

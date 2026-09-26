@@ -17,7 +17,8 @@ this suite time the identical program.
   (``record_property``, and printed), never asserted: a shared machine's
   timings are not a contract. It solves under the 10 s halt, so a hang
   fails the default run fast instead of stalling it.
-* The FULL benchmark (100 instances; end-to-end median < 3 s and p99 < 10 s)
+* The FULL benchmark (100 instances; end-to-end median < 3 s, p99 < 3 s and
+  max < 10 s, the bound ADR-0188 T12 pins)
   is marked ``slow`` and runs only under ``DSKIT_LATENCY_FULL=1``. ``slow`` is
   registered but not deselected by default, so the environment gate is what
   keeps the default run fast (the ``test_kronos`` precedent).
@@ -173,3 +174,4 @@ class TestLatencyFull:
         assert len(wall) == FULL_INSTANCES
         assert np.median(wall) < bench.MEDIAN_BUDGET_S
         assert np.percentile(wall, 99) < bench.P99_BUDGET_S
+        assert wall.max() < bench.MAX_BUDGET_S
