@@ -24157,8 +24157,9 @@ New facts, checked on the pinned archive files on 2026-09-25:
    entirely null. Every file has the columns `symbol`, `date`, `open`,
    `high`, `low`, `close`, `adjusted_close`, `volume`, `dividend_amount`
    and `split_coefficient`. The files reach back before the chains: SPY
-   and QQQ from 1999-11-01, IWM from 2000-05-26. The raw series holds QQQ's 2:1 split
-   on 2000-03-20 (flagged) and IWM's 2:1 split on 2005-06-09 (not flagged);
+   and QQQ from 1999-11-01, IWM from 2000-05-26. The raw series holds
+   QQQ's 2:1 split on 2000-03-20 (flagged) and IWM's 2:1 split on
+   2005-06-09 (not flagged);
    SPY has no split and no close-to-close move above 25%. The pack reads
    only `close`.
 7. Before 2015-02, standard monthly options carry a SATURDAY OCC expiry
@@ -24341,7 +24342,8 @@ Manifest: 23 new child files (`grid.py`, 21 grid configs,
   `fee_per_leg`, `dte_min`, `dte_max` and `max_abs_log_moneyness` (the last
   three pinned equal to `chain`'s), `label_horizon` (h_b, pinned equal to
   `labels`), `carry_rate`; optional `min_edge_usd` (0) and `cvar_alpha`
-  (0.95).
+  (0.95). One contract per leg, so `count` is 1 wherever the contracts.py
+  rules take it.
 
 The node indexes everything by (instrument, date) internally. It walks each
 instrument's in-split forecast rows, oldest first.
@@ -24393,13 +24395,23 @@ The report is kind `archived_quote_condor_backtest` with pricing
 as today, plus the reason counts and each book's total American charge.
 
 *Empty folds.* `CondorBacktest` raises when a split has no entry.
-`CondorQuoteBacktest` keeps that refusal only when the split has no
-forecast rows at all, which means miswiring. When forecast rows exist but
-none can enter (for example `no_expiry_in_bucket` before weeklies), it
-returns zero-trade metrics with every reason counted. The walk's objective
-is `score`'s twCRPS, which those folds still produce, so the walk records
-the fold and runs on. A test runs a fold with forecast rows and no
-qualifying expiry.
+`CondorQuoteBacktest` refuses in two plumbing cases:
+
+- the split has no forecast rows at all;
+- the `chain` input is empty across its WHOLE snapshot, not just this
+  split. That means a misconfigured reader, an unpulled store or a wrong
+  symbol.
+
+Otherwise a fold where no row can enter returns zero-trade metrics with
+every reason counted. The reader drops out-of-bucket expiries at intake,
+so a date before weeklies shows up as `no_chain` ("no admitted row that
+day"). The walk's objective is `score`'s twCRPS, which those folds still
+produce, so the walk records the fold and runs on. Tests cover both
+refusals and a fold with forecast rows but no qualifying expiry.
+Acceptance adds a cell-level check: a cell that enters no trade in any
+fold fails, and so does a cell with a fold that enters nothing after its
+bucket's expiries appear in that cell's chain. The report carries each
+cell's first and last chain date so the check is mechanical.
 
 **Point in time.**
 
@@ -24538,7 +24550,8 @@ the build stops and reports to the owner.
   - no 21 remains except in the 21-day cell;
   - `run-real-*.json` are unchanged.
 - **Real-data acceptance (not a unit test):** step 0, then one SPY 30-45
-  walk, then the grid.
+  walk, then the grid, with the cell-level trade check under *Empty
+  folds*.
 
 **Review lenses.**
 
@@ -24598,7 +24611,16 @@ the build stops and reports to the owner.
   strike rule; in the cases checked, such contracts lie outside the band.
 - The size rule makes most 2008 SPY legs unquotable (owner question 3).
 - Positions can overlap across a fold boundary, as in ADR-0182.
-- `carry_rate` is a constant.
+- `carry_rate` is a constant, and 0.055 overstates carry through the
+  near-zero-rate years (2009-2015, 2020-2021). For a short put that goes
+  ITM on the entry day of a 45-day SPY condor at 400, the charge is
+  400 x (e^(0.055 x 45/365) - 1) ~ $2.72 per share, $272 per condor. That
+  is the size of a typical credit. In those years it can be most of the
+  American charge (owner question 6).
+- The model book's entry gate is European: its draws are terminal, not
+  paths, so it cannot price the American charge. The gate can therefore
+  admit a trade whose realized edge, net of the charge, falls under
+  `min_edge_usd`.
 
 **Owner questions.**
 
