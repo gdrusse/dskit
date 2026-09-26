@@ -12,8 +12,9 @@ What is pinned here, and why each pin matters:
 - ``run`` returns results in INPUT order whatever the completion order,
   width 1 builds no pool, and a failing fold drops the ones that have
   not started;
-- ``measure_one`` is the only memory reading, reports it for exactly one
-  child, and refuses a process whose child counter is already used.
+- ``measure_one`` is the only memory reading and reports it for exactly one
+  child in ANY process, however many it has reaped: the counter is read in
+  a fresh measuring interpreter, which itself refuses a used counter.
 """
 
 import ast
@@ -24,7 +25,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +40,15 @@ RLIMIT_PROBE = [PY, "-c", "import resource; print(resource.getrlimit(resource.RL
 
 def _print_after(seconds, text):
     return [PY, "-c", f"import time; time.sleep({seconds}); print({text!r})"]
+
+
+def _touch(mib):
+    """Child code that writes ``mib`` MiB page by page, then says so."""
+    return (
+        f"b = bytearray({mib} * 1024**2)\n"
+        "for i in range(0, len(b), 4096): b[i] = 1\n"
+        f"print('touched {mib}')"
+    )
 
 
 class TestTheWidth:
@@ -325,9 +334,8 @@ class TestTheSpawnHook:
 
 class TestMeasureOne:
     def test_it_reports_the_peak_of_the_one_child_in_a_fresh_process(self):
-        # RUSAGE_CHILDREN is process-global and this pytest process has
-        # reaped children already, so the positive case needs a fresh
-        # interpreter — the precondition the seam enforces.
+        # The plain case, in an interpreter that has reaped nothing; the
+        # tests below measure again after other children were reaped.
         script = textwrap.dedent(
             """
             import json, sys
@@ -354,46 +362,118 @@ class TestMeasureOne:
         assert isinstance(report["peak"], int)
         assert report["peak"] >= 200 * MIB
 
-    def test_a_contaminated_counter_is_refused_before_spawning(self, monkeypatch):
+    def test_two_measurements_in_one_process_each_read_only_their_own_child(self):
+        # The retrain document's memory and trade_memory stages both measure
+        # in ONE staged process (ADR-0186). A fresh interpreter makes the
+        # order explicit: the first reading reaps a 256 MiB child, and the
+        # second must still read its own small child — neither refused nor
+        # the first child's high-water mark.
+        script = textwrap.dedent(
+            f"""
+            import json, sys
+            from dskit.pipeline.folds import BoundedFoldRunner
+
+            runner = BoundedFoldRunner(4 * 1024**3, workers=1)
+            big, big_peak = runner.measure_one([sys.executable, "-c", {_touch(256)!r}])
+            small, small_peak = runner.measure_one([sys.executable, "-c", {_touch(16)!r}])
+            print(json.dumps({{"big": [big.stdout, big_peak],
+                              "small": [small.stdout, small_peak]}}))
+            """
+        )
+        out = subprocess.run(
+            [PY, "-c", script], capture_output=True, text=True, cwd=REPO_ROOT
+        )
+        assert out.returncode == 0, out.stderr
+        report = json.loads(out.stdout.strip().splitlines()[-1])
+        assert report["big"][0] == "touched 256\n", "the fold's own output, exactly"
+        assert report["small"][0] == "touched 16\n", "the fold's own output, exactly"
+        assert report["big"][1] >= 256 * MIB
+        assert 16 * MIB <= report["small"][1] < 128 * MIB
+
+    def test_a_process_that_reaped_a_bigger_child_reads_only_the_one_it_measures(
+        self,
+    ):
+        # This pytest process has reaped children already. Reap one more
+        # that is known to be big, so the process-wide counter is at least
+        # 256 MiB; the measured child is tiny and must read as tiny.
+        subprocess.run([PY, "-c", _touch(256)], check=True, capture_output=True)
+        done, peak = BoundedFoldRunner(None, workers=1).measure_one(
+            [PY, "-c", "print('one')"]
+        )
+        assert done.returncode == 0
+        assert done.stdout == "one\n"
+        assert 0 < peak < 128 * MIB
+
+    def test_the_measuring_interpreter_refuses_a_counter_it_did_not_start_at_zero(
+        self, tmp_path
+    ):
+        # The contamination guard lives where the reading is taken. A fresh
+        # interpreter never trips it, so reap a child first and then run the
+        # wrapper's own code: it must refuse BEFORE the fold runs.
+        ran = tmp_path / "ran"
+        probe = (
+            "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass']); "
+            f"exec(compile({folds._MEASURE!r}, '<measure>', 'exec'))"
+        )
+        fold = [PY, "-c", f"open({str(ran)!r}, 'w').close()"]
+        out = subprocess.run(
+            [PY, "-c", probe, "the-nonce", *fold], capture_output=True, text=True
+        )
+        assert out.returncode != 0
+        assert "RUSAGE_CHILDREN.ru_maxrss is already" in out.stderr
+        assert not ran.exists(), "the fold ran under a contaminated counter"
+        assert "the-nonce" not in out.stdout, "a reading was reported"
+
+    def test_the_cap_binds_the_measured_fold_and_uncapped_is_uncapped(self):
+        # The wrapper runs exactly the command run would spawn, so the fold
+        # it measures is under the instance's own cap, read from inside it.
         import resource
 
-        monkeypatch.setattr(
-            resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=123)
-        )
-        spawned = []
+        cap = 512 * MIB
+        capped, _peak = BoundedFoldRunner(cap, workers=1).measure_one(RLIMIT_PROBE)
+        assert capped.stdout.strip() == str((cap, cap))
+        bare, _peak = BoundedFoldRunner(None, workers=1).measure_one(RLIMIT_PROBE)
+        assert bare.stdout.strip() == str(resource.getrlimit(resource.RLIMIT_AS))
 
-        class Spy(BoundedFoldRunner):
-            def spawn(self, index, argv, cwd, env):
-                spawned.append(index)
+    def test_a_signal_killed_fold_reports_the_code_run_reports(self):
+        # SIGKILL is the OOM killer's and takes no handler: the wrapper
+        # must still die the way its fold did, not with a traceback.
+        killed = [PY, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
+        with pytest.raises(RuntimeError, match=r"exited -9;") as measured:
+            BoundedFoldRunner(GIB, workers=1).measure_one(killed)
+        with pytest.raises(RuntimeError, match=r"exited -9;"):
+            BoundedFoldRunner(GIB, workers=1).run([killed])
+        assert "Traceback" not in str(measured.value)
 
-        with pytest.raises(ValueError, match="ru_maxrss"):
-            Spy(None, workers=1).measure_one([PY, "-c", "pass"])
-        assert spawned == []
-
-    def test_this_process_is_already_contaminated_and_the_seam_says_so(self):
-        # The test above proves the refusal against a fake counter; this
-        # one proves it against the REAL one. TestTheRun has reaped
-        # children in this process, so the counter is nonzero here.
-        with pytest.raises(ValueError, match="ru_maxrss"):
-            BoundedFoldRunner(None, workers=1).measure_one([PY, "-c", "pass"])
-
-    def test_it_delegates_to_run_and_the_spawn_hook(self, monkeypatch):
-        import resource
-
-        monkeypatch.setattr(
-            resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=0)
-        )
+    def test_it_delegates_to_run_and_the_spawn_hook(self, tmp_path):
+        # The hook receives the fold's OWN argv, cwd and env, never the
+        # measuring wrapper, so an override keyed on argv keeps working.
         seen = []
 
-        class Spy(BoundedFoldRunner):
+        class Recording(BoundedFoldRunner):
             def spawn(self, index, argv, cwd, env):
                 seen.append((index, list(argv), cwd, env))
+                return super().spawn(index, argv, cwd, env)
+
+        probe = [PY, "-c", "import os; print(os.getcwd()); print(os.environ['FOLD_PROBE'])"]
+        env = {**os.environ, "FOLD_PROBE": "yes"}
+        runner = Recording(GIB, workers=3)
+        done, peak = runner.measure_one(probe, cwd=str(tmp_path), env=env)
+        assert seen == [(0, probe, str(tmp_path), env)]
+        assert done.returncode == 0
+        assert done.stdout.split() == [os.path.realpath(str(tmp_path)), "yes"]
+        assert peak > 0
+        assert runner._measure_nonce is None, "the instance itself was changed"
+
+    def test_a_spawn_that_never_ran_the_wrapper_is_refused(self):
+        # An override that fakes its fold returns no reading; the seam
+        # must refuse rather than invent one.
+        class Faking(BoundedFoldRunner):
+            def spawn(self, index, argv, cwd, env):
                 return subprocess.CompletedProcess(argv, 0, "done", "")
 
-        done, peak = Spy(GIB, workers=3).measure_one(["x"], cwd="/c", env={"E": "1"})
-        assert seen == [(0, ["x"], "/c", {"E": "1"})]
-        assert done.stdout == "done"
-        assert peak == 0
+        with pytest.raises(ValueError, match="no peak reading"):
+            Faking(GIB, workers=1).measure_one([PY, "-c", "pass"])
 
     def test_the_one_command_runs_at_width_one_whatever_workers_says(
         self, monkeypatch
@@ -401,11 +481,6 @@ class TestMeasureOne:
         # ADR-0093: measure_one "runs the one command at width 1" — a
         # pool for a single command is a thread and a queue for nothing.
         import concurrent.futures
-        import resource
-
-        monkeypatch.setattr(
-            resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=0)
-        )
 
         def boom(*_args, **_kwargs):
             raise AssertionError("measure_one built a pool for its one command")
@@ -415,14 +490,18 @@ class TestMeasureOne:
             [PY, "-c", "print('one')"]
         )
         assert done.stdout.strip() == "one"
-        assert peak == 0
+        assert peak > 0
 
     def test_it_validates_the_cap_in_the_parent_like_run(self, monkeypatch):
         import resource
 
-        monkeypatch.setattr(
-            resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=0)
-        )
         monkeypatch.setattr(resource, "getrlimit", lambda _which: (MIB, MIB))
+        spawned = []
+
+        class Spy(BoundedFoldRunner):
+            def spawn(self, index, argv, cwd, env):
+                spawned.append(index)
+
         with pytest.raises(ValueError, match="hard"):
-            BoundedFoldRunner(2 * MIB, workers=1).measure_one([PY, "-c", "pass"])
+            Spy(2 * MIB, workers=1).measure_one([PY, "-c", "pass"])
+        assert spawned == []

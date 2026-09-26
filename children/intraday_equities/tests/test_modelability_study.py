@@ -5,14 +5,15 @@ and nothing else names it; every derived walk fits and scores exactly one
 asset, and the only other fit in the study is the reference symbol alone
 inside a cache build — there is no pooled fit anywhere; each asset belongs
 to exactly one group cache; the memory stage measures the first cache it
-builds (ADR-0093 allows one reading per process) and says what it
-measured; Gate 1 stops at the first failure and Gate 3 is ADR-0092's
+builds and says what it measured, and the trade caches' stage measures
+its own first build in the same process; Gate 1 stops at the first failure and Gate 3 is ADR-0092's
 fail-fast audit, keyed per asset. The P12 document mirrors P11's geometry
 key for key.
 """
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1169,6 +1170,51 @@ def test_trade_caches_refuse_a_build_that_left_no_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(study, "_verified_cache", lambda path, universe, params: None)
     with pytest.raises(RuntimeError, match="left no cache"):
         study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+
+
+def test_memory_and_trade_memory_each_measure_their_own_child_in_one_process(tmp_path, monkeypatch):
+    # The retrain document runs BOTH measuring stages in one staged process
+    # (ADR-0186). Each stage's first build here is a real capped child
+    # through the real seam, and each must read its own child's peak: the
+    # second stage used to be refused on the counter the first had moved.
+    monkeypatch.delenv("INTRADAY_EQUITIES_FOLD_WORKERS", raising=False)
+    ctx = _ctx(tmp_path, load_document(str(RETRAIN)))
+    ctx.source_path = str(RETRAIN)
+    root = study.p10._child_root(ctx)
+    built, spawned = set(), []
+    touched = {"memory": 256, "trade": 16}  # MiB each measured child writes
+
+    def verified(path, group_universe, _features_params):
+        if path in built:
+            return {"manifest_sha256": "0" * 64, "symbols": group_universe["symbols"]}
+        return None
+
+    def build(document):
+        built.add(os.path.join(root, document.pipeline["features"].params["cache_dir"]))
+
+    def prepare(_ctx, document, tag):
+        build(document)
+        spawned.append(tag)
+        mib = touched["trade" if "-trade-cache-" in tag else "memory"]
+        child = f"b = bytearray({mib} * 1024**2)\nfor i in range(0, len(b), 4096): b[i] = 1\n"
+        return [sys.executable, "-c", child], f"/summary/{tag}", False
+
+    def run(_ctx, document, tag):
+        build(document)
+        return f"/summary/{tag}"
+
+    monkeypatch.setattr(study, "_verified_cache", verified)
+    monkeypatch.setattr(study.p10, "_prepare_walk", prepare)
+    monkeypatch.setattr(study.p10, "_journal_confirms_walk", lambda *_a: True)
+    monkeypatch.setattr(study.p10, "_run_bounded_walk", run)
+    memory = study.MemoryPreflightStage("memory", _trade_params()).run(ctx, {})
+    trade = study.TradeFeatureCaches("trade_memory", _trade_params()).run(ctx, {})
+    name = ctx.document.name
+    assert spawned == [f"{name}-cache-a", f"{name}-trade-cache-a"]
+    assert memory["measured"]["kind"] == trade["measured"]["kind"] == "cache_build"
+    assert memory["measured"]["peak_rss_bytes"] >= 256 * 1024**2
+    assert 16 * 1024**2 <= trade["measured"]["peak_rss_bytes"] < 128 * 1024**2
+    assert memory["passed"] is trade["passed"] is True
 
 
 def test_trade_caches_refuse_a_cache_whose_membership_is_not_the_group(tmp_path, monkeypatch):

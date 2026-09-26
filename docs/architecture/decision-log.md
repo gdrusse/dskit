@@ -4668,6 +4668,26 @@ path. A `spawn` override runs on a pool thread and must be thread-safe.
 trees and an Extension-points bullet for the `spawn` hook; the `CLAUDE.md`
 tree also gains `stages.py`, which it omits today while the README lists it.
 
+**Amendment (2026-09-26, bug fix: a second reading in one process).** The
+caller precondition above (`measure_one` first, no spawning predecessor) did
+not survive ADR-0186: `run-retrain-simulation.json` runs `memory` and then
+`trade_memory` in one staged process, both measuring, and the second was
+refused on the counter the first had moved (journal A54556-A54559). No test
+ran two measurements in one process. The reading now happens in a fresh
+measuring interpreter (`python -I -c _MEASURE <nonce> <command>`), where
+`<command>` is exactly what `run` spawns (the cap shim, or the bare argv).
+That interpreter starts with `RUSAGE_CHILDREN` at zero, still refuses a
+nonzero counter, reaps the fold as its only child, and prints that child's
+`ru_maxrss` behind a per-call nonce. `measure_one` strips that line, so
+`stdout` is the fold's own. The meaning is unchanged: the peak of exactly
+one fold-like child (and its reaped descendants) under the instance's cap.
+The caller precondition is gone, so any stage may measure, in any order.
+`spawn` still receives the fold's own argv (a per-call copy of the runner
+carries the nonce to the default spawn), so an override keyed on argv keeps
+working. An override that never runs the default spawn yields no reading
+and is refused (`ValueError`). A killed fold's code (e.g. `-9`) matches
+`run`'s. `measure_one` no longer reads the parent's counter.
+
 ---
 
 ## ADR-0094 — The breadth cohort: one asset-local study over forty new names, group-cached

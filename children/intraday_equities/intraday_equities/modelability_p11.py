@@ -138,7 +138,7 @@ class MemoryPreflightStage(study.MemoryPreflightStage):
         return _score_one(summary, asset, lead, _PREFLIGHT_ALPHA)
 
     def run(self, ctx, inputs):
-        """Measure one capped Gate-1-shaped asset walk as the first child."""
+        """Measure one capped Gate-1-shaped asset walk as one measured child."""
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])

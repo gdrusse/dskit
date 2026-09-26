@@ -296,8 +296,9 @@ on it without breaking its rulings.
   thread-safe. The cap is the caller's (`memory_limit_bytes`, no default
   here, never divided); the width is the environment's (`env_var`, unset =
   1, empty refused, an explicit `workers` wins, never a document's).
-  `measure_one` must be the FIRST child the process reaps: a stage that
-  calls it may have no spawning predecessor in the staged DAG.
+  `measure_one` reads the peak in a fresh measuring interpreter whose one
+  child is the fold, so any stage may call it, in any order; an override
+  must run its fold through the default `spawn` or there is no reading.
 - **Model benchmarks** — `benchmarks.py` is a protocol over ordinary
   candidate documents, never an estimator registry (ADR-0097). Candidate JSON
   owns representation, leakage-safe feature policy, inner HPO, seeds, and
