@@ -24094,7 +24094,7 @@ bundle. TAF and Section 31 are unchanged.
   produced under the flat 2.2 bp and EQ 1 cost, and are not comparable
   without a rerun.
 
-## ADR-0186 — Multi-horizon, multi-underlying condor backtest on archived ETF option quotes
+## ADR-0187 — Multi-horizon, multi-underlying condor backtest on archived ETF option quotes
 
 **Status:** PROPOSED (2026-09-25). Design only: no code, config or test is
 built. Nothing lands until Russell approves this ADR; a clean skeptic review
