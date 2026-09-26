@@ -1,5 +1,34 @@
 # Re-entry
 
+## Time-of-day spread multiplier keyed on the fill minute (2026-09-26 wrap)
+
+- **Change** (owner ruling 2026-09-25, option B; ADR-0185 owner amendment 4,
+  ADR-0120 pointer): the per-name half-spread x EQ is multiplied by the
+  `spread_time_of_day` window of the minute the order FILLS, in both
+  `EquityKellyMIO` sizing (`portfolio.fill_ms`, built by the replay from each
+  name's decision bar + `fill_bar_offset`) and the replay's fees. Windows in
+  `configs/fill-policy.json`: 09:30-10:00 New York x1.84 and 15:30-16:00
+  x0.62, 1.0 elsewhere. These are the median LLY/XOM/JPM ratios to the
+  all-minute median; the note's "2x/0.65x" is relative to midday. A
+  halt-queued entry keeps its sized minute. ADR-0186's `pending` rows carry
+  `fill_ms`, and `MinuteMioDecider` reserves at that rate. Bad windows, bad
+  fill instants and a missing `fill_ms` are refused.
+- **Pins:** fill-policy digest `e4ffcd13` (5 documents); retrain template
+  `0f102cdf`.
+- **Reviews:** Sonnet correctness lens: round 1 found 1 Major (halt-queue key
+  divergence), fixed; clean on the fix and on the ADR-0186-integrated
+  candidate. Sonnet test-quality lens: clean with 1 Minor (the identity test
+  could not tell decision- from fill-keying), fixed by a per-minute boundary
+  test. On the ADR-0186-integrated candidate it found 2 Majors (test gaps: the
+  queued-buy reservation and a halt-queued pending row's key), fixed with
+  regression tests that kill those mutations; round 2 clean (`718cbea`).
+  Focused tests (test_nodes_capital, test_replay, test_simulation,
+  test_configs, test_evaluation): 577 passed.
+- **Caveat:** the multiplier is measured on three names and assumed for the
+  rest; it has two 30-minute windows, not a curve. Earlier simulation results
+  are not comparable until they are rerun.
+- **Next:** rerun the retrain simulation; replace EQ with Schwab's own Rule 605.
+
 ## Retrain simulation decides every minute (2026-09-26 wrap, ADR-0186)
 
 Owner ruling of 2026-09-25: the ADR-0185 retrain backtest decides EVERY
