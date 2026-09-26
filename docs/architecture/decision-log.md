@@ -24139,9 +24139,14 @@ fix keys both on the same instant.
   `e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e`
   (was `e078b15b...`), repinned in the five documents that pin it;
   `run-retrain-simulation.json`'s `template_sha256` is now
-  `ca45bb1eeb05599e91ffab3365e0b17e6a0af3e41c73b7b2d43a4107e4855789`
-  (was `e4aadf0c...`). Results produced before this amendment are not
-  comparable without a rerun.
+  `0f102cdffe32ea19ecabddde028ba8b6bfa6d1cdfda1f971e36de3906992bf31`
+  (was ADR-0186's `f5392fd5...`). Results produced before this amendment
+  are not comparable without a rerun.
+- With ADR-0186 (per-minute cadence): `fill_ms` is each name's next tape
+  minute, so the window of the minute an order fills applies at every
+  decision minute. Each `pending` row also carries `fill_ms` (its scheduled
+  fill instant), and `MinuteMioDecider` reserves a queued buy's cost at that
+  minute's rate, the rate the entry was sized at and is billed at.
 
 ## ADR-0186 — Per-minute decision cadence for the ADR-0185 retrain simulation
 

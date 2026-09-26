@@ -1990,7 +1990,7 @@ def test_minute_decider_skips_held_and_pending_units_and_reserves_pending_cash(m
     published = _mrun(mfx)
     decider = _minute_decider(published, mfx)
     t = _open(published["releases"][0]) + 100 * 60_000
-    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 60_000}
+    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 60_000, "fill_ms": t}
     decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[queued]))
     assert sorted((r["symbol"], r["lead"], r["reason"]) for r in decider.skipped) == [
         ("LLY", 2, "open_lot_at_decision"), ("NOW", 1, "pending_entry_at_decision"),
@@ -1998,8 +1998,36 @@ def test_minute_decider_skips_held_and_pending_units_and_reserves_pending_cash(m
     block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
     price = block["price"][block["ts"].index(t - 60_000)]
     costs = SchwabCostModel({name: getattr(FILL_POLICY, name) for name in SchwabCostModel._PARAMS})
-    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price)
+    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, t)
     assert seen == [(["LRCX"], pytest.approx(1020.0 - reserved))]
+
+
+def test_minute_decider_reserves_a_pending_entry_at_its_fill_minutes_spread(mfx, monkeypatch):
+    """The reservation charges the queued entry's own fill-minute multiplier (owner ruling 2026-09-25)."""
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(inputs["portfolio"]["cash"])
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    # The fixture's session opens 10:30 New York (EDT): +301 minutes is 15:31,
+    # inside the shipped 15:30-16:00 window.
+    t = _open(published["releases"][0]) + 301 * 60_000
+    costs = FILL_POLICY.costs
+    assert costs.time_of_day_multiplier(t) != 1.0
+    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 60_000, "fill_ms": t}
+    decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[queued]))
+    block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
+    price = block["price"][block["ts"].index(t - 60_000)]
+    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, t)
+    assert seen and seen[0] == pytest.approx(1020.0 - reserved)
+    without_key = {k: v for k, v in queued.items() if k != "fill_ms"}
+    with pytest.raises(ValueError, match="fill_ms"):
+        decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[without_key]))
 
 
 def test_minute_decider_refuses_a_pending_entry_it_did_not_size(mfx):

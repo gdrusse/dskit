@@ -2541,7 +2541,8 @@ def test_portfolio_reports_a_queued_unfilled_entry_as_pending():
     stub = _Orders({_m(0): [_decision("BBB", _m(0), 3)]})
     EquityReplay(_policy(), decider=stub).run(bars)
     assert stub.seen[_m(0)]["pending"] == []
-    queued = [{"symbol": "BBB", "lead": 3, "qty": 10, "side": "buy", "decision_ms": _m(0)}]
+    # fill_ms is the SCHEDULED fill bar: BBB's next bar after _m(0) is _m(3).
+    queued = [{"symbol": "BBB", "lead": 3, "qty": 10, "side": "buy", "decision_ms": _m(0), "fill_ms": _m(3)}]
     # BBB prints no bar at minutes 1-2: the entry is still queued there.
     assert stub.seen[_m(1)]["pending"] == queued and stub.seen[_m(2)]["pending"] == queued
     assert "BBB" not in stub.seen[_m(2)]["positions"]
@@ -2555,8 +2556,8 @@ def test_pending_reports_each_queued_entry_with_its_own_side_and_lead():
     stub = _Orders({_m(0): [_decision("BBB", _m(0), 2, side="sell"), _decision("CCC", _m(0), 4, qty=7)]})
     EquityReplay(_policy(), decider=stub).run(bars)
     assert stub.seen[_m(1)]["pending"] == [
-        {"symbol": "BBB", "lead": 2, "qty": 10, "side": "sell", "decision_ms": _m(0)},
-        {"symbol": "CCC", "lead": 4, "qty": 7, "side": "buy", "decision_ms": _m(0)},
+        {"symbol": "BBB", "lead": 2, "qty": 10, "side": "sell", "decision_ms": _m(0), "fill_ms": _m(3)},
+        {"symbol": "CCC", "lead": 4, "qty": 7, "side": "buy", "decision_ms": _m(0), "fill_ms": _m(3)},
     ]
 
 

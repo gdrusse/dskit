@@ -1391,8 +1391,10 @@ class EquityReplay:
         ``gross_limit`` is NAV (cash plus every open lot at its mark);
         ``pending`` lists the entries queued for a later fill bar and not
         filled yet (``symbol``, ``lead``, ``qty``, ``side``,
-        ``decision_ms``), which a per-minute decider must neither repeat
-        nor spend the cash of (ADR-0186); and
+        ``decision_ms``, and ``fill_ms``, its scheduled fill instant, the
+        key its time-of-day spread was sized and is billed at), which a
+        per-minute decider must neither repeat nor spend the cash of
+        (ADR-0186); and
         ``fill_ms`` is each name's fill instant, the ``asof_ms`` of the bar
         ``fill_bar_offset`` bars after its decision bar here, which keys the
         time-of-day spread for sizing exactly as the entry is billed (owner
@@ -1448,6 +1450,9 @@ class EquityReplay:
                         "qty": decision[policy.qty_field],
                         "side": decision[policy.side_field],
                         "decision_ms": int(decision["asof_ms"]),
+                        # The scheduled fill instant: the minute the entry
+                        # was sized at and is billed at (time-of-day spread).
+                        "fill_ms": self._scheduled_fill_ms(symbol, decision),
                     })
         return rows
 

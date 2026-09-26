@@ -1322,7 +1322,8 @@ class MinuteMioDecider(MioDecider):
     the reason, a unit whose entry is queued but not filled
     (``pending_entry_at_decision``) -- reserving that entry's cost, qty x
     the tick price it was sized at plus the cost model's buy cost per
-    share, from the cash the MIO may spend -- and a unit whose forced exit
+    share at the entry's scheduled fill minute (its ``fill_ms``), from the
+    cash the MIO may spend -- and a unit whose forced exit
     (fill ``fill_bar_offset`` minutes later, exit ``lead`` minutes after the
     fill, both read from the fill policy) would fall after the date's close
     (``exit_after_close``).
@@ -1379,12 +1380,19 @@ class MinuteMioDecider(MioDecider):
         return context
 
     def _reserved(self, row):
-        """Estimate a queued buy's cost at the tick price it was sized at."""
+        """Estimate a queued buy's cost at the tick price and fill minute it was sized at."""
         at = self._at.get(row["symbol"], {}).get(int(row["decision_ms"]))
         if at is None:
             raise ValueError(f"pending entry {row!r} was not sized from this release's ticks")
+        if "fill_ms" not in row:
+            raise ValueError(
+                f"pending entry {row!r} carries no fill_ms: its time-of-day spread is keyed on "
+                "the scheduled fill minute"
+            )
         price = self._blocks[row["symbol"]]["price"][at]
-        return row["qty"] * price + row["qty"] * self._cost_model.buy_per_share(row["symbol"], price)
+        return row["qty"] * price + row["qty"] * self._cost_model.buy_per_share(
+            row["symbol"], price, row["fill_ms"]
+        )
 
     def _names_at(self, asof_ms, lead):
         """Return the lead group's names with a tick at this instant."""
