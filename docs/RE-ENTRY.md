@@ -30,15 +30,22 @@
   independent reviewer inventoried every rule against its nearest
   substitute (58-mutant catalogue: 19 killed on `00f0579`) and authorised
   one tests-only batch, landed as `45d0d5d` (55 killed, 3 equivalent
-  survivors). Round 4 (two fresh lenses on `45d0d5d`, the tests lens
-  re-running the catalogue) is recorded in the ADR-0187 build record with
-  the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-
-  expiry Thursday entry settling at its own close, the fresh-object guard
-  bypassable by an in-place-mutating projection, a store-token race,
-  non-reader inputs raising TypeError, the ATM tie-break and the row-level
-  ATM rule unstated in the ADR text, a Sunday OCC expiry's settlement, the
-  band comparison at equality, a credit of exactly zero, the hit rate at
-  zero trades, the reader's drop counts.
+  survivors). Round 4 on `45d0d5d`: correctness C0 M0; the tests lens
+  found three more test-only Majors (the classification order, the
+  default gate, a fixture trading at a credit equal to its wing by float
+  rounding), corrected in the new tests-only candidate `b2fa3dd` (child
+  503 passed; the catalogue's kills hold). Round 5 (two fresh lenses on
+  `b2fa3dd`) is recorded in the ADR-0187 build record with the Minor/Nit
+  backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
+  entry settling at its own close, the fresh-object guard bypassable by an
+  in-place-mutating projection, a store-token race, non-reader inputs
+  raising TypeError, the ATM tie-break and the row-level ATM rule unstated
+  in the ADR text, a Sunday OCC expiry's settlement, the band comparison
+  at equality, a credit of exactly zero or exactly at the wing width by
+  float rounding, the hit rate at zero trades, the reader's drop counts,
+  the quote node's restated `DEFAULTS`, the bare `365` in two modules, the
+  order of `nonpositive_credit` versus `credit_not_below_width`, "one memo
+  entry per class" unpinned.
 - **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
   approves; (2) step 0 on the owner's machine: `acquire --stream index_daily`
   for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan (bound:

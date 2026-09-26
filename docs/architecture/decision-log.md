@@ -25258,4 +25258,45 @@ expiry's settlement, the band comparison at equality, a credit of exactly
 zero, the hit rate at zero trades, the plumbing refusals of the charge, the
 reader's drop counts as observability, and the round-1 expiry tie.
 
-Round 4 (fresh lenses on `45d0d5d`) is recorded below.
+*Review round 4 (candidate `45d0d5d`, two fresh lenses).* Correctness:
+C0 M0 m1 n3 — every invariant A–M probed with hand-computed counter-values
+(point-in-time: every later close and chain row rewritten without moving
+the decision view; Saturday, Good-Friday and Sandy-shaped dates; the
+outward snap, the gate at exact equality, the charge's every clause, the
+reader's New York date, the memo's keying and refusal, both optionshist
+streams, the generated grid byte-for-byte, the proxy byte-identical to
+origin/main but for the order of its accumulated refusal messages).
+Minor: `CondorQuoteBacktest.DEFAULTS` restates the base's dict (one lookup
+today). Nits: the calendar year 365 is a bare literal in two modules; the
+ATM tie-break unstated in the docstring; the proxy's refusal-message order.
+Tests (the 58-mutant catalogue re-run: 55 killed, the 3 survivors'
+equivalence confirmed; 24 child and 11 dskit substitutes of its own; 96
+hand values, all agreeing): C0 M3 m3 n4 — three findings of the reviewed
+family, each test-only: the classification order `target_outside_band`
+before `no_quotable_strike` unpinned (a too-narrow-band skip could be
+relabelled as data coverage, which the cell-level acceptance reads); a
+document omitting `min_edge_usd` gating at 0 unpinned ("no knob, no gate"
+survived); and one batch fixture asserting a trade at a per-share credit
+exactly equal to its one-point call wing, which the contract refuses and
+the node accepted only by float rounding (0.9999999999999999 < 1). Minors:
+the order of `nonpositive_credit` versus `credit_not_below_width` when both
+hold (immaterial); the reader's per-rule drop counts log-only; "one memo
+entry per class" unpinned. Nits: three node tests take the charge from
+`american_short_charge` itself (delegation pins); a Sunday OSI expiry
+alone separates the loop from a single step back; a forecast row with no
+matching close alone separates the cursor's `settle_date` from the
+settlement's date; the memo key's canonical ordering unpinned. Per the
+checkpoint's condition (d) the correction is a NEW tests-only candidate:
+the band is classified before quotability and quotability before geometry
+(a sizeless chain under a 0.06 band; a constant forecast whose put wing has
+no ask size), a missing `min_edge_usd` gates at 0 (fees of 39 leave a 4.00
+credit, the losing draws take 5.00 off it, E = -1.00 skipped, the always
+book trades, the report names the default), and the short-call fixture's
+long call asks 0.8 (credit 0.8 -> 77.4), so an output-equivalent credit
+summation no longer fails the suite. A per-share credit exactly at the
+wing width falling on either side of the rule by float rounding is
+recorded as a Minor of `condor_credit` (the cashflow owner sums Decimals;
+the backtest's floats do not; no economic consequence at a zero-max-loss
+boundary).
+
+Round 5 (fresh lenses on the corrected candidate) is recorded below.
