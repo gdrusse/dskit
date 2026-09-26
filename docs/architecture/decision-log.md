@@ -24154,9 +24154,11 @@ New facts, checked on the pinned archive files on 2026-09-25:
    2020-03-16. Raw prices are the strike basis. SPY and QQQ carry
    `dividend_amount` on each ex-date (71 and 73 in 2008-2025) and a
    `split_coefficient`. IWM's dividend, split and adjusted columns are
-   entirely null. The raw series holds QQQ's 2:1 split on 2000-03-20
-   (flagged) and IWM's 2:1 split on 2005-06-09 (not flagged). The pack
-   reads only `close`.
+   entirely null. The files reach back before the chains: SPY and QQQ from
+   1999-11-01, IWM from 2000-05-26. The raw series holds QQQ's 2:1 split
+   on 2000-03-20 (flagged) and IWM's 2:1 split on 2005-06-09 (not flagged);
+   SPY has no split and no close-to-close move above 25%. The pack reads
+   only `close`.
 7. Before 2015-02, standard monthly options carry a SATURDAY OCC expiry
    (e.g. SPY `2008-07-19`); their last session is the Friday.
 8. Listed expiries within 50 days: SPY 2008 has 2, 2012 has 3, 2016 has 7
@@ -24172,6 +24174,8 @@ New facts, checked on the pinned archive files on 2026-09-25:
     fresh nodes for every fold, so a chain reader rescans once per fold.
 12. Rows per day for a single cell, after the bounds below, stay at or
     below ~570 (SPY 30-45 in 2025). That is at most ~1.5M rows per cell.
+13. In the Cboe store, VIX runs from 1990-01-02, but VXN starts only on
+    2009-09-14 and RVX on 2009-09-16.
 
 **Decision proposed.**
 
@@ -24189,8 +24193,14 @@ count rather than silently.
 *Documents.* Each cell is one walk-forward document per rung. The document
 is the existing `run-real-<rung>.json` with only these changes:
 
-- the underlying reader's `source`, `symbol` and `since_ms`;
-- the vol index (VIX for SPY, VXN for QQQ, RVX for IWM);
+- the underlying reader's `source`, `symbol` and `since_ms` (node `spx`
+  renamed `underlying`);
+- the vol-index node is unchanged: VIX from `cboe-index` for every cell.
+  `har-vix` needs `iv_index` on every row it scores, and VXN and RVX start
+  in 2009-09 (fact 13). With them, the first QQQ and IWM folds could not
+  score, and those starts would move to 2012. VIX is the S&P 500's implied
+  vol, a proxy for QQQ and IWM. The implied book still uses each
+  underlying's own chain iv;
 - h_b in `labels` and `fwd`, and `scale_multiplier` = sqrt(h_b);
 - the walk-forward `first`, `count` and `embargo_days`;
 - `backtest`, which becomes `CondorQuoteBacktest`, plus a `chain` node (not
@@ -24210,8 +24220,9 @@ Walk-forward runs yearly validation windows with `step_days` 365 and
 The embargo is `embargo_days` = hi_b + 7, giving 8, 10, 12, 17, 21, 28
 and 52. It covers both the label's reach (h_b sessions, at most
 ceil(1.4 h_b) + 4 days) and the settlement's reach; a test pins both.
-Underlying reads start after the last split: SPY 1999-11-01, QQQ
-2000-03-21 and IWM 2005-07-01.
+Underlying reads start after the last split: SPY at its first row
+(1999-11-01, never split), QQQ at 2000-03-21 and IWM at 2005-07-01. Every
+first fold therefore trains on at least 2.4 years of rows that carry VIX.
 
 *dskit: generic, upstream.* This ADR is the "approved upstream proposal"
 the child's rule requires.
@@ -24280,9 +24291,11 @@ quote or backtest engine.
    The synthetic-only row classes are untouched; real rows never pass
    through them.
 5. **`nodes.py`.** `CondorQuoteBacktest` (role `score`, forbidden for
-   serving) is a sibling of `CondorBacktest`. The entry loop, the three
-   books and the flat metrics move to a shared base that both subclass.
-   `CondorBacktest`'s params, outputs and tests do not change.
+   serving) is a sibling of `CondorBacktest`. A shared base that both
+   subclass takes the per-instrument walk, the three-book cell and the flat
+   metrics. The skip rule stays per subclass: `hold_steps` rows for the
+   proxy, the settlement date for quotes. `CondorBacktest`'s params,
+   outputs and tests do not change.
 6. **Configs.** 21 files at `configs/grid/<underlying>-<bucket>.json`, and
    `index_options/grid.py`: a pure table of cells plus
    `grid_document(base, cell)`. Its only callers are the config test and a
@@ -24334,8 +24347,10 @@ instrument's in-split forecast rows, oldest first.
      the short put; the long call mirrors it.
    - A target outside the band is counted as `outside_band`; a strike with
      no quotable listing is counted as `degenerate_strikes`.
-   - "Quotable" means `quote_problems` passes, and a short leg also needs
-     bid > 0: a provider 0 bid means no market (ADR-0182 review).
+   - "Quotable" means `quote_problems` passes, plus a side rule: a short
+     leg needs bid > 0 and a long leg needs ask > 0. A provider 0 on the
+     side we trade means no market (ADR-0182 review), and a free long wing
+     would inflate the credit.
 4. **Implied book.** It keeps today's formula with the chain's vol in place
    of VIX. The ATM iv is the mean of the call and put `iv` at the quotable
    strike nearest S on that expiry, and s = iv sqrt(DTE / 365). Without an
@@ -24393,9 +24408,11 @@ conservative bound derived below.
 - **Short put, carry.** If assigned at a close s before `settle_date` with
   S_s < K_sp, we hold stock bought at K_sp.
   - The terminal difference to the European leg is
-    (S_T - K_sp)+ - K_sp (e^(r tau) - 1), which is at least -K_sp r tau.
-  - Charge K_sp x `carry_rate` x (`settle_date` - s) / 365 x multiplier
-    from the first such close.
+    (S_T - K_sp)+ - K_sp (e^(r tau) - 1), which is at least
+    -K_sp (e^(r tau) - 1).
+  - Charge K_sp x (e^(`carry_rate` x tau) - 1) x multiplier, with
+    tau = (`settle_date` - s) / 365, from the first such close. This is the
+    derived bound itself, not its smaller simple-interest form.
   - `carry_rate` is a constant upper bound on the cash rate: the configs use
     0.055, the 2008-2025 maximum (owner question 6). No rates series is
     added.
