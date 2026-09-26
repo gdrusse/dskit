@@ -8,7 +8,8 @@ by its old partial ReviewExit files. Apply the [index](README.md) first.
 ## Read and preserve
 
 Read the master's F5a/ADR-0125 chronology and controlling manifest, main's
-accepted F4 ADR-0126, and these source files at `c489199`:
+accepted F4 ADR-0126, and these source files, first at `c489199` and on main
+at the same paths since 2026-09-26 (record 0045; the branch is retired):
 `docs/review-evidence/F5a/0027-review-verdict.v1.json` through
 `0032-phase0-driver-only.v1.json`. In particular, owner decisions 0028/0029
 stop consume-once Review24 and direct the remaining clusters. This planning

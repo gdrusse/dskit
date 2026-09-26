@@ -1,5 +1,18 @@
 # Re-entry
 
+## F5a source branch retired; its evidence is on main (2026-09-26)
+
+- **Owner decision A (2026-09-26):** `origin/cursor/r5-f5a-private-plan-0f39@c489199`
+  (PR 14, closed unmerged) is deleted. Its code was superseded: owner decisions
+  0028/0029 said not to merge it, and ADR-0147 closed whole F5a on main.
+- **Evidence:** `docs/review-evidence/F5a/0001`-`0032` are on main at the same
+  paths, byte-identical to `c489199`. Record
+  `docs/review-evidence/F5a/0045-source-branch-evidence-import.v1.json` lists
+  each file's blob and sha256.
+- **Reading rule:** read `c489199:docs/review-evidence/F5a/<file>` as that path
+  on main. Every older "preserve the branch" or "protected source `c489199`"
+  line below is history, superseded by this note.
+
 ## Wrap 2026-09-26: retrain backtest stopped; the MIO must solve all horizons jointly
 
 **Status.**

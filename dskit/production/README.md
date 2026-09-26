@@ -345,7 +345,8 @@ dskit/production/
 │                      SettledFundsShortfall + UncommittedUnitsShortfall (the measures that BIND it)
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets
-├── verifier.py        SubmissionVerifier — the final verify-and-call gate
+├── verifier.py        SubmissionVerifier — the final verify-and-call gate;
+│                      HistoricalStudyVerifier — ADR-0125 plan-before-capture
 ├── resilience.py      Classifier; Retry; CircuitBreaker; RateLimiter; Transport; Signer + HmacSigner
 ├── ledger.py          Ledger ABC + LEDGER_KINDS; ChainLedger (the chain itself); JsonlLedger;
 │                      Checkpoint; ServeRoot; chain + verify

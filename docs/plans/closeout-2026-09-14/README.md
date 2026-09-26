@@ -85,6 +85,8 @@ model-release (A1–A4, I1/I2), forecast-capital (F3/F5a/F5b/B0–B3/E1/C1), rep
 
 - F5a: `cursor/r5-f5a-private-plan-0f39`, audited `c489199`.
   Later open findings supersede earlier partial exits.
+  Retired 2026-09-26: the branch is deleted; its evidence 0001-0032 is on
+  main at `docs/review-evidence/F5a/` (record 0045).
 - Replay design: `codex/r5-replay-ops-20260911`, audited `97900ef`.
   Its ADR-0126 is the replay decision; main's ADR-0126 is F4's threat model.
 - Clustering/RL: `codex/cluster-rl-framework-plan-20260913`, audited

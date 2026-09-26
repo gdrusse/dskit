@@ -3,7 +3,7 @@ Environment (mandatory)
 - Work in WSL2. Interpreter: /home/russell/dskit/.venv/bin/python. Run from the task worktree as cwd with PYTHONPATH=$PWD.
 - Task worktree: /home/russell/wt/f5a-remainder-20260915, branch codex/f5a-remainder-p6 (already pushed to origin). To run: wsl.exe -e bash -lc 'cd /home/russell/wt/f5a-remainder-20260915 && PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest ...'.
 - Do NOT touch the dirty main checkout at /home/russell/dskit (it is on a stale wrap-tft-rf-runs branch).
-- Preserve origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868 — never bulk-merge or delete it.
+- origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868 was retired on 2026-09-26 (owner decision A). Its evidence 0001–0032 is on main at docs/review-evidence/F5a/ (record 0045). Never merge its superseded code.
 Read these first (in order)
 1. docs/skills/implementation-workflow.md, docs/skills/test-drive-development.md, docs/skills/skeptic-review.md, docs/skills/wrap.md (the shared workflow; .cursor/rules/dskit-workflow.mdc points at them).
 2. docs/RE-ENTRY.md — top section is the current handoff.

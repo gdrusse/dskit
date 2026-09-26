@@ -1,0 +1,79 @@
+{
+  "schema_version": "EvidenceImport.v1",
+  "slice_id": "F5a",
+  "record_kind": "source-branch evidence import; source branch retired",
+  "date": "2026-09-26",
+  "previous_evidence_sha256": "94f76cefc4cfbea345b6332c1a9818e916f648d5861068dcceb63d23fb5fbb21",
+  "authority": {
+    "owner": "Russell",
+    "decision": "A",
+    "date": "2026-09-26",
+    "summary": "Make origin/cursor/r5-f5a-private-plan-0f39 unnecessary: bring its still-needed components onto main, repoint references, then delete the remote branch. Delete it only if its important components are on main."
+  },
+  "source": {
+    "ref": "origin/cursor/r5-f5a-private-plan-0f39",
+    "commit": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "merge_base_with_main": "36553aedcabfc148a6a6aa355a5c8d837d0c4d06",
+    "unique_commits": 74,
+    "pull_request": "PR 14, closed without merge",
+    "still_reachable_at": "GitHub refs/pull/14/head (read-only; GitHub keeps it for the closed PR)"
+  },
+  "inventory": {
+    "imported_evidence": "docs/review-evidence/F5a/0001-0032, 32 files, listed in imported",
+    "superseded_code": [
+      "dskit/production/verifier.py: the stopped in-memory consume-once HistoricalStudyVerifier. Owner decisions 0028/0029 say Do not merge. Main rebuilt the verifier and HistoricalStudyCaptureDriver through Packets 2-8, and ADR-0147 (durable ChainLedger-backed admission) closed F5A-R23 and whole F5a.",
+      "tests/production/test_capture_lifecycle.py: the branch's 1653-line version pins the stopped mechanism. Main's own tests cover the rebuilt code, e.g. tests/production/test_adr0147_durable_admission.py."
+    ],
+    "carried_doc_line": "dskit/production/README.md: the branch's one-line layout note naming HistoricalStudyVerifier in verifier.py is still true on main, so it is carried in the same commit as this record."
+  },
+  "imported": [
+    {"path": "docs/review-evidence/F5a/0001-review-verdict.v1.json", "git_blob": "e3cd6a270ab003ac7502b1af98c4a6c4947880f4", "sha256": "17636193d94d8b7d60f928dc2da6bb5c0e31cc0b9663e063ba85d81dbe3fb6bd"},
+    {"path": "docs/review-evidence/F5a/0002-review-verdict.v1.json", "git_blob": "a679a28abf2b5127087c5ce413f9edf1ae83eda2", "sha256": "77e7f45b6c376df8dd594f63331d12c5240361459155e0e3cd44e832b7e50a71"},
+    {"path": "docs/review-evidence/F5a/0003-review-verdict.v1.json", "git_blob": "b18ebd1870011ab32e61ada07bdb072ec58ae9cc", "sha256": "a1120bf3890bff59e406de764aa2debfb19eb1641be1c745f694778f0c7c57e8"},
+    {"path": "docs/review-evidence/F5a/0004-review-evidence-manifest.v1.json", "git_blob": "ec12e512ccb25767372e65c6c01bc6f5068b6224", "sha256": "c097d23fa60d7b21d93702c5712e22848734d917e6c0b25a3cad5a4aa142fb3b"},
+    {"path": "docs/review-evidence/F5a/0005-review-exit.v1.json", "git_blob": "c759baf49186be323a6375113ae893f2c2136412", "sha256": "29031e24ecf30b0284fe1d288809767751b66909ae5f1ba3d39e91d1296a4ddb"},
+    {"path": "docs/review-evidence/F5a/0006-review-verdict.v1.json", "git_blob": "797d677fbda66f63c810e66140cee9b04e9f6844", "sha256": "7c16ca7974604b61b4d120708561e3ffc68954f7db1cfe7d659638fcce55752a"},
+    {"path": "docs/review-evidence/F5a/0007-review-verdict.v1.json", "git_blob": "83f343eef803e29ccf8eb4a6c8f5703adde03691", "sha256": "d8a0996d5e44d5d168845f1c7d261dd529260d0f3b438d94075f41a2ef5412ed"},
+    {"path": "docs/review-evidence/F5a/0008-review-verdict.v1.json", "git_blob": "e5dd920134117794d39b258fe3128081b4b7976e", "sha256": "5b5da2dc3d2e63c9cd570634323e995255fb0665a3ce1e84f2dddff7c0b6ede6"},
+    {"path": "docs/review-evidence/F5a/0009-review-verdict.v1.json", "git_blob": "5020ad0aad9744a2178564fadfe865d24d609aa7", "sha256": "5d7503454b30d09ff2dc548676a220bd0b32d235803d62020fc79828b1b55e7a"},
+    {"path": "docs/review-evidence/F5a/0010-review-verdict.v1.json", "git_blob": "78a509e6ff2b60590d0dee7c198a9c481d23fe21", "sha256": "3d46ac089b45e90e3ed15fb614751fe29d81cf80504917bb3f97810e4acf9d8c"},
+    {"path": "docs/review-evidence/F5a/0011-review-verdict.v1.json", "git_blob": "b2c762ac702c633cea5ec9340d3286b4f043120c", "sha256": "4aae355ef1b3325047031f9b59c9807eafb5ff0a9601f4c7d2557d30384c5a73"},
+    {"path": "docs/review-evidence/F5a/0012-review-evidence-manifest.v1.json", "git_blob": "6d9df5e5d7a0f97972af31d0e9056cb30549ef80", "sha256": "8a3d0076c94a64a86558e3b03e01646f02cce317c920ae1a2cb97157847f3f3f"},
+    {"path": "docs/review-evidence/F5a/0013-review-exit.v1.json", "git_blob": "71e234fb212aa68b1241612ff039ba971c9cabb4", "sha256": "16e3990da03921109bb5b26e42312fa92406118e306e5cf0fd7a54fc25d5300a"},
+    {"path": "docs/review-evidence/F5a/0014-review-verdict.v1.json", "git_blob": "081aa2a0f09a4603d3e4bdc815ffcda2db841688", "sha256": "fb1fba8fb2ca98aec6f277b2ec5ae5e47c9261f829dd0c5c79181633fa59530f"},
+    {"path": "docs/review-evidence/F5a/0015-review-verdict.v1.json", "git_blob": "5c490995d60e652ea27a4f5f98ad9110cf3ede31", "sha256": "aba3d58466e8c7bc795b7beaae780955dd70d8ccc5cb6d7864af4e860fe68d2f"},
+    {"path": "docs/review-evidence/F5a/0016-review-verdict.v1.json", "git_blob": "69d80745cd2dd30c56c7fd6fa1ec0a3d2f291aa9", "sha256": "7dc669085c11d0a68fceda1ad6c63d3213a18ccdeb7c1bbe828fdcda8844b2bc"},
+    {"path": "docs/review-evidence/F5a/0017-review-verdict.v1.json", "git_blob": "2f0194304b5c62687f1c86a05f304540ac92f43f", "sha256": "56e06b91d0d3c7f2c900560adc06afe72bc7ae92c81570a159a837af23857234"},
+    {"path": "docs/review-evidence/F5a/0018-review-verdict.v1.json", "git_blob": "cb15cc5a81c3fe2e38bd61d09c59fc3f51863e65", "sha256": "6a27a14c4f0b6032aa511849a71b333fb9242cd821781ffd669ef30a5cb0c0b7"},
+    {"path": "docs/review-evidence/F5a/0019-review-verdict.v1.json", "git_blob": "76c6cce1d3d7b9b62ed856254f42ea8a032e7fc7", "sha256": "4b0a3e4149d052a683f0e2756164043913331a56859ada6102f02aa7ebb3bf5c"},
+    {"path": "docs/review-evidence/F5a/0020-review-verdict.v1.json", "git_blob": "0b82bc6c86aa8fff21196d387c4605e4fc534645", "sha256": "ff0914693bab64c312ec069c20b6db8c69527f43b44a9edd6a775aef729078ff"},
+    {"path": "docs/review-evidence/F5a/0021-review-verdict.v1.json", "git_blob": "e617f07033d0524f46fcd81fceee2effe39b0ab0", "sha256": "0cecbab0a3a8e37dc71c7a6ac540ab30cca664ca88549f849aba4f0f180eff72"},
+    {"path": "docs/review-evidence/F5a/0022-review-verdict.v1.json", "git_blob": "0433042f79deab4299b1c0ade9694db9254015a1", "sha256": "1ed37796d39b75d42315085de093fb06536d56980756c5bb8b4f73c2d522a14d"},
+    {"path": "docs/review-evidence/F5a/0023-review-verdict.v1.json", "git_blob": "09cacb2e5aeab10b373e2a79a46931a15b80b72d", "sha256": "4119c37d235d655283f4676d3ef4e63065bea3e74dc603f19b1b2ab1e1926d31"},
+    {"path": "docs/review-evidence/F5a/0024-review-verdict.v1.json", "git_blob": "83f3d997143f909918717e6482dc9f8f3ed8534b", "sha256": "a7909d8288ebd35bd46ff1d53038c579c5f38ec2a5ad20cc49b2e8d7c010e223"},
+    {"path": "docs/review-evidence/F5a/0025-review-verdict.v1.json", "git_blob": "0627645e43086439a080f9ebfa2c6e1185911379", "sha256": "d8f8c6fc32e3e58282f9545d5a33caf2094c692fbc851e6436070f735169e302"},
+    {"path": "docs/review-evidence/F5a/0026-review-verdict.v1.json", "git_blob": "9b84feb977dd77614a96dbc5435b75500660d26f", "sha256": "eb9a2d6d7b8485bdadaacfbad205bfd95c615b6e68bd79d45e2d4f1c410a7f99"},
+    {"path": "docs/review-evidence/F5a/0027-review-verdict.v1.json", "git_blob": "f7396a57f5daaeb4504081ff48e44705c8c97a01", "sha256": "2d227e3b7afba88fec07cbdb8e505bc1303049a331d6833bd1dd57a075b0eb5e"},
+    {"path": "docs/review-evidence/F5a/0028-owner-decision.v1.json", "git_blob": "16f297a02e4eaf892a19c05e86f5008b4fc1765e", "sha256": "da3f2ea7c2c2de0c4116f4089c42b5044ec9db3aa71f606bc7be76e65ac28da2"},
+    {"path": "docs/review-evidence/F5a/0029-owner-decision.v1.json", "git_blob": "9d0f0c1e04513eb831b8a2277976904fc8e71d2a", "sha256": "b89be1b848349cc81bbf0a8c09879f675622837bdcbc0717f1576939cd9c2bd0"},
+    {"path": "docs/review-evidence/F5a/0030-phase0-driver-only.v1.json", "git_blob": "b5b0d6a98063266d762ee18cd3b3e5703d782f0c", "sha256": "71764f98203cf5388b21840ef0e92ae881430022c081a5577495b3ed487d3e3e"},
+    {"path": "docs/review-evidence/F5a/0031-phase0-design-verdict.v1.json", "git_blob": "da364442b173e1937d32ae81e7cdcf3595725cf9", "sha256": "20c6431d4cb46a873317e01c0b370e2db9fd50bef41336194ff736c1015dead7"},
+    {"path": "docs/review-evidence/F5a/0032-phase0-driver-only.v1.json", "git_blob": "d3810129bf019a8d9db8681c2d7acc7f7e873efe", "sha256": "612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f"}
+  ],
+  "verification": {
+    "byte_identity": "32/32: each file's git blob on main equals c489199:<path>, and its sha256 equals the source blob's sha256.",
+    "pins_on_main": [
+      "0033 matrix_sha256 and previous_evidence_sha256 = 612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f = sha256 of 0032",
+      "0034 previous_evidence_sha256 = 612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f = sha256 of 0032"
+    ],
+    "path_citations_on_main": "The c489199:<path> citations in 0033, 0034 and 0038 (files 0027-0032), and the 0027-0032 range named in docs/plans/closeout-2026-09-14/01-capture-admission.md, all resolve at the same path on main.",
+    "internal_chain": "Every previous_evidence_sha256 link, 0002->0001 through 0032->0031, resolves inside the imported set. The F4 dependency pins in 0004/0012 resolve to files on main. The plan pin 5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c (docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md) resolves in main history at 169927c.",
+    "not_on_main": [
+      "Reviewed-code pins in 0004/0012: dskit/production/verifier.py sha256 62532959a99524d1af062796a1c6e5e1dd6d155e1e75b42cc15af1209ab77dd9 and bf3a89f4a0c662348fdb6720bfa840583e25d9acf284ab698954e9117f39ac08; tests/production/test_capture_lifecycle.py sha256 3198e6d84e670f43dfe1c921c4a95a4e5c76e515d88b614c613ac5a25180b9ae and 03d350f63d2b91c261e596396978e3b4ca46246538b89ede60839deba6a923c1. These are superseded code blobs at branch commits and are not imported. They stay reachable at refs/pull/14/head.",
+      "The normalized_output_sha256 values in 0004/0005/0012/0013 name ephemeral:// test outputs, which were never files."
+    ]
+  },
+  "reading_rule": "Read any citation c489199:docs/review-evidence/F5a/<file> as docs/review-evidence/F5a/<file> on main; the bytes are identical. Neither the imported files nor 0033-0044 were edited.",
+  "branch_retirement": "Once this record is on main, origin/cursor/r5-f5a-private-plan-0f39 is deleted. Older instructions to preserve it (RE-ENTRY, memos, plans, children/intraday_poc/prompt.txt) are history. Immutable evidence that names it as source_pin, protected_source or preserved_source_ref stays as written.",
+  "deployment_eligible": false
+}

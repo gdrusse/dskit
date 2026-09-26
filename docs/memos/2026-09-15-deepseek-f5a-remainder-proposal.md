@@ -1,5 +1,10 @@
 # Proposal — DeepSeek completion of F5a integration and implementation
 
+> **2026-09-26 note:** `origin/cursor/r5-f5a-private-plan-0f39` is retired
+> (deleted by owner decision A). Its F5a evidence 0001-0032 is on main at
+> `docs/review-evidence/F5a/` (record 0045). Branch instructions below are
+> history.
+
 **Status:** draft for owner approval. **Prepared:** 2026-09-15.
 **Starting point:** `origin/main@1fc290f6f2a8cd1d1944994d351f608f00ca1734`.
 **Preserved source:**

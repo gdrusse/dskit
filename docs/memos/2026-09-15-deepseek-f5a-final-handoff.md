@@ -1,5 +1,10 @@
 # DeepSeek continuation prompt — DSKIT F5a remainder
 
+> **2026-09-26 note:** `origin/cursor/r5-f5a-private-plan-0f39` is retired
+> (deleted by owner decision A). Its F5a evidence 0001-0032 is on main at
+> `docs/review-evidence/F5a/` (record 0045). Branch instructions below are
+> history.
+
 You are the sole primary implementer continuing DSKIT F5a. Finish all authorized
 remaining work and preserve truthful dependency/closure gates. Read this entire
 prompt before acting.

@@ -1,6 +1,11 @@
 # DSKIT progress, review value, and branch consolidation
 Date: 2026-09-14. Author: GPT-6.
 
+> **2026-09-26 note:** `origin/cursor/r5-f5a-private-plan-0f39` is retired
+> (deleted by owner decision A). Its F5a evidence 0001-0032 is on main at
+> `docs/review-evidence/F5a/` (record 0045). Branch instructions below are
+> history.
+
 ## TL;DR
 Yes, DSKIT is making real progress, but its review process also creates substantial avoidable churn. Keep independent review; replace repeated patch-and-rescan work with explicit boundaries, complete defect-family sweeps, risk-based severity, and a precise stopping rule. Development gate approval is not approval to run a real backtest or deploy.
 
