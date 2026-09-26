@@ -234,7 +234,7 @@
     "count": 15,
     "val_days": 365,
     "embargo_days": 28,
-    "notes": "Expanding train windows on session rows; 15 yearly validation windows from 2011-01-01 (the archive's chains begin there for QQQ). embargo_days = dte_max + 7 = 28 covers both the label's reach (15 sessions, at most ceil(1.4 h) + 4 calendar days) and the settlement's reach (21 days), so no train label or settlement reaches past the validation cut."
+    "notes": "Expanding train windows on session rows; 15 yearly validation windows from 2011-01-01 (the archive's chains begin there for QQQ). embargo_days = dte_max + 7 = 28 covers both the label's reach (15 sessions spanned at most 28 calendar days over 1999-2025, closures included) and the settlement's reach (21 days), so no train label or settlement reaches past the validation cut."
   },
   "outputs": {
     "run_root": ""

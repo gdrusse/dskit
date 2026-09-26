@@ -115,6 +115,14 @@ BASE_DIGESTS = {
 }
 
 
+#: The MEASURED maximum calendar reach of h sessions over 1999-11-01..2025-12-15: weekday
+#: sessions minus NYSE full-day closures (the fixed-rule holidays, 2001-09-11..14, 2004-06-11,
+#: 2007-01-02, 2012-10-29/30, 2018-12-05, 2025-01-09), the worst window for each h. Restated
+#: here, never read from grid.py: a formula such as ceil(1.4 h) + 4 UNDERSTATES it (6 vs 7 for
+#: h = 1, 35 vs 39 for h = 22), and the embargo must cover what a train label can actually span.
+LABEL_REACH_DAYS = {1: 7, 2: 10, 3: 11, 5: 13, 10: 21, 15: 28, 22: 39}
+
+
 def _grid(child_root, name):
     return json.loads((child_root / GRID / name).read_text())
 
@@ -139,9 +147,10 @@ def test_the_grid_is_twenty_one_cells_with_the_adr_buckets_and_starts():
     for cell in grid.CELLS:
         h, hi = cell.bucket.label_horizon, cell.bucket.dte_max
         # the embargo covers the label's reach and the settlement's reach
-        assert cell.bucket.embargo_days >= max(math.ceil(1.4 * h) + 4, hi)
+        assert cell.bucket.embargo_days >= max(LABEL_REACH_DAYS[h], hi)
         assert cell.bucket.embargo_days == hi + 7
         assert cell.bucket.dte_min >= 1  # no 0DTE
+    assert set(LABEL_REACH_DAYS) == {b.label_horizon for b in grid.BUCKETS}
     spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
     assert spy.since_ms == 941414400000  # 1999-11-01T00:00:00Z
 

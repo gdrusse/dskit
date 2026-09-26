@@ -145,6 +145,34 @@ def test_one_entry_hand_checked():
     assert report["params"]["label_horizon"] == 5 and report["params"]["cvar_alpha"] == 0.95
 
 
+def _settled_at(level):
+    """The worked series with the settlement close alone moved to ``level``."""
+    return _series([(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", level),
+                                                            ("2024-03-11", 100.0),
+                                                            ("2024-03-12", 100.0)])
+
+
+@pytest.mark.parametrize("level, model_loss, implied_loss", [
+    (80.0, 300.0, 100.0),    # through both put wings: the whole 3- and 1-point spreads
+    (93.5, 150.0, 100.0),    # between the model's short put and its wing: 1.5 points
+    (110.0, 200.0, 200.0),   # through both call wings: 2-point spreads on each book
+])
+def test_a_losing_settlement_is_the_credit_less_the_spread_times_the_multiplier(
+    level, model_loss, implied_loss
+):
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _settled_at(level))
+    books = report["ledger"][0]["books"]
+    expected = {"model": MODEL_CREDIT - model_loss, "always": MODEL_CREDIT - model_loss,
+                "implied": IMPLIED_CREDIT - implied_loss}
+    for book, pnl in expected.items():
+        assert books[book]["american_charge_usd"] == 0.0  # no ex-date, never in the money early
+        assert books[book]["pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_cvar_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_hit_rate"] == (1.0 if pnl > 0 else 0.0)
+        assert metrics[f"{book}_max_drawdown_usd"] == pytest.approx(max(-pnl, 0.0))
+
+
 def test_the_american_charge_is_taken_off_each_book():
     dividends = [("2024-03-07", 1.0)]
     closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
@@ -259,6 +287,50 @@ def test_the_implied_book_needs_an_atm_iv_on_both_rights():
     assert metrics["model_n_trades"] == 1
 
 
+def _smile(chain, wings=0.6, at=None):
+    """Give every strike ``wings`` vol except the ``at`` map of strike -> iv."""
+    at = at or {99.0: 0.25, 100.0: 0.2, 101.0: 0.3}
+    for q in chain:
+        q["iv"] = at.get(q["strike"], wings)
+    return chain
+
+
+def test_the_atm_iv_is_the_nearest_valid_pairs_mean_not_any_strikes():
+    _, report = _run([_row(ENTRY)], _smile(_chain(ENTRY, EXPIRY)), FLAT)
+    entry = report["ledger"][0]
+    assert entry["atm_iv"] == pytest.approx(0.2)  # the pair AT the forward, never a wing's 0.6
+    assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
+    # the nearest pair invalid on one right: the next nearest valid pair, lower strike on a tie
+    missing = _smile(_chain(ENTRY, EXPIRY))
+    for q in missing:
+        if q["strike"] == 100.0 and q["right"] == "put":
+            q["iv"] = None
+    assert _run([_row(ENTRY)], missing, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+    # a crossed quote at the nearest strike disqualifies that pair the same way
+    crossed = _smile(_chain(ENTRY, EXPIRY))
+    for q in crossed:
+        if q["strike"] == 100.0:
+            q["bid"], q["ask"] = 0.6, 0.5
+    assert _run([_row(ENTRY)], crossed, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+    # a strike quoted on one right only is no candidate at all
+    one_sided = [q for q in _smile(_chain(ENTRY, EXPIRY))
+                 if not (q["strike"] == 100.0 and q["right"] == "call")]
+    assert _run([_row(ENTRY)], one_sided, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+def test_credit_at_the_narrower_width_and_edge_at_the_gate_are_refused():
+    at_width = _chain(ENTRY, EXPIRY)
+    exact = {("put", 95.0): (2.25, 2.5), ("put", 92.0): (1.0, 1.25), ("call", 108.0): (0.25, 0.5)}
+    for q in at_width:  # dyadic quotes: 2.25 + 1.5 - 1.25 - 0.5 is EXACTLY the 2-point call wing
+        if (q["right"], q["strike"]) in exact:
+            q["bid"], q["ask"] = exact[(q["right"], q["strike"])]
+    metrics, report = _run([_row(ENTRY)], at_width, FLAT)
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == 200.0 - 2.6
+    assert metrics["model_n_skipped_credit_not_below_width"] == 1
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT)
+    assert metrics["model_n_skipped_below_min_edge"] == 1  # the edge must EXCEED the gate
+
+
 # -- settlement ---------------------------------------------------------------------------
 
 
@@ -281,11 +353,21 @@ def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
     [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-07")],          # ends before settlement
     [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-08")],          # no row after it
     [(d, 100.0) for d in ("2024-03-01", "2024-03-12")],                   # last close 7 days back
+    [("2024-03-01", 100.0), ("2024-03-03", 97.0), ("2024-03-11", 98.0)],  # 5 days back: too stale
 ])
 def test_an_entry_that_cannot_settle_is_unsettled_and_never_traded(closes):
     metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes))
     assert metrics["n_skipped_unsettled"] == 1 and metrics["n_entries"] == 0
     assert report["ledger"] == []
+
+
+def test_a_close_four_days_before_settlement_still_settles():
+    """The longest closure in the archive's span (Sandy, 2012) is exactly this shape."""
+    closes = [("2024-03-01", 100.0), ("2024-03-04", 97.0), ("2024-03-11", 98.0)]
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes))
+    entry = report["ledger"][0]
+    assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-04", 97.0)
+    assert metrics["n_skipped_unsettled"] == 0 and metrics["always_n_trades"] == 1
 
 
 def test_rows_after_the_entry_change_only_the_outcome():
@@ -310,7 +392,17 @@ def test_rows_after_the_entry_change_only_the_outcome():
         assert before["books"][book]["credit_usd"] == after["books"][book]["credit_usd"]
         assert before["books"][book]["entered"] is after["books"][book]["entered"]
     assert after["settlement"] == pytest.approx(97.0 * 0.8)
-    assert metrics["model_total_pnl_usd"] != base_metrics["model_total_pnl_usd"]
+    # ... and the outcome IS what the perturbed closes say: 77.6 sits below every put wing,
+    # and the 03-04 close (80) puts both short puts in the money, so carry runs from there
+    model_charge = american_short_charge(series, 95.0, 106.0, ENTRY, EXPIRY, 0.055, 100)
+    implied_charge = american_short_charge(series, 96.0, 104.0, ENTRY, EXPIRY, 0.055, 100)
+    assert model_charge["put_carry_usd"] > 0 and model_charge["call_dividend_usd"] == 0.0
+    for book, pnl in (("model", MODEL_CREDIT - 300.0 - model_charge["total_usd"]),
+                      ("always", MODEL_CREDIT - 300.0 - model_charge["total_usd"]),
+                      ("implied", IMPLIED_CREDIT - 100.0 - implied_charge["total_usd"])):
+        assert after["books"][book]["pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(pnl)
+    assert base_metrics["model_total_pnl_usd"] == pytest.approx(MODEL_CREDIT)
 
 
 # -- refusals and empty folds ---------------------------------------------------------------

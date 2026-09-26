@@ -234,7 +234,7 @@
     "count": 18,
     "val_days": 365,
     "embargo_days": 17,
-    "notes": "Expanding train windows on session rows; 18 yearly validation windows from 2008-01-01 (the archive's chains begin there for SPY). embargo_days = dte_max + 7 = 17 covers both the label's reach (5 sessions, at most ceil(1.4 h) + 4 calendar days) and the settlement's reach (10 days), so no train label or settlement reaches past the validation cut."
+    "notes": "Expanding train windows on session rows; 18 yearly validation windows from 2008-01-01 (the archive's chains begin there for SPY). embargo_days = dte_max + 7 = 17 covers both the label's reach (5 sessions spanned at most 13 calendar days over 1999-2025, closures included) and the settlement's reach (10 days), so no train label or settlement reaches past the validation cut."
   },
   "outputs": {
     "run_root": ""

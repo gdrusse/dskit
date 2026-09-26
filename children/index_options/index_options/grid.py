@@ -30,6 +30,7 @@ __all__ = [
     "CELLS",
     "GRID_RUNG",
     "HPO_SPACES",
+    "LABEL_REACH_DAYS",
     "RUNGS",
     "UNDERLYINGS",
     "WORKED_CELL",
@@ -45,10 +46,15 @@ __all__ = [
     "zoo_document",
 ]
 
-#: Calendar days added to a bucket's upper bound for its embargo: the label's
-#: reach (h sessions, at most ceil(1.4 h) + 4 days) and the settlement's reach
-#: (dte_max days) both sit inside ``dte_max + 7`` for every bucket; a test pins it.
+#: Calendar days added to a bucket's upper bound for its embargo. The settlement's
+#: reach is ``dte_max`` days; the label's reach is what h sessions span in calendar
+#: days, closures included — measured over 1999-2025 as :data:`LABEL_REACH_DAYS`,
+#: which ``dte_max + 7`` covers for every bucket (three at equality). The config
+#: test pins the embargo against its own restatement of that table, never this one.
 EMBARGO_MARGIN_DAYS = 7
+#: Label horizon (sessions) -> the maximum calendar days it spanned in 1999-2025
+#: (weekday sessions minus NYSE closures; 2001-09-11..14 and Sandy dominate).
+LABEL_REACH_DAYS = {1: 7, 2: 10, 3: 11, 5: 13, 10: 21, 15: 28, 22: 39}
 #: The constant upper bound on the cash rate charged on an assigned short put
 #: (ADR-0187, the 2008-2025 maximum; owner question 6).
 CARRY_RATE = 0.055
@@ -329,7 +335,8 @@ def grid_document(base, cell, rung=GRID_RUNG):
         f"Expanding train windows on session rows; {cell.underlying.folds} yearly validation "
         f"windows from {cell.underlying.first} (the archive's chains begin there for {symbol}). "
         f"embargo_days = dte_max + {EMBARGO_MARGIN_DAYS} = {bucket.embargo_days} covers both "
-        f"the label's reach ({horizon} sessions, at most ceil(1.4 h) + 4 calendar days) and "
+        f"the label's reach ({horizon} sessions spanned at most "
+        f"{LABEL_REACH_DAYS[horizon]} calendar days over 1999-2025, closures included) and "
         f"the settlement's reach ({bucket.dte_max} days), so no train label or settlement "
         "reaches past the validation cut.")
     return doc

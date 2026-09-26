@@ -263,6 +263,8 @@ def test_quote_problems_refuses_an_unknown_side_or_count():
         quote_problems(1.0, 1.2, 1, 1, 1, side="hold")
     with pytest.raises(ValueError, match="count"):
         quote_problems(1.0, 1.2, 1, 1, -1)
+    with pytest.raises(ValueError, match="count"):
+        quote_problems(1.0, 1.2, 1, 1, True)
     # count 0 is the row-level rule: a valid quote, no trade to cover
     assert quote_problems(0.0, 0.0, 0, 0, 0) == []
 
@@ -313,9 +315,19 @@ def test_ex_dates_on_the_entry_date_or_after_expiry_are_never_charged():
 def test_every_ex_date_after_the_first_qualifying_one_is_charged():
     rows = _series(WINDOW, [("2024-03-05", 0.5), ("2024-03-07", 1.0), ("2024-03-08", 0.25)])
     # 03-05: pre-ex close 101 < 102, not charged; 03-07: pre-ex 103 > 102, charged;
-    # 03-08: charged as a later ex-date whatever the close
+    # 03-08: pre-ex 104 > 102, charged on its own account
     charged = american_short_charge(rows, **CHARGE)
     assert charged["call_dividend_usd"] == pytest.approx(125.0)
+    # once assigned, a later ex-date is charged EVEN IF its own pre-ex close is below the call
+    assigned = _series([("2024-03-01", 100.0), ("2024-03-04", 101.0), ("2024-03-05", 99.0),
+                        ("2024-03-06", 103.0), ("2024-03-07", 98.0), ("2024-03-08", 105.0)],
+                       [("2024-03-07", 1.0), ("2024-03-08", 0.25)])
+    assert american_short_charge(assigned, **CHARGE)["call_dividend_usd"] == pytest.approx(125.0)
+    # without the earlier assignment, that same ex-date (pre-ex 98 < 102) is not charged
+    alone = _series([("2024-03-01", 100.0), ("2024-03-04", 101.0), ("2024-03-05", 99.0),
+                     ("2024-03-06", 103.0), ("2024-03-07", 98.0), ("2024-03-08", 105.0)],
+                    [("2024-03-08", 0.25)])
+    assert american_short_charge(alone, **CHARGE)["call_dividend_usd"] == 0.0
 
 
 def test_put_carry_runs_from_the_first_in_the_money_close_to_settlement():

@@ -99,6 +99,9 @@ def test_index_projection_copies_a_dividend_and_refuses_a_split(tmp_path):
     for coefficient in (2.0, 0.5):
         with pytest.raises(ValueError, match="split_coefficient"):
             node.project([dict(raw[0], split_coefficient=coefficient)])
+    for dividend in (-1.0, "1.4", True):
+        with pytest.raises(ValueError, match="dividend_amount"):
+            node.project([dict(raw[0], dividend_amount=dividend)])
 
 
 def test_index_reader_and_join_over_a_real_onboarding_store(store_factory):

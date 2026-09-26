@@ -244,6 +244,10 @@ CHAIN_ROWS = [
     _chain("SPY250207C00125000", "2025-01-02", 100.0),                    # ln(1.25) = 0.223 > band
     _chain("SPY250207C00101000", "2025-01-02", None),                     # no underlying close
     _chain("QQQ250207C00100000", "2025-01-02", 100.0),                    # another underlying
+    _chain("SPY250207P00090000", "2025-01-02", 100.0,                     # kept: stamped 00:30 UTC
+           quote_time="2025-01-03T00:30:00+00:00"),                       #   = 19:30 New York, 01-02
+    _chain("SPY250217C00100000", "2025-01-03", 100.0),                    # kept: DTE 45 = dte_max
+    _chain("SPY250218C00100000", "2025-01-03", 100.0),                    # DTE 46 > 45
     _chain("SPY250314C00100000", "2025-02-03", 100.0),                    # kept: a second date, DTE 39
 ]
 
@@ -288,6 +292,8 @@ def test_chain_intake_keeps_only_the_cells_rows_and_projects_fresh_envelopes(sto
         ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 82.0),
         ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 99.5),
         ("2025-01-02", "2025-02-08", "2025-02-07", 36, "call", 100.0),
+        ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 90.0),  # the New York date, not UTC's
+        ("2025-01-03", "2025-02-17", "2025-02-17", 45, "call", 100.0),
         ("2025-02-03", "2025-03-14", "2025-03-14", 39, "call", 100.0),
     ]
     assert set(out[0]) == {"instrument", "date", "expiry", "settle_date", "dte", "right",
@@ -297,7 +303,7 @@ def test_chain_intake_keeps_only_the_cells_rows_and_projects_fresh_envelopes(sto
     assert (out[0]["bid"], out[0]["ask"], out[0]["bid_size"], out[0]["ask_size"],
             out[0]["iv"]) == (1.0, 1.2, 10, 12, 0.2)
     assert type(out[0]["asof_ms"]) is int
-    assert node.fingerprint()["rows"] == 5
+    assert node.fingerprint()["rows"] == 7
     # the projection is fresh per instance: a consumer's edit reaches no other reader
     out[0]["bid"] = -1.0
     assert ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"][0]["bid"] == 1.0
@@ -319,9 +325,9 @@ def test_chain_reader_scans_the_store_once_per_process(store_factory, monkeypatc
     assert first.fingerprint() == second.fingerprint() and len(calls) == 1
     assert calls[0]["keep_values"] == {"underlying": ["SPY"]} and callable(calls[0]["admit"])
     assert first.run(None, {})["records"] == second.run(None, {})["records"]
-    # a different bucket is a different snapshot
+    # a different bucket is a different snapshot: DTE 46 and 50 join
     wider = ChainQuoteRows("chain", store.node_params(**dict(CHAIN_PARAMS, dte_max=60)))
-    assert wider.fingerprint()["rows"] == 6 and len(calls) == 2
+    assert wider.fingerprint()["rows"] == 9 and len(calls) == 2
 
 
 def test_chain_reader_drops_a_zero_dte_and_reads_a_second_symbol_by_name(store_factory):
