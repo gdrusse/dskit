@@ -25278,7 +25278,7 @@ s_ik` target shares after step `k` (expression, from `q_(i,-1) = h_i`).
       gross (no leverage) at k=0; the per-name row binds on BUYS only: a holding already above xcap_i is never
       forced to sell and cannot be added to. xeff_i is the per-name x_max the child's instruments() already
       supplies (the doorway's elig_hi row is unchanged; x_max = 0 stays the forced-exit route,
-      tests/pipeline_libs/test_pyomo.py:743-767)
+      tests/pipeline_libs/test_pyomo.py:743-748, test_held_inventory_alone_still_solves)
 (J6)  W_o = c_open + sum_i sum_{k<max(K_i(t),1)} [ (P_io(k) - kappa^s_i) s_ik - (P_io(k) + kappa^b_i) b_ik ]
             + sum_i q_(i,max(K_i(t),1)-1) * ( P_io(K_i(t)) - kappa^x_i )             terminal wealth, one instant
       (a name outside the solve contributes nothing; a mandatory exit has K_i(t) = 0, so its terminal term reads
@@ -25433,7 +25433,7 @@ every mechanism here, and the child is a wrapper that names the market:
   | `_bundle_problems` (`nodes_capital.py:504-722`) | unchanged |
   | `EquityKellyMIO.validate_inputs` (1013-1192), `_binding_problems` (1300-1323) | unchanged |
   | `_entity_problems` (1325-1354) | overridden by the subclass: binds `pi_hat_path`/`pi_widened_path` and the outcome band per cell `SYM:hNN` |
-  | `instruments` (1392-1564) | overridden IN FULL, not reused as a body: today's method is one loop that also reads `band_bps` unconditionally (1527-1529), so the refactor extracts `_routed_rows(bundle, survivors, confirmed, asof_ms, horizon_of)` (the gate/cap/staleness/price routing, 1417-1441, with the cap check at 1429 reading `horizon_of(row)`: the base passes `row["lead"]`, the joint override passes `row["admitted_horizon"]`, since every path row carries `lead = H`), `_mandatory_exit_row` (1473-1490) and `_account_envelope(rows, portfolio, worst_r, best_r, cost_bound)` (the wealth envelope and account dict, 1535-1563, with the return extremes passed in rather than accumulated inside, 1465-1466 and 1530-1531 today; the base passes its single-period extremes and `cost_bound = 0`, the joint override passes the extremes already scaled by `2H` and the cost bound below) as helpers the joint override calls; the joint override passes `worst_r`/`best_r` as the minimum and maximum of `r_io(k)` over EVERY step and scenario of every name's path AND widens the span by `2H`, which is a proven bound: (J6) telescopes per name into `P_io(0) h_i + sum_k q_ik (P_io(k+1) - P_io(k))` less costs, with `p_i q_ik <= xeff_i` at every step and `|P_io(k+1) - P_io(k)| <= 2 p_i max|r|`, so the path term is bounded by `2H x notional_cap x max|r|` however often the plan reverses; costs only lower `W_o`, so the LOWER edge is widened further by the cost of a plan that trades every step in both directions, `cost_bound = H x sum_i (kappa^b_i + kappa^s_i) x xeff_i / p_i`, applied INSIDE the existing floor, `wealth_lo = max(0.01 w0_mark, w0_mark - span - cost_bound)`, so `wealth_lo > 0` holds by construction as today (1561); the 1.5 pad and the 5% floor are unchanged, and `model.W`'s bounds (`pyomo.py:1169`) make an envelope breach an infeasible solve, never a silent one; T44 pins the widening with a plan that reverses at every step; the joint override routes on `admitted_horizon`, sets `x_max = xeff_i`, steps = `plan_horizon`, builds `[steps x S]` payoffs, never reads `band_bps`, classifies each routed-out HELD name by a STRUCTURED reason code that `_routed_rows` returns beside its message (`not_survivor`, `no_cap`, `zero_cap`, `cap_mismatch`, `future`, `stale`, `below_min_price`; today it returns free text only, 1420-1439), never by matching text (permanent: `not_survivor`, `no_cap`, `zero_cap`; transient: `stale`, `below_min_price`; producer fault: `future`, `cap_mismatch`) and builds `names = set(by_name) | (set(held) - transient_skips)` (today's `set(by_name) | set(held)` at 1443 is the base's line), adding each transient skip's `shares x mark` to `carried_wealth`; a held name in `names` with no row (`kstar_i = 0`, dropped by the publisher, or a permanent route-out) gets the mandatory-exit row as a one-step `[1 x S]` zero matrix; a last-decision name is outside the solve altogether (Sets) |
+  | `instruments` (1392-1564) | overridden IN FULL, not reused as a body: today's method is one loop that also reads `band_bps` unconditionally (1527-1529), so the refactor extracts `_routed_rows(bundle, survivors, confirmed, asof_ms, horizon_of)` (the gate/cap/staleness/price routing, 1417-1441, with the cap check at 1429 reading `horizon_of(row)`: the base passes `row["lead"]`, the joint override passes `row["admitted_horizon"]`, since every path row carries `lead = H`), `_mandatory_exit_row` (1473-1490) and `_account_envelope(rows, portfolio, worst_r, best_r, cost_bound)` (the wealth envelope and account dict, 1535-1563, with the return extremes passed in rather than accumulated inside, 1465-1466 and 1530-1531 today; the base passes its single-period extremes and `cost_bound = 0`, the joint override passes the extremes already scaled by `2H` and the cost bound below) as helpers the joint override calls; the joint override passes `worst_r`/`best_r` as the minimum and maximum of `r_io(k)` over EVERY step and scenario of every name's path AND widens the span by `2H`, which is a proven bound: (J6) telescopes per name into `P_io(0) h_i + sum_k q_ik (P_io(k+1) - P_io(k))` less costs, with `p_i q_ik <= xeff_i` at every step and `|P_io(k+1) - P_io(k)| <= 2 p_i max|r|`, so the path term is bounded by `2H x notional_cap x max|r|` however often the plan reverses; costs only lower `W_o`, so the LOWER edge is widened further by the cost of a plan that trades every step in both directions, `cost_bound = H x sum_i (kappa^b_i + kappa^s_i) x xeff_i / p_i`, applied INSIDE the existing floor, `wealth_lo = max(0.01 w0_mark, w0_mark - span - cost_bound)`, so `wealth_lo > 0` holds by construction as today (1561); the 1.5 pad and the 5% floor are unchanged, and `model.W`'s bounds (`pyomo.py:1169`) make an envelope breach an infeasible solve, never a silent one; T44 pins the widening with a plan that reverses at every step; the joint override routes on `admitted_horizon`, sets `x_max = xeff_i`, steps = `plan_horizon`, builds `[steps x S]` payoffs, never reads `band_bps`, classifies each routed-out HELD name by a STRUCTURED reason code that `_routed_rows` returns in a SECOND mapping beside the unchanged message map (`not_survivor`, `no_cap`, `zero_cap`, `cap_mismatch`, `future`, `stale`, `below_min_price`; today only the messages exist, 1420-1439): the base's `evidence["routed_out"]` keeps exactly today's strings, which `TestRealSolve` (`tests/test_nodes_capital.py:401-516`, e.g. `test_a_stat_test_miss_routes_the_name_out` 422, `test_a_price_below_min_price_is_routed_out` 443) and `TestConfirmedCapEnforcement` (1421-1755, e.g. 1562, 1575, 1588, 1602, 1635) pin as strings and substrings, and the joint kind adds `evidence["routed_codes"]` beside it; the classification keys on the codes, never on text (permanent: `not_survivor`, `no_cap`, `zero_cap`; transient: `stale`, `below_min_price`; producer fault: `future`, `cap_mismatch`) and builds `names = set(by_name) | (set(held) - transient_skips)` (today's `set(by_name) | set(held)` at 1443 is the base's line), adding each transient skip's `shares x mark` to `carried_wealth`; a held name in `names` with no row (`kstar_i = 0`, dropped by the publisher, or a permanent route-out) gets the mandatory-exit row as a one-step `[1 x S]` zero matrix; a last-decision name is outside the solve altogether (Sets) |
   | `payoffs` (1566-1575) | overridden: `[steps x S]` per name |
   | `validate_params` (879-978) -> helpers; `domain_constraints` (1577-1652) -> `_hfdr_row`/`_band_rows` | the refactor above; the subclass overrides `_policy_problems` and `_band_rows` |
   | `run` (1656-1676) | unchanged |
@@ -25441,9 +25441,13 @@ every mechanism here, and the child is a wrapper that names the market:
   step dimension (`payoffs` returns per-name `[steps x S]` matrices and
   `instruments` a per-name step count); the plan variables, the
   expected-path cash rows (J3), the terminal valuation (J6), an optional
-  `account["carried_wealth"]` (default 0) added to `w0_mark` (`pyomo.py:
-  1109`), to every `W_o` (`_wealth_rule`, 1222-1232) and to the recompute
-  (1388-1411) as a constant, and the extended recompute. The step
+  `account["carried_wealth"]` (read beside `cash_reserve` and
+  `gross_limit`, the doorway's existing optional account keys, `pyomo.py:
+  1086-1100`; default 0; refused by name unless a finite number `>= 0`,
+  the same guard its neighbours carry, 1080-1100) added to `w0_mark`
+  (1109), to every `W_o` (`_wealth_rule`, 1222-1232) and to the recompute
+  (1388-1411) as a constant, never to `cash0` or `buying_power0`, and the
+  extended recompute. The step
   dimension is OPT-IN: `payoffs` may still return today's flat `(S,)`
   array per name (`pyomo.py:825`; steps = 1) or a `[steps x S]` matrix,
   and `instruments` rows may carry `steps` (default 1); a flat, one-step
@@ -25469,11 +25473,13 @@ every mechanism here, and the child is a wrapper that names the market:
   `max_position_notional`, the staleness knobs), `_provenance_problems`,
   the existing `_intake_policy_problems`, and `_hfdr_row` / `_band_rows`.
   Same params, same refusal texts, same rows and solutions; the existing
-  suite is the regression net, so `TestGrowthPolicyV11NoCapNoTicket`
-  (`tests/test_nodes_capital.py:517-542`),
-  `TestNoTradeBandNeverStrandsAPosition` (1076) and
-  `TestNoTradeBandFloorsAreLoadBearing` (1102) keep pinning it unchanged
-  (T31). The subclass overrides
+  suite is the regression net, so `TestRealSolve` (`tests/
+  test_nodes_capital.py:401-516`, which pins the `routed_out` strings),
+  `TestGrowthPolicyV11NoCapNoTicket` (517-542),
+  `TestNoTradeBandNeverStrandsAPosition` (1076),
+  `TestNoTradeBandFloorsAreLoadBearing` (1102) and
+  `TestConfirmedCapEnforcement` (1421-1755, the cap route-out strings)
+  keep pinning it unchanged (T31). The subclass overrides
   `_policy_problems` (refuses `band_bps`), `_band_rows` (none),
   `_entity_problems` (per-cell binding), `instruments` and `payoffs`
   (path rows); every other check is inherited, not duplicated.
@@ -25544,7 +25550,9 @@ every mechanism here, and the child is a wrapper that names the market:
   path row's `admitted_horizon` comes from the same gate artifact as the
   cap, so a mismatch is a producer inconsistency, not a market condition)
   are PRODUCER FAULTS that refuse the minute's solve by name
-  (`mio_refused`, no trade for any name), as a stale bundle refuses today.
+  (`mio_refused`, no trade for any name), as a stale bundle refuses today;
+  the refusal is a recorded row, the report counts it, and a whole session
+  of refused minutes aborts the run (T50), so a persistent fault is loud.
   The route-out reason text at 1430-1432 reads `horizon_of(row)`, so a
   path row's evidence names its own admitted horizon, not `H`. This is the seam that is dead today
   (`positions: {}`) and live under the joint policy, so T45 drives every
@@ -25793,8 +25801,8 @@ green without edits, and the refactored `EquityKellyMIO` returns the same
 problems list and builds the same rows on the existing fixtures; (T32) the
 standalone joint document pins the stopped run's inventory and gates by
 sha256 and refuses a drifted artifact, and `test_every_run_document_loads`
-(`tests/test_configs.py:118-121`), which globs every `run-*.json`, loads
-it; (T34) a two-name path bundle with admitted horizons 5 and 10 passes
+(`children/intraday_equities/tests/test_configs.py:118-122`), which globs
+every `run-*.json`, loads it; (T34) a two-name path bundle with admitted horizons 5 and 10 passes
 `ForecastBundle.__init__`, `_bundle_problems` and `validate_inputs`
 unchanged and reaches the solver; (T35) a queued full sell landing on the
 session's last bar is refused `oversell` after the backstop, and no fill
@@ -25845,17 +25853,31 @@ absent from the solve, still marked in NAV, recorded in
 them; a permanently routed-out held name is sold in full at `k = 0`; a
 row from the future or a cap mismatch refuses the minute's solve; every
 other held name enters with its `int` shares; the classification is
-driven by the reason code (a mutated message text changes nothing); and
-after the fills the book's aggregate gross never exceeds NAV; (T48)
+driven by the reason code (a mutated message text changes nothing); the
+base kind's `evidence.routed_out` strings are unchanged (the seven
+existing string assertions in `TestRealSolve` and
+`TestConfirmedCapEnforcement` pass unedited); after the fills the book's
+aggregate gross never exceeds NAV; and no buy is ever funded beyond real
+cash plus the tick's sale proceeds (an excluded position's mark funds
+nothing); (T48)
 `carried_wealth`: with one excluded position the solve's `W^0` equals the
 replay's NAV, every `W_o` carries the constant, the CVaR and the chosen
 trades equal those of the same solve run without the position but with
-`c_open` AND the cash reserve `R` both raised by its mark (the constant is
-wealth that cannot be spent), and `wealth_lo < W^0 < wealth_hi` holds;
+`c_open` AND the cash reserve `R` both raised by its mark while
+`buying_power0` stays the real cash (the constant is wealth that can
+neither be spent nor fund a buy), and `wealth_lo < W^0 < wealth_hi`
+holds; (T50) fail-loud: a producer-fault refusal is recorded as a
+`mio_refused` row with its reason code and counted by the report as
+today, and a session in which every decision minute was refused aborts
+the run instead of trading nothing silently;
 (T49) the doorway's existing suite (`tests/pipeline_libs/test_pyomo.py`,
 flat one-step fixtures) passes unedited against the extended
 `ScenarioUtilitySolve`, and a flat `(S,)` payoff builds a model with no
-plan variables.
+plan variables, asserted through the suite's own `Spy` pattern
+(`test_null_cardinality_adds_no_cap_row`: the built model has no plan
+components); (T51) a `carried_wealth` that is NaN, infinite or negative
+is refused by name before any model is built, the sibling of
+`test_a_nan_account_cash_reserve_is_refused`.
 Plan §11: (T26) a diagnostic records realized return by minutes since the
 entry signal for every fill, so the half-life-versus-latency refusal can be
 applied with a measured number.
@@ -26041,6 +26063,8 @@ citations `tests/pipeline_libs/test_pyomo.py:743-767` and
 | 8 | `2682249` | tests/integration (Sonnet) | C0 M1 m2 n2; every round-7 Major fixed (M4 partially); the fill-policy digest recomputed and matched | T47 did not gate the per-cell degenerate-draw refusal |
 | 9 | `6aa0ac0` | correctness/authority (Sonnet) | C0 M3 m3 n1; round-8 M1/M3 and T47 fixed, the route-out mechanism partially | `carried_wealth` had no doorway channel except cash (which would corrupt the cash floor); the cap-shrink branch (1429) and the from-the-future branch (1436) were unclassified |
 | 9 | `6aa0ac0` | tests/integration (Sonnet) | C0 M2 m1 n0; round-8 M1/M3 and T47 fixed, the mechanism partially | the doorway's own flat-fixture suite (`test_pyomo.py:626-1020`) was not named as a regression net; no test for the classification, `evidence.routed_out` or `carried_wealth` |
+| 10 | `9a579ac` | correctness/authority (Sonnet) | C0 M1 m2 n0; every round-9 Major fixed (B partially); the one-step reduction and the `carried_wealth` algebra re-derived by hand | structured route-out codes would change the base kind's `evidence.routed_out` shape, pinned as strings by seven tests in `TestRealSolve` and `TestConfirmedCapEnforcement` |
+| 10 | `9a579ac` | tests/integration (Sonnet) | C0 M2 m1 n2; every round-9 item fixed; the fill-policy digest corroborated through the pinned documents and tests | the same `routed_out` shape risk; `carried_wealth` had no finiteness refusal unlike every sibling account key |
 
 **Checkpoint, continued (after round 4).** The round-3 inventory reached
 the functions that READ the seam fields but not the closed sets that ADMIT
@@ -26135,3 +26159,14 @@ envelope's floor; T48 for the constant; the T31 citation pairing fixed;
 the step dimension and `carried_wealth` are opt-in so the doorway's own
 flat-fixture suite runs unedited (T49); `_routed_rows` returns structured
 reason codes and the classification keys on them (T45); "five bars".
+
+Round-10 dispositions (candidate 11): the reason codes live in a second
+mapping, `evidence["routed_codes"]`, so the base kind's
+`evidence["routed_out"]` strings and the seven tests that pin them
+(`TestRealSolve`, `TestConfirmedCapEnforcement`) are untouched and named
+in T31; T45 asserts the buying-power fact it was cited for; T50 makes a
+persistent producer fault loud (a session of refused minutes aborts);
+`carried_wealth` is read beside the doorway's optional account keys,
+refused by name unless finite and `>= 0` (T51), and T48 holds
+`buying_power0` fixed; T49 asserts the absence of plan components through
+the suite's `Spy` pattern; two citation ranges narrowed.
