@@ -1106,3 +1106,99 @@ class TestSolveRecord:
         assert node.solve_record is not None and node.solve_record.termination == "optimal"
         node.run(_ctx(tmp_path), _su_fixture(names=[], rows={}, account={"cash": 1.0}))
         assert node.solve_record is None
+
+
+class TestScenarioUtilityTranches:
+    """ADR-0188 formulation B: a name's payoff may be a matrix of exit-horizon
+    tranches (one scenario row per horizon); the doorway allocates the target
+    shares across tranches with continuous ``e`` variables. A flat payoff is
+    the one-tranche case and must build exactly today's model."""
+
+    def test_flat_payoffs_build_no_tranche_variables(self, tmp_path):
+        built = []
+
+        class Spy(TwoNameSolve):
+            def build_model(self, inputs, params):
+                built.append(super().build_model(inputs, params))
+                return built[-1]
+
+        Spy("size", SU_PARAMS).run(_ctx(tmp_path), _su_fixture())
+        assert built and not hasattr(built[0], "e")
+        assert not hasattr(built[0], "tranche_allocation")
+
+    def test_a_one_tranche_matrix_solves_exactly_like_a_flat_payoff(self, tmp_path):
+        flat = _su_fixture()
+        matrix = _su_fixture()
+        matrix["r"] = {name: [list(values)] for name, values in flat["r"].items()}
+        out_flat = _su_node().run(_ctx(tmp_path), flat)
+        out_matrix = _su_node().run(_ctx(tmp_path), matrix)
+        assert out_matrix["target"] == out_flat["target"]
+        assert out_matrix["trades"] == out_flat["trades"]
+        assert out_matrix["metrics"]["expected_utility"] == pytest.approx(
+            out_flat["metrics"]["expected_utility"]
+        )
+
+    def test_tranches_send_every_target_share_to_the_horizon_that_pays(self, tmp_path):
+        fixture = _su_fixture()
+        # AAA: exiting at horizon 1 loses in both scenarios, exiting at
+        # horizon 2 gains in both; BBB stays flat, one tranche.
+        fixture["r"] = {"AAA": [[-0.02, -0.03], [0.05, 0.04]], "BBB": [0.0, 0.0]}
+        node = _su_node(cvar_limit=None, cardinality=None, min_ticket=0.0)
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["target"].get("AAA", 0) > 0
+        tranches = out["metrics"]["tranches"]["AAA"]
+        assert len(tranches) == 2
+        assert tranches[0] == pytest.approx(0.0, abs=1e-6)
+        assert tranches[1] == pytest.approx(out["target"]["AAA"], abs=1e-6)
+        assert "BBB" not in out["metrics"]["tranches"]
+
+    def test_tranche_allocation_sums_to_the_target_in_every_name(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": [[0.01, 0.02], [0.02, 0.01]], "BBB": [[0.00, 0.01], [0.01, 0.00]]}
+        node = _su_node(cvar_limit=None, cardinality=None, min_ticket=0.0)
+        out = node.run(_ctx(tmp_path), fixture)
+        for name, target in out["target"].items():
+            assert sum(out["metrics"]["tranches"][name]) == pytest.approx(target, abs=1e-6)
+
+    def test_mismatched_tranche_lengths_are_refused_by_name(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": [[0.01, 0.02], [0.02]], "BBB": [0.0, 0.0]}
+        with pytest.raises(ValueError, match="AAA"):
+            _su_node().run(_ctx(tmp_path), fixture)
+
+    def test_carried_wealth_is_wealth_but_never_cash(self, tmp_path):
+        base = _su_fixture()
+        carried = _su_fixture()
+        carried["account"]["carried_wealth"] = 2500.0
+        carried["account"]["wealth_lo"] = 7500.0
+        carried["account"]["wealth_hi"] = 17500.0
+        out_base = _su_node(cvar_limit=None).run(_ctx(tmp_path), base)
+        out_carried = _su_node(cvar_limit=None).run(_ctx(tmp_path), carried)
+        assert out_carried["trades"] == out_base["trades"]
+        assert out_carried["cash_after"] == pytest.approx(out_base["cash_after"])
+        assert out_carried["metrics"]["wealth_min"] == pytest.approx(
+            out_base["metrics"]["wealth_min"] + 2500.0
+        )
+        assert out_carried["metrics"]["wealth_max"] == pytest.approx(
+            out_base["metrics"]["wealth_max"] + 2500.0
+        )
+
+    def test_carried_wealth_cannot_fund_a_buy(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["account"]["cash"] = 120.0
+        fixture["account"]["buying_power"] = 120.0
+        fixture["account"]["carried_wealth"] = 50000.0
+        fixture["account"]["wealth_lo"] = 25000.0
+        fixture["account"]["wealth_hi"] = 75000.0
+        out = _su_node(cvar_limit=None, cardinality=None, min_ticket=0.0).run(_ctx(tmp_path), fixture)
+        notional = sum(
+            shares * (100.0 if name == "AAA" else 50.0) for name, shares in out["target"].items()
+        )
+        assert notional <= 120.0 + 1e-6
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, "10"])
+    def test_a_bad_carried_wealth_is_refused_by_name(self, tmp_path, bad):
+        fixture = _su_fixture()
+        fixture["account"]["carried_wealth"] = bad
+        with pytest.raises(ValueError, match="carried_wealth"):
+            _su_node().run(_ctx(tmp_path), fixture)

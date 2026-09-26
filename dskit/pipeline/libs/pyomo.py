@@ -818,14 +818,25 @@ class ScenarioUtilitySolve(PyomoSolve):
       is ``name -> {"price", "held", "x_max", "cost_buy", "cost_sell"}``,
       optionally ``"exit_cost_per_share"`` (default 0); ``account`` is
       ``{"cash", "buying_power", "wealth_lo", "wealth_hi", "sale_credit"}``,
-      optionally ``"cash_reserve"`` (default 0) and ``"gross_limit"``
-      (default ``None`` — unconstrained). ``names`` empty (no eligible
+      optionally ``"cash_reserve"`` (default 0), ``"gross_limit"``
+      (default ``None`` — unconstrained) and ``"carried_wealth"`` (default
+      0; finite, ``>= 0``): wealth the caller holds OUTSIDE this solve
+      (positions it is not sizing this tick). It is a constant in the
+      wealth mark and in every scenario wealth, never in cash, so it can
+      neither be spent nor fund a buy. ``names`` empty (no eligible
       candidate AND nothing held) is the ONLY case that skips the solver.
     * :meth:`payoffs` — ``(weights, r)``: scenario weights (summing to
       one) and ``name -> (n_omega,) scenario gross-return array``,
       ALREADY carrying any belief haircut or recentering the caller's
       own domain requires (a false-signal or parameter-uncertainty
-      correction on ``mu`` is domain policy, not this class's job).
+      correction on ``mu`` is domain policy, not this class's job). A
+      name may instead carry a ``(n_tranches, n_omega)`` matrix: one
+      scenario row per EXIT HORIZON (ADR-0188 formulation B). The
+      doorway then splits that name's target shares across tranches with
+      continuous ``e[name, k]`` variables summing to ``q[name]``, values
+      tranche ``k`` at its own row, and reports the split in
+      ``metrics["tranches"]``. A flat vector is the one-tranche case and
+      builds exactly today's rows.
     * :meth:`domain_constraints` — add the caller's own rows to the
       model in place (an HFDR cap, a no-trade band, an opportunity-cost
       charge): nothing here, because those ARE domain policy.
@@ -1065,17 +1076,42 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"{self.key}: payoffs() names {sorted(r)} do not match instruments() names "
                 f"{sorted(names)}"
             )
-        r = {i: np.asarray(r[i], dtype=float) for i in names}
+        payoffs_r = r
+        r, tranches = {}, {}
         for i in names:
-            if r[i].shape != (n_omega,):
+            try:
+                arr = np.asarray(payoffs_r[i], dtype=float)
+            except (TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"{self.key}: payoffs()[{i!r}] has shape {r[i].shape}, expected "
-                    f"({n_omega},)"
-                )
-            if not np.all(np.isfinite(r[i])):
+                    f"{self.key}: payoffs()[{i!r}] must be a scenario vector or a matrix "
+                    "of equal-length tranche vectors"
+                ) from exc
+            if arr.ndim == 1:
+                if arr.shape != (n_omega,):
+                    raise ValueError(
+                        f"{self.key}: payoffs()[{i!r}] has shape {arr.shape}, expected "
+                        f"({n_omega},)"
+                    )
+                tranches[i] = 1
+            elif arr.ndim == 2:
+                if arr.shape[0] < 1 or arr.shape[1] != n_omega:
+                    raise ValueError(
+                        f"{self.key}: payoffs()[{i!r}] has shape {arr.shape}, expected "
+                        f"(n_tranches >= 1, {n_omega})"
+                    )
+                tranches[i] = int(arr.shape[0])
+                if tranches[i] == 1:
+                    arr = arr[0]  # a one-tranche matrix IS the flat case
+            else:
                 raise ValueError(
-                    f"{self.key}: payoffs()[{i!r}] must be all finite numbers, got {r[i]!r}"
+                    f"{self.key}: payoffs()[{i!r}] has {arr.ndim} dimensions; a scenario "
+                    "vector or a tranche matrix is expected"
                 )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    f"{self.key}: payoffs()[{i!r}] must be all finite numbers, got {arr!r}"
+                )
+            r[i] = arr
 
         for key in ("wealth_lo", "wealth_hi", "cash", "buying_power", "sale_credit"):
             if key not in account or not number_ok(account[key]):
@@ -1093,6 +1129,14 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"{self.key}: account['gross_limit'] must be a finite number or null "
                 f"(unconstrained), got {account['gross_limit']!r}"
             )
+        carried = account.get("carried_wealth", 0.0)
+        if not number_ok(carried) or carried < 0.0:
+            raise ValueError(
+                f"{self.key}: account['carried_wealth'] must be a finite number >= 0 "
+                f"when given, got {carried!r} — it is wealth held outside this solve, "
+                "never cash"
+            )
+        carried = float(carried)
         cash0 = float(account["cash"])
         buying_power0 = float(account["buying_power"])
         sale_credit = float(account["sale_credit"])
@@ -1106,7 +1150,11 @@ class ScenarioUtilitySolve(PyomoSolve):
         # wealth_lo < wealth_hi even when net worth itself is deeply
         # negative) — net worth is the actual thing an operator would fix,
         # so its refusal must win the race.
-        w0_mark = cash0 + sum(float(rows[i]["price"]) * float(rows[i]["held"]) for i in names)
+        w0_mark = (
+            cash0
+            + sum(float(rows[i]["price"]) * float(rows[i]["held"]) for i in names)
+            + carried
+        )
         if w0_mark <= 0.0:
             raise ValueError(
                 f"{self.key}: account net worth (cash + mark value of held instruments) "
@@ -1219,12 +1267,31 @@ class ScenarioUtilitySolve(PyomoSolve):
                 expr=sum(model.x[i] for i in names) <= float(gross_limit)
             )
 
+        # Exit-horizon tranches (ADR-0188 formulation B): a name whose payoff
+        # is a (K, S) matrix splits its target shares across K continuous
+        # tranche variables, each valued at its own scenario row. A flat
+        # payoff (K = 1) keeps today's single q[i] term and adds nothing.
+        tranche_names = [i for i in names if tranches[i] > 1]
+        tranche_ix = [(i, k) for i in tranche_names for k in range(tranches[i])]
+        if tranche_ix:
+            model.e = Var(tranche_ix, domain=NonNegativeReals)
+            model.tranche_allocation = Constraint(
+                tranche_names,
+                rule=lambda m, i: sum(m.e[i, k] for k in range(tranches[i])) == m.q[i],
+            )
+
+        def _unit_value(i, k, o):
+            row_return = float(r[i][o]) if tranches[i] == 1 else float(r[i][k][o])
+            return float(rows[i]["price"]) * (1.0 + row_return) - float(
+                rows[i].get("exit_cost_per_share", 0.0)
+            )
+
         def _wealth_rule(m, o):
-            return m.W[o] == m.cash_after + sum(
-                m.q[i]
-                * (
-                    float(rows[i]["price"]) * (1.0 + float(r[i][o]))
-                    - float(rows[i].get("exit_cost_per_share", 0.0))
+            return m.W[o] == m.cash_after + carried + sum(
+                (
+                    m.q[i] * _unit_value(i, 0, o)
+                    if tranches[i] == 1
+                    else sum(m.e[i, k] * _unit_value(i, k, o) for k in range(tranches[i]))
                 )
                 for i in names
             )
@@ -1277,6 +1344,8 @@ class ScenarioUtilitySolve(PyomoSolve):
             "cvar_alpha": cvar_alpha,
             "cvar_limit": cvar_limit,
             "gamma": gamma,
+            "tranches": tranches,
+            "carried_wealth": carried,
         }
 
         self.domain_constraints(model, inputs, params)
@@ -1384,15 +1453,42 @@ class ScenarioUtilitySolve(PyomoSolve):
                 )
 
         weights, r = meta["weights"], meta["r"]
+        tranches, carried = meta["tranches"], meta["carried_wealth"]
         n_omega = len(weights)
+        # The tranche split is a continuous EXPECTATION (never an order), so
+        # the solver's values are read, then checked: non-negative and
+        # summing to the integer target of the name.
+        allocation = {}
+        for i in names:
+            if tranches[i] == 1:
+                continue
+            values = [float(model.e[i, k].value or 0.0) for k in range(tranches[i])]
+            q = target.get(i, 0)
+            if min(values) < -1e-6 or abs(sum(values) - q) > 1e-6 * max(1.0, float(q)):
+                raise AssertionError(
+                    f"{self.key}: {i}: tranche allocation {values!r} does not split the "
+                    f"target {q} (non-negative, summing to the target)"
+                )
+            allocation[i] = [max(v, 0.0) for v in values]
+
+        def _unit_value(i, k, o):
+            row_return = float(r[i][o]) if tranches[i] == 1 else float(r[i][k][o])
+            return float(rows[i]["price"]) * (1.0 + row_return) - float(
+                rows[i].get("exit_cost_per_share", 0.0)
+            )
+
         wealth = np.array(
             [
                 cash_after
+                + carried
                 + sum(
-                    target.get(i, 0)
-                    * (
-                        float(rows[i]["price"]) * (1.0 + float(r[i][o]))
-                        - float(rows[i].get("exit_cost_per_share", 0.0))
+                    (
+                        target.get(i, 0) * _unit_value(i, 0, o)
+                        if tranches[i] == 1
+                        else sum(
+                            allocation[i][k] * _unit_value(i, k, o)
+                            for k in range(tranches[i])
+                        )
                     )
                     for i in names
                 )
@@ -1431,6 +1527,7 @@ class ScenarioUtilitySolve(PyomoSolve):
                 "cvar_eta": cvar_eta,
                 "wealth_min": float(wealth.min()),
                 "wealth_max": float(wealth.max()),
+                "tranches": allocation,
             },
         }
 
