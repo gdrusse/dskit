@@ -16,12 +16,21 @@ must not import its sibling package at module level (the purity gate);
 ``scan_stream`` is therefore imported inside the scan, exactly as a node
 pack names its library inside ``run()``.
 
+Two seams a subclass may use (ADR-0187): the intake bounds
+``scan_stream`` already owns — :meth:`ObservationRows.keep_values` and
+:meth:`ObservationRows.admit` — and an opt-in, process-local memo of the
+deduplicated snapshot (:attr:`ObservationRows.reuse_snapshot`) so a
+walk-forward that builds a fresh reader per fold parses a large stream
+once per process rather than once per fold.
+
 Import cost: stdlib + the pipeline core.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
 
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
@@ -62,6 +71,12 @@ DEFAULT_TS_OUT = ASOF_FIELD
 #: the serving side imports the spelling rather than restating it.
 SOURCE_BINDING_KIND = "onboarding-stream"
 DIGEST_RECIPE_KIND = "stream-digest"
+
+#: The opt-in snapshot memo (ADR-0187): class -> ``(key, records, digest)``,
+#: ONE entry per reusing class, so a process holds at most one snapshot per
+#: class and a new key simply replaces the old entry. Keyed by the exact
+#: class, never its bases, so sibling readers never share.
+_SNAPSHOT_MEMO = {}
 
 
 def _ok_name(value):
@@ -117,6 +132,15 @@ class ObservationRows(Node):
 
     role = "data"
     outputs = ("records",)
+
+    #: Opt-in (ADR-0187). A subclass that sets this shares ONE deduplicated,
+    #: stamped, pre-projection snapshot per class across every instance whose
+    #: canonical params and store token (every acquisition member's name,
+    #: size and mtime) agree; anything else rescans. :meth:`project` still
+    #: runs per instance and MUST return fresh objects — the scan refuses a
+    #: projection that hands the memo itself downstream. The base never
+    #: reuses.
+    reuse_snapshot = False
 
     _PARAMS = (
         "root",
@@ -350,6 +374,29 @@ class ObservationRows(Node):
         """Give the inclusive upper bound on ``acquired_at``, or ``None``."""
         return self.params.get("as_of_acquisition_ms")
 
+    def keep_values(self):
+        """Give ``scan_stream``'s intake allow-list, or ``None`` (ADR-0187).
+
+        Returns
+        -------
+        dict or None
+            Field name -> the values of that field to read; every other
+            row is skipped at intake. ``None`` reads every row.
+        """
+        return None
+
+    def admit(self):
+        """Give ``scan_stream``'s intake predicate, or ``None`` (ADR-0187).
+
+        Returns
+        -------
+        callable or None
+            ``admit(data, stamp)``, judged per row that cleared the declared
+            bounds; a false answer drops the row at intake. ``None`` admits
+            every row.
+        """
+        return None
+
     def project(self, records):
         """Turn the deduplicated raw rows into this kind's records.
 
@@ -373,9 +420,58 @@ class ObservationRows(Node):
     # -- the scan ----------------------------------------------------------
 
     def _scan(self):
-        """Read the stream once and memoize the projection."""
+        """Read the stream once per instance and memoize the projection."""
         if self._snap is not None:
             return self._snap
+        key = self._memo_key() if self.reuse_snapshot else None
+        held = _SNAPSHOT_MEMO.get(type(self)) if key is not None else None
+        if held is not None and held[0] == key:
+            records, self._digest = held[1], held[2]
+        else:
+            records = self._read()
+            if key is not None:
+                _SNAPSHOT_MEMO[type(self)] = (key, records, self._digest)
+        self._snap = self.project(records)
+        if key is not None and (
+            self._snap is records
+            or (bool(records) and bool(self._snap) and self._snap[0] is records[0])
+        ):
+            raise ValueError(
+                f"{self.key}: reuse_snapshot needs project() to return fresh "
+                "objects — it handed the shared snapshot itself downstream, "
+                "where any consumer could mutate what every later instance reads"
+            )
+        return self._snap
+
+    def _memo_key(self):
+        """Return the snapshot's reuse identity: class, canonical params, store token."""
+        return (type(self), json.dumps(self.params, sort_keys=True, default=repr),
+                self._store_token())
+
+    def _store_token(self):
+        """Every acquisition member of the stream with its size and mtime, or ``None``."""
+        from dskit.onboarding.codec import resolve_stream_file
+        from dskit.onboarding.observations import stream_dir
+
+        base = stream_dir(self.root(), self.source())
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return None  # the scan itself states the refusal
+        token = []
+        for name in names:
+            directory = os.path.join(base, name)
+            if not os.path.isdir(directory):
+                continue
+            path = resolve_stream_file(directory, self.stream())
+            if path is None:
+                continue
+            info = os.stat(path)
+            token.append((name, os.path.basename(path), info.st_size, info.st_mtime_ns))
+        return tuple(token)
+
+    def _read(self):
+        """Scan the stream through the seam; stamp and digest the winning rows."""
         # Imported HERE, not at module top: the pipeline core is stdlib-only
         # and the purity gate refuses a module-level import of the sibling
         # package — the same rule a node pack keeps for its library.
@@ -412,12 +508,13 @@ class ObservationRows(Node):
             # never touches. Dropping it there would serve a revision
             # the document declared itself blind to.
             as_of_acquisition_ms=self.as_of_acquisition_ms(),
+            keep_values=self.keep_values(),
+            admit=self.admit(),
         )
         if ts_field is not None and unit == "ms":
             records = self._stamp_ms(records, ts_field)
         self._digest = self._digest_of(records)
-        self._snap = self.project(records)
-        return self._snap
+        return records
 
     def _stamp_ms(self, records, ts_field):
         """Copy an epoch-ms field onto ``ts_out`` in place, honoring ``since_ms``."""

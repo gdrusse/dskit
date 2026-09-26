@@ -568,6 +568,168 @@ class TestPackShape:
 
 
 # ---------------------------------------------------------------------------
+# Intake hooks and opt-in snapshot reuse (ADR-0187 item 1)
+# ---------------------------------------------------------------------------
+
+
+def _counting_scan(monkeypatch):
+    """Route the kind's scan through a counting wrapper; return the call log."""
+    import dskit.onboarding.observations as seam
+
+    real = seam.scan_stream
+    calls = []
+
+    def wrapper(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(seam, "scan_stream", wrapper)
+    return calls
+
+
+class _Fresh(ObservationRows):
+    """A reusing subclass whose projection hands out fresh dicts."""
+
+    reuse_snapshot = True
+    projections = 0
+
+    def project(self, records):
+        type(self).projections += 1
+        return [dict(r) for r in records]
+
+
+class TestIntakeHooks:
+    def test_the_hooks_default_to_none_and_are_forwarded_verbatim(self, acquired, monkeypatch):
+        calls = _counting_scan(monkeypatch)
+        node = ObservationRows("obs", _params(acquired.root))
+        assert node.keep_values() is None and node.admit() is None
+        node.fingerprint()
+        assert calls[-1]["keep_values"] is None and calls[-1]["admit"] is None
+
+        allow = {"sym": ["A"]}
+
+        def only_small(data, stamp):
+            return data["value"] < 3.0
+
+        class Bounded(ObservationRows):
+            def keep_values(self):
+                return allow
+
+            def admit(self):
+                return only_small
+
+        Bounded("obs", _params(acquired.root)).fingerprint()
+        # the seam's own objects, never a re-spelling of them
+        assert calls[-1]["keep_values"] is allow and calls[-1]["admit"] is only_small
+
+    def test_the_hooks_bound_the_rows_at_intake(self, acquired, tmp_path):
+        class OnlyA(ObservationRows):
+            def keep_values(self):
+                return {"sym": ["A"]}
+
+        class OnlySmall(ObservationRows):
+            def admit(self):
+                return lambda data, stamp: data["value"] < 3.0
+
+        a = OnlyA("obs", _params(acquired.root)).run(_ctx(tmp_path), {})["records"]
+        assert [(r["sym"], r["value"]) for r in a] == [("A", 1.0), ("A", 3.0)]
+        small = OnlySmall("obs", _params(acquired.root)).run(_ctx(tmp_path), {})["records"]
+        assert [(r["sym"], r["value"]) for r in small] == [("A", 1.0), ("B", 2.0)]
+        # a bound is identity: the fingerprint moves with what the run would see
+        assert OnlyA("obs", _params(acquired.root)).fingerprint()["rows"] == 2
+        assert ObservationRows("obs", _params(acquired.root)).fingerprint()["rows"] == len(ROWS)
+
+
+class TestSnapshotReuse:
+    def test_the_base_kind_never_reuses(self, acquired, monkeypatch):
+        assert ObservationRows.reuse_snapshot is False
+        calls = _counting_scan(monkeypatch)
+        ObservationRows("obs", _params(acquired.root)).fingerprint()
+        ObservationRows("obs", _params(acquired.root)).fingerprint()
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("unit", ["iso", "ms"])
+    def test_a_reusing_subclass_scans_once_across_instances(
+        self, acquired, tmp_path, monkeypatch, unit
+    ):
+        calls = _counting_scan(monkeypatch)
+        params = _params(acquired.root, ts_field="ts", ts_unit=unit) if unit == "ms" \
+            else _params(acquired.root)
+        first, second = _Fresh("obs", params), _Fresh("obs", params)
+        fp = first.fingerprint()
+        assert second.fingerprint() == fp
+        assert len(calls) == 1
+        a = first.run(_ctx(tmp_path), {})["records"]
+        b = second.run(_ctx(tmp_path), {})["records"]
+        assert a == b and a is not b and all(x is not y for x, y in zip(a, b))
+        assert all(isinstance(r[ASOF_FIELD], int) for r in a)
+        a[0]["value"] = -1.0  # a consumer mutating its rows touches no other instance
+        assert second.run(_ctx(tmp_path), {})["records"][0]["value"] == 1.0
+        assert _Fresh("obs", params).fingerprint() == fp and len(calls) == 1
+
+    def test_project_runs_per_instance_on_a_memo_hit(self, acquired, monkeypatch):
+        calls = _counting_scan(monkeypatch)
+        before = _Fresh.projections
+        _Fresh("obs", _params(acquired.root)).fingerprint()
+        _Fresh("obs", _params(acquired.root)).fingerprint()
+        assert len(calls) == 1 and _Fresh.projections - before == 2
+
+    def test_a_changed_store_or_params_forces_a_rescan(self, acquired, tmp_path, monkeypatch):
+        import shutil
+
+        calls = _counting_scan(monkeypatch)
+        params = _params(acquired.root)
+        first = _Fresh("obs", params).fingerprint()
+        assert len(calls) == 1
+        # new params: a bound is part of what the snapshot IS
+        narrow = _Fresh("obs", _params(acquired.root, since_ms=_ms("2026-01-03")))
+        assert narrow.fingerprint()["rows"] == 2 and len(calls) == 2
+        # a new acquisition landing underneath
+        _write_rows(_data_file(tmp_path), [GROWTH], mode="a")
+        _acquire(acquired)
+        grown = _Fresh("obs", params).fingerprint()
+        assert len(calls) == 3 and grown["rows"] == len(ROWS) + 1
+        # a touched member (same bytes, new mtime)
+        newest = _members(acquired)[-1]
+        os.utime(newest, ns=(1, 1))
+        assert _Fresh("obs", params).fingerprint() == grown and len(calls) == 4
+        # an acquisition removed
+        shutil.rmtree(os.path.dirname(newest))
+        assert _Fresh("obs", params).fingerprint() == first and len(calls) == 5
+
+    def test_the_memo_holds_one_entry_per_class(self, acquired, monkeypatch):
+        calls = _counting_scan(monkeypatch)
+        narrow = _params(acquired.root, since_ms=_ms("2026-01-03"))
+        wide = _params(acquired.root)
+        _Fresh("obs", wide).fingerprint()
+        _Fresh("obs", narrow).fingerprint()   # replaces the entry
+        _Fresh("obs", narrow).fingerprint()   # a hit on the new entry
+        assert len(calls) == 2
+        _Fresh("obs", wide).fingerprint()     # the old entry is gone, so this scans again
+        assert len(calls) == 3
+
+        class Other(_Fresh):
+            pass
+
+        Other("obs", wide).fingerprint()      # a sibling class never shares
+        assert len(calls) == 4
+
+    def test_a_reusing_projection_must_hand_out_fresh_objects(self, acquired):
+        class Leaky(ObservationRows):
+            reuse_snapshot = True
+
+        class Shallow(ObservationRows):
+            reuse_snapshot = True
+
+            def project(self, records):
+                return list(records)
+
+        for cls in (Leaky, Shallow):
+            with pytest.raises(ValueError, match="reuse_snapshot"):
+                cls("obs", _params(acquired.root)).fingerprint()
+
+
+# ---------------------------------------------------------------------------
 # Conformance — the toolkit bar over the acquired root
 # ---------------------------------------------------------------------------
 
