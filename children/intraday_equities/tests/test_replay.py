@@ -2561,6 +2561,21 @@ def test_pending_reports_each_queued_entry_with_its_own_side_and_lead():
     ]
 
 
+def test_a_halt_queued_pending_entry_keeps_its_scheduled_fill_ms():
+    # Decided at _m(0), scheduled to fill at _m(1), which is halted: the
+    # queue moves the entry to _m(2). While it waits, its pending row must
+    # still carry the SCHEDULED instant _m(1), the key it was sized at and
+    # is billed at, not the bar it now waits for.
+    bars = [_bar("AAA", _m(i), 10.0, 10.0, halted=(i == 1)) for i in range(5)]
+    stub = _Orders({_m(0): [_decision("AAA", _m(0), 2)]})
+    out = EquityReplay(_policy({"halt_handling": "queue"}), decider=stub).run(bars)
+    assert stub.seen[_m(1)]["pending"] == [
+        {"symbol": "AAA", "lead": 2, "qty": 10, "side": "buy", "decision_ms": _m(0), "fill_ms": _m(1)},
+    ]
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    assert entry["asof_ms"] == _m(2)
+
+
 def test_carry_lots_returns_an_unclosed_lot_with_the_bars_it_still_owes():
     bars = [_bar("AAA", _m(i), 10.0, 10.0) for i in range(4)]
     decisions = [_decision("AAA", _m(1), 5)]

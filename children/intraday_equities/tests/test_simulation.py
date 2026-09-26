@@ -2014,17 +2014,23 @@ def test_minute_decider_reserves_a_pending_entry_at_its_fill_minutes_spread(mfx,
     monkeypatch.setattr(EquityKellyMIO, "run", spy)
     published = _mrun(mfx)
     decider = _minute_decider(published, mfx)
-    # The fixture's session opens 10:30 New York (EDT): +301 minutes is 15:31,
-    # inside the shipped 15:30-16:00 window.
-    t = _open(published["releases"][0]) + 301 * 60_000
+    # The fixture's session opens 10:30 New York (EDT). A buy decided at
+    # 15:29 (+299 min, default 1.0) was scheduled to fill at 15:30 (+300,
+    # inside the shipped 0.62 window) and is still queued at 16:00 (+330,
+    # default 1.0): only the FILL minute's key gives the window's rate, so a
+    # reservation keyed on the decision or on this tick is caught.
+    release = published["releases"][0]
+    decision, fill, t = (_open(release) + m * 60_000 for m in (299, 300, 330))
     costs = FILL_POLICY.costs
-    assert costs.time_of_day_multiplier(t) != 1.0
-    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 60_000, "fill_ms": t}
+    assert costs.time_of_day_multiplier(fill) != costs.time_of_day_multiplier(decision)
+    assert costs.time_of_day_multiplier(fill) != costs.time_of_day_multiplier(t)
+    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": decision, "fill_ms": fill}
     decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[queued]))
     block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
-    price = block["price"][block["ts"].index(t - 60_000)]
-    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, t)
+    price = block["price"][block["ts"].index(decision)]
+    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, fill)
     assert seen and seen[0] == pytest.approx(1020.0 - reserved)
+    assert seen[0] != pytest.approx(1020.0 - 3 * price - 3 * costs.buy_per_share("NOW", price, decision))
     without_key = {k: v for k, v in queued.items() if k != "fill_ms"}
     with pytest.raises(ValueError, match="fill_ms"):
         decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[without_key]))
