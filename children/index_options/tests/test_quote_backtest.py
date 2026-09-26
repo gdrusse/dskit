@@ -269,6 +269,42 @@ def test_a_target_outside_the_band_is_counted():
     assert metrics["implied_n_trades"] == 1  # its targets stay within +-0.05
 
 
+def test_the_band_is_classified_before_quotability_and_quotability_before_geometry():
+    # A too-narrow band is not a data-coverage gap: on a chain with no size at all the
+    # model's long call (+0.075) is outside a 0.06 band -> target_outside_band, while the
+    # implied targets (inside +-0.05) reach the snap and find nothing -> no_quotable_strike.
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, _ = _run([_row(ENTRY)], chain, FLAT, max_abs_log_moneyness=0.06)
+    for book in ("model", "always"):
+        assert metrics[f"{book}_n_skipped_target_outside_band"] == 1
+        assert metrics[f"{book}_n_skipped_no_quotable_strike"] == 0
+    assert metrics["implied_n_skipped_no_quotable_strike"] == 1
+    assert metrics["implied_n_skipped_target_outside_band"] == 0
+    # Both shorts of a constant forecast land on 100 (the puts stay sellable), but a put
+    # wing with no ask SIZE is found first: no_quotable_strike, not degenerate_strikes.
+    unbuyable = _chain(ENTRY, EXPIRY)
+    for q in unbuyable:
+        if q["right"] == "put":
+            q["ask_size"] = 0
+    metrics, _ = _run([_row(ENTRY, samples=[0.0] * 10)], unbuyable, FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1
+    assert metrics["model_n_skipped_degenerate_strikes"] == 0
+
+
+def test_a_missing_min_edge_knob_gates_the_model_book_at_zero():
+    # PARAMS omits min_edge_usd. Fees of 39 per leg leave a 4.00 credit
+    # (160 - 156); the losing draws take 5.00 off it -> E = -1.00, below the default gate
+    # of 0; the always book, never gated, trades the same 4.00 credit.
+    rows = [_row(ENTRY, samples=list(LOSING_DRAWS))]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=39.0)
+    assert "min_edge_usd" not in PARAMS and report["params"]["min_edge_usd"] == 0.0
+    entry = report["ledger"][0]
+    assert entry["books"]["model"]["credit_usd"] == pytest.approx(4.0)
+    assert entry["model_expected_pnl_usd"] == pytest.approx(-1.0)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["model_n_trades"] == 0
+    assert metrics["always_n_trades"] == 1
+
+
 def test_credit_bounds_are_classified_not_raised():
     costly, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=100.0)
     for book in CondorQuoteBacktest.BOOKS:
@@ -584,12 +620,15 @@ def test_the_long_put_sits_below_the_short_put_even_after_the_short_snapped_past
 
 def test_the_short_call_is_snapped_past_unsellable_calls_and_the_long_call_beyond_it():
     # call 106 has a bid but no bid SIZE, 107 no bid: short call target 105.13 -> 108
-    # (bid 0.7); long call target 107.79 -> 108 is the short, so 109 (ask 0.6).
-    # Credit 2.0 + 0.7 - 1.1 - 0.6 = 1.0 -> 97.4
-    chain = _set(_chain(ENTRY, EXPIRY), call106={"bid_size": 0}, call107={"bid": 0.0})
+    # (bid 0.7); long call target 107.79 -> 108 is the short, so 109. The call wing is ONE
+    # point wide, so the long call's ask is set to 0.8 (the default 0.6 would make the credit
+    # exactly 1.0 = the wing, which the contract refuses): credit 2.0 + 0.7 - 1.1 - 0.8 = 0.8
+    # -> 77.4
+    chain = _set(_chain(ENTRY, EXPIRY), call106={"bid_size": 0}, call107={"bid": 0.0},
+                 call109={"ask": 0.8})
     metrics, report = _run([_row(ENTRY)], chain, FLAT)
     assert report["ledger"][0]["books"]["model"]["strikes"] == [92.0, 95.0, 108.0, 109.0]
-    assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(100 - 2.6)
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(80 - 2.6)
     assert metrics["model_n_trades"] == 1
 
 
