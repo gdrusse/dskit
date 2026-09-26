@@ -328,6 +328,11 @@ def test_every_ex_date_after_the_first_qualifying_one_is_charged():
                      ("2024-03-06", 103.0), ("2024-03-07", 98.0), ("2024-03-08", 105.0)],
                     [("2024-03-08", 0.25)])
     assert american_short_charge(alone, **CHARGE)["call_dividend_usd"] == 0.0
+    # two ex-dates that are BOTH out of the money never latch the assignment
+    otm_twice = _series([("2024-03-01", 100.0), ("2024-03-04", 101.0), ("2024-03-05", 99.0),
+                         ("2024-03-06", 100.0), ("2024-03-07", 98.0), ("2024-03-08", 105.0)],
+                        [("2024-03-05", 1.0), ("2024-03-07", 0.25)])
+    assert american_short_charge(otm_twice, **CHARGE)["call_dividend_usd"] == 0.0
 
 
 def test_put_carry_runs_from_the_first_in_the_money_close_to_settlement():

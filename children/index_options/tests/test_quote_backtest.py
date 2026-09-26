@@ -226,10 +226,28 @@ def test_strikes_snap_outward_past_unquotable_legs():
         if q["right"] == "call" and q["strike"] == 108.0:
             q["ask"], q["ask_size"] = 0.0, 0    # nothing to BUY at 108
         if q["right"] == "put" and q["strike"] == 92.0:
+            q["ask"] = 0.0                      # nothing to BUY the long put at 92 either
+        if q["right"] == "put" and q["strike"] == 91.0:
             q["bid_size"] = 0                   # a no-bid wing is still buyable
     _, report = _run([_row(ENTRY)], chain, FLAT)
     books = report["ledger"][0]["books"]
-    assert books["model"]["strikes"] == [92.0, 94.0, 106.0, 109.0]
+    assert books["model"]["strikes"] == [91.0, 94.0, 106.0, 109.0]
+
+
+#: A hundred draws whose 10%/90% quantiles are still -1 and +1, with one draw beyond each
+#: wing: under the worked strikes E[payoff] is (-300 - 200) / 100 = -5 USD per condor.
+LOSING_DRAWS = [-3.0] + [-1.0] * 10 + [0.0] * 78 + [1.0] * 10 + [3.0]
+
+
+def test_the_model_gate_reads_the_forecasts_expected_pnl_not_the_credit():
+    rows = [_row(ENTRY, samples=list(LOSING_DRAWS))]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT - 2.5)
+    entry = report["ledger"][0]
+    assert entry["books"]["model"]["strikes"] == MODEL_STRIKES  # the quantiles did not move
+    assert entry["model_expected_pnl_usd"] == pytest.approx(MODEL_CREDIT - 5.0)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["always_n_trades"] == 1
+    metrics, _ = _run(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT - 7.5)
+    assert metrics["model_n_trades"] == 1
 
 
 def test_an_expiry_with_no_quotable_strike_records_a_zero_trade_fold():
@@ -288,24 +306,27 @@ def test_the_implied_book_needs_an_atm_iv_on_both_rights():
 
 
 def _smile(chain, wings=0.6, at=None):
-    """Give every strike ``wings`` vol except the ``at`` map of strike -> iv."""
-    at = at or {99.0: 0.25, 100.0: 0.2, 101.0: 0.3}
+    """Give every strike ``wings`` vol except the ``at`` map of strike -> iv (or per right)."""
+    at = at or {99.0: 0.25, 100.0: {"put": 0.18, "call": 0.22}, 101.0: 0.3}
     for q in chain:
-        q["iv"] = at.get(q["strike"], wings)
+        iv = at.get(q["strike"], wings)
+        q["iv"] = iv[q["right"]] if isinstance(iv, dict) else iv
     return chain
 
 
 def test_the_atm_iv_is_the_nearest_valid_pairs_mean_not_any_strikes():
     _, report = _run([_row(ENTRY)], _smile(_chain(ENTRY, EXPIRY)), FLAT)
     entry = report["ledger"][0]
-    assert entry["atm_iv"] == pytest.approx(0.2)  # the pair AT the forward, never a wing's 0.6
+    assert entry["atm_iv"] == pytest.approx(0.2)  # the MEAN of 0.18 / 0.22 at the forward
     assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
-    # the nearest pair invalid on one right: the next nearest valid pair, lower strike on a tie
-    missing = _smile(_chain(ENTRY, EXPIRY))
-    for q in missing:
-        if q["strike"] == 100.0 and q["right"] == "put":
-            q["iv"] = None
-    assert _run([_row(ENTRY)], missing, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+    # the nearest pair invalid on one right (a missing or a zero iv): the next nearest
+    # valid pair, lower strike on a tie
+    for bad in (None, 0.0):
+        invalid = _smile(_chain(ENTRY, EXPIRY))
+        for q in invalid:
+            if q["strike"] == 100.0 and q["right"] == "put":
+                q["iv"] = bad
+        assert _run([_row(ENTRY)], invalid, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
     # a crossed quote at the nearest strike disqualifies that pair the same way
     crossed = _smile(_chain(ENTRY, EXPIRY))
     for q in crossed:
@@ -327,7 +348,11 @@ def test_credit_at_the_narrower_width_and_edge_at_the_gate_are_refused():
     metrics, report = _run([_row(ENTRY)], at_width, FLAT)
     assert report["ledger"][0]["books"]["model"]["credit_usd"] == 200.0 - 2.6
     assert metrics["model_n_skipped_credit_not_below_width"] == 1
-    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT)
+    # every worked draw settles inside the shorts, so the edge IS the credit the node reports
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    edge = report["ledger"][0]["model_expected_pnl_usd"]
+    assert edge == report["ledger"][0]["books"]["model"]["credit_usd"]
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=edge)
     assert metrics["model_n_skipped_below_min_edge"] == 1  # the edge must EXCEED the gate
 
 
@@ -353,7 +378,6 @@ def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
     [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-07")],          # ends before settlement
     [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-08")],          # no row after it
     [(d, 100.0) for d in ("2024-03-01", "2024-03-12")],                   # last close 7 days back
-    [("2024-03-01", 100.0), ("2024-03-03", 97.0), ("2024-03-11", 98.0)],  # 5 days back: too stale
 ])
 def test_an_entry_that_cannot_settle_is_unsettled_and_never_traded(closes):
     metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes))
@@ -361,13 +385,18 @@ def test_an_entry_that_cannot_settle_is_unsettled_and_never_traded(closes):
     assert report["ledger"] == []
 
 
-def test_a_close_four_days_before_settlement_still_settles():
-    """The longest closure in the archive's span (Sandy, 2012) is exactly this shape."""
-    closes = [("2024-03-01", 100.0), ("2024-03-04", 97.0), ("2024-03-11", 98.0)]
-    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes))
+def test_the_settlement_gap_boundary_is_four_calendar_days():
+    """A Monday settlement date: the Thursday before (4 days, Sandy's shape) settles,
+    the Wednesday before (5 days) is too stale."""
+    monday = _chain(ENTRY, "2024-03-11")  # DTE 10, the bucket's upper bound
+    four = _series([("2024-03-01", 100.0), ("2024-03-07", 97.0), ("2024-03-12", 98.0)])
+    metrics, report = _run([_row(ENTRY)], monday, four)
     entry = report["ledger"][0]
-    assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-04", 97.0)
+    assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-07", 97.0)
     assert metrics["n_skipped_unsettled"] == 0 and metrics["always_n_trades"] == 1
+    five = _series([("2024-03-01", 100.0), ("2024-03-06", 97.0), ("2024-03-12", 98.0)])
+    metrics, report = _run([_row(ENTRY)], monday, five)
+    assert metrics["n_skipped_unsettled"] == 1 and report["ledger"] == []
 
 
 def test_rows_after_the_entry_change_only_the_outcome():

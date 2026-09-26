@@ -150,7 +150,8 @@ def test_the_grid_is_twenty_one_cells_with_the_adr_buckets_and_starts():
         assert cell.bucket.embargo_days >= max(LABEL_REACH_DAYS[h], hi)
         assert cell.bucket.embargo_days == hi + 7
         assert cell.bucket.dte_min >= 1  # no 0DTE
-    assert set(LABEL_REACH_DAYS) == {b.label_horizon for b in grid.BUCKETS}
+    # the generator's own copy (it writes the notes) must agree with this restatement
+    assert grid.LABEL_REACH_DAYS == LABEL_REACH_DAYS
     spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
     assert spy.since_ms == 941414400000  # 1999-11-01T00:00:00Z
 
