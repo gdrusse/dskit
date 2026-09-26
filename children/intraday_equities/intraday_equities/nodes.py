@@ -42,7 +42,7 @@ from dskit.pipeline.node import (
     register_node_kind,
     reject_unknown_params,
 )
-from dskit.pipeline.predictions import PredictionWriter
+from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, PredictionWriter
 
 from .features import (
     BLOCK_BAR,
@@ -1639,6 +1639,18 @@ def _aligned_series(ms, pair):
     return out
 
 
+def _row_window_problems(window):
+    """Problems with a ``row_window`` param: two ints ``0 <= start < end``."""
+    if (
+        not isinstance(window, list)
+        or len(window) != 2
+        or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in window)
+        or window[0] >= window[1]
+    ):
+        return [f"row_window must be two ints [start_ms, end_ms) with 0 <= start < end, got {window!r}"]
+    return []
+
+
 def _grid_columns(
     ms,
     opn,
@@ -1659,8 +1671,13 @@ def _grid_columns(
     blocks=(),
     market_ret=None,
     sector_ret=None,
+    window=None,
 ):
-    """Grid-aligned feature columns for one symbol; full-tape arrays drop."""
+    """Grid-aligned feature columns for one symbol; full-tape arrays drop.
+
+    ``window`` ``[start_ms, end_ms)`` narrows the kept rows only; the
+    columns are computed over the full tape either way (ADR-0186).
+    """
     internals = {} if normalise_blocks(blocks) else None
     columns = _session_feature_arrays(
         ms,
@@ -1679,6 +1696,8 @@ def _grid_columns(
         internals=internals,
     )
     keep = ((ms - offset_ms) % period_ms) == 0
+    if window is not None:
+        keep &= (ms >= int(window[0])) & (ms < int(window[1]))
     names = [name for name in columns if name not in skip]
     kept_ms = ms[keep]
     kept_close = close[keep]
@@ -1881,6 +1900,11 @@ class SessionFeatureRows(Node):
         Optional ``cache_dir`` atomically persists these columnar frames and
         their full-resolution label tapes for later memory-mapped folds. It is
         write-once: an occupied path is refused.
+        Optional ``row_window`` ``[start_ms, end_ms)`` (two ints, ``0 <=
+        start < end``) keeps only the rows stamped inside it (ADR-0186's
+        per-minute trade cache). The feature columns are still computed over
+        the whole tape, so every kept row is exactly the row the unwindowed
+        build emits at that stamp.
 
     Examples
     --------
@@ -1904,6 +1928,7 @@ class SessionFeatureRows(Node):
         "sequence_period_ms",
         "sequence_gap_policy",
         "sequence_max_gap_minutes",
+        "row_window",
     )
 
     @classmethod
@@ -1989,6 +2014,8 @@ class SessionFeatureRows(Node):
                 "sequence_max_gap_minutes requires sequence_gap_policy "
                 "'carry_close_zero_volume'"
             )
+        if "row_window" in params:
+            problems.extend(_row_window_problems(params["row_window"]))
         return problems
 
     def validate_inputs(self, inputs):
@@ -2260,6 +2287,7 @@ class SessionFeatureRows(Node):
                 blocks=blocks,
                 market_ret=market_ret,
                 sector_ret=sector_ret,
+                window=self.params.get("row_window"),
             )
             if self.params.get("include_klines", False):
                 klines.append(
@@ -4046,6 +4074,21 @@ def _frame_matrix(frame, features, val_end=None):
     return stamps[keep], matrix[np.ix_(keep, columns)]
 
 
+def _window_matrix(frame, features, start, end):
+    """:func:`_frame_matrix` of the rows stamped in ``[start, end]`` only (ADR-0186).
+
+    The frame is sliced by stamp BEFORE the finite test, so a per-minute
+    trade frame spanning years is touched only inside one fold's window.
+    """
+    import numpy as np
+
+    stamps = np.asarray(frame["asof_ms"], dtype=np.int64)
+    lo = int(np.searchsorted(stamps, int(start), side="left"))
+    hi = int(np.searchsorted(stamps, int(end), side="right"))
+    sliced = {"asof_ms": stamps[lo:hi], "X": np.asarray(frame["X"])[lo:hi], "names": frame["names"]}
+    return _frame_matrix(sliced, features)
+
+
 def _symbol_codes(spec, prepared):
     """Stable integer codes: tradable order, then any extra names."""
     names = list(spec.get("tradable") or [])
@@ -5663,6 +5706,11 @@ class NoInformationScan(Node):
                 problems.append(
                     f"{port} must be a list of rows, got {inputs.get(port)!r}"
                 )
+        if "trade_records" in inputs and not isinstance(inputs["trade_records"], list):
+            problems.append(
+                "trade_records must be a list of columnar frames, got "
+                f"{inputs['trade_records']!r}"
+            )
         spec = inputs.get("spec")
         if not isinstance(spec, dict):
             problems.append(f"spec must be the universe object, got {spec!r}")
@@ -5743,6 +5791,115 @@ class NoInformationScan(Node):
             period_minutes=period_minutes,
             meta={"run": ctx.name, "val_start_ms": int(val_start)},
         )
+
+    def _write_trade_predictions(
+        self, ctx, model, trade, records, features, codes, score_set, leads,
+        val_start, val_end, scramble,
+    ):
+        """Predict every validation minute of ``trade`` with the fitted model (ADR-0186).
+
+        The trade rows are the per-minute build of the SAME features, so
+        every scored-symbol grid row inside the validation window must
+        reappear among them bit for bit; anything else refuses. Rows are
+        streamed to :data:`TRADE_PREDICTIONS_FILE` with NaN ``y``/``mu``
+        (no outcome is known at decision time), once per lead in ``leads``
+        because this scan scores every lead with the one fitted model.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Must carry a run dir: the rows are the output.
+        model : object or None
+            The fitted estimator; ``None`` refuses.
+        trade, records : list of dict
+            Per-minute trade frames and the scored grid frames.
+        features : list of str
+            The design matrix's feature columns, in order.
+        codes : dict
+            Symbol -> integer code (the matrix's last column).
+        score_set : set of str
+            The symbols this scan scores.
+        leads : list of int
+            The leads this scan scores.
+        val_start, val_end : int
+            The inclusive validation window, epoch ms.
+        scramble : object or None
+            A declared label scramble refuses: its model is a null draw.
+
+        Returns
+        -------
+        int
+            Rows written.
+
+        Raises
+        ------
+        ValueError
+            Nowhere to write, no fitted model, a scramble, a scored symbol
+            with no trade frame or a missing feature column, or trade
+            features that differ from the scored ones.
+        """
+        import numpy as np
+
+        if ctx is None or not getattr(ctx, "run_dir", ""):
+            raise ValueError("trade_records need a run directory to write trade predictions into")
+        if model is None:
+            raise ValueError("trade_records declared but this fold fitted no model")
+        if scramble is not None:
+            raise ValueError("trade_records are refused on a label-scramble null draw")
+        frames = {f["symbol"]: f for f in trade if _is_frame(f) and f.get("symbol") in score_set}
+        missing = sorted(score_set - set(frames))
+        if missing:
+            raise ValueError(f"trade_records hold no columnar frame for scored {missing}")
+        grid = {f["symbol"]: f for f in records if _is_frame(f) and f.get("symbol") in score_set}
+        fold = getattr(ctx, "fold_index", None)
+        writer = PredictionWriter(
+            self.artifact_dir(ctx),
+            sorted(frames),
+            fold=-1 if fold is None else int(fold),
+            period_minutes=1,
+            meta={"run": ctx.name, "val_start_ms": int(val_start)},
+            filename=TRADE_PREDICTIONS_FILE,
+        )
+        try:
+            for symbol in sorted(frames):
+                absent = [name for name in features if name not in frames[symbol]["names"]]
+                if absent:
+                    raise ValueError(f"trade_records for {symbol} lack feature column(s) {absent}")
+                stamps, x = _window_matrix(frames[symbol], features, val_start, val_end)
+                if symbol in grid:
+                    self._refuse_trade_drift(symbol, grid[symbol], stamps, x, features, val_start, val_end)
+                if not stamps.size:
+                    continue
+                code = np.full(x.shape[0], float(codes[symbol]), dtype=x.dtype)
+                yhat = np.asarray(model.predict(np.column_stack([x, code])), dtype=np.float64)
+                nan = [math.nan] * int(stamps.size)
+                for lead in leads:
+                    writer.append(symbol, int(lead), stamps.tolist(), nan, yhat.tolist(), math.nan)
+        finally:
+            self.log.info("trade predictions: %d row(s) -> %s", writer.n_rows, writer.close())
+        return writer.n_rows
+
+    @staticmethod
+    def _refuse_trade_drift(symbol, grid, stamps, x, features, val_start, val_end):
+        """Refuse unless every scored grid row in the window is a bit-identical trade row."""
+        import numpy as np
+
+        g_stamps, g_x = _window_matrix(grid, features, val_start, val_end)
+        at = np.searchsorted(stamps, g_stamps)
+        found = at < stamps.size
+        found[found] &= stamps[at[found]] == g_stamps[found]
+        if not found.all():
+            raise ValueError(
+                f"trade features for {symbol} lack {int((~found).sum())} scored minute(s), "
+                f"e.g. {g_stamps[~found][:3].tolist()}"
+            )
+        same = (x[at] == g_x) | (np.isnan(x[at]) & np.isnan(g_x))
+        if not same.all():
+            rows = np.flatnonzero(~same.all(axis=1))
+            raise ValueError(
+                f"trade features for {symbol} differ from the scored features at "
+                f"{rows.size} minute(s), e.g. {g_stamps[rows[:3]].tolist()}"
+            )
 
     def run(self, ctx, inputs):
         """Fit one pooled tree, then walk no-information per series.
@@ -6149,6 +6306,14 @@ class NoInformationScan(Node):
                     writer.n_rows,
                     writer.close(),
                 )
+        trade = inputs.get("trade_records")
+        if trade is not None:
+            metrics["n_trade_rows"] = float(
+                self._write_trade_predictions(
+                    ctx, model, trade, inputs["records"], features, codes,
+                    score_set, leads, val_start, val_end, scramble,
+                )
+            )
         n_series = len(scoring_prepared)
         metrics["n_go"] = float(n_go)
         metrics["go_frac"] = float(n_go / n_series) if n_series else 0.0

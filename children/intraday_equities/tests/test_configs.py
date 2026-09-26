@@ -1792,7 +1792,8 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
         "holiday_rule": "next_trading_day", "overrides": [],
     }
     assert simulate["cash_flow_policy_sha256"] == policy.digest()
-    assert {k: v for k, v in simulate.items() if not k.startswith("cash_flow_policy")} == {
+    # ADR-0186: the minute run keeps no per-solve rows (millions of solves).
+    assert {k: v for k, v in simulate.items() if not k.startswith("cash_flow_policy") and k != "keep_solves"} == {
         k: v for k, v in old.items() if not k.startswith("cash_flow_policy")
     }
     for key in ("bars_a", "bars_e"):
@@ -1801,3 +1802,44 @@ def test_the_retrain_run_restates_no_locked_value_it_can_read():
         assert {k: v for k, v in new.items() if k != "root"} == {k: v for k, v in prior.items() if k != "root"}
     assert template["pipeline"]["bars"] == adr0184["pipeline"]["bars"]
     assert template["pipeline"]["report"] == adr0184["pipeline"]["report"]
+
+
+def test_the_retrain_run_decides_every_minute_and_scores_on_the_lattice():
+    """ADR-0186: the retrain run trades per-minute ticks; scoring stays on the ADR-0065 lattice.
+
+    Pinned independently of the code: the stage and node kinds, the wiring
+    of the trade caches and ticks, and that the trade-cache stage restates
+    nothing the memory stage declares.
+    """
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.planner import plan
+
+    staged = _raw("run-retrain-simulation.json")
+    trade = staged["stages"]["trade_memory"]
+    assert trade["uses"] == "intraday_equities.modelability_study:TradeFeatureCaches"
+    assert trade["params"] == staged["stages"]["memory"]["params"]
+    assert "inputs" not in trade or trade["inputs"] == {}
+    walk = staged["stages"]["walk_document"]
+    assert walk["uses"] == "intraday_equities.model_zoo:MinuteWalkCandidate"
+    assert walk["inputs"] == {
+        "preflight": "$memory.passed", "caches": "$memory.groups", "phase": "$calendar.phase",
+        "winners": "$winners.winners", "trade_caches": "$trade_memory.groups",
+    }
+    assert staged["stages"]["hpo_document"]["uses"] == "intraday_equities.model_zoo:WarmupHpoCandidate"
+    assert staged["pipeline"]["scan"]["params"]["score_period_ms"] == 1_800_000
+    template = _raw(RETRAIN_TEMPLATE)
+    pipeline = template["pipeline"]
+    assert pipeline["publish"]["uses"] == "intraday_equities-minute-forecast-publisher"
+    assert pipeline["simulate"]["uses"] == "intraday_equities-minute-development-simulation"
+    assert pipeline["simulate"]["inputs"] == {
+        "bars": "$bars.merged", "releases": "$publish.releases", "ticks": "$publish.ticks", "mio": "$decide.mio",
+    }
+    assert pipeline["simulate"]["params"]["keep_solves"] is False
+    bound = json.loads(json.dumps(template).replace('"BOUND-BY-STAGE/', '"/tmp/x/').replace('"BOUND-BY-STAGE"', '"0000000000000000000000000000000000000000000000000000000000000000"'))
+    plan(PipelineDocument.from_obj(bound))
+    # The ADR-0184 documents keep the lattice publisher and simulation.
+    for name in SIMULATION_DOCS:
+        raw = _raw(name)["pipeline"]
+        assert raw["publish"]["uses"] == "intraday_equities-forecast-publisher", name
+        assert raw["simulate"]["uses"] == "intraday_equities-development-simulation", name
+        assert "keep_solves" not in raw["simulate"]["params"], name

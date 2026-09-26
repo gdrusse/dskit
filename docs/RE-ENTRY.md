@@ -1,5 +1,125 @@
 # Re-entry
 
+## Wrap 2026-09-26: retrain backtest stopped; the MIO must solve all horizons jointly
+
+**Status.**
+- **Owner stop:** the full retrain backtest (`run-retrain-simulation.json`, per-minute, main `5f82644`) was stopped by the owner at 08:13 ET on 2026-09-26, partway through `simulate`.
+- **Stages completed:** calendar, memory, trade_memory, hpo_document, hpo, winners, walk_document, walk, inventory and gates are complete. Their journal rows are A54556–A54576; the run dir is `pipeline_runs/retrain-simulation-staged-2026-02-28-4bfcaaea`.
+- **Gates:** 12 of 25 units admitted: ADBE 5, CIEN 2, IWM 2, LITE 5, LLY 2, LRCX 10, LULU 5, MSTR 9, NOW 5, PANW 5, TER 5, XLK 5.
+- **Speed:** about 150 MIO solves per minute (about 0.4 s per solve) over the first ~26k solves. That is inside the plan's 10 s per-tick budget. No simulate output was written, because the run keeps its ledger in memory until the end.
+
+**Why it was stopped (owner ruling, 2026-09-26).**
+- **The deviation:** each tick solves one MIO *per lead group* (2/5/9/10 min), in ascending lead order on shared cash. This is ADR-0184's choice: `ForecastBundle` and `EquityKellyMIO` refuse mixed leads.
+- **What the plan says:** "normalize **or** separate incompatible holding horizons before they enter one scenario set" (§7). §3 also scores each candidate over its "normalized horizon".
+- **The ruling:** one joint solve per minute across all admitted names and horizons. The optimizer must be able to mix horizons. No normalization exists anywhere in dskit or pmquant (swept 2026-09-26).
+- **Wider rule:** the owner also ruled that any simulation shortcut against the plan must be raised with him explicitly, not only disclosed in an ADR. The 30-minute decision lattice was the first such case, fixed by ADR-0186.
+
+**Next bounded action.**
+- **Design:** write an ADR for a normalized joint MIO. For example, each scenario row is wealth at a common horizon H = the tick's longest admitted lead; a lot with lead L < H returns its L-minute scenario and then sits in cash. Relax `ForecastBundle`/`EquityKellyMIO`'s single-lead refusals only through that normalization.
+- **Build:** TDD, then the two-lens skeptic loop, then land.
+- **Rerun:** rerun the backtest. The template will change, so expect fresh stages.
+- **Report:** run the evaluator on the output.
+
+**Pending owner decisions.**
+- ADR-0187, the multi-horizon SPY/QQQ/IWM options study, is PROPOSED and unmerged, on branch `claude/multi-horizon-options-adr`. It has six owner questions.
+- EQ = 0.25 is a proxy. Replace it with Schwab's own Rule 605 figure once published.
+
+**Data landed today.** The SPY/QQQ/IWM EOD option archive is in `~/data/index_options/ob`: 53,407,120 rows, verified clean.
+
+## Retrain backtest unblocked: trade_memory's memory reading (2026-09-26 bug fix)
+
+- **Bug:** the retrain staged run died 15 s in at `trade_memory` (journal
+  A54559). `memory` had already measured a child in the same process, so
+  `measure_one`'s `RUSAGE_CHILDREN` guard refused the second reading
+  (ADR-0093's first-child precondition, broken by ADR-0186).
+- **Fix** (`9b41824`, ADR-0093 amendment): `measure_one` reads the peak in a
+  fresh `python -I` wrapper whose only child is exactly what `run` spawns.
+  The wrapper keeps the zero-counter guard. Same meaning, no order
+  precondition; `spawn` still gets the fold's own argv.
+- **Evidence:** 4 RED tests on f9aefba (two readings in one process, the
+  memory+trade_memory pair through the real seam). Focused tests: dskit 154,
+  child 517 passed. Scratch e2e (calendar, memory, trade_memory; trade group d
+  only): all passed, trade cache peak 4.90 GB.
+- **Reviews:** Sonnet correctness lens and Sonnet test-quality lens (8
+  mutants, all killed) were both clean: 0 Critical/Major.
+- **Backlog:** Minor: the wrapper guard surfaces as RuntimeError, and the
+  uncapped `.args` is the wrapper command. Nit: the ADR is silent on that
+  exception type; a stale "one reading per process" comment remains at
+  test_modelability_study.py:493.
+- **Next:** rerun the full retrain backtest from main.
+
+## Time-of-day spread multiplier keyed on the fill minute (2026-09-26 wrap)
+
+- **Change** (owner ruling 2026-09-25, option B; ADR-0185 owner amendment 4,
+  ADR-0120 pointer): the per-name half-spread x EQ is multiplied by the
+  `spread_time_of_day` window of the minute the order FILLS, in both
+  `EquityKellyMIO` sizing (`portfolio.fill_ms`, built by the replay from each
+  name's decision bar + `fill_bar_offset`) and the replay's fees. Windows in
+  `configs/fill-policy.json`: 09:30-10:00 New York x1.84 and 15:30-16:00
+  x0.62, 1.0 elsewhere. These are the median LLY/XOM/JPM ratios to the
+  all-minute median; the note's "2x/0.65x" is relative to midday. A
+  halt-queued entry keeps its sized minute. ADR-0186's `pending` rows carry
+  `fill_ms`, and `MinuteMioDecider` reserves at that rate. Bad windows, bad
+  fill instants and a missing `fill_ms` are refused.
+- **Pins:** fill-policy digest `e4ffcd13` (5 documents); retrain template
+  `0f102cdf`.
+- **Reviews:** Sonnet correctness lens: round 1 found 1 Major (halt-queue key
+  divergence), fixed; clean on the fix and on the ADR-0186-integrated
+  candidate. Sonnet test-quality lens: clean with 1 Minor (the identity test
+  could not tell decision- from fill-keying), fixed by a per-minute boundary
+  test. On the ADR-0186-integrated candidate it found 2 Majors (test gaps: the
+  queued-buy reservation and a halt-queued pending row's key), fixed with
+  regression tests that kill those mutations; round 2 clean (`718cbea`).
+  Focused tests (test_nodes_capital, test_replay, test_simulation,
+  test_configs, test_evaluation): 577 passed.
+- **Caveat:** the multiplier is measured on three names and assumed for the
+  rest; it has two 30-minute windows, not a curve. Earlier simulation results
+  are not comparable until they are rerun.
+- **Next:** rerun the retrain simulation; replace EQ with Schwab's own Rule 605.
+
+## Retrain simulation decides every minute (2026-09-26 wrap, ADR-0186)
+
+Owner ruling of 2026-09-25: the ADR-0185 retrain backtest decides EVERY
+MINUTE, matching the MIO plan, not only on the 30-minute lattice. The work
+was TDD'd and skeptic-reviewed, and it is merged. The model, features, HPO,
+costs, MIO policy, gates, funding and data cut are unchanged.
+
+- **What landed:**
+  - **Trade features and predictions.** Per-minute trade feature caches
+    (`TradeFeatureCaches`, `row_window`). Each walk scan also writes
+    `trade_predictions.parquet` for every validation minute from the SAME
+    fitted model. The scan and the publisher both refuse any drift from the
+    scored lattice rows.
+  - **Per-minute decisions.** `MinuteForecastPublisher` emits per-minute
+    tick columns. `MinuteMioDecider` skips units that are held, queued
+    (their cost reserved) or would exit after the close.
+    `MinuteDevelopmentSimulation` carries lots across release boundaries.
+  - **Unchanged.** Scoring, calibration, gates and every ADR-0184 document.
+  - **Identity.** Retrain template sha `f5392fd5` (was `e4aadf0c`).
+- **Feasibility:** P16 fold 2 was the proxy, with growth policy v1.1 and 128
+  scenarios.
+  - **Per tick, all groups:** median 1.4-1.9 s. The worst p99 is 3.1 s with
+    9 lead groups, plus about 0.25 s of prediction. That is inside the plan's
+    10 s budget, and the 3 s target holds for 7 groups or fewer.
+  - **Full run:** about 304k ticks x ~1.8 s, roughly 6.3 days of wall time.
+    Nothing is parallelised, because cash is path-dependent.
+- **Reviews (Sonnet, 5 rounds, 2 lenses each):** the candidate is locked at
+  `fa877bd` with C0/M0. Correction cycles covered:
+  - `keep_solves` not bounding memory;
+  - trade-cache label tapes;
+  - reading `fill_bar_offset` instead of a literal;
+  - test gaps found by mutation.
+
+  A convergence checkpoint led to a full branch inventory, and the
+  author's mutation sweep then killed 19/19. The record is in the ADR-0186
+  review record.
+- **Tests:** focused child suites 638 passed plus test_replay/test_nodes
+  and the dskit pipeline tests 638 passed. The only failure is the known
+  base failure `test_pooled_materializer_...`. No full suite was run.
+- **Next:** run `configs/run-retrain-simulation.json`. It is heavy: the
+  walk plus about 6 days of simulation. The owner schedules it. Before
+  that, rebase if claude/tod-spread lands.
+
 ## options-dataset-hist chain archive pack (2026-09-25 wrap)
 
 Owner approval: ingest the free SPY/QQQ/IWM EOD option-chain archive ("A"),

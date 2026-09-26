@@ -35,6 +35,7 @@ from dskit.journal.store import read_actions
 from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.driver import FOLD_FIELDS, FOLD_OPTIONAL_FIELDS
 from dskit.pipeline.runs import score_walk
+from dskit.production.base import canonical_hash
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
 from . import modelability as p10
@@ -46,6 +47,7 @@ __all__ = [
     "Gate3ResultStage",
     "Gate3WalksStage",
     "MemoryPreflightStage",
+    "TradeFeatureCaches",
     "asset_walk_document",
     "cache_build_document",
 ]
@@ -241,7 +243,10 @@ def asset_walk_document(document, study, asset, horizon, cache, *, tag, scramble
     return PipelineDocument.from_obj(obj)
 
 
-def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
+def cache_build_document(
+    document, group, sources, universe, cache_dir, cutoff,
+    universe_overrides=None, features_params=None,
+):
     """Derive the one-fold walk that builds and verifies one group's cache.
 
     Parameters
@@ -259,6 +264,14 @@ def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
         Where the ``features`` node persists the group's cache.
     cutoff : str
         The one fold's cutoff, ``YYYY-MM-DD``.
+    universe_overrides : dict, optional
+        ``Universe`` ``overrides`` for the build (ADR-0065's knobs; the
+        ADR-0186 trade cache sets ``period_ms`` 60000). ``None`` declares
+        none, so the build is unchanged.
+    features_params : dict, optional
+        The ``features`` node's params for the build, replacing the
+        document's (``cache_dir`` is still set here). ``None`` keeps the
+        document's own.
 
     Returns
     -------
@@ -290,7 +303,10 @@ def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
     obj.pop("stages", None)
     obj["name"] = f"{document.name}-cache-{group}"
     original = obj["pipeline"]
-    pipeline = {"universe": {"uses": "intraday_equities-universe", "params": {"path": universe}}}
+    universe_params = {"path": universe}
+    if universe_overrides is not None:
+        universe_params["overrides"] = dict(universe_overrides)
+    pipeline = {"universe": {"uses": "intraday_equities-universe", "params": universe_params}}
     for key in sources:
         node = original.get(key)
         if node is None:
@@ -315,7 +331,8 @@ def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
     pooled["inputs"] = inputs
     pipeline["pooled"] = pooled
     features = dict(original["features"])
-    features["params"] = {**features["params"], "cache_dir": cache_dir}
+    base = features["params"] if features_params is None else features_params
+    features["params"] = {**base, "cache_dir": cache_dir}
     pipeline["features"] = features
     pipeline["reference_features"] = _filter("$features.records", "==", reference)
     pipeline["reference_tape"] = _filter("$features.tape", "in", [reference])
@@ -708,6 +725,119 @@ class MemoryPreflightStage(Stage):
         document = PipelineDocument.from_obj(obj)
         tag = f"{ctx.document.name}-memory-{asset.lower()}"
         return self.measure_document(ctx, document, asset, lead, tag)
+
+
+#: ADR-0186: a trade cache forms a row every minute (the ADR-0065 override).
+_TRADE_PERIOD_MS = 60_000
+
+
+class TradeFeatureCaches(MemoryPreflightStage):
+    """Build each group's per-minute TRADE feature cache over the walk's validation windows (ADR-0186).
+
+    The scored caches (:class:`MemoryPreflightStage`) form rows at the
+    universe's spacing; a decision every minute needs a row every minute.
+    This stage builds, per group, one write-once cache from the
+    document's OWN ``features`` params (never restated) with
+    ``row_window`` = ``[first cutoff, last cutoff + val_days)`` of the
+    document's walk-forward, ``include_klines`` false (the tabular model
+    reads no K-lines), and the group universe overridden to ``period_ms``
+    60000. Features are computed over the whole tape either way, so every
+    kept row is the row the scored build would emit at that minute; the
+    scan re-proves that per fold. The first build is measured and refused
+    at or above ``memory_limit_bytes``; a run that reuses every cache
+    measures nothing.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`MemoryPreflightStage`'s ``memory_limit_bytes`` and
+        ``groups``.
+
+    Examples
+    --------
+    Beside the memory stage, over the same groups::
+
+        stage = TradeFeatureCaches("trade_memory", document.stages["memory"].params)
+        groups = stage.run(ctx, {})["groups"]
+        # -> {"a": {..., "cache": "./pipeline_cache/...-trade-1m-<8>/a-<8>", "row_window": [...]}}
+    """
+
+    def run(self, ctx, inputs):
+        """Reuse or build every group's trade cache; measure the first build."""
+        del inputs
+        features = dict(ctx.document.pipeline["features"].params)
+        declared = features.pop("cache_dir", None)
+        if not isinstance(declared, str) or not declared:
+            raise ValueError("the study's features node must declare cache_dir")
+        window = self._window(ctx.document.walkforward)
+        expected = {**features, "row_window": window, "include_klines": False}
+        root = f"{declared}-trade-1m-{canonical_hash(expected)[:8]}"
+        groups, measured = {}, None
+        for group, spec in self.params["groups"].items():
+            entry, measured = self._trade_group(ctx, group, spec, root, expected, measured)
+            groups[group] = {**entry, "row_window": list(window)}
+        if measured is None:
+            measured = {"kind": "reused", "peak_rss_bytes": 0}
+        self.refuse_over_limit(measured["peak_rss_bytes"])
+        return {
+            "groups": groups,
+            "measured": measured,
+            "limit_bytes": self.params["memory_limit_bytes"],
+            "passed": True,
+        }
+
+    @staticmethod
+    def _window(walk):
+        """``[first cutoff, last cutoff + val_days)`` as epoch ms (UTC midnights)."""
+        from datetime import date, datetime, timedelta, timezone
+
+        if walk is None or not getattr(walk, "first", None):
+            raise ValueError("a trade cache needs the document's walk-forward schedule")
+        first = date.fromisoformat(walk.first)
+        end = first + timedelta(days=walk.step_days * (walk.count - 1) + walk.val_days)
+        return [
+            int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+            for d in (first, end)
+        ]
+
+    def _trade_group(self, ctx, group, spec, root, expected, measured):
+        """Reuse or build one group's trade cache; return its entry and the reading."""
+        universe = {**_universe_spec(ctx, spec["universe"]), "period_ms": _TRADE_PERIOD_MS}
+        digest = _universe_digest(ctx, spec["universe"])
+        cache = f"{root}/{group}-{digest[:8]}"
+        path = cache if os.path.isabs(cache) else os.path.join(p10._child_root(ctx), cache)
+        state = _verified_cache(path, universe, expected)
+        if state is None:
+            build = cache_build_document(
+                ctx.document, group, spec["sources"], spec["universe"], cache,
+                p10._last_first(ctx.document.walkforward),
+                universe_overrides={"period_ms": _TRADE_PERIOD_MS}, features_params=expected,
+            )
+            tag = f"{ctx.document.name}-trade-cache-{group}"
+            if measured is None:
+                summary, peak = p10._measure_walk(ctx, build, tag)
+                measured = {
+                    "kind": "cache_build", "name": group,
+                    "summary_dir": summary, "peak_rss_bytes": peak,
+                }
+            else:
+                p10._run_bounded_walk(ctx, build, tag)
+            state = _verified_cache(path, universe, expected)
+            if state is None:
+                raise RuntimeError(f"the {group} trade cache build left no cache at {path}")
+        if set(state["symbols"]) != set(universe["symbols"]):
+            raise ValueError(
+                f"trade cache {path} membership {sorted(state['symbols'])} is not "
+                f"the group universe {sorted(universe['symbols'])}"
+            )
+        entry = {
+            "universe": spec["universe"],
+            "universe_sha256": digest,
+            "cache": cache,
+            "manifest_sha256": state["manifest_sha256"],
+            "symbols": list(state["symbols"]),
+        }
+        return entry, measured
 
 
 class Gate1Stage(_StudyStage):

@@ -11,7 +11,7 @@ import os
 
 from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.node import Node
-from dskit.pipeline.stages import Stage, reject_unknown_params
+from dskit.pipeline.stages import Stage, is_sha256hex, reject_unknown_params
 from dskit.pipeline.libs.torch_ts import ZooEstimator
 
 from intraday_equities.modelability_study import asset_walk_document
@@ -28,9 +28,11 @@ __all__ = [
     "PooledDirectPathScore",
     "PooledGate3ZooCandidates",
     "KronosFusionRows",
+    "MinuteWalkCandidate",
     "SequenceFusionRows",
     "SequenceOnlyZooEstimator",
     "StandardizedSelectRegressor",
+    "TRADE_CACHE_PREFIX",
     "WarmupHpoCandidate",
 ]
 
@@ -1850,6 +1852,104 @@ class FrozenWalkCandidate(_SingleRecipeCandidate):
                 params.pop(field, None)
             params["estimator_params"] = {**copy.deepcopy(base), **copy.deepcopy(winners[key])}
         return obj
+
+
+#: Node-key prefix of a minute walk's per-group trade-cache nodes (ADR-0186).
+#: The one owner: the publisher reads it to tell a trade cache from the
+#: scored caches whose tapes carry the label.
+TRADE_CACHE_PREFIX = "trade_features_"
+_TRADE_CACHE_FIELDS = ("universe", "universe_sha256", "symbols")
+
+
+class MinuteWalkCandidate(FrozenWalkCandidate):
+    """The frozen retraining walk that ALSO predicts every validation minute (ADR-0186).
+
+    :class:`FrozenWalkCandidate`'s document, unchanged, plus per group a
+    trade-cache node (``trade_features_<group>``, the
+    :class:`~intraday_equities.modelability_study.TradeFeatureCaches`
+    cache), the group's own symbol filter (``trade_<group>``, the scored
+    filter's params), one ``trade_features`` concat, and
+    ``trade_records: $trade_features.merged`` on every ``scan_hNN``. Each
+    scan then writes its per-minute trade predictions beside its scored
+    lattice rows. The trade caches must be the scored groups: the same
+    group keys, universes and memberships, each with its ``row_window``.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`FrozenWalkCandidate`'s.
+
+    Examples
+    --------
+    ::
+
+        stage = MinuteWalkCandidate("walk_document", document.stages["walk_document"].params)
+        stage.run(ctx, {"preflight": True, "caches": groups, "phase": phase,
+                        "winners": winners, "trade_caches": trade_groups})
+    """
+
+    _EXTRA_INPUTS = ("winners", "trade_caches")
+    _SUFFIX = "minute-walk"
+
+    def run(self, ctx, inputs):
+        """Emit the minute walk document; its provenance names the trade caches."""
+        out = super().run(ctx, inputs)
+        out["provenance"]["trade_caches"] = [
+            {"group": group, "cache": entry["cache"], "manifest_sha256": entry["manifest_sha256"],
+             "row_window": list(entry["row_window"])}
+            for group, entry in inputs["trade_caches"].items()
+        ]
+        return out
+
+    def _shape(self, obj, template, inputs):
+        """Apply the frozen winners, then wire the per-minute trade rows into every scan."""
+        obj = super()._shape(obj, template, inputs)
+        trade = self._checked_trade_caches(inputs["trade_caches"], inputs["caches"])
+        pipeline = obj["pipeline"]
+        concat = {}
+        for group, entry in trade.items():
+            cache_key = f"{TRADE_CACHE_PREFIX}{group}"
+            pipeline[cache_key] = {
+                "uses": "intraday_equities-session-feature-cache",
+                "params": {"path": entry["cache"], "manifest_sha256": entry["manifest_sha256"]},
+            }
+            pipeline[f"trade_{group}"] = {
+                "uses": "filter",
+                "inputs": {"records": f"${cache_key}.records"},
+                "params": copy.deepcopy(pipeline[f"pooled_features_{group}"]["params"]),
+            }
+            concat[group] = f"$trade_{group}.records"
+        pipeline["trade_features"] = {
+            "uses": "concat",
+            "inputs": concat,
+            "params": copy.deepcopy(pipeline["pooled_features"]["params"]),
+        }
+        for key in sorted(k for k in pipeline if k.startswith("scan_h")):
+            pipeline[key]["inputs"]["trade_records"] = "$trade_features.merged"
+        return obj
+
+    @staticmethod
+    def _checked_trade_caches(trade, caches):
+        """Refuse trade caches that are not exactly the scored groups."""
+        if not isinstance(trade, dict) or list(trade) != list(caches):
+            raise ValueError(
+                f"trade_caches groups {list(trade) if isinstance(trade, dict) else trade!r} "
+                f"are not the scored groups {list(caches)}"
+            )
+        for group, entry in trade.items():
+            for field in _TRADE_CACHE_FIELDS:
+                if entry.get(field) != caches[group].get(field):
+                    raise ValueError(f"trade cache {group} {field} differs from the scored group's")
+            window = entry.get("row_window")
+            if (
+                not isinstance(window, list) or len(window) != 2
+                or any(isinstance(v, bool) or not isinstance(v, int) for v in window)
+                or window[0] >= window[1]
+            ):
+                raise ValueError(f"trade cache {group} row_window must be [start_ms, end_ms], got {window!r}")
+            if not _string(entry.get("cache")) or not is_sha256hex(entry.get("manifest_sha256")):
+                raise ValueError(f"trade cache {group} needs a cache path and a sha256 manifest_sha256")
+        return trade
 
 
 class Gate3ZooCandidates(Stage):

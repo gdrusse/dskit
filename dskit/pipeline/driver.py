@@ -3171,33 +3171,44 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
+def _sealed_files(run_dir, name):
+    """``[{path, sha256}]`` for every file called ``name`` under ``run_dir``, sorted."""
+    paths = []
+    if os.path.isdir(run_dir):
+        for root, dirs, files in os.walk(run_dir):
+            dirs.sort()
+            if name in files:
+                paths.append(os.path.realpath(os.path.join(root, name)))
+    return [{"path": path, "sha256": _file_sha256(path)} for path in sorted(paths)]
+
+
 def _walkforward_evidence(folds):
-    """Bind every saved prediction to the summary published for these folds."""
+    """Bind every saved prediction to the summary published for these folds.
+
+    Decision-time rows (``TRADE_PREDICTIONS_FILE``, ADR-0186) are pinned
+    under their own ``trade_predictions`` key, emitted only for a fold that
+    wrote some, so a seal of a walk without them is unchanged.
+    """
+    from dskit.pipeline.predictions import PREDICTIONS_FILE, TRADE_PREDICTIONS_FILE
+
     sealed = []
     for fold in folds:
         run_dir = os.path.realpath(fold.get("run_dir", ""))
-        paths = []
-        if os.path.isdir(run_dir):
-            for root, dirs, files in os.walk(run_dir):
-                dirs.sort()
-                if "predictions.parquet" in files:
-                    paths.append(os.path.realpath(os.path.join(root, "predictions.parquet")))
         carry_path = os.path.realpath(os.path.join(run_dir, "carry.json"))
         carry = (
             {"path": carry_path, "sha256": _file_sha256(carry_path)}
             if os.path.isfile(carry_path) else None
         )
-        sealed.append(
-            {
-                "cutoff": fold.get("cutoff"),
-                "run_dir": run_dir,
-                "carry": carry,
-                "predictions": [
-                    {"path": path, "sha256": _file_sha256(path)}
-                    for path in sorted(paths)
-                ],
-            }
-        )
+        row = {
+            "cutoff": fold.get("cutoff"),
+            "run_dir": run_dir,
+            "carry": carry,
+            "predictions": _sealed_files(run_dir, PREDICTIONS_FILE),
+        }
+        trade = _sealed_files(run_dir, TRADE_PREDICTIONS_FILE)
+        if trade:
+            row["trade_predictions"] = trade
+        sealed.append(row)
     return {
         "schema_version": 2,
         "contract": "walkforward_fold_artifacts_at_summary_publish",

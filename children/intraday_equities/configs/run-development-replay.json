@@ -8,7 +8,7 @@
         "deployment_eligible": false,
         "evidence_end": "2025-10-16",
         "fill_policy": "configs/fill-policy.json",
-        "fill_policy_sha256": "e078b15bdc66231edd84fb4a1f1bc80204733aaf74e8250f62ffe27dfd2c285d",
+        "fill_policy_sha256": "e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e",
         "caps": "development-only"
       },
       "notes": "ServeLoop + ReplayFeed + shared ReplayClock + JsonlLedger. Equity policy (next-bar-open, (symbol, lead) lots, Schwab costs) is injected; LegPipeline submits. Trailing fill-only bars are sized by fill-policy fill_suffix_bars / fill_suffix_weekdays (session bars and weekdays after evidence_end, weekends refuse). New decisions at or after evidence_end refuse. Overlap/expiry remains ADR-0120 accepted. Not deployment evidence."

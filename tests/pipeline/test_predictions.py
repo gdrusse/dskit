@@ -21,6 +21,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 from dskit.pipeline.predictions import (  # noqa: E402
     PREDICTION_COLUMNS,
     PREDICTIONS_FILE,
+    TRADE_PREDICTIONS_FILE,
     PredictionWriter,
     find_predictions,
     read_prediction_series,
@@ -309,3 +310,86 @@ class TestTheFullTestCanNowRun:
         assert scored["exact"] is True
         for row in scored["rows"]:
             assert row["passes"] is False
+
+
+class TestTradePredictions:
+    """ADR-0186: decision-time rows live in their own file, beside the scored ones."""
+
+    def _both(self, run_dir):
+        with PredictionWriter(_node_dir(run_dir), SERIES, fold=1, period_minutes=PERIOD) as w:
+            w.append("AAA", 3, [1, 2], [0.5, -0.25], [0.75, 0.125], 0.5)
+        with PredictionWriter(
+            _node_dir(run_dir), SERIES, fold=1, period_minutes=1, filename=TRADE_PREDICTIONS_FILE,
+        ) as w:
+            nan = float("nan")
+            w.append("AAA", 3, [1, 2, 3], [nan] * 3, [0.75, 0.5, 0.25], nan)
+
+    def test_the_trade_file_is_named_apart_from_the_scored_file(self):
+        assert TRADE_PREDICTIONS_FILE != PREDICTIONS_FILE
+        assert TRADE_PREDICTIONS_FILE.endswith(".parquet")
+
+    def test_the_scored_readers_never_see_trade_rows(self, tmp_path):
+        run_dir = str(tmp_path)
+        self._both(run_dir)
+        assert [os.path.basename(p) for p in find_predictions(run_dir)] == [PREDICTIONS_FILE]
+        assert read_predictions(run_dir)["ts"] == [1, 2]
+        assert len(read_prediction_series(run_dir)) == 1
+
+    def test_the_trade_rows_read_back_by_name(self, tmp_path):
+        run_dir = str(tmp_path)
+        self._both(run_dir)
+        found = find_predictions(run_dir, filename=TRADE_PREDICTIONS_FILE)
+        assert [os.path.basename(p) for p in found] == [TRADE_PREDICTIONS_FILE]
+        out = read_predictions(
+            run_dir, columns=("ts", "series", "horizon", "yhat"), filename=TRADE_PREDICTIONS_FILE,
+        )
+        assert out == {
+            "ts": [1, 2, 3], "series": ["AAA"] * 3, "horizon": [3] * 3,
+            "yhat": [0.75, 0.5, 0.25], "period_minutes": 1,
+        }
+
+    def test_the_default_filename_is_unchanged(self, tmp_path):
+        with PredictionWriter(_node_dir(str(tmp_path)), SERIES) as w:
+            assert os.path.basename(w.path) == PREDICTIONS_FILE
+
+    def test_an_unknown_filename_is_refused(self, tmp_path):
+        for bad in ("", "x.csv", "../predictions.parquet", "a/b.parquet"):
+            with pytest.raises(ValueError, match="filename"):
+                PredictionWriter(_node_dir(str(tmp_path)), SERIES, filename=bad)
+            with pytest.raises(ValueError, match="filename"):
+                find_predictions(str(tmp_path), filename=bad)
+
+
+class TestTheWalkSealPinsTradeFiles:
+    """ADR-0186: the summary seal binds trade rows too, and only when a fold has them."""
+
+    def _fold(self, root, trade):
+        run_dir = os.path.join(root, "wf-2022-01-01")
+        with PredictionWriter(_node_dir(run_dir), SERIES) as w:
+            w.append("AAA", 1, [1], [0.5], [0.4], 0.0)
+        if trade:
+            with PredictionWriter(_node_dir(run_dir), SERIES, filename=TRADE_PREDICTIONS_FILE) as w:
+                w.append("AAA", 1, [1, 2], [float("nan")] * 2, [0.4, 0.3], float("nan"))
+        with open(os.path.join(run_dir, "carry.json"), "w", encoding="utf-8") as fh:
+            json.dump({}, fh)
+        return run_dir
+
+    def test_a_fold_without_trade_rows_seals_exactly_as_before(self, tmp_path):
+        from dskit.pipeline.driver import _walkforward_evidence
+
+        run_dir = self._fold(str(tmp_path), trade=False)
+        sealed = _walkforward_evidence([{"cutoff": "2022-01-01", "run_dir": run_dir}])
+        assert set(sealed["folds"][0]) == {"cutoff", "run_dir", "carry", "predictions"}
+
+    def test_a_fold_with_trade_rows_pins_them_apart(self, tmp_path):
+        import hashlib
+
+        from dskit.pipeline.driver import _walkforward_evidence
+
+        run_dir = self._fold(str(tmp_path), trade=True)
+        fold = _walkforward_evidence([{"cutoff": "2022-01-01", "run_dir": run_dir}])["folds"][0]
+        assert [os.path.basename(p["path"]) for p in fold["predictions"]] == [PREDICTIONS_FILE]
+        assert [os.path.basename(p["path"]) for p in fold["trade_predictions"]] == [TRADE_PREDICTIONS_FILE]
+        pin = fold["trade_predictions"][0]
+        with open(pin["path"], "rb") as fh:
+            assert hashlib.sha256(fh.read()).hexdigest() == pin["sha256"]

@@ -31,6 +31,7 @@ import os
 __all__ = [
     "PREDICTIONS_FILE",
     "PREDICTION_COLUMNS",
+    "TRADE_PREDICTIONS_FILE",
     "PredictionWriter",
     "find_predictions",
     "read_prediction_series",
@@ -43,6 +44,22 @@ __all__ = [
 #: the same rows would need, and a reader can take one column without
 #: parsing the rest.
 PREDICTIONS_FILE = "predictions.parquet"
+
+#: Decision-time rows (ADR-0186): what a fitted model forecast at EVERY
+#: instant a decision could be taken, not only the ones it is scored on.
+#: They carry no realized outcome, so they live in their own file and the
+#: scored readers (``find_predictions`` / ``read_predictions`` /
+#: ``read_prediction_series`` with the default name) never see them.
+TRADE_PREDICTIONS_FILE = "trade_predictions.parquet"
+
+#: The closed set of file names a prediction file may take.
+_FILENAMES = (PREDICTIONS_FILE, TRADE_PREDICTIONS_FILE)
+
+
+def _check_filename(filename):
+    """Refuse a prediction file name outside the closed set."""
+    if filename not in _FILENAMES:
+        raise ValueError(f"filename must be one of {list(_FILENAMES)}, got {filename!r}")
 
 #: The row, in order. ``mu`` is the CONSTANT benchmark forecast the fold
 #: was scored against — persisted per row rather than derived later,
@@ -130,14 +147,19 @@ class PredictionWriter:
         Extra string key/values to stamp (the fold cutoff, the run name).
     compression : str
         Parquet codec; ``zstd`` by default.
+    filename : str
+        :data:`PREDICTIONS_FILE` (the default: scored rows) or
+        :data:`TRADE_PREDICTIONS_FILE` (decision-time rows, ADR-0186,
+        written with NaN ``y`` and ``mu``).
 
     Raises
     ------
     ImportError
         When pyarrow is not installed.
     ValueError
-        On an empty ``series_names``, or an :meth:`append` whose columns
-        disagree in length or whose series was never declared.
+        On an empty ``series_names``, a ``filename`` outside the two
+        names, or an :meth:`append` whose columns disagree in length or
+        whose series was never declared.
 
     Examples
     --------
@@ -149,8 +171,9 @@ class PredictionWriter:
 
     def __init__(
         self, path, series_names, fold=-1, period_minutes=1, meta=None,
-        compression="zstd",
+        compression="zstd", filename=PREDICTIONS_FILE,
     ):
+        _check_filename(filename)
         _require_pyarrow()
         import pyarrow.parquet as pq
 
@@ -163,7 +186,7 @@ class PredictionWriter:
         self._index = seen
         self._names = list(seen)
         self._fold = int(fold)
-        self._path = os.path.join(path, PREDICTIONS_FILE)
+        self._path = os.path.join(path, filename)
         self.n_rows = 0
         os.makedirs(path, exist_ok=True)
         self.schema = _schema(
@@ -252,13 +275,16 @@ class PredictionWriter:
         return False
 
 
-def find_predictions(run_dir):
+def find_predictions(run_dir, filename=PREDICTIONS_FILE):
     """Every prediction file one run directory holds, sorted by node.
 
     Parameters
     ----------
     run_dir : str
         A run directory (one walk-forward fold, or a standalone run).
+    filename : str
+        Which file to find: :data:`PREDICTIONS_FILE` (the default, scored
+        rows) or :data:`TRADE_PREDICTIONS_FILE`.
 
     Returns
     -------
@@ -272,19 +298,25 @@ def find_predictions(run_dir):
     A fold whose one score node wrote its rows::
 
         len(find_predictions(fold))  # 1
+
+    Raises
+    ------
+    ValueError
+        ``filename`` is not one of the two names.
     """
+    _check_filename(filename)
     root = os.path.join(run_dir, "artifacts")
     if not os.path.isdir(root):
         return []
     found = []
     for node in sorted(os.listdir(root)):
-        path = os.path.join(root, node, PREDICTIONS_FILE)
+        path = os.path.join(root, node, filename)
         if os.path.isfile(path):
             found.append(path)
     return found
 
 
-def read_predictions(run_dir, columns=None):
+def read_predictions(run_dir, columns=None, filename=PREDICTIONS_FILE):
     """Read a run's saved rows as a columnar mapping.
 
     Parameters
@@ -296,6 +328,9 @@ def read_predictions(run_dir, columns=None):
         :data:`PREDICTION_COLUMNS` (the file is never read in full, so a
         caller that must not see a column never loads it). ``None``, the
         default, reads every column.
+    filename : str
+        :data:`PREDICTIONS_FILE` (the default) or
+        :data:`TRADE_PREDICTIONS_FILE`.
 
     Returns
     -------
@@ -307,7 +342,8 @@ def read_predictions(run_dir, columns=None):
     Raises
     ------
     ValueError
-        ``columns`` names a column that is not in :data:`PREDICTION_COLUMNS`.
+        ``columns`` names a column that is not in :data:`PREDICTION_COLUMNS`,
+        or ``filename`` is not one of the two names.
 
     Examples
     --------
@@ -321,7 +357,7 @@ def read_predictions(run_dir, columns=None):
     unknown = [name for name in names if name not in PREDICTION_COLUMNS]
     if unknown:
         raise ValueError(f"unknown prediction column(s) {unknown}")
-    paths = find_predictions(run_dir)
+    paths = find_predictions(run_dir, filename=filename)
     if not paths:
         return {}
     import pyarrow.parquet as pq

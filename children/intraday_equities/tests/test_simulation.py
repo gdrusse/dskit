@@ -13,22 +13,25 @@ import json
 import math
 import os
 import shutil
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.false_signal import GrenanderLocalFdr
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, ConfigError, NodeContext, class_ref
-from dskit.pipeline.predictions import PredictionWriter
+from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, PredictionWriter
 from dskit.pipeline.uncertainty_intake import DecisionDemand, admission_problems
 
 import intraday_equities.simulation as simulation_module
 from intraday_equities.feature_cache import write_feature_cache
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
+from intraday_equities.model_zoo import TRADE_CACHE_PREFIX
 from intraday_equities.nodes import Universe, _child_root, _label_from_params, _tapes_from_bars
 from intraday_equities.nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, REQUIRED_INTAKES, EquityKellyMIO
 from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, EquityReplay, FillPolicy
@@ -113,13 +116,18 @@ def _write_inventory(fx):
             os.path.realpath(os.path.join(run_dir, "artifacts", f"scan_h{lead:02d}", "predictions.parquet"))
             for lead in LEADS
         )
-        folds.append(
-            {
-                "cutoff": (FIRST + timedelta(days=STEP * index)).isoformat(),
-                "run_dir": run_dir,
-                "predictions": [{"path": p, "sha256": _sha(p)} for p in paths],
-            }
-        )
+        row = {
+            "cutoff": (FIRST + timedelta(days=STEP * index)).isoformat(),
+            "run_dir": run_dir,
+            "predictions": [{"path": p, "sha256": _sha(p)} for p in paths],
+        }
+        if fx.get("minute"):
+            trade = sorted(
+                os.path.realpath(os.path.join(run_dir, "artifacts", f"scan_h{lead:02d}", TRADE_PREDICTIONS_FILE))
+                for lead in LEADS
+            )
+            row["trade_predictions"] = [{"path": p, "sha256": _sha(p)} for p in trade]
+        folds.append(row)
     manifest = {
         "schema_version": 1,
         "evidence_scope": DEVELOPMENT_EVIDENCE_SCOPE,
@@ -137,7 +145,37 @@ def _repin(fx, mutate):
             stamps, y, yhat = block[name]
             block[name] = (stamps, *mutate(index, name, lead, stamps, y, yhat))
     _write_predictions(fx)
+    if fx.get("minute"):
+        _write_trade(fx)
     _write_inventory(fx)
+
+
+def _write_trade(fx, mutate=None):
+    """ADR-0186: every tape minute of each fold's validation window, per name and lead.
+
+    The lattice minutes carry the scored ``yhat`` (the scan's invariant);
+    every other minute its own seeded draw. ``mutate(index, name, lead,
+    stamps, yhat) -> (stamps, yhat)`` may rewrite a block before it is written.
+    """
+    stamps, _ = fx["tape"]
+    nan = float("nan")
+    for index, run_dir in enumerate(fx["runs"]):
+        splits = _splits(index)
+        window = stamps[(stamps >= splits["val_start_ms"]) & (stamps <= splits["val_end_ms"])]
+        for lead in LEADS:
+            rng = np.random.default_rng(1000 * index + lead)
+            directory = os.path.join(run_dir, "artifacts", f"scan_h{lead:02d}")
+            block = fx["data"][(index, lead)]
+            with PredictionWriter(
+                directory, list(NAMES), fold=index, period_minutes=1, filename=TRADE_PREDICTIONS_FILE,
+            ) as writer:
+                for name in NAMES:
+                    scored = dict(zip(block[name][0], block[name][2]))
+                    yhat = [scored[int(t)] if int(t) in scored else float(rng.normal(0.0, 0.8)) for t in window]
+                    kept = window.tolist()
+                    if mutate is not None:
+                        kept, yhat = mutate(index, name, lead, kept, yhat)
+                    writer.append(name, lead, kept, [nan] * len(yhat), yhat, nan)
 
 
 @pytest.fixture
@@ -146,8 +184,12 @@ def fx(tmp_path):
     return _build_fx(str(tmp_path))
 
 
-def _build_fx(root, count=COUNT):
-    """Write the pinned ``count``-fold walk under ``root``; return its handles."""
+def _build_fx(root, count=COUNT, minute=False):
+    """Write the pinned ``count``-fold walk under ``root``; return its handles.
+
+    ``minute`` also writes every fold's per-minute trade predictions and
+    pins them in the inventory (ADR-0186).
+    """
     stamps, prices = _tape(count)
     cache = os.path.join(root, "walk", "pipeline_cache", "a")
     frames = [
@@ -159,10 +201,21 @@ def _build_fx(root, count=COUNT):
         for s in ("SPY",) + NAMES
     ]
     cache_sha = write_feature_cache(cache, {"records": frames, "tape": tapes}, {"fixture": True})
+    trade_sha = None
+    if minute:
+        # A minute walk's fold also names its trade cache (ADR-0186). Its
+        # tapes are deliberately NOT the scored cache's, so a publisher that
+        # read label tapes from it would refuse ("different ... tapes").
+        trade_sha = write_feature_cache(
+            os.path.join(root, "walk", "pipeline_cache", "trade"),
+            {"records": frames, "tape": [{**t, "close": t["close"] * 2.0} for t in tapes]},
+            {"fixture": "trade"},
+        )
     spec = Universe("universe", {"path": UNIVERSE}).run(None, {})["spec"]
     universe_sha = Universe("universe", {"path": UNIVERSE}).fingerprint()["sha256"]
     rng = np.random.default_rng(11)
-    fx = {"runs": [], "data": {}, "tape": (stamps, prices), "inventory": os.path.join(root, "inv", "stages", "inventory.json")}
+    fx = {"runs": [], "data": {}, "tape": (stamps, prices), "minute": minute,
+          "inventory": os.path.join(root, "inv", "stages", "inventory.json")}
     for index in range(count):
         splits = _splits(index)
         cutoff = FIRST + timedelta(days=STEP * index)
@@ -179,6 +232,11 @@ def _build_fx(root, count=COUNT):
                 "uses": "intraday_equities-no-information-scan",
                 "params": {**LABEL, "lead_start": lead, "val_end_ms": "$splits.val_end_ms"},
             }
+        if trade_sha is not None:
+            pipeline[f"{TRADE_CACHE_PREFIX}a"] = {
+                "uses": "intraday_equities-session-feature-cache",
+                "params": {"path": "./pipeline_cache/trade", "manifest_sha256": trade_sha},
+            }
         config = {"name": f"fixture-wf-{cutoff.isoformat()}", "pipeline": pipeline, "splits": splits}
         resolved = {
             "document_hash": PipelineDocument.from_obj(config).hash,
@@ -187,6 +245,7 @@ def _build_fx(root, count=COUNT):
             "data_fingerprint": {
                 "features_a": {"manifest_sha256": cache_sha},
                 "universe": {"sha256": universe_sha},
+                **({f"{TRADE_CACHE_PREFIX}a": {"manifest_sha256": trade_sha}} if trade_sha else {}),
             },
         }
         _dump(os.path.join(run_dir, "config.json"), config)
@@ -220,6 +279,8 @@ def _build_fx(root, count=COUNT):
         "uncertainty": {"n_scenarios": 8, "coverage": 0.6, "window_blocks": 2, "null_draws": 199, "seed": 0},
     }
     _write_predictions(fx)
+    if minute:
+        _write_trade(fx)
     _write_inventory(fx)
     caps = [{"unit": n, "capped_horizon": CAPS[n]} for n in NAMES]
     _dump(
@@ -571,6 +632,8 @@ def _book(fx, asof_ms, positions=None):
         "positions": dict(positions or {}),
         "mark_prices": {s: float(prices[s][loc]) for s in ("LLY", "LRCX", "NOW")},
         "gross_limit": 1020.0,
+        # The thin tape's next bar: each name's fill instant (fill_bar_offset 1).
+        "fill_ms": {s: asof_ms + 60_000 for s in ("LLY", "LRCX", "NOW")},
     }
 
 
@@ -653,7 +716,7 @@ def test_decider_sees_cash_after_this_bars_fills():
     assert at1 == {
         "asof_ms": _minute(1), "cash": 910.0, "buying_power": 910.0,
         "positions": {"AAA": 10}, "mark_prices": {"AAA": 11.5},
-        "gross_limit": 910.0 + 10 * 11.5,
+        "gross_limit": 910.0 + 10 * 11.5, "pending": [], "fill_ms": {"AAA": _minute(2)},
     }
     # At t3 the lot exits at the next bar (index 4 = fill + lead): no longer a
     # position for the decider, still part of NAV.
@@ -663,6 +726,75 @@ def test_decider_sees_cash_after_this_bars_fills():
     assert [(f["kind"], f["asof_ms"], f["price"]) for f in out["fills"]] == [
         ("entry", _minute(1), 11.0), ("exit", _minute(4), 14.0),
     ]
+
+
+def test_the_decider_portfolio_carries_each_names_own_fill_bar_instant():
+    # AAA trades every minute; BBB skips minutes 1-2, so its next bar after
+    # minute 0 is minute 3. At the tape's last bar no fill bar exists: the
+    # decision instant stands in, and the replay refuses any such decision.
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
+        for i in range(5)
+    ] + [
+        {"symbol": "BBB", "asof_ms": _minute(i), "open": 20.0, "close": 20.0, "halted": False}
+        for i in (0, 3, 4)
+    ]
+    stub = _Scripted({})
+    EquityReplay(_zero_fee_policy(), CASH_POLICY, decider=stub).run(bars)
+    assert stub.seen[_minute(0)]["fill_ms"] == {"AAA": _minute(1), "BBB": _minute(3)}
+    assert stub.seen[_minute(3)]["fill_ms"] == {"AAA": _minute(4), "BBB": _minute(4)}
+    assert stub.seen[_minute(4)]["fill_ms"] == {"AAA": _minute(4), "BBB": _minute(4)}
+    # BBB has no bar at minute 1: no decision bar, so the decision instant stands in.
+    assert stub.seen[_minute(1)]["fill_ms"] == {"AAA": _minute(2), "BBB": _minute(1)}
+
+
+def test_a_fill_offset_of_two_keys_sizing_two_bars_ahead():
+    bars = [
+        {"symbol": "AAA", "asof_ms": _minute(i), "open": 10.0, "close": 10.0, "halted": False}
+        for i in range(5)
+    ]
+    policy = FillPolicy({**_zero_fee_policy().to_obj(), "fill_bar_offset": 2})
+    stub = _Scripted({})
+    EquityReplay(policy, CASH_POLICY, decider=stub).run(bars)
+    assert stub.seen[_minute(0)]["fill_ms"] == {"AAA": _minute(2)}
+
+
+def test_a_halt_queued_entry_is_billed_at_the_rate_it_was_sized_at():
+    """Skeptic round 1 (Major): under halt_handling 'queue' the entry lands on a
+    later bar than sizing keyed. The fee keeps the SCHEDULED fill minute's
+    multiplier (decision bar + fill_bar_offset), so the billed rate is still
+    the one the decider was given; the price is the actual fill bar's."""
+    ny = ZoneInfo("America/New_York")
+
+    def at(hour, minute):
+        return int(datetime(2025, 1, 15, hour, minute, tzinfo=ny).timestamp() * 1000)
+
+    raw = _zero_fee_policy().to_obj()
+    policy = FillPolicy({
+        **raw, "halt_handling": "queue", "half_spread_bps": {"AAA": 10.0},
+        "default_half_spread_bps": None, "eq_ratio": 1.0,
+        "spread_time_of_day": {
+            "timezone": "America/New_York", "default_multiplier": 1.0,
+            "windows": [{"start_minute": 570, "end_minute": 600, "multiplier": 2.0}],
+        },
+    })
+    bars = [
+        {"symbol": "AAA", "asof_ms": at(9, 58), "open": 20.0, "close": 20.0, "halted": False},
+        {"symbol": "AAA", "asof_ms": at(9, 59), "open": 20.0, "close": 20.0, "halted": True},
+        {"symbol": "AAA", "asof_ms": at(10, 0), "open": 25.0, "close": 25.0, "halted": False},
+        {"symbol": "AAA", "asof_ms": at(10, 1), "open": 25.0, "close": 25.0, "halted": False},
+    ]
+    buy = {"symbol": "AAA", "asof_ms": at(9, 58), "lead": 1, "qty": 10, "side": "buy"}
+    stub = _Scripted({at(9, 58): [buy]})
+    out = EquityReplay(policy, CASH_POLICY, decider=stub).run(bars)
+    sized_key = stub.seen[at(9, 58)]["fill_ms"]["AAA"]
+    assert sized_key == at(9, 59)
+    entry = next(f for f in out["fills"] if f["kind"] == "entry")
+    assert (entry["asof_ms"], entry["price"]) == (at(10, 0), 25.0)
+    assert entry["fee"] / (entry["price"] * entry["qty"]) == pytest.approx(
+        policy.costs.half_spread_bps("AAA", sized_key) * 1e-4
+    )
+    assert entry["fee"] == pytest.approx(10.0e-4 * 2.0 * 25.0 * 10)
 
 
 def test_mio_orders_are_integer_shares_filled_next_bar_open(sim):
@@ -772,33 +904,42 @@ def test_lead_groups_share_one_cash_budget_in_ascending_order(sim, monkeypatch):
     assert seen[1][1] == seen[0][2]
 
 
-def test_sizing_and_fills_charge_the_same_per_name_cost(sim, monkeypatch):
-    """The MIO prices each name with exactly the replay's per-share cost (owner ruling 2026-09-25)."""
-    seen = {}
+def test_sizing_and_fills_charge_the_same_cost_keyed_on_the_fill_minute(sim, monkeypatch):
+    """Owner rulings 2026-09-25: per name, and per FILL minute (the time-of-day window).
+
+    The MIO sizes each name at the instant the replay will fill it (the
+    decision bar + ``fill_bar_offset``), so an entry's billed per-share rate
+    is exactly the rate its sizing charged.
+    """
+    sized = {}
     real = EquityKellyMIO.instruments
 
     def spy(self, inputs):
         out = real(self, inputs)
-        seen.update(out[1])
+        portfolio = inputs["portfolio"]
+        for name, row in out[1].items():
+            sized[(portfolio["asof_ms"], name)] = (row, portfolio["fill_ms"][name])
         return out
 
     monkeypatch.setattr(EquityKellyMIO, "instruments", spy)
     decider = _decider(sim["published"], sim["fx"])
-    for tick in _ticks(sim["published"]):
-        decider.decide(tick, _book(sim["fx"], tick))
-    assert len(seen) >= 2, "the fixture must size several names for this test to mean anything"
-    rates = {name: FILL_POLICY.costs.half_spread_bps(name) for name in seen}
-    assert len(set(rates.values())) >= 2, rates
-    for name, row in seen.items():
-        assert row["cost_buy"] == FILL_POLICY.costs.buy_per_share(name, row["price"])
-        assert row["cost_sell"] == FILL_POLICY.costs.sell_per_share(name, row["price"])
+    out = EquityReplay(FILL_POLICY, CASH_POLICY, decider=decider).run(sim["bars"])
+    assert len({name for _, name in sized}) >= 2, "the fixture must size several names"
+    costs = FILL_POLICY.costs
+    multipliers = {costs.time_of_day_multiplier(fill_ms) for _, fill_ms in sized.values()}
+    assert len(multipliers) >= 2, f"the fixture must size inside and outside a window: {multipliers}"
+    for (asof, name), (row, fill_ms) in sized.items():
+        assert fill_ms == asof + 60_000  # the thin tape's next bar
+        assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms)
+        assert row["cost_sell"] == costs.sell_per_share(name, row["price"], fill_ms)
         assert row["exit_cost_per_share"] == row["cost_sell"]
-    fills = [f for f in sim["out"]["fills"] if f["kind"] == "entry"]
-    assert fills
-    for fill in fills:
-        assert fill["fee"] == pytest.approx(
-            FILL_POLICY.costs.buy_per_share(fill["symbol"], fill["price"]) * fill["qty"]
-        )
+    entries = [f for f in out["fills"] if f["kind"] == "entry"]
+    assert entries
+    for fill in entries:
+        row, fill_ms = sized[(fill["decision_ms"], fill["symbol"])]
+        assert fill["asof_ms"] == fill_ms
+        billed_rate = fill["fee"] / (fill["price"] * fill["qty"])
+        assert billed_rate == pytest.approx(row["cost_buy"] / row["price"], rel=1e-12)
 
 
 def test_lot_expires_before_next_lattice_decision_for_max_lead_10():
@@ -854,6 +995,7 @@ def test_decide_node_refuses_bound_or_undeclared_params():
     assert check({"mio": MIO}) == []
     for bound in (
         {"half_spread_bps": {"LLY": 2.2}}, {"default_half_spread_bps": 2.2}, {"eq_ratio": 0.9},
+        {"spread_time_of_day": {"timezone": "UTC", "default_multiplier": 1.0, "windows": []}},
         {"cap_artifact_sha256": "a" * 64}, {"bundle_producer_node": "x"},
     ):
         assert any("must not carry" in p for p in check({"mio": {**MIO, **bound}}))
@@ -1154,7 +1296,7 @@ def test_open_lots_at_segment_end_refuse(sim7, monkeypatch):
     last = max(b["decision_ts"] for b in published["bundles"] if b["release_id"] == release["release_id"])
 
     class Stub:
-        def __init__(self, release, bundles, mio, fill_policy, ctx):
+        def __init__(self, release, bundles, mio, fill_policy, ctx, keep_solves=True):
             self.skipped, self.refused = [], []
 
         def decide(self, asof_ms, portfolio):
@@ -1578,3 +1720,696 @@ def test_cash_rows_refuse_a_booked_date_the_replay_never_ticked():
     recorder = SimpleNamespace(closes={"2026-01-05": {"cash": 1.0, "gross_limit": 1.0, "mark_prices": {}}})
     with pytest.raises(ConfigError, match="not dates the replay ticked"):
         DevelopmentSimulation._cash_rows(replay, recorder, None, Decimal("0"), TZ, CASH_POLICY)
+
+
+# --- ADR-0186: the per-minute publisher, decider and simulation --------------
+
+MINUTE_KIND = "intraday_equities-minute-forecast-publisher"
+MINUTE_SIM_KIND = "intraday_equities-minute-development-simulation"
+
+
+@pytest.fixture
+def mfx(tmp_path):
+    """The three-fold walk with every fold's per-minute trade predictions pinned."""
+    return _build_fx(str(tmp_path), minute=True)
+
+
+def _mrun(fx):
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    return MinuteForecastPublisher("publish", fx["params"]).run(fx["ctx"], {})
+
+
+def _closes(fx):
+    """Each local date's last tape minute: the session close the decider reads."""
+    stamps, _ = fx["tape"]
+    out = {}
+    for stamp in stamps:
+        day = _local_day(int(stamp))
+        out[day] = max(out.get(day, 0), int(stamp))
+    return out
+
+
+def _minute_decider(published, fx, closes=None, release=0, **overrides):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    mio = MioDeciderNode("decide", {"mio": {**MIO, **overrides}}).run(
+        fx["ctx"], {"releases": published["releases"]}
+    )["mio"]
+    return MinuteMioDecider(
+        published["releases"][release], published["ticks"], mio, FILL_POLICY, fx["ctx"],
+        _closes(fx) if closes is None else closes, TZ,
+    )
+
+
+def _mbook(fx, asof_ms, positions=None, pending=()):
+    return {**_book(fx, asof_ms, positions), "pending": list(pending)}
+
+
+def _open(release, day=0):
+    """The first tape minute of the segment's ``day``-th day."""
+    return release["segment_start_ms"] + day * 86_400_000 + OPEN_MS
+
+
+def test_minute_publisher_releases_are_the_lattice_releases_plus_tick_constants(mfx):
+    lattice = _run(mfx)["releases"]
+    minute = _mrun(mfx)["releases"]
+    extra = ("tick_constants", "label")
+    assert _canon([{k: v for k, v in r.items() if k not in extra} for r in minute]) == _canon(lattice)
+    for release in minute:
+        assert release["label"]["label_residual"] == "SPY"
+        for lead in release["lead_groups"]:
+            constants = release["tick_constants"][str(lead)]
+            members = sorted(s for s, held in release["lead_map"].items() if held == lead)
+            assert sorted(constants["scenarios"]) == members
+            assert all(len(draws) == len(constants["weights"]) for draws in constants["scenarios"].values())
+
+
+def test_minute_publisher_ticks_every_traded_minute_of_the_segment(mfx):
+    out = _mrun(mfx)
+    assert "bundles" not in out
+    release = out["releases"][0]
+    stamps, prices = mfx["tape"]
+    blocks = {(b["symbol"], b["lead"]): b for b in out["ticks"]}
+    assert set(blocks) == set(release["lead_map"].items())
+    window = [int(t) for t in stamps if release["segment_start_ms"] <= t < release["segment_end_ms"]]
+    assert len(window) == STEP * 390
+    for (symbol, lead), block in blocks.items():
+        assert block["ts"] == window
+        assert (block["fold"], block["release_id"]) == (2, release["release_id"])
+        at = np.searchsorted(stamps, block["ts"])
+        assert block["price"] == [float(p) for p in prices[symbol][at]]
+        assert len(block["yhat"]) == len(block["sigma"]) == len(block["beta"]) == len(window)
+    assert json.loads(json.dumps(out)) == out
+    assert DEFAULT_NODE_KINDS.get(MINUTE_KIND)[0].__name__ == "MinuteForecastPublisher"
+
+
+def test_minute_bundle_rows_equal_the_lattice_rows_at_every_lattice_tick(mfx):
+    lattice = _run(mfx)
+    decider = _minute_decider(_mrun(mfx), mfx)
+    for bundle in lattice["bundles"]:
+        names = [row["entity"] for row in bundle["rows"]]
+        rows = decider._bundle_rows(bundle["decision_ts"], bundle["lead"], names)
+        assert _canon(rows) == _canon(bundle["rows"])
+    assert lattice["bundles"]
+
+
+def test_minute_publisher_refuses_trade_yhat_that_disagrees_with_the_scored_yhat(mfx):
+    target = sorted(mfx["data"][(2, 2)]["LLY"][0])[3]
+
+    def moved(i, n, lead, stamps, yhat):
+        return stamps, [v + 0.5 if (i, n, lead, t) == (2, "LLY", 2, target) else v for t, v in zip(stamps, yhat)]
+
+    _write_trade(mfx, moved)
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="trade yhat"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_refuses_a_scored_minute_with_no_trade_row(mfx):
+    target = sorted(mfx["data"][(2, 1)]["NOW"][0])[5]
+
+    def dropped(i, n, lead, stamps, yhat):
+        keep = [k for k, t in enumerate(stamps) if (i, n, lead, t) != (2, "NOW", 1, target)]
+        return [stamps[k] for k in keep], [yhat[k] for k in keep]
+
+    _write_trade(mfx, dropped)
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="trade yhat"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_refuses_an_inventory_without_trade_pins(mfx):
+    mfx["minute"] = False
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="trade prediction"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_refuses_a_trade_file_that_moved_after_the_inventory(mfx):
+    _write_trade(mfx, lambda i, n, lead, stamps, yhat: (stamps, [v + 1.0 for v in yhat]))
+    with pytest.raises(ValueError, match="hash changed"):
+        _mrun(mfx)
+
+
+def test_minute_walk_never_reads_label_tapes_from_a_trade_cache(mfx, monkeypatch):
+    import intraday_equities.feature_cache as feature_cache
+
+    verified = []
+    real = feature_cache.verify_feature_cache
+
+    def spy(path, sha):
+        verified.append(os.path.basename(path))
+        return real(path, sha)
+
+    monkeypatch.setattr(feature_cache, "verify_feature_cache", spy)
+    config = json.load(open(os.path.join(mfx["runs"][2], "config.json"), encoding="utf-8"))
+    assert f"{TRADE_CACHE_PREFIX}a" in config["pipeline"]
+    out = _mrun(mfx)
+    assert out["ticks"] and verified and "trade" not in verified
+    # The lattice walk has no such filter to lean on: its folds carry no trade cache.
+    lattice = _build_fx(os.path.join(os.path.dirname(mfx["runs"][0]), "..", "lattice"))
+    assert not any(k.startswith(TRADE_CACHE_PREFIX) for k in json.load(
+        open(os.path.join(lattice["runs"][2], "config.json"), encoding="utf-8"))["pipeline"])
+
+
+def test_minute_publisher_reads_trade_rows_without_y(mfx, monkeypatch):
+    import pyarrow.parquet as pq
+
+    requested = []
+    real = pq.read_table
+
+    def spy(path, **kwargs):
+        requested.append((os.path.basename(path), kwargs.get("columns")))
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(pq, "read_table", spy)
+    _mrun(mfx)
+    trade = [cols for name, cols in requested if name == TRADE_PREDICTIONS_FILE]
+    assert trade and all(cols is not None and "y" not in cols for cols in trade)
+
+
+def test_minute_decider_leaves_out_a_name_with_no_tick_at_that_minute(mfx, monkeypatch):
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(sorted(row["entity"] for row in inputs["bundle"]))
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    published = json.loads(json.dumps(_mrun(mfx)))
+    t = _open(published["releases"][0]) + 11 * 60_000
+    block = next(b for b in published["ticks"] if b["symbol"] == "LLY")
+    k = block["ts"].index(t)
+    for column in ("ts", "price", "yhat", "sigma", "beta"):
+        del block[column][k]
+    decider = _minute_decider(published, mfx)
+    decider.decide(t, _mbook(mfx, t))
+    # LLY printed no tick at t: it is simply not a candidate there -- not skipped, not sized.
+    assert seen == [["NOW"], ["LRCX"]]
+    assert decider.skipped == []
+
+
+def test_minute_publisher_refuses_trade_rows_out_of_time_order(mfx):
+    def shuffled(i, n, lead, stamps, yhat):
+        if (i, n, lead) != (2, "LRCX", 2):
+            return stamps, yhat
+        return [stamps[1], stamps[0], *stamps[2:]], [yhat[1], yhat[0], *yhat[2:]]
+
+    _write_trade(mfx, shuffled)
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="time-ordered"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_refuses_an_unpinned_trade_file_in_a_fold(mfx):
+    extra = os.path.join(mfx["runs"][1], "artifacts", "scan_extra")
+    with PredictionWriter(extra, list(NAMES), filename=TRADE_PREDICTIONS_FILE) as writer:
+        writer.append("LLY", 2, [1], [float("nan")], [0.1], float("nan"))
+    with pytest.raises(ValueError, match="trade prediction inventory drifted"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_ticks_only_the_segment_even_if_trade_rows_start_earlier(mfx):
+    first = _splits(2)["val_start_ms"]
+    early = [first - 86_400_000 + OPEN_MS + i * 60_000 for i in range(3)]
+
+    def widened(i, n, lead, stamps, yhat):
+        return (early + stamps, [9.0] * len(early) + yhat) if i == 2 else (stamps, yhat)
+
+    _write_trade(mfx, widened)
+    _write_inventory(mfx)
+    out = _mrun(mfx)
+    assert all(min(block["ts"]) >= first for block in out["ticks"])
+    assert all(9.0 not in block["yhat"][:3] for block in out["ticks"])
+
+
+def test_minute_decider_refuses_a_tick_block_that_is_not_an_admitted_unit(mfx):
+    published = json.loads(json.dumps(_mrun(mfx)))
+    block = next(b for b in published["ticks"] if b["symbol"] == "LLY")
+    block["lead"] = 1
+    with pytest.raises(ValueError, match="not one admitted unit"):
+        _minute_decider(published, mfx)
+
+
+def test_minute_decider_opens_nothing_on_a_date_without_a_known_close(mfx):
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx, closes={})
+    t = _open(published["releases"][0]) + 20 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    assert decider.solves == [] and {r["reason"] for r in decider.skipped} == {"exit_after_close"}
+
+
+def test_minute_window_gate_ignores_an_empty_tick_block():
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    rows = MinuteDevelopmentSimulation._decision_rows([{"ts": []}, {"ts": [5, 9, 7]}])
+    assert rows == [{"asof_ms": 9}]
+
+
+def test_minute_decider_solves_at_a_minute_off_the_lattice(mfx):
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    t = _open(published["releases"][0]) + 7 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    assert {(row["asof_ms"], row["lead"]) for row in decider.solves} == {(t, 1), (t, 2)}
+
+
+def test_minute_decider_skips_held_and_pending_units_and_reserves_pending_cash(mfx, monkeypatch):
+    from intraday_equities.nodes_capital import SchwabCostModel
+
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(([row["entity"] for row in inputs["bundle"]], inputs["portfolio"]["cash"]))
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    t = _open(published["releases"][0]) + 100 * 60_000
+    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 60_000, "fill_ms": t}
+    decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[queued]))
+    assert sorted((r["symbol"], r["lead"], r["reason"]) for r in decider.skipped) == [
+        ("LLY", 2, "open_lot_at_decision"), ("NOW", 1, "pending_entry_at_decision"),
+    ]
+    block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
+    price = block["price"][block["ts"].index(t - 60_000)]
+    costs = SchwabCostModel({name: getattr(FILL_POLICY, name) for name in SchwabCostModel._PARAMS})
+    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, t)
+    assert seen == [(["LRCX"], pytest.approx(1020.0 - reserved))]
+
+
+def test_minute_decider_reserves_a_pending_entry_at_its_fill_minutes_spread(mfx, monkeypatch):
+    """The reservation charges the queued entry's own fill-minute multiplier (owner ruling 2026-09-25)."""
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(inputs["portfolio"]["cash"])
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    # The fixture's session opens 10:30 New York (EDT). A buy decided at
+    # 15:29 (+299 min, default 1.0) was scheduled to fill at 15:30 (+300,
+    # inside the shipped 0.62 window) and is still queued at 16:00 (+330,
+    # default 1.0): only the FILL minute's key gives the window's rate, so a
+    # reservation keyed on the decision or on this tick is caught.
+    release = published["releases"][0]
+    decision, fill, t = (_open(release) + m * 60_000 for m in (299, 300, 330))
+    costs = FILL_POLICY.costs
+    assert costs.time_of_day_multiplier(fill) != costs.time_of_day_multiplier(decision)
+    assert costs.time_of_day_multiplier(fill) != costs.time_of_day_multiplier(t)
+    queued = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": decision, "fill_ms": fill}
+    decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[queued]))
+    block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
+    price = block["price"][block["ts"].index(decision)]
+    reserved = 3 * price + 3 * costs.buy_per_share("NOW", price, fill)
+    assert seen and seen[0] == pytest.approx(1020.0 - reserved)
+    assert seen[0] != pytest.approx(1020.0 - 3 * price - 3 * costs.buy_per_share("NOW", price, decision))
+    without_key = {k: v for k, v in queued.items() if k != "fill_ms"}
+    with pytest.raises(ValueError, match="fill_ms"):
+        decider.decide(t, _mbook(mfx, t, positions={"LLY": 4}, pending=[without_key]))
+
+
+def test_minute_decider_refuses_a_pending_entry_it_did_not_size(mfx):
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    t = _open(published["releases"][0]) + 100 * 60_000
+    stray = {"symbol": "NOW", "lead": 1, "qty": 3, "side": "buy", "decision_ms": t - 30}
+    with pytest.raises(ValueError, match="pending"):
+        decider.decide(t, _mbook(mfx, t, pending=[stray]))
+
+
+def test_minute_decider_opens_no_lot_that_would_exit_after_the_close(mfx):
+    published = _mrun(mfx)
+    decider = _minute_decider(published, mfx)
+    close = _closes(mfx)[_local_day(_open(published["releases"][0]))]
+    t = close - 2 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    # Lead 1 fills at t+1 and exits at t+2 = the close: allowed. Lead 2 would exit after it.
+    assert sorted((r["symbol"], r["reason"]) for r in decider.skipped) == [
+        ("LLY", "exit_after_close"), ("LRCX", "exit_after_close"),
+    ]
+    assert {row["lead"] for row in decider.solves} == {1}
+    later = _minute_decider(published, mfx)
+    later.decide(close - 60_000, _mbook(mfx, close - 60_000))
+    assert later.solves == [] and len(later.skipped) == 3
+
+
+def test_minute_close_rule_reads_the_fill_offset_from_the_fill_policy(mfx):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    published = _mrun(mfx)
+    with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
+        later_fill = FillPolicy({**json.load(handle), "fill_bar_offset": 2})
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(mfx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(
+        published["releases"][0], published["ticks"], mio, later_fill, mfx["ctx"], _closes(mfx), TZ,
+    )
+    close = _closes(mfx)[_local_day(_open(published["releases"][0]))]
+    t = close - 3 * 60_000
+    decider.decide(t, _mbook(mfx, t))
+    # Fill two bars later: lead 1 exits at t+3 = the close (allowed), lead 2 after it.
+    assert sorted((r["symbol"], r["reason"]) for r in decider.skipped) == [
+        ("LLY", "exit_after_close"), ("LRCX", "exit_after_close"),
+    ]
+    assert {row["lead"] for row in decider.solves} == {1}
+
+
+def test_minute_decision_at_t_reads_no_tick_after_t(mfx):
+    published = _mrun(mfx)
+    t = _open(published["releases"][0]) + 40 * 60_000
+    first = _minute_decider(published, mfx)
+    orders = first.decide(t, _mbook(mfx, t))
+    moved = json.loads(json.dumps(published))
+    for block in moved["ticks"]:
+        for k, stamp in enumerate(block["ts"]):
+            if stamp > t:
+                block["yhat"][k] += 5.0
+                block["price"][k] *= 1.5
+                block["sigma"][k] *= 3.0
+                block["beta"][k] += 1.0
+    second = _minute_decider(moved, mfx)
+    assert second.decide(t, _mbook(mfx, t)) == orders
+    strip = [{k: v for k, v in row.items() if k != "seconds"} for row in first.solves]
+    assert [{k: v for k, v in row.items() if k != "seconds"} for row in second.solves] == strip
+    assert strip, "the decision must solve for this test to mean anything"
+
+
+def _minute_bars(published, fx, days=(0,), head=30, tail=20):
+    """Each admitted name's bars in the first ``head`` and last ``tail`` minutes of the given segment days."""
+    stamps, prices = fx["tape"]
+    keep = set()
+    for release in published["releases"]:
+        for day in days:
+            start = _open(release, day)
+            keep.update(start + i * 60_000 for i in range(head))
+            keep.update(start + i * 60_000 for i in range(390 - tail, 390))
+    return [
+        {"symbol": s, "asof_ms": int(t), "open": float(p), "close": float(p), "halted": False}
+        for s in published["releases"][0]["survivors"]
+        for t, p in zip(stamps, prices[s])
+        if int(t) in keep
+    ]
+
+
+@pytest.fixture(scope="module")
+def msim(tmp_path_factory):
+    """One funded minute replay of segment 2's first day (head and tail of the session)."""
+    fx = _build_fx(str(tmp_path_factory.mktemp("m6")), minute=True)
+    published = _mrun(fx)
+    bars = [b for b in _minute_bars(published, fx) if b["asof_ms"] < published["releases"][0]["segment_end_ms"]]
+    spy = _Spy(_minute_decider(published, fx))
+    out = EquityReplay(FILL_POLICY, CASH_POLICY, decider=spy).run(bars)
+    return {"fx": fx, "published": published, "bars": bars, "spy": spy, "out": out}
+
+
+def test_minute_cadence_sizes_and_bills_every_entry_at_its_fill_minute_not_its_decision_minute(msim, monkeypatch):
+    """Skeptic minor (test quality): a window boundary between EVERY decision
+    minute and its fill minute, so decision-keying and fill-keying disagree on
+    every entry. Odd session minutes 10:31..10:59 New York (the fixture opens
+    10:30 EDT) carry x3.0; even minutes pay the default 1.0."""
+    from intraday_equities.simulation import MinuteMioDecider
+
+    fx, published = msim["fx"], msim["published"]
+    open_minute = 10 * 60 + 30
+    schedule = {
+        "timezone": "America/New_York", "default_multiplier": 1.0,
+        "windows": [
+            {"start_minute": m, "end_minute": m + 1, "multiplier": 3.0}
+            for m in range(open_minute + 1, open_minute + 30, 2)
+        ],
+    }
+    policy = FillPolicy({**FILL_POLICY.to_obj(), "spread_time_of_day": schedule})
+    sized = {}
+    real = EquityKellyMIO.instruments
+
+    def spy(self, inputs):
+        out = real(self, inputs)
+        portfolio = inputs["portfolio"]
+        for name, row in out[1].items():
+            sized[(portfolio["asof_ms"], name)] = (row, portfolio["fill_ms"][name])
+        return out
+
+    monkeypatch.setattr(EquityKellyMIO, "instruments", spy)
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(published["releases"][0], published["ticks"], mio, policy, fx["ctx"], _closes(fx), TZ)
+    out = EquityReplay(policy, CASH_POLICY, decider=decider).run(msim["bars"])
+    costs = policy.costs
+    head = [key for key in sized if costs.time_of_day_multiplier(key[0]) != costs.time_of_day_multiplier(sized[key][1])]
+    assert head, "the head of the session must size names across a window boundary"
+    for (asof, name), (row, fill_ms) in sized.items():
+        assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms)
+    entries = [
+        f for f in out["fills"]
+        if f["kind"] == "entry"
+        and costs.time_of_day_multiplier(f["decision_ms"]) != costs.time_of_day_multiplier(f["asof_ms"])
+    ]
+    assert entries, "the fixture must fill entries across a window boundary"
+    for fill in entries:
+        row, fill_ms = sized[(fill["decision_ms"], fill["symbol"])]
+        # The fill bar is the name's next TAPE bar: the next minute, or the
+        # tail of the session after the thinned tape's gap.
+        assert fill_ms == fill["asof_ms"] > fill["decision_ms"]
+        billed = fill["fee"] / (fill["price"] * fill["qty"])
+        assert billed == pytest.approx(row["cost_buy"] / row["price"], rel=1e-12)
+        assert billed == pytest.approx(costs.half_spread_bps(fill["symbol"], fill["asof_ms"]) * 1e-4, rel=1e-12)
+        assert billed != pytest.approx(costs.half_spread_bps(fill["symbol"], fill["decision_ms"]) * 1e-4, rel=1e-6)
+
+
+def test_minute_replay_consults_the_decider_every_minute_it_ticks(msim):
+    ticks = sorted({b["asof_ms"] for b in msim["bars"]})
+    assert [asof for asof, _, _ in msim["spy"].calls] == ticks
+    solved = {row["asof_ms"] for row in msim["spy"].inner.solves}
+    off_lattice = {t for t in solved if (t - OPEN_MS) % 1_800_000}
+    assert len(off_lattice) > 20
+
+
+def test_minute_entries_fill_next_bar_and_exit_at_fill_plus_lead(msim):
+    by_symbol = _by_symbol(msim["bars"])
+    fills = msim["out"]["fills"]
+    entries = [f for f in fills if f["kind"] == "entry"]
+    assert entries, "the fixture must trade for this test to mean anything"
+    for entry in entries:
+        seq = by_symbol[entry["symbol"]]
+        times = [b["asof_ms"] for b in seq]
+        assert times[times.index(entry["decision_ms"]) + 1] == entry["asof_ms"]
+        due = seq[times.index(entry["asof_ms"]) + entry["lead"]]
+        assert any(
+            (f["kind"], f["symbol"], f["asof_ms"], f["qty"]) == ("exit", entry["symbol"], due["asof_ms"], entry["qty"])
+            for f in fills
+        )
+        close = _closes(msim["fx"])[_local_day(entry["decision_ms"])]
+        assert entry["decision_ms"] + (1 + entry["lead"]) * 60_000 <= close
+
+
+def test_minute_replay_never_repeats_an_open_or_queued_lot(msim):
+    assert not [r for r in msim["out"]["refused"] if r["reason"] == "same_lead_open"]
+    held = [r for r in msim["spy"].inner.skipped if r["reason"] == "open_lot_at_decision"]
+    assert held, "a lot must be open at a later minute for this test to mean anything"
+
+
+def _minute_sim_inputs(published, bars, fx):
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    return {"bars": bars, "releases": published["releases"], "ticks": published["ticks"], "mio": mio}
+
+
+@pytest.fixture(scope="module")
+def msim7(tmp_path_factory):
+    """Two funded minute segments (folds 2 and 3) through the minute simulate node and the report."""
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    fx = _build_fx(str(tmp_path_factory.mktemp("m7")), count=4, minute=True)
+    fx["params"]["last_fold"] = 3
+    published = _mrun(fx)
+    bars = _minute_bars(published, fx)
+    node = MinuteDevelopmentSimulation("simulate", _sim_params(keep_solves=False))
+    out = node.run(fx["ctx"], _minute_sim_inputs(published, list(bars), fx))
+    ports = ("fills", "skipped", "refused", "cash", "metadata")
+    report = SimulationReport("report", {}).run(
+        fx["ctx"], {**{port: out[port] for port in ports}, "releases": published["releases"]}
+    )
+    return {"fx": fx, "published": published, "bars": bars, "out": out, "report": report}
+
+
+def test_minute_simulate_is_a_registered_development_simulation(msim7):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    assert DEFAULT_NODE_KINDS.get(MINUTE_SIM_KIND)[0] is MinuteDevelopmentSimulation
+    assert issubclass(MinuteDevelopmentSimulation, DevelopmentSimulation)
+    assert MinuteDevelopmentSimulation.outputs == DevelopmentSimulation.outputs
+    assert json.loads(json.dumps(msim7["out"])) == msim7["out"]
+    assert MinuteDevelopmentSimulation.validate_params(_sim_params()) == []
+    assert MinuteDevelopmentSimulation.validate_params(_sim_params(deployment_eligible=True))
+    assert MinuteDevelopmentSimulation.validate_params(_sim_params(keep_solves="no"))
+    node = MinuteDevelopmentSimulation("simulate", _sim_params())
+    inputs = _minute_sim_inputs(msim7["published"], [], msim7["fx"])
+    assert node.validate_inputs(inputs) == []
+    assert any("ticks" in p for p in node.validate_inputs({**inputs, "ticks": None}))
+
+
+def test_minute_simulate_trades_off_the_lattice_in_both_segments(msim7):
+    fills = msim7["out"]["fills"]
+    assert {f["fold"] for f in fills} == {2, 3}
+    entries = [f for f in fills if f["kind"] == "entry"]
+    assert [f for f in entries if (f["decision_ms"] - OPEN_MS) % 1_800_000]
+    assert msim7["report"]["summary"]["max_abs_nav_discrepancy"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_minute_decider_without_kept_solves_holds_no_rows_but_counts_them(mfx):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    published = _mrun(mfx)
+    mio = MioDeciderNode("decide", {"mio": MIO}).run(mfx["ctx"], {"releases": published["releases"]})["mio"]
+    decider = MinuteMioDecider(
+        published["releases"][0], published["ticks"], mio, FILL_POLICY, mfx["ctx"], _closes(mfx), TZ,
+        keep_solves=False,
+    )
+    start = _open(published["releases"][0])
+    for minute in (5, 6, 7):
+        decider.decide(start + minute * 60_000, _mbook(mfx, start + minute * 60_000))
+    assert decider.solves == [] and decider.n_solves == 6 and decider.solve_seconds > 0.0
+
+
+def test_minute_walk_keeps_only_the_latest_folds_label_arrays(mfx):
+    from intraday_equities.simulation import _MinuteWalk
+
+    walk = _MinuteWalk(mfx["params"])
+    try:
+        first = walk.market(1)
+        assert walk.market(1) is first
+        walk.market(2)
+        assert list(walk._markets) == [2]
+    finally:
+        walk.close()
+
+
+def test_minute_simulate_without_kept_solves_counts_them_in_the_metadata(msim7, monkeypatch):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    built = _spy_deciders(monkeypatch, "MinuteMioDecider")
+    fx, published = msim7["fx"], msim7["published"]
+    MinuteDevelopmentSimulation("simulate", _sim_params(keep_solves=False)).run(
+        fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
+    )
+    assert len(built) == 2 and all(d.solves == [] and d.n_solves > 0 for d in built)
+    out = msim7["out"]
+    assert out["solves"] == []
+    counted = out["metadata"]["solves"]
+    assert counted["count"] > 0 and counted["seconds"] > 0.0
+    skips = Counter(row["reason"] for row in out["skipped"])
+    assert skips["exit_after_close"] > 0
+
+
+def _spy_deciders(monkeypatch, name):
+    """Record every decider the simulation builds under ``simulation_module.<name>``."""
+    built = []
+    real = getattr(simulation_module, name)
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(simulation_module, name, Recording)
+    return built
+
+
+def test_development_simulation_keep_solves_false_drops_the_rows_and_keeps_the_count(sim7, monkeypatch):
+    fx, published = sim7["fx"], sim7["published"]
+    built = _spy_deciders(monkeypatch, "MioDecider")
+    out = DevelopmentSimulation("simulate", _sim_params(keep_solves=False)).run(
+        fx["ctx"], _sim_inputs(published, list(sim7["bars"]), fx)
+    )
+    assert out["solves"] == [] and out["fills"] == sim7["out"]["fills"]
+    assert out["metadata"]["solves"]["count"] == len(sim7["out"]["solves"]) > 0
+    assert "solves" not in sim7["out"]["metadata"]
+    # The deciders themselves never held the rows: the flag bounds memory, not just output.
+    assert len(built) == 2 and all(d.solves == [] and d.n_solves > 0 for d in built)
+
+
+def _carry_stub(target):
+    """A minute decider stub: one LLY lead-2 buy at ``target``, nothing else."""
+
+    class Stub:
+        def __init__(self, release, ticks, mio, fill_policy, ctx, closes, tz, keep_solves=True):
+            self.skipped, self.refused, self.solves = [], [], []
+            self.n_solves, self.solve_seconds = 0, 0.0
+
+        def decide(self, asof_ms, portfolio):
+            if asof_ms != target:
+                return []
+            return [{"symbol": "LLY", "asof_ms": asof_ms, "lead": 2, "qty": 1, "side": "buy"}]
+
+    return Stub
+
+
+def test_a_lot_open_at_a_release_boundary_carries_into_the_next_release(msim7, monkeypatch):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    fx, published = msim7["fx"], msim7["published"]
+    first, second = published["releases"]
+    lly = [b["asof_ms"] for b in msim7["bars"] if b["symbol"] == "LLY"]
+    before = [t for t in lly if t < first["segment_end_ms"]]
+    # Decide at LLY's second-to-last bar of release 2: fill at its last bar, owe 2 more.
+    target = before[-2]
+    monkeypatch.setattr(simulation_module, "MinuteMioDecider", _carry_stub(target))
+    out = MinuteDevelopmentSimulation("simulate", _sim_params()).run(
+        fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
+    )
+    fills = [(f["fold"], f["kind"], f["asof_ms"]) for f in out["fills"] if f["symbol"] == "LLY"]
+    after = [t for t in lly if t >= second["segment_start_ms"]]
+    assert fills == [(2, "entry", before[-1]), (3, "exit", after[1])]
+    assert not [r for r in out["refused"] if r["reason"] == "expiry_past_tape"]
+    segments = out["metadata"]["segments"]
+    assert segments[0]["carried_out"] == [{"symbol": "LLY", "lead": 2, "qty": 1, "side": "buy", "exit_in": 1}]
+    assert segments[1]["opening_cash"] == segments[0]["closing_cash"]
+    assert out["metadata"]["open_at_evidence_end"] == []
+
+
+def test_a_lot_open_at_the_evidence_end_stays_marked_and_is_listed(msim7, monkeypatch):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    fx, published = msim7["fx"], msim7["published"]
+    lly = [b["asof_ms"] for b in msim7["bars"] if b["symbol"] == "LLY"]
+    target = lly[-2]
+    monkeypatch.setattr(simulation_module, "MinuteMioDecider", _carry_stub(target))
+    out = MinuteDevelopmentSimulation("simulate", _sim_params()).run(
+        fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
+    )
+    assert out["metadata"]["open_at_evidence_end"] == [
+        {"symbol": "LLY", "lead": 2, "qty": 1, "side": "buy", "exit_in": 1},
+    ]
+    last = out["cash"][-1]
+    lly_close = next(b["close"] for b in msim7["bars"] if b["symbol"] == "LLY" and b["asof_ms"] == lly[-1])
+    assert last["nav_close"] == pytest.approx(last["cash_close"] + lly_close)
+
+
+@pytest.mark.parametrize("which", [0, -1], ids=["first-minute", "last-minute"])
+def test_minute_simulate_refuses_a_bar_close_that_disagrees_with_the_tick_price(msim7, which):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    fx, published = msim7["fx"], msim7["published"]
+    end = published["releases"][0]["segment_end_ms"]
+    target = [b for b in msim7["bars"] if b["symbol"] == "LRCX" and b["asof_ms"] < end][which]
+    bars = [{**b, "close": b["close"] * 1.01} if b is target else b for b in msim7["bars"]]
+    with pytest.raises(ConfigError, match="disagrees"):
+        MinuteDevelopmentSimulation("simulate", _sim_params()).run(
+            fx["ctx"], _minute_sim_inputs(published, bars, fx)
+        )
+
+
+def test_minute_simulate_refuses_a_tick_after_the_evidence_end(msim7):
+    from intraday_equities.simulation import MinuteDevelopmentSimulation
+
+    fx, published = msim7["fx"], msim7["published"]
+    early = (FIRST + timedelta(days=STEP * 3)).isoformat()
+    with pytest.raises(ConfigError, match="evidence_end"):
+        MinuteDevelopmentSimulation("simulate", _sim_params(evidence_end=early)).run(
+            fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
+        )

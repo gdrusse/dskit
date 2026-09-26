@@ -13,6 +13,9 @@ covered directly below instead.
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from dskit.pipeline.node import ConfigError, DEFAULT_NODE_KINDS, NodeContext, node_class_errors
@@ -78,6 +81,9 @@ PARAMS = {
     "half_spread_bps": {},
     "default_half_spread_bps": 2.2,
     "eq_ratio": 1.0,
+    "spread_time_of_day": {
+        "timezone": "America/New_York", "default_multiplier": 1.0, "windows": [],
+    },
     "taf_per_share": 0.000195,
     "sec31_bps": 0.0206,
     "min_price": 5.0,
@@ -238,6 +244,8 @@ def _portfolio(**overrides):
         "cash_reserve": 0.0,
         "gross_limit": 12000.0,
         "sale_credit": 1.0,
+        # Each name's fill instant: the replay's next bar (ADR-0120 fill_bar_offset 1).
+        "fill_ms": {name: ASOF_MS + 60_000 for name in ("AAPL", "MSFT", "XOM")},
     }
     base.update(overrides)
     return base
@@ -289,7 +297,7 @@ class TestParams:
     @pytest.mark.parametrize(
         "name",
         [
-            "half_spread_bps", "default_half_spread_bps", "eq_ratio",
+            "half_spread_bps", "default_half_spread_bps", "eq_ratio", "spread_time_of_day",
             "taf_per_share", "sec31_bps", "min_price",
             "hfdr_q", "band_bps", "max_position_notional", "bundle_max_staleness_ms",
             "cap_max_staleness_ms", "cap_artifact_sha256",
@@ -605,12 +613,14 @@ class TestTheDoorwayHooksReadTheDeclaredFields:
         # comparative solve at two spread_bps values still differs even
         # when the buy side is dead.
         node = _node()
-        _names, rows, _account = node.instruments(_uinputs())
+        inputs = _uinputs()
+        _names, rows, _account = node.instruments(inputs)
         costs = SchwabCostModel(
             {name: PARAMS[name] for name in SchwabCostModel._PARAMS}
         )
+        fill_ms = inputs["portfolio"]["fill_ms"]
         for name, row in rows.items():
-            assert row["cost_buy"] == costs.buy_per_share(name, row["price"])
+            assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms[name])
         assert any(row["cost_buy"] > 0.0 for row in rows.values())
 
     def test_cost_buy_tracks_each_names_configured_rate(self):
@@ -650,10 +660,37 @@ class TestTheDoorwayHooksReadTheDeclaredFields:
 #: The fee knobs every SchwabCostModel case below shares.
 _FEES = {"taf_per_share": 0.000195, "sec31_bps": 0.0206, "min_price": 5.0}
 
+_NY = ZoneInfo("America/New_York")
+
+
+def _ny_ms(year, month, day, hour, minute):
+    """Epoch ms of a New York wall-clock minute (DST-aware)."""
+    return int(datetime(year, month, day, hour, minute, tzinfo=_NY).timestamp() * 1000)
+
+
+#: A midday New York fill instant: outside every window used below.
+NOON = _ny_ms(2025, 1, 15, 12, 0)
+
+#: No window: every fill minute pays the default multiplier 1.0.
+_FLAT_TOD = {"timezone": "America/New_York", "default_multiplier": 1.0, "windows": []}
+
+#: The research's shape (first and last 30 minutes of the NY session).
+_TOD = {
+    "timezone": "America/New_York",
+    "default_multiplier": 1.0,
+    "windows": [
+        {"start_minute": 570, "end_minute": 600, "multiplier": 2.0},
+        {"start_minute": 930, "end_minute": 960, "multiplier": 0.5},
+    ],
+}
+
 
 def _costs(**spread):
     """A SchwabCostModel over ``_FEES`` plus the spread knobs given."""
-    params = {"half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0}
+    params = {
+        "half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0,
+        "spread_time_of_day": _FLAT_TOD,
+    }
     params.update(spread)
     return SchwabCostModel({**params, **_FEES})
 
@@ -663,31 +700,33 @@ class TestPerNameSpread:
 
     def test_a_listed_name_pays_its_own_half_spread(self):
         costs = _costs(half_spread_bps={"LLY": 4.5, "XOM": 0.8}, default_half_spread_bps=5.6)
-        assert costs.buy_per_share("LLY", 800.0) == pytest.approx(4.5e-4 * 800.0)
-        assert costs.buy_per_share("XOM", 110.0) == pytest.approx(0.8e-4 * 110.0)
+        assert costs.buy_per_share("LLY", 800.0, NOON) == pytest.approx(4.5e-4 * 800.0)
+        assert costs.buy_per_share("XOM", 110.0, NOON) == pytest.approx(0.8e-4 * 110.0)
 
     def test_an_unlisted_name_pays_the_explicit_default(self):
         costs = _costs(half_spread_bps={"LLY": 4.5}, default_half_spread_bps=5.6)
-        assert costs.buy_per_share("ZZZ", 100.0) == pytest.approx(5.6e-4 * 100.0)
+        assert costs.buy_per_share("ZZZ", 100.0, NOON) == pytest.approx(5.6e-4 * 100.0)
 
     def test_an_unlisted_name_without_a_default_refuses(self):
         costs = _costs(half_spread_bps={"LLY": 4.5}, default_half_spread_bps=None)
         for price_it in (costs.buy_per_share, costs.sell_per_share):
             with pytest.raises(ConfigError, match="ZZZ"):
-                price_it("ZZZ", 100.0)
+                price_it("ZZZ", 100.0, NOON)
 
     def test_eq_ratio_scales_the_spread_term_and_nothing_else(self):
         full = _costs(half_spread_bps={"LLY": 4.0}, eq_ratio=1.0)
         half = _costs(half_spread_bps={"LLY": 4.0}, eq_ratio=0.5)
-        assert half.buy_per_share("LLY", 100.0) == pytest.approx(0.5 * full.buy_per_share("LLY", 100.0))
+        assert half.buy_per_share("LLY", 100.0, NOON) == pytest.approx(
+            0.5 * full.buy_per_share("LLY", 100.0, NOON)
+        )
         fees = 0.000195 + 0.0206e-4 * 100.0
-        assert full.sell_per_share("LLY", 100.0) == pytest.approx(4.0e-4 * 100.0 + fees)
-        assert half.sell_per_share("LLY", 100.0) == pytest.approx(2.0e-4 * 100.0 + fees)
-        assert half.half_spread_bps("LLY") == pytest.approx(2.0)
+        assert full.sell_per_share("LLY", 100.0, NOON) == pytest.approx(4.0e-4 * 100.0 + fees)
+        assert half.sell_per_share("LLY", 100.0, NOON) == pytest.approx(2.0e-4 * 100.0 + fees)
+        assert half.half_spread_bps("LLY", NOON) == pytest.approx(2.0)
 
     def test_eq_ratio_scales_the_default_too(self):
         costs = _costs(default_half_spread_bps=6.0, eq_ratio=0.5)
-        assert costs.buy_per_share("ZZZ", 100.0) == pytest.approx(3.0e-4 * 100.0)
+        assert costs.buy_per_share("ZZZ", 100.0, NOON) == pytest.approx(3.0e-4 * 100.0)
 
     @pytest.mark.parametrize(
         "bad, needle",
@@ -706,21 +745,32 @@ class TestPerNameSpread:
         ],
     )
     def test_malformed_spread_knobs_refuse(self, bad, needle):
-        params = {"half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0, **_FEES, **bad}
+        params = {
+            "half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0,
+            "spread_time_of_day": _FLAT_TOD, **_FEES, **bad,
+        }
         problems = SchwabCostModel.validate_params(params)
         assert any(needle in p for p in problems), problems
         with pytest.raises(ConfigError):
             SchwabCostModel(params)
         assert any(needle in p for p in EquityKellyMIO.validate_params({**PARAMS, **bad}))
 
-    @pytest.mark.parametrize("name", ["half_spread_bps", "default_half_spread_bps", "eq_ratio"])
+    @pytest.mark.parametrize(
+        "name", ["half_spread_bps", "default_half_spread_bps", "eq_ratio", "spread_time_of_day"],
+    )
     def test_every_spread_knob_is_required(self, name):
-        params = {"half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0, **_FEES}
+        params = {
+            "half_spread_bps": {}, "default_half_spread_bps": None, "eq_ratio": 1.0,
+            "spread_time_of_day": _FLAT_TOD, **_FEES,
+        }
         del params[name]
         assert any(name in p and "required" in p for p in SchwabCostModel.validate_params(params))
 
     def test_the_old_scalar_spread_bps_is_refused_by_name(self):
-        params = {"half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0, **_FEES}
+        params = {
+            "half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0,
+            "spread_time_of_day": _FLAT_TOD, **_FEES,
+        }
         assert any("spread_bps" in p for p in SchwabCostModel.validate_params({**params, "spread_bps": 2.2}))
         assert any("spread_bps" in p for p in EquityKellyMIO.validate_params({**PARAMS, "spread_bps": 2.2}))
 
@@ -728,6 +778,207 @@ class TestPerNameSpread:
         node = _node(half_spread_bps={"AAPL": 1.0, "MSFT": 1.0}, default_half_spread_bps=None)
         with pytest.raises(ConfigError, match="XOM"):
             node.instruments(_uinputs())
+
+
+def _window(start, end, multiplier):
+    return {"start_minute": start, "end_minute": end, "multiplier": multiplier}
+
+
+class TestTimeOfDaySpread:
+    """Owner ruling 2026-09-25 (option B): the half-spread scales by the FILL minute's window."""
+
+    @pytest.mark.parametrize(
+        "hour, minute, expected",
+        [
+            (9, 29, 1.0),    # before the first window: the default
+            (9, 30, 2.0),    # a window's start minute is inside it
+            (9, 45, 2.0),
+            (9, 59, 2.0),
+            (10, 0, 1.0),    # a window's end minute is outside it
+            (12, 0, 1.0),
+            (15, 29, 1.0),
+            (15, 30, 0.5),
+            (15, 59, 0.5),
+            (16, 0, 1.0),
+        ],
+    )
+    def test_each_fill_minute_gets_its_windows_multiplier(self, hour, minute, expected):
+        costs = _costs(half_spread_bps={"LLY": 4.0}, spread_time_of_day=_TOD)
+        fill_ms = _ny_ms(2025, 1, 15, hour, minute)
+        assert costs.time_of_day_multiplier(fill_ms) == expected
+        assert costs.half_spread_bps("LLY", fill_ms) == pytest.approx(4.0 * expected)
+        assert costs.buy_per_share("LLY", 100.0, fill_ms) == pytest.approx(4.0e-4 * expected * 100.0)
+
+    def test_seconds_inside_a_minute_key_on_that_minute(self):
+        costs = _costs(spread_time_of_day=_TOD)
+        assert costs.time_of_day_multiplier(_ny_ms(2025, 1, 15, 9, 59) + 59_999) == 2.0
+        assert costs.time_of_day_multiplier(_ny_ms(2025, 1, 15, 10, 0) + 1) == 1.0
+
+    @pytest.mark.parametrize("month", [1, 7])  # EST and EDT
+    def test_windows_are_new_york_wall_clock_across_dst(self, month):
+        costs = _costs(spread_time_of_day=_TOD)
+        assert costs.time_of_day_multiplier(_ny_ms(2025, month, 15, 9, 30)) == 2.0
+        assert costs.time_of_day_multiplier(_ny_ms(2025, month, 15, 15, 45)) == 0.5
+
+    def test_the_same_utc_instant_maps_by_the_new_york_offset(self):
+        costs = _costs(spread_time_of_day=_TOD)
+        # 14:45 UTC is 09:45 EST in January but 10:45 EDT in July.
+        january = int(datetime(2025, 1, 15, 14, 45, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+        july = int(datetime(2025, 7, 15, 14, 45, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+        assert costs.time_of_day_multiplier(january) == 2.0
+        assert costs.time_of_day_multiplier(july) == 1.0
+
+    def test_the_default_multiplier_is_read_from_config(self):
+        costs = _costs(
+            half_spread_bps={"LLY": 4.0},
+            spread_time_of_day={**_TOD, "default_multiplier": 1.5},
+        )
+        assert costs.half_spread_bps("LLY", NOON) == pytest.approx(6.0)
+        flat = _costs(half_spread_bps={"LLY": 4.0})
+        assert flat.half_spread_bps("LLY", _ny_ms(2025, 1, 15, 9, 30)) == pytest.approx(4.0)
+
+    def test_the_multiplier_scales_the_spread_term_and_nothing_else(self):
+        costs = _costs(half_spread_bps={"LLY": 4.0}, eq_ratio=0.5, spread_time_of_day=_TOD)
+        open_ms = _ny_ms(2025, 1, 15, 9, 31)
+        fees = 0.000195 + 0.0206e-4 * 100.0
+        # quoted 4.0 x EQ 0.5 x window 2.0 = 4.0 bp per side; TAF/SEC unchanged.
+        assert costs.buy_per_share("LLY", 100.0, open_ms) == pytest.approx(4.0e-4 * 100.0)
+        assert costs.sell_per_share("LLY", 100.0, open_ms) == pytest.approx(4.0e-4 * 100.0 + fees)
+        assert costs.sell_per_share("LLY", 100.0, NOON) == pytest.approx(2.0e-4 * 100.0 + fees)
+
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            None,
+            [],
+            {"default_multiplier": 1.0, "windows": []},
+            {"timezone": "America/New_York", "windows": []},
+            {"timezone": "America/New_York", "default_multiplier": 1.0},
+            {**_FLAT_TOD, "extra": 1},
+            {**_FLAT_TOD, "timezone": "Mars/Olympus"},
+            {**_FLAT_TOD, "timezone": ""},
+            {**_FLAT_TOD, "timezone": 5},
+            {**_FLAT_TOD, "default_multiplier": 0.0},
+            {**_FLAT_TOD, "default_multiplier": -1.0},
+            {**_FLAT_TOD, "default_multiplier": float("nan")},
+            {**_FLAT_TOD, "default_multiplier": True},
+            {**_FLAT_TOD, "default_multiplier": None},
+            {**_FLAT_TOD, "windows": {"start_minute": 570}},
+            {**_FLAT_TOD, "windows": [[570, 600, 2.0]]},
+            {**_FLAT_TOD, "windows": [{"start_minute": 570, "end_minute": 600}]},
+            {**_FLAT_TOD, "windows": [{**_window(570, 600, 2.0), "extra": 1}]},
+            {**_FLAT_TOD, "windows": [_window(570.0, 600, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(True, 600, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, "600", 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(-1, 600, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, 1441, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(600, 600, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(600, 570, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, 0.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, -2.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, float("inf"))]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, True)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, None)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, 2.0), _window(599, 620, 1.5)]},
+            {**_FLAT_TOD, "windows": [_window(600, 660, 1.5), _window(570, 601, 2.0)]},
+            {**_FLAT_TOD, "windows": [_window(570, 600, 2.0), _window(570, 600, 2.0)]},
+        ],
+    )
+    def test_a_bad_schedule_refuses(self, schedule):
+        params = {
+            "half_spread_bps": {}, "default_half_spread_bps": 2.2, "eq_ratio": 1.0,
+            **_FEES, "spread_time_of_day": schedule,
+        }
+        problems = SchwabCostModel.validate_params(params)
+        assert any("spread_time_of_day" in p for p in problems), problems
+        with pytest.raises(ConfigError):
+            SchwabCostModel(params)
+        mio = EquityKellyMIO.validate_params({**PARAMS, "spread_time_of_day": schedule})
+        assert any("spread_time_of_day" in p for p in mio), mio
+
+    def test_adjacent_and_whole_day_windows_are_valid(self):
+        schedule = {
+            **_FLAT_TOD,
+            "windows": [_window(0, 570, 3.0), _window(570, 600, 2.0), _window(600, 1440, 1.0)],
+        }
+        costs = _costs(spread_time_of_day=schedule)
+        assert costs.time_of_day_multiplier(_ny_ms(2025, 1, 15, 0, 0)) == 3.0
+        assert costs.time_of_day_multiplier(_ny_ms(2025, 1, 15, 9, 30)) == 2.0
+        assert costs.time_of_day_multiplier(_ny_ms(2025, 1, 15, 23, 59)) == 1.0
+
+    @pytest.mark.parametrize("fill_ms", [None, True, 1.5e12, "1700000000000", -1])
+    def test_a_bad_fill_instant_refuses(self, fill_ms):
+        costs = _costs(half_spread_bps={"LLY": 4.0}, spread_time_of_day=_TOD)
+        for price_it in (costs.buy_per_share, costs.sell_per_share):
+            with pytest.raises(ConfigError, match="fill"):
+                price_it("LLY", 100.0, fill_ms)
+
+    def test_numpy_integer_fill_instants_are_accepted(self):
+        np = pytest.importorskip("numpy")
+        costs = _costs(spread_time_of_day=_TOD)
+        assert costs.time_of_day_multiplier(np.int64(_ny_ms(2025, 1, 15, 9, 30))) == 2.0
+
+
+class TestSizingKeysTheSpreadOnTheFillMinute:
+    """``EquityKellyMIO`` prices each name at ITS fill instant (``portfolio.fill_ms``)."""
+
+    def test_each_name_is_priced_at_its_own_fill_minute(self):
+        node = _node(spread_time_of_day=_TOD)
+        fill_ms = {
+            "AAPL": _ny_ms(2025, 1, 15, 9, 31),    # first-30 window: 2.0
+            "MSFT": _ny_ms(2025, 1, 15, 12, 1),    # midday: 1.0
+            "XOM": _ny_ms(2025, 1, 15, 15, 31),    # last-30 window: 0.5
+        }
+        inputs = _uinputs(portfolio=_portfolio(fill_ms=fill_ms))
+        _names, rows, _account = node.instruments(inputs)
+        costs = SchwabCostModel(
+            {**{name: PARAMS[name] for name in SchwabCostModel._PARAMS}, "spread_time_of_day": _TOD}
+        )
+        for name, row in rows.items():
+            assert row["cost_buy"] == costs.buy_per_share(name, row["price"], fill_ms[name])
+            assert row["cost_sell"] == costs.sell_per_share(name, row["price"], fill_ms[name])
+            assert row["exit_cost_per_share"] == row["cost_sell"]
+        base = 2.2e-4
+        assert rows["AAPL"]["cost_buy"] == pytest.approx(rows["AAPL"]["price"] * base * 2.0)
+        assert rows["MSFT"]["cost_buy"] == pytest.approx(rows["MSFT"]["price"] * base * 1.0)
+        assert rows["XOM"]["cost_buy"] == pytest.approx(rows["XOM"]["price"] * base * 0.5)
+
+    def test_the_decision_minute_is_not_the_key(self):
+        # The decision instant ASOF_MS is 17:13 New York (the default 1.0);
+        # each fill is at 09:30 (inside the 2.0 window): sizing must charge
+        # the fill minute's multiplier, never the decision's.
+        assert _costs(spread_time_of_day=_TOD).time_of_day_multiplier(ASOF_MS) == 1.0
+        node = _node(spread_time_of_day=_TOD)
+        fill = {name: _ny_ms(2025, 1, 15, 9, 30) for name in ("AAPL", "MSFT", "XOM")}
+        _names, rows, _account = node.instruments(_uinputs(portfolio=_portfolio(fill_ms=fill)))
+        for row in rows.values():
+            assert row["cost_buy"] == pytest.approx(row["price"] * 2.2e-4 * 2.0)
+
+    def test_a_portfolio_without_fill_instants_refuses(self, tmp_path):
+        portfolio = _portfolio()
+        del portfolio["fill_ms"]
+        problems = _node().validate_inputs(_uinputs(portfolio=portfolio))
+        assert any("fill_ms" in p for p in problems), problems
+
+    @pytest.mark.parametrize(
+        "fill_ms",
+        [
+            [ASOF_MS + 60_000],
+            {"AAPL": True},
+            {"AAPL": float(ASOF_MS + 60_000)},
+            {"AAPL": ASOF_MS - 1},
+            {"": ASOF_MS + 60_000},
+        ],
+    )
+    def test_malformed_fill_instants_refuse(self, fill_ms):
+        problems = _node().validate_inputs(_uinputs(portfolio=_portfolio(fill_ms=fill_ms)))
+        assert any("fill_ms" in p for p in problems), problems
+
+    def test_a_priced_name_without_a_fill_instant_refuses(self):
+        node = _node()
+        inputs = _uinputs(portfolio=_portfolio(fill_ms={"AAPL": ASOF_MS, "MSFT": ASOF_MS}))
+        with pytest.raises(ValueError, match="XOM"):
+            node.instruments(inputs)
 
 
 class TestPositionBookkeeping:
@@ -1083,7 +1334,7 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
         portfolio = {
             "asof_ms": ASOF_MS, "cash": 0.0, "buying_power": 0.0, "positions": {"AAPL": 1},
             "mark_prices": {"AAPL": 0.50}, "cash_reserve": 0.0, "gross_limit": None,
-            "sale_credit": 1.0,
+            "sale_credit": 1.0, "fill_ms": {"AAPL": ASOF_MS + 60_000},
         }
         out = node.run(
             _ctx(tmp_path),

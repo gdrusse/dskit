@@ -1,6 +1,6 @@
 {
   "name": "retrain-simulation",
-  "notes": "ADR-0185: ONE staged document that trains, retrains and trades. Stages: calendar (locked development_outer) -> memory -> hpo_document + hpo (warmup HPO: the locked lean recipe's 24-candidate evidence-mode search, one-standard-error rule per lead, on fold 0's inner purged slice, which ends before 2022-05-01) -> winners (each lead's ruling re-derived from its attested trial ledger) -> walk_document + walk (the scheduled retraining: 20 releases, each FITTED on its trailing 730 days with a 5-day embargo, every 63 days, with the frozen winners and no search) -> inventory -> gates -> simulate (ADR-0184's publisher, per-tick EquityKellyMIO, next-bar-open fills and Schwab costs over folds 2..19 = 2022-09-09..2025-10-16, $10,000 + $500 every other Friday per cash-flow-policy-biweekly.json). DEVELOPMENTAL POST-SELECTION, deployment_eligible=false: the gate admission reads all 20 folds, and the warmup search's cohort and horizons come from the Gate-3 admission decided on the traded 2022-2025 folds (both look-ahead, disclosed). The MIO uses ADR-0185's owner-delegated growth policy v1; those values are judgement calls, not tuned optima or deployment validation. Predictions are computed in batch at fit time over each release's validation window, not by per-tick calls to a persisted model. Run from the child root: python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities. A rerun of the same document resumes finished stages.",
+  "notes": "ADR-0185: ONE staged document that trains, retrains and trades. Stages: calendar (locked development_outer) -> memory -> hpo_document + hpo (warmup HPO: the locked lean recipe's 24-candidate evidence-mode search, one-standard-error rule per lead, on fold 0's inner purged slice, which ends before 2022-05-01) -> winners (each lead's ruling re-derived from its attested trial ledger) -> walk_document + walk (the scheduled retraining: 20 releases, each FITTED on its trailing 730 days with a 5-day embargo, every 63 days, with the frozen winners and no search) -> inventory -> gates -> simulate (ADR-0184's publisher, per-tick EquityKellyMIO, next-bar-open fills and Schwab costs over folds 2..19 = 2022-09-09..2025-10-16, $10,000 + $500 every other Friday per cash-flow-policy-biweekly.json). DEVELOPMENTAL POST-SELECTION, deployment_eligible=false: the gate admission reads all 20 folds, and the warmup search's cohort and horizons come from the Gate-3 admission decided on the traded 2022-2025 folds (both look-ahead, disclosed). The MIO uses ADR-0185's owner-delegated growth policy v1; those values are judgement calls, not tuned optima or deployment validation. Predictions are computed in batch at fit time over each release's validation window, not by per-tick calls to a persisted model: the 30-minute lattice rows score and gate (ADR-0065), and every minute's trade row (trade_memory's per-minute caches, the same features) is what the simulation decides on, every minute (ADR-0186). Run from the child root: python -m dskit.pipeline staged configs/run-retrain-simulation.json --asof 2026-02-28 --adapter intraday_equities. A rerun of the same document resumes finished stages.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -295,6 +295,42 @@
       },
       "notes": "Build four bounded P13 group caches containing the frozen P12 feature matrix, label tape, and causal five-minute OHLCVA bars. The P12 caches remain untouched because write-once cache identity changes when K-lines are added. Groups D and E use P13 cohort-only universes plus SPY so unused P12 breadth candidates cannot inflate peak memory."
     },
+    "trade_memory": {
+      "uses": "intraday_equities.modelability_study:TradeFeatureCaches",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "a": {
+            "universe": "configs/universe-p12-a.json",
+            "sources": [
+              "source_a"
+            ]
+          },
+          "c": {
+            "universe": "configs/universe-p12-c.json",
+            "sources": [
+              "source_a",
+              "source_c"
+            ]
+          },
+          "d": {
+            "universe": "configs/universe-p13-d-selected.json",
+            "sources": [
+              "source_a",
+              "source_d"
+            ]
+          },
+          "e": {
+            "universe": "configs/universe-p13-e-selected.json",
+            "sources": [
+              "source_a",
+              "source_e"
+            ]
+          }
+        }
+      },
+      "notes": "ADR-0186: the same groups and limit as memory (pinned equal by test_configs); per group a write-once per-minute cache of the features node's own params over the walk's validation windows (row_window), universe period_ms overridden to 60000, K-lines off."
+    },
     "hpo_document": {
       "uses": "intraday_equities.model_zoo:WarmupHpoCandidate",
       "inputs": {
@@ -437,12 +473,13 @@
       "notes": "Each lead's winner re-derived from its attested hpo_ledger with the same one-standard-error rule FinalRefit uses; nothing is read from a pasted value."
     },
     "walk_document": {
-      "uses": "intraday_equities.model_zoo:FrozenWalkCandidate",
+      "uses": "intraday_equities.model_zoo:MinuteWalkCandidate",
       "inputs": {
         "preflight": "$memory.passed",
         "caches": "$memory.groups",
         "phase": "$calendar.phase",
-        "winners": "$winners.winners"
+        "winners": "$winners.winners",
+        "trade_caches": "$trade_memory.groups"
       },
       "params": {
         "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
@@ -562,7 +599,7 @@
           "score_universe": "certified_horizon_includes_lead"
         }
       },
-      "notes": "The same recipe with every hpo_* knob removed and each lead's estimator_params = recipe base + its frozen winner; the full 20-fold schedule."
+      "notes": "The same recipe with every hpo_* knob removed and each lead's estimator_params = recipe base + its frozen winner; the full 20-fold schedule. ADR-0186: every scan_hNN also reads its group's per-minute trade rows and writes one trade prediction per validation minute from the same fitted model."
     },
     "walk": {
       "uses": "dskit.pipeline.benchmarks:DocumentWalkRun",
@@ -622,7 +659,7 @@
       },
       "params": {
         "template": "run-retrain-simulation-template.json",
-        "template_sha256": "e4aadf0c39b6e5e481e8da0310f7faa19d28f8fa0b1cdb994d3a63fab78ce2f3",
+        "template_sha256": "0f102cdffe32ea19ecabddde028ba8b6bfa6d1cdfda1f971e36de3906992bf31",
         "inventory_stage": "inventory",
         "gates_stage": "gates"
       },

@@ -1,6 +1,6 @@
 {
   "name": "retrain-simulation-trade",
-  "notes": "ADR-0185: the decision graph RetrainedSimulation runs as the last stage of run-retrain-simulation.json. It is ADR-0184's graph (bars -> publisher -> per-tick EquityKellyMIO decider -> DevelopmentSimulation -> report -> writers) with three changes: funding is cash-flow-policy-biweekly.json ($10,000 initial, $500 every other Friday 09:30 New York, holiday -> next trading day, booked before a same-instant decision); the owner-delegated growth-policy-v1 MIO values replace ADR-0184's historical placeholders; and every value marked BOUND-BY-STAGE is bound by the stage to THIS staged run: the publisher's inventory/gates artifacts and their sha256 (read at bind time), walk_root (the directory the walk ran from) and the writers' output directory (<run>/stages/simulate/). A template with any other value there is refused, so no stale pin can ride along. Developmental post-selection, deployment_eligible=false; the policy is a judgement call, not a tuned or deployment-validated optimum. Not runnable on its own: run the staged document.",
+  "notes": "ADR-0185: the decision graph RetrainedSimulation runs as the last stage of run-retrain-simulation.json. It is ADR-0184's graph (bars -> publisher -> per-tick EquityKellyMIO decider -> DevelopmentSimulation -> report -> writers) with four changes: it decides EVERY MINUTE (ADR-0186: the minute publisher emits per-minute tick columns from the walk's trade predictions, and the minute simulation sizes each minute, skipping held, queued and after-close units and carrying a lot open at a release boundary into the next release; scoring, calibration and gates stay on the 30-minute lattice); funding is cash-flow-policy-biweekly.json ($10,000 initial, $500 every other Friday 09:30 New York, holiday -> next trading day, booked before a same-instant decision); the owner-delegated growth-policy-v1 MIO values replace ADR-0184's historical placeholders; and every value marked BOUND-BY-STAGE is bound by the stage to THIS staged run: the publisher's inventory/gates artifacts and their sha256 (read at bind time), walk_root (the directory the walk ran from) and the writers' output directory (<run>/stages/simulate/). A template with any other value there is refused, so no stale pin can ride along. Developmental post-selection, deployment_eligible=false; the policy is a judgement call, not a tuned or deployment-validated optimum. Not runnable on its own: run the staged document.",
   "pipeline": {
     "bars_a": {
       "uses": "intraday_equities-bars",
@@ -52,7 +52,7 @@
       }
     },
     "publish": {
-      "uses": "intraday_equities-forecast-publisher",
+      "uses": "intraday_equities-minute-forecast-publisher",
       "params": {
         "inventory_manifest": "BOUND-BY-STAGE",
         "inventory_manifest_sha256": "BOUND-BY-STAGE",
@@ -72,7 +72,7 @@
           "seed": 0
         }
       },
-      "notes": "One release per fold: cap artifact (TRUE stamps, never a confirmation), survivors and leads read from the pinned gates.json, per-lead attested uncertainty calibrated on folds < k inside the trailing 730 days; one ForecastBundle per (lattice tick, lead group), yhat only."
+      "notes": "ADR-0186: releases are ADR-0184's (calibration, false signal and caps from the scored lattice rows) plus each lead group's scenario constants; ticks carry every minute of each release's pinned trade predictions, refused unless they equal the scored yhat at every lattice stamp."
     },
     "decide": {
       "uses": "intraday_equities-mio-decider",
@@ -102,25 +102,27 @@
       "notes": "ADR-0185 growth policy v1, owner delegated to best judgement on 2026-09-25: growth-oriented CRRA gamma 2.0; 32 tangents; 128 scenarios; 95% CVaR capped at $500 per lead-group solve; no cardinality cap and no minimum ticket (owner ruling 2026-09-25: neither is imposed as a hard rule; whole-share lots and the per-share cost terms remain); HFDR q 0.20 on pi_widened (a widened point estimate, not a bound); 10 bp band; $5,000 per-name ceiling; zero bundle staleness; 64-day cap/calibration age; 0.53 uncertainty coverage floor (equal to the publisher's attested false-signal attainment). cap_evidence_look_ahead remains true because gate admission uses all 20 folds, so this remains developmental post-selection and is not deployment evidence. These are explicit policy choices, not tuned optima."
     },
     "simulate": {
-      "uses": "intraday_equities-development-simulation",
+      "uses": "intraday_equities-minute-development-simulation",
       "inputs": {
         "bars": "$bars.merged",
         "releases": "$publish.releases",
-        "bundles": "$publish.bundles",
+        "ticks": "$publish.ticks",
         "mio": "$decide.mio"
       },
       "params": {
         "deployment_eligible": false,
         "evidence_end": "2025-10-16",
         "fill_policy": "configs/fill-policy.json",
-        "fill_policy_sha256": "e078b15bdc66231edd84fb4a1f1bc80204733aaf74e8250f62ffe27dfd2c285d",
+        "fill_policy_sha256": "e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e",
         "caps": "development-only",
         "cash_flow_policy": "configs/cash-flow-policy-biweekly.json",
         "cash_flow_policy_sha256": "03c31ce2d6bebaaee6eac2f9916ea7e96137f7787e566d45ebfd3acfc25a1a68",
         "first_fold": 2,
         "last_fold": 19,
-        "consume_bars": true
-      }
+        "consume_bars": true,
+        "keep_solves": false
+      },
+      "notes": "ADR-0186: one MIO solve per lead group per minute; a full run makes ~2M solves, so solve rows are counted in the metadata (keep_solves false), not kept."
     },
     "report": {
       "uses": "intraday_equities-simulation-report",

@@ -16,6 +16,15 @@ release over its ``bars`` input, carrying cash between releases, and
 :class:`SimulationReport` folds the fills through ``WindowBook`` into a
 daily NAV/P&L report.
 
+ADR-0186 adds the per-MINUTE cadence the ADR-0185 retrain document runs:
+:class:`MinuteForecastPublisher` publishes each release's per-minute tick
+columns from the walk's pinned trade predictions (every validation minute,
+one fitted model), :class:`MinuteMioDecider` assembles a minute's bundle
+from those columns through the same builders and skips held, queued and
+after-close units, and :class:`MinuteDevelopmentSimulation` carries a lot
+open at a release boundary into the next release. Scoring, calibration,
+false signal and caps stay on the 30-minute lattice rows.
+
 Point in time, by construction rather than by care: a release's
 calibration reads ONLY rows of earlier folds stamped before its cutoff,
 and the tick path reads ``yhat`` through a column projection that never
@@ -77,6 +86,7 @@ from .final_gates import (
 )
 from .final_model import _epoch_ms
 from .forecast_bundle import ConfirmedCaps, ForecastBundle
+from .model_zoo import TRADE_CACHE_PREFIX
 from .nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, EquityKellyMIO, SchwabCostModel
 from .nodes import (
     LABEL_PARAMS,
@@ -94,6 +104,9 @@ __all__ = [
     "NODE_KINDS",
     "DevelopmentSimulation",
     "ForecastPublisher",
+    "MinuteDevelopmentSimulation",
+    "MinuteForecastPublisher",
+    "MinuteMioDecider",
     "MioDecider",
     "MioDeciderNode",
     "RetrainedSimulation",
@@ -375,11 +388,20 @@ class _Walk:
         return node.run(None, {})["spec"]
 
     def _tapes(self, fold, nodes, needed):
-        """Tape frames for ``needed`` symbols from the fold's verified feature caches."""
+        """Tape frames for ``needed`` symbols from the fold's verified SCORED feature caches.
+
+        A minute walk's trade caches (``TRADE_CACHE_PREFIX`` nodes, ADR-0186)
+        are the same kind but carry no label of their own: their tapes are
+        the scored caches', so they are neither verified nor read here.
+        """
         from .feature_cache import SessionFeatureCache, verify_feature_cache
 
         frames, digests = {}, {}
-        for key in sorted(k for k, spec in nodes.items() if spec.get("uses") == _CACHE_KIND):
+        scored = (
+            k for k, spec in nodes.items()
+            if spec.get("uses") == _CACHE_KIND and not k.startswith(TRADE_CACHE_PREFIX)
+        )
+        for key in sorted(scored):
             params = nodes[key].get("params") or {}
             path = os.path.join(self._params["walk_root"], params.get("path", ""))
             sha = params.get("manifest_sha256")
@@ -468,6 +490,9 @@ class ForecastPublisher(Node):
 
     role = "data"
     outputs = ("releases", "bundles")
+    #: The walk reader and the per-tick output port; the minute subclass swaps both.
+    _WALK = _Walk
+    _TICK_PORT = "bundles"
     _PARAMS = (
         "inventory_manifest",
         "inventory_manifest_sha256",
@@ -529,10 +554,12 @@ class ForecastPublisher(Node):
         problems.extend(cls._int_problems(knobs, "seed", 0))
         return [p if p.startswith("uncertainty") else f"uncertainty.{p}" for p in problems]
 
+    _KIND = "intraday_equities-forecast-publisher"
+
     def fingerprint(self):
         """Identity: the kind plus the two pinned artifacts (dict)."""
         return {
-            "kind": "intraday_equities-forecast-publisher",
+            "kind": self._KIND,
             "inventory_manifest_sha256": self.params["inventory_manifest_sha256"],
             "gates_sha256": self.params["gates_sha256"],
         }
@@ -556,18 +583,22 @@ class ForecastPublisher(Node):
         """
         del inputs
         producer = self._document_sha256(ctx)
-        walk = _Walk(self.params)
+        walk = self._WALK(self.params)
         try:
             if self.params["last_fold"] >= len(walk.folds):
                 raise ValueError(f"last_fold {self.params['last_fold']} is past the walk's {len(walk.folds)} folds")
-            releases, bundles = [], []
+            releases, ticks = [], []
             for index in range(self.params["first_fold"], self.params["last_fold"] + 1):
                 release, scenarios = self._release(walk, index, producer)
                 releases.append(release)
-                bundles.extend(self._bundles(walk, index, release, scenarios, producer))
+                ticks.extend(self._publish_ticks(walk, index, release, scenarios))
         finally:
             walk.close()
-        return {"releases": releases, "bundles": bundles}
+        return {"releases": releases, self._TICK_PORT: ticks}
+
+    def _publish_ticks(self, walk, index, release, scenarios):
+        """One segment's per-tick output: here, one ``ForecastBundle`` per lattice tick and lead group."""
+        return self._bundles(walk, index, release, scenarios)
 
     @staticmethod
     def _document_sha256(ctx):
@@ -816,6 +847,81 @@ class ForecastPublisher(Node):
 
     # -- the tick path ------------------------------------------------------
 
+    @staticmethod
+    def _market_at(market, symbol, stamp):
+        """``(price, sigma, beta)`` of ``symbol``'s fold tape bar at ``stamp``; refuses a missing bar."""
+        stamps, prices, beta, sigma = market[symbol]
+        loc = int(stamps.searchsorted(stamp))
+        if loc >= stamps.size or int(stamps[loc]) != stamp:
+            raise ValueError(f"{symbol} has a prediction at {stamp} but no tape bar")
+        return float(prices[loc]), float(sigma[loc]), 0.0 if beta is None else float(beta[loc])
+
+    @staticmethod
+    def tick_row(release, symbol, stamp, lead, price, yhat, sigma, beta, weights, draws, contract):
+        """One ``ForecastBundle`` input row -- the ONE builder both cadences use (ADR-0186).
+
+        Market fields are known at ``stamp``; the calibrated ones at the
+        release cutoff. ``yhat`` is the forecast alone, never ``y``.
+
+        Parameters
+        ----------
+        release : dict
+            The ``releases`` entry (its cutoff and false-signal artifact).
+        symbol : str
+        stamp : int
+            The decision instant, epoch ms.
+        lead : int
+        price, yhat, sigma, beta : float
+            The decision bar's close, the forecast, and the label's sigma/beta there.
+        weights : list of float
+            The lead group's scenario weights.
+        draws : list of float
+            This symbol's scenario residuals.
+        contract : dict
+            The fold label's effective knobs.
+
+        Returns
+        -------
+        dict
+        """
+        signal = release["uncertainty"][str(lead)]["false_signal"]["artifact"]
+        cutoff_ms = release["segment_start_ms"]
+        return {
+            "entity": symbol,
+            "decision_ts": stamp,
+            "lead": lead,
+            "price": price,
+            "yhat": yhat,
+            "sigma_t": sigma,
+            "beta_t": beta,
+            "pi_hat": signal["pi_hat"][symbol],
+            "pi_widened": signal["pi_widened"][symbol],
+            "weights": weights,
+            "scenarios": draws,
+            "label": contract,
+            "known_at": {
+                **{name: stamp for name in _MARKET_FIELDS},
+                **{name: cutoff_ms for name in _CALIBRATED_FIELDS},
+            },
+        }
+
+    @staticmethod
+    def bundle_rows(release, lead, rows):
+        """Assemble one lead group's ``ForecastBundle`` rows for a release (both cadences, ADR-0186).
+
+        The producer is the release cap's own (the publisher document and
+        node), with output ``bundle``.
+        """
+        group = release["uncertainty"][str(lead)]
+        producer = release["cap"]["producer"]
+        return ForecastBundle(
+            release["release_id"],
+            sorted(rows, key=lambda row: row["entity"]),
+            producer={"document_sha256": producer["document_sha256"], "node": producer["node"], "output": "bundle"},
+            model_manifest_sha256=release["model_manifest_sha256"],
+            uncertainty={slot: group[slot]["attestation"]["artifact_id"] for slot in ("false_signal", "outcome")},
+        ).rows
+
     def _tick_rows(self, walk, index, release, scenarios):
         """``{(ts, lead): [bundle input row, ...]}`` for one segment -- ``yhat`` only, never ``y``."""
         fold = walk.folds[index]
@@ -824,61 +930,174 @@ class ForecastPublisher(Node):
         cutoff_ms = fold["cutoff_ms"]
         out = {}
         for symbol, lead in sorted(walk.lead_map.items()):
-            stamps, prices, beta, sigma = market[symbol]
-            signal = release["uncertainty"][str(lead)]["false_signal"]["artifact"]
             weights, draws = scenarios[lead].weighted_draws()
             for stamp, yhat in predictions.get((symbol, lead), ()):
                 if not cutoff_ms <= stamp < release["segment_end_ms"]:
                     continue
-                loc = int(stamps.searchsorted(stamp))
-                if loc >= stamps.size or int(stamps[loc]) != stamp:
-                    raise ValueError(f"{symbol} has a prediction at {stamp} but no tape bar")
+                price, sigma, beta = self._market_at(market, symbol, stamp)
                 out.setdefault((stamp, lead), []).append(
-                    {
-                        "entity": symbol,
-                        "decision_ts": stamp,
-                        "lead": lead,
-                        "price": float(prices[loc]),
-                        "yhat": yhat,
-                        "sigma_t": float(sigma[loc]),
-                        "beta_t": 0.0 if beta is None else float(beta[loc]),
-                        "pi_hat": signal["pi_hat"][symbol],
-                        "pi_widened": signal["pi_widened"][symbol],
-                        "weights": weights,
-                        "scenarios": draws[symbol],
-                        "label": contract,
-                        "known_at": {
-                            **{name: stamp for name in _MARKET_FIELDS},
-                            **{name: cutoff_ms for name in _CALIBRATED_FIELDS},
-                        },
-                    }
+                    self.tick_row(release, symbol, stamp, lead, price, yhat, sigma, beta, weights, draws[symbol], contract)
                 )
         return out
 
-    def _bundles(self, walk, index, release, scenarios, producer):
+    def _bundles(self, walk, index, release, scenarios):
         """One ``ForecastBundle`` per ``(tick, lead group)`` of a segment, as JSON rows."""
-        out = []
-        for (stamp, lead), rows in sorted(self._tick_rows(walk, index, release, scenarios).items()):
-            group = release["uncertainty"][str(lead)]
-            bundle = ForecastBundle(
-                release["release_id"],
-                sorted(rows, key=lambda row: row["entity"]),
-                producer={"document_sha256": producer, "node": self.key, "output": "bundle"},
-                model_manifest_sha256=release["model_manifest_sha256"],
-                uncertainty={
-                    slot: group[slot]["attestation"]["artifact_id"] for slot in ("false_signal", "outcome")
-                },
+        return [
+            {
+                "fold": index,
+                "release_id": release["release_id"],
+                "decision_ts": stamp,
+                "lead": lead,
+                "rows": self.bundle_rows(release, lead, rows),
+            }
+            for (stamp, lead), rows in sorted(self._tick_rows(walk, index, release, scenarios).items())
+        ]
+
+
+class _MinuteWalk(_Walk):
+    """The pinned walk plus every fold's per-minute trade predictions (ADR-0186).
+
+    Each manifest fold must carry ``trade_predictions`` pins; they are
+    hashed and snapshotted like the scored pins, and the fold's run dir must
+    hold exactly those trade files. Label tapes come from the scored caches
+    only (:meth:`_Walk._tapes` skips ``TRADE_CACHE_PREFIX`` nodes).
+    """
+
+    def __init__(self, params):
+        self._markets = {}
+        super().__init__(params)
+
+    def _verified_folds(self, folds):
+        """Run the scored verification, then snapshot each fold's trade pins."""
+        from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, find_predictions
+
+        verified = super()._verified_folds(folds)
+        for entry, fold in zip(verified, folds):
+            pins = fold.get("trade_predictions")
+            if not isinstance(pins, list) or not pins:
+                raise ValueError(
+                    f"fold {entry['index']} carries no trade prediction pins: the inventory "
+                    "is not a minute walk's (ADR-0186)"
+                )
+            guard, declared = _verified_prediction_snapshot(pins, fold["cutoff"], filename=TRADE_PREDICTIONS_FILE)
+            self._guards.append(guard)
+            found = sorted(
+                os.path.realpath(path) for path in find_predictions(fold["run_dir"], filename=TRADE_PREDICTIONS_FILE)
             )
-            out.append(
-                {
-                    "fold": index,
-                    "release_id": release["release_id"],
-                    "decision_ts": stamp,
-                    "lead": lead,
-                    "rows": bundle.rows,
-                }
-            )
+            if sorted(declared) != found:
+                raise ValueError(f"fold {entry['index']} trade prediction inventory drifted")
+            entry["trade_snapshot"] = guard.name
+        return verified
+
+    def trade_yhat(self, index):
+        """Fold ``index``'s ``{(symbol, lead): [(ts, yhat), ...]}`` trade rows, admitted units only, no ``y``."""
+        from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, read_predictions
+
+        names = ("ts", "series", "horizon", "yhat")
+        table = read_predictions(
+            self.folds[index]["trade_snapshot"], columns=names, filename=TRADE_PREDICTIONS_FILE,
+        )
+        wanted = set(self.lead_map.items())
+        out = {}
+        for stamp, symbol, lead, value in zip(*(table.get(name, ()) for name in names)):
+            if (symbol, int(lead)) in wanted:
+                out.setdefault((symbol, int(lead)), []).append((int(stamp), float(value)))
         return out
+
+    def market(self, index):
+        """:meth:`_Walk.market`, built once per fold (the release and its ticks both read it).
+
+        Only the latest fold is kept: each holds whole-tape label arrays for
+        every admitted name, so keeping every fold would hold them all.
+        """
+        if index not in self._markets:
+            self._markets = {index: super().market(index)}
+        return self._markets[index]
+
+
+class MinuteForecastPublisher(ForecastPublisher):
+    """Publish each release and its per-MINUTE tick columns (ADR-0186).
+
+    The ``intraday_equities-minute-forecast-publisher`` kind. Releases are
+    :class:`ForecastPublisher`'s -- calibration, false signal and caps from
+    the scored lattice rows, unchanged -- plus ``tick_constants`` (each lead
+    group's scenario ``weights`` and per-symbol ``scenarios``) and ``label``
+    (the fold label's contract), so a decider can assemble any minute's
+    bundle. ``ticks`` replaces ``bundles``: per release and admitted unit,
+    the columns ``ts``, ``price``, ``yhat``, ``sigma`` and ``beta`` at every
+    minute its pinned trade predictions cover inside the segment. It refuses
+    unless the trade ``yhat`` equals the scored ``yhat`` at every scored
+    stamp of the segment (one model, one feature pipeline).
+
+    Parameters
+    ----------
+    params : dict
+        :class:`ForecastPublisher`'s.
+
+    Examples
+    --------
+    ::
+
+        out = MinuteForecastPublisher("publish", params).run(ctx, {})
+        out["ticks"][0]
+        # -> {"fold": 2, "release_id": ..., "symbol": "LLY", "lead": 2, "ts": [...], "price": [...], ...}
+    """
+
+    outputs = ("releases", "ticks")
+    _WALK = _MinuteWalk
+    _TICK_PORT = "ticks"
+    _KIND = "intraday_equities-minute-forecast-publisher"
+
+    def _release(self, walk, index, producer):
+        """Return the lattice release plus the constants a per-minute bundle needs."""
+        release, scenarios = super()._release(walk, index, producer)
+        _market, contract = walk.market(index)
+        constants = {}
+        for lead in release["lead_groups"]:
+            weights, draws = scenarios[lead].weighted_draws()
+            members = sorted(symbol for symbol, held in release["lead_map"].items() if held == lead)
+            constants[str(lead)] = {"weights": list(weights), "scenarios": {s: list(draws[s]) for s in members}}
+        release["tick_constants"] = constants
+        release["label"] = contract
+        return release, scenarios
+
+    def _publish_ticks(self, walk, index, release, scenarios):
+        """Per admitted unit, the segment's per-minute tick columns."""
+        del scenarios
+        market, _contract = walk.market(index)
+        trade = walk.trade_yhat(index)
+        scored = walk.yhat(index)
+        start, end = release["segment_start_ms"], release["segment_end_ms"]
+        out = []
+        for symbol, lead in sorted(walk.lead_map.items()):
+            rows = [(stamp, value) for stamp, value in trade.get((symbol, lead), ()) if start <= stamp < end]
+            stamps = [stamp for stamp, _ in rows]
+            if stamps != sorted(set(stamps)):
+                raise ValueError(f"{symbol}:h{lead:02d} trade rows are not unique and time-ordered")
+            self._refuse_trade_disagreement(symbol, lead, dict(rows), scored.get((symbol, lead), ()), start, end)
+            block = {"fold": index, "release_id": release["release_id"], "symbol": symbol, "lead": lead,
+                     "ts": stamps, "price": [], "yhat": [value for _, value in rows], "sigma": [], "beta": []}
+            for stamp in stamps:
+                price, sigma, beta = self._market_at(market, symbol, stamp)
+                block["price"].append(price)
+                block["sigma"].append(sigma)
+                block["beta"].append(beta)
+            out.append(block)
+        return out
+
+    @staticmethod
+    def _refuse_trade_disagreement(symbol, lead, trade, scored, start, end):
+        """Refuse unless every scored stamp in the segment has an identical trade ``yhat``."""
+        bad = [
+            (stamp, value, trade.get(stamp))
+            for stamp, value in scored
+            if start <= stamp < end and trade.get(stamp) != value
+        ]
+        if bad:
+            raise ValueError(
+                f"{symbol}:h{lead:02d} trade yhat differs from (or lacks) the scored yhat at "
+                f"{len(bad)} stamp(s), e.g. {bad[:3]}"
+            )
 
 
 #: ``EquityKellyMIO`` params the per-tick decider binds itself, so the
@@ -906,6 +1125,7 @@ _BOUND_PLACEHOLDERS = {
     "half_spread_bps": {},
     "default_half_spread_bps": 0.0,
     "eq_ratio": 1.0,
+    "spread_time_of_day": {"timezone": "UTC", "default_multiplier": 1.0, "windows": []},
     "taf_per_share": 0.0,
     "sec31_bps": 0.0,
     "min_price": 1.0,
@@ -929,7 +1149,10 @@ class MioDecider:
     non-optimal solve is recorded ``mio_refused`` and trades nothing for
     that group. Every solve that ran -- a refused non-optimal one
     included -- leaves ``{asof_ms, lead, **SolveRecord.to_obj()}`` in
-    :attr:`solves` (ADR-0183 phase 2).
+    :attr:`solves` (ADR-0183 phase 2) and is counted in :attr:`n_solves`
+    and :attr:`solve_seconds`. The per-tick steps are hooks --
+    :meth:`_context`, :meth:`_names_at`, :meth:`_exclusion`,
+    :meth:`_bundle_rows` -- which :class:`MinuteMioDecider` overrides.
 
     Parameters
     ----------
@@ -944,6 +1167,9 @@ class MioDecider:
         Source of the Schwab cost knobs.
     ctx : dskit.pipeline.node.NodeContext
         Passed to each solve.
+    keep_solves : bool, optional
+        ``False`` counts solves without keeping their records (a per-minute
+        run makes millions). Default ``True``.
 
     Examples
     --------
@@ -954,7 +1180,7 @@ class MioDecider:
         decider.refused  # [{"asof_ms": ..., "lead": 2, "reason": "mio_refused", ...}]
     """
 
-    def __init__(self, release, bundles, mio, fill_policy, ctx):
+    def __init__(self, release, bundles, mio, fill_policy, ctx, keep_solves=True):
         if list(release["lead_groups"]) != list(mio["lead_groups"]):
             raise ValueError(
                 f"release {release['release_id']} lead groups {release['lead_groups']} "
@@ -971,30 +1197,32 @@ class MioDecider:
             for bundle in bundles
             if bundle["release_id"] == release["release_id"]
         }
+        self._keep_solves = bool(keep_solves)
         self.skipped = []
         self.refused = []
         self.solves = []
+        self.n_solves = 0
+        self.solve_seconds = 0.0
 
     def decide(self, asof_ms, portfolio):
         """Orders for this tick: ``{"symbol", "asof_ms", "lead", "qty", "side": "buy"}``."""
-        held = {symbol for symbol, shares in portfolio["positions"].items() if shares}
-        cash = portfolio["cash"]
+        context = self._context(asof_ms, portfolio)
+        cash = context["cash"]
         orders = []
         for lead in self._leads:
-            rows = self._bundles.get((asof_ms, lead))
-            if not rows:
+            names = self._names_at(asof_ms, lead)
+            if not names:
                 continue
             kept = []
-            for row in rows:
-                if row["entity"] in held:
-                    self.skipped.append({
-                        "symbol": row["entity"], "asof_ms": asof_ms, "lead": lead,
-                        "reason": "open_lot_at_decision",
-                    })
+            for name in names:
+                reason = self._exclusion(name, asof_ms, lead, context)
+                if reason is None:
+                    kept.append(name)
                 else:
-                    kept.append(row)
+                    self.skipped.append({"symbol": name, "asof_ms": asof_ms, "lead": lead, "reason": reason})
             if not kept:
                 continue
+            kept = self._bundle_rows(asof_ms, lead, kept)
             node = EquityKellyMIO(f"mio_h{lead:02d}", {**self._params, **self._costs, **self._pins(kept)})
             inputs = {
                 "bundle": kept,
@@ -1009,6 +1237,9 @@ class MioDecider:
                     "gross_limit": portfolio["gross_limit"],
                     "cash_reserve": 0.0,
                     "sale_credit": 1.0,
+                    # Each name's fill-bar instant: the time-of-day spread
+                    # is keyed on it in sizing exactly as the replay bills.
+                    "fill_ms": portfolio["fill_ms"],
                 },
                 "survivors": list(self._release["survivors"]),
                 "cap": self._release["cap"],
@@ -1030,10 +1261,36 @@ class MioDecider:
             cash = out["cash_after"]
         return orders
 
+    def _context(self, asof_ms, portfolio):
+        """Per-tick state the exclusions and the budget read: the held names and the cash."""
+        del asof_ms
+        return {
+            "held": {symbol for symbol, shares in portfolio["positions"].items() if shares},
+            "cash": portfolio["cash"],
+        }
+
+    def _names_at(self, asof_ms, lead):
+        """Return the names with a forecast for ``lead`` at this tick, in bundle order."""
+        return [row["entity"] for row in self._bundles.get((asof_ms, lead)) or ()]
+
+    def _exclusion(self, name, asof_ms, lead, context):
+        """Why ``name`` sits this tick out, or ``None``: a held unit is never re-sized (ADR-0184)."""
+        del asof_ms, lead
+        return "open_lot_at_decision" if name in context["held"] else None
+
+    def _bundle_rows(self, asof_ms, lead, names):
+        """Return the stored bundle's rows for ``names``."""
+        wanted = set(names)
+        return [row for row in self._bundles[(asof_ms, lead)] if row["entity"] in wanted]
+
     def _keep_solve(self, node, asof_ms, lead):
-        """Keep the node's solve record, if it solved (a refused solve included)."""
+        """Count the node's solve, if it solved (a refused solve included); keep it when asked."""
         if node.solve_record is not None:
-            self.solves.append({"asof_ms": asof_ms, "lead": lead, **node.solve_record.to_obj()})
+            record = node.solve_record.to_obj()
+            self.n_solves += 1
+            self.solve_seconds += float(record["seconds"])
+            if self._keep_solves:
+                self.solves.append({"asof_ms": asof_ms, "lead": lead, **record})
 
     def _pins(self, rows):
         """Return the in-process producer's identities this solve is pinned to."""
@@ -1048,6 +1305,123 @@ class MioDecider:
             "cap_producer_node": cap["producer"]["node"],
             "cap_evidence_sha256": cap["evidence"]["sha256"],
         }
+
+
+_MINUTE_MS = 60_000
+
+
+class MinuteMioDecider(MioDecider):
+    """The per-tick MIO decider over per-MINUTE tick columns (ADR-0186).
+
+    Holds one release (a :class:`MinuteForecastPublisher` ``releases``
+    entry) and its ``ticks``; at a decision instant it assembles each lead
+    group's ``ForecastBundle`` rows through the SAME builders the lattice
+    publisher uses (:meth:`ForecastPublisher.tick_row`,
+    :meth:`ForecastPublisher.bundle_rows`) from the tick at that instant
+    alone. Beyond :class:`MioDecider`'s held-unit rule it skips, recording
+    the reason, a unit whose entry is queued but not filled
+    (``pending_entry_at_decision``) -- reserving that entry's cost, qty x
+    the tick price it was sized at plus the cost model's buy cost per
+    share at the entry's scheduled fill minute (its ``fill_ms``), from the
+    cash the MIO may spend -- and a unit whose forced exit
+    (fill ``fill_bar_offset`` minutes later, exit ``lead`` minutes after the
+    fill, both read from the fill policy) would fall after the date's close
+    (``exit_after_close``).
+
+    Parameters
+    ----------
+    release : dict
+        One minute ``releases`` entry.
+    ticks : list of dict
+        The publisher's ``ticks``; only this release's blocks are used.
+    mio, fill_policy, ctx, keep_solves
+        As :class:`MioDecider`.
+    closes : dict
+        ``{local ISO date: last tape minute (epoch ms)}``: the session close.
+    tz : zoneinfo.ZoneInfo
+        The zone ``closes`` is keyed in.
+
+    Examples
+    --------
+    ::
+
+        decider = MinuteMioDecider(release, ticks, mio, policy, ctx, closes, ZoneInfo("America/New_York"))
+        EquityReplay(policy, cash_policy, decider=decider).run(bars)
+        decider.skipped  # [{"symbol": "LLY", "asof_ms": ..., "lead": 2, "reason": "open_lot_at_decision"}, ...]
+    """
+
+    def __init__(self, release, ticks, mio, fill_policy, ctx, closes, tz, keep_solves=True):
+        super().__init__(release, [], mio, fill_policy, ctx, keep_solves=keep_solves)
+        self._fill_offset = int(fill_policy.fill_bar_offset)
+        self._closes = dict(closes)
+        self._tz = tz
+        self._cost_model = SchwabCostModel(self._costs)
+        self._groups = {
+            lead: sorted(symbol for symbol, held in release["lead_map"].items() if held == lead)
+            for lead in self._leads
+        }
+        self._blocks, self._at = {}, {}
+        for block in ticks:
+            if block["release_id"] != release["release_id"]:
+                continue
+            symbol = block["symbol"]
+            if release["lead_map"].get(symbol) != int(block["lead"]) or symbol in self._blocks:
+                raise ValueError(f"tick block {symbol}:h{block['lead']} is not one admitted unit of the release")
+            self._blocks[symbol] = block
+            self._at[symbol] = {int(stamp): index for index, stamp in enumerate(block["ts"])}
+
+    def _context(self, asof_ms, portfolio):
+        """Held names, queued names, the date's close, and cash less the queued entries' cost."""
+        context = super()._context(asof_ms, portfolio)
+        pending = portfolio["pending"]
+        context["pending"] = {row["symbol"] for row in pending}
+        context["cash"] -= sum(self._reserved(row) for row in pending if row["side"] == "buy")
+        context["close"] = self._closes.get(_local_date(asof_ms, self._tz))
+        return context
+
+    def _reserved(self, row):
+        """Estimate a queued buy's cost at the tick price and fill minute it was sized at."""
+        at = self._at.get(row["symbol"], {}).get(int(row["decision_ms"]))
+        if at is None:
+            raise ValueError(f"pending entry {row!r} was not sized from this release's ticks")
+        if "fill_ms" not in row:
+            raise ValueError(
+                f"pending entry {row!r} carries no fill_ms: its time-of-day spread is keyed on "
+                "the scheduled fill minute"
+            )
+        price = self._blocks[row["symbol"]]["price"][at]
+        return row["qty"] * price + row["qty"] * self._cost_model.buy_per_share(
+            row["symbol"], price, row["fill_ms"]
+        )
+
+    def _names_at(self, asof_ms, lead):
+        """Return the lead group's names with a tick at this instant."""
+        return [symbol for symbol in self._groups[lead] if asof_ms in self._at.get(symbol, ())]
+
+    def _exclusion(self, name, asof_ms, lead, context):
+        """Held, queued, or not able to exit before the close -- else ``None``."""
+        reason = super()._exclusion(name, asof_ms, lead, context)
+        if reason is not None:
+            return reason
+        if name in context["pending"]:
+            return "pending_entry_at_decision"
+        close = context["close"]
+        if close is None or asof_ms + (self._fill_offset + lead) * _MINUTE_MS > close:
+            return "exit_after_close"
+        return None
+
+    def _bundle_rows(self, asof_ms, lead, names):
+        """Assemble this tick's bundle rows for ``names`` from the tick at ``asof_ms`` only."""
+        constants = self._release["tick_constants"][str(lead)]
+        rows = []
+        for symbol in names:
+            block, at = self._blocks[symbol], self._at[symbol][asof_ms]
+            rows.append(ForecastPublisher.tick_row(
+                self._release, symbol, asof_ms, lead, block["price"][at], block["yhat"][at],
+                block["sigma"][at], block["beta"][at], constants["weights"],
+                constants["scenarios"][symbol], self._release["label"],
+            ))
+        return ForecastPublisher.bundle_rows(self._release, lead, rows)
 
 
 class MioDeciderNode(Node):
@@ -1195,7 +1569,10 @@ class DevelopmentSimulation(DevelopmentReplay):
         ``last_fold`` (ints >= 2, the releases this run must receive) and
         optional ``consume_bars`` (JSON bool, default false): clear the
         ``bars`` input list once it is sliced -- the explicit ownership
-        transfer ``concat``'s ``consume_inputs`` makes, for bounded memory.
+        transfer ``concat``'s ``consume_inputs`` makes, for bounded memory;
+        and optional ``keep_solves`` (JSON bool, default true): false leaves
+        ``solves`` empty and records ``{count, seconds}`` in the metadata
+        instead (ADR-0186: a per-minute run solves millions of times).
 
     Inputs
     ------
@@ -1241,7 +1618,9 @@ class DevelopmentSimulation(DevelopmentReplay):
         "first_fold",
         "last_fold",
     )
-    _OPTIONAL_PARAMS = ("consume_bars",)
+    _OPTIONAL_PARAMS = ("consume_bars", "keep_solves")
+    #: The publisher port this node sizes from; the minute subclass reads ``ticks``.
+    _TICK_PORT = "bundles"
 
     @classmethod
     def validate_params(cls, params):
@@ -1252,14 +1631,15 @@ class DevelopmentSimulation(DevelopmentReplay):
                 problems.extend(ForecastPublisher._int_problems(params, name, 2))
         if not problems and params["last_fold"] < params["first_fold"]:
             problems.append("last_fold must be >= first_fold")
-        if not isinstance(params.get("consume_bars", False), bool):
-            problems.append(f"consume_bars must be a JSON bool, got {params['consume_bars']!r}")
+        for name in cls._OPTIONAL_PARAMS:
+            if not isinstance(params.get(name, False), bool):
+                problems.append(f"{name} must be a JSON bool, got {params[name]!r}")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require ``bars``/``bundles`` lists, a non-empty ``releases`` list and a ``mio`` mapping."""
+        """Require ``bars``/``bundles`` (or ``ticks``) lists, a non-empty ``releases`` list and a ``mio`` mapping."""
         problems = []
-        for port in ("bars", "bundles", "releases"):
+        for port in ("bars", self._TICK_PORT, "releases"):
             if not isinstance(inputs.get(port), list):
                 problems.append(f"{port} must be a list")
         if isinstance(inputs.get("releases"), list) and not inputs["releases"]:
@@ -1282,8 +1662,8 @@ class DevelopmentSimulation(DevelopmentReplay):
                 f"{self.key}: the releases cover folds {folds}, but first_fold..last_fold "
                 f"declare {declared}"
             ])
-        bundles = inputs["bundles"]
-        self._refuse_out_of_window(inputs["bars"], [{"asof_ms": b["decision_ts"]} for b in bundles])
+        bundles = inputs[self._TICK_PORT]
+        self._refuse_out_of_window(inputs["bars"], self._decision_rows(bundles))
         segments, census = self._segment_bars(inputs["bars"], releases)
         if self.params.get("consume_bars", False):
             inputs["bars"].clear()
@@ -1295,25 +1675,26 @@ class DevelopmentSimulation(DevelopmentReplay):
         summaries = []
         carried = Decimal("0")
         contributed = Decimal("0")
+        lots, open_at_end, solves = [], [], {"count": 0, "seconds": 0.0}
         for index, release in enumerate(releases):
             bars, segments[index] = segments[index], None
             self._refuse_price_disagreement(release, bundles, bars)
             policy = self._cash_flow_policy.segment(carried if index else None, calendar)
-            decider = MioDecider(release, bundles, inputs["mio"], self._policy, ctx)
+            decider = self._decider(release, bundles, inputs["mio"], ctx, bars, tz)
             recorder = _DayCloses(decider, tz)
-            replay = EquityReplay(self._policy, policy, decider=recorder)
+            replay = self._replay(policy, recorder, lots)
             result = replay.run(bars)
-            stuck = [row for row in result["refused"] if row["reason"] == "expiry_past_tape"]
-            if stuck:
-                raise ConfigError([
-                    f"{self.key}: segment fold {release['fold']} ended with {len(stuck)} open lot(s) "
-                    f"that cannot exit inside it, e.g. {stuck[:3]}"
-                ])
+            lots = self._carry(release, result)
+            if index == len(releases) - 1:
+                lots, open_at_end = [], lots
             stamp = {"fold": release["fold"], "release_id": release["release_id"], **DISCLOSURE}
             out["fills"].extend({**row, **stamp} for row in result["fills"])
             out["skipped"].extend({**row, **stamp} for row in result["skipped"] + decider.skipped)
             out["refused"].extend({**row, **stamp} for row in result["refused"] + decider.refused)
-            out["solves"].extend({**row, **stamp} for row in decider.solves)
+            solves["count"] += decider.n_solves
+            solves["seconds"] += decider.solve_seconds
+            if self.params.get("keep_solves", True):
+                out["solves"].extend({**row, **stamp} for row in decider.solves)
             rows, contributed = self._cash_rows(
                 replay, recorder, carried if index else None, contributed, tz, self._cash_flow_policy,
             )
@@ -1328,6 +1709,7 @@ class DevelopmentSimulation(DevelopmentReplay):
                 "trading_days": len(rows),
                 "bars": len(bars),
                 "fills": len(result["fills"]),
+                **self._segment_extras(lots),
             })
             carried = replay.cash_balance
             del bars, replay, recorder, decider
@@ -1342,8 +1724,50 @@ class DevelopmentSimulation(DevelopmentReplay):
             "timezone": tz.key,
             "segments": summaries,
             **census,
+            **self._run_extras(open_at_end),
         }
+        if not self.params.get("keep_solves", True):
+            out["metadata"]["solves"] = solves
         return out
+
+    # -- hooks the minute subclass overrides (ADR-0186) -------------------
+
+    @staticmethod
+    def _decision_rows(bundles):
+        """Return the decision stamps the evidence-window gate reads: every bundle's."""
+        return [{"asof_ms": bundle["decision_ts"]} for bundle in bundles]
+
+    def _decider(self, release, bundles, mio, ctx, bars, tz):
+        """Build the segment's per-tick strategy: the lattice :class:`MioDecider`."""
+        del bars, tz
+        return MioDecider(
+            release, bundles, mio, self._policy, ctx, keep_solves=self.params.get("keep_solves", True),
+        )
+
+    def _replay(self, cash_policy, recorder, lots):
+        """Build the segment's replay; no lot ever crosses a lattice release boundary."""
+        del lots
+        return EquityReplay(self._policy, cash_policy, decider=recorder)
+
+    def _carry(self, release, result):
+        """Refuse a segment that ended with an open lot (ADR-0184); nothing is carried."""
+        stuck = [row for row in result["refused"] if row["reason"] == "expiry_past_tape"]
+        if stuck:
+            raise ConfigError([
+                f"{self.key}: segment fold {release['fold']} ended with {len(stuck)} open lot(s) "
+                f"that cannot exit inside it, e.g. {stuck[:3]}"
+            ])
+        return []
+
+    def _segment_extras(self, carried_out):
+        """Extra per-segment summary fields; none on the lattice."""
+        del carried_out
+        return {}
+
+    def _run_extras(self, open_at_end):
+        """Extra run metadata; none on the lattice."""
+        del open_at_end
+        return {}
 
     def _segment_bars(self, bars, releases):
         """Slice ``bars`` into one minimal bar list per release; count what no segment holds."""
@@ -1426,6 +1850,87 @@ class DevelopmentSimulation(DevelopmentReplay):
                 "marks": dict(close["mark_prices"]),
             })
         return rows, contributed
+
+
+class MinuteDevelopmentSimulation(DevelopmentSimulation):
+    """Replay every release deciding EVERY MINUTE (ADR-0186).
+
+    The ``intraday_equities-minute-development-simulation`` kind: a
+    :class:`DevelopmentSimulation` -- every gate, the cash carry and the
+    outputs unchanged -- that reads the minute publisher's ``ticks`` instead
+    of ``bundles`` and decides through :class:`MinuteMioDecider`, whose
+    session close per date is the last minute of this segment's own bars.
+    A lot still open at a release boundary (a name that missed minutes
+    after a late entry) is carried into the next release's replay, the way
+    production restarts with its positions, and listed in the segment's
+    ``carried_out``; one open at the evidence end stays marked in NAV and is
+    listed in the metadata's ``open_at_evidence_end``.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`DevelopmentSimulation`'s.
+
+    Examples
+    --------
+    ::
+
+        node = MinuteDevelopmentSimulation("simulate", {**params, "keep_solves": False})
+        out = node.run(ctx, {"bars": bars, "releases": releases, "ticks": ticks, "mio": mio})
+    """
+
+    _TICK_PORT = "ticks"
+
+    @staticmethod
+    def _decision_rows(ticks):
+        """Each tick block's LAST stamp: the window gate refuses any stamp at or past the end."""
+        return [{"asof_ms": max(block["ts"])} for block in ticks if block["ts"]]
+
+    def _decider(self, release, ticks, mio, ctx, bars, tz):
+        """Build the minute decider, its closes read from this segment's bars."""
+        closes = {}
+        for bar in bars:
+            day = _local_date(bar["asof_ms"], tz)
+            closes[day] = max(closes.get(day, 0), int(bar["asof_ms"]))
+        return MinuteMioDecider(
+            release, ticks, mio, self._policy, ctx, closes, tz,
+            keep_solves=self.params.get("keep_solves", True),
+        )
+
+    def _replay(self, cash_policy, recorder, lots):
+        """Build a replay seeded with the lots the previous release left open, returning its own."""
+        return EquityReplay(self._policy, cash_policy, decider=recorder, carried_lots=lots, carry_lots=True)
+
+    def _carry(self, release, result):
+        """Return the lots this release leaves open, carried to the next."""
+        del release
+        return list(result["open_lots"])
+
+    def _segment_extras(self, carried_out):
+        """Each segment names the lots it handed on."""
+        return {"carried_out": list(carried_out)}
+
+    def _run_extras(self, open_at_end):
+        """Return the lots still open at the evidence end, marked in NAV."""
+        return {"open_at_evidence_end": list(open_at_end)}
+
+    def _refuse_price_disagreement(self, release, ticks, bars):
+        """Refuse when a bar's decision close is not the tick price for that minute."""
+        field = self._policy.decision_price_field
+        closes = {(bar[self._policy.symbol_field], bar["asof_ms"]): bar.get(field) for bar in bars}
+        bad = []
+        for block in ticks:
+            if block["release_id"] != release["release_id"]:
+                continue
+            for stamp, price in zip(block["ts"], block["price"]):
+                close = closes.get((block["symbol"], int(stamp)))
+                if close is not None and abs(close - price) > _PRICE_TOLERANCE * max(abs(price), 1.0):
+                    bad.append((block["symbol"], stamp, close, price))
+        if bad:
+            raise ConfigError([
+                f"{self.key}: the bar {field} disagrees with the tick price at {len(bad)} "
+                f"minute(s) of fold {release['fold']}, e.g. {bad[:3]}"
+            ])
 
 
 class SimulationReport(Node):
@@ -1668,7 +2173,8 @@ class SimulationReport(Node):
 
 #: The template value the simulation stage must bind; any other value is a stale pin.
 BOUND_BY_STAGE = "BOUND-BY-STAGE"
-_PUBLISHER_KIND = "intraday_equities-forecast-publisher"
+#: Either publisher binds: the lattice one (ADR-0184) or the minute one (ADR-0186).
+_PUBLISHER_KINDS = (ForecastPublisher._KIND, MinuteForecastPublisher._KIND)
 _WRITER_KINDS = ("records-write", "table-write")
 
 
@@ -1779,7 +2285,7 @@ class RetrainedSimulation(Stage):
         publishers = 0
         for key, node in obj["pipeline"].items():
             params = node.get("params") or {}
-            if node.get("uses") == _PUBLISHER_KIND:
+            if node.get("uses") in _PUBLISHER_KINDS:
                 publishers += 1
                 stale = sorted(name for name in values if params.get(name) != BOUND_BY_STAGE)
                 if stale:
@@ -1798,8 +2304,10 @@ class RetrainedSimulation(Stage):
 
 NODE_KINDS = {
     "intraday_equities-forecast-publisher": ForecastPublisher,
+    "intraday_equities-minute-forecast-publisher": MinuteForecastPublisher,
     "intraday_equities-mio-decider": MioDeciderNode,
     "intraday_equities-development-simulation": DevelopmentSimulation,
+    "intraday_equities-minute-development-simulation": MinuteDevelopmentSimulation,
     "intraday_equities-simulation-report": SimulationReport,
 }
 

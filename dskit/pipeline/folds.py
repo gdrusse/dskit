@@ -24,8 +24,10 @@ document's identity each time it was tuned.
 The seam measures no memory in ``run``: ``RUSAGE_CHILDREN.ru_maxrss`` is
 process-global and monotone, so under a pool a fold would report
 whichever sibling peaked highest. :meth:`BoundedFoldRunner.measure_one`
-is the one reading, for exactly one child, and it refuses a process that
-has already reaped one.
+is the one reading, for exactly one child. It reads that counter in a
+fresh measuring interpreter whose only child is the fold, never in the
+caller, so a process may measure any number of times, in any order,
+whatever it has reaped before (ADR-0093 amendment, 2026-09-26).
 
 ``resource`` is imported inside the methods that touch it, so this
 module imports on any platform.
@@ -34,7 +36,10 @@ module imports on any platform.
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import os
+import re
+import secrets
 import subprocess
 import sys
 
@@ -51,6 +56,35 @@ _SHIM = (
     "import os, resource, sys; cap = int(sys.argv[1]); "
     "resource.setrlimit(resource.RLIMIT_AS, (cap, cap)); "
     "os.execvp(sys.argv[2], sys.argv[2:])"
+)
+
+#: The measuring wrapper, run as ``python -I -c _MEASURE <nonce> <command...>``
+#: where ``<command...>`` is exactly what ``run`` would spawn (the capped
+#: shim, or the bare argv when uncapped). It is a FRESH interpreter, so its
+#: own ``RUSAGE_CHILDREN`` starts at zero whatever the caller has reaped;
+#: it still refuses a nonzero counter, then runs the command as its one
+#: child (cwd, environment and streams inherited) and, on a clean exit,
+#: prints that child's ``ru_maxrss`` behind the nonce. It exits as the
+#: child did, re-raising a fatal signal so the caller sees the same code
+#: (SIGKILL, the OOM killer's, takes no handler, hence the guard).
+_MEASURE = (
+    "import os, resource, signal, subprocess, sys\n"
+    "before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+    "if before:\n"
+    "    sys.exit(f'RUSAGE_CHILDREN.ru_maxrss is already {before}: this process "
+    "has reaped a child, so a one-child memory reading is impossible here')\n"
+    "code = subprocess.call(sys.argv[2:])\n"
+    "if code < 0:\n"
+    "    try:\n"
+    "        signal.signal(-code, signal.SIG_DFL)\n"
+    "    except (OSError, ValueError):\n"
+    "        pass\n"
+    "    os.kill(os.getpid(), -code)\n"
+    "    sys.exit(128 - code)\n"
+    "if code == 0:\n"
+    "    peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+    "    sys.stdout.write(f'\\n{sys.argv[1]} {peak}\\n')\n"
+    "sys.exit(code)\n"
 )
 
 #: ``ru_maxrss`` is reported in kilobytes on Linux and in bytes on macOS.
@@ -89,6 +123,20 @@ def _check_commands(commands):
     )
     if not ok:
         raise ValueError("commands must be a non-empty list of argv lists of strings")
+
+
+def _split_reading(stdout, nonce):
+    """Split the measuring wrapper's line off ``stdout``: (fold output, ru_maxrss)."""
+    head, marker, tail = (
+        stdout.rpartition(f"\n{nonce} ") if isinstance(stdout, str) else ("", "", "")
+    )
+    reading = re.match(r"(\d+)\n", tail) if marker else None
+    if reading is None:
+        raise ValueError(
+            "the measured spawn returned no peak reading: a spawn override must "
+            "run its fold through the default spawn, which captures stdout as text"
+        )
+    return head + tail[reading.end():], int(reading.group(1))
 
 
 class BoundedFoldRunner:
@@ -132,6 +180,10 @@ class BoundedFoldRunner:
         )
         [d.returncode for d in done]  # [0, 0]
     """
+
+    #: Set only on :meth:`measure_one`'s per-call copy: wrap the command in
+    #: the measuring interpreter and mark its reading with this nonce.
+    _measure_nonce = None
 
     def __init__(self, memory_limit_bytes, workers=None, env_var="DSKIT_FOLD_WORKERS"):
         if memory_limit_bytes is not None and (
@@ -254,16 +306,18 @@ class BoundedFoldRunner:
         return done
 
     def measure_one(self, argv, cwd=None, env=None):
-        """Run ONE fold as this process's first child and report its peak.
+        """Run ONE fold and report the peak resident memory of that fold alone.
 
         The only way the seam reports memory, and it reports it for
-        exactly one child: ``RUSAGE_CHILDREN.ru_maxrss`` is the
-        high-water mark over EVERY child this process has ever reaped,
-        so a nonzero reading before the spawn means the counter is
-        contaminated and the measurement impossible here. The one
-        command runs at width 1 whatever ``workers`` says, under the
-        instance's own cap and through the same parent-side validation
-        and :meth:`spawn` hook.
+        exactly one child. ``RUSAGE_CHILDREN.ru_maxrss`` is the
+        high-water mark over EVERY child a process has ever reaped, so
+        this process's own counter can hold an earlier child's peak. The
+        fold therefore runs as the only child of a fresh measuring
+        interpreter, which reads the counter it started at zero (and
+        refuses to run if it did not). The one command runs at width 1
+        whatever ``workers`` says, under the instance's own cap and
+        through the same parent-side validation and :meth:`spawn` hook,
+        which receives the fold's own ``argv``.
 
         Parameters
         ----------
@@ -277,32 +331,34 @@ class BoundedFoldRunner:
         Returns
         -------
         tuple
-            ``(CompletedProcess, peak_rss_bytes)``.
+            ``(CompletedProcess, peak_rss_bytes)``; the process's
+            ``stdout`` is the fold's own output.
 
         Raises
         ------
         ValueError
-            When the child counter is already nonzero, when ``argv`` is
-            not an argv list of strings, or from the same parent-side
-            cap validation :meth:`run` does.
+            When ``argv`` is not an argv list of strings, from the same
+            parent-side cap validation :meth:`run` does, or when the
+            spawn returned no reading (an override that never ran the
+            measuring wrapper).
         RuntimeError
-            From :meth:`spawn` when the fold exits nonzero.
+            From :meth:`spawn` when the fold exits nonzero, or when the
+            measuring interpreter refuses a nonzero child counter.
         """
-        import resource
-
-        before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-        if before != 0:
-            raise ValueError(
-                f"RUSAGE_CHILDREN.ru_maxrss is already {before}: this process has "
-                "reaped a child, so a one-child memory reading is impossible here"
-            )
         _check_commands([argv])
         self._check_cap()
+        nonce = secrets.token_hex(16)
+        # A per-call copy carries the nonce, so the wrapper reaches the
+        # default spawn through a subclass's own spawn override without
+        # touching this instance, which another thread may be running.
+        measuring = copy.copy(self)
+        measuring._measure_nonce = nonce
         # The serial path, never the pool: a pool for one command is a
         # thread and a queue for nothing (ADR-0093).
-        done = self._run_serial([argv], cwd, env)[0]
-        after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-        return done, after * _RU_MAXRSS_UNIT
+        done = measuring._run_serial([argv], cwd, env)[0]
+        output, peak = _split_reading(done.stdout, nonce)
+        fold = subprocess.CompletedProcess(done.args, done.returncode, output, done.stderr)
+        return fold, peak * _RU_MAXRSS_UNIT
 
     def _run_serial(self, commands, cwd, env):
         """Run every command one after another, building no pool."""
@@ -326,7 +382,13 @@ class BoundedFoldRunner:
             )
 
     def _capped(self, argv):
-        """``argv`` behind the setrlimit + exec shim, or itself when uncapped."""
+        """``argv`` behind the cap shim, itself when uncapped; measured when asked."""
         if self.memory_limit_bytes is None:
-            return list(argv)
-        return [sys.executable, "-I", "-c", _SHIM, str(self.memory_limit_bytes), *argv]
+            command = list(argv)
+        else:
+            command = [
+                sys.executable, "-I", "-c", _SHIM, str(self.memory_limit_bytes), *argv
+            ]
+        if self._measure_nonce is None:
+            return command
+        return [sys.executable, "-I", "-c", _MEASURE, self._measure_nonce, *command]

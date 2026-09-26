@@ -78,6 +78,10 @@ machine with neither installed.
 
 from __future__ import annotations
 
+import numbers
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
@@ -187,14 +191,20 @@ def _ceil_div(numerator, denominator):
 
 
 class SchwabCostModel:
-    """Per-share Schwab half-spread, TAF, and Section-31 costs, per name.
+    """Per-share Schwab half-spread, TAF, and Section-31 costs, per name and fill minute.
 
     The one owner of the formula ``EquityKellyMIO`` sizes with and the
     replay bills with: each side pays the name's QUOTED half-spread times
     ``eq_ratio`` (the broker's effective/quoted spread ratio, i.e. price
-    improvement); a sell also pays uncapped TAF plus Section 31 (owner
-    ruling 2026-09-25, ADR-0120/ADR-0185 amendment). ``min_price`` is the
-    routing floor, not a fee input.
+    improvement) times the time-of-day multiplier of the FILL minute; a
+    sell also pays uncapped TAF plus Section 31 (owner rulings 2026-09-25,
+    ADR-0120/ADR-0185 amendments). ``min_price`` is the routing floor, not
+    a fee input.
+
+    The multiplier is keyed on the instant the order FILLS (the replay's
+    fill bar, i.e. the decision bar + ``fill_bar_offset``), never on the
+    decision instant, so sizing (which is told that instant) and the
+    replay's fill charge the identical per-share rate.
 
     Parameters
     ----------
@@ -203,31 +213,47 @@ class SchwabCostModel:
         the quoted half-spread in bp), ``default_half_spread_bps`` (finite
         >= 0 for any unlisted name, or ``None``: an unlisted name then
         refuses), ``eq_ratio`` (finite > 0, effective/quoted),
-        ``taf_per_share`` (finite >= 0), ``sec31_bps`` (finite >= 0),
-        ``min_price`` (finite > 0). All required; ``notes`` is allowed.
+        ``spread_time_of_day`` (``timezone``: a zoneinfo key;
+        ``default_multiplier``: finite > 0 for a minute in no window;
+        ``windows``: a list of ``{start_minute, end_minute, multiplier}``,
+        integer wall-clock minutes after local midnight in ``timezone``,
+        ``0 <= start < end <= 1440``, half-open ``[start, end)``,
+        non-overlapping, multiplier finite > 0), ``taf_per_share`` (finite
+        >= 0), ``sec31_bps`` (finite >= 0), ``min_price`` (finite > 0).
+        All required; ``notes`` is allowed.
 
     Examples
     --------
-    Per-share buy and sell costs for LLY at $800::
+    Per-share buy and sell costs for LLY at $800, filled at 09:45 New York::
 
         costs = SchwabCostModel({
             "half_spread_bps": {"LLY": 4.51}, "default_half_spread_bps": None,
             "eq_ratio": 1.0, "taf_per_share": 0.000195,
             "sec31_bps": 0.0206, "min_price": 5.0,
+            "spread_time_of_day": {
+                "timezone": "America/New_York", "default_multiplier": 1.0,
+                "windows": [{"start_minute": 570, "end_minute": 600, "multiplier": 2.0}],
+            },
         })
-        costs.buy_per_share("LLY", 800.0)  # 0.3608
-        costs.sell_per_share("LLY", 800.0)  # 0.3608 + 0.000195 + 0.001648
-        costs.buy_per_share("XOM", 110.0)  # ConfigError: no half-spread for XOM
+        costs.buy_per_share("LLY", 800.0, fill_ms)  # 0.7216 (4.51 bp x 2.0)
+        costs.sell_per_share("LLY", 800.0, fill_ms)  # 0.7216 + 0.000195 + 0.001648
+        costs.buy_per_share("XOM", 110.0, fill_ms)  # ConfigError: no half-spread for XOM
     """
 
     _PARAMS = (
         "half_spread_bps",
         "default_half_spread_bps",
         "eq_ratio",
+        "spread_time_of_day",
         "taf_per_share",
         "sec31_bps",
         "min_price",
     )
+
+    #: The keys of ``spread_time_of_day`` and of each of its windows.
+    _TOD_KEYS = ("timezone", "default_multiplier", "windows")
+    _WINDOW_KEYS = ("start_minute", "end_minute", "multiplier")
+    _MINUTES_PER_DAY = 1440
 
     def __init__(self, params):
         problems = self.validate_params(params)
@@ -239,6 +265,13 @@ class SchwabCostModel:
         self._knobs = {
             name: float(params[name]) for name in ("eq_ratio", "taf_per_share", "sec31_bps", "min_price")
         }
+        schedule = params["spread_time_of_day"]
+        self._zone = ZoneInfo(schedule["timezone"])
+        self._default_multiplier = float(schedule["default_multiplier"])
+        self._windows = tuple(
+            (int(w["start_minute"]), int(w["end_minute"]), float(w["multiplier"]))
+            for w in schedule["windows"]
+        )
 
     @classmethod
     def validate_params(cls, params):
@@ -259,9 +292,9 @@ class SchwabCostModel:
             )
         return problems
 
-    @staticmethod
-    def spread_problems(params):
-        """Problems with the three spread knobs in ``params``, empty when none."""
+    @classmethod
+    def spread_problems(cls, params):
+        """Problems with the four spread knobs in ``params``, empty when none."""
         problems = []
         if "half_spread_bps" not in params:
             problems.append(
@@ -300,15 +333,118 @@ class SchwabCostModel:
             )
         elif not number_ok(params["eq_ratio"]) or params["eq_ratio"] <= 0.0:
             problems.append(f"eq_ratio must be a finite number > 0, got {params['eq_ratio']!r}")
+        if "spread_time_of_day" not in params:
+            problems.append(
+                "spread_time_of_day is required — {timezone, default_multiplier, windows} "
+                "keyed on the fill minute, no default"
+            )
+        else:
+            problems.extend(cls._time_of_day_problems(params["spread_time_of_day"]))
         return problems
 
-    def half_spread_bps(self, symbol):
-        """The half-spread ``symbol`` pays per side, in bp: quoted x ``eq_ratio``.
+    @classmethod
+    def _time_of_day_problems(cls, schedule):
+        """Problems with a ``spread_time_of_day`` value, each naming the knob."""
+        name = "spread_time_of_day"
+        if not isinstance(schedule, dict):
+            return [
+                f"{name} must be a mapping {{timezone, default_multiplier, windows}}, got "
+                f"{type(schedule).__name__}"
+            ]
+        problems = []
+        unknown = sorted(str(key) for key in set(schedule) - set(cls._TOD_KEYS))
+        if unknown:
+            problems.append(f"{name} has unknown keys {unknown}")
+        missing = [key for key in cls._TOD_KEYS if key not in schedule]
+        problems.extend(f"{name}.{key} is required" for key in missing)
+        if "timezone" in schedule:
+            zone = schedule["timezone"]
+            if not isinstance(zone, str) or not zone:
+                problems.append(f"{name}.timezone must be a non-empty zoneinfo key, got {zone!r}")
+            else:
+                try:
+                    ZoneInfo(zone)
+                except (ZoneInfoNotFoundError, ValueError):
+                    problems.append(f"{name}.timezone is not a known zoneinfo key: {zone!r}")
+        if "default_multiplier" in schedule:
+            value = schedule["default_multiplier"]
+            if not number_ok(value) or value <= 0.0:
+                problems.append(f"{name}.default_multiplier must be a finite number > 0, got {value!r}")
+        if "windows" not in schedule:
+            return problems
+        windows = schedule["windows"]
+        if not isinstance(windows, list):
+            problems.append(f"{name}.windows must be a list, got {type(windows).__name__}")
+            return problems
+        spans = []
+        for index, window in enumerate(windows):
+            where = f"{name}.windows[{index}]"
+            if not isinstance(window, dict) or set(window) != set(cls._WINDOW_KEYS):
+                problems.append(
+                    f"{where} must be exactly {{start_minute, end_minute, multiplier}}, got {window!r}"
+                )
+                continue
+            start, end, multiplier = (window[key] for key in cls._WINDOW_KEYS)
+            bounds_ok = True
+            for key, value in (("start_minute", start), ("end_minute", end)):
+                if isinstance(value, bool) or not isinstance(value, int):
+                    problems.append(f"{where}.{key} must be an integer minute, got {value!r}")
+                    bounds_ok = False
+                elif not 0 <= value <= cls._MINUTES_PER_DAY:
+                    problems.append(
+                        f"{where}.{key} must be in [0, {cls._MINUTES_PER_DAY}], got {value!r}"
+                    )
+                    bounds_ok = False
+            if bounds_ok and start >= end:
+                problems.append(f"{where} must have start_minute < end_minute, got [{start}, {end})")
+                bounds_ok = False
+            if not number_ok(multiplier) or multiplier <= 0.0:
+                problems.append(f"{where}.multiplier must be a finite number > 0, got {multiplier!r}")
+            if bounds_ok:
+                spans.append((start, end, index))
+        spans.sort()
+        for (start_a, end_a, a), (start_b, end_b, b) in zip(spans, spans[1:]):
+            if start_b < end_a:
+                problems.append(
+                    f"{name}.windows[{a}] [{start_a}, {end_a}) and windows[{b}] "
+                    f"[{start_b}, {end_b}) overlap — a fill minute must map to one multiplier"
+                )
+        return problems
+
+    def time_of_day_multiplier(self, fill_ms):
+        """The spread multiplier for a fill at epoch ms ``fill_ms``.
+
+        The fill instant's wall-clock minute in the schedule's timezone
+        (DST-aware) selects the one window containing it; a minute in no
+        window gets ``default_multiplier``.
 
         Raises
         ------
         ConfigError
-            ``symbol`` is not listed and no default is declared.
+            ``fill_ms`` is not an integer epoch ms >= 0.
+        """
+        if isinstance(fill_ms, bool) or not isinstance(fill_ms, numbers.Integral) or fill_ms < 0:
+            raise ConfigError([
+                f"the fill instant must be an integer epoch ms >= 0, got {fill_ms!r} — the "
+                "time-of-day spread is keyed on the fill minute and has no default"
+            ])
+        local = datetime.fromtimestamp(int(fill_ms) // 1000, tz=timezone.utc).astimezone(self._zone)
+        minute = local.hour * 60 + local.minute
+        for start, end, multiplier in self._windows:
+            if start <= minute < end:
+                return multiplier
+        return self._default_multiplier
+
+    def half_spread_bps(self, symbol, fill_ms):
+        """The half-spread ``symbol`` pays per side on a fill at ``fill_ms``, in bp.
+
+        Quoted x ``eq_ratio`` x the fill minute's time-of-day multiplier.
+
+        Raises
+        ------
+        ConfigError
+            ``symbol`` is not listed and no default is declared, or
+            ``fill_ms`` is not an integer epoch ms >= 0.
         """
         quoted = self._spreads.get(symbol, self._default)
         if quoted is None:
@@ -316,17 +452,17 @@ class SchwabCostModel:
                 f"no half-spread for {symbol!r}: it is not in half_spread_bps and "
                 "default_half_spread_bps is null — an unpriced name refuses"
             ])
-        return quoted * self._knobs["eq_ratio"]
+        return quoted * self._knobs["eq_ratio"] * self.time_of_day_multiplier(fill_ms)
 
-    def buy_per_share(self, symbol, price):
-        """Effective half-spread in quote currency per share of ``symbol`` at ``price``."""
-        return self.half_spread_bps(symbol) * 1e-4 * float(price)
+    def buy_per_share(self, symbol, price, fill_ms):
+        """Effective half-spread in quote currency per share of ``symbol`` at ``price``, filled at ``fill_ms``."""
+        return self.half_spread_bps(symbol, fill_ms) * 1e-4 * float(price)
 
-    def sell_per_share(self, symbol, price):
-        """Effective half-spread plus uncapped TAF plus Section 31, per share."""
+    def sell_per_share(self, symbol, price, fill_ms):
+        """Effective half-spread plus uncapped TAF plus Section 31, per share, filled at ``fill_ms``."""
         price = float(price)
         return (
-            self.buy_per_share(symbol, price)
+            self.buy_per_share(symbol, price, fill_ms)
             + self._knobs["taf_per_share"]
             + self._knobs["sec31_bps"] * 1e-4 * price
         )
@@ -334,6 +470,35 @@ class SchwabCostModel:
     def below_floor(self, price):
         """Return whether ``price`` is under the routing floor."""
         return float(price) < self._knobs["min_price"]
+
+
+def _fill_instant_problems(portfolio):
+    """Problems with ``portfolio.fill_ms``, empty when none.
+
+    Every priced name's fill instant (epoch ms, never before the decision
+    ``asof_ms``) keys its time-of-day spread; the map is required.
+    """
+    if "fill_ms" not in portfolio:
+        return [
+            "portfolio.fill_ms is required — {symbol: fill instant epoch ms}, the minute "
+            "each order fills keys its time-of-day spread"
+        ]
+    fill_ms = portfolio["fill_ms"]
+    if not isinstance(fill_ms, dict):
+        return [f"portfolio.fill_ms must be a mapping of symbol -> epoch ms, got {type(fill_ms).__name__}"]
+    asof_ms = portfolio.get("asof_ms")
+    problems = []
+    for symbol, instant in fill_ms.items():
+        if not isinstance(symbol, str) or not symbol:
+            problems.append(f"portfolio.fill_ms keys must be non-empty strings, got {symbol!r}")
+        elif isinstance(instant, bool) or not isinstance(instant, numbers.Integral):
+            problems.append(f"portfolio.fill_ms[{symbol!r}] must be an integer epoch ms, got {instant!r}")
+        elif isinstance(asof_ms, int) and not isinstance(asof_ms, bool) and instant < asof_ms:
+            problems.append(
+                f"portfolio.fill_ms[{symbol!r}] = {instant} is before asof_ms {asof_ms} — "
+                "an order cannot fill before its decision"
+            )
+    return problems
 
 
 def _bundle_problems(bundle):
@@ -568,7 +733,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     :data:`BUNDLE_FIELDS`; even an empty list must match its artifact pin,
     and it is legal only with no held positions), ``portfolio`` (account state — ``asof_ms``,
     ``cash``, ``buying_power``, ``positions`` (``symbol -> held shares``),
-    optional ``mark_prices`` for a held name the bundle dropped, optional
+    ``fill_ms`` (``symbol -> epoch ms >= asof_ms``, the instant each name's
+    order FILLS — the replay's fill bar, i.e. the decision bar +
+    ``fill_bar_offset``; required for every name the program prices, since
+    the time-of-day spread is keyed on it), optional ``mark_prices`` for a
+    held name the bundle dropped, optional
     ``cash_reserve``/``gross_limit``/``sale_credit``), ``survivors``
     (the ``stat_test`` gate REQUIRED by the planner's capital rule — only
     bundle rows whose ``entity`` is a survivor enter the program),
@@ -588,11 +757,13 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         The doorway's knobs (``risk_aversion_gamma``, ``n_tangents``,
         ``n_scenarios_max``, ``cvar_alpha``, ``cvar_limit``, ``cardinality``,
         ``min_ticket``, ``solver``, ``solver_options``) plus this kind's own:
-        ``half_spread_bps`` / ``default_half_spread_bps`` / ``eq_ratio``
-        (required — :class:`SchwabCostModel`'s per-name quoted half-spread
-        map, its default for unlisted names or null to refuse them, and the
-        effective/quoted ratio; each side pays quoted x ``eq_ratio``, on
-        entry AND exit), ``taf_per_share`` (required, >= 0 — FINRA TAF,
+        ``half_spread_bps`` / ``default_half_spread_bps`` / ``eq_ratio`` /
+        ``spread_time_of_day`` (required — :class:`SchwabCostModel`'s
+        per-name quoted half-spread map, its default for unlisted names or
+        null to refuse them, the effective/quoted ratio, and the
+        time-of-day windows; each side pays quoted x ``eq_ratio`` x the
+        multiplier of the name's ``portfolio.fill_ms`` minute, on entry AND
+        exit), ``taf_per_share`` (required, >= 0 — FINRA TAF,
         sell-only, charged UNCAPPED — see the module docstring on why the
         per-order cap is not modeled), ``sec31_bps`` (required, >= 0 — SEC
         Section 31, sell-only), ``min_price`` (required, > 0 — the per-share
@@ -644,6 +815,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "cvar_alpha": 0.95, "cvar_limit": 5000.0, "cardinality": 5,
             "min_ticket": 500.0, "half_spread_bps": {"LLY": 4.51},
             "default_half_spread_bps": 5.62, "eq_ratio": 1.0, "taf_per_share": 0.000195,
+            "spread_time_of_day": {
+                "timezone": "America/New_York", "default_multiplier": 1.0, "windows": [],
+            },
             "sec31_bps": 0.0206, "min_price": 5.0,
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
@@ -669,6 +843,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "half_spread_bps",
         "default_half_spread_bps",
         "eq_ratio",
+        "spread_time_of_day",
         "taf_per_share",
         "sec31_bps",
         "min_price",
@@ -904,6 +1079,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                         "an empty bundle cannot authorize liquidation of a non-empty "
                         "portfolio — require an authenticated bundle carrying the held names"
                     )
+            problems.extend(_fill_instant_problems(portfolio))
             mark_prices = portfolio.get("mark_prices", {})
             if not isinstance(mark_prices, dict):
                 problems.append("portfolio.mark_prices must be a mapping of symbol -> price when given")
@@ -1289,6 +1465,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         rows, pi_widened, band_shares, payoffs_r = {}, {}, {}, {}
         worst_r, best_r = 0.0, 0.0
         costs = SchwabCostModel({name: self.params[name] for name in SchwabCostModel._PARAMS})
+        fill_ms = portfolio.get("fill_ms")
+        fill_ms = fill_ms if isinstance(fill_ms, dict) else {}
         for name in names:
             row = by_name.get(name)
             h = held.get(name, 0)
@@ -1317,9 +1495,16 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 scenarios = [float(v) for v in row["scenarios"]]
             # Uncapped TAF lives in SchwabCostModel (see that class and the
             # module docstring) — never a size-referenced rate. The per-name
-            # half-spread is the SAME one the replay bills this name's fills.
-            spread = costs.buy_per_share(name, price)
-            sell_cost = costs.sell_per_share(name, price)
+            # half-spread, keyed on the name's FILL minute, is the SAME one
+            # the replay bills this name's fill at that minute.
+            if name not in fill_ms:
+                raise ValueError(
+                    f"{self.key}: {name!r} has no portfolio.fill_ms instant — the "
+                    "time-of-day spread is keyed on the fill minute, so an unkeyed name "
+                    "cannot be priced"
+                )
+            spread = costs.buy_per_share(name, price, fill_ms[name])
+            sell_cost = costs.sell_per_share(name, price, fill_ms[name])
             rows[name] = {
                 "price": price,
                 "held": h,

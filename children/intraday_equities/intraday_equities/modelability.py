@@ -317,11 +317,12 @@ def _prepare_walk(ctx, document, tag):
 
 
 def _measure_walk(ctx, document, tag):
-    """Run one derived walk as this process's first child and read its peak."""
-    # Returns (summary_dir, peak_rss_bytes) from the seam's measure_one;
-    # nothing persists the reading beside the walk. A walk that already
-    # finished refuses — a measurement needs a fresh spawn (ADR-0093) —
-    # as do the seam's own contamination and cap guards.
+    """Run one derived walk as one measured child and read its peak."""
+    # Returns (summary_dir, peak_rss_bytes) from the seam's measure_one,
+    # which reads that one child's peak whatever this process reaped
+    # before; nothing persists the reading beside the walk. A walk that
+    # already finished refuses — a measurement needs a fresh spawn
+    # (ADR-0093) — as do the seam's own cap guards.
     argv, summary, reused = _prepare_walk(ctx, document, tag)
     if reused:
         raise ValueError(
@@ -492,10 +493,9 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
 class MemoryPreflightStage(Stage):
     """Measure the most recent single pooled fold under the 17 GiB cap.
 
-    The reading is the seam's ``measure_one`` (ADR-0093): this stage is
-    the study's first, so the walk it spawns is the first child this
-    process reaps, and the stage keeps only its threshold and its choice
-    of what to run.
+    The reading is the seam's ``measure_one`` (ADR-0093), the peak of
+    the one walk it spawns wherever this stage sits in the study, and
+    the stage keeps only its threshold and its choice of what to run.
 
     Parameters
     ----------
@@ -534,7 +534,7 @@ class MemoryPreflightStage(Stage):
         return problems
 
     def run(self, ctx, inputs):
-        """Measure the isolated most-recent fold as this process's first child."""
+        """Measure the isolated most-recent fold as one measured child."""
         del inputs
         limit = self.params["memory_limit_bytes"]
         # Named for the staged identity: the reading is the seam's

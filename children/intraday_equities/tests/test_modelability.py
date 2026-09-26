@@ -418,6 +418,22 @@ def test_a_failing_fold_names_its_derived_config_not_its_position(tmp_path):
         raise AssertionError("a nonzero fold did not raise")
 
 
+def test_a_failing_measured_fold_names_its_derived_config(tmp_path):
+    # The same naming on the measuring path, in a process that has already
+    # reaped a child (as the staged process has by trade_memory): the spawn
+    # hook still receives the fold's OWN argv, so the override finds the
+    # derived config at [4].
+    subprocess.run([sys.executable, "-c", "pass"], check=True)
+    config = str(tmp_path / "trade-cache-a.json")
+    shaped = modelability._walk_argv(config, "2026-02-28")
+    argv = [sys.executable, "-c", "import sys; sys.exit(9)", *shaped[3:]]
+    assert argv[4] == config
+    with pytest.raises(RuntimeError) as error:
+        modelability._runner(workers=1).measure_one(argv, cwd=str(tmp_path))
+    assert config in str(error.value)
+    assert "exited 9" in str(error.value)
+
+
 def _preflight(tmp_path, monkeypatch):
     ctx, journaled = _harness(tmp_path, monkeypatch)
     ctx.document = _document(tmp_path / "runs", count=1)
