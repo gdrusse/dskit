@@ -166,6 +166,28 @@ _INPUT_FIELDS = frozenset(
     )
 )
 
+#: The exit-horizon PATH a row may carry beside the flat contract (ADR-0188
+#: formulation B): ``admitted_horizon`` (``H_i``, the gate's confirmed cap),
+#: ``plan_horizon`` (``K_i(t)``, the tranches offered this tick),
+#: ``yhat_path`` (one label-unit prediction per scored head, lead order),
+#: ``pi_hat_path`` / ``pi_widened_path`` (one calibrated rate per ADMITTED
+#: lead — nothing is calibrated past the cap) and ``scenarios_path`` (one
+#: residual list per scored head). The six come together or not at all, and
+#: a path row is ALSO a valid flat row whose flat fields are the path's
+#: first step (``lead`` 1), so every consumer of the flat contract is
+#: unaffected. A second frozenset, never a widening of ``_INPUT_FIELDS``:
+#: the missing-field check over the flat set stays exactly as it is.
+_PATH_FIELDS = frozenset(
+    (
+        "admitted_horizon",
+        "plan_horizon",
+        "yhat_path",
+        "pi_hat_path",
+        "pi_widened_path",
+        "scenarios_path",
+    )
+)
+
 #: How far a weights list may miss summing to exactly 1 before it refuses —
 #: the same tolerance the capital node's own bundle validator applies; the
 #: two are pinned to agree by ``test_forecast_bundle``.
@@ -298,12 +320,21 @@ def _row_problems(index, row, label_contract):
             "that name asserts a probability upper bound no producer in this "
             "release can supply"
         )
-    extra = sorted(set(row) - _INPUT_FIELDS - set(WITHDRAWN_FIELD_ALIASES))
+    extra = sorted(
+        set(row) - _INPUT_FIELDS - _PATH_FIELDS - set(WITHDRAWN_FIELD_ALIASES)
+    )
     if extra:
         problems.append(
             f"{where}: unknown input field(s) {extra} — an assembled row is "
             "converted from label units here, never handed a precomputed "
             "gross value or a self-declared unit (plan §6 Phase 4 item 1)"
+        )
+    present_path = set(row) & _PATH_FIELDS
+    if present_path and present_path != _PATH_FIELDS:
+        problems.append(
+            f"{where}: the exit-horizon path fields come together or not at "
+            f"all — carries {sorted(present_path)}, missing "
+            f"{sorted(_PATH_FIELDS - present_path)} (ADR-0188)"
         )
     missing = sorted(_INPUT_FIELDS - set(row))
     if missing:
@@ -431,6 +462,112 @@ def _row_problems(index, row, label_contract):
                         f"({stamp!r}) is after decision_ts — point-in-time "
                         "inputs only (plan §6 Phase 4 item 2)"
                     )
+    if _PATH_FIELDS <= set(row):
+        problems.extend(_path_problems(where, entity, row))
+    return problems
+
+
+def _step_ok(value, n_steps):
+    """Say whether ``value`` is an integer step index in ``1..n_steps``."""
+    return not isinstance(value, bool) and isinstance(value, int) and 1 <= value <= n_steps
+
+
+def _path_problems(where, entity, row):
+    """Problems with a row's exit-horizon path fields, empty when none.
+
+    Called only when every name in :data:`_PATH_FIELDS` is present. The
+    flat fields have already been checked; here the path's own shape is
+    checked, then the rule that the flat fields ARE the path's first step.
+    """
+    tag = f"{where} ({entity!r})"
+    problems = []
+    yhat_path = row["yhat_path"]
+    if not isinstance(yhat_path, (list, tuple)) or not 1 <= len(yhat_path) <= len(HEADS):
+        problems.append(
+            f"{tag}: yhat_path must be a list of 1..{len(HEADS)} label-unit "
+            "predictions, one per scored head in lead order"
+        )
+        return problems
+    n_steps = len(yhat_path)
+    if not all(number_ok(v) for v in yhat_path):
+        problems.append(f"{tag}: yhat_path must be all finite numbers (label units)")
+    admitted = row["admitted_horizon"]
+    admitted_ok = _step_ok(admitted, n_steps)
+    if not admitted_ok:
+        problems.append(
+            f"{tag}: admitted_horizon must be an integer 1..{n_steps} (the row "
+            f"carries {n_steps} scored heads), got {admitted!r}"
+        )
+    plan = row["plan_horizon"]
+    if not _step_ok(plan, n_steps):
+        problems.append(
+            f"{tag}: plan_horizon must be an integer 1..{n_steps} (the row "
+            f"carries {n_steps} scored heads), got {plan!r}"
+        )
+    rates = {}
+    for field in ("pi_hat_path", "pi_widened_path"):
+        values = row[field]
+        if not isinstance(values, (list, tuple)) or (
+            admitted_ok and len(values) != admitted
+        ):
+            problems.append(
+                f"{tag}: {field} must be a list of exactly admitted_horizon "
+                f"({admitted!r}) rates, one per admitted lead — nothing is "
+                f"calibrated past the cap; got {values!r}"
+            )
+        elif not all(number_ok(v) and 0.0 <= v <= 1.0 for v in values):
+            problems.append(f"{tag}: {field} must be all finite numbers in [0, 1]")
+        else:
+            rates[field] = [float(v) for v in values]
+    if len(rates) == 2 and any(
+        hat > widened
+        for hat, widened in zip(rates["pi_hat_path"], rates["pi_widened_path"])
+    ):
+        problems.append(
+            f"{tag}: pi_hat_path must not exceed pi_widened_path at any lead"
+        )
+    weights = row["weights"]
+    scenarios_path = row["scenarios_path"]
+    if not isinstance(scenarios_path, (list, tuple)) or len(scenarios_path) != n_steps:
+        problems.append(
+            f"{tag}: scenarios_path must carry one residual list per scored "
+            f"head ({n_steps}), got {scenarios_path!r}"
+        )
+        scenarios_path = None
+    else:
+        for step, residuals in enumerate(scenarios_path, start=1):
+            if not isinstance(residuals, (list, tuple)) or (
+                isinstance(weights, (list, tuple)) and len(residuals) != len(weights)
+            ):
+                problems.append(
+                    f"{tag}: scenarios_path[{step}] must be a list as long as weights"
+                )
+            elif not all(number_ok(v) for v in residuals):
+                problems.append(
+                    f"{tag}: scenarios_path[{step}] must be all finite numbers "
+                    "(label-unit residuals)"
+                )
+    # The flat fields are the path's first step, so a consumer of the flat
+    # contract sizes off the same numbers the path's first tranche carries.
+    if row["lead"] != 1:
+        problems.append(
+            f"{tag}: a path row's lead must be 1 — its flat fields are the "
+            f"first step of the path, got {row['lead']!r}"
+        )
+    first_step = [("yhat", yhat_path[0])]
+    for field in ("pi_hat", "pi_widened"):
+        if field + "_path" in rates:
+            first_step.append((field, rates[field + "_path"][0]))
+    if scenarios_path is not None and isinstance(scenarios_path[0], (list, tuple)):
+        first_step.append(("scenarios", list(scenarios_path[0])))
+    for field, expected in first_step:
+        actual = row[field]
+        actual = list(actual) if isinstance(actual, (list, tuple)) else actual
+        if actual != expected:
+            problems.append(
+                f"{tag}: {field} {actual!r} must equal the path's first step "
+                f"{expected!r} — the flat fields ARE step 1 of the path"
+            )
     return problems
 
 
@@ -474,6 +611,16 @@ class ForecastBundle:
         :data:`WITHDRAWN_FIELD_ALIASES` refuses with the withdrawal named.
         All time values are integer epoch milliseconds.
         An empty list is the empty gate and assembles to an empty bundle.
+        A row may ALSO carry the six exit-horizon path fields of
+        :data:`_PATH_FIELDS` (ADR-0188 formulation B): then its flat fields
+        must be the path's first step (``lead`` 1), the whole tick must
+        carry paths, and the assembled row gains ``admitted_horizon``,
+        ``plan_horizon``, ``mu_gross_path``, ``pi_hat_path``,
+        ``pi_widened_path`` and ``scenarios_path`` — one entry per scored
+        head, where past the admitted cap the expected return and the
+        calibrated rates of the last admitted lead carry forward (zero
+        expected increment, owner ruling B(a)) while each step keeps its
+        own calibrated dispersion.
     producer : dict
         Exact producer identity: lowercase ``document_sha256``, non-empty
         ``node``, and ``output="bundle"``.
@@ -573,11 +720,13 @@ class ForecastBundle:
             rows = []
         seen = set()
         shared = {}
+        path_flags = set()
         for index, row in enumerate(rows):
             for problem in _row_problems(index, row, self.label_contract):
                 problems.append(problem)
             if not isinstance(row, dict):
                 continue
+            path_flags.add(_PATH_FIELDS <= set(row))
             entity = row.get("entity")
             if isinstance(entity, str) and entity:
                 if entity in seen:
@@ -599,8 +748,14 @@ class ForecastBundle:
                         "decision tick: mixed horizons or mismatched "
                         "scenario sets refuse (plan §6 Phase 4 item 3)"
                     )
+        if len(path_flags) > 1:
+            problems.append(
+                "a tick carries exit-horizon path rows on every row or on none "
+                "— mixing path rows with flat rows refuses (ADR-0188)"
+            )
         if problems:
             raise ValueError("ForecastBundle: " + "; ".join(problems))
+        self.has_paths = path_flags == {True}
         self.decision_ts = shared.get("decision_ts")
         self.lead = shared.get("lead")
         self.weights = list(shared["weights"]) if "weights" in shared else None
@@ -629,7 +784,7 @@ class ForecastBundle:
         sigma = float(row["sigma_t"])
         lead = row["lead"]
         mu_gross = gross_return(row["yhat"], sigma, lead)
-        return {
+        out = {
             "entity": row["entity"],
             "decision_ts": row["decision_ts"],
             "lead": lead,
@@ -648,21 +803,82 @@ class ForecastBundle:
             "uncertainty": dict(self.uncertainty),
             "known_at": dict(row["known_at"]),
         }
+        if _PATH_FIELDS <= set(row):
+            out.update(self._assemble_path(row))
+        return out
+
+    def _assemble_path(self, row):
+        """Convert a validated path row's curve into per-step gross outputs.
+
+        Step ``k`` (1-based, one per scored head) is valued by its own
+        head for ``k <= admitted_horizon``. Past the admitted cap there is
+        no admitted skill: the log mean of the last admitted lead carries
+        forward unchanged (zero expected increment, owner ruling B(a)),
+        as do its calibrated rates, while the step's own residual draws
+        keep their calibrated dispersion at ``sqrt(k)``.
+        """
+        sigma = float(row["sigma_t"])
+        admitted = row["admitted_horizon"]
+        yhat_path = [float(v) for v in row["yhat_path"]]
+        pi_hat_path = [float(v) for v in row["pi_hat_path"]]
+        pi_widened_path = [float(v) for v in row["pi_widened_path"]]
+        mu_gross_path, scenarios_path = [], []
+        pi_hat_out, pi_widened_out = [], []
+        for k in range(1, len(yhat_path) + 1):
+            step = min(k, admitted)
+            if k <= admitted:
+                yhat_k = yhat_path[k - 1]
+                mu_k = gross_return(yhat_k, sigma, k)
+            else:
+                # The same log mean as the last admitted lead, expressed in
+                # this step's label units so that the conversion below
+                # scales the residuals by sqrt(k) and nothing else.
+                yhat_k = yhat_path[admitted - 1] * math.sqrt(admitted / k)
+                mu_k = mu_gross_path[admitted - 1]
+            mu_gross_path.append(mu_k)
+            pi_hat_out.append(pi_hat_path[step - 1])
+            pi_widened_out.append(pi_widened_path[step - 1])
+            scenarios_path.append(
+                self._recenter(
+                    yhat_k,
+                    sigma,
+                    k,
+                    row["scenarios_path"][k - 1],
+                    row["weights"],
+                    pi_hat_path[step - 1],
+                    mu_k,
+                )
+            )
+        return {
+            "admitted_horizon": admitted,
+            "plan_horizon": row["plan_horizon"],
+            "mu_gross_path": mu_gross_path,
+            "pi_hat_path": pi_hat_out,
+            "pi_widened_path": pi_widened_out,
+            "scenarios_path": scenarios_path,
+        }
+
+    @classmethod
+    def _recentered_scenarios(cls, row, mu_gross):
+        """Convert log residual draws, then pin their weighted simple-return mean."""
+        return cls._recenter(
+            row["yhat"],
+            float(row["sigma_t"]),
+            row["lead"],
+            row["scenarios"],
+            row["weights"],
+            row["pi_hat"],
+            mu_gross,
+        )
 
     @staticmethod
-    def _recentered_scenarios(row, mu_gross):
-        """Convert log residual draws, then pin their weighted simple-return mean."""
-        sigma = float(row["sigma_t"])
-        lead = row["lead"]
-        converted = [
-            gross_return(row["yhat"] + residual, sigma, lead)
-            for residual in row["scenarios"]
-        ]
+    def _recenter(yhat, sigma, lead, residuals, weights, pi_hat, mu_gross):
+        """One step's draws: convert, then pin the mean to the haircut target."""
+        converted = [gross_return(yhat + residual, sigma, lead) for residual in residuals]
         observed_mean = sum(
-            float(weight) * value
-            for weight, value in zip(row["weights"], converted)
+            float(weight) * value for weight, value in zip(weights, converted)
         )
-        target_mean = (1.0 - float(row["pi_hat"])) * mu_gross
+        target_mean = (1.0 - float(pi_hat)) * mu_gross
         recentered = [value - observed_mean + target_mean for value in converted]
         if any(value <= -1.0 or not math.isfinite(value) for value in recentered):
             raise ValueError(

@@ -688,3 +688,190 @@ class TestTheCalibrationIdentitiesAreRequired:
             [_input_row("AAPL")],
         ).rows
         assert rows[0]["uncertainty"]["outcome"] == UNCERTAINTY_IDS["outcome"]
+
+
+# --- ADR-0188 formulation B: exit-horizon path rows ---------------------------
+
+#: A four-head forecast curve (label units, one per scored lead) whose
+#: admitted cap is lead 2 and whose plan this tick is three tranches.
+PATH_YHAT = [0.5, 0.8, 0.9, 1.0]
+PATH_PI_HAT = [0.10, 0.15]
+PATH_PI_WIDENED = [0.20, 0.30]
+PATH_SCENARIOS = [
+    [-0.4, 0.0, 0.9],
+    [-0.5, 0.1, 0.8],
+    [-0.6, 0.2, 0.7],
+    [-0.7, 0.3, 0.6],
+]
+
+
+def _path_row(entity, **overrides):
+    """One hand-built path row: the flat fields ARE the path's first step."""
+    row = _input_row(
+        entity,
+        lead=1,
+        yhat=PATH_YHAT[0],
+        pi_hat=PATH_PI_HAT[0],
+        pi_widened=PATH_PI_WIDENED[0],
+        scenarios=list(PATH_SCENARIOS[0]),
+    )
+    row.update(
+        {
+            "admitted_horizon": 2,
+            "plan_horizon": 3,
+            "yhat_path": list(PATH_YHAT),
+            "pi_hat_path": list(PATH_PI_HAT),
+            "pi_widened_path": list(PATH_PI_WIDENED),
+            "scenarios_path": [list(step) for step in PATH_SCENARIOS],
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _weighted_mean(weights, values):
+    return sum(w * v for w, v in zip(weights, values))
+
+
+class TestPathRows:
+    """A row may carry its whole forecast curve as exit-horizon tranches
+    (ADR-0188 formulation B). The flat single-period fields stay valid and
+    are the path's first step, so every existing consumer of a bundle row
+    is unaffected; the path outputs ride beside them."""
+
+    def test_a_path_tick_assembles_with_the_flat_contract_intact(self):
+        from intraday_equities.nodes_capital import _bundle_problems
+
+        bundle = _bundle([_path_row("AAPL"), _path_row("MSFT")])
+        assert bundle.has_paths is True
+        assert _bundle_problems(bundle.rows) == []
+        for out in bundle.rows:
+            assert out["lead"] == 1
+            assert out["mu_gross"] == pytest.approx(gross_return(0.5, 0.0012, 1))
+            assert "yhat_path" not in out  # label units are consumed, never re-offered
+
+    def test_expected_returns_follow_the_admitted_heads_then_go_flat(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        path = out["mu_gross_path"]
+        assert len(path) == 4
+        assert path[0] == pytest.approx(gross_return(0.5, 0.0012, 1))
+        assert path[1] == pytest.approx(gross_return(0.8, 0.0012, 2))
+        # Zero expected increment past the admitted cap (owner ruling B(a)):
+        # the unadmitted heads' predictions are never used.
+        assert path[2] == path[1]
+        assert path[3] == path[1]
+
+    def test_every_step_is_recentered_to_its_own_false_signal_haircut(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        for k in range(4):
+            haircut = 1.0 - out["pi_hat_path"][k]
+            assert _weighted_mean(out["weights"], out["scenarios_path"][k]) == pytest.approx(
+                haircut * out["mu_gross_path"][k]
+            )
+
+    def test_dispersion_keeps_growing_past_the_cap(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        spreads = [max(step) - min(step) for step in out["scenarios_path"]]
+        assert spreads[1] < spreads[2] < spreads[3]
+
+    def test_the_calibrated_rates_carry_forward_past_the_cap(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        assert out["admitted_horizon"] == 2
+        assert out["plan_horizon"] == 3
+        assert out["pi_hat_path"] == [0.10, 0.15, 0.15, 0.15]
+        assert out["pi_widened_path"] == [0.20, 0.30, 0.30, 0.30]
+
+    def test_the_flat_fields_of_a_path_row_are_its_first_step(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        assert out["mu_gross"] == out["mu_gross_path"][0]
+        assert out["scenarios"] == out["scenarios_path"][0]
+        assert out["pi_hat"] == out["pi_hat_path"][0]
+        assert out["pi_widened"] == out["pi_widened_path"][0]
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("lead", 2),
+            ("yhat", 0.6),
+            ("pi_hat", 0.05),
+            ("pi_widened", 0.25),
+            ("scenarios", [-0.5, 0.1, 0.8]),
+        ],
+    )
+    def test_a_flat_field_that_disagrees_with_step_one_refuses(self, field, value):
+        with pytest.raises(ValueError, match=field):
+            _bundle([_path_row("AAPL", **{field: value})])
+
+    def test_a_partial_path_row_refuses_naming_the_absent_fields(self):
+        bad = _path_row("AAPL")
+        del bad["plan_horizon"]
+        with pytest.raises(ValueError, match="plan_horizon"):
+            _bundle([bad])
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"admitted_horizon": 5},
+            {"admitted_horizon": 0},
+            {"admitted_horizon": True},
+            {"plan_horizon": 0},
+            {"plan_horizon": 5},
+            {"plan_horizon": 2.0},
+            {"pi_hat_path": [0.10]},
+            {"pi_widened_path": [0.20, 0.30, 0.30]},
+            {"pi_hat_path": [0.10, 1.5]},
+            {"scenarios_path": [list(step) for step in PATH_SCENARIOS[:3]]},
+            {"scenarios_path": [[-0.4, 0.0, 0.9], [-0.5, 0.1], [-0.6, 0.2, 0.7], [-0.7, 0.3, 0.6]]},
+            {"scenarios_path": [[-0.4, 0.0, 0.9], [-0.5, float("nan"), 0.8], [-0.6, 0.2, 0.7], [-0.7, 0.3, 0.6]]},
+            {"yhat_path": [0.5, float("inf"), 0.9, 1.0]},
+            {"yhat_path": [], "scenarios_path": []},
+            {"yhat_path": [0.5] * 11, "scenarios_path": [[-0.4, 0.0, 0.9]] * 11},
+        ],
+    )
+    def test_a_malformed_path_refuses_by_entity(self, overrides):
+        with pytest.raises(ValueError, match="AAPL"):
+            _bundle([_path_row("AAPL", **overrides)])
+
+    def test_pi_hat_path_above_pi_widened_path_refuses(self):
+        with pytest.raises(ValueError, match="pi_hat_path"):
+            _bundle([_path_row("AAPL", pi_hat_path=[0.10, 0.35])])
+
+    def test_a_step_whose_recentered_returns_reach_minus_one_refuses(self):
+        # One enormous positive residual at step 3 drags the recentering
+        # shift below -1 for the other draws: the existing rule, per step.
+        bad = _path_row(
+            "AAPL",
+            scenarios_path=[[-0.4, 0.0, 0.9], [-0.5, 0.1, 0.8], [0.0, 0.0, 8000.0], [-0.7, 0.3, 0.6]],
+        )
+        with pytest.raises(ValueError, match="greater than -1"):
+            _bundle([bad])
+
+    def test_a_tick_mixing_path_and_flat_rows_refuses(self):
+        with pytest.raises(ValueError, match="path"):
+            _bundle([_path_row("AAPL"), _input_row("MSFT", lead=1)])
+
+    def test_a_flat_tick_carries_no_path_outputs(self):
+        bundle = _bundle()
+        assert bundle.has_paths is False
+        for out in bundle.rows:
+            assert not {"mu_gross_path", "scenarios_path", "admitted_horizon"} & set(out)
+
+    def test_the_path_field_names_are_disjoint_from_the_flat_contract(self):
+        from intraday_equities.forecast_bundle import (
+            _INPUT_FIELDS,
+            _PATH_FIELDS,
+            WITHDRAWN_FIELD_ALIASES,
+        )
+
+        assert _PATH_FIELDS & _INPUT_FIELDS == frozenset()
+        assert _PATH_FIELDS & set(WITHDRAWN_FIELD_ALIASES) == frozenset()
+        assert _PATH_FIELDS == frozenset(
+            (
+                "admitted_horizon",
+                "plan_horizon",
+                "yhat_path",
+                "pi_hat_path",
+                "pi_widened_path",
+                "scenarios_path",
+            )
+        )
