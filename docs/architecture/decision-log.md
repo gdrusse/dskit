@@ -24168,7 +24168,9 @@ New facts, checked on the pinned archive files on 2026-09-25:
    (weeklies), 2019 has 18, and 2023 onward lists daily expiries. Short
    buckets exist only in later years.
 9. In SPY 2008, about 89% of rows have `bid_size` and `ask_size` equal to 0
-   (sizes were not recorded). Later years have about 5%.
+   (sizes were not recorded). From 2012 on, a zero `ask_size` is under
+   0.3% of rows, while a zero `bid_size` is 4-12%: far strikes with no
+   bid.
 10. QQQ lists adjusted-deliverable contracts under root `QQQ` with off-grid
     strikes (34.63 in 2015, 129.78 in 2025).
 11. A chain read parses every line. Raw gunzip plus JSON decoding measured
@@ -24300,11 +24302,15 @@ quote or backtest engine.
       `bid`, `ask`, `bid_size`, `ask_size`, `iv` and `underlying_price`.
 4. **`contracts.py`.** New module functions; `DefinedRiskCondor`'s
    behavior does not change, and its existing tests pin that.
-   a. `quote_problems(bid, ask, bid_size, ask_size, count)` and
+   a. `quote_problems(bid, ask, bid_size, ask_size, count, side=None)` and
       `condor_credit(...)` carry the existing rules: quotes are nonnegative
       and uncrossed, sizes are at least `count`, long legs pay the ask,
       short legs receive the bid, and 0 < credit < the narrower wing.
-      `DefinedRiskCondor` calls them.
+      `DefinedRiskCondor` calls them with `side=None`, which checks both
+      sizes exactly as today. `side="sell"` or `"buy"` checks the size on
+      the side traded, and needs that side's price > 0 (see *Quotable*).
+      Requiring a bid size on a long wing would reject the no-bid far
+      strikes wings are bought at (fact 9).
    b. `american_short_charge(...)`, defined under *American exercise*.
    The synthetic-only row classes are untouched; real rows never pass
    through them.
@@ -24373,10 +24379,12 @@ instrument's in-split forecast rows, oldest first.
      listed strikes on the right side of its target all fail the quote
      rules is counted as `no_quotable_strike` (e.g. fact 9's zero sizes). A
      geometry that is not strictly increasing is `degenerate_strikes`.
-   - "Quotable" means `quote_problems` passes, plus a side rule: a short
-     leg needs bid > 0 and a long leg needs ask > 0. A provider 0 on the
-     side we trade means no market (ADR-0182 review), and a free long wing
-     would inflate the credit.
+   - *Quotable* means `quote_problems` passes for the traded side: a short
+     leg (`side="sell"`) needs bid > 0 and `bid_size` >= 1; a long leg
+     (`side="buy"`) needs ask > 0 and `ask_size` >= 1. Both need a
+     nonnegative, uncrossed quote. A provider 0 on the side we trade means
+     no market (ADR-0182 review), and a free long wing would inflate the
+     credit.
 4. **Implied book.** It keeps today's formula with the chain's vol in place
    of VIX. The ATM iv is the mean of the call and put `iv` at the quotable
    strike nearest S on that expiry, and s = iv sqrt(DTE / 365). Without an
@@ -24387,10 +24395,17 @@ instrument's in-split forecast rows, oldest first.
 6. **Model book gate.** The expected P&L under the forecast draws, scaled by
    s', at these quotes and net of fees, must exceed `min_edge_usd`.
 7. **Settlement.** S_T is the underlying close of the last row dated on or
-   before `settle_date`, which covers Saturday and holiday expiries.
+   before `settle_date`, which covers Saturday and holiday expiries. That
+   row is valid only when both of these hold:
+   - it lies at most 4 calendar days before `settle_date`. That covers
+     every closure in 2008-2025; the longest is Hurricane Sandy
+     (2012-10-29/30), which puts Tuesday 4 days after Friday;
+   - the series has a row dated after `settle_date`, so it was not cut
+     off before the expiry.
+   Otherwise the entry is `unsettled` and never traded. The archive ends
+   2025-12-12/15, so a late-2025 entry cannot settle at a stale close.
    P&L = credit_usd + multiplier x `condor_payoff(S_T, strikes)` - the
-   American charge. An entry with no settlement close is `unsettled` and is
-   never traded.
+   American charge.
 
 The report is kind `archived_quote_condor_backtest` with pricing
 `archived_eod_quotes`, and `decision_eligible` is false. Metrics stay flat
@@ -24412,9 +24427,10 @@ produce, so the walk records the fold and runs on. Tests cover both
 refusals and a fold with forecast rows but no qualifying expiry.
 Acceptance adds a cell-level check: a cell that enters no trade in any
 fold fails. A fold that enters nothing passes only when every skip in it
-has a data-coverage reason: `no_chain`, `no_expiry_in_bucket` or
-`no_quotable_strike`. Those are what the pre-weekly years and 2008's
-unrecorded sizes (fact 9, owner question 3) produce. Any other reason
+has a data-coverage reason: `no_chain`, `no_expiry_in_bucket`,
+`no_quotable_strike` or `unsettled`. Those are what the pre-weekly years,
+2008's unrecorded sizes (fact 9, owner question 3) and the archive's end
+produce. Any other reason
 fails the fold. The report carries each cell's first and last chain date
 and the per-fold reason counts, so the check is mechanical.
 
@@ -24534,13 +24550,16 @@ the build stops and reports to the owner.
     - the nearest expiry within the bucket, and none (counted);
     - outward snapping to quotable strikes;
     - a 0-bid short leg and a long leg with no ask;
+    - a long wing with `bid_size` 0 stays quotable, while
+      `DefinedRiskCondor`'s both-sides size check is unchanged;
     - a listed expiry whose strikes all carry zero sizes, which counts as
       `no_quotable_strike` and gives a recorded zero-trade fold;
     - the credit bounds.
   - Settlement:
     - on the last session at or before expiry, for a Saturday expiry and a
       holiday Friday;
-    - `unsettled`;
+    - `unsettled` when the series ends before `settle_date`, or its last
+      row before it is more than 4 days back;
     - no overlap between positions;
     - the sqrt(n / h_b) rescale.
   - The implied book from the chain's iv, and the model gate.
