@@ -26170,3 +26170,41 @@ persistent producer fault loud (a session of refused minutes aborts);
 refused by name unless finite and `>= 0` (T51), and T48 holds
 `buying_power0` fixed; T49 asserts the absence of plan components through
 the suite's `Spy` pattern; two citation ranges narrowed.
+
+| Round | Candidate | Lens | Result | Majors |
+|---|---|---|---|---|
+| 11 | `710317d` | correctness/authority (Sonnet) | C0 M0 m2 n0; both round-10 Majors verified fixed; ~35 citations checked | none |
+| 11 | `710317d` | tests/integration (Sonnet) | C0 M0 m3 n1; every round-10 item verified fixed | none |
+
+**Lock (2026-09-26).** Candidate `710317d` is locked: two independent
+lenses report zero unresolved Critical or Major. The Decision text is the
+one reviewed; this paragraph and the backlog below are appended evidence.
+The lock is design evidence, not owner approval: nothing is built until
+Russell rules on questions A-L.
+
+**Minor and Nit backlog, deferred to the build (recorded, not applied):**
+
+- The parenthetical "the same guard its neighbours carry" for
+  `carried_wealth` overstates the precedent: `cash_reserve` and
+  `gross_limit` are checked for finiteness only (`pyomo.py:1080-1100`); the
+  `>= 0` requirement is an additional guard because the field is a wealth
+  value. T51 already specifies the intended check.
+- T50 names no location or exact trigger. Intended at build: the check
+  lives in `MinuteDevelopmentSimulation` (`simulation.py:1855+`), which
+  owns the per-date closes and the decider's `refused` rows; after each
+  session it raises `ConfigError` when every decision minute of that date
+  was a `mio_refused` row with a producer-fault code, and the replay's
+  fault path (`replay.py:1754-1762`) propagates it. A session with a mix
+  of refused and traded minutes continues, its refusals counted by the
+  report; a rate-based breaker is a build-time question.
+- The whole-book last-decision tick (every name's fill bar is the
+  session's last bar at the same minute): `H = max_i K_i(t)` over zero live
+  names resolves through the existing empty-gate shortcut
+  (`instruments`'s `if not names`, exercised by
+  `test_empty_bundle_and_no_position_deploys_zero_without_solving`,
+  `tests/test_nodes_capital.py:368`); one sentence and a named test
+  belong beside T30.
+- Citation precision: `tests/pipeline_libs/test_pyomo.py:743-751` (the
+  assertion lines, not 743-748); child test files cited without the
+  `children/intraday_equities/` qualifier in several places (only the
+  child copies exist repo-wide, so no reader is misdirected).
