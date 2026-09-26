@@ -1807,6 +1807,48 @@ def test_minute_publisher_reads_trade_rows_without_y(mfx, monkeypatch):
     assert trade and all(cols is not None and "y" not in cols for cols in trade)
 
 
+def test_minute_decider_leaves_out_a_name_with_no_tick_at_that_minute(mfx, monkeypatch):
+    seen = []
+    real = EquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        seen.append(sorted(row["entity"] for row in inputs["bundle"]))
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(EquityKellyMIO, "run", spy)
+    published = json.loads(json.dumps(_mrun(mfx)))
+    t = _open(published["releases"][0]) + 11 * 60_000
+    block = next(b for b in published["ticks"] if b["symbol"] == "LLY")
+    k = block["ts"].index(t)
+    for column in ("ts", "price", "yhat", "sigma", "beta"):
+        del block[column][k]
+    decider = _minute_decider(published, mfx)
+    decider.decide(t, _mbook(mfx, t))
+    # LLY printed no tick at t: it is simply not a candidate there -- not skipped, not sized.
+    assert seen == [["NOW"], ["LRCX"]]
+    assert decider.skipped == []
+
+
+def test_minute_publisher_refuses_trade_rows_out_of_time_order(mfx):
+    def shuffled(i, n, lead, stamps, yhat):
+        if (i, n, lead) != (2, "LRCX", 2):
+            return stamps, yhat
+        return [stamps[1], stamps[0], *stamps[2:]], [yhat[1], yhat[0], *yhat[2:]]
+
+    _write_trade(mfx, shuffled)
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="time-ordered"):
+        _mrun(mfx)
+
+
+def test_minute_publisher_refuses_an_unpinned_trade_file_in_a_fold(mfx):
+    extra = os.path.join(mfx["runs"][1], "artifacts", "scan_extra")
+    with PredictionWriter(extra, list(NAMES), filename=TRADE_PREDICTIONS_FILE) as writer:
+        writer.append("LLY", 2, [1], [float("nan")], [0.1], float("nan"))
+    with pytest.raises(ValueError, match="trade prediction inventory drifted"):
+        _mrun(mfx)
+
+
 def test_minute_decider_solves_at_a_minute_off_the_lattice(mfx):
     published = _mrun(mfx)
     decider = _minute_decider(published, mfx)
@@ -2142,11 +2184,13 @@ def test_a_lot_open_at_the_evidence_end_stays_marked_and_is_listed(msim7, monkey
     assert last["nav_close"] == pytest.approx(last["cash_close"] + lly_close)
 
 
-def test_minute_simulate_refuses_a_bar_close_that_disagrees_with_the_tick_price(msim7):
+@pytest.mark.parametrize("which", [0, -1], ids=["first-minute", "last-minute"])
+def test_minute_simulate_refuses_a_bar_close_that_disagrees_with_the_tick_price(msim7, which):
     from intraday_equities.simulation import MinuteDevelopmentSimulation
 
     fx, published = msim7["fx"], msim7["published"]
-    target = next(b for b in msim7["bars"] if b["symbol"] == "LRCX")
+    end = published["releases"][0]["segment_end_ms"]
+    target = [b for b in msim7["bars"] if b["symbol"] == "LRCX" and b["asof_ms"] < end][which]
     bars = [{**b, "close": b["close"] * 1.01} if b is target else b for b in msim7["bars"]]
     with pytest.raises(ConfigError, match="disagrees"):
         MinuteDevelopmentSimulation("simulate", _sim_params()).run(

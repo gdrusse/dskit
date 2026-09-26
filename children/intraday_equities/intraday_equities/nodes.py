@@ -1647,7 +1647,7 @@ def _row_window_problems(window):
         or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in window)
         or window[0] >= window[1]
     ):
-        return [f"row_window must be [start_ms, end_ms] ints with 0 <= start < end, got {window!r}"]
+        return [f"row_window must be two ints [start_ms, end_ms) with 0 <= start < end, got {window!r}"]
     return []
 
 

@@ -24349,3 +24349,16 @@ Round 2 ran on `4e899b1`. The correctness lens found 0 Critical, 0 Major and
 hardcoded the one-minute fill delay instead of reading `fill_bar_offset`,
 and a test now runs it at offset 2. The fix changed code, so both lenses
 re-run on the next candidate.
+
+Round 3 ran on `44369e1`. Correctness found C0/M0/m0/N0. Tests and
+integration ran 15 mutants: 10 were killed, 4 survived as real gaps and 1
+survived as an equivalent mutant. It found 1 Major, 4 Minor and 2 Nit, all
+fixed, with tests only except one error message:
+
+- **Major:** no decider test had a lead-group member with no tick at the
+  decision minute. A new test covers it.
+- **Minor:** tests were added for an unpinned extra trade file, for trade
+  rows out of time order, and for a price disagreement at a block's last
+  minute.
+- **Nit:** a test for the carried-lot collision refusal, and the
+  `row_window` message now says half-open.

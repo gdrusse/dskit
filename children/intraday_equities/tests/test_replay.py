@@ -2473,5 +2473,13 @@ def test_a_carried_lot_on_a_name_the_tape_lacks_refuses():
         EquityReplay(_policy(), carried_lots=[lot], carry_lots=True).run([_bar("AAA", _m(0), 1.0, 1.0)])
 
 
+def test_a_carried_lot_colliding_with_another_carried_lot_refuses():
+    lot = {"symbol": "AAA", "lead": 2, "qty": 1, "side": "buy", "exit_in": 1}
+    with pytest.raises(ConfigError, match="collides"):
+        EquityReplay(_policy(), carried_lots=[lot, dict(lot)], carry_lots=True).run(
+            [_bar("AAA", _m(i), 1.0, 1.0) for i in range(3)]
+        )
+
+
 def _zero_fee():
     return _policy({"half_spread_bps": {}, "default_half_spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0})
