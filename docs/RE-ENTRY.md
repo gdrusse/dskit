@@ -1,5 +1,31 @@
 # Re-entry
 
+## Wrap 2026-09-26: retrain backtest stopped; the MIO must solve all horizons jointly
+
+**Status.**
+- **Owner stop:** the full retrain backtest (`run-retrain-simulation.json`, per-minute, main `5f82644`) was stopped by the owner at 08:13 ET on 2026-09-26, partway through `simulate`.
+- **Stages completed:** calendar, memory, trade_memory, hpo_document, hpo, winners, walk_document, walk, inventory and gates are complete. Their journal rows are A54556–A54576; the run dir is `pipeline_runs/retrain-simulation-staged-2026-02-28-4bfcaaea`.
+- **Gates:** 12 of 25 units admitted: ADBE 5, CIEN 2, IWM 2, LITE 5, LLY 2, LRCX 10, LULU 5, MSTR 9, NOW 5, PANW 5, TER 5, XLK 5.
+- **Speed:** about 150 MIO solves per minute (about 0.4 s per solve) over the first ~26k solves. That is inside the plan's 10 s per-tick budget. No simulate output was written, because the run keeps its ledger in memory until the end.
+
+**Why it was stopped (owner ruling, 2026-09-26).**
+- **The deviation:** each tick solves one MIO *per lead group* (2/5/9/10 min), in ascending lead order on shared cash. This is ADR-0184's choice: `ForecastBundle` and `EquityKellyMIO` refuse mixed leads.
+- **What the plan says:** "normalize **or** separate incompatible holding horizons before they enter one scenario set" (§7). §3 also scores each candidate over its "normalized horizon".
+- **The ruling:** one joint solve per minute across all admitted names and horizons. The optimizer must be able to mix horizons. No normalization exists anywhere in dskit or pmquant (swept 2026-09-26).
+- **Wider rule:** the owner also ruled that any simulation shortcut against the plan must be raised with him explicitly, not only disclosed in an ADR. The 30-minute decision lattice was the first such case, fixed by ADR-0186.
+
+**Next bounded action.**
+- **Design:** write an ADR for a normalized joint MIO. For example, each scenario row is wealth at a common horizon H = the tick's longest admitted lead; a lot with lead L < H returns its L-minute scenario and then sits in cash. Relax `ForecastBundle`/`EquityKellyMIO`'s single-lead refusals only through that normalization.
+- **Build:** TDD, then the two-lens skeptic loop, then land.
+- **Rerun:** rerun the backtest. The template will change, so expect fresh stages.
+- **Report:** run the evaluator on the output.
+
+**Pending owner decisions.**
+- ADR-0187, the multi-horizon SPY/QQQ/IWM options study, is PROPOSED and unmerged, on branch `claude/multi-horizon-options-adr`. It has six owner questions.
+- EQ = 0.25 is a proxy. Replace it with Schwab's own Rule 605 figure once published.
+
+**Data landed today.** The SPY/QQQ/IWM EOD option archive is in `~/data/index_options/ob`: 53,407,120 rows, verified clean.
+
 ## Retrain backtest unblocked: trade_memory's memory reading (2026-09-26 bug fix)
 
 - **Bug:** the retrain staged run died 15 s in at `trade_memory` (journal
