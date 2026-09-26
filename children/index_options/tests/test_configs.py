@@ -167,6 +167,9 @@ def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     for relpath in files:
         assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
     assert grid.write_grid(child_root / "configs", tmp_path) == written  # regenerating in place
+    nested = tmp_path / "a" / "b"  # missing parents are created
+    assert sorted(grid.write_grid(child_root / "configs", nested)) == sorted(files)
+    assert (nested / "grid" / "spy-30-45.json").exists()
 
 
 def _knob_numbers(obj, out):
