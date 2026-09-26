@@ -1,5 +1,27 @@
 # Re-entry
 
+## Retrain backtest unblocked: trade_memory's memory reading (2026-09-26 bug fix)
+
+- **Bug:** the retrain staged run died 15 s in at `trade_memory` (journal
+  A54559). `memory` had already measured a child in the same process, so
+  `measure_one`'s `RUSAGE_CHILDREN` guard refused the second reading
+  (ADR-0093's first-child precondition, broken by ADR-0186).
+- **Fix** (`9b41824`, ADR-0093 amendment): `measure_one` reads the peak in a
+  fresh `python -I` wrapper whose only child is exactly what `run` spawns.
+  The wrapper keeps the zero-counter guard. Same meaning, no order
+  precondition; `spawn` still gets the fold's own argv.
+- **Evidence:** 4 RED tests on f9aefba (two readings in one process, the
+  memory+trade_memory pair through the real seam). Focused tests: dskit 154,
+  child 517 passed. Scratch e2e (calendar, memory, trade_memory; trade group d
+  only): all passed, trade cache peak 4.90 GB.
+- **Reviews:** Sonnet correctness lens and Sonnet test-quality lens (8
+  mutants, all killed) were both clean: 0 Critical/Major.
+- **Backlog:** Minor: the wrapper guard surfaces as RuntimeError, and the
+  uncapped `.args` is the wrapper command. Nit: the ADR is silent on that
+  exception type; a stale "one reading per process" comment remains at
+  test_modelability_study.py:493.
+- **Next:** rerun the full retrain backtest from main.
+
 ## Time-of-day spread multiplier keyed on the fill minute (2026-09-26 wrap)
 
 - **Change** (owner ruling 2026-09-25, option B; ADR-0185 owner amendment 4,
