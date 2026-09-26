@@ -44,9 +44,14 @@
   mutants; 231 survived the round-5 tests; every survivor now killed by a
   fixture or adjudicated equivalent, 108 in named classes, in the ADR
   record). The batch is on the branch as tests-only commits (production
-  blobs and all 27 identity hashes unchanged since `00f0579`; child 534
-  passed). Next: the independent checkpoint review of the sweep and its
-  adjudication, then two fresh lenses (round 6). The ADR-0187 build record
+  blobs and all 27 identity hashes unchanged since `00f0579`). The
+  independent checkpoint re-ran the sweep, audited the generator's gaps
+  with 83 catalogue mutants of its own, probed every equivalence class
+  (five arguments failed), found one more test-only Major (one expiry
+  quoted on two dates) and AUTHORIZED resumption; its eight fixtures
+  landed as `e8b0e7f` (child 541 passed), the round-6 candidate. Next:
+  two fresh lenses on `e8b0e7f`; a further Critical/Major reconvenes the
+  checkpoint before any fixture. The ADR-0187 build record
   carries every round and the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
   entry settling at its own close, the fresh-object guard bypassable by an
   in-place-mutating projection, a store-token race, non-reader inputs

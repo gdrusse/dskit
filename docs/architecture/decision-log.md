@@ -25415,4 +25415,63 @@ production blobs and all 27 identity hashes those of `00f0579`. The
 sweep's tool, results and adjudication are session scratch, re-runnable
 by the checkpoint and the tests lens.
 
-The independent checkpoint review and round 6 are recorded below.
+*Second checkpoint review (independent; on `6b575d9`, tests, with
+`12156f2` docs on top).* Tooling verified (pristine package equal to the
+worktree's, the unparsed modules AST-identical to the source, baselines
+green with import proofs) and the whole sweep re-run: 1,843 mutants,
+1,733 killed, 108 surviving id-for-id as recorded, 2 non-terminating.
+The operator audit named the classes the generator does not emit and
+ran 83 hand-written mutants of them (chained-comparison single-operator
+swaps, guard deletion, all/any, sum to max/len/first, argument swaps,
+latching and placement, dict keys outside the vocabulary, statement
+reordering, elif to if, sort keys, math builtins, metric substitutes,
+memo keys, membership versus None, the traded side): 67 killed, 16
+survived, four of them findings. Probing every "equivalent" class
+(pristine versus mutant on a reachable input, import proof on both)
+confirmed twelve of seventeen and failed five. Verdict C0 M1 m7 n4, the
+Major of the reviewed family in a class the generator does not emit: no
+fixture quotes one OCC expiry on two dates within a scan, so a reader
+memo keyed by the expiry instead of the quote time survives, although
+every archive expiry is quoted daily (each later row would carry the
+first date and an overstated DTE). Minors: a book's American charge
+pinned only where sum, max and first coincide; `short_q` of exactly 0
+accepted and crashing at run; the settlement gap measured from the OCC
+expiry rather than the settle date survives (a Saturday expiry with a
+four-day closure separates it — the "weekday" adjudication was wrong for
+`_settlement`); the ATM check's size swap survives a `None` size on one
+side (the "symmetric" adjudication was wrong); a non-numeric
+`cvar_alpha` raises TypeError under the swapped guard (the "redundant"
+adjudication was wrong for that line); the index reader accepts an empty
+symbol (no later check refuses it — the "redundant" adjudication was
+wrong, and the line is pre-existing on main); a one-row expiry indexed at
+`[1]` raises instead of `no_quotable_strike` (the "rows" adjudication
+was wrong for `[1]`). Nits: the first pass of the nodes.py sweep ran on
+parallel copies whose import path the runner then failed to recognise
+(the kills are self-proving and the re-sweep proves all 1,843); 80
+intermediate kills were never re-run after two tests were rewritten (the
+re-sweep shows all 80 still die); the record's list of generator gaps
+was overstated; a few more catalogue survivors are labels, logs and
+statement order of no consequence. Hand recomputation of every batch
+value agreed. AUTHORIZED to resume on conditions: (1) one more tests-only
+commit with its eight fixtures, production and configs unchanged, the
+child suite green — landed as `e8b0e7f` (541 passed): one expiry quoted
+on two dates keeps each row's own date and DTE; the charge summed over
+two trades with different nonzero charges; `short_q` 0 and a non-numeric
+`cvar_alpha` refused as config errors; the gap measured from the settle
+date; an unusable size on either side disqualifying an ATM pair; a
+one-row expiry counted as `no_quotable_strike`; the index reader refusing
+an empty symbol — which kills the seven generated survivors above and
+its own P1, D1, D1b and A1, leaving 101 generated and 12 catalogue
+survivors, every one with a probe; (2) this record corrected as above;
+(3) `e8b0e7f` is the round-6 candidate: two fresh lenses, the tests lens
+re-running the generated sweep and the checkpoint's catalogue, probes,
+fixtures and hand values with import proofs; (4) any change to code or
+tests is a new candidate resetting both lenses, and a further
+Critical/Major from round 6 is not patched author-side — the checkpoint
+reconvenes and the operator class that produced it enters the catalogue
+first; (5) every "equivalent" adjudication carries a probe script; (6)
+the proxy's 39 survivors and the empty-symbol line are pre-existing on
+origin/main and outside this ADR (backlog: pin the proxy's bid/ask
+credit rule, gate and defaults in its own suite).
+
+Round 6 (two fresh lenses on `e8b0e7f`) is recorded below.
