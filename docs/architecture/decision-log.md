@@ -24387,3 +24387,20 @@ author-side mutation sweep over that inventory before the next review.
   pending side.
 - **Author mutation sweep:** 19 mutants, all killed. The file is
   `~/mc-measure/mutate.py`, outside the repo.
+
+Round 5 ran on `fa877bd` and closed the candidate. Correctness found 0
+Critical, 0 Major and 1 Minor. Tests and integration ran 20 new mutants: 17
+were killed and 3 survived, each unreachable or equivalent. It found 0
+Critical, 0 Major, 2 Minor and 1 Nit. Both lenses report zero unresolved
+Critical and Major, so the candidate is locked at `fa877bd`. Checks passed:
+the focused child suites (1 known base failure,
+`test_pooled_materializer_emits_four_valid_shared_fit_documents`, a missing
+local artifact), the dskit pipeline tests named in the wrap, and ruff (the
+1 remaining error is on the base). Recorded Minor backlog, deferred:
+
+- a carried lot on a name with no bar at all in the next release aborts the
+  run (fail-loud; untested through the simulation);
+- `MinuteWalkCandidate._checked_trade_caches` does not test its key order or
+  an equal-bounds `row_window` (unreachable with the shipped stages);
+- the NaN clause in `_refuse_trade_drift` is dead, because `_frame_matrix`
+  already drops non-finite rows (Nit).
