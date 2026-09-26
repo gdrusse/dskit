@@ -24093,3 +24093,466 @@ bundle. TAF and Section 31 are unchanged.
   (was `643c3bd2...`). Earlier ADR-0184/0185 results were
   produced under the flat 2.2 bp and EQ 1 cost, and are not comparable
   without a rerun.
+
+## ADR-0186 — Multi-horizon, multi-underlying condor backtest on archived ETF option quotes
+
+**Status:** PROPOSED (2026-09-25). Design only: no code, config or test is
+built. Nothing lands until Russell approves this ADR; a clean skeptic review
+is not approval.
+**Owner:** Russell. **Base:** `0ca56a8`. **Branch:**
+`claude/multi-horizon-options-adr`.
+
+**Owner direction (2026-09-25).** Move `children/index_options` from one
+index (SPX) at one horizon priced by the VIX proxy to many underlyings at
+the horizons 1, 2-3, 5, 7-10, 14, 21 and 30-45 days to expiry, with no
+0DTE, using real archived bid/ask. Underlyings are whatever the data
+covers. "We should be able to simply build on what we have." "DONT GO OUT
+OF SCOPE."
+
+**Context.** The sweep covered `tools/sweep/sweep` on every new name below,
+plus git grep over `origin/main`, every branch and every worktree. It found
+no multi-horizon, quote-backtest or early-assignment code anywhere. The
+nearest matches are `QuoteRows` (synthetic fixture quotes) and
+`CondorBacktest` (VIX proxy). This ADR extends both rather than copying
+them.
+
+What exists and is reused:
+
+- **Data.** Source `optionshist-chain` (ADR-0182 amendment, `0ca56a8`) holds
+  53.4M end-of-day contract rows in the Cboe `option_chain` shape: SPY
+  2008-2025, QQQ 2011-2025 and IWM 2008-2025. `quote_time` is the 16:00 ET
+  close, and `underlying_price` is the pinned archive close. The ingest is
+  in progress (cursor 2022-07-12 at the time of writing). `cboe-index-wide`
+  carries VIX, VXN and RVX daily. The wide recorder (20 underlyings, since
+  2026-09-25) has no settled expiry yet.
+- **Nodes.** `IndexCloseRows`, `KeyBy` and `Join`; `RealizedVolFeatures`,
+  `HorizonLogReturn` and `ForwardRealizedVol` (all per `instrument` group);
+  the ADR-0181 rungs; `ScoreDistributions`, `CondorDistributionReport` and
+  `CondorBacktest`; `condor_payoff`/`leg_intrinsic` and
+  `lower_tail_mean`/`max_drawdown`; walk-forward; `BenchmarkPlan` groups;
+  `Concat` and `Filter`.
+- **Intake bounds.** `scan_stream` already bounds a read at intake
+  (`keep_values`, `admit`), but `ObservationRows` does not forward either.
+
+The internal sweep's list, re-checked on `0ca56a8`:
+
+1. `IndexCloseRows` takes one `symbol` (`observations.py:293`). True.
+2. `Join` and `KeyBy` take one key field. True.
+3. `CondorBacktest` pins `FORWARD_FIELD = "close"`, `IV_FIELD = "iv_index"`
+   and a single `strike_increment` and `multiplier` (`nodes.py:435-441`).
+   It prices through `VolIndexSmileQuotes` and settles at
+   `close x exp(label)`. True: it cannot read a quote.
+4. 21 is hard-coded in every `run-real-*.json`: the `labels` and `fwd`
+   horizon, `hold_steps`, `scale_multiplier` = sqrt(21), and the 35-day
+   embargo derived from it. True.
+5. Labels (`group_field` `instrument`), `Concat`, `Filter` and
+   `BenchmarkPlan` groups already generalize. True.
+
+New facts, checked on the pinned archive files on 2026-09-25:
+
+6. `underlying_prices.parquet` `close` is RAW: SPY closed at 239.85 on
+   2020-03-16. Raw prices are the strike basis. SPY and QQQ carry
+   `dividend_amount` on each ex-date (71 and 73 in 2008-2025) and a
+   `split_coefficient`. IWM's dividend, split and adjusted columns are
+   entirely null. The raw series holds QQQ's 2:1 split on 2000-03-20
+   (flagged) and IWM's 2:1 split on 2005-06-09 (not flagged). The pack
+   reads only `close`.
+7. Before 2015-02, standard monthly options carry a SATURDAY OCC expiry
+   (e.g. SPY `2008-07-19`); their last session is the Friday.
+8. Listed expiries within 50 days: SPY 2008 has 2, 2012 has 3, 2016 has 7
+   (weeklies), 2019 has 18, and 2023 onward lists daily expiries. Short
+   buckets exist only in later years.
+9. In SPY 2008, about 89% of rows have `bid_size` and `ask_size` equal to 0
+   (sizes were not recorded). Later years have about 5%.
+10. QQQ lists adjusted-deliverable contracts under root `QQQ` with off-grid
+    strikes (34.63 in 2015, 129.78 in 2025).
+11. A chain read parses every line. Raw gunzip plus JSON decoding measured
+    5.7 µs per row (643,598 rows in 3.7 s), so a full 53M-row scan takes
+    at least 5 minutes before `scan_stream`'s own work. Walk-forward builds
+    fresh nodes for every fold, so a chain reader rescans once per fold.
+12. Rows per day for a single cell, after the bounds below, stay at or
+    below ~570 (SPY 30-45 in 2025). That is at most ~1.5M rows per cell.
+
+**Decision proposed.**
+
+*Cells and units.* A cell is one (underlying, bucket) pair. Buckets are
+counted in CALENDAR days from the entry session to the expiry's settlement
+date. The settlement date is the last weekday on or before the OCC expiry,
+so a pre-2015 Saturday expiry settles on the Friday. The buckets are {1},
+{2,3}, {5}, {7..10}, {14}, {21} and {30..45}; 0 is excluded. Each bucket
+has a label horizon h_b, the number of sessions its lower bound spans:
+1, 2, 3, 5, 10, 15 and 22 (owner question 1). Each bucket also has a
+log-moneyness band that bounds the chain read: 0.05, 0.07, 0.08, 0.10,
+0.12, 0.15 and 0.20. A too-narrow band shows up in the `outside_band`
+count rather than silently.
+
+*Documents.* Each cell is one walk-forward document per rung. The document
+is the existing `run-real-<rung>.json` with only these changes:
+
+- the underlying reader's `source`, `symbol` and `since_ms`;
+- the vol index (VIX for SPY, VXN for QQQ, RVX for IWM);
+- h_b in `labels` and `fwd`, and `scale_multiplier` = sqrt(h_b);
+- the walk-forward `first`, `count` and `embargo_days`;
+- `backtest`, which becomes `CondorQuoteBacktest`, plus a `chain` node (not
+  for IWM; see *American exercise*).
+
+The rung is `har-vix` only, ADR-0182's frontier pick, giving 21 documents
+(owner question 4). A single-cell document needs neither a multi-symbol
+reader nor a composite key, because every join stays on `date`.
+
+Walk-forward runs yearly validation windows with `step_days` 365 and
+`val_days` 365:
+
+- SPY starts at 2008-01-01 with 18 folds;
+- QQQ starts at 2011-01-01 with 15 folds;
+- IWM starts at 2008-01-01 with 18 folds.
+
+The embargo is `embargo_days` = hi_b + 7, giving 8, 10, 12, 17, 21, 28
+and 52. It covers both the label's reach (h_b sessions, at most
+ceil(1.4 h_b) + 4 days) and the settlement's reach; a test pins both.
+Underlying reads start after the last split: SPY 1999-11-01, QQQ
+2000-03-21 and IWM 2005-07-01.
+
+*dskit: generic, upstream.* This ADR is the "approved upstream proposal"
+the child's rule requires.
+
+1. **`dskit/pipeline/libs/observations.py`, `ObservationRows`.**
+   a. Hooks `keep_values()` and `admit()`, both defaulting to `None`,
+      forwarded to `scan_stream`'s existing intake bounds. No new bound
+      semantics.
+   b. Opt-in snapshot reuse through a class attribute `reuse_snapshot`,
+      default `False`. When a subclass sets it, `_scan` keeps a
+      process-local memo (one entry per class) of the deduplicated,
+      pre-projection records and their digest. The memo key is the class,
+      the canonical params and a store token: every (acquisition dir,
+      stream file, size, mtime_ns) under the stream. Any change to the
+      token forces a rescan.
+   c. `project` still runs per instance, and a reusing subclass must
+      return fresh objects from it (tested), so no downstream node can
+      mutate the memo.
+   d. The reason is fact 11: without reuse, an 18-fold cell parses the
+      archive 18 times (owner question 5).
+   Tests go in `tests/pipeline_libs/test_observations.py`.
+2. **`dskit/onboarding/libs/optionshist.py`, a second stream
+   `index_daily`.** It reads the already-pinned `underlying_prices.parquet`
+   and emits one row per (symbol, date).
+   - Fields: the imported Cboe `INDEX_FIELDS`, plus `dividend_amount` and
+     `split_coefficient` (`None` where the archive has null).
+   - `effective_date` is the date, the cursor is the maximum date, and
+     `max_days` does not apply (at most ~6.6K rows per ticker).
+   - Nothing else changes: no new knob, pin or source config. The existing
+     `optionshist-chain` source gains `acquire --stream index_daily`.
+   Tests go in `tests/onboarding/test_optionshist.py`.
+
+Not proposed: a multi-symbol reader, a composite join key, or a generic
+quote or backtest engine.
+
+*Child `index_options`.*
+
+3. **`observations.py`.**
+   a. `IndexCloseRows` copies `dividend_amount` when a row carries it. Cboe
+      rows do not, so SPX and VIX output is unchanged. It refuses a row
+      whose `split_coefficient` is present and not 1.
+   b. New `ChainQuoteRows(ObservationRows)`, forbidden for serving, with
+      `reuse_snapshot = True`. The child's "do not add readers" rule is
+      lifted for this one subclass, as ADR-0182 did for `IndexCloseRows`. It reads stream `option_chain` with key
+      `(option, quote_time)` and timestamp `quote_time`. Its params are
+      `root`, `source`, `symbol`, `dte_min`, `dte_max`,
+      `max_abs_log_moneyness`, and the parent's `since_ms` and
+      `as_of_acquisition_ms`.
+   c. At intake, `keep_values` is `{underlying: [symbol]}`. `admit` keeps a
+      row only when all of these hold:
+      - `root` equals the symbol;
+      - the strike is a multiple of 0.5 (fact 10);
+      - the settlement-date calendar DTE is in [`dte_min`, `dte_max`];
+      - |ln(K / `underlying_price`)| is within the band.
+   d. It projects fresh rows with `instrument`, `date` (the New York date of
+      `quote_time`), `expiry`, `settle_date`, `dte`, `right`, `strike`,
+      `bid`, `ask`, `bid_size`, `ask_size`, `iv` and `underlying_price`.
+4. **`contracts.py`.** New module functions; `DefinedRiskCondor`'s
+   behavior does not change, and its existing tests pin that.
+   a. `quote_problems(bid, ask, bid_size, ask_size, count)` and
+      `condor_credit(...)` carry the existing rules: quotes are nonnegative
+      and uncrossed, sizes are at least `count`, long legs pay the ask,
+      short legs receive the bid, and 0 < credit < the narrower wing.
+      `DefinedRiskCondor` calls them.
+   b. `american_short_charge(...)`, defined under *American exercise*.
+   The synthetic-only row classes are untouched; real rows never pass
+   through them.
+5. **`nodes.py`.** `CondorQuoteBacktest` (role `score`, forbidden for
+   serving) is a sibling of `CondorBacktest`. The entry loop, the three
+   books and the flat metrics move to a shared base that both subclass.
+   `CondorBacktest`'s params, outputs and tests do not change.
+6. **Configs.** 21 files at `configs/grid/<underlying>-<bucket>.json`, and
+   `index_options/grid.py`: a pure table of cells plus
+   `grid_document(base, cell)`. Its only callers are the config test and a
+   README one-liner that rewrites the files.
+7. **Tests and docs.** New `tests/test_quote_backtest.py`; edits to
+   `test_observations.py`, `test_contracts.py`, `test_configs.py`, and to
+   the manifest test in `test_real_data.py`. AGENTS.md, CLAUDE.md and
+   README.md are updated, including their layout trees. The line
+   "Only European-exercise, PM cash-settled ... index condors" is
+   superseded for this track only.
+
+Manifest: 23 new child files (`grid.py`, 21 grid configs,
+`test_quote_backtest.py`); the edited files are the ones named in items
+1-7. Nothing else changes.
+
+**Pricing and settlement (`CondorQuoteBacktest`, owner item 1).**
+
+- **Inputs:** `forecasts` (the model's rows), `chain` (`ChainQuoteRows`)
+  and `underlying` (`IndexCloseRows` rows for the same symbol).
+- **Params:** `split`, `short_q`, `wing_z`, `multiplier` (100),
+  `fee_per_leg`, `dte_min`, `dte_max` and `max_abs_log_moneyness` (the last
+  three pinned equal to `chain`'s), `label_horizon` (h_b, pinned equal to
+  `labels`), `carry_rate`; optional `min_edge_usd` (0) and `cvar_alpha`
+  (0.95).
+
+The node indexes everything by (instrument, date) internally. It walks each
+instrument's in-split forecast rows, oldest first.
+
+1. **Entry.** The row reasons are `CondorBacktest`'s (`forecast_pair`,
+   close, scale), plus `no_chain`, `no_expiry_in_bucket` and `unsettled`.
+   If the chain's `underlying_price` differs from the row's `close`, the
+   node refuses: both are the same archive number, so a difference means
+   misalignment. Positions do not overlap: the next entry is the first row
+   on or after the current settlement date.
+2. **Expiry.** Only the expiries that appear in that date's chain are
+   eligible, so an expiry listed later is invisible. The node takes the
+   smallest DTE within [`dte_min`, `dte_max`].
+3. **Strikes (model and always books).**
+   - n counts weekdays in (entry, `settle_date`]. It uses no calendar
+     knowledge from the future.
+   - The rescaled scale is s' = scale x sqrt(n / h_b).
+   - Targets are K = S exp(s' Q(q)): q = `short_q` for the short put,
+     1 - `short_q` for the short call. The wings sit `wing_z` further out,
+     in s' units.
+   - Each target snaps OUTWARD to that expiry's quotable listed strikes.
+     The short put is the largest quotable put at or below its target; the
+     short call is the smallest quotable call at or above its target. The
+     long put is the largest quotable put at or below its target and below
+     the short put; the long call mirrors it.
+   - A target outside the band is counted as `outside_band`; a strike with
+     no quotable listing is counted as `degenerate_strikes`.
+   - "Quotable" means `quote_problems` passes, and a short leg also needs
+     bid > 0: a provider 0 bid means no market (ADR-0182 review).
+4. **Implied book.** It keeps today's formula with the chain's vol in place
+   of VIX. The ATM iv is the mean of the call and put `iv` at the quotable
+   strike nearest S on that expiry, and s = iv sqrt(DTE / 365). Without an
+   ATM iv the entry is counted as `no_atm_iv`.
+5. **Credit.** `condor_credit` gives the per-share credit; per condor the
+   USD credit is credit x multiplier - 4 x `fee_per_leg`. Failures are
+   counted as `nonpositive_credit` or `credit_not_below_width`.
+6. **Model book gate.** The expected P&L under the forecast draws, scaled by
+   s', at these quotes and net of fees, must exceed `min_edge_usd`.
+7. **Settlement.** S_T is the underlying close of the last row dated on or
+   before `settle_date`, which covers Saturday and holiday expiries.
+   P&L = credit_usd + multiplier x `condor_payoff(S_T, strikes)` - the
+   American charge. An entry with no settlement close is `unsettled` and is
+   never traded.
+
+The report is kind `archived_quote_condor_backtest` with pricing
+`archived_eod_quotes`, and `decision_eligible` is false. Metrics stay flat
+as today, plus the reason counts and each book's total American charge.
+
+**Point in time.**
+
+- **Decision inputs at entry date t:**
+  - features from closes up to and including t;
+  - the fold's model, fit on train rows whose labels end before the
+    validation cut by the embargo;
+  - t's chain snapshot: its quotes, listed expiries, strikes and iv.
+- **Same-snapshot entry.** The close and the quotes are one 16:00 snapshot.
+  Entering at that close is feasible because Cboe lists SPY, QQQ and IWM
+  options to 16:15 ET (to be confirmed in the build). It remains a
+  zero-latency end-of-day fill at the quoted touch.
+- **Outcome-only inputs:** closes and dividends after t, used only for
+  settlement and the American charge. A test perturbs every chain row and
+  close after the entry and asserts that the entries, expiries, strikes,
+  credits and gate decisions do not change.
+- **Knowledge time.** The archive was acquired in 2026, so no
+  as-of-acquisition vintage can express 2008 knowledge. Point-in-time
+  rests on event time and the archive's end-of-day declaration, as in the
+  ADR-0182 amendment.
+- **Selection.** The three ETFs were chosen by data availability, not by
+  outcome.
+
+**American exercise (owner item 3).** ETF options are American and settle
+physically. The node values each position at the European payoff on
+`settle_date`'s close, minus `american_short_charge`, a one-sided
+conservative bound derived below.
+
+- **Short call, dividends.** Early exercise of a call is rational only at
+  the close before an ex-date, and only if the call is in the money.
+  - If assigned, we are short stock from K_sc and owe the dividend D. The
+    terminal difference to the European leg is (K_sc - S_T)+ - D, which is
+    at least -D.
+  - Charge D x multiplier for the first ex-date in (entry, `settle_date`]
+    whose pre-ex close is above K_sc, and for every later ex-date in the
+    window. Quarterly dividends put at most one ex-date in a 45-day window.
+- **Short put, carry.** If assigned at a close s before `settle_date` with
+  S_s < K_sp, we hold stock bought at K_sp.
+  - The terminal difference to the European leg is
+    (S_T - K_sp)+ - K_sp (e^(r tau) - 1), which is at least -K_sp r tau.
+  - Charge K_sp x `carry_rate` x (`settle_date` - s) / 365 x multiplier
+    from the first such close.
+  - `carry_rate` is a constant upper bound on the cash rate: the configs use
+    0.055, the 2008-2025 maximum (owner question 6). No rates series is
+    added.
+- **Why the bound is conservative.** Both charges ignore what we would gain:
+  forfeited extrinsic value, early exercise of our own long legs, and
+  dividends on stock we are assigned into.
+- **Not modeled, disclosed:** pin risk (moves after the close and before
+  the exercise cutoff), borrow fees and exercise fees.
+- **IWM restricted.** The archive has no IWM dividends, so the call charge
+  cannot be computed. IWM cells run labels, forecasts and scores, but ship
+  no `chain` or `backtest` node until an ex-dividend source is approved
+  (owner question 2). In a SPY or QQQ window, a `dividend_amount` of None
+  refuses; it is never skipped.
+
+**Underlying series (owner item 4).**
+
+- **One series.** The archive's raw `close`, read through stream 2. It is
+  the same number every chain row carries as `underlying_price`, and the
+  node checks that at entry. Raw prices are the strike basis: ordinary
+  dividends do not adjust strikes.
+- **Splits.** Reads start after the last split (fact 6), and
+  `IndexCloseRows` refuses a flagged split.
+- **Alpaca bars are not read,** for four reasons:
+  - they cover SPY and QQQ only, from 2016, so no IWM and no 2008-2015;
+  - they live in another child's store, and children are standalone;
+  - a minute bar's last trade is not the official closing auction;
+  - the split-adjusted source restates history on every pull.
+  A one-off parity check against them is a possible follow-up, not in
+  scope.
+
+**Memory and runtime.** Step 0 of the build comes before any other code: on
+the finished ingest, measure one bounded `ChainQuoteRows` scan (wall time
+and peak RSS). The build proceeds only if the scan takes at most 30 minutes
+and 6 GB; otherwise it stops and reports. Only one heavy job runs in WSL at
+a time.
+
+**Tests (owner item 6; TDD, RED first).**
+
+- **dskit, `ObservationRows`:**
+  - the hooks reach `scan_stream` (captured call), and the defaults are
+    unchanged;
+  - with reuse, a second instance does not rescan;
+  - a new, removed or touched acquisition, or changed params, forces a
+    rescan;
+  - the base class never reuses;
+  - `project` runs per instance;
+  - the fingerprint is equal on a memo hit.
+- **dskit, the optionshist pack:**
+  - `index_daily` rows, None passthrough and the cursor;
+  - the pins are still enforced;
+  - the chain stream's output is byte-identical.
+- **Child:**
+  - `quote_problems` and `condor_credit` refusals, with `DefinedRiskCondor`
+    unchanged.
+  - `ChainQuoteRows` intake: symbol, root, off-grid strike, DTE on a
+    Saturday expiry, band; and its projection.
+  - `IndexCloseRows` dividend passthrough and split refusal.
+  - Expiry and strike selection:
+    - the nearest expiry within the bucket, and none (counted);
+    - outward snapping to quotable strikes;
+    - a 0-bid short leg and a long leg with no ask;
+    - the credit bounds.
+  - Settlement:
+    - on the last session at or before expiry, for a Saturday expiry and a
+      holiday Friday;
+    - `unsettled`;
+    - no overlap between positions;
+    - the sqrt(n / h_b) rescale.
+  - The implied book from the chain's iv, and the model gate.
+  - American charge cases:
+    - OTM at the pre-ex close;
+    - ITM at the pre-ex close;
+    - an ex-date on the entry date;
+    - an ex-date after expiry;
+    - a second ex-date;
+    - the put in the money;
+    - `carry_rate` 0;
+    - the None refusal.
+  - Look-ahead perturbation: rows after the entry change only P&L, and a
+    later-listed expiry is never chosen.
+- **Configs:**
+  - each grid document equals `grid_document(base, cell)`;
+  - the embargo inequalities hold;
+  - h_b appears in `labels`, `fwd`, `backtest` and `scale_multiplier`;
+  - no 21 remains except in the 21-day cell;
+  - `run-real-*.json` are unchanged.
+- **Real-data acceptance (not a unit test):** step 0, then one SPY 30-45
+  walk, then the grid.
+
+**Review lenses.**
+
+- This ADR: design correctness and scope (look-ahead, pricing realism,
+  reuse, scope creep).
+- The build: two fresh lenses.
+  - Correctness and point-in-time: the American bounds, the expiry and
+    settlement dates, splits and dividends.
+  - Tests and integration, with mutation testing.
+- Delivery needs 0 Critical and 0 Major from both.
+
+**Non-goals (owner item 7).**
+
+- 0DTE.
+- Index options (SPX, NDX, RUT, XSP): there is no free history, and the
+  recorded chains are forward-only.
+- Live or paper trading, or a broker.
+- Intraday, time-of-day or per-minute work (intraday_equities).
+- Early exit, rolling or adjustment of a position.
+- Sizing, or a portfolio across cells.
+- New rungs or features (chain-derived features, term structure, SKEW),
+  and a per-cell rung zoo (`BenchmarkPlan` groups can do that later).
+- The recorder's other 17 underlyings: they have no settled history and
+  no daily-close source.
+- Recalibrating the VIX proxy.
+- A rates series.
+- Reading Alpaca bars.
+- Pooled multi-underlying models (`Concat` and `Filter` can express them
+  later).
+
+**Alternatives considered.**
+
+- **Pooled multi-underlying, multi-horizon documents.** Rejected: one
+  embargo sized to the longest horizon for every cell, pooled fits, and
+  composite keys.
+- **Buckets in sessions that require an exact expiry.** Rejected: the 14
+  and 21 buckets are empty in the weekly era, because a Friday plus 14
+  sessions is a Thursday.
+- **A variable-horizon label node.** Rejected: new label code, while the
+  sqrt-time rescale reuses `HorizonLogReturn`.
+- **Entry at the next close.** Rejected: it removes the 1-day bucket.
+- **Skipping every window that contains an ex-date.** Rejected: it drops
+  about half of the 30-45 entries, while the charge keeps them
+  conservatively.
+- **Materialized per-cell quote tables.** Rejected: new storage machinery.
+
+**Risks disclosed.**
+
+- Fills are the end-of-day touch with zero latency. Wide spreads in early
+  years are paid, not modeled away.
+- The sqrt-time rescale within a bucket.
+- The weekday count ignores holidays, so n can be overstated by 1-2 and the
+  strikes sit slightly wider.
+- An adjusted contract whose strike falls on the 0.5 grid could pass the
+  strike rule; in the cases checked, such contracts lie outside the band.
+- The size rule makes most 2008 SPY legs unquotable (owner question 3).
+- Positions can overlap across a fold boundary, as in ADR-0182.
+- `carry_rate` is a constant.
+
+**Owner questions.**
+
+1. Buckets in calendar days to expiry (proposed), or in trading sessions?
+2. IWM: keep it restricted (proposed), or approve an IWM ex-dividend
+   source?
+3. Zero quote sizes (2008 SPY): keep the size rule (proposed), or treat 0
+   as "not recorded"?
+4. Rungs: `har-vix` only (21 documents, proposed), or add `empirical`
+   (21 more) plus a per-cell zoo?
+5. Snapshot reuse (item 1b): approve it (proposed), or accept a rescan per
+   fold?
+6. `carry_rate`: 0.055 (proposed), or 0 (disclose the carry, do not charge
+   it)?
