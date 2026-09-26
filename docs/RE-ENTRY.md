@@ -1,5 +1,34 @@
 # Re-entry
 
+## options-dataset-hist chain archive pack (2026-09-25 wrap)
+
+Owner approval: ingest the free SPY/QQQ/IWM EOD option-chain archive ("A"),
+TDD + skeptic reviewed, merged; no modelling, backtest or label work.
+
+- **Landed:** `0ded8e5` (pack, tests, child config, ADR-0182 amendment),
+  `6ecbf07` (docstring-only correction of a reviewer Minor). New connector
+  kind `optionshist` (`dskit/onboarding/libs/optionshist.py`) maps the
+  archive onto the Cboe `option_chain` shape; child source config
+  `children/index_options/configs/source-optionshist-chain.json` pins mirror
+  `github.com/anahatsingh-ui/options-dataset-hist` at `37f6c456` and all 54
+  Parquet files by sha256 (a fresh clone equals the commit's blobs).
+- **Reviews (Sonnet, on `0ded8e5`):** correctness/data-integrity
+  (agent ae72e12194e88c876) C0 M0 m1; test-quality/integration
+  (agent a6b21daa678e8e07f, 16 mutation probes all caught, CLI e2e) C0 M0
+  m2. One round each; no correction cycle.
+- **Minor backlog:** (1) the year-skip compares against Dec 31, so a year
+  whose last session is earlier is re-opened and re-hashed (no output);
+  docstring corrected in `6ecbf07`, code unchanged. (2)
+  `test_max_days_walks_forward...` loops `while True` with no cap. (3)
+  `check()` does not hash (documented; `read()` always does before any row);
+  no test pins the asymmetry. Strike-tolerance boundary untested.
+- **Tests:** `tests/onboarding/test_optionshist.py` 77 (RED 56 failed on a
+  stub at `94f24d8`), focused onboarding set 270 passed; child suite 356
+  passed; ruff clean. No full suite.
+- **Next:** backfill the full archive into `~/data/index_options/ob`
+  (source `optionshist-chain`, `max_days` 63, repeat `acquire --mode
+  backfill` until 0 records) and verify counts per symbol/year.
+
 ## Per-name spread cost in SchwabCostModel (2026-09-25 wrap)
 
 - **Change** (`4ee8201`, on the measurement `15787c3`/`2c37644`):
