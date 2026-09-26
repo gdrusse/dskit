@@ -340,3 +340,13 @@ def test_chain_reader_drops_a_zero_dte_and_reads_a_second_symbol_by_name(store_f
     assert [(r["expiry"], r["dte"]) for r in spy] == [("2025-01-03", 1)]
     qqq = ChainQuoteRows("chain", dict(params, symbol="QQQ")).run(None, {})["records"]
     assert [(r["instrument"], r["expiry"]) for r in qqq] == [("QQQ", "2025-01-03")]
+
+
+def test_a_put_far_below_the_band_is_dropped_like_a_call_far_above_it(store_factory):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 100.0),   # kept
+            _chain("SPY250207P00070000", "2025-01-02", 100.0),   # ln(0.70) = -0.357: dropped
+            _chain("SPY250207P00082000", "2025-01-02", 100.0),   # ln(0.82) = -0.198: kept
+            _chain("SPY250207C00125000", "2025-01-02", 100.0)]   # ln(1.25) = +0.223: dropped
+    store = _chain_store(store_factory, rows, name="band")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert sorted((r["right"], r["strike"]) for r in out) == [("call", 100.0), ("put", 82.0)]

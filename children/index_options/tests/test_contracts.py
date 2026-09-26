@@ -363,3 +363,37 @@ def test_a_missing_dividend_in_the_window_refuses_and_the_window_is_bounded():
         american_short_charge(_series(WINDOW), **dict(CHARGE, carry_rate=-0.01))
     with pytest.raises(ValueError, match="settle_date"):
         american_short_charge(_series(WINDOW), **dict(CHARGE, settle_date="2024-02-28"))
+
+
+def test_a_pre_ex_close_exactly_at_the_short_call_is_not_assigned():
+    at = _series([("2024-03-01", 100.0), ("2024-03-06", 102.0), ("2024-03-07", 104.0),
+                  ("2024-03-08", 105.0)], [("2024-03-07", 1.5)])
+    assert american_short_charge(at, **CHARGE)["call_dividend_usd"] == 0.0
+    above = _series([("2024-03-01", 100.0), ("2024-03-06", 102.01), ("2024-03-07", 104.0),
+                     ("2024-03-08", 105.0)], [("2024-03-07", 1.5)])
+    assert american_short_charge(above, **CHARGE)["call_dividend_usd"] == 150.0
+
+
+def test_a_close_exactly_at_the_short_put_carries_nothing():
+    at = _series([("2024-03-01", 100.0), ("2024-03-04", 95.0), ("2024-03-05", 96.0),
+                  ("2024-03-06", 96.0), ("2024-03-07", 97.0), ("2024-03-08", 98.0)])
+    assert american_short_charge(at, **CHARGE)["put_carry_usd"] == 0.0
+    below = _series([("2024-03-01", 100.0), ("2024-03-04", 95.0), ("2024-03-05", 94.99),
+                     ("2024-03-06", 96.0), ("2024-03-07", 97.0), ("2024-03-08", 98.0)])
+    tau = 3 / 365  # from 03-05, not 03-04
+    assert american_short_charge(below, **CHARGE)["put_carry_usd"] == pytest.approx(
+        95.0 * (math.exp(0.055 * tau) - 1) * 100)
+
+
+def test_the_charge_reads_rows_in_any_order_and_never_the_entry_days_dividend():
+    # the pre-ex close (03-06, 103) is above the call but the ex-date's own close (101) is
+    # not, so reading the rows backwards would find no assignment
+    itm = _series([("2024-03-01", 100.0), ("2024-03-04", 101.0), ("2024-03-05", 99.0),
+                   ("2024-03-06", 103.0), ("2024-03-07", 101.0), ("2024-03-08", 101.0)],
+                  [("2024-03-07", 1.5)])
+    assert american_short_charge(list(reversed(itm)), **CHARGE) == \
+        american_short_charge(itm, **CHARGE) == {"call_dividend_usd": 150.0,
+                                                 "put_carry_usd": 0.0, "total_usd": 150.0}
+    on_entry = _series(WINDOW)
+    on_entry[0]["dividend_amount"] = None  # the entry date's own ex-date is never read
+    assert american_short_charge(on_entry, **CHARGE)["total_usd"] == 0.0
