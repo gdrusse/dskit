@@ -24306,8 +24306,11 @@ quote or backtest engine.
       `condor_credit(...)` carry the existing rules: quotes are nonnegative
       and uncrossed, sizes are at least `count`, long legs pay the ask,
       short legs receive the bid, and 0 < credit < the narrower wing.
-      `DefinedRiskCondor` calls them with `side=None`, which checks both
-      sizes exactly as today. `side="sell"` or `"buy"` checks the size on
+      They are extracted from the rules now inlined in
+      `DefinedRiskCondor._credit`, `_check_identity` and
+      `_IndexQuote._validate`. After the extraction, `DefinedRiskCondor`
+      calls them with `side=None`, which checks both sizes exactly as
+      today. `side="sell"` or `"buy"` checks the size on
       the side traded, and needs that side's price > 0 (see *Quotable*).
       Requiring a bid size on a long wing would reject the no-bid far
       strikes wings are bought at (fact 9).
@@ -24425,8 +24428,10 @@ so a date before weeklies shows up as `no_chain` ("no admitted row that
 day"). The walk's objective is `score`'s twCRPS, which those folds still
 produce, so the walk records the fold and runs on. Tests cover both
 refusals and a fold with forecast rows but no qualifying expiry.
-Acceptance adds a cell-level check: a cell that enters no trade in any
-fold fails. A fold that enters nothing passes only when every skip in it
+Acceptance adds a cell-level check for the 14 SPY and QQQ cells, which
+carry a backtest. The 7 IWM cells have no backtest, so they are accepted
+on their labels, forecasts and scores alone. A backtest cell that enters
+no trade in any fold fails. A fold that enters nothing passes only when every skip in it
 has a data-coverage reason: `no_chain`, `no_expiry_in_bucket`,
 `no_quotable_strike` or `unsettled`. Those are what the pre-weekly years,
 2008's unrecorded sizes (fact 9, owner question 3) and the archive's end
@@ -24442,8 +24447,8 @@ and the per-fold reason counts, so the check is mechanical.
     validation cut by the embargo;
   - t's chain snapshot: its quotes, listed expiries, strikes and iv.
 - **Same-snapshot entry.** The close and the quotes are one 16:00 snapshot.
-  Entering at that close is feasible because Cboe lists SPY, QQQ and IWM
-  options to 16:15 ET (to be confirmed in the build). It remains a
+  Entering at that close is ASSUMED feasible, pending step 0's check that
+  Cboe lists SPY, QQQ and IWM options until 16:15 ET. Even then it is a
   zero-latency end-of-day fill at the quoted touch.
 - **Outcome-only inputs:** closes and dividends after t, used only for
   settlement and the American charge. A test perturbs every chain row and
