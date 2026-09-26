@@ -814,6 +814,7 @@ class TestPathRows:
             {"admitted_horizon": 5},
             {"admitted_horizon": 0},
             {"admitted_horizon": True},
+            {"plan_horizon": True},
             {"plan_horizon": 0},
             {"plan_horizon": 5},
             {"plan_horizon": 2.0},

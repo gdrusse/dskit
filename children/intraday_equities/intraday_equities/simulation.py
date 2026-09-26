@@ -453,6 +453,13 @@ class ForecastPublisher(Node):
       tape's decision-bar close, and ``sigma``/``beta`` the fold label's
       own causal values at that bar.
 
+    The row builders are static and shared with the per-tick deciders:
+    :meth:`tick_row`/:meth:`bundle_rows` for a lead group, and -- for a
+    release :class:`MinuteForecastPublisher` published with ``leads:
+    "path"`` (ADR-0188 formulation B) -- :meth:`path_plan`,
+    :meth:`path_row`, :meth:`path_rows`, :meth:`path_bundle_rows` and
+    :meth:`path_envelopes` for the exit-horizon path rows.
+
     Parameters
     ----------
     params : dict
@@ -612,21 +619,31 @@ class ForecastPublisher(Node):
 
     # -- one release --------------------------------------------------------
 
-    def _release(self, walk, index, producer):
-        """One segment's release object, and its per-lead scenario sets."""
+    def _release(self, walk, index, producer, estimate=None):
+        """One segment's release object, and its per-lead scenario sets.
+
+        ``estimate`` is the segment's false-signal estimate when the caller
+        already holds it (the minute publisher's path mode projects it a
+        second time); ``None`` computes it here.
+        """
         fold = walk.folds[index]
         release_id = f"{walk.model_id}-fold{index:02d}-{fold['run_hash'][:16]}"
         cutoff_ms = fold["cutoff_ms"]
         groups = {}
         for symbol, lead in walk.lead_map.items():
             groups.setdefault(lead, []).append(symbol)
-        estimate = self._false_signal(walk, index)
+        if estimate is None:
+            estimate = self._false_signal(walk, index)
         uncertainty, scenarios, measured = {}, {}, {}
         for lead in sorted(groups):
             symbols = sorted(groups[lead])
-            outcome, scenarios[lead], measured[lead] = self._outcome(walk, index, lead, symbols, release_id)
+            tag = f"h{lead:02d}"
+            outcome, scenarios[lead], measured[lead], _per_symbol = self._outcome(
+                walk, index, {symbol: (symbol, lead) for symbol in symbols}, tag, release_id
+            )
+            cells = {symbol: self._cell_id(symbol, lead) for symbol in symbols}
             uncertainty[str(lead)] = {
-                "false_signal": self._false_signal_obj(estimate, lead, symbols, release_id, cutoff_ms),
+                "false_signal": self._false_signal_obj(estimate, cells, tag, release_id, cutoff_ms),
                 "outcome": outcome,
             }
         release = {
@@ -679,18 +696,31 @@ class ForecastPublisher(Node):
             raise ValueError("cap artifact refused: " + "; ".join(problems))
         return cap
 
-    def _residual_panel(self, walk, before, cutoff_ms, lead, symbols):
-        """Complete-case ``y - yhat`` rows at ``lead`` from folds < ``before``, stamped in the window."""
-        start = self._window_start(cutoff_ms)
-        by_symbol = {symbol: {} for symbol in symbols}
-        for index in range(before):
+    @staticmethod
+    def _cell_id(symbol, lead):
+        """Return the ``SYM:hNN`` name of one ``(symbol, lead)`` cell -- the false-signal estimate's key."""
+        return f"{symbol}:h{lead:02d}"
+
+    def _residual_panel(self, walk, folds, start, end, components):
+        """Complete-case ``y - yhat`` rows of ``components`` from ``folds``, stamped in ``[start, end)``.
+
+        ``components`` maps each panel column's name to the ``(symbol,
+        lead)`` unit it reads, in column order: a lead group names its
+        columns by symbol at its one lead, the path mode names them by cell
+        across every lead (ADR-0188), so a row is one instant across every
+        column either way.
+        """
+        wanted = {unit: name for name, unit in components.items()}
+        by_name = {name: {} for name in components}
+        for index in folds:
             for unit in walk.series(index):
-                if unit["lead"] != lead or unit["symbol"] not in by_symbol:
+                name = wanted.get((unit["symbol"], unit["lead"]))
+                if name is None:
                     continue
                 for stamp, y, yhat in zip(unit["stamps"], unit["y"], unit["yhat"]):
-                    if start <= stamp < cutoff_ms:
-                        by_symbol[unit["symbol"]][stamp] = y - yhat
-        return self._complete_case(by_symbol, symbols)
+                    if start <= stamp < end:
+                        by_name[name][stamp] = y - yhat
+        return self._complete_case(by_name, list(components))
 
     @staticmethod
     def _complete_case(by_symbol, symbols):
@@ -698,30 +728,55 @@ class ForecastPublisher(Node):
         stamps = sorted(set.intersection(*(set(by_symbol[s]) for s in symbols)))
         return stamps, [tuple(by_symbol[s][stamp] for s in symbols) for stamp in stamps]
 
-    def _calibrated(self, walk, before, cutoff_ms, lead, symbols):
-        """``(panel, band)``: the block-conformal band from folds < ``before``."""
+    def _calibrated(self, walk, before, cutoff_ms, components, tag):
+        """``(panel, band)``: the block-conformal band over ``components`` from folds < ``before``."""
         knobs = self.params["uncertainty"]
-        stamps, rows = self._residual_panel(walk, before, cutoff_ms, lead, symbols)
+        stamps, rows = self._residual_panel(
+            walk, range(before), self._window_start(cutoff_ms), cutoff_ms, components
+        )
         if not rows:
-            raise ValueError(f"no complete-case residuals at h{lead:02d} before {cutoff_ms}")
+            raise ValueError(f"no complete-case residuals at {tag} before {cutoff_ms}")
         panel = BlockResiduals(
-            names=tuple(symbols), rows=rows, blocks=[utc_day(s) for s in stamps], stamps=stamps
+            names=tuple(components), rows=rows, blocks=[utc_day(s) for s in stamps], stamps=stamps
         )
         band = BlockConformalInterval().calibrate(
             panel, coverage=knobs["coverage"], window_blocks=knobs["window_blocks"]
         )
         return panel, band
 
-    def _outcome(self, walk, index, lead, symbols, release_id):
-        """Calibrate the attested outcome band (JSON), its scenario set and measured coverage."""
+    def _outcome(self, walk, index, components, tag, release_id):
+        """Calibrate the attested outcome band (JSON), its scenario set and measured coverage.
+
+        Parameters
+        ----------
+        walk : _Walk
+        index : int
+            The release's fold.
+        components : dict
+            ``{column name: (symbol, lead)}``, in column order (see
+            :meth:`_residual_panel`).
+        tag : str
+            The calibration's name in its artifact and evidence ids:
+            ``hNN`` for a lead group, ``path`` for the path mode's cells.
+        release_id : str
+
+        Returns
+        -------
+        tuple
+            ``(outcome, scenarios, measured, per_component)``: the band and
+            its attestation as JSON, ONE joint scenario draw over every
+            column (seeded from the panel digest), the artifact-level
+            out-of-sample coverage the attestation carries, and the same
+            reading per column.
+        """
         knobs = self.params["uncertainty"]
         cutoff_ms = walk.folds[index]["cutoff_ms"]
-        panel, band = self._calibrated(walk, index, cutoff_ms, lead, symbols)
+        panel, band = self._calibrated(walk, index, cutoff_ms, components, tag)
         scenarios = BlockConformalInterval().scenarios(panel, knobs["n_scenarios"], knobs["seed"])
-        measured, n_units = self._measured_coverage(walk, index, lead, symbols)
+        measured, per_component, n_units = self._measured_coverage(walk, index, components, tag)
         artifact = _dataclass_obj(band)
         attestation = UncertaintyAttestation(
-            artifact_id=f"{release_id}:h{lead:02d}:outcome:{canonical_hash(artifact)[:16]}",
+            artifact_id=f"{release_id}:{tag}:outcome:{canonical_hash(artifact)[:16]}",
             model_identity=release_id,
             calibration_end_ms=cutoff_ms - 1,
             known_at_ms=cutoff_ms,
@@ -730,34 +785,42 @@ class ForecastPublisher(Node):
                 target=float(knobs["coverage"]),
                 measured=measured,
                 evidence_id=(
-                    f"procedure-level:{walk.model_id}:h{lead:02d}:calibrated-before-fold"
+                    f"procedure-level:{walk.model_id}:{tag}:calibrated-before-fold"
                     f"{index - 1:02d}-scored-on-fold{index - 1:02d}"
                 ),
                 n_units=n_units,
             ),
         )
-        return {"artifact": artifact, "attestation": _dataclass_obj(attestation)}, scenarios, measured
+        outcome = {"artifact": artifact, "attestation": _dataclass_obj(attestation)}
+        return outcome, scenarios, measured, per_component
 
-    def _measured_coverage(self, walk, index, lead, symbols):
-        """Out-of-sample coverage of the procedure at release ``index - 1``, scored on its own fold."""
+    def _measured_coverage(self, walk, index, components, tag):
+        """Out-of-sample coverage of the procedure at release ``index - 1``, scored on its own fold.
+
+        Returns
+        -------
+        tuple
+            ``(measured, per_component, n_units)``: the hit rate over every
+            scored value, each column's own hit rate on the SAME
+            complete-case rows (so ``measured`` is their mean), and the
+            number of UTC days scored.
+        """
         prior = walk.folds[index - 1]
-        _panel, band = self._calibrated(walk, index - 1, prior["cutoff_ms"], lead, symbols)
-        by_symbol = {symbol: {} for symbol in symbols}
-        for unit in walk.series(index - 1):
-            if unit["lead"] == lead and unit["symbol"] in by_symbol:
-                for stamp, y, yhat in zip(unit["stamps"], unit["y"], unit["yhat"]):
-                    if prior["cutoff_ms"] <= stamp < walk.folds[index]["cutoff_ms"]:
-                        by_symbol[unit["symbol"]][stamp] = y - yhat
-        stamps, rows = self._complete_case(by_symbol, symbols)
-        if not rows:
-            raise ValueError(f"fold {index - 1} has no complete-case rows at h{lead:02d} to score")
-        hits = sum(
-            1
-            for row in rows
-            for symbol, value in zip(symbols, row)
-            if band.lower_offset[symbol] <= value <= band.upper_offset[symbol]
+        _panel, band = self._calibrated(walk, index - 1, prior["cutoff_ms"], components, tag)
+        stamps, rows = self._residual_panel(
+            walk, (index - 1,), prior["cutoff_ms"], walk.folds[index]["cutoff_ms"], components
         )
-        return hits / (len(rows) * len(symbols)), len({utc_day(s) for s in stamps})
+        if not rows:
+            raise ValueError(f"fold {index - 1} has no complete-case rows at {tag} to score")
+        names = list(components)
+        hits = dict.fromkeys(names, 0)
+        for row in rows:
+            for name, value in zip(names, row):
+                if band.lower_offset[name] <= value <= band.upper_offset[name]:
+                    hits[name] += 1
+        measured = sum(hits.values()) / (len(rows) * len(names))
+        per_component = {name: hits[name] / len(rows) for name in names}
+        return measured, per_component, len({utc_day(s) for s in stamps})
 
     def _false_signal(self, walk, index):
         """One ``GrenanderLocalFdr`` estimate over every modeled cell in the window before the cutoff."""
@@ -777,7 +840,7 @@ class ForecastPublisher(Node):
                 ]
                 if not kept:
                     continue
-                cell = f"{unit['symbol']}:h{unit['lead']:02d}"
+                cell = self._cell_id(unit["symbol"], unit["lead"])
                 owner[cell] = unit["symbol"]
                 merge_session_totals(
                     cells.setdefault(cell, {}),
@@ -789,20 +852,24 @@ class ForecastPublisher(Node):
             evidence, independent_units=len({owner[cell] for cell in evidence})
         )
 
-    def _false_signal_obj(self, estimate, lead, symbols, release_id, cutoff_ms):
-        """One lead group's projection of ``estimate`` (values unchanged), attested, as JSON."""
-        cells = {symbol: f"{symbol}:h{lead:02d}" for symbol in symbols}
+    def _false_signal_obj(self, estimate, cells, tag, release_id, cutoff_ms):
+        """Project ``estimate`` onto ``cells`` (values unchanged), attested, as JSON.
+
+        ``cells`` maps each projected key to its ``SYM:hNN`` cell: a lead
+        group keys its projection by symbol, the path mode by the cell
+        itself (ADR-0188). ``tag`` names the projection in the artifact id.
+        """
         missing = sorted(cell for cell in cells.values() if cell not in estimate.pi_hat)
         if missing:
             raise ValueError(f"false-signal estimate has no statistic for admitted cell(s) {missing}")
         projected = FalseSignalEstimate(
-            pi_hat={symbol: estimate.pi_hat[cell] for symbol, cell in cells.items()},
-            pi_widened={symbol: estimate.pi_widened[cell] for symbol, cell in cells.items()},
+            pi_hat={key: estimate.pi_hat[cell] for key, cell in cells.items()},
+            pi_widened={key: estimate.pi_widened[cell] for key, cell in cells.items()},
             evidence=estimate.evidence,
         )
         artifact = _dataclass_obj(projected)
         attestation = UncertaintyAttestation(
-            artifact_id=f"{release_id}:h{lead:02d}:false-signal:{canonical_hash(artifact)[:16]}",
+            artifact_id=f"{release_id}:{tag}:false-signal:{canonical_hash(artifact)[:16]}",
             model_identity=release_id,
             calibration_end_ms=cutoff_ms - 1,
             known_at_ms=cutoff_ms,
@@ -834,7 +901,37 @@ class ForecastPublisher(Node):
             AttestedOutcomeBand}`` -- the ``uncertainty`` port
             ``EquityKellyMIO`` admits.
         """
-        group = release["uncertainty"][str(lead)]
+        return cls._envelopes_of(release["uncertainty"][str(lead)])
+
+    @classmethod
+    def path_envelopes(cls, release):
+        """Rebuild a path release's ONE pair of attested envelopes (ADR-0188 formulation B).
+
+        Parameters
+        ----------
+        release : dict
+            A ``releases`` entry published with ``leads: "path"`` (as
+            emitted, or after a JSON round trip).
+
+        Returns
+        -------
+        dict
+            ``{"false_signal": AttestedFalseSignalRate, "outcome":
+            AttestedOutcomeBand}``, both keyed per cell ``SYM:hNN``: the
+            rates cover every ADMITTED cell (lead ``<= H_i``), the band
+            every calibrated cell (lead ``<= K_i``). The capital step binds
+            a path row to them per cell, not per entity.
+
+        Raises
+        ------
+        ValueError
+            The release carries no path block.
+        """
+        return cls._envelopes_of(cls._path_block(release)["uncertainty"])
+
+    @staticmethod
+    def _envelopes_of(group):
+        """Rebuild the ``false_signal``/``outcome`` envelopes of one ``uncertainty`` group's JSON."""
         signal, outcome = group["false_signal"], group["outcome"]
         return {
             "false_signal": AttestedFalseSignalRate(
@@ -844,6 +941,18 @@ class ForecastPublisher(Node):
                 OutcomeIntervalResult(**outcome["artifact"]), _attestation_from(outcome["attestation"])
             ),
         }
+
+    @staticmethod
+    def _path_block(release):
+        """``release["path"]``, or a refusal naming the undeclared path mode."""
+        path = release.get("path") if isinstance(release, dict) else None
+        if not isinstance(path, dict):
+            release_id = release.get("release_id") if isinstance(release, dict) else None
+            raise ValueError(
+                f"release {release_id!r} carries no path block: its publisher did not declare "
+                "leads 'path' (ADR-0188)"
+            )
+        return path
 
     # -- the tick path ------------------------------------------------------
 
@@ -899,10 +1008,15 @@ class ForecastPublisher(Node):
             "weights": weights,
             "scenarios": draws,
             "label": contract,
-            "known_at": {
-                **{name: stamp for name in _MARKET_FIELDS},
-                **{name: cutoff_ms for name in _CALIBRATED_FIELDS},
-            },
+            "known_at": ForecastPublisher._known_at(stamp, cutoff_ms),
+        }
+
+    @staticmethod
+    def _known_at(stamp, cutoff_ms):
+        """Return a row's ``known_at``: market fields at the tick, calibrated ones at the release cutoff."""
+        return {
+            **{name: stamp for name in _MARKET_FIELDS},
+            **{name: cutoff_ms for name in _CALIBRATED_FIELDS},
         }
 
     @staticmethod
@@ -912,7 +1026,253 @@ class ForecastPublisher(Node):
         The producer is the release cap's own (the publisher document and
         node), with output ``bundle``.
         """
-        group = release["uncertainty"][str(lead)]
+        return ForecastPublisher._assembled(release, release["uncertainty"][str(lead)], rows).rows
+
+    # -- the exit-horizon path (ADR-0188 formulation B) ---------------------
+
+    @classmethod
+    def path_plan(cls, release, symbol, coverage_floor):
+        """One name's exit-horizon plan in a path release, screened per cell (ADR-0188).
+
+        ``kstar`` is the largest lead ``k <= K_i`` such that EVERY cell
+        ``(symbol, 1..k)`` measured an out-of-sample coverage at or above
+        ``coverage_floor`` (owner question I(a)): a breach at lead ``j``
+        truncates the plan to ``j - 1`` whatever the later cells measured,
+        and a lead-1 breach leaves the name no path row at all (sell-only).
+        This per-cell reading sits BESIDE the artifact-level screen, which is
+        unchanged: the capital step's intake still admits the joint band on
+        its one attested coverage. Session-close truncation is not applied
+        here; a caller shortens the plan through :meth:`path_row`.
+
+        Parameters
+        ----------
+        release : dict
+            A ``releases`` entry published with ``leads: "path"``.
+        symbol : str
+            A gate-admitted name (a positive ``capped_horizon``).
+        coverage_floor : float
+            The per-cell floor, a finite number in (0, 1): the capital
+            step's ``uncertainty_min_coverage``, the same floor its intake
+            holds the artifact-level reading to.
+
+        Returns
+        -------
+        dict
+            ``calibrated`` (``K_i``, the name's scored heads), ``admitted``
+            (``H_i``, the gate's ``capped_horizon``), ``kstar`` and ``plan``
+            (``min(K_i, kstar)``, the tranches a row offers; 0 = no row).
+
+        Raises
+        ------
+        ValueError
+            The release carries no path block, ``symbol`` has no path (no
+            cap or a zero cap), a cell of it has no measured coverage, or
+            ``coverage_floor`` is not a finite number in (0, 1).
+
+        Examples
+        --------
+        ::
+
+            ForecastPublisher.path_plan(release, "LLY", 0.53)
+            # -> {"calibrated": 3, "admitted": 2, "kstar": 3, "plan": 3}
+        """
+        path = cls._path_block(release)
+        if (
+            isinstance(coverage_floor, bool)
+            or not isinstance(coverage_floor, (int, float))
+            or not math.isfinite(coverage_floor)
+            or not 0.0 < coverage_floor < 1.0
+        ):
+            raise ValueError(
+                "coverage_floor must be a finite number in (0, 1) -- the capital step's "
+                f"uncertainty_min_coverage -- got {coverage_floor!r}"
+            )
+        horizons = path["horizons"]
+        if symbol not in horizons:
+            raise ValueError(
+                f"{symbol!r} has no path in release {release['release_id']}: only a gate-admitted "
+                f"name (a positive capped_horizon) is published, the admitted are {sorted(horizons)}"
+            )
+        calibrated = horizons[symbol]
+        kstar = 0
+        for lead in range(1, calibrated + 1):
+            cell = cls._cell_id(symbol, lead)
+            measured = path["cell_coverage"].get(cell)
+            if measured is None:
+                raise ValueError(f"release {release['release_id']} records no measured coverage for {cell}")
+            if measured < coverage_floor:
+                break
+            kstar = lead
+        return {
+            "calibrated": calibrated,
+            "admitted": release["lead_map"][symbol],
+            "kstar": kstar,
+            "plan": min(calibrated, kstar),
+        }
+
+    @classmethod
+    def path_plans(cls, release, coverage_floor):
+        """:meth:`path_plan` for every name with a path in ``release``: ``{symbol: plan}``."""
+        return {
+            symbol: cls.path_plan(release, symbol, coverage_floor)
+            for symbol in sorted(cls._path_block(release)["horizons"])
+        }
+
+    @classmethod
+    def path_row(cls, release, symbol, stamp, price, yhat_path, sigma, beta, coverage_floor, plan_horizon=None):
+        """One exit-horizon PATH input row -- the path counterpart of :meth:`tick_row` (ADR-0188).
+
+        The row carries the name's whole forecast curve beside the flat
+        contract: ``yhat_path`` (every scored head, lead order),
+        ``admitted_horizon`` (the gate's cap ``H_i``), ``plan_horizon``
+        (the screened ``min(K_i, kstar_i)`` of :meth:`path_plan`, or a
+        caller's shorter value), ``pi_hat_path``/``pi_widened_path`` (the
+        per-cell false-signal readings at the ADMITTED leads only) and
+        ``scenarios_path`` (cell ``(symbol, k)``'s residuals from the
+        release's ONE joint draw, so scenario ``o`` is the same world in
+        every row and step). Its flat fields ARE step 1: ``lead`` 1 and
+        ``yhat``/``pi_hat``/``pi_widened``/``scenarios`` the path's first
+        entries. Market fields are known at ``stamp``, calibrated ones at
+        the release cutoff, exactly as :meth:`tick_row`. The values stay in
+        label units; :class:`ForecastBundle` converts and recenters them.
+
+        Parameters
+        ----------
+        release : dict
+            A ``releases`` entry published with ``leads: "path"``.
+        symbol : str
+        stamp : int
+            The decision instant, epoch ms.
+        price, sigma, beta : float
+            The decision bar's close and the label's sigma/beta there.
+        yhat_path : list of float
+            Every scored head's prediction at ``stamp``, leads ``1..K_i``
+            (:meth:`MinuteForecastPublisher.path_tick`).
+        coverage_floor : float
+            As :meth:`path_plan`.
+        plan_horizon : int, optional
+            A shorter plan than the screened one (the decider's session
+            close); never longer. Default: the screened plan.
+
+        Returns
+        -------
+        dict
+            One :class:`ForecastBundle` path input row.
+
+        Raises
+        ------
+        ValueError
+            Anything :meth:`path_plan` refuses, a name whose screened plan
+            is empty (``kstar`` 0), a ``plan_horizon`` outside
+            ``1..min(K_i, kstar_i)``, or a ``yhat_path`` that is not one
+            prediction per scored head.
+        """
+        plan = cls.path_plan(release, symbol, coverage_floor)
+        screened, calibrated, admitted = plan["plan"], plan["calibrated"], plan["admitted"]
+        if screened == 0:
+            raise ValueError(
+                f"{symbol} gets no path row: its lead-1 cell measured coverage below the per-cell "
+                f"floor {coverage_floor!r} (kstar 0, owner question I(a)) -- the name is sell-only"
+            )
+        if plan_horizon is None:
+            plan_horizon = screened
+        elif isinstance(plan_horizon, bool) or not isinstance(plan_horizon, int) or not 1 <= plan_horizon <= screened:
+            raise ValueError(
+                f"{symbol}: plan_horizon must be an int in 1..{screened} (min(K_i, kstar_i)) -- a "
+                f"caller may shorten the screened plan, never extend it -- got {plan_horizon!r}"
+            )
+        if not isinstance(yhat_path, (list, tuple)) or len(yhat_path) != calibrated:
+            raise ValueError(
+                f"{symbol}: yhat_path must carry one prediction per scored head ({calibrated}), "
+                f"got {yhat_path!r}"
+            )
+        path = release["path"]
+        signal = path["uncertainty"]["false_signal"]["artifact"]
+        draws = path["tick_constants"]["scenarios"]
+        cells = [cls._cell_id(symbol, lead) for lead in range(1, calibrated + 1)]
+        yhat_path = list(yhat_path)
+        pi_hat_path = [signal["pi_hat"][cell] for cell in cells[:admitted]]
+        pi_widened_path = [signal["pi_widened"][cell] for cell in cells[:admitted]]
+        scenarios_path = [list(draws[cell]) for cell in cells]
+        return {
+            "entity": symbol,
+            "decision_ts": stamp,
+            "lead": 1,
+            "price": price,
+            "yhat": yhat_path[0],
+            "sigma_t": sigma,
+            "beta_t": beta,
+            "pi_hat": pi_hat_path[0],
+            "pi_widened": pi_widened_path[0],
+            "weights": list(path["tick_constants"]["weights"]),
+            "scenarios": list(scenarios_path[0]),
+            "label": dict(release["label"]),
+            "known_at": cls._known_at(stamp, release["segment_start_ms"]),
+            "admitted_horizon": admitted,
+            "plan_horizon": plan_horizon,
+            "yhat_path": yhat_path,
+            "pi_hat_path": pi_hat_path,
+            "pi_widened_path": pi_widened_path,
+            "scenarios_path": scenarios_path,
+        }
+
+    @classmethod
+    def path_rows(cls, release, stamp, ticks, coverage_floor):
+        """Every path input row of one decision tick, in entity order (ADR-0188 formulation B).
+
+        One row per name with a tick at ``stamp`` whose screened plan holds
+        at least one tranche. A name whose ``kstar`` is 0 gets no row (owner
+        question I(a): sell-only), which :meth:`path_plans` makes visible;
+        a tick for a name with no path refuses.
+
+        Parameters
+        ----------
+        release : dict
+            A ``releases`` entry published with ``leads: "path"``.
+        stamp : int
+            The decision instant, epoch ms.
+        ticks : dict
+            ``{symbol: {"price", "yhat_path", "sigma", "beta"}}`` at
+            ``stamp`` (:meth:`MinuteForecastPublisher.path_tick`).
+        coverage_floor : float
+            As :meth:`path_plan`.
+
+        Returns
+        -------
+        list of dict
+            :meth:`path_row` rows with their screened plans.
+        """
+        rows = []
+        for symbol in sorted(ticks):
+            if cls.path_plan(release, symbol, coverage_floor)["plan"] == 0:
+                continue
+            tick = ticks[symbol]
+            rows.append(cls.path_row(
+                release, symbol, stamp, tick["price"], tick["yhat_path"], tick["sigma"], tick["beta"],
+                coverage_floor,
+            ))
+        return rows
+
+    @classmethod
+    def path_bundle_rows(cls, release, rows):
+        """Assemble one path tick's ``ForecastBundle`` rows against the release's joint artifacts.
+
+        The path counterpart of :meth:`bundle_rows` (ADR-0188): the same
+        producer, with the path block's ONE false-signal and ONE outcome
+        identity on every row. An empty tick is the empty gate; any row
+        without the path fields refuses.
+        """
+        bundle = cls._assembled(release, cls._path_block(release)["uncertainty"], rows)
+        if rows and not bundle.has_paths:
+            raise ValueError(
+                "path_bundle_rows assembles path rows only -- a row without the exit-horizon "
+                "fields belongs in bundle_rows (ADR-0188)"
+            )
+        return bundle.rows
+
+    @staticmethod
+    def _assembled(release, group, rows):
+        """Build the ``ForecastBundle`` of ``rows`` under the release cap's producer and ``group``'s ids."""
         producer = release["cap"]["producer"]
         return ForecastBundle(
             release["release_id"],
@@ -920,7 +1280,7 @@ class ForecastPublisher(Node):
             producer={"document_sha256": producer["document_sha256"], "node": producer["node"], "output": "bundle"},
             model_manifest_sha256=release["model_manifest_sha256"],
             uncertainty={slot: group[slot]["attestation"]["artifact_id"] for slot in ("false_signal", "outcome")},
-        ).rows
+        )
 
     def _tick_rows(self, walk, index, release, scenarios):
         """``{(ts, lead): [bundle input row, ...]}`` for one segment -- ``yhat`` only, never ``y``."""
@@ -989,15 +1349,82 @@ class _MinuteWalk(_Walk):
             entry["trade_snapshot"] = guard.name
         return verified
 
-    def trade_yhat(self, index):
-        """Fold ``index``'s ``{(symbol, lead): [(ts, yhat), ...]}`` trade rows, admitted units only, no ``y``."""
+    def _admission(self, gates, inventory_path, manifest):
+        """:meth:`_Walk._admission`, keeping the cap rows and modeled units a path release reads."""
+        lead_map = super()._admission(gates, inventory_path, manifest)
+        self._cap_rows = {row["unit"]: row for row in _outputs(gates, "gate artifact")["caps"]}
+        self._modeled = {
+            (row.get("symbol"), row.get("horizon"))
+            for row in manifest.get("expected_units") or ()
+            if isinstance(row, dict)
+        }
+        return lead_map
+
+    def calibrated_horizons(self):
+        """Every admitted name's calibrated horizon ``K_i``: its gate unit's ``n_horizons`` (ADR-0188).
+
+        ``K_i`` is the number of leads with a scored head (the unit's dense
+        evidence ladder from h1), which the path mode forecasts and
+        calibrates past the admitted cap ``H_i``. Read in path mode only, so
+        a gate artifact without ``n_horizons`` still serves the cap mode.
+
+        Returns
+        -------
+        dict
+            ``{symbol: K_i}`` for every admitted symbol, in symbol order.
+
+        Raises
+        ------
+        ValueError
+            A cap row without an integer ``n_horizons``, one outside
+            ``[capped_horizon, 10]``, or one claiming a head the pinned
+            inventory never modeled -- every problem named.
+        """
+        from .final_model import HEADS
+
+        horizons, problems = {}, []
+        for symbol, cap in sorted(self.lead_map.items()):
+            top = self._cap_rows[symbol].get("n_horizons")
+            if isinstance(top, bool) or not isinstance(top, int):
+                problems.append(
+                    f"gate cap row {symbol} carries no integer n_horizons (got {top!r}): the path mode "
+                    "reads each admitted name's calibrated horizon from the gate"
+                )
+            elif not cap <= top <= len(HEADS):
+                problems.append(
+                    f"gate cap row {symbol} has n_horizons {top}, outside [{cap}, {len(HEADS)}] "
+                    "(its capped_horizon up to the release's scored heads)"
+                )
+            else:
+                unmodeled = [lead for lead in range(1, top + 1) if (symbol, lead) not in self._modeled]
+                if unmodeled:
+                    problems.append(
+                        f"{symbol}:h{unmodeled[0]:02d} was never modeled, yet the gate's n_horizons "
+                        f"{top} claims it"
+                    )
+                else:
+                    horizons[symbol] = top
+        if problems:
+            raise ValueError("path mode refused: " + "; ".join(problems))
+        return horizons
+
+    def trade_yhat(self, index, horizons=None):
+        """Fold ``index``'s ``{(symbol, lead): [(ts, yhat), ...]}`` trade rows, admitted units only, no ``y``.
+
+        ``horizons`` (``{symbol: K_i}``, the path mode's calibrated horizons,
+        ADR-0188) widens each admitted name from its capped lead to every
+        scored lead ``1..K_i``; ``None`` keeps the capped lead alone.
+        """
         from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, read_predictions
 
         names = ("ts", "series", "horizon", "yhat")
         table = read_predictions(
             self.folds[index]["trade_snapshot"], columns=names, filename=TRADE_PREDICTIONS_FILE,
         )
-        wanted = set(self.lead_map.items())
+        if horizons is None:
+            wanted = set(self.lead_map.items())
+        else:
+            wanted = {(symbol, lead) for symbol, top in horizons.items() for lead in range(1, top + 1)}
         out = {}
         for stamp, symbol, lead, value in zip(*(table.get(name, ()) for name in names)):
             if (symbol, int(lead)) in wanted:
@@ -1029,10 +1456,24 @@ class MinuteForecastPublisher(ForecastPublisher):
     unless the trade ``yhat`` equals the scored ``yhat`` at every scored
     stamp of the segment (one model, one feature pipeline).
 
+    PATH mode (ADR-0188 formulation B) is declared, never defaulted: with
+    ``leads: "path"`` every release is the default release PLUS a ``path``
+    block (:meth:`_path_release`: each admitted name's calibrated horizon
+    ``K_i`` from the gate, ONE joint outcome calibration over every cell
+    ``(name, lead <= K_i)`` with its per-cell coverage beside the attested
+    artifact-level one, the false-signal estimate per admitted cell, and ONE
+    joint scenario draw over the cells), and every tick block also carries
+    ``yhat_by_lead``: the trade ``yhat`` of every scored head ``1..K_i``,
+    one column per lead in lead order, refused when a head misses a minute
+    its capped lead ticks. :meth:`path_tick` reads one minute of it and
+    :meth:`ForecastPublisher.path_rows` turns that into the tick's path rows.
+
     Parameters
     ----------
     params : dict
-        :class:`ForecastPublisher`'s.
+        :class:`ForecastPublisher`'s, plus the optional ``leads``:
+        ``"cap"`` (the default: ADR-0186's releases and ticks, byte for
+        byte) or ``"path"``.
 
     Examples
     --------
@@ -1047,10 +1488,36 @@ class MinuteForecastPublisher(ForecastPublisher):
     _WALK = _MinuteWalk
     _TICK_PORT = "ticks"
     _KIND = "intraday_equities-minute-forecast-publisher"
+    #: The optional ``leads`` param's closed vocabulary (ADR-0188).
+    _LEADS = ("cap", "path")
+
+    @classmethod
+    def validate_params(cls, params):
+        """:meth:`ForecastPublisher.validate_params`, plus the optional ``leads`` (default ``"cap"``)."""
+        problems = super().validate_params({name: value for name, value in params.items() if name != "leads"})
+        if "leads" in params and params["leads"] not in cls._LEADS:
+            problems.append(f"leads must be one of {list(cls._LEADS)} (default 'cap'), got {params['leads']!r}")
+        return problems
+
+    def fingerprint(self):
+        """:meth:`ForecastPublisher.fingerprint`, naming the path mode when it is declared."""
+        fingerprint = super().fingerprint()
+        if self._path_mode():
+            fingerprint["leads"] = "path"
+        return fingerprint
+
+    def _path_mode(self):
+        """Whether the document declared ``leads: "path"`` (ADR-0188)."""
+        return self.params.get("leads", "cap") == "path"
 
     def _release(self, walk, index, producer):
-        """Return the lattice release plus the constants a per-minute bundle needs."""
-        release, scenarios = super()._release(walk, index, producer)
+        """Return the lattice release plus the constants a per-minute bundle needs.
+
+        In path mode the release also carries :meth:`_path_release`'s block,
+        projected from the SAME false-signal estimate the lead groups read.
+        """
+        estimate = self._false_signal(walk, index) if self._path_mode() else None
+        release, scenarios = super()._release(walk, index, producer, estimate=estimate)
         _market, contract = walk.market(index)
         constants = {}
         for lead in release["lead_groups"]:
@@ -1059,13 +1526,66 @@ class MinuteForecastPublisher(ForecastPublisher):
             constants[str(lead)] = {"weights": list(weights), "scenarios": {s: list(draws[s]) for s in members}}
         release["tick_constants"] = constants
         release["label"] = contract
+        if estimate is not None:
+            release["path"] = self._path_release(walk, index, release, estimate)
         return release, scenarios
 
+    def _path_release(self, walk, index, release, estimate):
+        """Build the release's ``path`` block (ADR-0188 formulation B), as JSON.
+
+        * ``horizons`` -- ``{symbol: K_i}``, every admitted name's calibrated
+          horizon (:meth:`_MinuteWalk.calibrated_horizons`).
+        * ``cells`` -- the joint panel's columns ``SYM:hNN``, every lead
+          ``1..K_i`` of every admitted name, in symbol then lead order.
+        * ``uncertainty`` -- ONE outcome band over the cells, calibrated on
+          the same complete-case lattice rows and UTC-day blocks the lead
+          groups use (a row is one instant across every name AND lead), and
+          ``estimate`` projected to every ADMITTED cell (lead ``<= H_i``):
+          nothing is calibrated past the cap. Both attested.
+        * ``measured_coverage`` -- the band's artifact-level out-of-sample
+          coverage (the number its attestation carries and the capital
+          intake screens); ``cell_coverage`` -- each cell's own reading on
+          the same rows, the per-cell screen of
+          :meth:`ForecastPublisher.path_plan` (owner question I(a)).
+        * ``tick_constants`` -- ONE joint scenario draw over the cells
+          (shared ``weights``, one residual array per cell, seeded from the
+          panel digest as every draw here is), which every tick of the
+          release reads, so scenario ``o`` is one calibration instant across
+          every name and every lead.
+        """
+        horizons = walk.calibrated_horizons()
+        release_id = release["release_id"]
+        cells = {
+            self._cell_id(symbol, lead): (symbol, lead)
+            for symbol in sorted(horizons)
+            for lead in range(1, horizons[symbol] + 1)
+        }
+        outcome, scenarios, measured, per_cell = self._outcome(walk, index, cells, "path", release_id)
+        admitted = {cell: cell for cell, (symbol, lead) in cells.items() if lead <= release["lead_map"][symbol]}
+        weights, draws = scenarios.weighted_draws()
+        return {
+            "horizons": horizons,
+            "cells": list(cells),
+            "uncertainty": {
+                "false_signal": self._false_signal_obj(
+                    estimate, admitted, "path", release_id, release["segment_start_ms"]
+                ),
+                "outcome": outcome,
+            },
+            "measured_coverage": measured,
+            "cell_coverage": per_cell,
+            "tick_constants": {
+                "weights": list(weights),
+                "scenarios": {cell: list(draws[cell]) for cell in cells},
+            },
+        }
+
     def _publish_ticks(self, walk, index, release, scenarios):
-        """Per admitted unit, the segment's per-minute tick columns."""
+        """Per admitted unit, the segment's per-minute tick columns (every head's too, in path mode)."""
         del scenarios
         market, _contract = walk.market(index)
-        trade = walk.trade_yhat(index)
+        horizons = release["path"]["horizons"] if self._path_mode() else None
+        trade = walk.trade_yhat(index, horizons)
         scored = walk.yhat(index)
         start, end = release["segment_start_ms"], release["segment_end_ms"]
         out = []
@@ -1082,8 +1602,74 @@ class MinuteForecastPublisher(ForecastPublisher):
                 block["price"].append(price)
                 block["sigma"].append(sigma)
                 block["beta"].append(beta)
+            if horizons is not None:
+                block["yhat_by_lead"] = self._lead_columns(
+                    symbol, stamps, horizons[symbol], trade, scored, start, end
+                )
             out.append(block)
         return out
+
+    def _lead_columns(self, symbol, stamps, calibrated, trade, scored, start, end):
+        """Every scored head's trade ``yhat`` at ``stamps``: one column per lead ``1..calibrated``.
+
+        Each head is held to the capped lead's own checks -- unique,
+        time-ordered rows equal to the scored ``yhat`` at every scored stamp
+        of the segment -- and must tick exactly the minutes the capped lead
+        ticks: a path row needs every head at its minute, so a missing cell
+        refuses by name (ADR-0188).
+        """
+        columns = []
+        for lead in range(1, calibrated + 1):
+            rows = [(stamp, value) for stamp, value in trade.get((symbol, lead), ()) if start <= stamp < end]
+            found = [stamp for stamp, _ in rows]
+            if found != sorted(set(found)):
+                raise ValueError(f"{symbol}:h{lead:02d} trade rows are not unique and time-ordered")
+            if found != stamps:
+                missing = sorted(set(stamps) - set(found))
+                extra = sorted(set(found) - set(stamps))
+                raise ValueError(
+                    f"{symbol}:h{lead:02d} trade rows do not tick the minutes its capped lead ticks "
+                    f"({len(missing)} missing, e.g. {missing[:3]}; {len(extra)} extra, e.g. {extra[:3]}): "
+                    "a path row carries every scored head at its minute (ADR-0188)"
+                )
+            self._refuse_trade_disagreement(symbol, lead, dict(rows), scored.get((symbol, lead), ()), start, end)
+            columns.append([value for _, value in rows])
+        return columns
+
+    @staticmethod
+    def path_tick(block, at):
+        """Minute ``at`` of a path tick block, as the ``ticks`` entry the path builders take (ADR-0188).
+
+        Parameters
+        ----------
+        block : dict
+            One ``ticks`` entry published with ``leads: "path"``.
+        at : int
+            The minute's index in ``block["ts"]``.
+
+        Returns
+        -------
+        dict
+            ``{"price", "yhat_path", "sigma", "beta"}``, where
+            ``yhat_path`` is every scored head's prediction at that minute
+            in lead order -- the input of :meth:`ForecastPublisher.path_row`.
+
+        Raises
+        ------
+        ValueError
+            The block was published without the path mode.
+        """
+        if "yhat_by_lead" not in block:
+            raise ValueError(
+                f"tick block {block.get('symbol')!r} carries no yhat_by_lead: its publisher did not "
+                "declare leads 'path' (ADR-0188)"
+            )
+        return {
+            "price": block["price"][at],
+            "yhat_path": [column[at] for column in block["yhat_by_lead"]],
+            "sigma": block["sigma"][at],
+            "beta": block["beta"][at],
+        }
 
     @staticmethod
     def _refuse_trade_disagreement(symbol, lead, trade, scored, start, end):

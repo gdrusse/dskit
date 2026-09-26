@@ -2413,3 +2413,508 @@ def test_minute_simulate_refuses_a_tick_after_the_evidence_end(msim7):
         MinuteDevelopmentSimulation("simulate", _sim_params(evidence_end=early)).run(
             fx["ctx"], _minute_sim_inputs(published, list(msim7["bars"]), fx)
         )
+
+
+# --- ADR-0188 formulation B: the publisher's exit-horizon PATH mode ----------
+
+#: Each unit's calibrated horizon ``K_i`` -- the real gate artifact's
+#: ``n_horizons``, stamped onto the fixture's cap rows. Every admitted name
+#: scores more heads than its cap admits (LLY and LRCX 3 over 2, NOW 2 over
+#: 1); ANET is modeled but not admitted, so no path may ever carry it.
+PATH_HORIZONS = {"ANET": 3, "LLY": 3, "LRCX": 3, "NOW": 2}
+#: The per-cell floor these tests screen with when no cell should fail:
+#: every measured cell of the fixture clears it.
+LOW_FLOOR = 0.01
+
+
+def _with_horizons(fx, horizons=PATH_HORIZONS):
+    """Stamp each gate cap row with its ``n_horizons`` (as the real gate does) and repin the gates."""
+    with open(fx["params"]["gates"], encoding="utf-8") as handle:
+        gates = json.load(handle)
+    for row in gates["outputs"]["caps"]:
+        row.pop("n_horizons", None)
+        if row["unit"] in horizons:
+            row["n_horizons"] = horizons[row["unit"]]
+    _dump(fx["params"]["gates"], gates)
+    fx["params"]["gates_sha256"] = _sha(fx["params"]["gates"])
+    return fx
+
+
+def _prun(fx, leads="path"):
+    """Publish the minute walk with ``leads`` declared (``None``: the param left out), as JSON."""
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    params = dict(fx["params"]) if leads is None else dict(fx["params"], leads=leads)
+    return json.loads(json.dumps(MinuteForecastPublisher("publish", params).run(fx["ctx"], {})))
+
+
+def _path_ticks(published, stamp, release=0):
+    """``{symbol: tick}`` at ``stamp``: every path tick block of the release that printed there."""
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    release_id = published["releases"][release]["release_id"]
+    return {
+        block["symbol"]: MinuteForecastPublisher.path_tick(block, block["ts"].index(stamp))
+        for block in published["ticks"]
+        if block["release_id"] == release_id and stamp in block["ts"]
+    }
+
+
+def _lattice_stamp(release, m=3):
+    """The ``m``-th scored lattice instant of the segment's first day (every head scored it)."""
+    return release["segment_start_ms"] + OPEN_MS + m * 1_800_000
+
+
+@pytest.fixture(scope="module")
+def ppub(tmp_path_factory):
+    """One minute walk with calibrated horizons, published in path mode and with ``leads`` left out."""
+    fx = _with_horizons(_build_fx(str(tmp_path_factory.mktemp("path")), minute=True))
+    return {"fx": fx, "path": _prun(fx), "default": _prun(fx, leads=None)}
+
+
+def test_path_mode_is_declared_and_never_the_default(ppub):
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    fx = ppub["fx"]
+    assert _canon(_prun(fx, leads="cap")) == _canon(ppub["default"])
+    assert all("path" not in release for release in ppub["default"]["releases"])
+    assert all("yhat_by_lead" not in block for block in ppub["default"]["ticks"])
+    assert MinuteForecastPublisher.validate_params(dict(fx["params"], leads="path")) == []
+    assert MinuteForecastPublisher.validate_params(dict(fx["params"], leads="cap")) == []
+    assert any("leads" in p for p in MinuteForecastPublisher.validate_params(dict(fx["params"], leads="joint")))
+    # The lattice kind has no path mode: the knob is an unknown param there.
+    assert any("leads" in p for p in ForecastPublisher.validate_params(dict(fx["params"], leads="path")))
+    default = MinuteForecastPublisher("publish", fx["params"]).fingerprint()
+    assert "leads" not in default
+    path = MinuteForecastPublisher("publish", dict(fx["params"], leads="path")).fingerprint()
+    assert path == {**default, "leads": "path"}
+
+
+def test_a_path_release_is_the_default_release_plus_one_path_block(ppub):
+    path, default = ppub["path"], ppub["default"]
+    assert _canon([{k: v for k, v in r.items() if k != "path"} for r in path["releases"]]) == _canon(
+        default["releases"]
+    )
+    assert _canon([{k: v for k, v in b.items() if k != "yhat_by_lead"} for b in path["ticks"]]) == _canon(
+        default["ticks"]
+    )
+    block = path["releases"][0]["path"]
+    assert block["horizons"] == {"LLY": 3, "LRCX": 3, "NOW": 2}
+    cells = ["LLY:h01", "LLY:h02", "LLY:h03", "LRCX:h01", "LRCX:h02", "LRCX:h03", "NOW:h01", "NOW:h02"]
+    assert block["cells"] == cells
+    assert list(block["tick_constants"]["scenarios"]) == cells
+    assert block["uncertainty"]["outcome"]["artifact"]["provenance"]["components"] == cells
+
+
+def test_path_ticks_carry_every_scored_head_in_lead_order(ppub):
+    from dskit.pipeline.predictions import read_predictions
+
+    fx, published = ppub["fx"], ppub["path"]
+    names = ("ts", "series", "horizon", "yhat")
+    table = read_predictions(fx["runs"][2], columns=names, filename=TRADE_PREDICTIONS_FILE)
+    trade = {
+        (symbol, int(lead), int(stamp)): float(value)
+        for stamp, symbol, lead, value in zip(*(table[name] for name in names))
+    }
+    lattice = set(fx["data"][(2, 1)]["LLY"][0])
+    checked = 0
+    for block in published["ticks"]:
+        symbol = block["symbol"]
+        columns = block["yhat_by_lead"]
+        assert len(columns) == PATH_HORIZONS[symbol]
+        # The capped head's column is the default tick's own yhat column.
+        assert columns[block["lead"] - 1] == block["yhat"]
+        for lead, column in enumerate(columns, start=1):
+            assert column == [trade[(symbol, lead, t)] for t in block["ts"]]
+            stamps, _y, yhat = fx["data"][(2, lead)][symbol]
+            scored = dict(zip(stamps, yhat))
+            for at, t in enumerate(block["ts"]):
+                if t in lattice:
+                    assert column[at] == pytest.approx(scored[t], rel=1e-6)
+                    checked += 1
+    assert checked == len(lattice) * sum(PATH_HORIZONS[b["symbol"]] for b in published["ticks"])
+
+
+def test_a_path_tick_refuses_a_minute_one_head_did_not_score(mfx):
+    _with_horizons(mfx)
+    target = _splits(2)["val_start_ms"] + OPEN_MS + 7 * 60_000
+
+    def dropped(i, n, lead, stamps, yhat):
+        keep = [k for k, t in enumerate(stamps) if (i, n, lead, t) != (2, "LRCX", 3, target)]
+        return [stamps[k] for k in keep], [yhat[k] for k in keep]
+
+    _write_trade(mfx, dropped)
+    _write_inventory(mfx)
+    with pytest.raises(ValueError, match="LRCX:h03 trade rows do not tick"):
+        _prun(mfx)
+    # LRCX's cap is h02: the default mode never reads its third head.
+    assert _prun(mfx, leads=None)["ticks"]
+
+
+def test_path_rows_validate_through_the_bundle_as_path_rows(ppub):
+    from intraday_equities.nodes_capital import _bundle_problems
+
+    published = ppub["path"]
+    release = published["releases"][0]
+    t = _open(release) + 7 * 60_000
+    rows = ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR)
+    assert [row["entity"] for row in rows] == ["LLY", "LRCX", "NOW"]
+    producer = release["cap"]["producer"]
+    bundle = ForecastBundle(
+        release["release_id"],
+        rows,
+        producer={"document_sha256": producer["document_sha256"], "node": producer["node"], "output": "bundle"},
+        model_manifest_sha256=release["model_manifest_sha256"],
+        uncertainty={
+            slot: release["path"]["uncertainty"][slot]["attestation"]["artifact_id"]
+            for slot in ("false_signal", "outcome")
+        },
+    )
+    assert bundle.has_paths is True
+    assembled = ForecastPublisher.path_bundle_rows(release, rows)
+    assert _canon(assembled) == _canon(bundle.rows)
+    assert [len(row["mu_gross_path"]) for row in assembled] == [3, 3, 2]
+    # A path row is also a valid flat row at the capital boundary.
+    assert _bundle_problems(assembled) == []
+    assert ForecastPublisher.path_bundle_rows(release, []) == []
+    flat = ForecastPublisher.tick_row(
+        release, "NOW", t, 1, rows[2]["price"], rows[2]["yhat"], rows[2]["sigma_t"], rows[2]["beta_t"],
+        rows[2]["weights"], rows[2]["scenarios"], release["label"],
+    )
+    with pytest.raises(ValueError, match="path rows"):
+        ForecastPublisher.path_bundle_rows(release, [flat])
+
+
+def test_a_path_rows_curve_is_every_head_at_that_minute_in_lead_order(ppub):
+    fx, published = ppub["fx"], ppub["path"]
+    release = published["releases"][0]
+    t = _lattice_stamp(release)
+    rows = ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR)
+    assert len(rows) == 3
+    for row in rows:
+        expected = []
+        for lead in range(1, PATH_HORIZONS[row["entity"]] + 1):
+            stamps, _y, yhat = fx["data"][(2, lead)][row["entity"]]
+            expected.append(yhat[stamps.index(t)])
+        assert row["yhat_path"] == pytest.approx(expected, rel=1e-6)
+
+
+def test_a_path_rows_admitted_horizon_is_the_gates_cap(ppub):
+    release = ppub["path"]["releases"][0]
+    caps = ConfirmedCaps(release["cap"])
+    t = _open(release) + 7 * 60_000
+    rows = ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR)
+    for row in rows:
+        assert row["admitted_horizon"] == caps.capped_horizon(row["entity"]) == CAPS[row["entity"]]
+        assert len(row["pi_hat_path"]) == len(row["pi_widened_path"]) == row["admitted_horizon"]
+        assert len(row["yhat_path"]) == len(row["scenarios_path"]) == PATH_HORIZONS[row["entity"]]
+
+
+def test_a_name_with_no_cap_or_a_zero_cap_gets_no_path_row(ppub):
+    published = ppub["path"]
+    release = published["releases"][0]
+    t = _open(release) + 7 * 60_000
+    assert "ANET" not in release["path"]["horizons"]
+    assert not any(cell.startswith("ANET:") for cell in release["path"]["cells"])
+    assert "ANET" not in {block["symbol"] for block in published["ticks"]}
+    ticks = _path_ticks(published, t)
+    assert sorted(ticks) == ["LLY", "LRCX", "NOW"]
+    assert "ANET" not in {row["entity"] for row in ForecastPublisher.path_rows(release, t, ticks, LOW_FLOOR)}
+    tick = ticks["LLY"]
+    for symbol in ("ANET", "XYZ"):  # a zero cap, and a name the gate never saw
+        with pytest.raises(ValueError, match=f"{symbol}.*no path"):
+            ForecastPublisher.path_row(
+                release, symbol, t, tick["price"], tick["yhat_path"], tick["sigma"], tick["beta"], LOW_FLOOR
+            )
+        with pytest.raises(ValueError, match=f"{symbol}.*no path"):
+            ForecastPublisher.path_rows(release, t, {**ticks, symbol: tick}, LOW_FLOOR)
+
+
+def test_the_plan_is_every_calibrated_head_when_every_cell_clears_the_floor(ppub):
+    release = ppub["path"]["releases"][0]
+    assert ForecastPublisher.path_plans(release, LOW_FLOOR) == {
+        "LLY": {"calibrated": 3, "admitted": 2, "kstar": 3, "plan": 3},
+        "LRCX": {"calibrated": 3, "admitted": 2, "kstar": 3, "plan": 3},
+        "NOW": {"calibrated": 2, "admitted": 1, "kstar": 2, "plan": 2},
+    }
+    t = _open(release) + 7 * 60_000
+    rows = ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR)
+    assert {row["entity"]: row["plan_horizon"] for row in rows} == {"LLY": 3, "LRCX": 3, "NOW": 2}
+
+
+def test_a_cell_below_the_floor_truncates_its_names_plan_at_the_last_passing_lead(ppub):
+    published = ppub["path"]
+    release = json.loads(json.dumps(published["releases"][0]))
+    coverage = release["path"]["cell_coverage"]
+    for cell in coverage:
+        coverage[cell] = 0.9
+    coverage["LLY:h03"] = 0.4  # a lead-3 breach: LLY plans two tranches
+    coverage["LRCX:h02"] = 0.4  # a middle breach truncates though h03 passes
+    coverage["NOW:h01"] = 0.4  # a lead-1 breach: NOW gets no row (sell-only, question I(a))
+    plans = ForecastPublisher.path_plans(release, 0.5)
+    assert {s: (p["kstar"], p["plan"]) for s, p in plans.items()} == {"LLY": (2, 2), "LRCX": (1, 1), "NOW": (0, 0)}
+    t = _open(release) + 7 * 60_000
+    ticks = _path_ticks(published, t)
+    rows = ForecastPublisher.path_rows(release, t, ticks, 0.5)
+    assert {row["entity"]: row["plan_horizon"] for row in rows} == {"LLY": 2, "LRCX": 1}
+    lly = rows[0]
+    # Screening shortens the plan only: every scored head and admitted rate still rides.
+    assert (len(lly["yhat_path"]), len(lly["scenarios_path"]), len(lly["pi_hat_path"])) == (3, 3, 2)
+    assert [row["plan_horizon"] for row in ForecastPublisher.path_bundle_rows(release, rows)] == [2, 1]
+    tick = ticks["NOW"]
+    with pytest.raises(ValueError, match="NOW gets no path row.*kstar 0"):
+        ForecastPublisher.path_row(
+            release, "NOW", t, tick["price"], tick["yhat_path"], tick["sigma"], tick["beta"], 0.5
+        )
+    coverage["NOW:h01"] = 0.5  # exactly at the floor passes
+    assert ForecastPublisher.path_plans(release, 0.5)["NOW"]["kstar"] == 2
+
+
+def test_per_cell_coverage_is_recorded_beside_the_artifact_level_reading(ppub):
+    release = ppub["path"]["releases"][0]
+    path = release["path"]
+    assert list(path["cell_coverage"]) == path["cells"]
+    assert all(0.0 <= value <= 1.0 for value in path["cell_coverage"].values())
+    # One scored row set for every cell, so the attested reading is their mean.
+    assert path["measured_coverage"] == pytest.approx(sum(path["cell_coverage"].values()) / len(path["cells"]))
+    attested = path["uncertainty"]["outcome"]["attestation"]["coverage"]
+    assert attested["measured"] == path["measured_coverage"]
+    assert attested["evidence_id"].startswith("procedure-level:fixture-model:path:")
+    # The lead groups' artifact-level readings are untouched beside it.
+    default = ppub["default"]["releases"][0]
+    assert release["calibration"] == default["calibration"]
+    assert release["uncertainty"] == default["uncertainty"]
+
+
+def test_a_cell_that_misses_out_of_sample_is_screened_end_to_end(mfx):
+    # Release 2 measures coverage with the band calibrated before fold 1 and
+    # scored on fold 1. Wreck fold 1's LLY h3 and NOW h1 forecasts: those two
+    # cells miss every out-of-sample row; no other cell's forecasts move.
+    _with_horizons(mfx)
+    wrecked = {(1, "LLY", 3), (1, "NOW", 1)}
+    _repin(mfx, lambda i, n, lead, s, y, yhat: (y, [v + 50.0 for v in yhat] if (i, n, lead) in wrecked else yhat))
+    published = _prun(mfx)
+    release = published["releases"][0]
+    coverage = release["path"]["cell_coverage"]
+    assert coverage["LLY:h03"] == coverage["NOW:h01"] == 0.0
+    assert min(v for cell, v in coverage.items() if cell not in {"LLY:h03", "NOW:h01"}) >= 0.1
+    plans = ForecastPublisher.path_plans(release, 0.1)
+    assert {s: p["plan"] for s, p in plans.items()} == {"LLY": 2, "LRCX": 3, "NOW": 0}
+    t = _open(release) + 7 * 60_000
+    rows = ForecastPublisher.path_rows(release, t, _path_ticks(published, t), 0.1)
+    assert {row["entity"]: row["plan_horizon"] for row in rows} == {"LLY": 2, "LRCX": 3}
+
+
+def test_the_joint_draw_is_one_calibration_row_across_every_name_and_lead(ppub):
+    from dskit.pipeline.predictions import read_prediction_series
+
+    fx = ppub["fx"]
+    release = ppub["path"]["releases"][0]
+    cells = release["path"]["cells"]
+    constants = release["path"]["tick_constants"]
+    cutoff = release["segment_start_ms"]
+    start = cutoff - fx["params"]["calibration_window_days"] * 86_400_000
+    by_stamp = {}
+    for index in range(2):
+        for unit in read_prediction_series(fx["runs"][index]):
+            cell = f"{unit['symbol']}:h{unit['lead']:02d}"
+            for stamp, y, yhat in zip(unit["stamps"], unit["y"], unit["yhat"]):
+                if start <= stamp < cutoff:
+                    by_stamp.setdefault(stamp, {})[cell] = y - yhat
+    calibration = {tuple(row[cell] for cell in cells) for row in by_stamp.values() if set(cells) <= set(row)}
+    drawn = list(zip(*(constants["scenarios"][cell] for cell in cells)))
+    assert len(drawn) == len(constants["weights"]) == fx["params"]["uncertainty"]["n_scenarios"]
+    # Scenario o is ONE simultaneous calibration row: the same world for every name and every lead.
+    assert all(world in calibration for world in drawn)
+    assert len(set(drawn)) > 1
+
+
+def test_the_joint_draw_is_reproducible_and_each_lead_is_its_own_draw(ppub):
+    fx = ppub["fx"]
+    release = ppub["path"]["releases"][0]
+    assert _canon(_prun(fx)) == _canon(ppub["path"])
+    draws = release["path"]["tick_constants"]["scenarios"]
+    assert draws["LLY:h01"] != draws["LLY:h02"] != draws["LLY:h03"] != draws["LLY:h01"]
+    t = _open(release) + 7 * 60_000
+    lly = ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR)[0]
+    assert lly["scenarios_path"] == [draws["LLY:h01"], draws["LLY:h02"], draws["LLY:h03"]]
+    reseeded = dict(fx, params=dict(fx["params"], uncertainty=dict(fx["params"]["uncertainty"], seed=1)))
+    moved = _prun(reseeded)["releases"][0]["path"]
+    # The seed moves the draw, never the calibration it draws from.
+    assert moved["tick_constants"] != release["path"]["tick_constants"]
+    assert moved["cell_coverage"] == release["path"]["cell_coverage"]
+    assert moved["uncertainty"]["outcome"] == release["path"]["uncertainty"]["outcome"]
+
+
+def test_path_rates_are_the_per_cell_estimate_at_admitted_leads_only(ppub):
+    from intraday_equities.simulation import MinuteForecastPublisher, _MinuteWalk
+
+    fx = ppub["fx"]
+    release = ppub["path"]["releases"][0]
+    signal = release["path"]["uncertainty"]["false_signal"]["artifact"]
+    admitted = sorted(f"{s}:h{k:02d}" for s, cap in release["lead_map"].items() for k in range(1, cap + 1))
+    assert sorted(signal["pi_hat"]) == sorted(signal["pi_widened"]) == admitted
+    walk = _MinuteWalk(fx["params"])
+    try:
+        estimate = MinuteForecastPublisher("publish", fx["params"])._false_signal(walk, 2)
+    finally:
+        walk.close()
+    for cell in admitted:
+        assert signal["pi_hat"][cell] == estimate.pi_hat[cell]
+        assert signal["pi_widened"][cell] == estimate.pi_widened[cell]
+    t = _open(release) + 7 * 60_000
+    for row in ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR):
+        cells = [f"{row['entity']}:h{k:02d}" for k in range(1, row["admitted_horizon"] + 1)]
+        assert row["pi_hat_path"] == [signal["pi_hat"][c] for c in cells]
+        assert row["pi_widened_path"] == [signal["pi_widened"][c] for c in cells]
+    # The cap lead's rate is the very number the lead-group artifact projects.
+    for symbol, cap in release["lead_map"].items():
+        group = release["uncertainty"][str(cap)]["false_signal"]["artifact"]
+        assert signal["pi_hat"][f"{symbol}:h{cap:02d}"] == group["pi_hat"][symbol]
+
+
+def test_a_path_rows_flat_fields_are_its_first_step_and_todays_tick_fields(ppub):
+    published = ppub["path"]
+    release = published["releases"][0]
+    cutoff = release["segment_start_ms"]
+    t = _open(release) + 7 * 60_000
+    ticks = _path_ticks(published, t)
+    rows = ForecastPublisher.path_rows(release, t, ticks, LOW_FLOOR)
+    constants = release["path"]["tick_constants"]
+    for row in rows:
+        tick = ticks[row["entity"]]
+        assert (row["lead"], row["decision_ts"]) == (1, t)
+        assert row["yhat"] == row["yhat_path"][0]
+        assert row["pi_hat"] == row["pi_hat_path"][0]
+        assert row["pi_widened"] == row["pi_widened_path"][0]
+        assert row["scenarios"] == row["scenarios_path"][0]
+        assert row["weights"] == constants["weights"]
+        assert (row["price"], row["sigma_t"], row["beta_t"]) == (tick["price"], tick["sigma"], tick["beta"])
+        assert row["label"] == release["label"]
+        assert row["known_at"] == {
+            "sigma": t, "beta": t, "reference": t, "price": t, "yhat": t,
+            "pi_hat": cutoff, "pi_widened": cutoff, "scenarios": cutoff,
+        }
+    # NOW's cap is lead 1: its path row's flat fields are today's tick row's,
+    # except the scenario draw, which is the joint one.
+    block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
+    at = block["ts"].index(t)
+    group = release["tick_constants"]["1"]
+    flat = ForecastPublisher.tick_row(
+        release, "NOW", t, 1, block["price"][at], block["yhat"][at], block["sigma"][at], block["beta"][at],
+        group["weights"], group["scenarios"]["NOW"], release["label"],
+    )
+    now = next(row for row in rows if row["entity"] == "NOW")
+    same = set(flat) - {"weights", "scenarios"}
+    assert {k: now[k] for k in same} == {k: flat[k] for k in same}
+
+
+def test_a_path_row_at_t_reads_no_tick_after_t(ppub):
+    published = json.loads(json.dumps(ppub["path"]))
+    release = published["releases"][0]
+    t = _open(release) + 7 * 60_000
+    before = ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR)
+    for block in published["ticks"]:
+        at = block["ts"].index(t) + 1
+        for column in block["yhat_by_lead"]:
+            column[at:] = [99.0] * (len(column) - at)
+        for name in ("price", "sigma", "beta"):
+            block[name][at:] = [7.0] * (len(block[name]) - at)
+    assert ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR) == before
+
+
+def test_path_calibration_reads_nothing_at_or_after_the_cutoff(mfx):
+    _with_horizons(mfx)
+    before = _prun(mfx)
+    cutoff = before["releases"][0]["segment_start_ms"]
+    _repin(
+        mfx,
+        lambda i, n, lead, s, y, yhat: (
+            [v * 5.0 + 1.0 if t >= cutoff else v for t, v in zip(s, y)],
+            [-3.0 * v if t >= cutoff else v for t, v in zip(s, yhat)],
+        ),
+    )
+    after = _prun(mfx)
+    assert _canon(after["releases"][0]["path"]) == _canon(before["releases"][0]["path"])
+    assert _canon(after["ticks"]) != _canon(before["ticks"])
+
+
+def test_path_envelopes_admit_through_the_uncertainty_intake(ppub):
+    from dskit.pipeline.uncertainty_intake import artifact_of, attestation_of
+
+    release = ppub["path"]["releases"][0]
+    envelopes = ForecastPublisher.path_envelopes(release)
+    members = dict(REQUIRED_INTAKES)
+    for when, admitted in (
+        (release["segment_start_ms"] + 3_600_000, True),
+        (release["segment_start_ms"] - 1, False),
+    ):
+        demand = DecisionDemand(
+            decision_ts_ms=when,
+            model_identity=release["release_id"],
+            max_calibration_age_ms=64 * 86_400_000,
+            min_measured_coverage=0.01,
+        )
+        for slot, envelope in envelopes.items():
+            problems = admission_problems(envelope, demand, members[slot])
+            if admitted:
+                assert problems == []
+            else:
+                assert any(p.startswith("post_decision") for p in problems)
+    t = _open(release) + 7 * 60_000
+    rows = ForecastPublisher.path_bundle_rows(
+        release, ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR)
+    )
+    ids = {slot: attestation_of(envelope).artifact_id for slot, envelope in envelopes.items()}
+    assert rows and all(row["uncertainty"] == ids for row in rows)
+    # Keyed per cell: the band covers every calibrated cell, the rates every admitted one.
+    assert sorted(artifact_of(envelopes["outcome"]).lower_offset) == sorted(release["path"]["cells"])
+    assert sorted(artifact_of(envelopes["false_signal"]).pi_hat) == sorted(
+        f"{s}:h{k:02d}" for s, cap in release["lead_map"].items() for k in range(1, cap + 1)
+    )
+    with pytest.raises(ValueError, match="no path block"):
+        ForecastPublisher.path_envelopes(ppub["default"]["releases"][0])
+
+
+@pytest.mark.parametrize(
+    "horizons, match",
+    [
+        ({}, "LLY carries no integer n_horizons"),
+        ({"LLY": 3, "LRCX": 3}, "NOW carries no integer n_horizons"),
+        ({**PATH_HORIZONS, "LLY": 1}, "LLY has n_horizons 1, outside"),
+        ({**PATH_HORIZONS, "NOW": 11}, "NOW has n_horizons 11, outside"),
+        ({**PATH_HORIZONS, "LRCX": 4}, "LRCX:h04 was never modeled"),
+    ],
+    ids=["no-horizons", "one-missing", "below-cap", "past-the-heads", "unmodeled-head"],
+)
+def test_path_mode_refuses_a_calibrated_horizon_it_cannot_honour(mfx, horizons, match):
+    _with_horizons(mfx, horizons)
+    with pytest.raises(ValueError, match=match):
+        _prun(mfx)
+
+
+def test_path_row_refuses_what_the_screen_forbids(ppub):
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    published = ppub["path"]
+    release = published["releases"][0]
+    t = _open(release) + 7 * 60_000
+    tick = _path_ticks(published, t)["LLY"]
+    head = (release, "LLY", t, tick["price"])
+    tail = (tick["sigma"], tick["beta"])
+    # The decider may shorten the screened plan (the session close), never extend it.
+    assert ForecastPublisher.path_row(*head, tick["yhat_path"], *tail, LOW_FLOOR, plan_horizon=1)["plan_horizon"] == 1
+    for plan in (0, 4, True, 2.0):
+        with pytest.raises(ValueError, match="plan_horizon"):
+            ForecastPublisher.path_row(*head, tick["yhat_path"], *tail, LOW_FLOOR, plan_horizon=plan)
+    for floor in (0.0, 1.0, float("nan"), True, "0.5", None):
+        with pytest.raises(ValueError, match="coverage_floor"):
+            ForecastPublisher.path_row(*head, tick["yhat_path"], *tail, floor)
+    with pytest.raises(ValueError, match="yhat_path"):
+        ForecastPublisher.path_row(*head, tick["yhat_path"][:2], *tail, LOW_FLOOR)
+    default = ppub["default"]["releases"][0]
+    with pytest.raises(ValueError, match="no path block"):
+        ForecastPublisher.path_row(default, *head[1:], tick["yhat_path"], *tail, LOW_FLOOR)
+    block = next(b for b in ppub["default"]["ticks"] if b["symbol"] == "LLY")
+    with pytest.raises(ValueError, match="yhat_by_lead"):
+        MinuteForecastPublisher.path_tick(block, 0)
