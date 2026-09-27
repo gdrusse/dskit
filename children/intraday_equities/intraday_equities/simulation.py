@@ -83,6 +83,7 @@ from .final_gates import (
     _outputs,
     _read_pinned_json,
     _verified_prediction_snapshot,
+    cell_id,
 )
 from .final_model import _epoch_ms
 from .forecast_bundle import ConfirmedCaps, ForecastBundle
@@ -698,8 +699,8 @@ class ForecastPublisher(Node):
 
     @staticmethod
     def _cell_id(symbol, lead):
-        """Return the ``SYM:hNN`` name of one ``(symbol, lead)`` cell -- the false-signal estimate's key."""
-        return f"{symbol}:h{lead:02d}"
+        """Return the ``SYM:hNN`` name of one ``(symbol, lead)`` cell -- ``final_gates.cell_id``, the one owner."""
+        return cell_id(symbol, lead)
 
     def _residual_panel(self, walk, folds, start, end, components):
         """Complete-case ``y - yhat`` rows of ``components`` from ``folds``, stamped in ``[start, end)``.

@@ -9,6 +9,31 @@ import os
 
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
+
+def cell_id(symbol, horizon):
+    """Return the ``SYM:hNN`` id of one ``(symbol, horizon)`` calibration cell.
+
+    The ONE owner of the cell-id format: the gate's p-value and evidence
+    maps, the minute publisher's per-cell artifacts
+    (``ForecastPublisher.path_envelopes``) and the joint capital node's
+    per-cell binding all spell a cell through this function, so the
+    format can never drift in one place only (skeptic round 1 on
+    ADR-0188 slice 4).
+
+    Parameters
+    ----------
+    symbol : str
+        The instrument.
+    horizon : int
+        The lead in bars, 1..10.
+
+    Returns
+    -------
+    str
+        ``f"{symbol}:h{horizon:02d}"``, e.g. ``cell_id("LLY", 1) == "LLY:h01"``.
+    """
+    return f"{symbol}:h{horizon:02d}"
+
 __all__ = [
     "DEVELOPMENT_EVIDENCE_SCOPE",
     "FinalModelGateInventory",
@@ -595,7 +620,7 @@ class FinalModelGates(Stage):
             skills[key] = skill
             raw_pvalues[key] = max(float(skill["p_pool"]), float(skill["p_fold"]))
         safe_pvalues = {
-            f"{symbol}:h{horizon:02d}": max(value, sys.float_info.min)
+            cell_id(symbol, horizon): max(value, sys.float_info.min)
             for (symbol, horizon), value in raw_pvalues.items()
         }
         corrected = correction(self.params["correction"])["fn"](
@@ -612,7 +637,7 @@ class FinalModelGates(Stage):
         evidence = []
         for (symbol, horizon), units in sorted(by_unit.items()):
             skill = skills[(symbol, horizon)]
-            cell = f"{symbol}:h{horizon:02d}"
+            cell = cell_id(symbol, horizon)
             seasonal = {
                 name: {"sse_model": 0.0, "sse_mean": 0.0, "n": 0}
                 for name in season_names

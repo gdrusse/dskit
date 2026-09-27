@@ -108,6 +108,7 @@ from dskit.pipeline.uncertainty_intake import (
     attestation_of,
 )
 
+from .final_gates import cell_id
 from .final_model import HEADS
 from .forecast_bundle import (
     _PATH_FIELDS,
@@ -821,9 +822,10 @@ def _path_cell_id(symbol, lead):
 
     The key a path release's per-cell artifacts carry (the gate's
     false-signal cells, ``ForecastPublisher.path_envelopes``), e.g.
-    ``_path_cell_id("LLY", 1) == "LLY:h01"``.
+    ``_path_cell_id("LLY", 1) == "LLY:h01"`` — ``final_gates.cell_id``, the
+    one owner of the format.
     """
-    return f"{symbol}:h{lead:02d}"
+    return cell_id(symbol, lead)
 
 
 def _path_output_problems(bundle):

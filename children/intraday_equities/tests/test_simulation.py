@@ -2670,6 +2670,40 @@ def test_a_cell_below_the_floor_truncates_its_names_plan_at_the_last_passing_lea
     assert ForecastPublisher.path_plans(release, 0.5)["NOW"]["kstar"] == 2
 
 
+def test_a_plan_longer_than_the_screened_one_refuses_even_below_the_calibrated_horizon(ppub):
+    # Skeptic round 1 on slice 4 (tests lens, F1): the ceiling is the SCREENED
+    # plan min(K_i, kstar_i); a caller may never size a tranche at a lead
+    # whose own cell failed the coverage floor, even below K_i.
+    published = ppub["path"]
+    release = json.loads(json.dumps(published["releases"][0]))
+    coverage = release["path"]["cell_coverage"]
+    for cell in coverage:
+        coverage[cell] = 0.9
+    coverage["LLY:h03"] = 0.4
+    plans = ForecastPublisher.path_plans(release, 0.5)
+    assert (plans["LLY"]["calibrated"], plans["LLY"]["kstar"], plans["LLY"]["plan"]) == (3, 2, 2)
+    t = _open(release) + 7 * 60_000
+    tick = _path_ticks(published, t)["LLY"]
+    args = (release, "LLY", t, tick["price"], tick["yhat_path"], tick["sigma"], tick["beta"], 0.5)
+    with pytest.raises(ValueError, match="LLY: plan_horizon"):
+        ForecastPublisher.path_row(*args, plan_horizon=3)
+    assert ForecastPublisher.path_row(*args, plan_horizon=2)["plan_horizon"] == 2
+    assert ForecastPublisher.path_row(*args, plan_horizon=1)["plan_horizon"] == 1
+
+
+def test_the_cell_id_has_one_owner():
+    # Skeptic round 1 on slice 4 (tests lens, F2): the gate, the publisher
+    # and the capital node spell a cell through final_gates.cell_id.
+    from intraday_equities.final_gates import cell_id
+    from intraday_equities.nodes_capital import _path_cell_id
+
+    for symbol, lead in (("LLY", 1), ("A:h01", 10), ("XLK", 5)):
+        expected = f"{symbol}:h{lead:02d}"
+        assert cell_id(symbol, lead) == expected
+        assert ForecastPublisher._cell_id(symbol, lead) == expected
+        assert _path_cell_id(symbol, lead) == expected
+
+
 def test_per_cell_coverage_is_recorded_beside_the_artifact_level_reading(ppub):
     release = ppub["path"]["releases"][0]
     path = release["path"]
