@@ -1,6 +1,6 @@
 # Re-entry
 
-## ADR-0187 built on a branch; owner decisions pending (2026-09-26)
+## ADR-0187 built and review-LOCKED on a branch; owner decisions pending (2026-09-27)
 
 - **Owner directive:** build the code needed to run the index-options
   backtests, sweep dskit first, no rework; the process is HPO plus model zoos.
@@ -20,55 +20,40 @@
   other rungs, zoo and two `hpo-grid` documents). Docs and trees updated; the
   ADR carries the build record.
 - **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
-  purity gates); child 501 passed (every suite, manifest, an end-to-end cell
+  purity gates); child 541 passed (every suite, manifest, an end-to-end cell
   walk over a scripted archive store); ruff clean on the branch's files.
-- **Review (owner ruling 2026-09-26: only Critical/Major block; Minors and
-  Nits are recorded):** rounds 1–3 (`bcfb907`, `34869d7`, `00f0579`) found
-  no Critical/Major in production and, each round, one test-defect Major of
-  ONE family (a fixture whose value cannot separate a rule from its
-  substitute), which triggered the skill's convergence checkpoint: an
-  independent reviewer inventoried every rule against its nearest
-  substitute (58-mutant catalogue: 19 killed on `00f0579`) and authorised
-  one tests-only batch, landed as `45d0d5d` (55 killed, 3 equivalent
-  survivors). Round 4 on `45d0d5d`: correctness C0 M0; the tests lens
-  found three more test-only Majors (the classification order, the
-  default gate, a fixture trading at a credit equal to its wing by float
-  rounding), corrected in the new tests-only candidate `b2fa3dd` (child
-  503 passed; the catalogue's kills hold). Round 5 on `b2fa3dd`:
-  correctness C0 M0; the tests lens found four more test-only Majors of
-  the same family (the nearest-expiry rule pinned by name only, the always
-  book's scale, mean P&L and hit rate over all cells, a dead `cvar_alpha`).
-  That is the family recurring after the first checkpoint, so a SECOND
-  convergence checkpoint changed the approach: a generated
-  operator-mutation sweep over every scope this build added (1,843
-  mutants; 231 survived the round-5 tests; every survivor now killed by a
-  fixture or adjudicated equivalent, 108 in named classes, in the ADR
-  record). The batch is on the branch as tests-only commits (production
-  blobs and all 27 identity hashes unchanged since `00f0579`). The
-  independent checkpoint re-ran the sweep, audited the generator's gaps
-  with 83 catalogue mutants of its own, probed every equivalence class
-  (five arguments failed), found one more test-only Major (one expiry
-  quoted on two dates) and AUTHORIZED resumption; its eight fixtures
-  landed as `e8b0e7f` (child 541 passed), the round-6 candidate. Next:
-  two fresh lenses on `e8b0e7f`; a further Critical/Major reconvenes the
-  checkpoint before any fixture. The ADR-0187 build record
-  carries every round and the Minor/Nit backlog: an expiry tie merging two OCC series, a holiday-expiry Thursday
-  entry settling at its own close, the fresh-object guard bypassable by an
-  in-place-mutating projection, a store-token race, non-reader inputs
-  raising TypeError, the ATM tie-break and the row-level ATM rule unstated
-  in the ADR text, a Sunday OCC expiry's settlement, the band comparison
-  at equality, a credit of exactly zero or exactly at the wing width by
-  float rounding, the hit rate at zero trades, the reader's drop counts,
-  the quote node's restated `DEFAULTS`, the bare `365` in two modules, the
-  order of `nonpositive_credit` versus `credit_not_below_width`, "one memo
-  entry per class" unpinned.
+- **Review — LOCKED at `e8b0e7f` (owner ruling 2026-09-26: only Critical/Major
+  block; Minors and Nits are recorded, not fixed):** six review rounds plus
+  two convergence checkpoints, summarized in full in the ADR-0187 build
+  record. Rounds 1–5 each found production clean but one or more test-only
+  Majors of ONE recurring family — a fixture whose value could not separate
+  a rule from a plausible substitute (a payoff sign, a gate reading the
+  credit instead of the expectation, a classification order, a dead knob, a
+  metric denominator). Two independent checkpoints changed the approach
+  when the family kept recurring: the first hand-inventoried every rule
+  against its nearest substitute; the second made the catalogue GENERATED —
+  an AST operator-mutation sweep (1,843 mutants) over every child scope the
+  build added, plus an 83-mutant hand catalogue of the operator classes the
+  generator cannot emit, with every survivor either killed by a fixture or
+  adjudicated equivalent by a runnable probe. Round 6, two fresh lenses on
+  the sweep's final tests-only candidate `e8b0e7f`, reported zero
+  Critical/Major from both: correctness C0 M0 m0 n1; tests (the full sweep
+  and catalogue re-run in full, every survivor re-adjudicated, 37 more
+  mutants of its own, 768+ hand-computed values) C0 M0 m3 n3. Per the
+  skill, two independent lenses at zero Critical/Major closes the
+  candidate. **Production, dskit and all 27 `configs/grid` identity hashes
+  are those of `00f0579`** — six rounds of review changed zero lines of
+  production code, only tests. The full Minor/Nit backlog (not fixed;
+  fixing any item would open a new candidate) is in the ADR record.
 - **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
-  approves; (2) step 0 on the owner's machine: `acquire --stream index_daily`
-  for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan (bound:
-  30 min, 6 GB) and check that `dividend_amount` is 0, not null, on SPY/QQQ
-  non-ex-dates (a null in a window refuses the entry); (3) merge, then
+  approves — nothing here authorizes merging to `main`; (2) step 0 on the
+  owner's machine: `acquire --stream index_daily` for `optionshist-chain`,
+  then time one bounded `ChainQuoteRows` scan (bound: 30 min, 6 GB) and
+  check that `dividend_amount` is 0, not null, on SPY/QQQ non-ex-dates (a
+  null in a window refuses the entry); (3) once approved and merged, run
   `walkforward configs/grid/spy-30-45.json`, the zoo and the HPO documents,
-  then the grid; (4) run the evaluator on the output; (5) the backlog.
+  then the grid; (4) run the evaluator on the output; (5) work the backlog
+  if and when it matters (none of it is reachable on any shipped document).
 
 ## F5a source branch retired; its evidence is on main (2026-09-26)
 

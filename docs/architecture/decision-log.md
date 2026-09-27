@@ -25403,7 +25403,10 @@ later check); 4 row numbers inside messages; 4 the geometry test (with
 monotone quantiles and strict outward snaps, strikes are degenerate
 exactly when the two short targets coincide, and no ETF strike lies in
 (0, 1]); 4 the always and implied books' unused scale in `_book`; 4 the
-index into the chosen expiry's rows (all share expiry and settle_date);
+index into the chosen DTE group's rows (all share settle_date; when two
+OCC expiries share one settle date on one quote date the group's expiry
+label is the first-listed row's, per the round-1 expiry-tie Minor, whose
+own fixture is the closer separation, not this class);
 2 settlement and sessions taken to the OCC expiry (no weekday between it
 and the settle date); 2 the ATM check's two sizes (judged symmetrically
 with side None); 2 a close below the short put on the settle date
@@ -25474,4 +25477,70 @@ the proxy's 39 survivors and the empty-symbol line are pre-existing on
 origin/main and outside this ADR (backlog: pin the proxy's bid/ask
 credit rule, gate and defaults in its own suite).
 
-Round 6 (two fresh lenses on `e8b0e7f`) is recorded below.
+*Round 6 (candidate `e8b0e7f`, two fresh lenses).* Correctness: C0 M0 m0
+n1 — the delta re-proven tests-only, 768 own hand-computed checks across
+every invariant (point-in-time with every later row and close rewritten,
+dates, the snap and its classification order, credit and gate
+arithmetic, the charge's every clause, quote rules, the reader and its
+memo, both optionshist streams, the generated configs against an
+independent NYSE calendar, the proxy dict-equal to a merge-base copy over
+218 rows and 6 param variants), child suite 541 passed, dskit suites 264
+passed / 10 skipped, ruff clean, every shipped document loading and
+planning cleanly. Nit: three grid.py module constants
+(`EMBARGO_MARGIN_DAYS`, `ROOT`, `CHAIN_SOURCE`) are public-spelled but
+outside `__all__`. Tests (the full generated sweep re-run — 1,740 killed,
+2 by the running-time bound, 101 surviving id-for-id; the checkpoint's
+83-mutant catalogue re-run — 71 killed, 12 surviving; every one of the
+101 + 12 adjudicated with its own probe; 28 more child mutants and 9
+dskit mutants of its own; every batch value re-derived by hand): C0 M0
+m3 n3 — no new Critical/Major; three Minors of the reviewed family's
+immaterial tail, each with a probe: the ATM tie-break (`nodes.py:1016`,
+`min(candidates)`) is pinned only for CPython's set-iteration order, not
+against a tie a different order would visit first, though implied
+strikes move only in the measure-zero case of an ATM strike exactly
+midway between two neighbours; the DTE-bucket refusal (`nodes.py`
+`_prepare`) is pinned only on a chain whose FIRST row breaks the bound,
+so a chain with in-bucket rows followed by an out-of-bucket expiry runs
+instead of refusing (reachable only when a reader's bounds differ from
+the node's, which no shipped document does); and the "rows" class
+argument above was wrong for the `[-1]` case, corrected. Nits: one
+fixture's collaborator value could be asserted directly instead of only
+bounded (`> 100.0`); the sweep's total in an earlier count did not
+separate the two running-time-bound kills from the rest; "every scope
+this build added" should read "every CHILD scope" — the dskit seams the
+matrix also names are covered by round 4's hand mutants and the 264-test
+dskit suites, not the generator.
+
+Two completed independent lenses report zero unresolved Critical/Major.
+Per the skill, that closes the candidate. **The build is LOCKED at
+`e8b0e7f`** (the tests-only tip of the branch; production, dskit and all
+27 `configs/grid` identity hashes are those of `00f0579`). The full
+Minor/Nit backlog across all six rounds and both checkpoints, carried
+forward for whoever next touches this code and not fixed now (fixing any
+of it would open a new candidate): an expiry tie merging two OCC series
+at the ledger's expiry label (the fixture that would separate `[-1]`
+from `[0]` is the natural next test); a holiday-expiry Thursday entry
+settling at its own close; the fresh-object guard bypassable by an
+in-place-mutating projection or a base-class reuser; a store-token race;
+non-reader inputs raising TypeError instead of ValueError; the ATM
+tie-break's rule undocumented and its pin order-fragile; a Sunday OCC
+expiry's settlement (no OCC expiry is ever a Sunday); the band comparison
+at exact float equality; a credit of exactly zero or exactly at a wing
+width, both float-rounding boundaries of `condor_credit`; the hit rate at
+zero trades; the reader's drop counts as observability only; the quote
+node's `DEFAULTS` dict restated from the base class; the bare `365` in
+two modules; the order of `nonpositive_credit` versus
+`credit_not_below_width` when both hold; "one memo entry per class"
+degrading gracefully to one entry total if ever mis-keyed; an integral
+float `multiplier` validating at plan and refusing at run; the dte
+ordering rule spelled in both `nodes.py` and `observations.py`; the
+optionshist `check()` verifying three columns where `index_daily` needs
+eight; a boolean `split_coefficient` passing `!= 1`; the DTE-bucket
+refusal pinned on the first chain row only; and three grid.py constants
+outside `__all__`. None is reachable on any shipped `configs/grid`
+document; none changes a priced value, a gate decision, or a refusal
+under the frozen matrix.
+
+The branch is not merged: ADR-0187 remains PROPOSED and its six owner
+questions are open (see the header of this entry). Nothing here
+authorizes landing on `main`.
