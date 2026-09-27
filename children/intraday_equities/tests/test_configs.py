@@ -669,8 +669,20 @@ RETRAIN_TEMPLATE = "run-retrain-simulation-template.json"
 #: ADR-0111's MIO demo runs on SyntheticMioSource: no universe, no bars, no
 #: fit, nothing to track. Its capital pins are checked by the mio_demo tests.
 MIO_DEMO = "run-mio-demo.json"
+#: ADR-0188's joint per-minute policy simulation: the same kind of document
+#: as SIMULATION_DOCS (fits nothing, tracks nothing, reads the split-adjusted
+#: sources over the replay window) but standalone rather than a full/smoke
+#: pair, so it gets its own name rather than joining that tuple (which is
+#: unpacked as exactly two elements elsewhere).
+JOINT_SIMULATION_DOC = "run-joint-simulation.json"
 _NON_MARKET_RUN_DOCS = frozenset(
-    {"run-development-replay.json", *SIMULATION_DOCS, RETRAIN_TEMPLATE, MIO_DEMO}
+    {
+        "run-development-replay.json",
+        *SIMULATION_DOCS,
+        RETRAIN_TEMPLATE,
+        MIO_DEMO,
+        JOINT_SIMULATION_DOC,
+    }
 )
 #: ADR-0166's final refit is a non-executable contract: it tracks like any
 #: market run but names no universe and reads no bars, so it cannot restate
@@ -833,7 +845,7 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert isinstance(walk["train_days"], int), name
                 assert params["start_ms"] <= first_train.timestamp() * 1000, name
                 continue
-            if name in (*SIMULATION_DOCS, RETRAIN_TEMPLATE):
+            if name in (*SIMULATION_DOCS, RETRAIN_TEMPLATE, JOINT_SIMULATION_DOC):
                 # Split-adjusted, and bounded to the replay window on both
                 # sides; moving the start forward cannot undo ADR-0066.
                 assert params["source"] in MODELABILITY_SOURCES, name
