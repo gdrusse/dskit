@@ -3278,6 +3278,68 @@ class TestJointMandatoryExitExcludedFromGrossLimit:
             _joint_run(tmp_path, bundle, portfolio=portfolio)
 
 
+class TestJointGrossLimitTolerancesTheRowMarkPriceGap:
+    """A caller's ``gross_limit`` is commonly NAV computed off the replay's
+    own ``mark_prices``; this refusal marks holdings at the bundle row's own
+    price. ``_refuse_price_disagreement`` (``simulation.py``) tolerates those
+    two numbers differing by up to 1e-6 relative -- a real, everyday gap, not
+    a bug -- so a ``gross_limit`` set to NAV on a nearly-fully-invested book
+    must not spuriously refuse on that gap alone (flagged during the
+    ADR-0188 finalization pass; never run through a skeptic round)."""
+
+    AAPL_HELD = 100
+    MARK_PRICE = 190.0  # what the replay's own mark_prices carries
+    ROW_PRICE = MARK_PRICE * (1.0 + 5e-7)  # within simulation.py's 1e-6 gap
+
+    def _bundle(self):
+        costs = _schwab()
+        round_trip = costs.buy_per_share(
+            "AAPL", self.ROW_PRICE, FILL_MS
+        ) + costs.sell_per_share("AAPL", self.ROW_PRICE, FILL_MS)
+        gain = 0.5 * round_trip / self.ROW_PRICE
+        return [_path_row("AAPL", self.ROW_PRICE, _flat_steps([gain, gain]))]
+
+    def test_a_nav_gross_limit_off_the_mark_price_survives_the_rows_own_price(
+        self, tmp_path
+    ):
+        # gross_limit is NAV computed off the MARK price (as a real decider
+        # would); the bundle row's own price is the tick's, a hair higher
+        # inside the tolerated gap. The refusal must not fire on that gap.
+        nav = self.MARK_PRICE * self.AAPL_HELD  # cash 0
+        bundle = self._bundle()
+        portfolio = _portfolio(
+            cash=0.0, buying_power=0.0, positions={"AAPL": self.AAPL_HELD},
+            mark_prices={"AAPL": self.MARK_PRICE}, gross_limit=nav,
+        )
+        # The refusal must not fire; the pre-existing whole-share
+        # aggregate row (unchanged by this fix, unrelated to the flagged
+        # gap) may still trim at most 1 share to satisfy sum x_i <=
+        # gross_limit when the limit sits fractions of a cent below the
+        # row-priced holdings -- a separate, inherent, negligible effect
+        # of integer granularity, not the false refusal this test pins.
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"].keys() <= {"AAPL"}
+        sold = out["trades"].get("AAPL", {}).get("sell", 0)
+        assert sold <= 1
+        assert out["target"]["AAPL"] >= self.AAPL_HELD - 1
+
+    def test_a_genuine_shortfall_still_refuses_despite_the_widened_tolerance(
+        self, tmp_path
+    ):
+        # The widened tolerance (1e-4) must not swallow a real shortfall:
+        # a limit 1% below the row-priced holdings still refuses by name.
+        bundle = self._bundle()
+        live_mark = self.ROW_PRICE * self.AAPL_HELD
+        portfolio = _portfolio(
+            cash=0.0, buying_power=0.0, positions={"AAPL": self.AAPL_HELD},
+            mark_prices={"AAPL": self.MARK_PRICE}, gross_limit=live_mark * 0.99,
+        )
+        with pytest.raises(
+            ValueError, match="no-leverage bound is below the marked holdings"
+        ):
+            _joint_run(tmp_path, bundle, portfolio=portfolio)
+
+
 class TestJointSellsAreDecisions:
     """ADR-0188: holdings are inputs and target shares the output; a sell or a
     trim is an ordinary decision."""

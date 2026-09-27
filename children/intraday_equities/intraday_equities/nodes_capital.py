@@ -262,9 +262,17 @@ JOINT_REFUSED_PARAMS = {
 _JOINT_DOORWAY_PARAMS = {"cardinality": None, "min_ticket": 0.0}
 
 #: How far below the marked holdings a declared ``gross_limit`` may sit before
-#: the joint kind refuses it: float noise only (a NAV computed elsewhere can
-#: miss the holdings' own mark in the last bits when cash is exactly zero).
-_GROSS_LIMIT_REL_TOLERANCE = 1e-9
+#: the joint kind refuses it. Not just float noise in the last bits: a
+#: caller's ``gross_limit`` is commonly NAV computed off the replay's own
+#: ``mark_prices``, while this refusal marks holdings at the BUNDLE ROW's
+#: own price -- the same two numbers ``_refuse_price_disagreement``
+#: (``simulation.py``) tolerates differing by up to its own 1e-6 relative
+#: bound. A tolerance tighter than that gap would make a nearly-fully-
+#: invested book's LEGITIMATE row/mark disagreement alone trip this refusal.
+#: 1e-4 is two orders of magnitude looser than that tolerated gap (comfortable
+#: margin) while still catching any real shortfall a caller's own tests use
+#: (all >= 20% of the marked holdings).
+_GROSS_LIMIT_REL_TOLERANCE = 1e-4
 
 #: The assembled exit-horizon outputs every joint bundle row must carry
 #: (``ForecastBundle``'s path rows, ADR-0188 formulation B).
