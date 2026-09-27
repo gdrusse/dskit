@@ -244,7 +244,9 @@ JOINT_REFUSED_PARAMS = {
     "max_position_notional": (
         "the per-name ceiling is replaced by the no-leverage bound "
         "max(G, price x held), so a holding that appreciated is never forced "
-        "to sell (ADR-0188 question F(a))"
+        "to sell by its own row; the account's aggregate bound G is the "
+        "no-leverage bound, NAV, refused by name when it sits below the marked "
+        "holdings (ADR-0188 question F(a))"
     ),
     "lot_size": (
         "it only scaled the no-trade band's floor, which the joint kind does "
@@ -255,6 +257,11 @@ JOINT_REFUSED_PARAMS = {
 #: What the joint kind hands the doorway for the two gating knobs the doorway
 #: requires: no cardinality row and no minimum ticket.
 _JOINT_DOORWAY_PARAMS = {"cardinality": None, "min_ticket": 0.0}
+
+#: How far below the marked holdings a declared ``gross_limit`` may sit before
+#: the joint kind refuses it: float noise only (a NAV computed elsewhere can
+#: miss the holdings' own mark in the last bits when cash is exactly zero).
+_GROSS_LIMIT_REL_TOLERANCE = 1e-9
 
 #: The assembled exit-horizon outputs every joint bundle row must carry
 #: (``ForecastBundle``'s path rows, ADR-0188 formulation B).
@@ -2156,8 +2163,14 @@ class JointEquityKellyMIO(EquityKellyMIO):
       ``buying_power + sum_i p_i h_i`` over the names in the solve, the
       most notional any one name can reach when every other held name is
       sold and all buying power spent (sale credit at most 1), so the row
-      only hands the doorway a finite bound. Either way a holding worth
-      more than ``G`` is never forced to sell by its own row.
+      only hands the doorway a finite bound. A holding is therefore never
+      forced to sell by its own row. The account's aggregate bound is the
+      no-leverage bound, NAV with cash >= 0, so the doorway's gross row
+      never binds the no-trade point either: a declared ``gross_limit``
+      below the marked holdings of the names in the solve would make that
+      row trim a wanted position, and refuses the minute by name instead
+      (ADR-0188 F(a)). Only the priced objective and the risk rows the
+      owner kept (CVaR, HFDR) move a holding.
     * **HFDR per tranche.** ADR-0088's row applied to each tranche:
       ``sum_i sum_k (pi_widened_i(k) - q) p_i e_i(k) <= 0``, reading
       :data:`HFDR_PATH_FIELD`. No band rows.
@@ -2343,8 +2356,10 @@ class JointEquityKellyMIO(EquityKellyMIO):
         ValueError
             A row lacks or malforms its path outputs; a producer-fault route
             (a row from the future, a cap mismatch) on any row; a skipped or
-            exiting held name with no usable mark; a priced name with no fill
-            instant.
+            exiting held name with no usable mark; a declared
+            ``gross_limit`` below the marked holdings of the names in the
+            solve (the no-leverage bound cannot sit under them); a priced
+            name with no fill instant.
         """
         bundle = inputs["bundle"]
         portfolio = inputs["portfolio"]
@@ -2418,12 +2433,25 @@ class JointEquityKellyMIO(EquityKellyMIO):
                 "mark_source": source,
             }
         gross_limit = portfolio.get("gross_limit")
+        held_mark = sum(prices[name] * held.get(name, 0) for name in names)
+        if gross_limit is not None and float(gross_limit) < held_mark * (
+            1.0 - _GROSS_LIMIT_REL_TOLERANCE
+        ):
+            listing = ", ".join(
+                f"{name} {held[name]} x {prices[name]!r}" for name in names if held.get(name, 0)
+            )
+            raise ValueError(
+                f"{self.key}: portfolio.gross_limit {float(gross_limit)!r} is below the marked "
+                f"holdings of the names in the solve, {held_mark!r} ({listing}), shortfall "
+                f"{held_mark - float(gross_limit)!r} — the no-leverage bound is below the "
+                "marked holdings; the joint kind never trims a holding to fit an aggregate "
+                "limit, ADR-0188 F(a): the aggregate bound must be the no-leverage bound, NAV "
+                "with cash >= 0"
+            )
         if gross_limit is not None:
             bound = float(gross_limit)
         else:
-            bound = float(portfolio.get("buying_power", 0.0)) + sum(
-                prices[name] * held.get(name, 0) for name in names
-            )
+            bound = float(portfolio.get("buying_power", 0.0)) + held_mark
         bound = max(bound, 0.0)
 
         rows, coefficients, payoffs_r = {}, {}, {}

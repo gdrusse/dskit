@@ -2253,6 +2253,72 @@ class TestCapEvidenceLookAhead:
 # tests/test_forecast_bundle.py::TestPathRows) so every scenario return is
 # exact; TestJointPathContract also assembles one tick through ForecastBundle.
 # ---------------------------------------------------------------------------
+#
+# Mutation audit (re-run after skeptic round 1's fixes; 29 breakages, 29
+# caught). Each breakage of nodes_capital.py below was applied ALONE to a copy
+# of the child, never the worktree, and this section's tests were run against
+# it (pytest -x -k "Joint or PathBundle", which also selects
+# TestTheBaseKindRefusesAPathBundle); every one turned a test red. The first
+# test to fail is named under each.
+#
+#  1. HFDR row reads step 1's rate for every tranche (rates[k] -> rates[0])
+#       TestJointFalseSignalIsolation::test_a_tranche_whose_widened_rate_passes_q_loses_shares_to_one_that_does_not
+#  2. HFDR row not built
+#       TestJointParams::test_the_doorway_builds_no_cardinality_ticket_or_band_rows
+#  3. x_max ignores the holding (max(G, p*h) -> G)
+#       TestJointNeverForcesASaleByACap::test_x_max_is_the_no_leverage_bound_or_the_holding[None--15000.0-19000.0]
+#  4. x_max back to a $4,000 per-name ceiling
+#       TestJointFrictionlessDominance::test_a_dominant_name_is_bought_to_the_no_leverage_limit
+#  5. a transient route-out treated as permanent (the skipped name exits)
+#       TestJointRoutingClassification::test_a_transient_route_out_skips_the_held_name_and_carries_its_mark
+#  6. a producer fault does not refuse the minute
+#       TestJointRoutingClassification::test_a_cap_mismatch_refuses_the_whole_minute[3-held0]
+#  7. a cap mismatch refused only above the cap (!= -> >)
+#       TestJointRoutingClassification::test_a_cap_mismatch_refuses_the_whole_minute[3-held0]
+#  8. the payoff ignores plan_horizon (every carried step used)
+#       TestJointPathContract::test_the_payoffs_are_each_names_path_cut_at_its_plan_horizon
+#  9. the payoff keeps only the plan's last step
+#       TestJointParams::test_the_doorway_builds_no_cardinality_ticket_or_band_rows
+# 10. min_ticket 200 reaches the doorway
+#       TestJointParams::test_the_doorway_builds_no_cardinality_ticket_or_band_rows
+# 11. carried_wealth not passed to the doorway's account
+#       TestJointPathContract::test_the_payoffs_are_each_names_path_cut_at_its_plan_horizon
+# 12. the caller's portfolio.carried_wealth ignored
+#       TestJointRoutingClassification::test_the_decider_s_carried_wealth_is_added_to_the_skipped_marks
+# 13. a mark read from the bundle row before portfolio.mark_prices
+#       TestJointRoutingClassification::test_a_transient_route_out_skips_the_held_name_and_carries_its_mark
+# 14. the flat fields not checked against the path's first step
+#       TestJointPathContract::test_the_flat_fields_must_be_the_first_step[pi_widened-0.21]
+# 15. band_bps accepted (dropped from the refused set)
+#       TestJointParams::test_the_refused_set_is_exactly_the_hard_row_knobs
+# 16. the exit cost per share dropped to 0
+#       TestJointCostBreakEven::test_a_flat_name_is_bought_exactly_when_its_best_path_gain_beats_the_round_trip[0.5]
+# 17. the buy-side half-spread dropped to 0
+#       TestJointCostBreakEven::test_a_flat_name_is_bought_exactly_when_its_best_path_gain_beats_the_round_trip[0.9]
+# 18. per-cell rates bound without the carry-forward past the cap
+#       TestJointPathContract::test_a_forecast_bundle_path_tick_reaches_the_solver
+# 19. per-cell rate values not compared
+#       TestJointPerCellBinding::test_a_rate_that_differs_from_its_cell_is_refused_at_every_step_reading_it
+# 20. the outcome band checked past plan_horizon
+#       TestJointPerCellBinding::test_the_band_need_not_cover_a_step_past_the_plan
+# 21. the outcome band not checked
+#       TestJointPerCellBinding::test_an_entity_keyed_port_is_refused_by_cell
+# 22. the empty gate drops the carried constant
+#       TestJointRoutingClassification::test_a_stale_tick_skips_every_held_name_and_trades_nothing
+# 23. the wealth envelope ignores the carried constant
+#       TestJointRoutingClassification::test_a_transient_route_out_skips_the_held_name_and_carries_its_mark
+# 24. a row from the future read as stale
+#       TestJointRoutingClassification::test_a_row_from_the_future_refuses_the_whole_minute
+# 25. a wrong-mode bundle not refused before the digest pin
+#       TestJointPathContract::test_a_flat_row_is_refused_by_name
+# 26. the base kind accepts a path row
+#       TestTheBaseKindRefusesAPathBundle::test_a_path_row_is_refused_by_name_pointing_at_the_joint_kind
+# 27. the joint kind accepts a flat row
+#       TestJointPathContract::test_a_flat_row_is_refused_by_name
+# 28. the aggregate-limit refusal removed (a gross_limit under the holdings trims)
+#       TestJointNeverTrimsToFitAnAggregateLimit::test_a_gross_limit_below_the_marked_holdings_refuses_by_name
+# 29. the aggregate-limit refusal fires at NAV (tolerance sign flipped)
+#       TestJointIntegerCashStress::test_every_answer_is_whole_non_negative_funded_and_unlevered[2]
 
 JOINT_KIND = "intraday_equities-joint-kelly-mio"
 
@@ -2996,7 +3062,10 @@ class TestJointRoutingClassification:
 
 class TestJointNeverForcesASaleByACap:
     """ADR-0188 F(a) and T27: the per-name bound is max(G, price x held), so a
-    holding above any former ceiling is kept while its path still pays."""
+    holding above any former ceiling is never forced to sell by its own row;
+    with the aggregate bound at the no-leverage bound (NAV, cash >= 0) it is
+    kept while its path still pays. A ``gross_limit`` below the marked
+    holdings refuses instead (``TestJointNeverTrimsToFitAnAggregateLimit``)."""
 
     def test_a_holding_above_the_former_ceiling_is_never_forced_to_sell(self, tmp_path):
         price, held = 190.0, 100  # $19,000: far above the base kind's $4,000 ceiling
@@ -3023,17 +3092,77 @@ class TestJointNeverForcesASaleByACap:
         assert base["trades"]["AAPL"]["sell"] >= 79
 
     @pytest.mark.parametrize(
-        "gross_limit, expected",
-        [(20_000.0, 20_000.0), (10_000.0, 19_000.0), (None, 1000.0 + 19_000.0)],
+        "gross_limit, buying_power, expected",
+        [
+            (20_000.0, 1000.0, 20_000.0),  # G is the declared no-leverage bound, NAV
+            (None, 1000.0, 1000.0 + 19_000.0),  # G is buying power plus the marked holdings
+            (None, -15_000.0, 19_000.0),  # G below the holding: its own row still keeps it
+        ],
     )
-    def test_x_max_is_the_no_leverage_bound_or_the_holding(self, gross_limit, expected):
+    def test_x_max_is_the_no_leverage_bound_or_the_holding(self, gross_limit, buying_power, expected):
         portfolio = _portfolio(
-            cash=1000.0, buying_power=1000.0, positions={"AAPL": 100}, gross_limit=gross_limit,
+            cash=1000.0, buying_power=buying_power, positions={"AAPL": 100}, gross_limit=gross_limit,
         )
         bundle = [_path_row("AAPL", 190.0, _flat_steps([0.001, 0.001]))]
         node = _joint_node(bundle)
         _names, rows, _account = node.instruments(_joint_inputs(bundle, portfolio=portfolio))
         assert rows["AAPL"]["x_max"] == pytest.approx(expected)
+
+
+class TestJointNeverTrimsToFitAnAggregateLimit:
+    """Skeptic round 1 (correctness Major): the doorway's aggregate gross row
+    (``sum x_i <= gross_limit``) silently trimmed a wanted holding whenever the
+    caller's ``gross_limit`` sat below the marked holdings in the solve. Under
+    formulation B the aggregate bound IS the no-leverage bound, NAV with cash
+    >= 0, which never binds the no-trade point; anything lower is a caller
+    contract violation, refused by name before any solve."""
+
+    PRICE, HELD = 190.0, 100
+
+    def _bundle(self):
+        costs = _schwab()
+        round_trip = costs.buy_per_share("AAPL", self.PRICE, FILL_MS) + costs.sell_per_share(
+            "AAPL", self.PRICE, FILL_MS
+        )
+        gain = 0.5 * round_trip / self.PRICE  # worth keeping, not worth adding to
+        return [_path_row("AAPL", self.PRICE, _flat_steps([gain, gain]))]
+
+    def _account(self, cash, gross_limit):
+        return _portfolio(
+            cash=cash, buying_power=max(cash, 0.0), positions={"AAPL": self.HELD},
+            gross_limit=gross_limit,
+        )
+
+    def test_a_gross_limit_below_the_marked_holdings_refuses_by_name(self, tmp_path):
+        nav = 1000.0 + self.PRICE * self.HELD
+        bundle = self._bundle()
+        node = _joint_node(bundle)
+        inputs = _joint_inputs(bundle, portfolio=self._account(1000.0, 0.75 * nav))
+        with pytest.raises(ValueError, match="no-leverage bound is below the marked holdings") as caught:
+            node.run(_ctx(tmp_path), inputs)
+        message = str(caught.value)
+        assert "AAPL 100 x 190.0" in message and "ADR-0188 F(a)" in message
+        assert "shortfall 4000.0" in message  # 19,000 marked against a 15,000 limit
+        assert node.solve_record is None  # refused before any solve: nothing trades
+        with pytest.raises(ValueError, match="never trims a holding to fit an aggregate limit"):
+            _joint_node(bundle).instruments(inputs)
+
+    def test_negative_cash_at_a_nav_gross_limit_refuses_by_name(self, tmp_path):
+        nav = -500.0 + self.PRICE * self.HELD  # NAV below the holdings: already levered
+        with pytest.raises(ValueError, match="no-leverage bound is below the marked holdings"):
+            _joint_run(tmp_path, self._bundle(), portfolio=self._account(-500.0, nav))
+
+    @pytest.mark.parametrize("cash", [1000.0, 0.0])
+    def test_a_nav_gross_limit_with_cash_at_or_above_zero_keeps_the_holding(self, tmp_path, cash):
+        nav = cash + self.PRICE * self.HELD  # cash 0: the limit equals the holdings exactly
+        out = _joint_run(tmp_path, self._bundle(), portfolio=self._account(cash, nav))
+        assert out["trades"] == {}
+        assert out["target"] == {"AAPL": self.HELD}
+
+    def test_a_null_gross_limit_still_solves_and_keeps_the_holding(self, tmp_path):
+        out = _joint_run(tmp_path, self._bundle(), portfolio=self._account(1000.0, None))
+        assert out["trades"] == {}
+        assert out["target"] == {"AAPL": self.HELD}
 
 
 class TestJointSellsAreDecisions:
@@ -3087,12 +3216,39 @@ class TestJointSellsAreDecisions:
 
 
 class TestJointSolverHalt:
-    """Plan §4.4: a declared solver time limit is a halt, never a degraded fill."""
+    """Plan §4.4: a declared solver time limit is a halt, never a degraded fill.
 
-    def test_a_time_limit_halt_refuses_the_minute_by_name(self, tmp_path):
+    Deterministic: the resolved solver raises appsi's own no-solution error,
+    since a zero time limit on a small program may still return optimal. The
+    real-HiGHS integration check lives in the doorway's own suite
+    (``tests/pipeline_libs/test_pyomo.py::TestScenarioUtilityTimeLimit``)."""
+
+    def test_the_time_limit_reaches_the_solver_through_solver_options(self):
         bundle = [_path_row("AAPL", 100.0, _flat_steps([0.004, 0.005]))]
+        node = _joint_node(bundle, solver_options={"time_limit": 8.0})
+        assert node._solver_options() == {
+            "mip_rel_gap": 0, "threads": 1, "random_seed": 0, "time_limit": 8.0,
+        }
+
+    def test_a_halt_before_any_incumbent_refuses_the_minute_by_name(self, tmp_path):
+        class Halted(JointEquityKellyMIO):
+            def _resolve_solver(self):
+                solver = super()._resolve_solver()
+
+                def halted(model, **kwargs):
+                    del model, kwargs
+                    raise RuntimeError(
+                        "A feasible solution was not found, so no solution can be loaded."
+                    )
+
+                solver.solve = halted
+                return solver
+
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.004, 0.005]))]
+        node = Halted("joint", _joint_params(bundle))
         with pytest.raises(RuntimeError, match=r"^joint: the solver returned no loadable solution"):
-            _joint_run(tmp_path, bundle, solver_options={"time_limit": 0.0})
+            node.run(_ctx(tmp_path), _joint_inputs(bundle))
+        assert node.solve_record is None
 
 
 class TestJointEvidence:

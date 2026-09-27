@@ -1258,6 +1258,84 @@ class TestScenarioUtilityTranches:
             _su_node().run(_ctx(tmp_path), fixture)
 
 
+#: appsi_highs' own words when a solve ends with no loadable solution (pyomo
+#: 6.10, ``contrib/appsi/solvers/highs.py``): an infeasible program, or a time
+#: limit reached before any incumbent.
+_APPSI_NO_SOLUTION = (
+    "A feasible solution was not found, so no solution can be loaded. If using the "
+    "appsi.solvers.Highs interface, you can set opt.config.load_solution=False. If using "
+    "the environ.SolverFactory interface, you can set opt.solve(model, load_solutions = "
+    "False). Then you can check results.termination_condition and "
+    "results.best_feasible_objective before loading a solution."
+)
+
+
+class HaltedSolve(TwoNameSolve):
+    """TwoNameSolve whose real, resolved solver ends every solve with no loadable
+    solution: appsi's own RuntimeError, raised deterministically rather than
+    depending on how far HiGHS gets before a time limit."""
+
+    def _resolve_solver(self):
+        solver = super()._resolve_solver()
+
+        def halted(model, **kwargs):
+            del model, kwargs
+            raise RuntimeError(_APPSI_NO_SOLUTION)
+
+        solver.solve = halted
+        return solver
+
+
+def _su_large_fixture(seed=7, n_names=12, n_tranches=3, n_omega=32):
+    """A seeded instance HiGHS cannot finish at a zero time limit.
+
+    12 names (three already held), three exit tranches each, 32 scenarios
+    sharing one common factor; with ``cardinality`` 4 the optimum is
+    combinatorial and takes a real branch-and-bound search.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    names = [f"N{i:02d}" for i in range(n_names)]
+    prices = rng.uniform(20.0, 400.0, n_names)
+    held = [int(rng.integers(0, 15)) if i < 3 else 0 for i in range(n_names)]
+    rows = {
+        name: {
+            "price": float(prices[i]),
+            "held": held[i],
+            "x_max": 6000.0,
+            "cost_buy": float(prices[i] * 3e-4),
+            "cost_sell": float(prices[i] * 3e-4),
+            "exit_cost_per_share": float(prices[i] * 3e-4),
+        }
+        for i, name in enumerate(names)
+    }
+    common = rng.normal(0.0, 0.01, n_omega)
+    r = {}
+    for name in names:
+        drift = rng.normal(0.002, 0.002, n_tranches).cumsum()
+        r[name] = [
+            [
+                float(drift[k] + 0.6 * common[o] * np.sqrt(k + 1) + rng.normal(0.0, 0.01))
+                for o in range(n_omega)
+            ]
+            for k in range(n_tranches)
+        ]
+    cash = 30_000.0
+    w0 = cash + sum(rows[name]["price"] * rows[name]["held"] for name in names)
+    account = {
+        "cash": cash,
+        "buying_power": cash,
+        "wealth_lo": 0.5 * w0,
+        "wealth_hi": 1.5 * w0,
+        "sale_credit": 1.0,
+        "cash_reserve": 0.0,
+        "gross_limit": 25_000.0,
+    }
+    weights = [1.0 / n_omega] * n_omega
+    return {"names": names, "rows": rows, "weights": weights, "r": r, "account": account}
+
+
 class TestScenarioUtilityTimeLimit:
     """Plan §4.4's breaker: a declared solver time limit is a HALT, never a
     degraded fill. Under appsi_highs the limit is HiGHS's own ``time_limit``
@@ -1265,7 +1343,12 @@ class TestScenarioUtilityTimeLimit:
     determinism pins merge under it). A halt that found an incumbent
     returns ``maxTimeLimit``, which ``extract`` refuses by name; a halt
     before any incumbent makes appsi raise from ``solve`` itself, which the
-    doorway re-raises naming the node. Either way nothing is sized."""
+    doorway re-raises naming the node. Either way nothing is sized.
+
+    The named re-raise is pinned DETERMINISTICALLY (``HaltedSolve``: the
+    resolved solver raises appsi's own error), because a zero time limit on
+    a small program may still return optimal. One real-HiGHS integration
+    check runs a zero limit on an instance too large to finish."""
 
     def test_the_time_limit_reaches_highs_through_solver_options(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "pyomo", None)
@@ -1279,16 +1362,41 @@ class TestScenarioUtilityTimeLimit:
         assert limited["trades"] == free["trades"]
 
     def test_a_halt_before_any_incumbent_refuses_by_name(self, tmp_path):
-        # time_limit 0 stops HiGHS before it finds any feasible point.
-        node = _su_node(solver_options={"time_limit": 0.0})
-        with pytest.raises(RuntimeError, match=r"^size: the solver returned no loadable solution"):
+        node = HaltedSolve("size", SU_PARAMS)
+        with pytest.raises(
+            RuntimeError, match=r"^size: the solver returned no loadable solution"
+        ) as caught:
             node.run(_ctx(tmp_path), _su_fixture())
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == _APPSI_NO_SOLUTION
         assert node.solve_record is None  # the solve raised: no record, no target
 
     def test_the_refusal_keeps_the_solvers_own_words(self, tmp_path):
-        node = _su_node(solver_options={"time_limit": 0.0})
-        with pytest.raises(RuntimeError, match="[Ff]easible solution"):
-            node.run(_ctx(tmp_path), _su_fixture())
+        with pytest.raises(RuntimeError) as caught:
+            HaltedSolve("size", SU_PARAMS).run(_ctx(tmp_path), _su_fixture())
+        assert _APPSI_NO_SOLUTION in str(caught.value)
+
+    def test_a_real_zero_time_limit_halt_refuses_by_name(self, tmp_path):
+        """The INTEGRATION check: real HiGHS, a real time limit of zero.
+
+        The instance solves to a non-trivial optimum without a limit, so a
+        refusal under the limit is the halt, never an infeasible program.
+        Whether HiGHS halts before an incumbent (appsi raises, re-raised by
+        name) or after one (``maxTimeLimit``, refused by ``extract``), the
+        refusal names the node and nothing is sized.
+        """
+        params = {**SU_PARAMS, "cardinality": 4, "min_ticket": 0.0}
+        free = TwoNameSolve("size", params).run(_ctx(tmp_path), _su_large_fixture())
+        assert free["trades"]
+        node = TwoNameSolve("size", {**params, "solver_options": {"time_limit": 0.0}})
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                r"^size: (the solver returned no loadable solution"
+                r"|solver finished with termination condition 'maxTimeLimit')"
+            ),
+        ):
+            node.run(_ctx(tmp_path), _su_large_fixture())
 
     def test_a_halt_with_an_incumbent_is_refused_by_extract(self):
         from types import SimpleNamespace
