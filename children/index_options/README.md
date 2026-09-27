@@ -231,7 +231,8 @@ a split with no forecast rows and an empty chain.
 # the cell documents are generated; edit the base rung or the grid table, then
 python -c "from index_options.grid import write_grid; write_grid('configs')"
 python -m dskit.pipeline walkforward configs/grid/spy-30-45.json --asof <today>
-# the worked cell: the other rungs, a zoo over the four, and per-fold HPO
+# every cell: the other rungs, a zoo over the four, and per-fold HPO (owner
+# question 4, expanded 2026-09-27 to run on all 21 cells, not one)
 python -m dskit.pipeline staged configs/grid/spy-30-45-zoo.json --asof <today>
 python -m dskit.pipeline walkforward configs/grid/spy-30-45-hpo-har-vix.json --asof <today>
 ```
@@ -265,8 +266,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
-                           # (har-vix) + the worked cell's spy-30-45-{empirical,vix,lightgbm-vix,
-                           # zoo,hpo-har-vix,hpo-lightgbm-vix}.json
+                           # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
+                           # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
+                           # question 4, expanded 2026-09-27 from the one worked cell)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

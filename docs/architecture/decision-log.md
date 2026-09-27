@@ -25544,3 +25544,55 @@ under the frozen matrix.
 The branch is not merged: ADR-0187 remains PROPOSED and its six owner
 questions are open (see the header of this entry). Nothing here
 authorizes landing on `main`.
+
+**Owner answers (2026-09-27).** Russell answered all six questions.
+Five confirm the proposed default already built, no change: (1) buckets
+in calendar days; (2) IWM stays restricted, no backtest; (3) the zero-size
+quote rule stays; (5) snapshot reuse stays on; (6) `carry_rate` stays
+0.055. Question 4 changes scope: the model comparison and per-fold HPO,
+previously shipped for `spy-30-45` alone, now ship for EVERY cell.
+
+**Build: question 4 expanded to every cell (2026-09-27).** `cell_files`
+(every rung, its zoo, its HPO documents for one cell) was already fully
+cell-agnostic — it took any `Cell`, and `grid_document`/`zoo_document`/
+`hpo_document` already branch correctly on `cell.underlying.backtest`
+(IWM). The only production change is `grid_files()`: it now calls
+`cell_files` for every cell in `CELLS` instead of the one named
+`WORKED_CELL`, which is removed as a constant (`cell_files`'s docstring
+already said "produces the same set for any other cell on request").
+`configs/grid/` grows from 27 to 147 documents (21 har-vix bases + 21 ×
+6 extras); every one of the 21 existing har-vix documents and the 6
+pre-existing `spy-30-45` extras is byte-identical to what it was —
+`git status` after `write_grid` shows exactly 120 new files and zero
+modified ones. The manual spot-check on `iwm-21`'s new zoo and HPO
+documents (previously unexercised: `backtest=False` combined with
+`zoo_document`/`hpo_document`, which had only ever run on `spy-30-45`,
+`backtest=True`) confirms the zoo's `contract_paths` correctly drops
+`pipeline.chain`/`pipeline.backtest` and the HPO document is clean.
+
+Tests: `test_configs.py`'s three worked-cell tests are generalized to
+parametrize over all 21 cells (rungs-agree-with-base, zoo compares four
+rungs with the IWM contract-path case now an explicit assertion, HPO
+searches the rung's own knobs), 155 cases instead of 3 + 2; the
+file-set and manifest tests updated to the new counts (147 grid files;
+206 total repository files, up from 86). Child suite 661 passed
+(up from 541); ruff clean. Docs: the child's README/CLAUDE/AGENTS trees
+and worked-example commands updated; `AGENTS.md`/`CLAUDE.md` stay
+byte-identical.
+
+This is a narrower change than the locked candidate's review scope and
+does not reopen it: `nodes.py`, `contracts.py`, `observations.py` and the
+three dskit seams the six review rounds and two convergence checkpoints
+covered are untouched, and every one of `grid.py`'s document-generating
+functions (`grid_document`, `zoo_document`, `hpo_document`) is unchanged
+— only which cells `grid_files()` calls them for. Given the low risk
+(a loop over already-tested, already-reviewed per-cell functions, zero
+change to backtest math, proven by the byte-identical-except-additive
+diff) this landed on direct verification — full suite, ruff, and a
+targeted read of the one genuinely new code path (IWM's zoo/HPO) —
+rather than the six-round adversarial process the core backtest logic
+required; that process remains reserved for changes to the pricing,
+gating, or settlement logic itself.
+
+All six owner questions are now answered. The branch remains unmerged
+pending an explicit instruction to merge.

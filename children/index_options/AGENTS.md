@@ -67,8 +67,9 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json
-                           # (har-vix) + the worked cell's spy-30-45-{empirical,vix,lightgbm-vix,
-                           # zoo,hpo-har-vix,hpo-lightgbm-vix}.json
+                           # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
+                           # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
+                           # question 4, expanded 2026-09-27 from the one worked cell)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

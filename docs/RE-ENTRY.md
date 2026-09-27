@@ -1,14 +1,17 @@
 # Re-entry
 
-## ADR-0187 built and review-LOCKED on a branch; owner decisions pending (2026-09-27)
+## ADR-0187 built, review-LOCKED, all six owner questions answered (2026-09-27)
 
 - **Owner directive:** build the code needed to run the index-options
   backtests, sweep dskit first, no rework; the process is HPO plus model zoos.
 - **Where:** branch `claude/index-options-quote-backtest` (worktree
-  `.claude/worktrees/index-options-quote-backtest`), NOT merged: ADR-0187 says
-  nothing lands until Russell approves it, and its six questions are open.
-  Questions 1, 2, 3, 5 and 6 are built at their proposed defaults; question 4
-  is answered by the directive (zoo + HPO on the worked cell `spy-30-45`).
+  `.claude/worktrees/index-options-quote-backtest`), NOT merged: ADR-0187 said
+  nothing lands until Russell approves it. All six questions are now
+  answered (2026-09-27, see the ADR's "Owner answers"): five confirm the
+  proposed default already built (bucket units, IWM restricted, the
+  zero-size quote rule, snapshot reuse, `carry_rate` 0.055); question 4
+  changes scope — the model-comparison zoo and per-fold HPO, originally
+  scoped to one worked cell, now ship for every one of the 21 cells.
 - **Landed on the branch:** dskit — `ObservationRows.keep_values()/admit()`
   hooks and opt-in `reuse_snapshot` (one parsed snapshot per class per
   process), `dskit.onboarding.observations.stream_members`, the optionshist
@@ -16,11 +19,12 @@
   `contracts.quote_problems/condor_credit/american_short_charge` +
   `CONDOR_LEGS`, `ChainQuoteRows`, `IndexCloseRows` dividend/split rules,
   `_CondorBacktestBase` + `CondorQuoteBacktest`, `index_options/grid.py` and
-  the 27 generated `configs/grid/` documents (21 har-vix cells; spy-30-45's
-  other rungs, zoo and two `hpo-grid` documents). Docs and trees updated; the
-  ADR carries the build record.
+  the 147 generated `configs/grid/` documents (21 har-vix cells; every
+  cell's other rungs, zoo and two `hpo-grid` documents — expanded from 27
+  and one worked cell per owner question 4, 2026-09-27). Docs and trees
+  updated; the ADR carries the build record.
 - **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
-  purity gates); child 541 passed (every suite, manifest, an end-to-end cell
+  purity gates); child 661 passed (every suite, manifest, an end-to-end cell
   walk over a scripted archive store); ruff clean on the branch's files.
 - **Review — LOCKED at `e8b0e7f` (owner ruling 2026-09-26: only Critical/Major
   block; Minors and Nits are recorded, not fixed):** six review rounds plus
@@ -45,14 +49,14 @@
   are those of `00f0579`** — six rounds of review changed zero lines of
   production code, only tests. The full Minor/Nit backlog (not fixed;
   fixing any item would open a new candidate) is in the ADR record.
-- **Next bounded actions:** (1) the owner answers ADR-0187's six questions and
-  approves — nothing here authorizes merging to `main`; (2) step 0 on the
-  owner's machine: `acquire --stream index_daily` for `optionshist-chain`,
-  then time one bounded `ChainQuoteRows` scan (bound: 30 min, 6 GB) and
-  check that `dividend_amount` is 0, not null, on SPY/QQQ non-ex-dates (a
-  null in a window refuses the entry); (3) once approved and merged, run
-  `walkforward configs/grid/spy-30-45.json`, the zoo and the HPO documents,
-  then the grid; (4) run the evaluator on the output; (5) work the backlog
+- **Next bounded actions:** (1) all six questions are answered; merging to
+  `main` still needs an explicit go-ahead, not assumed from the answers
+  alone; (2) step 0 on the owner's machine: `acquire --stream index_daily`
+  for `optionshist-chain`, then time one bounded `ChainQuoteRows` scan
+  (bound: 30 min, 6 GB) and check that `dividend_amount` is 0, not null, on
+  SPY/QQQ non-ex-dates (a null in a window refuses the entry); (3) once
+  merged, run `walkforward` over the grid, the 21 cells' zoos and their
+  HPO documents; (4) run the evaluator on the output; (5) work the backlog
   if and when it matters (none of it is reachable on any shipped document).
 
 ## F5a source branch retired; its evidence is on main (2026-09-26)

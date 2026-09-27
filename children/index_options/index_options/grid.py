@@ -9,12 +9,13 @@ archived-quote backtest. ``configs/grid/`` holds what :func:`write_grid`
 writes; the config test pins every file to its generator, so a cell document
 changes only through this table or its base rung, never by hand.
 
-The worked cell (:data:`WORKED_CELL`) also ships the other rungs, a per-cell
-zoo (:func:`zoo_document`, the ADR-0097 protocol over the four rung
-documents) and two HPO documents (:func:`hpo_document`, ``hpo-grid`` over a
-rung's own knobs under the cell's walk-forward, ADR-0043) — the owner's
-model-zoo and hyperparameter-tuning process on one cell. :func:`cell_files`
-produces the same set for any other cell on request.
+Every cell also ships the other rungs, a per-cell zoo (:func:`zoo_document`,
+the ADR-0097 protocol over the four rung documents) and two HPO documents
+(:func:`hpo_document`, ``hpo-grid`` over a rung's own knobs under the cell's
+walk-forward, ADR-0043) — the owner's model-zoo and hyperparameter-tuning
+process on every cell (ADR-0187 owner question 4, expanded 2026-09-27).
+:func:`cell_files` builds one cell's full document set; :func:`grid_files`
+calls it for every cell in :data:`CELLS`.
 """
 
 import copy
@@ -33,7 +34,6 @@ __all__ = [
     "LABEL_REACH_DAYS",
     "RUNGS",
     "UNDERLYINGS",
-    "WORKED_CELL",
     "ZOO_RUNGS",
     "Bucket",
     "Cell",
@@ -192,8 +192,6 @@ RUNGS = {
 GRID_RUNG = "har-vix"
 #: The rungs a cell's zoo compares, in the real zoo's order.
 ZOO_RUNGS = ("empirical", "vix", "har-vix", "lightgbm-vix")
-#: The cell that ships its zoo and HPO documents.
-WORKED_CELL = "spy-30-45"
 #: Rung id -> the ``hpo-grid`` space over that rung's OWN knobs (ADR-0044: a
 #: fitted transform's member knobs are searchable; its ``fit_split`` is not).
 HPO_SPACES = {
@@ -448,7 +446,7 @@ def zoo_document(zoo_base, cell, rungs=ZOO_RUNGS):
 
 
 def cell_files(configs_dir, cell):
-    """Return one cell's worked set: every rung, its zoo and its HPO documents.
+    """Return one cell's full document set: every rung, its zoo and its HPO documents.
 
     Parameters
     ----------
@@ -477,7 +475,7 @@ def cell_files(configs_dir, cell):
 
 
 def grid_files(configs_dir):
-    """Return everything ``configs/grid/`` ships: 21 cell documents plus the worked cell's set.
+    """Return everything ``configs/grid/`` ships: every cell's full document set.
 
     Parameters
     ----------
@@ -493,8 +491,8 @@ def grid_files(configs_dir):
     base = _load(configs_dir / RUNGS[GRID_RUNG])
     out = {f"grid/{_cell_file(cell, GRID_RUNG)}": grid_document(base, cell, GRID_RUNG)
            for cell in CELLS}
-    worked = next(cell for cell in CELLS if cell.name == WORKED_CELL)
-    out.update(cell_files(configs_dir, worked))
+    for cell in CELLS:
+        out.update(cell_files(configs_dir, cell))
     return out
 
 

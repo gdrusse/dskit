@@ -64,16 +64,17 @@ def test_exact_manifest_and_agent_parity(child_root):
         "tests/test_nodes.py", "tests/test_configs.py", "tests/test_integration.py",
         "tests/test_distribution.py", "tests/test_synthetic_distribution_run.py",
         "tests/test_distribution_zoo.py", "tests/test_real_data.py",
-        # ADR-0187: the grid generator, its 21 cell documents, the worked cell's
-        # three other rungs + zoo + two HPO documents, and the quote backtest's tests
+        # ADR-0187: the grid generator, its 21 cell documents, EVERY cell's three other
+        # rungs + zoo + two HPO documents (owner question 4, expanded 2026-09-27), and
+        # the quote backtest's tests
         "index_options/grid.py", "tests/test_quote_backtest.py",
         *(f"configs/grid/{stem}.json" for stem in (
             f"{u}-{b}" for u in ("spy", "qqq", "iwm")
             for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45"))),
-        "configs/grid/spy-30-45-empirical.json", "configs/grid/spy-30-45-vix.json",
-        "configs/grid/spy-30-45-lightgbm-vix.json", "configs/grid/spy-30-45-zoo.json",
-        "configs/grid/spy-30-45-hpo-har-vix.json",
-        "configs/grid/spy-30-45-hpo-lightgbm-vix.json",
+        *(f"configs/grid/{name}" for stem in (
+            f"{u}-{b}" for u in ("spy", "qqq", "iwm")
+            for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45"))
+          for name in _cell_extra_files(stem)),
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -84,8 +85,10 @@ def test_exact_manifest_and_agent_parity(child_root):
     # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8,
     # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement),
     # plus the options-dataset-hist source config (ADR-0182 amendment, 2026-09-25) = 57,
-    # plus ADR-0187's 29 (grid.py, 21 cells, 6 worked-cell documents, test_quote_backtest.py)
-    assert len(actual) == 86
+    # plus ADR-0187's original 29 (grid.py, 21 cells, 6 worked-cell documents,
+    # test_quote_backtest.py) = 86, less those 6 plus the other 20 cells' 6 each = 120,
+    # for owner question 4's expansion to every cell (2026-09-27) = 206
+    assert len(actual) == 206
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -100,8 +103,19 @@ from dskit.pipeline.document import PipelineDocument  # noqa: E402
 from index_options import grid  # noqa: E402
 
 GRID = "configs/grid"
-WORKED = ("spy-30-45-empirical.json", "spy-30-45-vix.json", "spy-30-45-lightgbm-vix.json",
-          "spy-30-45-zoo.json", "spy-30-45-hpo-har-vix.json", "spy-30-45-hpo-lightgbm-vix.json")
+
+
+def _cell_extra_files(cell_name):
+    """The six document names one cell ships beyond its har-vix base (owner question 4)."""
+    return (f"{cell_name}-empirical.json", f"{cell_name}-vix.json",
+            f"{cell_name}-lightgbm-vix.json", f"{cell_name}-zoo.json",
+            f"{cell_name}-hpo-har-vix.json", f"{cell_name}-hpo-lightgbm-vix.json")
+
+
+#: The original hand-checked cell (ADR-0187); every cell now ships the same set (owner
+#: question 4, expanded 2026-09-27), but this one stays the primary worked example below.
+WORKED_CELL = "spy-30-45"
+WORKED = _cell_extra_files(WORKED_CELL)
 #: The base rungs the grid is generated from, pinned by digest: a cell document must
 #: change through its generator, never by a quiet edit of a base.
 BASE_DIGESTS = {
@@ -158,7 +172,9 @@ def test_the_grid_is_twenty_one_cells_with_the_adr_buckets_and_starts():
 
 def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     files = grid.grid_files(child_root / "configs")
-    assert set(files) == {f"grid/{c.name}.json" for c in grid.CELLS} | {f"grid/{n}" for n in WORKED}
+    expected = {f"grid/{c.name}.json" for c in grid.CELLS} | {
+        f"grid/{n}" for c in grid.CELLS for n in _cell_extra_files(c.name)}
+    assert set(files) == expected
     for relpath, document in files.items():
         assert (child_root / "configs" / relpath).read_text() == \
             json.dumps(document, indent=2) + "\n", relpath
@@ -241,12 +257,14 @@ def test_each_cell_document_carries_its_horizon_bucket_and_folds(child_root, mon
     assert set(planned.order) == set(pipe)
 
 
-@pytest.mark.parametrize("name", WORKED[:3])
-def test_the_worked_rungs_differ_from_the_cell_document_only_in_name_notes_and_model(
-    child_root, monkeypatch, name
+@pytest.mark.parametrize("cell", grid.CELLS, ids=lambda c: c.name)
+@pytest.mark.parametrize("suffix", ["-empirical", "-vix", "-lightgbm-vix"])
+def test_every_cells_rungs_differ_from_its_har_vix_document_only_in_name_notes_and_model(
+    child_root, monkeypatch, cell, suffix
 ):
     monkeypatch.chdir(child_root)
-    base, rung = _grid(child_root, "spy-30-45.json"), _grid(child_root, name)
+    base = _grid(child_root, f"{cell.name}.json")
+    rung = _grid(child_root, f"{cell.name}{suffix}.json")
     stripped = [copy.deepcopy(d) for d in (base, rung)]
     for d in stripped:
         d.pop("name")
@@ -256,43 +274,55 @@ def test_the_worked_rungs_differ_from_the_cell_document_only_in_name_notes_and_m
     shared = ("fit_split", "label", "scale_field", "scale_multiplier", "n_samples")
     assert {k: rung["pipeline"]["model"]["params"][k] for k in shared} == \
         {k: base["pipeline"]["model"]["params"][k] for k in shared}
+    name = f"{cell.name}{suffix}.json"
     assert set(plan(load_document(str(child_root / GRID / name))).order) == set(rung["pipeline"])
 
 
-def test_the_worked_zoo_compares_four_rungs_on_one_cell(child_root, monkeypatch):
+@pytest.mark.parametrize("cell", grid.CELLS, ids=lambda c: c.name)
+def test_every_cells_zoo_compares_four_rungs(child_root, monkeypatch, cell):
     monkeypatch.chdir(child_root)
-    zoo = _grid(child_root, "spy-30-45-zoo.json")
+    zoo = _grid(child_root, f"{cell.name}-zoo.json")
     params = zoo["stages"]["plan"]["params"]
     candidates = params["candidates"]
     assert [(c["id"], c["path"]) for c in candidates] == [
-        ("empirical", "spy-30-45-empirical.json"), ("vix", "spy-30-45-vix.json"),
-        ("har-vix", "spy-30-45.json"), ("lightgbm-vix", "spy-30-45-lightgbm-vix.json")]
+        ("empirical", f"{cell.name}-empirical.json"), ("vix", f"{cell.name}-vix.json"),
+        ("har-vix", f"{cell.name}.json"), ("lightgbm-vix", f"{cell.name}-lightgbm-vix.json")]
     real = {c["id"]: c for c in json.loads(
         (child_root / "configs" / "run-real-zoo.json").read_text())["stages"]["plan"]["params"]["candidates"]}
     for candidate in candidates:  # the rung's own metadata is the real zoo's, re-pointed
         assert {k: v for k, v in candidate.items() if k != "path"} == \
             {k: v for k, v in real[candidate["id"]].items() if k != "path"}
-    assert {"pipeline.underlying", "pipeline.vix", "pipeline.vix_by_date", "pipeline.market",
-            "pipeline.rv", "pipeline.labels", "pipeline.fwd", "pipeline.score",
-            "pipeline.condor", "pipeline.chain", "pipeline.backtest", "pipeline.model.inputs",
-            "pipeline.model.params.scale_multiplier", "walkforward"} <= set(params["contract_paths"])
+    always = {"pipeline.underlying", "pipeline.vix", "pipeline.vix_by_date", "pipeline.market",
+              "pipeline.rv", "pipeline.labels", "pipeline.fwd", "pipeline.score",
+              "pipeline.condor", "pipeline.model.inputs",
+              "pipeline.model.params.scale_multiplier", "walkforward"}
+    assert always <= set(params["contract_paths"])
+    # IWM has no backtest, so its zoo names no chain/backtest contract path (ADR-0187)
+    if cell.underlying.backtest:
+        assert {"pipeline.chain", "pipeline.backtest"} <= set(params["contract_paths"])
+    else:
+        assert "pipeline.chain" not in params["contract_paths"]
+        assert "pipeline.backtest" not in params["contract_paths"]
     assert "pipeline.model.params.ridge_alpha" not in params["contract_paths"]
-    assert params["protocol"]["attempt_family"] == "index-options-grid-spy-30-45"
+    assert params["protocol"]["attempt_family"] == f"index-options-grid-{cell.name}"
     assert zoo["stages"]["approval"]["params"]["approved_by"] == "PENDING-PLAN-REVIEW"
-    assert zoo["pipeline"]["market"]["params"]["symbol"] == "SPY"
+    assert zoo["pipeline"]["market"]["params"]["symbol"] == cell.underlying.symbol
     PipelineDocument.from_obj(zoo)
     for c in candidates:
         assert (child_root / GRID / c["path"]).is_file()
 
 
+@pytest.mark.parametrize("cell", grid.CELLS, ids=lambda c: c.name)
 @pytest.mark.parametrize("rung, keys", [
     ("har-vix", ["model.ridge_alpha"]),
     ("lightgbm-vix", ["model.lgbm_params.num_leaves", "model.lgbm_params.learning_rate",
                       "model.lgbm_params.min_child_samples"]),
 ])
-def test_the_worked_hpo_documents_search_the_rungs_own_knobs(child_root, monkeypatch, rung, keys):
+def test_every_cells_hpo_documents_search_the_rungs_own_knobs(
+    child_root, monkeypatch, cell, rung, keys
+):
     monkeypatch.chdir(child_root)
-    doc = _grid(child_root, f"spy-30-45-hpo-{rung}.json")
+    doc = _grid(child_root, f"{cell.name}-hpo-{rung}.json")
     search = doc["pipeline"]["search"]
     assert search["uses"] == "hpo-grid"
     assert search["params"]["objective"] == "$score.metrics.twcrps"
@@ -301,14 +331,15 @@ def test_the_worked_hpo_documents_search_the_rungs_own_knobs(child_root, monkeyp
     assert all(isinstance(v, list) and len(v) >= 2 for v in search["params"]["space"].values())
     for key in ("condor", "chain", "backtest"):
         assert key not in doc["pipeline"]
-    base = _grid(child_root, "spy-30-45.json" if rung == "har-vix" else f"spy-30-45-{rung}.json")
+    base = _grid(child_root, f"{cell.name}.json" if rung == "har-vix"
+                 else f"{cell.name}-{rung}.json")
     for node in ("underlying", "vix", "vix_by_date", "market", "rv", "labels", "fwd", "model",
                  "score"):
         assert doc["pipeline"][node] == base["pipeline"][node], node
     assert doc["walkforward"] == base["walkforward"]
     assert doc["name"] == base["name"] + "-hpo"
     # the planner's search rules hold: a searchable member knob, a val score objective
-    planned = plan(load_document(str(child_root / GRID / f"spy-30-45-hpo-{rung}.json")))
+    planned = plan(load_document(str(child_root / GRID / f"{cell.name}-hpo-{rung}.json")))
     assert "search" in planned.order
 
 
