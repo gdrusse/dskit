@@ -8,7 +8,10 @@ costs) is injected into ``compose.bundles_for``: a ``BarTape`` is the
 D20 tape (clock + feed), ``ReleaseIdSource`` allocates because this is
 not a recorded series, ``_TapeCadence`` ticks at bar instants, this
 object is the decider, and ``_PaperVenue`` records fills from compose's
-``PaperExecutor``. Overlap/expiry is ADR-0120 **accepted**.
+``PaperExecutor``. Overlap/expiry is ADR-0120 **accepted**. Under
+``forced_exit_at: "session_close"`` (ADR-0188) the position book is
+:class:`SessionShareBook` instead: whole shares bought and sold by
+decision, flat by each session's close.
 
 Every fill-model value is a field of ``configs/fill-policy.json``. This
 file has no default for those knobs — a missing or unknown name refuses.
@@ -17,6 +20,7 @@ file has no default for those knobs — a missing or unknown name refuses.
 from __future__ import annotations
 
 import json
+import numbers
 import os
 import shutil
 import tempfile
@@ -50,7 +54,7 @@ from dskit.production.cashflows import (
 )
 from dskit.production.compose import ReplayCashFlowComposer, bundles_for, guard_chain
 from dskit.production.document import ServeDocument
-from dskit.production.executor import PaperExecutor
+from dskit.production.executor import SIMULATED_UNITS, PaperExecutor
 from dskit.production.health import InstanceLock
 from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import ServeRoot
@@ -60,6 +64,7 @@ from dskit.production.records import (
     EntryBatch,
     ExecutionScope,
     FeedResult,
+    Fill,
     InputWatermark,
     Proposal,
     Quote,
@@ -70,6 +75,7 @@ from dskit.production.release import (
     artifact_digest,
     runtime_capture_memo,
 )
+from dskit.production.state import PositionBook
 
 from .nodes_capital import SchwabCostModel
 
@@ -81,6 +87,7 @@ __all__ = [
     "HorizonBook",
     "ReplayAdapter",
     "ScheduledCashFlowPolicy",
+    "SessionShareBook",
 ]
 
 
@@ -107,7 +114,10 @@ class FillPolicy:
     params : dict
         Every name in :attr:`_PARAMS` is required. Closed vocabularies
         are the ADR-0120 accepted/ruled members; any other member
-        refuses. ``notes`` is allowed.
+        refuses. ``forced_exit_at`` also picks the position book:
+        ``horizon_expiry`` the lead-keyed lots of :class:`HorizonBook`,
+        ``session_close`` the whole shares of :class:`SessionShareBook`
+        (ADR-0188). ``notes`` is allowed.
 
     Examples
     --------
@@ -161,7 +171,7 @@ class FillPolicy:
         "order_type": ("market",),
         "rejections": ("none",),
         "halt_handling": ("skip", "queue"),
-        "forced_exit_at": ("horizon_expiry",),
+        "forced_exit_at": ("horizon_expiry", "session_close"),
         "forced_exit_horizon_basis": ("fill",),
         "mark_source": ("fill_bar_open",),
         "same_lead_overlap": ("refuse", "override"),
@@ -983,6 +993,311 @@ class HorizonBook:
         return tuple(self._lots.items())
 
 
+def _share_fill_id(symbol, asof_ms, side, origin):
+    """The id of one share-book fill: ``{symbol}-{asof_ms}-{side}-{origin}`` (ADR-0188).
+
+    ``origin`` is ``decision`` (an order a decision queued), ``backstop``
+    (the ``session_close`` exit) or ``carried`` (a position an earlier
+    replay handed on, as the book seeds it). The id is unique by
+    construction, not by ``PositionBook.apply``'s repeat check, which scans
+    only an instrument's live log: ``asof_ms`` is unique per symbol over a
+    run (a duplicate bar refuses, segments are disjoint days), the replay
+    admits one order per name per fill bar (``duplicate_order``), the
+    backstop exits a name at most once per bar and a name is carried in at
+    most once.
+    """
+    return f"{symbol}-{int(asof_ms)}-{side}-{origin}"
+
+
+def _session_date(asof_ms, zone):
+    """The session an instant belongs to: its local date in ``zone``."""
+    return datetime.fromtimestamp(int(asof_ms) / 1000, tz=timezone.utc).astimezone(zone).date()
+
+
+def _session_last_indices(seq, zone):
+    """Each session's last-bar index in one symbol's time-sorted bars, keyed by session date.
+
+    The session is a bar's local date in ``zone`` (:func:`_session_date`);
+    its last bar is the last one the tape holds for that date, so a missing
+    closing minute moves the session close to the last minute that printed.
+    The backstop, ``_portfolio``'s ``session_last_ms`` and the
+    ``fill_next_session`` refusal all read this one definition (ADR-0188).
+    """
+    last = {}
+    for position, bar in enumerate(seq):
+        last[_session_date(bar["asof_ms"], zone)] = position
+    return last
+
+
+class SessionShareBook:
+    """Whole-share positions under ``forced_exit_at: "session_close"`` (ADR-0188).
+
+    The position store of the per-minute MIO that buys AND sells whole
+    shares and keeps no lot identity (formulation B): one long position per
+    name, folded by dskit's :class:`~dskit.production.state.PositionBook`,
+    the toolkit's position ledger (this class adds no second one). It
+    answers :class:`HorizonBook`'s six methods so :class:`EquityReplay`'s
+    tick loop calls either book the same way. Every row carries ``lead``
+    ``0``, "no horizon"; any other lead refuses.
+
+    - ``open_lot`` folds one order's fill: a buy adds shares, a sell removes
+      them. A sell of more shares than are held returns ``False`` BEFORE the
+      ledger is touched, and the caller records ``oversell``:
+      ``PositionBook`` would carry the position through flat (its ``_step``
+      rebases at the crossing), which a long-only book must never do.
+    - ``expiring`` names the whole position only at the last bar the tape
+      holds for the name's local session date (in the fill policy's
+      ``spread_time_of_day.timezone``). That is the ``session_close``
+      backstop; ``same_tick_order: exits_then_entries`` runs it before the
+      bar's queued orders, so the book is flat by the close (owner ruling
+      A(a)). Nothing expires by lead.
+    - ``session_last_ms`` names each symbol's session-close bar (the one
+      the backstop sells at) on an instant's session date, and
+      ``same_session`` whether two bars share a session date: the
+      decider's and the ``fill_next_session`` rule's view of the same
+      definition (:func:`_session_last_indices`).
+    - ``close_lot`` flattens: the position leaves the ledger.
+      ``PositionBook`` realises an instrument's log when it reaches flat, so
+      this leaves exactly the state a flattening sale would; the sale itself
+      (price, fee, ``reason``) is the caller's fill row.
+    - ``unclosed`` and ``carry_lot`` report and seed whole shares as an
+      ``int`` (``PositionBook.net_qty`` is a ``Decimal``, which the replay's
+      float NAV arithmetic refuses); a carried row is ``{lead: 0, exit_in:
+      0}``.
+
+    The ledger folds each fill at its fill bar's price with no fee: the
+    Schwab cost is billed on the replay's fill rows and folded by the
+    report's ``WindowBook``, which stays the cost basis of record
+    (ADR-0188); ``PositionBook``'s average cost never reads a fee. Fills and
+    the backstop need the tape, so :meth:`EquityReplay.run` calls
+    :meth:`bind` before the first tick.
+
+    Parameters
+    ----------
+    policy : FillPolicy
+        ``fill_price_field`` prices each fill; ``spread_time_of_day``'s
+        ``timezone`` dates the sessions.
+
+    Examples
+    --------
+    Buy ten, trim four, and refuse selling seven more::
+
+        book = SessionShareBook(policy)  # forced_exit_at: "session_close"
+        book.bind({"AAA": bars})  # one symbol's time-sorted bars
+        book.open_lot("AAA", 0, 10, "buy", 1)  # True
+        book.open_lot("AAA", 0, 4, "sell", 2)  # True: 6 left
+        book.open_lot("AAA", 0, 7, "sell", 3)  # False: oversell, still 6
+        book.shares("AAA")  # 6
+    """
+
+    #: The ``lead`` every share-book row carries: 0, "no horizon".
+    LEAD = 0
+
+    #: The sides an order may take; a sell only ever reduces a long position.
+    _SIDES = ("buy", "sell")
+
+    def __init__(self, policy):
+        self._policy = policy
+        self._zone = ZoneInfo(policy.spread_time_of_day["timezone"])
+        self._ledger = PositionBook()
+        self._bars = {}
+        self._session_last = {}
+        self._closes = {}
+
+    def bind(self, by_symbol):
+        """Bind the tape :meth:`EquityReplay.run` built: each symbol's time-sorted bars.
+
+        Each fill takes its bar (instant and price) from it and the backstop
+        its session-last indices; the ledger is untouched.
+        """
+        self._bars = dict(by_symbol)
+        self._session_last = {
+            symbol: _session_last_indices(seq, self._zone) for symbol, seq in self._bars.items()
+        }
+        self._closes = {
+            symbol: frozenset(by_date.values()) for symbol, by_date in self._session_last.items()
+        }
+
+    def shares(self, symbol):
+        """Whole shares held in ``symbol``, an ``int`` (0 when flat)."""
+        return int(self._ledger.net_qty(symbol))
+
+    def is_session_last(self, symbol, index):
+        """Return whether bar ``index`` is the last bar of its local session date for ``symbol``."""
+        return index in self._sessions(symbol)
+
+    def same_session(self, symbol, first, second):
+        """Return whether bars ``first`` and ``second`` of ``symbol`` share a session date."""
+        return (
+            _session_date(self._bar(symbol, first)["asof_ms"], self._zone)
+            == _session_date(self._bar(symbol, second)["asof_ms"], self._zone)
+        )
+
+    def session_last_ms(self, asof_ms):
+        """Each symbol's session-close instant on ``asof_ms``'s session date.
+
+        Returns
+        -------
+        dict
+            ``{symbol: asof_ms of its last bar that date}`` for every symbol
+            the tape holds on that date: the bar :meth:`expiring` names for
+            the backstop.
+        """
+        day = _session_date(asof_ms, self._zone)
+        return {
+            symbol: int(self._bars[symbol][by_date[day]]["asof_ms"])
+            for symbol, by_date in sorted(self._session_last.items())
+            if day in by_date
+        }
+
+    def is_open(self, symbol, lead):
+        """Return whether ``symbol`` holds shares."""
+        self._refuse_lead(lead)
+        return self.shares(symbol) > 0
+
+    def open_lot(self, symbol, lead, qty, side, fill_index):
+        """Fold one order's fill at bar ``fill_index``: a buy adds shares, a sell removes them.
+
+        Returns
+        -------
+        bool
+            False, with the ledger untouched, when a sell asks for more
+            shares than are held; the caller records ``oversell``.
+
+        Raises
+        ------
+        ConfigError
+            ``lead`` is not 0, ``qty`` is not a positive whole number of
+            shares, ``side`` is neither ``buy`` nor ``sell``, or the bar is
+            not on the bound tape.
+        """
+        self._refuse_lead(lead)
+        shares = self._whole(qty)
+        if side not in self._SIDES:
+            raise ConfigError([f"share book: side must be one of {list(self._SIDES)}, got {side!r}"])
+        if side == "sell" and shares > self.shares(symbol):
+            return False
+        bar = self._bar(symbol, fill_index)
+        self._fold(symbol, side, shares, bar[self._policy.fill_price_field], bar["asof_ms"], "decision")
+        return True
+
+    def carry_lot(self, symbol, lead, qty, side, exit_in):
+        """Seed a position an EARLIER replay handed on (ADR-0186): ``{lead: 0, exit_in: 0}``.
+
+        It enters the ledger at this tape's first bar for ``symbol`` at
+        price 0: its cost basis lives in the earlier replay's fills, which
+        the report's ``WindowBook`` folds, and the ledger needs its shares
+        only. Refuses a name already held (a double carry), a side other than
+        ``buy`` and an ``exit_in`` other than the integer 0.
+        """
+        self._refuse_lead(lead)
+        shares = self._whole(qty)
+        if side != "buy":
+            raise ConfigError([f"share book: a carried position is long (side buy), got {side!r}"])
+        if isinstance(exit_in, bool) or not isinstance(exit_in, int) or exit_in != 0:
+            raise ConfigError([
+                f"share book: a carried position owes no lead exit (exit_in 0), got {exit_in!r}"
+            ])
+        if self.shares(symbol):
+            raise ConfigError([f"carried position {symbol!r} collides with an open position"])
+        self._fold(symbol, "buy", shares, 0, self._bar(symbol, 0)["asof_ms"], "carried")
+
+    def expiring(self, symbol, index):
+        """The whole position when ``index`` is ``symbol``'s session-last bar, else nothing.
+
+        This is the ``session_close`` backstop: no share expires by lead.
+        """
+        if not self.is_session_last(symbol, index) or not self.shares(symbol):
+            return []
+        return [(self.LEAD, self._lot(symbol))]
+
+    def close_lot(self, symbol, lead):
+        """Flatten ``symbol`` and return the position it held, as a lot."""
+        self._refuse_lead(lead)
+        if not self.shares(symbol):
+            raise ConfigError([f"share book: no open position in {symbol!r} to close"])
+        lot = self._lot(symbol)
+        logs = self._ledger.to_obj()
+        del logs[symbol]
+        self._ledger = PositionBook.from_obj(logs)
+        return lot
+
+    def unclosed(self):
+        """Open positions as ``((symbol, 0), lot)`` pairs, sorted by symbol."""
+        return tuple(
+            ((position.instrument, self.LEAD), self._lot(position.instrument))
+            for position in self._ledger.positions()
+        )
+
+    def _lot(self, symbol):
+        """``symbol``'s position in the lot shape the tick loop reads: whole shares, no lead expiry."""
+        return {"qty": self.shares(symbol), "side": "buy", "fill_index": None, "expiry_index": None}
+
+    def _sessions(self, symbol):
+        """``symbol``'s session-last indices on the bound tape; an unbound name refuses."""
+        if symbol not in self._closes:
+            raise ConfigError([f"share book: no tape is bound for {symbol!r}"])
+        return self._closes[symbol]
+
+    def _bar(self, symbol, index):
+        """Bar ``index`` of ``symbol``'s bound tape; an unbound name or an off-tape index refuses."""
+        seq = self._bars.get(symbol)
+        if seq is None:
+            raise ConfigError([f"share book: no tape is bound for {symbol!r}"])
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(seq):
+            raise ConfigError([f"share book: bar index {index!r} is off {symbol!r}'s tape"])
+        return seq[index]
+
+    @classmethod
+    def _refuse_lead(cls, lead):
+        """Refuse any ``lead`` but the integer 0: a share position has no horizon."""
+        if isinstance(lead, bool) or not isinstance(lead, int) or lead != cls.LEAD:
+            raise ConfigError([f"share book rows carry lead 0 (no horizon), got {lead!r}"])
+
+    @staticmethod
+    def _whole(qty):
+        """``qty`` as whole shares; anything but a positive integer refuses."""
+        if isinstance(qty, bool) or not isinstance(qty, numbers.Integral) or qty <= 0:
+            raise ConfigError([
+                f"share book trades whole shares: qty must be a positive integer, got {qty!r}"
+            ])
+        return int(qty)
+
+    def _fold(self, symbol, side, shares, price, asof_ms, origin):
+        """Apply one fill to the ledger as the ``records.Fill`` ``PositionBook`` folds."""
+        fill_id = _share_fill_id(symbol, asof_ms, side, origin)
+        try:
+            self._ledger.apply(Fill(
+                fill_id=fill_id,
+                venue_ref="development-replay",
+                client_ref=fill_id,
+                instrument=symbol,
+                side=side,
+                qty=Decimal(shares),
+                price=Decimal(str(price)),
+                fee=Decimal(0),
+                fee_currency=SIMULATED_UNITS["cash"],
+                liquidity="taker",
+                status="final",
+                ts_ms=int(asof_ms),
+                native=None,
+            ))
+        except ProductionError as exc:
+            raise ConfigError([f"share book: {problem}" for problem in exc.problems]) from exc
+
+
+#: ``forced_exit_at`` -> the position book it names (ADR-0188): the lead-keyed
+#: lot book or the share book. Its keys are ``FillPolicy._VOCAB``'s members.
+_POSITION_BOOKS = {"horizon_expiry": HorizonBook, "session_close": SessionShareBook}
+
+
+def _book_for(policy):
+    """Build the position book ``policy.forced_exit_at`` names; an unknown member refuses."""
+    if policy.forced_exit_at not in _POSITION_BOOKS:
+        raise ConfigError([f"forced_exit_at {policy.forced_exit_at!r} has no position book"])
+    return _POSITION_BOOKS[policy.forced_exit_at](policy)
+
+
 class BarTape(ReplayTape):
     """Historical bars as D20 tape data: feed results, not a scheduler."""
 
@@ -1160,7 +1475,13 @@ class EquityReplay:
     Parameters
     ----------
     policy : FillPolicy
-        The fill-model bundle.
+        The fill-model bundle. Its ``forced_exit_at`` picks the position
+        book: :class:`HorizonBook` lots, or under ``session_close``
+        (ADR-0188) :class:`SessionShareBook` whole shares, whose
+        decisions carry ``lead: 0`` and either side, one order per name
+        per fill bar, filled inside their decision's session (else
+        ``fill_next_session``), and whose positions the backstop sells at
+        each session's last bar.
     cash_flow_policy : CashFlowPolicy, optional
         Funding (ADR-0176); ``None`` binds no composer.
     decider : object, optional
@@ -1181,12 +1502,16 @@ class EquityReplay:
         side, exit_in}``, where ``exit_in`` is the index, in THIS tape's
         bars of that symbol, of the bar the forced exit is owed at. They are
         seeded before the first tick, count in NAV and ``positions``, and
-        exit like any lot. A lot on a name this tape lacks refuses.
+        exit like any lot. A lot on a name this tape lacks refuses. Under
+        ``session_close`` a row is a share position, ``{lead: 0, exit_in:
+        0}``, backstopped at its session's last bar (ADR-0188).
     carry_lots : bool, optional
         ``True`` returns lots still open at the end of the tape as
         ``open_lots`` (with the ``exit_in`` the NEXT tape owes) instead of
-        refusing them ``expiry_past_tape``. ``False`` (the default) keeps
-        the refusal and adds no ``open_lots`` key.
+        refusing them ``expiry_past_tape`` (``open_at_session_close`` for
+        a share position, left open because its last bar was halted).
+        ``False`` (the default) keeps the refusal and adds no
+        ``open_lots`` key.
     ledger_dir : str, optional
         Where the replay's ledger ROOT (``placement.ledger_root``: one
         ``<series_id>/`` holding ``series.json`` and ``ledger/``) is copied
@@ -1247,7 +1572,8 @@ class EquityReplay:
         self._by_symbol = {}
         self._index_of = {}
         self._pending = {}
-        self._book = HorizonBook(policy)
+        self._book = _book_for(policy)
+        self._share_mode = isinstance(self._book, SessionShareBook)
         self._venue = None
         self._source = policy.digest()
         self._asof = 0
@@ -1303,6 +1629,8 @@ class EquityReplay:
         }
         self._pending = {symbol: defaultdict(list) for symbol in self._by_symbol}
         self._last_bar = {symbol: seq[0]["asof_ms"] for symbol, seq in self._by_symbol.items()}
+        if self._share_mode:
+            self._book.bind(self._by_symbol)
         self._seed_carried_lots()
         for decision in decisions:
             self._enqueue_decision(decision)
@@ -1316,9 +1644,11 @@ class EquityReplay:
             return {**self._result(), "open_lots": self._open_lots()}
         last = {symbol: seq[-1]["asof_ms"] for symbol, seq in self._by_symbol.items()}
         for (sym, lead), lot in self._book.unclosed():
+            # A share position the backstop could not sell (its last bar was
+            # halted) is open at its session close, not owed past the tape.
             self.refused.append({
                 "symbol": sym, "asof_ms": last.get(sym), "lead": lead, "qty": lot["qty"],
-                "reason": "expiry_past_tape",
+                "reason": "open_at_session_close" if self._share_mode else "expiry_past_tape",
             })
             self._book.close_lot(sym, lead)
         return self._result()
@@ -1332,10 +1662,14 @@ class EquityReplay:
             self._book.carry_lot(symbol, lot["lead"], lot["qty"], lot["side"], lot["exit_in"])
 
     def _open_lots(self):
-        """Close and return every lot still open, each with the ``exit_in`` the next tape owes."""
+        """Close and return every lot still open, each with the ``exit_in`` the next tape owes.
+
+        A share position owes no lead exit: its ``exit_in`` is the integer 0
+        (ADR-0188), and the next tape's backstop sells it.
+        """
         out = []
         for (symbol, lead), lot in self._book.unclosed():
-            owed = lot["expiry_index"] - len(self._by_symbol[symbol])
+            owed = 0 if self._share_mode else lot["expiry_index"] - len(self._by_symbol[symbol])
             out.append({"symbol": symbol, "lead": lead, "qty": lot["qty"], "side": lot["side"], "exit_in": owed})
             self._book.close_lot(symbol, lead)
         return sorted(out, key=lambda row: (row["symbol"], row["lead"]))
@@ -1351,7 +1685,7 @@ class EquityReplay:
                 "reason": "unknown_symbol", "decision_ms": decision["asof_ms"],
             })
             return
-        if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
+        if not self._lead_ok(lead):
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
                 "reason": "lead", "decision_ms": decision["asof_ms"],
@@ -1378,7 +1712,21 @@ class EquityReplay:
                 "reason": "fill_bar_past_tape", "decision_ms": decision["asof_ms"],
             })
             return
+        if self._share_mode and not self._book.same_session(symbol, decision_index, fill_index):
+            # A share order never fills across a session close (ADR-0188):
+            # the book is flat by the close, and the decision is stale after it.
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "fill_next_session", "decision_ms": decision["asof_ms"],
+            })
+            return
         self._pending[symbol][fill_index].append(decision)
+
+    def _lead_ok(self, lead):
+        """Whether a decision's ``lead`` suits the book: a lot needs >= 1, a share order 0 (ADR-0188)."""
+        if isinstance(lead, bool) or not isinstance(lead, int):
+            return False
+        return lead == SessionShareBook.LEAD if self._share_mode else lead >= 1
 
     def _portfolio(self, asof):
         """Live account state at tick ``asof`` for a per-tick decider (ADR-0184 S6).
@@ -1403,6 +1751,17 @@ class EquityReplay:
         ``asof``, or the fill bar is past the tape) gets ``asof`` itself: the
         replay refuses any decision for it (``unknown_decision_bar`` /
         ``fill_bar_past_tape``), so no fee is ever billed at that key.
+
+        Under ``session_close`` (ADR-0188) ``positions`` holds each name's
+        whole shares (an ``int``) with NO fill-bar filter: nothing expires by
+        lead, so a position stays listed through its session's last
+        decision, and the backstop sells it at the session's last bar before
+        that bar's queued orders (a sell landing there refuses ``oversell``,
+        a buy ``buy_at_session_close``). ``pending`` lists queued orders of
+        both sides, each with ``lead`` 0. ``session_last_ms`` maps every
+        symbol the tape holds on the tick's session date to the instant of
+        its last bar that date: the bar the backstop sells at, from the one
+        definition the backstop reads (:func:`_session_last_indices`).
         """
         policy = self._policy
         marks = {}
@@ -1423,10 +1782,15 @@ class EquityReplay:
             signed = lot["qty"] if lot["side"] == "buy" else -lot["qty"]
             nav += signed * marks.get(symbol, 0.0)
             index = self._index_of[symbol].get(asof)
-            if index is not None and lot["expiry_index"] <= index + policy.fill_bar_offset:
+            # Lot book only: a lot exiting at or before the fill bar is not a
+            # position to size against. A share position has no lead expiry.
+            if (
+                not self._share_mode and index is not None
+                and lot["expiry_index"] <= index + policy.fill_bar_offset
+            ):
                 continue
             positions[symbol] = positions.get(symbol, 0) + signed
-        return {
+        portfolio = {
             "asof_ms": asof,
             "cash": cash,
             "buying_power": cash,
@@ -1436,6 +1800,9 @@ class EquityReplay:
             "pending": self._pending_entries(),
             "fill_ms": fill_ms,
         }
+        if self._share_mode:
+            portfolio["session_last_ms"] = self._book.session_last_ms(asof)
+        return portfolio
 
     def _pending_entries(self):
         """Every queued, unfilled decision, in fill-bar then decision order."""
@@ -1732,7 +2099,7 @@ class EquityReplay:
         try:
             asof = self._asof
             policy = self._policy
-            if policy.forced_exit_at != "horizon_expiry":
+            if policy.forced_exit_at not in _POSITION_BOOKS:
                 raise ConfigError([f"forced_exit_at {policy.forced_exit_at!r} has no dispatch"])
             if policy.mark_source != "fill_bar_open":
                 raise ConfigError([f"mark_source {policy.mark_source!r} has no dispatch"])
@@ -1841,6 +2208,8 @@ class EquityReplay:
                             "decision_ms": decision["asof_ms"],
                         })
                 else:
+                    if self._share_mode:
+                        incoming = self._within_session(symbol, bar, nxt, incoming)
                     pending[nxt].extend(incoming)
             else:
                 raise ConfigError([f"halt_handling {policy.halt_handling!r} has no dispatch"])
@@ -1879,10 +2248,17 @@ class EquityReplay:
             self._book.close_lot(symbol, lead)
 
     def _process_entries(self, symbol, bar, index, incoming):
-        """Open new lots after exits on this fill bar."""
+        """Open new lots after exits on this fill bar.
+
+        Under ``session_close`` each order is a share buy or sell on the
+        share book (ADR-0188): :meth:`_share_refusal` admits one order per
+        name per fill bar and no buy on a session-last bar, a sell beyond
+        the shares held refuses ``oversell``, and the same-lead override
+        (lot book only) never closes a share position.
+        """
         policy = self._policy
         price = bar[policy.fill_price_field]
-        for decision in incoming:
+        for nth, decision in enumerate(incoming):
             lead = decision[policy.horizon_field]
             qty = decision[policy.qty_field]
             side = decision[policy.side_field]
@@ -1894,7 +2270,18 @@ class EquityReplay:
                 raise ConfigError([
                     f"bar missing {policy.fill_price_field!r} at asof_ms={bar['asof_ms']!r}"
                 ])
-            if self._book.is_open(symbol, lead) and policy.same_lead_overlap == "override":
+            if self._share_mode:
+                refusal = self._share_refusal(symbol, index, nth, side)
+                if refusal is not None:
+                    self.refused.append({
+                        "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": refusal,
+                        "decision_ms": decision["asof_ms"],
+                    })
+                    continue
+            if (
+                not self._share_mode and self._book.is_open(symbol, lead)
+                and policy.same_lead_overlap == "override"
+            ):
                 lot = self._book.close_lot(symbol, lead)
                 exit_side = "sell" if lot["side"] == "buy" else "buy"
                 exit_px = bar[policy.forced_exit_price_field]
@@ -1932,7 +2319,8 @@ class EquityReplay:
                     continue
             if not self._book.open_lot(symbol, lead, qty, side, index):
                 self.refused.append({
-                    "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "same_lead_open",
+                    "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead,
+                    "reason": "oversell" if self._share_mode else "same_lead_open",
                     "decision_ms": decision["asof_ms"],
                 })
                 continue
@@ -1940,6 +2328,45 @@ class EquityReplay:
                 "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
                 decision_ms=decision["asof_ms"],
             )
+
+    def _share_refusal(self, symbol, index, nth, side):
+        """Why the ``nth`` share order landing on fill bar ``index`` may not fill, or None (ADR-0188).
+
+        One order per name per fill bar: a later one refuses
+        ``duplicate_order`` (a decider nets a name's trade into one order,
+        and the fill ids stay unique, :func:`_share_fill_id`). No buy on the
+        name's session-last bar, where the backstop has just flattened it, so
+        the book is flat by the close: ``buy_at_session_close`` (a sell there
+        finds no shares and refuses ``oversell``).
+        """
+        if nth:
+            return "duplicate_order"
+        if side == "buy" and self._book.is_session_last(symbol, index):
+            return "buy_at_session_close"
+        return None
+
+    def _within_session(self, symbol, bar, nxt, incoming):
+        """The halted ``bar``'s share orders whose next bar ``nxt`` is still their decision's session.
+
+        A halt queue never carries a share order across a session close
+        (ADR-0188): an order it would push into a later session is refused
+        ``fill_next_session`` at the halted bar, like its past-the-tape
+        sibling.
+        """
+        kept = []
+        for decision in incoming:
+            decided = self._index_of[symbol][int(decision["asof_ms"])]
+            if self._book.same_session(symbol, decided, nxt):
+                kept.append(decision)
+                continue
+            self.refused.append({
+                "symbol": symbol,
+                "asof_ms": bar["asof_ms"],
+                "lead": decision[self._policy.horizon_field],
+                "reason": "fill_next_session",
+                "decision_ms": decision["asof_ms"],
+            })
+        return kept
 
     def _scheduled_fill_ms(self, symbol, decision):
         """The ``asof_ms`` of ``decision``'s scheduled fill bar: its decision bar + ``fill_bar_offset``.
@@ -1961,10 +2388,17 @@ class EquityReplay:
         it forces) answers; ``reason`` is why an exit happened — the
         policy's ``forced_exit_at`` name or ``same_lead_override``. Both
         ride onto the output fill row so a report can join a fill back to
-        the decision that caused it (ADR-0183).
+        the decision that caused it (ADR-0183). Under ``session_close`` the
+        row also carries ``origin`` (``decision``, or ``backstop`` for the
+        session-close exit) and ``fill_id`` (:func:`_share_fill_id`, the id
+        the share book folds the same fill under; ADR-0188).
         """
         prefix = "0" if kind == "exit" else "1"
         client_ref = f"{prefix}-{kind}-{symbol}-{lead}-{index}"
+        fill_id = origin = None
+        if self._share_mode:
+            origin = "backstop" if kind == "exit" else "decision"
+            fill_id = _share_fill_id(symbol, asof_ms, side, origin)
         meta = {
             "id": client_ref,
             "kind": kind,
@@ -1977,6 +2411,8 @@ class EquityReplay:
             "fee": fee,
             "reason": reason,
             "decision_ms": decision_ms,
+            "fill_id": fill_id,
+            "origin": origin,
         }
         self._pending_by_id[client_ref] = meta
         self._queued.append(meta)
@@ -2032,7 +2468,7 @@ class EquityReplay:
                 meta["kind"], meta["symbol"], meta["lead"], meta["side"],
                 meta["qty"], meta["price"], meta["asof_ms"], meta["fee"], ack,
             )
-            for key in ("reason", "decision_ms"):
+            for key in ("reason", "decision_ms", "fill_id", "origin"):
                 if meta[key] is not None:
                     row[key] = meta[key]
             self.fills.append(row)
