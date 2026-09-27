@@ -25573,7 +25573,8 @@ documents (previously unexercised: `backtest=False` combined with
 Tests: `test_configs.py`'s three worked-cell tests are generalized to
 parametrize over all 21 cells (rungs-agree-with-base, zoo compares four
 rungs with the IWM contract-path case now an explicit assertion, HPO
-searches the rung's own knobs), 155 cases instead of 3 + 2; the
+searches the rung's own knobs), 126 cases instead of 6 (63 + 21 + 42;
+matches the 541 -> 661 child-suite delta exactly); the
 file-set and manifest tests updated to the new counts (147 grid files;
 206 total repository files, up from 86). Child suite 661 passed
 (up from 541); ruff clean. Docs: the child's README/CLAUDE/AGENTS trees
