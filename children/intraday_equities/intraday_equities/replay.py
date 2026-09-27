@@ -2138,7 +2138,7 @@ class EquityReplay:
                 idx = self._index_of[symbol].get(asof)
                 if idx is not None and self._apply_exits(symbol, seq[idx], idx):
                     live.append((symbol, seq[idx], idx))
-            for item in live:
+            for item in self._entries_order(live):
                 self._apply_entries(*item)
             if self._decider is not None:
                 for decision in self._decider.decide(asof, self._portfolio(asof)):
@@ -2248,6 +2248,47 @@ class EquityReplay:
     def _apply_entries(self, symbol, bar, index):
         """Open this live fill bar's pending entries, after every symbol's exits."""
         self._process_entries(symbol, bar, index, self._pending[symbol].pop(index, ()))
+
+    def _entries_order(self, live):
+        """Order one tick's live fill-bar items for the entries pass (ADR-0188 J4).
+
+        Share mode only: every symbol whose queued order at this fill bar is
+        a SELL comes before every symbol whose queued order is a BUY, so a
+        same-bar sale's cash proceeds are available to fund a same-bar buy.
+        ``JointEquityKellyMIO`` sizes a buy assuming a same-tick sell has
+        already netted into the same cash budget (``sale_credit: 1.0``, the
+        ``cash_after`` row of ADR-0188 formulation B). Without this,
+        :meth:`_process_entries` folds one symbol's whole queue at a time in
+        tape order, so a buy processed ahead of the sell that funds it was
+        wrongly refused ``insufficient_cash``. Within each side, ``live``'s
+        existing order (today's tape order) is unchanged, a stable
+        partition, so ties, ``duplicate_order`` and every other refusal
+        reason are unaffected.
+
+        Lot mode returns ``live`` untouched: a lot's buys and sells across
+        different leads are unrelated cash events, so no reordering applies.
+
+        Parameters
+        ----------
+        live : list of tuple
+            ``(symbol, bar, index)`` rows built by :meth:`evaluate` for this
+            tick's symbols that are live (not halted) at this fill bar.
+
+        Returns
+        -------
+        list of tuple
+            ``live``, reordered under share mode; ``live`` itself otherwise.
+        """
+        if not self._share_mode:
+            return live
+        side_field = self._policy.side_field
+        sells, buys = [], []
+        for item in live:
+            symbol, _bar, index = item
+            incoming = self._pending[symbol].get(index, ())
+            side = incoming[0][side_field] if incoming else None
+            (sells if side == "sell" else buys).append(item)
+        return sells + buys
 
     def _halted(self, bar):
         """Return whether ``bar`` is halted, accepting JSON and numpy bools."""

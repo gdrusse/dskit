@@ -1343,6 +1343,27 @@ def test_a_short_entry_is_never_refused_for_insufficient_cash():
     assert out["refused"] == []
 
 
+def test_a_lot_short_entrys_cash_credit_is_price_times_qty_minus_the_actual_fee():
+    # Slice-5 tests-lens Major M1 (skeptic round 1): assert the actual cash VALUE a
+    # sell credits, not only nav == cash + positions * mark (which holds even if the
+    # cash-credit sign or amount were wrong). A short entry needs no prior lot (unlike
+    # the share book); its expiry (lead 5) falls past this 2-bar tape, so the entry is
+    # the tape's only fill and the only event that moves the cash balance.
+    policy = _policy()
+    replay = EquityReplay(policy)
+    cash_before = replay.cash_balance
+    bars = _cf_bars([10.0, 10.0])
+    out = replay.run(bars, [_decision("AAA", _cf_t(0), lead=5, qty=100, side="sell")])
+    assert [f["kind"] for f in out["fills"]] == ["entry"]
+    entry = out["fills"][0]
+    price, qty = entry["price"], entry["qty"]
+    fee = policy.costs.sell_per_share("AAA", price, entry["asof_ms"]) * qty
+    assert fee > 0
+    expected_cash_after = float(cash_before) + price * qty - fee
+    assert float(replay.cash_balance) == pytest.approx(expected_cash_after)
+    assert [row["reason"] for row in out["refused"]] == ["expiry_past_tape"]
+
+
 def test_a_forced_exit_always_executes_on_a_deeply_negative_balance():
     # Two shorts of 100 @ 10 fund ~3020; the lead-1 cover at 100 drives the
     # balance to about -6980; the lead-2 cover (10000 cost) still executes.
@@ -3141,6 +3162,66 @@ def test_a_share_buy_beyond_cash_refuses_insufficient_cash_and_a_sale_funds_the_
         ("entry", "buy", 100, _m(2)), ("entry", "sell", 100, _m(3)),
         ("entry", "buy", 102, _m(4)), ("exit", "sell", 102, _m(5)),
     ]
+
+
+def test_a_share_sells_cash_credit_is_price_times_qty_minus_the_actual_fee():
+    # Slice-5 tests-lens Major M1 (skeptic round 1), share-mode twin of the lot-mode
+    # test above: the code path (EquityReplay._queue_fill) is shared, so the same
+    # arithmetic check applies here. A carried-in position has no cash effect (its
+    # cost basis lived in the earlier replay), so the sell below is this run's only
+    # cash event; the shipped (nonzero-fee) policy is used, not _ZERO_FEES.
+    policy = _shares_policy()
+    carried = [{"symbol": "AAA", "lead": 0, "qty": 10, "side": "buy", "exit_in": 0}]
+    replay = EquityReplay(policy, carried_lots=carried, carry_lots=True)
+    cash_before = replay.cash_balance
+    out = replay.run(_session([10.0, 11.0, 12.0]), [_order("AAA", _m(0), 10, side="sell")])
+    assert [f["side"] for f in out["fills"]] == ["sell"]
+    sell = out["fills"][0]
+    price, qty = sell["price"], sell["qty"]
+    fee = policy.costs.sell_per_share("AAA", price, sell["asof_ms"]) * qty
+    assert fee > 0
+    expected_cash_after = float(cash_before) + price * qty - fee
+    assert float(replay.cash_balance) == pytest.approx(expected_cash_after)
+    assert out["refused"] == []
+
+
+def test_a_same_bar_sell_on_one_symbol_funds_a_same_bar_buy_on_another_symbol():
+    # ADR-0188 J4 sale_credit 1.0: the joint node sizes AAA's buy assuming BBB's
+    # same-tick sell has already netted into one cash budget. AAA's bars lead the
+    # tape (its buy would be folded, symbol by symbol, before BBB's sell): 1020 of
+    # funded cash alone cannot cover AAA's 150 @ 10 = 1500 buy without BBB's 100 @ 10
+    # = 1000 sale proceeds too. Before the entries-pass reordering this refused AAA
+    # insufficient_cash (the defect the slice-6 xfail pinned in test_simulation.py).
+    bars = [_bar(symbol, _m(m), 10.0, 10.0) for symbol in ("AAA", "BBB") for m in range(4)]
+    carried = [{"symbol": "BBB", "lead": 0, "qty": 100, "side": "buy", "exit_in": 0}]
+    orders = [
+        _order("BBB", _m(0), 100, side="sell"),
+        _order("AAA", _m(0), 150),
+    ]
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES), _cash_flow_policy(), carried_lots=carried, carry_lots=True,
+    ).run(bars, orders)
+    assert out["refused"] == []
+    decided = sorted((f["symbol"], f["side"], f["qty"]) for f in out["fills"] if f["origin"] == "decision")
+    assert decided == [("AAA", "buy", 150), ("BBB", "sell", 100)]
+
+
+def test_the_same_bar_sale_credit_holds_with_the_sell_symbol_first_in_tape_order_too():
+    # Same scenario, tape order reversed (BBB's bars lead, then AAA's): proves the
+    # entries pass sorts by each symbol's order side, not by whichever symbol the
+    # tape already happens to list first.
+    bars = [_bar(symbol, _m(m), 10.0, 10.0) for symbol in ("BBB", "AAA") for m in range(4)]
+    carried = [{"symbol": "BBB", "lead": 0, "qty": 100, "side": "buy", "exit_in": 0}]
+    orders = [
+        _order("BBB", _m(0), 100, side="sell"),
+        _order("AAA", _m(0), 150),
+    ]
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES), _cash_flow_policy(), carried_lots=carried, carry_lots=True,
+    ).run(bars, orders)
+    assert out["refused"] == []
+    decided = sorted((f["symbol"], f["side"], f["qty"]) for f in out["fills"] if f["origin"] == "decision")
+    assert decided == [("AAA", "buy", 150), ("BBB", "sell", 100)]
 
 
 def test_min_price_refuses_a_share_order_on_either_side_but_never_the_backstop():

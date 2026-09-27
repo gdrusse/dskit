@@ -3617,11 +3617,6 @@ def test_joint_simulation_carries_a_share_position_a_halted_close_left_open(jsim
     assert node._carry({"fold": 3}, result) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "replay.py (slice 5) fills a bar's share orders symbol by symbol in tape order, so a later "
-    "symbol's same-bar SALE cannot fund an earlier symbol's BUY, which is refused insufficient_cash; "
-    "the joint decider sizes with sale_credit 1.0 (ADR-0188 J4: sale proceeds reusable at once)"
-))
 def test_a_same_bar_sale_funds_a_same_bar_buy_on_the_share_book():
     ny = ZoneInfo("America/New_York")
 
