@@ -1167,6 +1167,36 @@ class TestScenarioUtilityTranches:
         with pytest.raises(ValueError, match="AAA"):
             _su_node().run(_ctx(tmp_path), fixture)
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            [[[0.01, 0.02]], [[0.02, 0.01]]],  # three dimensions
+            [[0.01, 0.02, 0.03], [0.02, 0.01, 0.0]],  # a real matrix with the wrong scenario count
+            [[0.01, 0.02], [float("nan"), 0.01]],  # non-finite inside a K > 1 matrix
+            [[0.01, 0.02], [float("inf"), 0.01]],
+        ],
+    )
+    def test_a_malformed_tranche_matrix_is_refused_by_name(self, tmp_path, bad):
+        # Skeptic round 1 (tests lens, M1): the shape rules past the ragged case.
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": bad, "BBB": [0.0, 0.0]}
+        with pytest.raises(ValueError, match="AAA"):
+            _su_node().run(_ctx(tmp_path), fixture)
+
+    def test_a_binding_cardinality_counts_names_not_tranches(self, tmp_path):
+        # Skeptic round 1 (tests lens, M2): model.y is per name, so a
+        # cardinality of one with two two-tranche names holds at most ONE
+        # name, whose split still sums to its integer target.
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": [[0.01, 0.02], [0.02, 0.01]], "BBB": [[0.01, 0.02], [0.02, 0.01]]}
+        out = _su_node(cvar_limit=None, cardinality=1, min_ticket=0.0).run(_ctx(tmp_path), fixture)
+        held = {name: shares for name, shares in out["target"].items() if shares}
+        assert len(held) == 1
+        for name, target in held.items():
+            assert len(out["metrics"]["tranches"][name]) == 2
+            assert sum(out["metrics"]["tranches"][name]) == pytest.approx(target, abs=1e-6)
+        assert out["metrics"]["n_held"] == 1
+
     def test_carried_wealth_is_wealth_but_never_cash(self, tmp_path):
         base = _su_fixture()
         carried = _su_fixture()
