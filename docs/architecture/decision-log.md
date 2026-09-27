@@ -25089,6 +25089,515 @@ The Minors and Nits of every round were fixed in the following commit,
 including round 9's Nit. The clean review is design evidence, not owner
 approval.
 
+**Build record (2026-09-26, owner directive; branch
+`claude/index-options-quote-backtest`, NOT merged).** The owner directed:
+"build out any additional code needed to run the back tests ... I think that we
+should have everything covered in DSKit ... do a thorough sweep of DSKit first
+... our process will involve hyperparameter tuning and model zoos to figure out
+the best architecture ... Do not do any rework." The build follows this ADR's
+manifest. The status stays PROPOSED: the six owner questions are open, and the
+branch waits for the owner. Questions 1, 2, 3, 5 and 6 are built at their
+proposed defaults (calendar-day buckets; IWM without a backtest; the size rule
+kept; snapshot reuse on; `carry_rate` 0.055 as `grid.CARRY_RATE`). Question 4
+is answered by the directive: every cell ships `har-vix`, and the worked cell
+`spy-30-45` also ships the `empirical`, `vix` and `lightgbm-vix` rungs, an
+ADR-0097 zoo over the four (`spy-30-45-zoo.json`) and two ADR-0043 per-fold
+re-tune documents (`hpo-grid` over `model.ridge_alpha` and
+`model.lgbm_params.{num_leaves, learning_rate, min_child_samples}`, objective
+the val twCRPS). ADR-0097 refuses a search node inside a zoo candidate, so
+tuning and comparison are separate documents and a winner is shipped by pinning
+it into the cell document; `grid.cell_files` writes the same set for any cell.
+
+*Sweep (2026-09-26, `tools/sweep/sweep` over origin/main, every branch and
+worktree).* No near match for any new name. `keep_values`/`admit` existed on
+`scan_stream` with a child-side `_scan` override in intraday_equities, which
+the hooks graduate; the HPO and zoo mechanisms exist (`hpo-grid`,
+`optuna-search`, `BenchmarkPlan/Approval/Run/Compare`) and a fitted
+transform's member knobs are searchable (ADR-0044), so the zoo and HPO are
+configuration only; `dskit.evaluation.diagnostics.Bucket` is a calibration
+score bucket, unrelated to the DTE `grid.Bucket`.
+
+*Deviations from the manifest, all additive.* (a)
+`dskit.onboarding.observations.stream_members`: the tier-2 pack may import
+only the read seam at function depth (purity gate), so the memo's store token
+lives there. (b) `contracts.CONDOR_LEGS`: `distribution._LEGS` and
+`DefinedRiskCondor` read one owner of leg order and sign. (c)
+`quote_problems` takes `count >= 0`, so `_IndexQuote`'s row rule and the
+condor rule are one function. (d) A chain row whose `dte` lies outside the
+backtest's declared bucket refuses (the reader's and the backtest's bounds are
+pinned equal by test). (e) The ledger records `settlement_date`, `sessions`,
+`horizon_scale`, `atm_iv` and each book's `american_charge_usd`; the metrics
+carry `<book>_american_charge_usd`. (f) The grid module is
+`index_options/grid.py`: `Bucket`/`Underlying`/`Cell` tables,
+`grid_document(base, cell, rung)`, `hpo_document`, `zoo_document`,
+`cell_files`, `grid_files`, `write_grid`; the config test pins every shipped
+file to its generator and the six base rungs plus the real zoo by sha256. (g)
+`IndexCloseRows` refuses a `dividend_amount` that is present and neither null
+nor a number >= 0.
+
+*Step 0.* (i) Trading hours: Cboe Rule 5.1(b)(1) lets designated ETF options
+trade to 4:15 p.m. ET; Nasdaq's and NYSE Arca/American's per-ticker lists name
+SPY, QQQ and IWM today; CBOE (SR-CBOE-2004-79) and ISE (SR-ISE-2004-39) rules
+permitted 4:15 for ETF options from 2004, naming QQQ; no primary source names
+SPY or IWM per year for 2008-2017 (CBOE's 2017 filing says "certain" ETPs).
+Entry at the 16:00 close is therefore assumed feasible with that gap
+disclosed. (ii) Runtime: the bounded `ChainQuoteRows` scan on the finished
+ingest (30 minutes, 6 GB) is NOT measured — the store lives on the owner's
+machine — and is the first action before any cell runs.
+
+*Tests.* RED then GREEN per slice. dskit: observations pack, read seam,
+optionshist and both purity gates (264 passed); child: every suite, the
+manifest (57 -> 86 files) and an end-to-end walk of `spy-7-10` over a scripted
+archive store in which the chain is parsed once across two folds (461 passed);
+ruff clean. Real-data acceptance (one SPY 30-45 walk, then the grid) is not
+run.
+
+*Review round 1 (2026-09-26, candidate `bcfb907`, two fresh Fable 5.1
+lenses).* Correctness / point-in-time / authority: C0 M0 m4 n5 — the proxy
+backtest and `DefinedRiskCondor` proven byte-identical to origin/main (only
+refusal message text differs), every American-charge case, the settlement
+gap, the sqrt rescale, the implied formula and the reader's New York date
+verified as designed. Minors, recorded as backlog (owner ruling 2026-09-26:
+Minors and Nits do not block): (1) two OCC expiries sharing one settlement
+date on one quote date are merged by `_entry` (last row per strike wins,
+the ledger names `expiry_rows[0]`); (2) an OCC expiry on an exchange holiday
+the day after a Thursday entry (2008-03-21, 2014-04-18 for the 1-day cells)
+settles at the entry's own close; (3) the fresh-object guard checks the
+list and its first element only, so a projection that mutates memo'd dicts
+in place or returns a filtered shared list is not refused; (4) the
+"ceil(1.4 h) + 4" label-reach bound was false (the shipped embargo still
+covers every measured reach; corrected below). Nits: the store token is read
+before the scan; a charge window lacking the entry close leaves the first
+ex-date uncharged (unreachable from the node); malformed non-reader inputs
+raise TypeError; the node's band is pinned to the reader's by config test
+only; `american_short_charge` re-parses the whole series per book.
+Test quality / integration (47 mutants, 33 killed): C0 M2 m5 — both Majors
+test defects: no losing settlement pinned for `CondorQuoteBacktest` (a
+flipped payoff sign or dropped multiplier survived) and a flat-iv fixture
+that could not distinguish the ATM-iv selection; Minors: the later-ex-date
+clause, DTE == dte_max, the 4-day gap, the dividend refusal and six
+boundary comparisons unpinned. Corrected in `34869d7` (tests only, plus
+`grid.LABEL_REACH_DAYS` and the note wording; every cell document's
+identity hash unchanged): losing settlements through the put wings, between
+a short and its wing and through the call wings with hand-computed P&L,
+CVaR, hit rate and drawdown; the perturbation test asserts exact settled
+P&L per book; a smile fixture pins the ATM pair, the next-nearest valid pair
+and a one-sided strike; the boundaries above. Child suite 468 passed, ruff
+clean.
+
+*Review round 2 (candidate `34869d7`, two fresh lenses).* Correctness:
+C0 M0 m1 n2 — the delta proven test-only plus `grid.py`, all 27 cell
+documents' identity hashes unchanged, the proxy backtest still byte-identical
+to origin/main, every hand value re-derived independently, the measured
+reach table reproduced exactly from an independent NYSE calendar (every
+maximum is a September-2001 window), both round-1 Majors closed. Minor: the
+generator's copy of the reach table was pinned only by its key set; Nits: the
+"Sandy dominates" comment, the stale `ceil(1.4 h) + 4` sentence in the design
+paragraph above (superseded by this record) and RE-ENTRY's test count.
+Tests (14 named mutants re-run, 16 of its own): C0 M1 m4 n3 — the round-1
+Majors closed (their mutants killed), one NEW Major of the same family: every
+forecast fixture settled inside the shorts, so a model gate reading the credit
+survived; Minors: the ATM mean unpinned (put or call iv alone survived), a
+non-positive iv accepted, an OTM ex-date latching the assignment, the reach
+table's second copy. Corrected in `00f0579` (tests only): a hundred-draw
+forecast with one draw beyond each wing pins E[P&L] = credit - 5 and the gate
+on both sides; the ATM pair at 0.18/0.22 pins the mean and a zero iv
+disqualifies a pair; two OTM ex-dates never latch; the two reach tables must
+agree; a long put with no ask is not buyable; the settlement-gap boundary on
+weekday closes; the edge-at-the-gate case reads the reported credit.
+
+*Review round 3 (candidate `00f0579`, two fresh lenses).* Correctness:
+C0 M1 m0 n3 — the candidate proven test-only, all 37 new hand values
+re-derived with the stdlib alone, round 2's Major closed (both credit-gate
+mutants killed); one NEW Major of the same family: the gate's s' scaling is
+unpinned, because every gate fixture has n == h, so a gate evaluated at the
+raw reference scale passes all 468 tests and flips the model book's decision
+on any fixture with n != h. Nits: the unbuyable put-92 fixture is also
+crossed; the ATM tie-break (lower strike) is pinned by the smile test but
+stated in neither the ADR nor the docstring; the pricing paragraph above
+says "quotable strike nearest S" where the matrix and code use the row-level
+rule (nonnegative, uncrossed). Tests (7 named mutants re-run and killed, 17
+of its own, 6 surviving and each converted to a finding): C0 M1 m3 n0 — the
+same Major (the expectation never pinned where sessions != label_horizon,
+systematic across every shipped cell); Minors: ATM validity fixtured on the
+put side only, the settle-date-vs-OCC-expiry seam of `_settlement` unpinned,
+the two ITM equality boundaries of `american_short_charge` unpinned.
+
+*Convergence checkpoint.* Three consecutive rounds each found one Major of
+one family — a fixture whose value cannot separate a rule from its plausible
+substitute — and each correction pinned only the reported quantity while
+reusing the worked fixture (Friday to Friday, five sessions, h = 5,
+symmetric draws, flat iv), whose coincidences collapse s' onto the scale,
+E[P&L] onto the credit and the ATM iv onto every iv. Per the skill an
+independent checkpoint reviewer inventoried every rule of
+`CondorQuoteBacktest`, `ChainQuoteRows` and `american_short_charge` against
+its nearest substitute (55 rules), built a 58-mutant catalogue on a scratch
+copy of the package (import path proved on every run; 19 killed and 39
+surviving against `00f0579`), corrected the author's draft batch (values of
+the gate case confirmed, the short-call quotability mis-assessed as pinned,
+the band batch one-sided, one fixture that would not trade, and rules the
+draft missed: the implied book's dte/365 convention and its -s^2/2 drift,
+the settlement `at < 0` guard, dte_min at equality, settle_date versus
+expiry in the cursor and the charge window, ATM validity per right, a size
+of exactly one, the charge's equality boundaries and row order, the mean
+credit over traded cells, the charge summed over trades, the strict snap
+variants, the chain span's last date, the reader's band on the put side)
+and authorised resumption on conditions: the batch as ONE tests-only commit
+whose record cites the catalogue and states the production blobs and the 27
+identity hashes unchanged, then two fresh lenses with the tests lens
+re-running the catalogue plus its own, any further Critical/Major being a
+new candidate. Landed as `45d0d5d` (tests only): 33 tests, one separating
+fixture per rule; against it 55 mutants are killed and 3 survive, each
+equivalent on every reachable input — the band on the long legs alone
+(with Q(0.1) <= Q(0.9) a short leg outside the band puts its own long leg
+outside), sessions counted to the OCC expiry (the reader's settle_date is
+the last weekday on or before it), and a single step back from a weekend
+expiry (OSI expiries are Fridays or Saturdays). Child suite 501 passed. The
+checkpoint's own backlog (Nits, no material consequence): a Sunday OCC
+expiry's settlement, the band comparison at equality, a credit of exactly
+zero, the hit rate at zero trades, the plumbing refusals of the charge, the
+reader's drop counts as observability, and the round-1 expiry tie.
+
+*Review round 4 (candidate `45d0d5d`, two fresh lenses).* Correctness:
+C0 M0 m1 n3 — every invariant A–M probed with hand-computed counter-values
+(point-in-time: every later close and chain row rewritten without moving
+the decision view; Saturday, Good-Friday and Sandy-shaped dates; the
+outward snap, the gate at exact equality, the charge's every clause, the
+reader's New York date, the memo's keying and refusal, both optionshist
+streams, the generated grid byte-for-byte, the proxy byte-identical to
+origin/main but for the order of its accumulated refusal messages).
+Minor: `CondorQuoteBacktest.DEFAULTS` restates the base's dict (one lookup
+today). Nits: the calendar year 365 is a bare literal in two modules; the
+ATM tie-break unstated in the docstring; the proxy's refusal-message order.
+Tests (the 58-mutant catalogue re-run: 55 killed, the 3 survivors'
+equivalence confirmed; 24 child and 11 dskit substitutes of its own; 96
+hand values, all agreeing): C0 M3 m3 n4 — three findings of the reviewed
+family, each test-only: the classification order `target_outside_band`
+before `no_quotable_strike` unpinned (a too-narrow-band skip could be
+relabelled as data coverage, which the cell-level acceptance reads); a
+document omitting `min_edge_usd` gating at 0 unpinned ("no knob, no gate"
+survived); and one batch fixture asserting a trade at a per-share credit
+exactly equal to its one-point call wing, which the contract refuses and
+the node accepted only by float rounding (0.9999999999999999 < 1). Minors:
+the order of `nonpositive_credit` versus `credit_not_below_width` when both
+hold (immaterial); the reader's per-rule drop counts log-only; "one memo
+entry per class" unpinned. Nits: three node tests take the charge from
+`american_short_charge` itself (delegation pins); a Sunday OSI expiry
+alone separates the loop from a single step back; a forecast row with no
+matching close alone separates the cursor's `settle_date` from the
+settlement's date; the memo key's canonical ordering unpinned. Per the
+checkpoint's condition (d) the correction is a NEW tests-only candidate:
+the band is classified before quotability and quotability before geometry
+(a sizeless chain under a 0.06 band; a constant forecast whose put wing has
+no ask size), a missing `min_edge_usd` gates at 0 (fees of 39 leave a 4.00
+credit, the losing draws take 5.00 off it, E = -1.00 skipped, the always
+book trades, the report names the default), and the short-call fixture's
+long call asks 0.8 (credit 0.8 -> 77.4), so an output-equivalent credit
+summation no longer fails the suite. A per-share credit exactly at the
+wing width falling on either side of the rule by float rounding is
+recorded as a Minor of `condor_credit` (the cashflow owner sums Decimals;
+the backtest's floats do not; no economic consequence at a zero-max-loss
+boundary).
+
+*Review round 5 (candidate `b2fa3dd`, two fresh lenses).* Correctness:
+C0 M0 m3 n2 — the delta proven tests-only against 00f0579's blobs, the
+corrected fixtures re-derived by hand, every invariant probed again with
+its own scripts (a later-listed nearer expiry, Good Friday, a Sunday OCC
+expiry, exact-equality credit and gate, an independent NYSE calendar
+reproducing the reach table, the proxy byte-identical). Minors: a target
+inside the band whose outward snap lands one step beyond the reader's band
+is labelled `no_quotable_strike` (a data-coverage reason) rather than the
+band; an integral-float `multiplier` validates at plan and refuses at run;
+the dte ordering rule is spelled in two modules. Nits: the optionshist
+`check` verifies the underlying file's three columns only; a boolean split
+coefficient passes `!= 1`. Tests (the catalogue, round 4's 25 and the
+author's 5 re-run with identical verdicts; 24 substitutes of its own; 110
+hand values, all agreeing): C0 M4 m4 n5 — four more findings of the
+reviewed family, all test-only: the nearest-expiry rule pinned by the
+recorded NAME alone (both same-date chains carried identical quotes, so a
+node pricing every row of the date passed); the always book's strikes
+never asserted where sessions != label_horizon (an always book at the raw
+scale survived); mean P&L and hit rate never asserted on a book with a
+traded and a skipped cell (dividing by every cell survived); and no
+fixture with more than three trades or an alpha other than 0.95, so the
+CVaR collapsed to the minimum and a dead `cvar_alpha` survived. Minors:
+sessions counted to the settlement close's date (a holiday settlement);
+the entry close as the pre-ex close of a next-session ex-date; every
+losing fixture drawing exactly 100 samples against a multiplier of 100;
+the reader's `underlying_price` rule pinned on None only. Nits: the hit
+rate at a P&L of exactly zero; misalignment checked on the first chain
+row; a close validated before the window filter; the zoo's contract paths
+unguarded for an IWM cell; the node key absent from the memo key.
+
+*Second convergence checkpoint.* Two corrections after the first
+checkpoint each met a fresh round that found the same family again, which
+the skill forbids patching further: the first checkpoint's inventory
+enumerated rules as the author described them, so a lens could always
+name a substitute outside it (a reason's ORDER, a knob's ABSENCE, a
+metric's DENOMINATOR, a filter's DELETION). The changed approach makes the
+catalogue GENERATED, not written: an operator-mutation sweep over the AST
+of every scope this build added or changed — `_CondorBacktestBase`,
+`CondorBacktest`, `CondorQuoteBacktest`, `quote_problems`,
+`condor_credit`, `american_short_charge`, `_settlement_date`,
+`ChainQuoteRows`, `IndexCloseRows.project` and all of `grid.py` —
+swapping every comparison, arithmetic and boolean operator, shifting every
+numeric constant, negating every `if`, deleting every comprehension filter
+and every deletable statement, swapping `min`/`max`, `floor`/`ceil`,
+`bisect_left`/`bisect_right` and identity-wrapping calls, and swapping
+every vocabulary string and confusable local name (`scale` /
+`horizon_scale`, `settle_date` / `expiry`, `credit` / `per_share`, ...).
+Every survivor is adjudicated: killed by a fixture or proven equivalent on
+every reachable input. The completion criterion is mechanical, and the
+sweep is re-runnable by the tests lens.
+
+*The sweep (author side, before the checkpoint review).* 1,843 mutants
+generated from the pristine modules (nodes.py 1,123; contracts.py 249;
+observations.py 260; grid.py 211), each written into a scratch copy of the
+package with the import path proved on every run, the mapped test files
+run with the first failure stopping the run, and the copy restored from
+the pristine package after each; the unparsed, unmutated modules pass
+their tests as the baseline. Against the tests of `caf66a5` (round 5's
+fixtures included) 1,612 were killed, two of them by a bound on running
+time (a settle-date loop that no longer terminates), and 231 survived
+(nodes 145, contracts 35, observations 48, grid 3). Each survivor that
+encodes a rule got a separating fixture, in three tests-only commits
+(`2bdd315`, `4e96116` and the drop-count / parents commit after it): an
+exact-zero credit is nonpositive while half a dollar trades and a settled
++0.50 is a hit, -0.50 and 0.00 are not; every one of the thirteen required
+chain fields refuses when absent; a zero fee, carry and edge, a one-day
+cell and a multiplier of one are accepted; a target exactly on the band
+is inside it (reference scale 1/16, band 3/32, both dyadic); a zero SIZE
+on one side stops that side's leg alone; the holiday settlement keeps the
+ledger's settle_date, its cursor and its charge window on the settle
+date, with the series long enough for a wrongly admitted entry to show;
+a series whose first row is the settlement close settles; a pre-ex close
+between the short put and the short call assigns nothing; every
+statistic of an empty book is zero; the ledger keeps the row's reference
+scale; the misalignment tolerance is relative (5e-8 on 100 passes); the
+refusal messages name the bound they broke; a farther expiry listed
+first, with half-strikes the near one lacks, never reaches the ledger or
+the snap; a strike listed on one right only is no ATM candidate; the
+always and implied cells carry the same fields as a skipped model cell;
+the charge validates its multiplier, dates and strikes by name, ignores
+closes before the entry, refuses a negative dividend, a non-positive
+close and an empty row list; a negative ask alone is "nonnegative"; the
+reader's shared fields, a one-day bucket, the inverted-bounds message, a
+strike a thousandth below a grid point, and the intake's logged drop
+counts by first failing rule (with 0 for a rule that dropped nothing);
+an index row's dividend copied without a split column and its close
+projected as a float; and write_grid regenerating in place and creating
+missing parents. Re-run against the final tests, 108 mutants survive and
+every one is adjudicated equivalent, by class: 39 in the VIX-proxy node
+(`CondorBacktest`, byte-identical to origin/main; its own suite leaves
+its defaults, gate arithmetic, bid/ask credit rule, cell keys, ledger
+fields and report echo unpinned — a pre-existing backlog item, not this
+ADR's rules); 20 message wording only (the refused input is still
+refused); 6 tolerance widths (1e-9 versus 2e-9 relative on the
+misalignment check, whose absolute term is dead at prices above 1; the
+strike grid's 1e-9 on thousandth strikes); 5 `str()` or `float()` of a
+value the contract already types; 4 the base class's `DEFAULTS`, dead
+under both subclasses' own (the recorded Minor); 4 `_PARAMS` order (a
+membership set); 4 a redundant guard or message (the per-knob refusals
+that follow report the same knob; the reader's empty symbol refused by a
+later check); 4 row numbers inside messages; 4 the geometry test (with
+monotone quantiles and strict outward snaps, strikes are degenerate
+exactly when the two short targets coincide, and no ETF strike lies in
+(0, 1]); 4 the always and implied books' unused scale in `_book`; 4 the
+index into the chosen DTE group's rows (all share settle_date; when two
+OCC expiries share one settle date on one quote date the group's expiry
+label is the first-listed row's, per the round-1 expiry-tie Minor, whose
+own fixture is the closer separation, not this class);
+2 settlement and sessions taken to the OCC expiry (no weekday between it
+and the settle date); 2 the ATM check's two sizes (judged symmetrically
+with side None); 2 a close below the short put on the settle date
+(carries for tau = 0); 2 the leg sign (never 0); 1 exact equality of a
+float log-moneyness with the reader's band; 1 a slice constant in the
+generator that the shipped documents' byte-equality test proves
+inert. Child suite 534 passed; ruff clean on the branch's files;
+production blobs and all 27 identity hashes those of `00f0579`. The
+sweep's tool, results and adjudication are session scratch, re-runnable
+by the checkpoint and the tests lens.
+
+*Second checkpoint review (independent; on `6b575d9`, tests, with
+`12156f2` docs on top).* Tooling verified (pristine package equal to the
+worktree's, the unparsed modules AST-identical to the source, baselines
+green with import proofs) and the whole sweep re-run: 1,843 mutants,
+1,733 killed, 108 surviving id-for-id as recorded, 2 non-terminating.
+The operator audit named the classes the generator does not emit and
+ran 83 hand-written mutants of them (chained-comparison single-operator
+swaps, guard deletion, all/any, sum to max/len/first, argument swaps,
+latching and placement, dict keys outside the vocabulary, statement
+reordering, elif to if, sort keys, math builtins, metric substitutes,
+memo keys, membership versus None, the traded side): 67 killed, 16
+survived, four of them findings. Probing every "equivalent" class
+(pristine versus mutant on a reachable input, import proof on both)
+confirmed twelve of seventeen and failed five. Verdict C0 M1 m7 n4, the
+Major of the reviewed family in a class the generator does not emit: no
+fixture quotes one OCC expiry on two dates within a scan, so a reader
+memo keyed by the expiry instead of the quote time survives, although
+every archive expiry is quoted daily (each later row would carry the
+first date and an overstated DTE). Minors: a book's American charge
+pinned only where sum, max and first coincide; `short_q` of exactly 0
+accepted and crashing at run; the settlement gap measured from the OCC
+expiry rather than the settle date survives (a Saturday expiry with a
+four-day closure separates it — the "weekday" adjudication was wrong for
+`_settlement`); the ATM check's size swap survives a `None` size on one
+side (the "symmetric" adjudication was wrong); a non-numeric
+`cvar_alpha` raises TypeError under the swapped guard (the "redundant"
+adjudication was wrong for that line); the index reader accepts an empty
+symbol (no later check refuses it — the "redundant" adjudication was
+wrong, and the line is pre-existing on main); a one-row expiry indexed at
+`[1]` raises instead of `no_quotable_strike` (the "rows" adjudication
+was wrong for `[1]`). Nits: the first pass of the nodes.py sweep ran on
+parallel copies whose import path the runner then failed to recognise
+(the kills are self-proving and the re-sweep proves all 1,843); 80
+intermediate kills were never re-run after two tests were rewritten (the
+re-sweep shows all 80 still die); the record's list of generator gaps
+was overstated; a few more catalogue survivors are labels, logs and
+statement order of no consequence. Hand recomputation of every batch
+value agreed. AUTHORIZED to resume on conditions: (1) one more tests-only
+commit with its eight fixtures, production and configs unchanged, the
+child suite green — landed as `e8b0e7f` (541 passed): one expiry quoted
+on two dates keeps each row's own date and DTE; the charge summed over
+two trades with different nonzero charges; `short_q` 0 and a non-numeric
+`cvar_alpha` refused as config errors; the gap measured from the settle
+date; an unusable size on either side disqualifying an ATM pair; a
+one-row expiry counted as `no_quotable_strike`; the index reader refusing
+an empty symbol — which kills the seven generated survivors above and
+its own P1, D1, D1b and A1, leaving 101 generated and 12 catalogue
+survivors, every one with a probe; (2) this record corrected as above;
+(3) `e8b0e7f` is the round-6 candidate: two fresh lenses, the tests lens
+re-running the generated sweep and the checkpoint's catalogue, probes,
+fixtures and hand values with import proofs; (4) any change to code or
+tests is a new candidate resetting both lenses, and a further
+Critical/Major from round 6 is not patched author-side — the checkpoint
+reconvenes and the operator class that produced it enters the catalogue
+first; (5) every "equivalent" adjudication carries a probe script; (6)
+the proxy's 39 survivors and the empty-symbol line are pre-existing on
+origin/main and outside this ADR (backlog: pin the proxy's bid/ask
+credit rule, gate and defaults in its own suite).
+
+*Round 6 (candidate `e8b0e7f`, two fresh lenses).* Correctness: C0 M0 m0
+n1 — the delta re-proven tests-only, 768 own hand-computed checks across
+every invariant (point-in-time with every later row and close rewritten,
+dates, the snap and its classification order, credit and gate
+arithmetic, the charge's every clause, quote rules, the reader and its
+memo, both optionshist streams, the generated configs against an
+independent NYSE calendar, the proxy dict-equal to a merge-base copy over
+218 rows and 6 param variants), child suite 541 passed, dskit suites 264
+passed / 10 skipped, ruff clean, every shipped document loading and
+planning cleanly. Nit: three grid.py module constants
+(`EMBARGO_MARGIN_DAYS`, `ROOT`, `CHAIN_SOURCE`) are public-spelled but
+outside `__all__`. Tests (the full generated sweep re-run — 1,740 killed,
+2 by the running-time bound, 101 surviving id-for-id; the checkpoint's
+83-mutant catalogue re-run — 71 killed, 12 surviving; every one of the
+101 + 12 adjudicated with its own probe; 28 more child mutants and 9
+dskit mutants of its own; every batch value re-derived by hand): C0 M0
+m3 n3 — no new Critical/Major; three Minors of the reviewed family's
+immaterial tail, each with a probe: the ATM tie-break (`nodes.py:1016`,
+`min(candidates)`) is pinned only for CPython's set-iteration order, not
+against a tie a different order would visit first, though implied
+strikes move only in the measure-zero case of an ATM strike exactly
+midway between two neighbours; the DTE-bucket refusal (`nodes.py`
+`_prepare`) is pinned only on a chain whose FIRST row breaks the bound,
+so a chain with in-bucket rows followed by an out-of-bucket expiry runs
+instead of refusing (reachable only when a reader's bounds differ from
+the node's, which no shipped document does); and the "rows" class
+argument above was wrong for the `[-1]` case, corrected. Nits: one
+fixture's collaborator value could be asserted directly instead of only
+bounded (`> 100.0`); the sweep's total in an earlier count did not
+separate the two running-time-bound kills from the rest; "every scope
+this build added" should read "every CHILD scope" — the dskit seams the
+matrix also names are covered by round 4's hand mutants and the 264-test
+dskit suites, not the generator.
+
+Two completed independent lenses report zero unresolved Critical/Major.
+Per the skill, that closes the candidate. **The build is LOCKED at
+`e8b0e7f`** (the tests-only tip of the branch; production, dskit and all
+27 `configs/grid` identity hashes are those of `00f0579`). The full
+Minor/Nit backlog across all six rounds and both checkpoints, carried
+forward for whoever next touches this code and not fixed now (fixing any
+of it would open a new candidate): an expiry tie merging two OCC series
+at the ledger's expiry label (the fixture that would separate `[-1]`
+from `[0]` is the natural next test); a holiday-expiry Thursday entry
+settling at its own close; the fresh-object guard bypassable by an
+in-place-mutating projection or a base-class reuser; a store-token race;
+non-reader inputs raising TypeError instead of ValueError; the ATM
+tie-break's rule undocumented and its pin order-fragile; a Sunday OCC
+expiry's settlement (no OCC expiry is ever a Sunday); the band comparison
+at exact float equality; a credit of exactly zero or exactly at a wing
+width, both float-rounding boundaries of `condor_credit`; the hit rate at
+zero trades; the reader's drop counts as observability only; the quote
+node's `DEFAULTS` dict restated from the base class; the bare `365` in
+two modules; the order of `nonpositive_credit` versus
+`credit_not_below_width` when both hold; "one memo entry per class"
+degrading gracefully to one entry total if ever mis-keyed; an integral
+float `multiplier` validating at plan and refusing at run; the dte
+ordering rule spelled in both `nodes.py` and `observations.py`; the
+optionshist `check()` verifying three columns where `index_daily` needs
+eight; a boolean `split_coefficient` passing `!= 1`; the DTE-bucket
+refusal pinned on the first chain row only; and three grid.py constants
+outside `__all__`. None is reachable on any shipped `configs/grid`
+document; none changes a priced value, a gate decision, or a refusal
+under the frozen matrix.
+
+The branch is not merged: ADR-0187 remains PROPOSED and its six owner
+questions are open (see the header of this entry). Nothing here
+authorizes landing on `main`.
+
+**Owner answers (2026-09-27).** Russell answered all six questions.
+Five confirm the proposed default already built, no change: (1) buckets
+in calendar days; (2) IWM stays restricted, no backtest; (3) the zero-size
+quote rule stays; (5) snapshot reuse stays on; (6) `carry_rate` stays
+0.055. Question 4 changes scope: the model comparison and per-fold HPO,
+previously shipped for `spy-30-45` alone, now ship for EVERY cell.
+
+**Build: question 4 expanded to every cell (2026-09-27).** `cell_files`
+(every rung, its zoo, its HPO documents for one cell) was already fully
+cell-agnostic — it took any `Cell`, and `grid_document`/`zoo_document`/
+`hpo_document` already branch correctly on `cell.underlying.backtest`
+(IWM). The only production change is `grid_files()`: it now calls
+`cell_files` for every cell in `CELLS` instead of the one named
+`WORKED_CELL`, which is removed as a constant (`cell_files`'s docstring
+already said "produces the same set for any other cell on request").
+`configs/grid/` grows from 27 to 147 documents (21 har-vix bases + 21 ×
+6 extras); every one of the 21 existing har-vix documents and the 6
+pre-existing `spy-30-45` extras is byte-identical to what it was —
+`git status` after `write_grid` shows exactly 120 new files and zero
+modified ones. The manual spot-check on `iwm-21`'s new zoo and HPO
+documents (previously unexercised: `backtest=False` combined with
+`zoo_document`/`hpo_document`, which had only ever run on `spy-30-45`,
+`backtest=True`) confirms the zoo's `contract_paths` correctly drops
+`pipeline.chain`/`pipeline.backtest` and the HPO document is clean.
+
+Tests: `test_configs.py`'s three worked-cell tests are generalized to
+parametrize over all 21 cells (rungs-agree-with-base, zoo compares four
+rungs with the IWM contract-path case now an explicit assertion, HPO
+searches the rung's own knobs), 126 cases instead of 6 (63 + 21 + 42;
+matches the 541 -> 661 child-suite delta exactly); the
+file-set and manifest tests updated to the new counts (147 grid files;
+206 total repository files, up from 86). Child suite 661 passed
+(up from 541); ruff clean. Docs: the child's README/CLAUDE/AGENTS trees
+and worked-example commands updated; `AGENTS.md`/`CLAUDE.md` stay
+byte-identical.
+
+This is a narrower change than the locked candidate's review scope and
+does not reopen it: `nodes.py`, `contracts.py`, `observations.py` and the
+three dskit seams the six review rounds and two convergence checkpoints
+covered are untouched, and every one of `grid.py`'s document-generating
+functions (`grid_document`, `zoo_document`, `hpo_document`) is unchanged
+— only which cells `grid_files()` calls them for. Given the low risk
+(a loop over already-tested, already-reviewed per-cell functions, zero
+change to backtest math, proven by the byte-identical-except-additive
+diff) this landed on direct verification — full suite, ruff, and a
+targeted read of the one genuinely new code path (IWM's zoo/HPO) —
+rather than the six-round adversarial process the core backtest logic
+required; that process remains reserved for changes to the pricing,
+gating, or settlement logic itself.
+
+All six owner questions are now answered. The branch remains unmerged
+pending an explicit instruction to merge.
+
 ## ADR-0188 — One joint per-minute exit-horizon-tranche MIO: holdings and every forecast path in, target shares out (formulation B)
 
 **Status:** ACCEPTED as formulation B (owner direction in chat, 2026-09-26).

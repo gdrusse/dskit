@@ -16,7 +16,7 @@ import pytest
 
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import PipelineDocument, load_document
-from dskit.pipeline.driver import run_walk_forward
+from dskit.pipeline.driver import resolve_json_artifact, run_walk_forward
 from dskit.pipeline.kinds_flow import Join, KeyBy
 from dskit.pipeline.option_pricing import VolIndexSmileQuotes, black76
 from dskit.pipeline.planner import plan
@@ -79,6 +79,34 @@ def test_index_projection_keeps_one_symbol_in_time_order():
     for bad in (0, None, float("nan"), "3234"):
         with pytest.raises(ValueError, match="close"):
             node.project([dict(raw[1], close=bad)])
+
+
+def test_index_projection_copies_a_dividend_and_refuses_a_split(tmp_path):
+    """ADR-0187: the optionshist ``index_daily`` rows carry the two corporate-action columns."""
+    node = IndexCloseRows("spy", {"root": str(tmp_path), "source": "optionshist-chain",
+                                  "symbol": "SPY"})
+    raw = [{"symbol": "SPY", "date": "2020-03-16", "close": 239.85, "asof_ms": 1,
+            "dividend_amount": 0.0, "split_coefficient": 1.0},
+           {"symbol": "SPY", "date": "2020-03-20", "close": 228.8, "asof_ms": 2,
+            "dividend_amount": 1.406, "split_coefficient": 1.0},
+           {"symbol": "SPY", "date": "2020-03-23", "close": 222.95, "asof_ms": 3,
+            "dividend_amount": None, "split_coefficient": None}]
+    out = node.project(raw)
+    assert [r["dividend_amount"] for r in out] == [0.0, 1.406, None]
+    assert all("split_coefficient" not in r for r in out)
+    assert set(out[0]) == {"instrument", "contract", "group", "close", "asof_ms", "date",
+                           "dividend_amount"}
+    for coefficient in (2.0, 0.5):
+        with pytest.raises(ValueError, match="split_coefficient"):
+            node.project([dict(raw[0], split_coefficient=coefficient)])
+    for dividend in (-1.0, "1.4", True):
+        with pytest.raises(ValueError, match="dividend_amount"):
+            node.project([dict(raw[0], dividend_amount=dividend)])
+    # the dividend is copied whether or not the row carries a split, and the close is a float
+    bare = node.project([{"symbol": "SPY", "date": "2020-03-24", "close": 240, "asof_ms": 4,
+                          "dividend_amount": 0.5}])
+    assert bare[0]["dividend_amount"] == 0.5
+    assert bare[0]["close"] == 240.0 and isinstance(bare[0]["close"], float)
 
 
 def test_index_reader_and_join_over_a_real_onboarding_store(store_factory):
@@ -397,3 +425,83 @@ def test_real_har_rung_runs_over_a_scripted_store(child_root, store_factory, tmp
     metrics = carry["backtest"]["metrics"]
     assert metrics["n_entries"] >= 2 and metrics["always_n_trades"] >= 1
     assert "model_total_pnl_usd" in metrics and "implied_cvar_usd" in metrics
+
+
+# -- ADR-0187: one grid cell end to end over a scripted archive store ----------------------
+
+
+def _archive_rows(n, seed=5):
+    """SPY closes with a quarterly dividend, and one chain per day expiring 7 days out."""
+    from datetime import datetime, time, timezone
+    from zoneinfo import ZoneInfo
+
+    rng = random.Random(seed)
+    closes, chain, spot = [], [], 300.0
+    for i in range(n):
+        spot *= math.exp(rng.gauss(0.0, 0.012))
+        day = _day(i)
+        closes.append({"symbol": "SPY", "date": day, "open": spot, "high": spot, "low": spot,
+                       "close": round(spot, 2), "dividend_amount": 1.5 if i % 63 == 40 else 0.0,
+                       "split_coefficient": 1.0, "effective_date": day})
+        expiry = (date.fromisoformat(day) + timedelta(days=7)).isoformat()
+        quote_time = datetime.combine(date.fromisoformat(day), time(16, 0),
+                                      tzinfo=ZoneInfo("America/New_York")).astimezone(
+            timezone.utc).isoformat()
+        close = round(spot, 2)
+        for k in range(int(close * 0.9), int(close * 1.1) + 1):
+            for right in ("put", "call"):
+                distance = (close - k) if right == "put" else (k - close)
+                mid = max(0.05, 4.0 * math.exp(-max(distance, 0.0) / 6.0))
+                occ = f"SPY{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}{right[0].upper()}{k * 1000:08d}"
+                chain.append({"underlying": "SPY", "option": occ, "root": "SPY",
+                              "expiry": expiry, "right": right, "strike": float(k),
+                              "bid": round(mid * 0.95, 2), "bid_size": 10,
+                              "ask": round(mid * 1.05, 2), "ask_size": 10, "iv": 0.2,
+                              "open_interest": 1, "volume": 1, "delta": None, "gamma": None,
+                              "vega": None, "theta": None, "last_trade_price": None,
+                              "last_trade_time": None, "underlying_price": close,
+                              "quote_time": quote_time, "effective_date": quote_time})
+    return closes, chain
+
+
+def test_a_grid_cell_runs_its_walk_over_a_scripted_archive(child_root, store_factory, tmp_path,
+                                                          monkeypatch):
+    import dskit.onboarding.observations as seam
+
+    closes, chain = _archive_rows(420)
+    archive = store_factory({"index_daily": closes, "option_chain": chain}, "archive",
+                            source="optionshist-chain", effective_field="effective_date")
+    archive.acquire("index_daily")
+    archive.acquire("option_chain")
+    vix = store_factory({"index_daily": [r for r in _index_rows(420) if r["symbol"] == "VIX"]},
+                        "vix", source="cboe-index", effective_field="effective_date")
+    vix.acquire("index_daily")
+    obj = _load(child_root, "grid/spy-7-10.json")
+    for key in ("underlying", "chain"):
+        obj["pipeline"][key]["params"]["root"] = archive.root.root
+    obj["pipeline"]["underlying"]["params"]["since_ms"] = 0
+    obj["pipeline"]["vix"]["params"]["root"] = vix.root.root
+    obj["walkforward"].update(first=_day(300), step_days=45, count=2, val_days=45)
+    obj["outputs"]["run_root"] = str(tmp_path / "runs")
+    real, scans = seam.scan_stream, []
+
+    def counting(*args, **kwargs):
+        scans.append(args[2])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(seam, "scan_stream", counting)
+    result = run_walk_forward(PipelineDocument.from_obj(obj), asof=_day(419))
+    assert len(result.folds) == 2 and all(f["state"] == "ran" for f in result.folds)
+    # the chain is parsed once per process, the closes once per reader per fold
+    assert scans.count("option_chain") == 1 and scans.count("index_daily") == 4
+    for fold in result.folds:
+        carry = json.loads((tmp_path / "runs" / fold["run_dir"] / "carry.json").read_text())
+        metrics = carry["backtest"]["metrics"]
+        assert metrics["n_entries"] >= 3 and metrics["always_n_trades"] >= 1
+        assert metrics["n_skipped_no_chain"] == 0 and carry["score"]["metrics"]["n"] > 0
+        report = resolve_json_artifact(str(tmp_path / "runs" / fold["run_dir"]),
+                                       carry["backtest"]["report"])
+        assert report["kind"] == "archived_quote_condor_backtest"
+        entry = report["ledger"][0]
+        assert entry["dte"] == 7 and entry["sessions"] == 5
+        assert entry["settlement_date"] == entry["settle_date"]

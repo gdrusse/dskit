@@ -66,6 +66,19 @@ identical in both modes (the platform keys the cursors apart, ADR-0014). One cur
 every ticker, so a ticker added to an already-walked source would be
 skipped before the cursor — register a new source to add one.
 
+**The ``index_daily`` stream (ADR-0187).** The same pinned
+``underlying_prices.parquet`` read whole: one row per ``(symbol, date)``
+in the Cboe pack's :data:`~dskit.onboarding.libs.cboe.INDEX_FIELDS` plus
+the archive's two corporate-action columns, ``dividend_amount`` (the cash
+dividend on its ex-date, else 0; None where the archive is null, as IWM's
+is throughout) and ``split_coefficient`` (1 on an ordinary day; None where
+null). This stream requires the eight :data:`INDEX_COLUMNS`; the chain
+stream keeps needing only :data:`UNDERLYING_COLUMNS`. ``effective_date``
+is the date, the cursor is the maximum date emitted, a pull emits only
+dates strictly after it, and ``max_days`` does not apply (at most a few
+thousand rows per ticker). A repeated date, a symbol that is not the
+directory's, a malformed date or a non-finite close refuses.
+
 Knobs (default-deny, per ``spec()``): ``path``, ``symbols``, ``files``,
 ``source_url``, ``source_commit`` (all required) and ``max_days``.
 
@@ -84,11 +97,22 @@ from zoneinfo import ZoneInfo
 
 from ..base import MODES, AssetError, _raise_if, parse_utc
 from ..connector import PROTOCOL, Connector
-from .cboe import CHAIN_FIELDS, CHAIN_KEY_FIELDS, CHAIN_STREAM, QUOTE_TZ, parse_occ
+from .cboe import (
+    CHAIN_FIELDS,
+    CHAIN_KEY_FIELDS,
+    CHAIN_STREAM,
+    INDEX_FIELDS,
+    INDEX_KEY_FIELDS,
+    INDEX_STREAM,
+    QUOTE_TZ,
+    parse_occ,
+)
 from .kalshi import _finite
 from .localtables import _pyarrow
 
 __all__ = [
+    "INDEX_COLUMNS",
+    "INDEX_ROW_FIELDS",
     "OPTION_COLUMNS",
     "SNAPSHOT_TIME",
     "STRIKE_TOLERANCE",
@@ -102,8 +126,17 @@ OPTION_COLUMNS = (
     "bid_size", "ask", "ask_size", "volume", "open_interest", "date",
     "implied_volatility", "delta", "gamma", "theta", "vega",
 )
-#: The ``underlying_prices.parquet`` columns the mapping reads.
+#: The ``underlying_prices.parquet`` columns the CHAIN mapping reads.
 UNDERLYING_COLUMNS = ("symbol", "date", "close")
+#: The ``underlying_prices.parquet`` columns the ``index_daily`` stream reads (ADR-0187).
+INDEX_COLUMNS = INDEX_FIELDS + ("dividend_amount", "split_coefficient")
+#: What an ``index_daily`` row carries: the Cboe index fields plus the two corporate-action columns.
+INDEX_ROW_FIELDS = INDEX_COLUMNS
+
+_STREAMS = {
+    CHAIN_STREAM: (CHAIN_FIELDS, CHAIN_KEY_FIELDS),
+    INDEX_STREAM: (INDEX_ROW_FIELDS, INDEX_KEY_FIELDS),
+}
 
 #: The archive's declared snapshot: the market close, New York wall clock.
 SNAPSHOT_TIME = time(16, 0)
@@ -570,7 +603,7 @@ class OptionsHistConnector(Connector):
                 self._require_columns(pa, full, relpath, required)
 
     def discover(self, config):
-        """Declare the ``option_chain`` stream without reading a file.
+        """Declare the two streams without reading a file.
 
         Parameters
         ----------
@@ -580,7 +613,8 @@ class OptionsHistConnector(Connector):
         Returns
         -------
         list
-            One ``{stream, schema, primary_key}`` declaration.
+            One ``{stream, schema, primary_key}`` declaration per stream,
+            by name: ``index_daily`` then ``option_chain``.
 
         Raises
         ------
@@ -588,20 +622,65 @@ class OptionsHistConnector(Connector):
             If config values are invalid.
         """
         self.resolve_knobs(config)
-        return [{"stream": CHAIN_STREAM, "schema": {"fields": list(CHAIN_FIELDS)},
-                 "primary_key": list(CHAIN_KEY_FIELDS)}]
+        return [
+            {"stream": name, "schema": {"fields": list(fields)},
+             "primary_key": list(key)}
+            for name, (fields, key) in sorted(_STREAMS.items())
+        ]
+
+    # -- the index_daily stream (ADR-0187) --------------------------------------
+
+    def _index_rows(self, pa, knobs, symbol, relpath):
+        """Return ``(date, row)`` per row of one verified ``underlying_prices`` file."""
+        full = self._verified(knobs, relpath)
+        self._require_columns(pa, full, relpath, INDEX_COLUMNS)
+        table = self._read_table(pa, full, relpath, INDEX_COLUMNS)
+        out, seen = [], set()
+        for n, raw in enumerate(table.to_pylist(), start=1):
+            where = f"{relpath} row {n}"
+            if raw["symbol"] != symbol:
+                raise AssetError(
+                    [f"{where}: symbol {raw['symbol']!r} is not the directory's {symbol!r}"]
+                )
+            day = _parse_day(raw["date"], where).isoformat()
+            if day in seen:
+                raise AssetError([f"{where}: date {day} repeats"])
+            seen.add(day)
+            row = {"symbol": symbol, "date": day}
+            for column in INDEX_COLUMNS[2:]:
+                row[column] = _finite(raw[column])
+            if row["close"] is None:
+                raise AssetError(
+                    [f"{where}: close must be a finite number, got {raw['close']!r}"]
+                )
+            out.append((day, row))
+        return out
+
+    def _pull_index(self, pa, knobs, layout, cursor_dt, logs):
+        """Yield ``(date, row)`` for every ``(date, symbol)`` after the cursor, in that order."""
+        rows = []
+        for symbol in sorted(layout):
+            rows.extend(self._index_rows(pa, knobs, symbol, layout[symbol][1]))
+        for day, row in sorted(rows, key=lambda pair: (pair[0], pair[1]["symbol"])):
+            if cursor_dt is None or parse_utc(day) > cursor_dt:
+                yield day, row
+
+    def _pullers(self):
+        """Stream name -> the generator that pulls it."""
+        return {CHAIN_STREAM: self._pull, INDEX_STREAM: self._pull_index}
 
     def read(self, config, streams, state, mode):
-        """Emit SCHEMA, the provenance LOG, cursor-filtered RECORDs, then one STATE.
+        """Emit SCHEMA, the provenance LOG and cursor-filtered RECORDs per stream, then one STATE.
 
         Parameters
         ----------
         config : dict
             Connector configuration.
         streams : list
-            ``["option_chain"]``.
+            Any of ``["option_chain", "index_daily"]``.
         state : dict
-            Prior mode-keyed checkpoint: ``{"option_chain": {"cursor": ISO}}``.
+            Prior mode-keyed checkpoint: ``{stream: {"cursor": ISO}}`` — a
+            close instant for the chain, a date for the index stream.
         mode : str
             ``backfill`` or ``live`` — identical; the platform keys the
             cursors apart.
@@ -623,10 +702,11 @@ class OptionsHistConnector(Connector):
             raise AssetError([f"state.{k} must be a dict, got {state[k]!r}" for k in bad])
         if not isinstance(streams, list) or not streams:
             raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
-        unknown = [s for s in streams if s != CHAIN_STREAM]
+        pullers = self._pullers()
+        unknown = [s for s in streams if s not in pullers]
         if unknown:
             raise AssetError(
-                [f"unknown stream(s) {unknown}; discovered: {[CHAIN_STREAM]}"]
+                [f"unknown stream(s) {unknown}; discovered: {sorted(_STREAMS)}"]
             )
         if mode not in MODES:
             raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
@@ -636,22 +716,23 @@ class OptionsHistConnector(Connector):
         import pyarrow.compute  # noqa: F401 — binds pa.compute for _year_days
 
         new_state = {key: dict(value) for key, value in state.items()}
-        cursor = state.get(CHAIN_STREAM, {}).get("cursor", "")
-        cursor_dt = parse_utc(cursor) if cursor else None
-        yield {"protocol": PROTOCOL, "type": "SCHEMA", "stream": CHAIN_STREAM,
-               "schema": {"fields": list(CHAIN_FIELDS)}}
-        yield {"protocol": PROTOCOL, "type": "LOG", "level": "info",
-               "message": f"optionshist archive {knobs['source_url']} at commit "
-                          f"{knobs['source_commit']}; every file opened is "
-                          "sha256-verified against config.files"}
-        logs = []
-        emitted = cursor
-        for quote_time, row in self._pull(pa, knobs, layout, cursor_dt, logs):
-            yield {"protocol": PROTOCOL, "type": "RECORD", "stream": CHAIN_STREAM,
-                   "effective_date": quote_time, "kind": "observation", "data": row}
-            emitted = quote_time
-        for message in logs:
-            yield {"protocol": PROTOCOL, "type": "LOG", "level": "warning",
-                   "message": message}
-        new_state.setdefault(CHAIN_STREAM, {})["cursor"] = emitted
+        for stream in streams:
+            cursor = state.get(stream, {}).get("cursor", "")
+            cursor_dt = parse_utc(cursor) if cursor else None
+            yield {"protocol": PROTOCOL, "type": "SCHEMA", "stream": stream,
+                   "schema": {"fields": list(_STREAMS[stream][0])}}
+            yield {"protocol": PROTOCOL, "type": "LOG", "level": "info",
+                   "message": f"optionshist archive {knobs['source_url']} at commit "
+                              f"{knobs['source_commit']}; every file opened is "
+                              "sha256-verified against config.files"}
+            logs = []
+            emitted = cursor
+            for effective, row in pullers[stream](pa, knobs, layout, cursor_dt, logs):
+                yield {"protocol": PROTOCOL, "type": "RECORD", "stream": stream,
+                       "effective_date": effective, "kind": "observation", "data": row}
+                emitted = effective
+            for message in logs:
+                yield {"protocol": PROTOCOL, "type": "LOG", "level": "warning",
+                       "message": message}
+            new_state.setdefault(stream, {})["cursor"] = emitted
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

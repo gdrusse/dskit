@@ -1,0 +1,1056 @@
+"""ADR-0187: ``CondorQuoteBacktest`` over archived end-of-day quotes.
+
+Every scenario is scripted: forecast rows whose draws have hand-known
+quantiles, one chain per date with explicit (bid, ask, sizes) per strike,
+and an underlying series with closes and ex-dates. Expected strikes,
+credits and P&L are restated by hand in the assertions.
+"""
+
+import copy
+import math
+from datetime import date, timedelta
+from statistics import NormalDist
+from types import SimpleNamespace
+
+import pytest
+
+from dskit.pipeline.base import ConfigError
+
+from index_options.contracts import american_short_charge
+from index_options.nodes import CondorBacktest, CondorQuoteBacktest
+
+#: Draws whose 10%/90% quantiles are exactly -1 and +1.
+DRAWS = [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+Z10 = NormalDist().inv_cdf(0.1)
+
+PARAMS = {"split": "val", "short_q": 0.1, "wing_z": 0.5, "multiplier": 100,
+          "fee_per_leg": 0.65, "dte_min": 5, "dte_max": 10, "max_abs_log_moneyness": 0.2,
+          "label_horizon": 5, "carry_rate": 0.055}
+
+
+class _Split:
+    def split_of(self, frame):
+        return "val" if frame.asof_ms >= 100 else "train"
+
+
+CTX = SimpleNamespace(splits=_Split())
+
+
+def _ms(day):
+    """A monotone integer stamp per date: val rows sit at or above 100."""
+    return 100 + (date.fromisoformat(day) - date(2024, 3, 1)).days
+
+
+def _row(day, close=100.0, outcome_z=0.0, instrument="SPY", **extra):
+    return {"asof_ms": _ms(day), "instrument": instrument, "date": day, "close": close,
+            "reference_scale": 0.05, "samples": list(DRAWS), "outcome": outcome_z, **extra}
+
+
+def _weekdays(start, end):
+    """Weekdays from ``start`` to ``end`` inclusive, ISO."""
+    out, day = [], date.fromisoformat(start)
+    while day <= date.fromisoformat(end):
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += timedelta(days=1)
+    return out
+
+
+#: Quotes by (right, strike) for the worked chain; everything else is (0.5, 0.6).
+QUOTES = {("put", 95.0): (2.0, 2.2), ("put", 92.0): (1.0, 1.1), ("call", 106.0): (1.5, 1.6),
+          ("call", 108.0): (0.7, 0.8), ("put", 96.0): (2.4, 2.6), ("call", 104.0): (2.1, 2.3)}
+
+
+def _quote(day, expiry, right, strike, close=100.0, instrument="SPY", iv=0.2, bid=None,
+           ask=None, bid_size=10, ask_size=10, settle=None):
+    b, a = QUOTES.get((right, strike), (0.5, 0.6))
+    settle_day = settle or expiry
+    return {"instrument": instrument, "date": day, "expiry": expiry,
+            "settle_date": settle_day,
+            "dte": (date.fromisoformat(settle_day) - date.fromisoformat(day)).days,
+            "right": right, "strike": strike, "bid": b if bid is None else bid,
+            "ask": a if ask is None else ask, "bid_size": bid_size, "ask_size": ask_size,
+            "iv": iv, "underlying_price": close, "asof_ms": _ms(day)}
+
+
+def _chain(day, expiry, close=100.0, strikes=range(88, 113), **over):
+    return [_quote(day, expiry, right, float(k), close, **over)
+            for k in strikes for right in ("put", "call")]
+
+
+def _series(closes, dividends=()):
+    paid = dict(dividends)
+    return [{"instrument": "SPY", "date": d, "close": c, "asof_ms": _ms(d),
+             "dividend_amount": paid.get(d, 0.0)} for d, c in closes]
+
+
+def _run(forecasts, chain, underlying, **over):
+    node = CondorQuoteBacktest("bt", {**PARAMS, **over})
+    out = node.run(CTX, {"forecasts": forecasts, "chain": chain, "underlying": underlying})
+    return out["metrics"], out["report"].value
+
+
+# -- the worked entry ---------------------------------------------------------------------
+
+#: Entry Friday 2024-03-01 at 100, expiry Friday 2024-03-08 (DTE 7, five sessions).
+ENTRY, EXPIRY = "2024-03-01", "2024-03-08"
+SESSIONS = _weekdays("2024-03-01", "2024-03-12")
+FLAT = _series([(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", 97.0), ("2024-03-11", 98.0),
+                                                        ("2024-03-12", 99.0)])
+MODEL_STRIKES = [92.0, 95.0, 106.0, 108.0]
+MODEL_CREDIT = (2.0 + 1.5 - 1.1 - 0.8) * 100 - 4 * 0.65  # shorts at the bid, wings at the ask
+IMPLIED_STRIKES = [95.0, 96.0, 104.0, 106.0]
+IMPLIED_CREDIT = (2.4 + 2.1 - 2.2 - 1.6) * 100 - 4 * 0.65
+
+
+def test_one_entry_hand_checked():
+    forecasts = [_row(ENTRY), _row("2024-02-20", instrument="SPY")]  # the second is train
+    metrics, report = _run(forecasts, _chain(ENTRY, EXPIRY), FLAT)
+    assert report["kind"] == "archived_quote_condor_backtest"
+    assert report["pricing"] == "archived_eod_quotes" and report["decision_eligible"] is False
+    assert report["chain"] == {"first_date": ENTRY, "last_date": ENTRY, "n_rows": 50}
+    (entry,) = report["ledger"]
+    assert (entry["date"], entry["expiry"], entry["settle_date"], entry["dte"],
+            entry["sessions"]) == (ENTRY, EXPIRY, EXPIRY, 7, 5)
+    assert entry["horizon_scale"] == pytest.approx(0.05)  # sqrt(5 / 5)
+    assert entry["settlement"] == 97.0 and entry["settlement_date"] == EXPIRY
+    assert entry["atm_iv"] == pytest.approx(0.2)
+    books = entry["books"]
+    # targets 95.12 / 92.77 / 105.13 / 107.79 snap OUTWARD onto the 1-point grid
+    assert books["model"]["strikes"] == MODEL_STRIKES == books["always"]["strikes"]
+    assert books["model"]["credit_usd"] == pytest.approx(MODEL_CREDIT)
+    # implied: s = 0.2 sqrt(7/365); ln(K/S) = -s^2/2 +- s z_q, wings 0.5 s further
+    s = 0.2 * math.sqrt(7 / 365)
+    targets = [100 * math.exp(-s * s / 2 + s * z) for z in (Z10 - 0.5, Z10, -Z10, -Z10 + 0.5)]
+    assert [math.floor(targets[0]), math.floor(targets[1]), math.ceil(targets[2]),
+            math.ceil(targets[3])] == IMPLIED_STRIKES
+    assert books["implied"]["strikes"] == IMPLIED_STRIKES
+    assert books["implied"]["credit_usd"] == pytest.approx(IMPLIED_CREDIT)
+    # settled at 97: every short stays out of the money, no ex-date, no carry
+    for book, credit in (("model", MODEL_CREDIT), ("always", MODEL_CREDIT),
+                         ("implied", IMPLIED_CREDIT)):
+        assert books[book]["entered"] is True and books[book]["reason"] is None
+        assert books[book]["american_charge_usd"] == 0.0
+        assert books[book]["pnl_usd"] == pytest.approx(credit)
+        assert metrics[f"{book}_n_trades"] == 1
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(credit)
+        assert metrics[f"{book}_mean_credit_usd"] == pytest.approx(credit)
+        assert metrics[f"{book}_american_charge_usd"] == 0.0
+    assert entry["model_expected_pnl_usd"] == pytest.approx(MODEL_CREDIT)  # draws settle inside
+    assert metrics["n_rows_in_split"] == 1 and metrics["n_entries"] == 1
+    assert {k: v for k, v in metrics.items() if k.startswith("n_skipped_")} == {
+        f"n_skipped_{r}": 0 for r in CondorQuoteBacktest.ROW_REASONS}
+    assert set(CondorQuoteBacktest.ROW_REASONS) == {
+        "no_outcome", "no_forecast", "no_forward", "no_scale", "no_chain", "unsettled"}
+    assert report["params"]["label_horizon"] == 5 and report["params"]["cvar_alpha"] == 0.95
+
+
+def _settled_at(level):
+    """The worked series with the settlement close alone moved to ``level``."""
+    return _series([(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", level),
+                                                            ("2024-03-11", 100.0),
+                                                            ("2024-03-12", 100.0)])
+
+
+@pytest.mark.parametrize("level, model_loss, implied_loss", [
+    (80.0, 300.0, 100.0),    # through both put wings: the whole 3- and 1-point spreads
+    (93.5, 150.0, 100.0),    # between the model's short put and its wing: 1.5 points
+    (110.0, 200.0, 200.0),   # through both call wings: 2-point spreads on each book
+])
+def test_a_losing_settlement_is_the_credit_less_the_spread_times_the_multiplier(
+    level, model_loss, implied_loss
+):
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _settled_at(level))
+    books = report["ledger"][0]["books"]
+    expected = {"model": MODEL_CREDIT - model_loss, "always": MODEL_CREDIT - model_loss,
+                "implied": IMPLIED_CREDIT - implied_loss}
+    for book, pnl in expected.items():
+        assert books[book]["american_charge_usd"] == 0.0  # no ex-date, never in the money early
+        assert books[book]["pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_cvar_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_hit_rate"] == (1.0 if pnl > 0 else 0.0)
+        assert metrics[f"{book}_max_drawdown_usd"] == pytest.approx(max(-pnl, 0.0))
+
+
+def test_the_american_charge_is_taken_off_each_book():
+    dividends = [("2024-03-07", 1.0)]
+    closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                     ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    series = _series(closes, dividends)
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), series)
+    books = report["ledger"][0]["books"]
+    expected = american_short_charge(series, 95.0, 106.0, ENTRY, EXPIRY, 0.055, 100)
+    # pre-ex close 107 > 106: the dividend; 94 < 95 on 03-07: one day of carry
+    assert expected["call_dividend_usd"] == 100.0 and expected["put_carry_usd"] > 0
+    assert books["model"]["american_charge_usd"] == pytest.approx(expected["total_usd"])
+    assert books["model"]["pnl_usd"] == pytest.approx(MODEL_CREDIT - expected["total_usd"])
+    implied = american_short_charge(series, 96.0, 104.0, ENTRY, EXPIRY, 0.055, 100)
+    assert books["implied"]["pnl_usd"] == pytest.approx(IMPLIED_CREDIT - implied["total_usd"])
+    assert metrics["model_american_charge_usd"] == pytest.approx(expected["total_usd"])
+    # a pre-ex close of 100 sits above the short PUT but below the short CALL: no assignment
+    between = _series([(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", 97.0),
+                                                              ("2024-03-11", 98.0)], dividends)
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), between)
+    assert report["ledger"][0]["books"]["model"]["american_charge_usd"] == 0.0
+
+
+def test_a_missing_dividend_in_the_window_refuses():
+    series = _series([(d, 100.0) for d in SESSIONS])
+    series[3]["dividend_amount"] = None
+    with pytest.raises(ValueError, match="dividend_amount"):
+        _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), series)
+
+
+# -- expiry, strikes and quotability ------------------------------------------------------
+
+
+def test_the_nearest_listed_expiry_is_taken_and_a_day_without_chain_is_skipped():
+    # the farther 03-11 expiry carries richer quotes and a higher iv, so pricing any of its
+    # rows would move the credit (put 95 at 2.4), the ATM iv (0.4) and the implied strikes
+    # rows, and it lists two half-strikes (94.5, 105.5) the near expiry lacks
+    far = _set(_chain(ENTRY, "2024-03-11", iv=0.4, strikes=[94.5, 105.5] + list(range(88, 113))),
+               put95={"bid": 2.4, "ask": 2.6}, call106={"bid": 1.0, "ask": 1.1})
+    chain = far + _chain(ENTRY, "2024-03-08")  # the farther expiry's rows come FIRST
+    metrics, report = _run([_row(ENTRY), _row("2024-03-04"), _row("2024-03-11")], chain, FLAT)
+    assert [e["expiry"] for e in report["ledger"]] == ["2024-03-08"]
+    entry = report["ledger"][0]
+    assert entry["dte"] == 7 and entry["atm_iv"] == pytest.approx(0.2)
+    assert entry["books"]["model"]["credit_usd"] == pytest.approx(MODEL_CREDIT)
+    assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
+    # 03-04 sits inside the open position (passed over, uncounted); 03-11 has no chain
+    assert metrics["n_skipped_no_chain"] == 1 and metrics["n_rows_in_split"] == 3
+
+
+def test_positions_never_overlap_and_the_next_entry_is_on_or_after_settlement():
+    days = ["2024-03-01", "2024-03-04", "2024-03-08", "2024-03-11"]
+    chain = (_chain("2024-03-01", "2024-03-08") + _chain("2024-03-04", "2024-03-11")
+             + _chain("2024-03-08", "2024-03-15") + _chain("2024-03-11", "2024-03-18"))
+    series = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")])
+    metrics, report = _run([_row(d) for d in days], chain, series)
+    assert [e["date"] for e in report["ledger"]] == ["2024-03-01", "2024-03-08"]
+    assert metrics["n_entries"] == 2 and metrics["n_rows_in_split"] == 4
+
+
+def test_strikes_snap_outward_past_unquotable_legs():
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == "put" and q["strike"] == 95.0:
+            q["bid"] = 0.0                      # no market to SELL the short put at 95
+        if q["right"] == "call" and q["strike"] == 108.0:
+            q["ask"], q["ask_size"] = 0.0, 0    # nothing to BUY at 108
+        if q["right"] == "put" and q["strike"] == 92.0:
+            q["ask"] = 0.0                      # nothing to BUY the long put at 92 either
+        if q["right"] == "put" and q["strike"] == 91.0:
+            q["bid_size"] = 0                   # a no-bid wing is still buyable
+    _, report = _run([_row(ENTRY)], chain, FLAT)
+    books = report["ledger"][0]["books"]
+    assert books["model"]["strikes"] == [91.0, 94.0, 106.0, 109.0]
+
+
+#: A hundred draws whose 10%/90% quantiles are still -1 and +1, with one draw beyond each
+#: wing: under the worked strikes E[payoff] is (-300 - 200) / 100 = -5 USD per condor.
+LOSING_DRAWS = [-3.0] + [-1.0] * 10 + [0.0] * 78 + [1.0] * 10 + [3.0]
+
+
+def test_the_model_gate_reads_the_forecasts_expected_pnl_not_the_credit():
+    rows = [_row(ENTRY, samples=list(LOSING_DRAWS))]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT - 2.5)
+    entry = report["ledger"][0]
+    assert entry["books"]["model"]["strikes"] == MODEL_STRIKES  # the quantiles did not move
+    assert entry["model_expected_pnl_usd"] == pytest.approx(MODEL_CREDIT - 5.0)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["always_n_trades"] == 1
+    metrics, _ = _run(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=MODEL_CREDIT - 7.5)
+    assert metrics["model_n_trades"] == 1
+
+
+def test_an_expiry_with_no_quotable_strike_records_a_zero_trade_fold():
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    assert metrics["n_entries"] == 1
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0
+        assert metrics[f"{book}_n_skipped_no_quotable_strike"] == 1
+        assert metrics[f"{book}_total_pnl_usd"] == 0.0 and metrics[f"{book}_cvar_usd"] == 0.0
+        # every per-book statistic of an empty book is exactly zero
+        for stat in ("mean_pnl_usd", "hit_rate", "max_drawdown_usd", "mean_credit_usd",
+                     "american_charge_usd"):
+            assert metrics[f"{book}_{stat}"] == 0.0
+    assert report["ledger"][0]["books"]["model"]["strikes"] is None
+
+
+def test_a_target_outside_the_band_is_counted():
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT,
+                           max_abs_log_moneyness=0.06)  # the long call target sits at +0.075
+    assert metrics["model_n_skipped_target_outside_band"] == 1
+    assert metrics["always_n_skipped_target_outside_band"] == 1
+    assert metrics["implied_n_trades"] == 1  # its targets stay within +-0.05
+    # a skipped cell carries exactly the book fields, with the reason and nothing priced;
+    # only the model book reports an expectation, and at the entry level
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell == {"strikes": None, "credit_usd": None, "american_charge_usd": None,
+                    "pnl_usd": None, "entered": False, "reason": "target_outside_band"}
+    assert report["ledger"][0]["books"]["always"] == cell
+    assert set(report["ledger"][0]["books"]["implied"]) == set(cell)
+
+
+def test_a_target_exactly_on_the_band_is_inside_it():
+    # reference scale 1/16 and the +-1 draws put the wings at exactly 1.5/16 = 0.09375 in
+    # log-moneyness (a dyadic product, exact in binary): a band of 0.09375 keeps them
+    # (strict >), one tick below excludes them. Strikes 100 e^{-0.09375} = 91.05 -> 91,
+    # e^{-0.0625} = 93.94 -> 93, e^{0.0625} = 106.45 -> 107, e^{0.09375} = 109.83 -> 110.
+    chain = _set(_chain(ENTRY, EXPIRY), put93={"bid": 1.0, "ask": 1.1},
+                 call107={"bid": 1.0, "ask": 1.1})
+    rows = [_row(ENTRY, reference_scale=0.0625)]
+    metrics, report = _run(rows, chain, FLAT, max_abs_log_moneyness=0.09375)
+    assert report["ledger"][0]["horizon_scale"] == 0.0625
+    assert report["ledger"][0]["books"]["model"]["strikes"] == [91.0, 93.0, 107.0, 110.0]
+    assert metrics["model_n_trades"] == 1
+    metrics, _ = _run(rows, chain, FLAT, max_abs_log_moneyness=0.09374)
+    assert metrics["model_n_skipped_target_outside_band"] == 1
+
+
+def test_the_band_is_classified_before_quotability_and_quotability_before_geometry():
+    # A too-narrow band is not a data-coverage gap: on a chain with no size at all the
+    # model's long call (+0.075) is outside a 0.06 band -> target_outside_band, while the
+    # implied targets (inside +-0.05) reach the snap and find nothing -> no_quotable_strike.
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, _ = _run([_row(ENTRY)], chain, FLAT, max_abs_log_moneyness=0.06)
+    for book in ("model", "always"):
+        assert metrics[f"{book}_n_skipped_target_outside_band"] == 1
+        assert metrics[f"{book}_n_skipped_no_quotable_strike"] == 0
+    assert metrics["implied_n_skipped_no_quotable_strike"] == 1
+    assert metrics["implied_n_skipped_target_outside_band"] == 0
+    # Both shorts of a constant forecast land on 100 (the puts stay sellable), but a put
+    # wing with no ask SIZE is found first: no_quotable_strike, not degenerate_strikes.
+    unbuyable = _chain(ENTRY, EXPIRY)
+    for q in unbuyable:
+        if q["right"] == "put":
+            q["ask_size"] = 0
+    metrics, _ = _run([_row(ENTRY, samples=[0.0] * 10)], unbuyable, FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1
+    assert metrics["model_n_skipped_degenerate_strikes"] == 0
+
+
+def test_a_missing_min_edge_knob_gates_the_model_book_at_zero():
+    # PARAMS omits min_edge_usd. Fees of 39 per leg leave a 4.00 credit
+    # (160 - 156); the losing draws take 5.00 off it -> E = -1.00, below the default gate
+    # of 0; the always book, never gated, trades the same 4.00 credit.
+    rows = [_row(ENTRY, samples=list(LOSING_DRAWS))]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=39.0)
+    assert "min_edge_usd" not in PARAMS and report["params"]["min_edge_usd"] == 0.0
+    entry = report["ledger"][0]
+    assert entry["books"]["model"]["credit_usd"] == pytest.approx(4.0)
+    assert entry["model_expected_pnl_usd"] == pytest.approx(-1.0)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["model_n_trades"] == 0
+    assert metrics["always_n_trades"] == 1
+
+
+def test_credit_bounds_are_classified_not_raised():
+    costly, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=100.0)
+    for book in CondorQuoteBacktest.BOOKS:
+        assert costly[f"{book}_n_skipped_nonpositive_credit"] == 1
+    rich = _chain(ENTRY, EXPIRY)
+    for q in rich:
+        if q["right"] == "put" and q["strike"] == 95.0:
+            q["bid"], q["ask"] = 3.5, 3.6       # 3.5 + 1.5 - 1.1 - 0.8 = 3.1 > the 2-point call wing
+    wide, report = _run([_row(ENTRY)], rich, FLAT)
+    assert wide["model_n_skipped_credit_not_below_width"] == 1
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(310 - 2.6)
+    # an EXACT zero is nonpositive: dyadic quotes summing to 1.5 per share (2.0 + 1.5 - 1.25
+    # - 0.75) against fees of 37.5 per leg leave 150 - 150 = 0.0 on every book
+    zero = _set(_chain(ENTRY, EXPIRY), put92={"ask": 1.25}, call108={"ask": 0.75})
+    exact, report = _run([_row(ENTRY)], zero, FLAT, fee_per_leg=37.5)
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == 0.0
+    for book in ("model", "always"):
+        assert exact[f"{book}_n_skipped_nonpositive_credit"] == 1
+    # ... while half a dollar (fees 37.375 per leg: 150 - 149.5) is a credit that trades,
+    # and a settled +0.5 is a hit; settled at 94.99 the same trade loses 1.00 - 0.5 = 0.50,
+    # a miss
+    half, report = _run([_row(ENTRY)], zero, FLAT, fee_per_leg=37.375)
+    assert report["ledger"][0]["books"]["always"]["credit_usd"] == 0.5
+    assert half["always_n_trades"] == 1 and half["model_n_trades"] == 1
+    assert half["always_hit_rate"] == 1.0
+    lost, report = _run([_row(ENTRY)], zero, _settled_at(94.99), fee_per_leg=37.375)
+    assert report["ledger"][0]["books"]["always"]["pnl_usd"] == pytest.approx(-0.5)
+    assert lost["always_hit_rate"] == 0.0
+    # a P&L of exactly zero (12.5 credit, 12.5 lost at 94.875, both dyadic) is not a hit
+    flat, report = _run([_row(ENTRY)], zero, _settled_at(94.875), fee_per_leg=34.375)
+    assert report["ledger"][0]["books"]["always"]["pnl_usd"] == 0.0
+    assert flat["always_hit_rate"] == 0.0 and flat["always_n_trades"] == 1
+
+
+#: Every field a chain row must carry (restated here, never read from the node).
+CHAIN_FIELDS = ("instrument", "date", "expiry", "settle_date", "dte", "right", "strike",
+                "bid", "ask", "bid_size", "ask_size", "iv", "underlying_price")
+
+
+@pytest.mark.parametrize("field", CHAIN_FIELDS)
+def test_a_chain_row_lacking_any_required_field_refuses(field):
+    chain = _chain(ENTRY, EXPIRY)
+    del chain[0][field]
+    with pytest.raises(ValueError, match=f"lacks.*{field}"):
+        _run([_row(ENTRY)], chain, FLAT)
+
+
+def test_zero_fee_carry_and_edge_are_accepted():
+    node = CondorQuoteBacktest("bt", {**PARAMS, "fee_per_leg": 0.0, "carry_rate": 0.0,
+                                      "min_edge_usd": 0.0})
+    assert (node.params["fee_per_leg"], node.params["carry_rate"]) == (0.0, 0.0)
+    # a one-day bucket with a one-day horizon and a multiplier of one is the smallest cell
+    one = CondorQuoteBacktest("bt", {**PARAMS, "dte_min": 1, "dte_max": 1, "label_horizon": 1,
+                                     "multiplier": 1})
+    assert (one.params["dte_min"], one.params["dte_max"], one.params["multiplier"]) == (1, 1, 1)
+
+
+def test_refusal_messages_name_the_bound_they_broke():
+    with pytest.raises(ConfigError, match=r"dte_min 5 must not exceed dte_max 4"):
+        CondorQuoteBacktest("bt", {**PARAMS, "dte_max": 4})
+    for alpha in (0.0, -0.5, "0.95", None):  # a non-number is a config error, not a crash
+        with pytest.raises(ConfigError, match="cvar_alpha"):
+            CondorQuoteBacktest("bt", {**PARAMS, "cvar_alpha": alpha})
+    with pytest.raises(ConfigError, match="short_q"):  # the open bound at 0 (0.5 is pinned)
+        CondorQuoteBacktest("bt", {**PARAMS, "short_q": 0})
+    with pytest.raises(ValueError, match=r"2024-03-01 2024-03-05\) has dte 4 outside the "
+                                         r"declared \[5, 10\]"):
+        _run([_row(ENTRY)], _chain(ENTRY, "2024-03-05"), FLAT)
+    # the chain's underlying_price must match the forecast close within 1e-9 RELATIVE
+    # (5e-8 on a price of 100 is inside that; an absolute 1e-9 alone would refuse it)
+    close = _chain(ENTRY, EXPIRY)
+    for q in close:
+        q["underlying_price"] = 100.0 + 5e-8
+    assert _run([_row(ENTRY)], close, FLAT)[0]["model_n_trades"] == 1
+    for q in close:
+        q["underlying_price"] = 100.0 + 1e-5
+    with pytest.raises(ValueError, match="misaligned"):
+        _run([_row(ENTRY)], close, FLAT)
+
+
+def test_min_edge_gates_only_the_model_book():
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=1e6)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["model_n_trades"] == 0
+    assert metrics["always_n_trades"] == 1 and metrics["implied_n_trades"] == 1
+    assert report["ledger"][0]["books"]["model"]["pnl_usd"] is None
+
+
+def test_the_horizon_rescale_is_sqrt_sessions_over_label_horizon():
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, label_horizon=20)
+    entry = report["ledger"][0]
+    assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(5 / 20))
+    assert entry["reference_scale"] == 0.05  # the ledger keeps the row's own scale too
+    # tighter scale: 100 e^{-0.025} = 97.53 -> 97; 100 e^{-0.0375} = 96.32 -> 96 ...
+    assert entry["books"]["model"]["strikes"] == [96.0, 97.0, 103.0, 104.0]
+    # the always book shares the model's snap at the SAME horizon scale
+    assert entry["books"]["always"]["strikes"] == [96.0, 97.0, 103.0, 104.0]
+
+
+def test_the_implied_book_needs_an_atm_iv_on_both_rights():
+    chain = _chain(ENTRY, EXPIRY, iv=None)
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    assert metrics["implied_n_skipped_no_atm_iv"] == 1 and metrics["implied_n_trades"] == 0
+    assert report["ledger"][0]["atm_iv"] is None
+    assert metrics["model_n_trades"] == 1
+
+
+def _smile(chain, wings=0.6, at=None):
+    """Give every strike ``wings`` vol except the ``at`` map of strike -> iv (or per right)."""
+    at = at or {99.0: 0.25, 100.0: {"put": 0.18, "call": 0.22}, 101.0: 0.3}
+    for q in chain:
+        iv = at.get(q["strike"], wings)
+        q["iv"] = iv[q["right"]] if isinstance(iv, dict) else iv
+    return chain
+
+
+def test_the_atm_iv_is_the_nearest_valid_pairs_mean_not_any_strikes():
+    _, report = _run([_row(ENTRY)], _smile(_chain(ENTRY, EXPIRY)), FLAT)
+    entry = report["ledger"][0]
+    assert entry["atm_iv"] == pytest.approx(0.2)  # the MEAN of 0.18 / 0.22 at the forward
+    assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
+    # the nearest pair invalid on one right (a missing or a zero iv): the next nearest
+    # valid pair, lower strike on a tie
+    for bad in (None, 0.0):
+        invalid = _smile(_chain(ENTRY, EXPIRY))
+        for q in invalid:
+            if q["strike"] == 100.0 and q["right"] == "put":
+                q["iv"] = bad
+        assert _run([_row(ENTRY)], invalid, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+    # a crossed quote at the nearest strike disqualifies that pair the same way
+    crossed = _smile(_chain(ENTRY, EXPIRY))
+    for q in crossed:
+        if q["strike"] == 100.0:
+            q["bid"], q["ask"] = 0.6, 0.5
+    assert _run([_row(ENTRY)], crossed, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+    # a strike quoted on one right only is no candidate at all
+    one_sided = [q for q in _smile(_chain(ENTRY, EXPIRY))
+                 if not (q["strike"] == 100.0 and q["right"] == "call")]
+    assert _run([_row(ENTRY)], one_sided, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+def test_credit_at_the_narrower_width_and_edge_at_the_gate_are_refused():
+    at_width = _chain(ENTRY, EXPIRY)
+    exact = {("put", 95.0): (2.25, 2.5), ("put", 92.0): (1.0, 1.25), ("call", 108.0): (0.25, 0.5)}
+    for q in at_width:  # dyadic quotes: 2.25 + 1.5 - 1.25 - 0.5 is EXACTLY the 2-point call wing
+        if (q["right"], q["strike"]) in exact:
+            q["bid"], q["ask"] = exact[(q["right"], q["strike"])]
+    metrics, report = _run([_row(ENTRY)], at_width, FLAT)
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == 200.0 - 2.6
+    assert metrics["model_n_skipped_credit_not_below_width"] == 1
+    # every worked draw settles inside the shorts, so the edge IS the credit the node reports
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    edge = report["ledger"][0]["model_expected_pnl_usd"]
+    assert edge == report["ledger"][0]["books"]["model"]["credit_usd"]
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=edge)
+    assert metrics["model_n_skipped_below_min_edge"] == 1  # the edge must EXCEED the gate
+
+
+# -- settlement ---------------------------------------------------------------------------
+
+
+def test_settlement_uses_the_last_close_on_or_before_the_settlement_date():
+    # a Saturday OCC expiry settles on the Friday; a holiday Friday on the Thursday
+    saturday = _chain(ENTRY, "2024-03-09", settle="2024-03-08")
+    _, report = _run([_row(ENTRY)], saturday, FLAT)
+    entry = report["ledger"][0]
+    assert (entry["expiry"], entry["settle_date"], entry["settlement_date"],
+            entry["settlement"]) == ("2024-03-09", "2024-03-08", "2024-03-08", 97.0)
+    holiday = _series([(d, 100.0) for d in SESSIONS if d not in ("2024-03-08",)]
+                      + [("2024-03-07", 96.0)])
+    holiday = sorted({r["date"]: r for r in holiday}.values(), key=lambda r: r["date"])
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), holiday)
+    entry = report["ledger"][0]
+    assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-07", 96.0)
+    assert entry["settle_date"] == "2024-03-08"  # the ledger keeps both dates apart
+    # the sessions are counted to the settle DATE, not to the close that settled: still 5
+    assert entry["sessions"] == 5 and entry["books"]["model"]["strikes"] == MODEL_STRIKES
+    # so does the charge window: a put in the money from 03-04 carries to 03-08, four days,
+    # although the last close is 03-07's
+    itm = [dict(r, close=94.0) if r["date"] == "2024-03-04" else r for r in holiday]
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), itm)
+    charge = report["ledger"][0]["books"]["model"]["american_charge_usd"]
+    assert charge == pytest.approx(95.0 * (math.exp(0.055 * 4 / 365) - 1) * 100)
+    # and so does the cursor: a forecast row on the settlement CLOSE's date (03-07) is
+    # still inside the position, which ends on the settle date (the series runs on so
+    # that a 03-07 entry, were it admitted, could settle and show in the ledger)
+    chain = _chain(ENTRY, EXPIRY) + _chain("2024-03-07", "2024-03-14")
+    longer = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")
+                      if d not in ("2024-03-07", "2024-03-08")] + [("2024-03-07", 96.0)])
+    longer.sort(key=lambda r: r["date"])
+    _, report = _run([_row(ENTRY), _row("2024-03-07")], chain, longer)
+    assert [e["date"] for e in report["ledger"]] == ["2024-03-01"]
+    # a series whose FIRST row is the settlement close settles (one later row suffices)
+    first = _series([("2024-03-08", 97.0), ("2024-03-11", 98.0)])
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), first)
+    assert report["ledger"][0]["settlement"] == 97.0 and report["ledger"][0]["books"]["model"]["entered"]
+
+
+@pytest.mark.parametrize("closes", [
+    [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-07")],          # ends before settlement
+    [(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-08")],          # no row after it
+    [(d, 100.0) for d in ("2024-03-01", "2024-03-12")],                   # last close 7 days back
+])
+def test_an_entry_that_cannot_settle_is_unsettled_and_never_traded(closes):
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes))
+    assert metrics["n_skipped_unsettled"] == 1 and metrics["n_entries"] == 0
+    assert report["ledger"] == []
+
+
+def test_the_settlement_gap_boundary_is_four_calendar_days():
+    """A Monday settlement date: the Thursday before (4 days, Sandy's shape) settles,
+    the Wednesday before (5 days) is too stale."""
+    monday = _chain(ENTRY, "2024-03-11")  # DTE 10, the bucket's upper bound
+    four = _series([("2024-03-01", 100.0), ("2024-03-07", 97.0), ("2024-03-12", 98.0)])
+    metrics, report = _run([_row(ENTRY)], monday, four)
+    entry = report["ledger"][0]
+    assert (entry["settlement_date"], entry["settlement"]) == ("2024-03-07", 97.0)
+    assert metrics["n_skipped_unsettled"] == 0 and metrics["always_n_trades"] == 1
+    five = _series([("2024-03-01", 100.0), ("2024-03-06", 97.0), ("2024-03-12", 98.0)])
+    metrics, report = _run([_row(ENTRY)], monday, five)
+    assert metrics["n_skipped_unsettled"] == 1 and report["ledger"] == []
+
+
+def test_rows_after_the_entry_change_only_the_outcome():
+    chain = _chain(ENTRY, EXPIRY) + _chain("2024-03-04", "2024-03-11")
+    base_metrics, base = _run([_row(ENTRY)], chain, FLAT)
+    shaken = copy.deepcopy(chain)
+    for q in shaken:
+        if q["date"] > ENTRY:
+            q.update(bid=q["bid"] * 3, ask=q["ask"] * 3, iv=0.9, expiry="2024-03-12",
+                     settle_date="2024-03-12", dte=8)
+    series = copy.deepcopy(FLAT)
+    for r in series:
+        if r["date"] > ENTRY:
+            r["close"] = r["close"] * 0.8
+    metrics, report = _run([_row(ENTRY)], shaken, series)
+    before, after = base["ledger"][0], report["ledger"][0]
+    for key in ("expiry", "settle_date", "sessions", "horizon_scale", "atm_iv",
+                "model_expected_pnl_usd"):
+        assert before[key] == after[key], key
+    for book in CondorQuoteBacktest.BOOKS:
+        assert before["books"][book]["strikes"] == after["books"][book]["strikes"]
+        assert before["books"][book]["credit_usd"] == after["books"][book]["credit_usd"]
+        assert before["books"][book]["entered"] is after["books"][book]["entered"]
+    assert after["settlement"] == pytest.approx(97.0 * 0.8)
+    # ... and the outcome IS what the perturbed closes say: 77.6 sits below every put wing,
+    # and the 03-04 close (80) puts both short puts in the money, so carry runs from there
+    model_charge = american_short_charge(series, 95.0, 106.0, ENTRY, EXPIRY, 0.055, 100)
+    implied_charge = american_short_charge(series, 96.0, 104.0, ENTRY, EXPIRY, 0.055, 100)
+    assert model_charge["put_carry_usd"] > 0 and model_charge["call_dividend_usd"] == 0.0
+    for book, pnl in (("model", MODEL_CREDIT - 300.0 - model_charge["total_usd"]),
+                      ("always", MODEL_CREDIT - 300.0 - model_charge["total_usd"]),
+                      ("implied", IMPLIED_CREDIT - 100.0 - implied_charge["total_usd"])):
+        assert after["books"][book]["pnl_usd"] == pytest.approx(pnl)
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(pnl)
+    assert base_metrics["model_total_pnl_usd"] == pytest.approx(MODEL_CREDIT)
+
+
+# -- refusals and empty folds ---------------------------------------------------------------
+
+
+def test_plumbing_refusals():
+    with pytest.raises(ValueError, match="no forecast row"):
+        _run([_row("2024-02-20")], _chain(ENTRY, EXPIRY), FLAT)  # train only
+    with pytest.raises(ValueError, match="chain"):
+        _run([_row(ENTRY)], [], FLAT)  # an empty chain across the whole snapshot
+    misaligned = _chain(ENTRY, EXPIRY, close=101.0)
+    with pytest.raises(ValueError, match="underlying_price"):
+        _run([_row(ENTRY)], misaligned, FLAT)
+    out_of_bucket = _chain(ENTRY, "2024-03-15")  # DTE 14 > dte_max 10
+    with pytest.raises(ValueError, match="dte"):
+        _run([_row(ENTRY)], out_of_bucket, FLAT)
+    node = CondorQuoteBacktest("bt", dict(PARAMS))
+    assert node.validate_inputs({"forecasts": [], "chain": [], "underlying": []}) == []
+    assert node.validate_inputs({"forecasts": [], "chain": []}) != []
+    assert node.validate_inputs({"forecasts": [], "chain": {}, "underlying": []}) != []
+
+
+def test_a_fold_whose_rows_all_lack_a_chain_records_zero_trades():
+    rows = [_row("2024-03-01"), _row("2024-03-04", outcome_z=None), _row("2024-03-05", close=0.0)]
+    metrics, report = _run(rows, _chain("2024-03-06", "2024-03-15"), FLAT)
+    assert metrics["n_entries"] == 0 and metrics["n_skipped_no_chain"] == 1
+    assert metrics["n_skipped_no_outcome"] == 1 and metrics["n_skipped_no_forward"] == 1
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0 and metrics[f"{book}_max_drawdown_usd"] == 0.0
+    assert report["chain"]["first_date"] == "2024-03-06" and report["ledger"] == []
+
+
+@pytest.mark.parametrize("change", [
+    {"split": "nope"}, {"short_q": 0.5}, {"wing_z": 0}, {"wing_points": 25},
+    {"multiplier": 0}, {"fee_per_leg": -1}, {"dte_min": 0}, {"dte_max": 4},
+    {"max_abs_log_moneyness": 0}, {"label_horizon": 0}, {"carry_rate": -0.01},
+    {"carry_rate": "0.055"}, {"min_edge_usd": float("nan")}, {"cvar_alpha": 1.0},
+    {"hold_steps": 21}, {"atm_ratio": 0.8}, {"iv_index": "x"}, {"surprise": 1},
+    {"dte_max": 10.5},
+])
+def test_knob_refusals(change):
+    with pytest.raises(ConfigError, match=next(iter(change))):  # the message names the knob
+        CondorQuoteBacktest("bt", {**PARAMS, **change})
+
+
+@pytest.mark.parametrize("missing", list(PARAMS))
+def test_every_cell_knob_is_required(missing):
+    with pytest.raises(ConfigError, match=missing):
+        CondorQuoteBacktest("bt", {k: v for k, v in PARAMS.items() if k != missing})
+
+
+def test_the_proxy_backtest_keeps_its_own_contract():
+    """The shared base changes nothing the VIX-proxy node declares (ADR-0187 item 5)."""
+    assert CondorBacktest.ROW_REASONS == ("no_outcome", "no_forecast", "no_forward",
+                                          "no_scale", "no_iv")
+    assert CondorBacktest.BOOK_REASONS == ("degenerate_strikes", "nonpositive_credit",
+                                           "below_min_edge")
+    assert CondorBacktest.outputs == CondorQuoteBacktest.outputs == ("metrics", "report")
+    assert CondorBacktest.role == CondorQuoteBacktest.role == "score"
+    assert CondorQuoteBacktest.serving_effect(PARAMS, {}) == "forbidden"
+    assert "hold_steps" in CondorBacktest._PARAMS and "hold_steps" not in CondorQuoteBacktest._PARAMS
+
+
+# -- one separating fixture per rule ------------------------------------------------------
+#
+# Each scenario below makes a rule's value differ from its nearest substitute (the gate at
+# the horizon scale vs the raw scale, the band on every leg, a wing beyond the SNAPPED
+# short, dte/365 vs sessions/252, the -s^2/2 drift, two instruments on one date, ...).
+# Every expected value is restated by hand; nothing is read back from the node.
+
+
+def _set(chain, **quotes):
+    """Overwrite (right, strike) -> dict of quote fields on a chain."""
+    for q in chain:
+        over = quotes.get(f"{q['right']}{int(q['strike'])}")
+        if over:
+            q.update(over)
+    return chain
+
+
+#: Q(0.1) = -1.2 (index 9 of the sorted hundred), Q(0.9) = +1 (index 89); five draws at -1.4.
+M1_DRAWS = [-1.4] * 5 + [-1.2] * 5 + [0.0] * 79 + [1.0] * 11
+
+
+def test_the_gate_prices_the_draws_at_the_horizon_scale_not_the_reference_scale():
+    # label_horizon 4, n = 5 sessions: s' = 0.05 sqrt(5/4) = 0.055902
+    # targets 100 e^{s' z}: 90.93 / 93.51 / 105.75 / 108.75 -> [90, 93, 106, 109]
+    # credit: put 93 bid 0.5 + call 106 bid 1.5 - put 90 ask 0.6 - call 109 ask 0.6 = 0.8
+    #         -> 80 - 2.6 = 77.4
+    # the -1.4 draws settle at 100 e^{-1.4 s'} = 92.472 < 93 (0.528 below the short put)
+    #   -> E = 77.4 - 100 * 5 * 0.5278 / 100 = 74.761; at the RAW scale they settle at
+    #   93.239 > 93 and E would be the credit, 77.4.
+    rows = [_row(ENTRY, samples=list(M1_DRAWS))]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY), FLAT, label_horizon=4, min_edge_usd=76.0)
+    entry = report["ledger"][0]
+    assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(5 / 4))
+    assert entry["books"]["model"]["strikes"] == [90.0, 93.0, 106.0, 109.0]
+    assert entry["books"]["always"]["strikes"] == [90.0, 93.0, 106.0, 109.0]
+    assert entry["books"]["model"]["credit_usd"] == pytest.approx(77.4)
+    expected = 77.4 - 5 * (93.0 - 100 * math.exp(-1.4 * 0.05 * math.sqrt(5 / 4)))
+    assert expected == pytest.approx(74.761, abs=1e-3)
+    assert entry["model_expected_pnl_usd"] == pytest.approx(expected)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["always_n_trades"] == 1
+    metrics, _ = _run(rows, _chain(ENTRY, EXPIRY), FLAT, label_horizon=4, min_edge_usd=74.0)
+    assert metrics["model_n_trades"] == 1
+
+
+PUT_HEAVY = [-2.0] * 2 + [0.0] * 6 + [1.0] * 2    # Q(0.1) = -2, Q(0.9) = +1
+CALL_HEAVY = [-1.0] * 2 + [0.0] * 6 + [2.0] * 2   # Q(0.1) = -1, Q(0.9) = +2
+
+
+@pytest.mark.parametrize("draws, band, strikes", [
+    # exponents x 0.05: puts -0.125 / -0.1, calls 0.05 / 0.075: band 0.09 -> only the PUTS exceed
+    (PUT_HEAVY, 0.09, None),
+    # band 0.11 -> only the LONG put exceeds
+    (PUT_HEAVY, 0.11, None),
+    # puts -0.075 / -0.05, calls 0.1 / 0.125: band 0.09 -> only the CALLS exceed
+    (CALL_HEAVY, 0.09, None),
+    (CALL_HEAVY, 0.11, None),
+    # inside the default band the asymmetric quantiles land on their own strikes:
+    # 100 e^{-0.125} = 88.25 -> 88, e^{-0.1} = 90.48 -> 90, calls as the worked entry
+    (PUT_HEAVY, 0.2, [88.0, 90.0, 106.0, 108.0]),
+    # e^{0.1} = 110.5 -> 111, e^{0.125} = 113.3 -> 114 (grid extended to 116)
+    (CALL_HEAVY, 0.2, [92.0, 95.0, 111.0, 114.0]),
+])
+def test_the_band_is_checked_on_each_leg_and_each_side(draws, band, strikes):
+    chain = _chain(ENTRY, EXPIRY, strikes=range(88, 117))
+    metrics, report = _run([_row(ENTRY, samples=list(draws))], chain, FLAT,
+                           max_abs_log_moneyness=band)
+    cell = report["ledger"][0]["books"]["model"]
+    if strikes is None:
+        assert cell["reason"] == "target_outside_band" and cell["strikes"] is None
+        assert metrics["model_n_skipped_target_outside_band"] == 1
+        assert metrics["always_n_skipped_target_outside_band"] == 1
+    else:
+        assert cell["strikes"] == strikes
+    assert metrics["implied_n_trades"] == 1  # its targets stay within +-0.05
+
+
+def test_the_long_put_sits_below_the_short_put_even_after_the_short_snapped_past_its_target():
+    # puts 93..95 unsellable: short put target 95.12 -> 92; long put target 92.77 -> 92 is
+    # the short, so 91 (ask 0.6). The put wing is ONE point wide, so the short put's bid is
+    # set to 0.5 (the worked 1.0 would make the credit 1.1 >= the wing and skip the book):
+    # credit 0.5 + 1.5 - 0.6 - 0.8 = 0.6 -> 57.4
+    chain = _set(_chain(ENTRY, EXPIRY), put95={"bid": 0.0}, put94={"bid_size": 0},
+                 put93={"bid": 0.0}, put92={"bid": 0.5, "ask": 0.6})
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    assert report["ledger"][0]["books"]["model"]["strikes"] == [91.0, 92.0, 106.0, 108.0]
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(60 - 2.6)
+    assert metrics["model_n_trades"] == 1
+
+
+def test_the_short_call_is_snapped_past_unsellable_calls_and_the_long_call_beyond_it():
+    # call 106 has a bid but no bid SIZE, 107 no bid: short call target 105.13 -> 108
+    # (bid 0.7); long call target 107.79 -> 108 is the short, so 109. The call wing is ONE
+    # point wide, so the long call's ask is set to 0.8 (the default 0.6 would make the credit
+    # exactly 1.0 = the wing, which the contract refuses): credit 2.0 + 0.7 - 1.1 - 0.8 = 0.8
+    # -> 77.4
+    chain = _set(_chain(ENTRY, EXPIRY), call106={"bid_size": 0}, call107={"bid": 0.0},
+                 call109={"ask": 0.8})
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    assert report["ledger"][0]["books"]["model"]["strikes"] == [92.0, 95.0, 108.0, 109.0]
+    assert report["ledger"][0]["books"]["model"]["credit_usd"] == pytest.approx(80 - 2.6)
+    assert metrics["model_n_trades"] == 1
+
+
+def test_a_size_of_exactly_one_contract_is_quotable():
+    chain = _set(_chain(ENTRY, EXPIRY), put95={"bid_size": 1}, call108={"ask_size": 1})
+    _, report = _run([_row(ENTRY)], chain, FLAT)
+    assert report["ledger"][0]["books"]["model"]["strikes"] == MODEL_STRIKES
+
+
+@pytest.mark.parametrize("right, field", [
+    ("put", "bid"), ("call", "bid"), ("put", "ask"), ("call", "ask"),
+    # a zero SIZE on one side leaves the quote valid, so only that side's leg fails:
+    # no bid size stops the short, no ask size stops the long alone
+    ("put", "bid_size"), ("call", "bid_size"), ("put", "ask_size"), ("call", "ask_size"),
+])
+def test_one_side_with_no_quotable_strike_is_counted_per_leg(right, field):
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == right:
+            q[field] = 0 if field.endswith("size") else 0.0
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1
+    assert report["ledger"][0]["books"]["model"]["strikes"] is None
+
+
+def test_a_constant_forecast_gives_degenerate_strikes_and_the_implied_book_still_trades():
+    # z = 0 for both shorts: put 100, call 100 -> not strictly increasing
+    metrics, report = _run([_row(ENTRY, samples=[0.0] * 10)], _chain(ENTRY, EXPIRY), FLAT)
+    assert metrics["model_n_skipped_degenerate_strikes"] == 1
+    assert metrics["always_n_skipped_degenerate_strikes"] == 1
+    assert metrics["model_n_skipped_nonpositive_credit"] == 0
+    assert report["ledger"][0]["books"]["implied"]["strikes"] == IMPLIED_STRIKES
+    assert metrics["implied_n_trades"] == 1
+
+
+def test_the_implied_scale_uses_calendar_dte_over_365():
+    # Monday expiry 03-11: DTE 10 but only 6 sessions; iv 0.4: s = 0.4 sqrt(10/365) = 0.066208
+    # ln(K/F) = -s^2/2 + s z: 88.68 / 91.66 / 108.62 / 112.27 -> [88, 91, 109, 113]
+    # (sessions/252 would give s = 0.061721 -> [89, 92, 109, 112])
+    chain = _set(_chain(ENTRY, "2024-03-11", strikes=range(85, 116), iv=0.4),
+                 put91={"bid": 1.0, "ask": 1.1}, call109={"bid": 1.0, "ask": 1.1})
+    series = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")])
+    metrics, report = _run([_row(ENTRY)], chain, series)
+    entry = report["ledger"][0]
+    assert (entry["dte"], entry["sessions"], entry["atm_iv"]) == (10, 6, pytest.approx(0.4))
+    s = 0.4 * math.sqrt(10 / 365)
+    targets = [100 * math.exp(-s * s / 2 + s * z) for z in (Z10 - 0.5, Z10, -Z10, -Z10 + 0.5)]
+    assert [math.floor(targets[0]), math.floor(targets[1]), math.ceil(targets[2]),
+            math.ceil(targets[3])] == [88, 91, 109, 113]
+    assert entry["books"]["implied"]["strikes"] == [88.0, 91.0, 109.0, 113.0]
+    assert entry["books"]["implied"]["credit_usd"] == pytest.approx(80 - 2.6)
+    assert metrics["implied_n_trades"] == 1
+
+
+def test_the_implied_targets_carry_the_minus_half_s_squared_drift():
+    # S = 1000, iv 0.6, DTE 10: s = 0.099312, s^2/2 = 0.004931 (0.49% of spot = 4.9 points)
+    # with the drift: 833.72 / 876.16 / 1130.14 / 1187.68 -> [833, 876, 1131, 1188]
+    # without it:     837.84 / 880.49 / 1135.73 / 1193.55 -> [837, 880, 1136, 1194]
+    chain = _set(_chain(ENTRY, "2024-03-11", close=1000.0, strikes=range(820, 1200), iv=0.6),
+                 put876={"bid": 1.0, "ask": 1.1}, call1131={"bid": 1.0, "ask": 1.1})
+    series = _series([(d, 1000.0) for d in _weekdays("2024-03-01", "2024-03-20")])
+    metrics, report = _run([_row(ENTRY, close=1000.0)], chain, series)
+    entry = report["ledger"][0]
+    assert entry["atm_iv"] == pytest.approx(0.6)
+    assert entry["books"]["implied"]["strikes"] == [833.0, 876.0, 1131.0, 1188.0]
+    assert metrics["implied_n_trades"] == 1
+
+
+@pytest.mark.parametrize("crossed_right", ["put", "call"])
+def test_a_crossed_quote_on_either_right_disqualifies_the_atm_pair(crossed_right):
+    chain = _smile(_chain(ENTRY, EXPIRY))
+    for q in chain:
+        if q["strike"] == 100.0 and q["right"] == crossed_right:
+            q["bid"], q["ask"] = 0.6, 0.5
+    assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("missing_right", ["put", "call"])
+def test_a_strike_listed_on_one_right_only_is_no_atm_candidate(missing_right):
+    # without its put (or call) the 100 strike is no pair; 99 and 101 tie, the lower wins
+    chain = [q for q in _smile(_chain(ENTRY, EXPIRY))
+             if not (q["strike"] == 100.0 and q["right"] == missing_right)]
+    assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("field", ["bid_size", "ask_size"])
+def test_an_atm_pair_with_an_unusable_size_on_either_side_is_no_candidate(field):
+    # the row-level rule reads BOTH sizes: a None on the put at 100 disqualifies the pair
+    chain = _smile(_chain(ENTRY, EXPIRY))
+    for q in chain:
+        if q["strike"] == 100.0 and q["right"] == "put":
+            q[field] = None
+    assert _run([_row(ENTRY)], chain, FLAT)[1]["ledger"][0]["atm_iv"] == pytest.approx(0.25)
+
+
+def test_an_expiry_listing_a_single_row_is_no_quotable_strike_not_a_crash():
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY, strikes=[100])[:1], FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1 and metrics["n_entries"] == 1
+
+
+def test_the_settlement_gap_is_measured_from_the_settle_date_not_the_occ_expiry():
+    # Saturday expiry 03-09 settles Friday 03-08; with no close after Monday 03-04 until
+    # 03-11, Monday's close is 4 days before the settle date (settles) but 5 before the expiry
+    chain = _chain(ENTRY, "2024-03-09", settle="2024-03-08")
+    series = _series([("2024-03-01", 100.0), ("2024-03-04", 96.0), ("2024-03-11", 98.0),
+                      ("2024-03-12", 99.0)])
+    metrics, report = _run([_row(ENTRY)], chain, series)
+    assert metrics["n_entries"] == 1 and metrics["n_skipped_unsettled"] == 0
+    assert (report["ledger"][0]["settlement_date"], report["ledger"][0]["settlement"]) == \
+        ("2024-03-04", 96.0)
+
+
+def test_a_books_american_charge_is_the_sum_over_its_trades():
+    # two traded cells with two DIFFERENT charges: SPY's dividend (100) plus one day of carry,
+    # QQQ's dividend (50); neither the larger nor the first alone is the book's charge
+    dividends = [("2024-03-07", 1.0)]
+    spy_closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                        ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    spy_series = _series(spy_closes, dividends)
+    spy_charge = american_short_charge(spy_series, 95.0, 106.0, ENTRY, EXPIRY, 0.055, 100)["total_usd"]
+    qqq_chain = _set(_chain(ENTRY, EXPIRY, close=50.0, strikes=range(44, 57), instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_closes = [(d, 50.0) for d in SESSIONS[:3]] + [("2024-03-06", 55.0), ("2024-03-07", 50.0),
+                                                       ("2024-03-08", 45.0), ("2024-03-11", 45.0)]
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": c, "asof_ms": _ms(d),
+                   "dividend_amount": 0.5 if d == "2024-03-07" else 0.0} for d, c in qqq_closes]
+    rows = [_row(ENTRY), _row(ENTRY, close=50.0, instrument="QQQ")]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY) + qqq_chain, spy_series + qqq_series)
+    charges = [e["books"]["model"]["american_charge_usd"] for e in report["ledger"]]
+    assert charges == pytest.approx([50.0, spy_charge]) and spy_charge > 100.0
+    assert metrics["model_american_charge_usd"] == pytest.approx(50.0 + spy_charge)
+
+
+def test_two_instruments_are_priced_and_settled_from_their_own_chain_and_closes():
+    # QQQ at 50: targets 46.39 / 47.56 / 52.56 / 53.89 -> [46, 47, 53, 54]; shorts quoted 1.0
+    # -> credit 1.0 + 1.0 - 0.6 - 0.6 = 0.8 -> 77.4; settles at 45 through both put wings
+    # (-100); pre-ex close 55 > 53 with a 0.5 dividend on 03-07 -> 50 USD charge;
+    # 03-08 is the settlement day so no carry -> pnl 77.4 - 100 - 50 = -72.6
+    qqq_chain = _set(_chain(ENTRY, EXPIRY, close=50.0, strikes=range(44, 57), instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_closes = [(d, 50.0) for d in SESSIONS[:3]] + [("2024-03-06", 55.0), ("2024-03-07", 50.0),
+                                                       ("2024-03-08", 45.0), ("2024-03-11", 45.0)]
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": c, "asof_ms": _ms(d),
+                   "dividend_amount": 0.5 if d == "2024-03-07" else 0.0} for d, c in qqq_closes]
+    rows = [_row(ENTRY), _row(ENTRY, close=50.0, instrument="QQQ")]
+    metrics, report = _run(rows, _chain(ENTRY, EXPIRY) + qqq_chain, FLAT + qqq_series)
+    assert [(e["instrument"], e["forward"], e["settlement"]) for e in report["ledger"]] == [
+        ("QQQ", 50.0, 45.0), ("SPY", 100.0, 97.0)]
+    qqq, spy = report["ledger"][0]["books"]["model"], report["ledger"][1]["books"]["model"]
+    assert qqq["strikes"] == [46.0, 47.0, 53.0, 54.0] and spy["strikes"] == MODEL_STRIKES
+    assert qqq["american_charge_usd"] == pytest.approx(50.0) and spy["american_charge_usd"] == 0.0
+    assert qqq["pnl_usd"] == pytest.approx(77.4 - 100.0 - 50.0)
+    assert spy["pnl_usd"] == pytest.approx(MODEL_CREDIT)
+    assert metrics["model_n_trades"] == 2 and metrics["n_rows_in_split"] == 2
+    assert metrics["model_american_charge_usd"] == pytest.approx(50.0)  # the SUM over trades
+    assert metrics["model_total_pnl_usd"] == pytest.approx(MODEL_CREDIT - 72.6)
+
+
+def test_input_order_of_forecasts_and_closes_never_changes_the_ledger():
+    days = ["2024-03-01", "2024-03-04", "2024-03-08", "2024-03-11"]
+    chain = (_chain("2024-03-01", "2024-03-08") + _chain("2024-03-04", "2024-03-11")
+             + _chain("2024-03-08", "2024-03-15") + _chain("2024-03-11", "2024-03-18"))
+    series = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")])
+    forward_metrics, forward = _run([_row(d) for d in days], chain, series)
+    metrics, report = _run([_row(d) for d in reversed(days)], list(reversed(chain)),
+                           list(reversed(series)))
+    assert [e["date"] for e in report["ledger"]] == ["2024-03-01", "2024-03-08"]
+    assert report["ledger"] == forward["ledger"] and metrics == forward_metrics
+    assert report["chain"] == {"first_date": "2024-03-01", "last_date": "2024-03-11", "n_rows": 200}
+    _, shuffled = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), list(reversed(FLAT)))
+    assert shuffled["ledger"][0]["settlement"] == 97.0
+
+
+def test_a_bad_or_repeated_underlying_row_refuses():
+    with pytest.raises(ValueError, match="underlying row"):
+        _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT + [{"instrument": "SPY", "date": "2024-03-13",
+                                                            "close": 0.0, "asof_ms": 1}])
+    with pytest.raises(ValueError, match="repeats a date"):
+        _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT + [dict(FLAT[0])])
+    with pytest.raises(ValueError, match="lacks"):
+        chain = _chain(ENTRY, EXPIRY)
+        del chain[0]["iv"]
+        _run([_row(ENTRY)], chain, FLAT)
+
+
+def test_a_series_that_starts_after_the_settlement_date_is_unsettled():
+    late = _series([("2024-03-11", 100.0), ("2024-03-12", 100.0)])
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), late)
+    assert metrics["n_skipped_unsettled"] == 1 and report["ledger"] == []
+
+
+def test_a_chain_at_exactly_dte_min_is_accepted_and_one_below_refuses():
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, "2024-03-06"), FLAT)  # Wednesday: DTE 5
+    entry = report["ledger"][0]
+    assert (entry["dte"], entry["sessions"]) == (5, 3)
+    assert entry["horizon_scale"] == pytest.approx(0.05 * math.sqrt(3 / 5))
+    with pytest.raises(ValueError, match="dte"):
+        _run([_row(ENTRY)], _chain(ENTRY, "2024-03-05"), FLAT)  # Tuesday: DTE 4
+
+
+def test_the_charge_window_ends_on_the_settlement_date_not_the_occ_expiry():
+    # Saturday expiry 03-09 settles Friday 03-08; the put goes in the money on 03-04, so the
+    # carry runs 4 days (to the settlement date), not 5 (to the OCC expiry)
+    closes = [("2024-03-01", 100.0), ("2024-03-04", 94.0), ("2024-03-05", 100.0),
+              ("2024-03-06", 100.0), ("2024-03-07", 100.0), ("2024-03-08", 100.0),
+              ("2024-03-11", 100.0)]
+    series = _series(closes)
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, "2024-03-09", settle="2024-03-08"), series)
+    charge = report["ledger"][0]["books"]["model"]["american_charge_usd"]
+    assert charge == pytest.approx(95.0 * (math.exp(0.055 * 4 / 365) - 1) * 100)
+    assert charge == american_short_charge(series, 95.0, 106.0, ENTRY, "2024-03-08", 0.055, 100)["total_usd"]
+    assert charge != pytest.approx(
+        american_short_charge(series, 95.0, 106.0, ENTRY, "2024-03-09", 0.055, 100)["total_usd"])
+
+
+def test_mean_credit_averages_traded_cells_only():
+    # SPY's model book (E = 157.4) clears a 100 USD gate, QQQ's (E = 77.4) does not; the
+    # always book trades both: mean credit (157.4 + 77.4) / 2 = 117.4
+    qqq_chain = _set(_chain(ENTRY, EXPIRY, close=50.0, strikes=range(44, 57), instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": 50.0, "asof_ms": _ms(d),
+                   "dividend_amount": 0.0} for d in SESSIONS]
+    rows = [_row(ENTRY), _row(ENTRY, close=50.0, instrument="QQQ")]
+    metrics, _ = _run(rows, _chain(ENTRY, EXPIRY) + qqq_chain, FLAT + qqq_series,
+                      min_edge_usd=100.0)
+    assert metrics["model_n_trades"] == 1 and metrics["model_n_skipped_below_min_edge"] == 1
+    assert metrics["model_mean_credit_usd"] == pytest.approx(MODEL_CREDIT)
+    assert metrics["always_n_trades"] == 2
+    assert metrics["always_mean_credit_usd"] == pytest.approx((MODEL_CREDIT + 77.4) / 2)
+    # the mean P&L and hit rate are over TRADED cells too: both settle inside the shorts
+    assert metrics["model_mean_pnl_usd"] == pytest.approx(MODEL_CREDIT)
+    assert metrics["model_hit_rate"] == 1.0
+    assert metrics["always_mean_pnl_usd"] == pytest.approx((MODEL_CREDIT + 77.4) / 2)
+    assert metrics["always_hit_rate"] == 1.0
+
+
+@pytest.mark.parametrize("draws, strikes", [
+    # Q(0.1) = +0.5: the long put target is exactly S = 100, a listed strike -> 100 (at or
+    # below); the short put e^{0.025} = 102.53 -> 102; calls as the worked entry
+    ([0.5] * 2 + [1.0] * 8, [100.0, 102.0, 106.0, 108.0]),
+    # Q(0.9) = -0.5: the long call target is exactly 100 -> 100 (at or above); the short call
+    # e^{-0.025} = 97.53 -> 98
+    ([-1.0] * 8 + [-0.5] * 2, [92.0, 95.0, 98.0, 100.0]),
+])
+def test_a_target_exactly_on_a_listed_strike_snaps_to_that_strike(draws, strikes):
+    _, report = _run([_row(ENTRY, samples=list(draws))], _chain(ENTRY, EXPIRY), FLAT)
+    assert report["ledger"][0]["books"]["model"]["strikes"] == strikes
+
+
+def test_the_next_entry_may_start_on_the_settlement_date_of_a_saturday_expiry():
+    chain = _chain(ENTRY, "2024-03-09", settle="2024-03-08") + _chain("2024-03-08", "2024-03-15")
+    series = _series([(d, 100.0) for d in _weekdays("2024-03-01", "2024-03-20")])
+    _, report = _run([_row(ENTRY), _row("2024-03-08")], chain, series)
+    assert [e["date"] for e in report["ledger"]] == ["2024-03-01", "2024-03-08"]
+
+
+def _three_trades(s1, s2, s3):
+    """Three non-overlapping worked entries (five sessions each) settling at s1 / s2 / s3."""
+    days = ["2024-03-01", "2024-03-11", "2024-03-19"]
+    chain = (_chain("2024-03-01", "2024-03-08") + _chain("2024-03-11", "2024-03-18")
+             + _chain("2024-03-19", "2024-03-26"))
+    closes = {d: 100.0 for d in _weekdays("2024-03-01", "2024-03-29")}
+    closes.update({"2024-03-08": s1, "2024-03-18": s2, "2024-03-26": s3})
+    return [_row(d) for d in days], chain, _series(sorted(closes.items()))
+
+
+def test_cvar_takes_the_declared_tail_and_the_drawdown_follows_time_order():
+    # settlements 80 / 93.5 / 97 through the worked strikes: P&L -142.6 / +7.4 / +157.4
+    # (the 157.4 credit less 300, 150 and 0; no close inside a window is below the short
+    # put, so no carry). At cvar_alpha 0.5 the tail holds ceil(1.5) = 2 values:
+    # (-142.6 + 7.4) / 2 = -67.6, not the worst trade. Mean 22.2 / 3 = 7.4, hit rate 2/3,
+    # drawdown 142.6 from the start.
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    metrics, report = _run(rows, chain, series, cvar_alpha=0.5)
+    assert [e["books"]["model"]["pnl_usd"] for e in report["ledger"]] == pytest.approx(
+        [-142.6, 7.4, 157.4])
+    assert metrics["model_n_trades"] == 3
+    assert metrics["model_cvar_usd"] == pytest.approx(-67.6)
+    assert metrics["model_mean_pnl_usd"] == pytest.approx(7.4)
+    assert metrics["model_hit_rate"] == pytest.approx(2 / 3)
+    assert metrics["model_total_pnl_usd"] == pytest.approx(22.2)
+    assert metrics["model_max_drawdown_usd"] == pytest.approx(142.6)
+    # loss, small win, loss: the path falls 142.6, recovers 7.4 and falls again, 277.8 from
+    # the start; a time-blind (sorted) path would report 285.2. The default 0.95 tail of
+    # three trades is one value, the worst.
+    rows, chain, series = _three_trades(80.0, 93.5, 80.0)
+    metrics, _ = _run(rows, chain, series)
+    assert metrics["model_max_drawdown_usd"] == pytest.approx(277.8)
+    assert metrics["model_cvar_usd"] == pytest.approx(-142.6)
+    assert metrics["model_hit_rate"] == pytest.approx(1 / 3)

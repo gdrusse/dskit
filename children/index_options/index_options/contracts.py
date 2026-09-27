@@ -2,8 +2,16 @@
 
 This is domain validation, not a pricing, ingestion or execution engine.
 Immutable snapshots prevent caller mutation from changing a validated position.
+
+The quote, credit and American-exercise rules the archived-quote backtest
+shares with the synthetic track are module functions (ADR-0187):
+:func:`quote_problems`, :func:`condor_credit` and
+:func:`american_short_charge`. :class:`DefinedRiskCondor` calls the first
+two and keeps raising on a bad quote or credit; a backtest classifies the
+same problems instead.
 """
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -13,8 +21,25 @@ from types import MappingProxyType
 
 from dskit.onboarding.base import parse_utc
 from dskit.pipeline.node import check_int_param, reject_unknown_params
+from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["CashIndexContract", "DefinedRiskCondor", "leg_intrinsic"]
+__all__ = [
+    "CONDOR_LEGS",
+    "CashIndexContract",
+    "DefinedRiskCondor",
+    "american_short_charge",
+    "condor_credit",
+    "leg_intrinsic",
+    "quote_problems",
+]
+
+#: The one owner of an iron condor's leg order and signed quantity: long
+#: put, short put, short call, long call. The standardized geometry, the
+#: cashflow owner and both backtests read it; none restates it.
+CONDOR_LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+_LEG_SIGNS = tuple(sign for _right, sign in CONDOR_LEGS)
+#: The side a quote is judged for: both sizes, a sale (bid) or a purchase (ask).
+_SIDES = (None, "sell", "buy")
 
 _SCHEMA = "index-options-synthetic-v1"
 _DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
@@ -102,6 +127,195 @@ def leg_intrinsic(right, strike, level):
     """
     gap = strike - level if right == "put" else level - strike
     return max(type(gap)(0), gap)
+
+
+def _amount(value):
+    """Say whether ``value`` is a finite Decimal or a finite non-bool number."""
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    return number_ok(value)
+
+
+def _size(value):
+    """Say whether ``value`` is a usable quote size: a finite non-bool number >= 0."""
+    return number_ok(value) and value >= 0
+
+
+def quote_problems(bid, ask, bid_size, ask_size, count, side=None):
+    """List what stops a quote from filling ``count`` contracts on ``side``.
+
+    The one owner of the quote rules (ADR-0187): a quote is nonnegative and
+    uncrossed; with ``side=None`` both sizes must cover ``count``; a sale
+    (``"sell"``) needs a positive bid and a bid size that covers it; a
+    purchase (``"buy"``) needs a positive ask and an ask size that covers
+    it. A provider ``0`` on the side traded means no market, never a free
+    fill — while a far-strike wing with no bid stays buyable.
+
+    Parameters
+    ----------
+    bid, ask : Decimal or float
+        The quote, in one numeric family.
+    bid_size, ask_size : int or float
+        The sizes as the source sends them.
+    count : int
+        Contracts to fill, >= 0; ``0`` is the row-level rule (a valid
+        quote, nothing to cover).
+    side : None, "sell" or "buy"
+        Which side is traded; ``None`` judges both sizes.
+
+    Returns
+    -------
+    list of str
+        Every problem found; empty when the quote fills.
+
+    Raises
+    ------
+    ValueError
+        When ``side`` or ``count`` is not one of the above.
+    """
+    if side not in _SIDES:
+        raise ValueError(f"side must be one of {_SIDES}, got {side!r}")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError(f"count must be an int >= 0, got {count!r}")
+    problems = []
+    for name, value in (("bid", bid), ("ask", ask)):
+        if not _amount(value):
+            problems.append(f"{name} must be a finite number, got {value!r}")
+    if not problems:
+        if bid < 0 or ask < 0:
+            problems.append(f"quote must be nonnegative, got bid {bid} ask {ask}")
+        elif ask < bid:
+            problems.append(f"quote must be uncrossed, got bid {bid} above ask {ask}")
+        if side == "sell" and not bid > 0:
+            problems.append(f"bid must be positive to sell, got {bid}")
+        if side == "buy" and not ask > 0:
+            problems.append(f"ask must be positive to buy, got {ask}")
+    for name, value in (("bid_size", bid_size), ("ask_size", ask_size)):
+        if side is not None and name != f"{'bid' if side == 'sell' else 'ask'}_size":
+            continue
+        if not _size(value):
+            problems.append(f"{name} must be a number >= 0, got {value!r}")
+        elif value < count:
+            problems.append(f"{name} {value} does not cover count {count}")
+    return problems
+
+
+def condor_credit(strikes, quotes):
+    """Return a condor's per-share entry credit and both wing widths.
+
+    Short legs sell at the bid, long legs buy at the ask — the one owner of
+    that rule (ADR-0187). It never raises on the answer: the cashflow owner
+    refuses a credit outside ``(0, narrower width)`` and a backtest
+    classifies it.
+
+    Parameters
+    ----------
+    strikes : sequence of Decimal or float
+        Long put, short put, short call, long call.
+    quotes : sequence of (bid, ask)
+        One pair per leg, in the same order and numeric family.
+
+    Returns
+    -------
+    tuple
+        ``(credit, (put_width, call_width))``.
+    """
+    credit = sum(-sign * (ask if sign > 0 else bid)
+                 for sign, (bid, ask) in zip(_LEG_SIGNS, quotes))
+    return credit, (strikes[1] - strikes[0], strikes[3] - strikes[2])
+
+
+def american_short_charge(rows, short_put, short_call, entry_date, settle_date,
+                          carry_rate, multiplier):
+    """Return the conservative early-exercise charge on a condor's two short legs.
+
+    ETF options are American and physically settled (ADR-0187). Each short
+    leg is valued at its European payoff on ``settle_date`` minus a one-sided
+    bound on what early assignment can cost:
+
+    * **short call, dividends** — the dividend is charged for the first
+      ex-date in ``(entry_date, settle_date]`` whose pre-ex close (the
+      previous session's close) is above ``short_call``, and for every
+      later ex-date in the window, because from then on the position is
+      assumed short the stock;
+    * **short put, carry** — from the first close ``s`` in
+      ``[entry_date, settle_date)`` below ``short_put``, the position is
+      assumed long the stock at ``short_put``, and
+      ``short_put x (exp(carry_rate x tau) - 1)`` with
+      ``tau = (settle_date - s) / 365`` is charged.
+
+    Both ignore what assignment would gain (forfeited extrinsic value, our
+    own long legs, dividends on assigned stock), so the bound is
+    conservative.
+
+    Parameters
+    ----------
+    rows : list of dict
+        ``date`` (ISO), ``close`` (positive) and ``dividend_amount`` (the
+        ex-date cash, ``0`` otherwise) per session; rows outside the window
+        are ignored.
+    short_put, short_call : float
+        The short strikes.
+    entry_date, settle_date : str
+        ISO dates; the window is ``[entry_date, settle_date]``.
+    carry_rate : float
+        A constant upper bound on the cash rate, >= 0.
+    multiplier : int
+        Shares per contract.
+
+    Returns
+    -------
+    dict
+        ``call_dividend_usd``, ``put_carry_usd`` and ``total_usd`` per condor.
+
+    Raises
+    ------
+    ValueError
+        When the window is empty or inverted, a rate or strike is unusable,
+        a close is not a positive number, or a session after the entry and
+        up to settlement carries no ``dividend_amount`` (``None`` refuses,
+        it is never skipped).
+    """
+    entry, settle = _day(entry_date, "entry_date"), _day(settle_date, "settle_date")
+    if settle <= entry:
+        raise ValueError(f"settle_date {settle_date} must follow entry_date {entry_date}")
+    if not number_ok(carry_rate) or carry_rate < 0:
+        raise ValueError(f"carry_rate must be a finite number >= 0, got {carry_rate!r}")
+    for name, strike in (("short_put", short_put), ("short_call", short_call)):
+        if not price_ok(strike):
+            raise ValueError(f"{name} must be a positive number, got {strike!r}")
+    _integer(multiplier, "multiplier", 1)
+    window = []
+    for row in rows:
+        day = _day(row["date"], "date")
+        if entry <= day <= settle:
+            if not price_ok(row.get("close")):
+                raise ValueError(f"close on {row['date']} must be a positive number, "
+                                 f"got {row.get('close')!r}")
+            window.append((day, row))
+    window.sort(key=lambda pair: pair[0])
+    if not window:
+        raise ValueError(f"no closes between {entry_date} and {settle_date}")
+    call, assigned, previous_close = 0.0, False, None
+    for day, row in window:
+        if day > entry:
+            dividend = row.get("dividend_amount")
+            if not number_ok(dividend) or dividend < 0:
+                raise ValueError(f"dividend_amount on {row['date']} must be a finite "
+                                 f"number >= 0, got {dividend!r}")
+            if dividend > 0 and (assigned or (previous_close is not None
+                                              and previous_close > short_call)):
+                assigned = True
+                call += dividend
+        previous_close = row["close"]
+    put = 0.0
+    for day, row in window:
+        if day < settle and row["close"] < short_put:
+            tau = (settle - day).days / 365
+            put = short_put * (math.exp(carry_rate * tau) - 1)
+            break
+    return {"call_dividend_usd": call * multiplier, "put_carry_usd": put * multiplier,
+            "total_usd": (call + put) * multiplier}
 
 
 def _amount_text(value):
@@ -215,10 +429,11 @@ class _IndexQuote(_SyntheticIndexRow):
         """Refuse invalid, crossed, negative or ill-typed quotes."""
         self._same_instant(data, "quote_at")
         bid, ask = (_decimal(data[key], key) for key in ("bid", "ask"))
-        if bid < 0 or ask < bid:
-            raise ValueError("quote must be nonnegative and uncrossed")
         for key in ("bid_size", "ask_size"):
             _integer(data[key], key, 0)
+        problems = quote_problems(bid, ask, data["bid_size"], data["ask_size"], 0)
+        if problems:
+            raise ValueError("; ".join(problems))
         if data["condition_valid"] is not True:
             raise ValueError("condition_valid must be true")
 
@@ -283,8 +498,8 @@ class DefinedRiskCondor:
             raise ValueError("exactly four signed quantities are required")
         for quantity in quantities:
             _integer(quantity, "quantity", -1)
-        if tuple(quantities) != (1, -1, -1, 1):
-            raise ValueError("quantities must be [1, -1, -1, 1]")
+        if tuple(quantities) != _LEG_SIGNS:
+            raise ValueError(f"quantities must be {list(_LEG_SIGNS)}")
         _integer(count, "count", 1)
         fees = _decimal(fees_usd, "fees_usd")
         if fees < 0:
@@ -324,8 +539,12 @@ class DefinedRiskCondor:
                 "corpus_id", "contract_id", "reference_version",
             )):
                 raise ValueError("quote must match its contract/reference version")
-            if any(quote[k] < self.count for k in ("bid_size", "ask_size")):
-                raise ValueError("quote sizes must cover every leg")
+            problems = quote_problems(
+                _decimal(quote["bid"], "bid"), _decimal(quote["ask"], "ask"),
+                quote["bid_size"], quote["ask_size"], self.count,
+            )
+            if problems:
+                raise ValueError("quote sizes must cover every leg: " + "; ".join(problems))
             if _instant(quote["quote_at"], "quote_at") != _instant(
                 quotes[0]["quote_at"], "quote_at"
             ):
@@ -355,12 +574,11 @@ class DefinedRiskCondor:
 
     def _credit(self):
         """Check the conservative quote-side credit against both wing widths."""
-        credit = sum(
-            -sign * _decimal(q.data["ask" if sign > 0 else "bid"], "premium")
-            for sign, q in zip(self.quantities, self.quotes)
+        credit, widths = condor_credit(
+            [_decimal(c.data["strike"], "strike") for c in self.contracts],
+            [(_decimal(q.data["bid"], "premium"), _decimal(q.data["ask"], "premium"))
+             for q in self.quotes],
         )
-        strikes = [_decimal(c.data["strike"], "strike") for c in self.contracts]
-        widths = (strikes[1] - strikes[0], strikes[3] - strikes[2])
         if not 0 < credit < min(widths):
             raise ValueError("credit must be positive and below the narrower wing width")
         return credit, widths

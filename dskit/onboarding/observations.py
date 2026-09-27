@@ -58,7 +58,8 @@ from .codec import iter_text_lines, resolve_stream_file
 from .layout import OnboardingRoot
 from .snapshot import find_snapshot_dir, verify_snapshot
 
-__all__ = ["scan_stream", "stream_dir", "stream_digest", "verified_payload_dir"]
+__all__ = ["scan_stream", "stream_dir", "stream_digest", "stream_members",
+           "verified_payload_dir"]
 
 #: The spelling of a snapshot's identity — the 64-hex sha256 of its
 #: canonical manifest (:func:`~dskit.onboarding.snapshot.snapshot_hash`).
@@ -232,6 +233,61 @@ def stream_dir(root, source) -> str:
         does not validate either argument before ``os.path.join``.
     """
     return os.path.join(root, "observations", source)
+
+
+def stream_members(root, source, stream):
+    """Inventory the committed members a scan of ``stream`` would read.
+
+    The store token a memoized scan keys on (ADR-0187): one entry per
+    acquisition dir holding the stream, so a new, removed or touched
+    member changes the token and forces a rescan. Members are resolved by
+    the codec seam exactly as :func:`scan_stream` resolves them, so a
+    stray spelling is refused here as it is there.
+
+    Parameters
+    ----------
+    root : str
+        The onboarding root.
+    source : str
+        The registered source name.
+    stream : str
+        The stream name.
+
+    Returns
+    -------
+    tuple
+        ``(acquisition dir name, member file name, size, mtime_ns)`` per
+        committed member, in acquisition dir name order; empty when the
+        source has no observations directory (the scan states that
+        refusal itself).
+
+    Raises
+    ------
+    AssetError
+        When the directory cannot be listed, a member cannot be stat'ed,
+        or a stream's spelling is ambiguous within one acquisition dir.
+    """
+    base = stream_dir(root, source)
+    if not os.path.isdir(base):
+        return ()
+    try:
+        names = sorted(os.listdir(base))
+    except OSError as exc:
+        raise AssetError([f"cannot list {base}: {exc}"]) from exc
+    members = []
+    for name in names:
+        directory = os.path.join(base, name)
+        if not os.path.isdir(directory):
+            continue
+        path = resolve_stream_file(directory, stream)
+        if path is None:
+            continue
+        try:
+            info = os.stat(path)
+        except OSError as exc:
+            raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+        members.append((name, os.path.basename(path), info.st_size, info.st_mtime_ns))
+    return tuple(members)
 
 
 def scan_stream(root, source, stream, key_fields, ts_field=None,

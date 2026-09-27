@@ -206,6 +206,11 @@ New York close in UTC, `in_the_money` never read. `source_url`,
 unpinned, missing or changed file refuses. The cursor is the last close
 emitted and `max_days` bounds a pull, so repeated backfills walk the
 archive in whole-day chunks; `libs/optionshist.py` is the knob reference.
+Its second stream, `index_daily` (ADR-0187), is the same pinned
+`underlying_prices.parquet` as one row per (symbol, date) in the `cboe`
+kind's index fields plus `dividend_amount` and `split_coefficient` (None
+where the archive is null); its cursor is the max date and `max_days` does
+not apply.
 
 The `predexon` kind (ADR-0075) pulls Predexon's Kalshi L2 order-book
 history as one `l2_snapshots` record per sequenced snapshot, keyed
@@ -331,7 +336,7 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
 ├── leads.py           LeadGrid: capture instants at declared fractions of an expiring life (ADR-0075)
 ├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
-├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037); verified_payload_dir for FILE trees (ADR-0083)
+├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037); verified_payload_dir for FILE trees (ADR-0083); stream_members, the member inventory a memoized scan keys on (ADR-0187)
 ├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
@@ -346,7 +351,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)
-│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
+│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (closes with dividends/splits, ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)

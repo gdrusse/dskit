@@ -131,7 +131,7 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── leads.py           LeadGrid — lead-fraction capture grid; due_periods speaks the ledger's period spelling (ADR-0075)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
-├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037); verified_payload_dir (ADR-0083)
+├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037); verified_payload_dir (ADR-0083); stream_members (ADR-0187)
 ├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
@@ -146,7 +146,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)
-│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)
+│   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)

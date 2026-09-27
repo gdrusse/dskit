@@ -12,6 +12,7 @@ def test_knobs_are_narrowed_and_serving_refused(cls):
 
 import copy
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -197,3 +198,211 @@ def test_projection_pins_own_clock_without_cross_leg_checks(rows, cls, stream, w
         node.project(rows[stream])
     rows[stream][0]["effective_at"] = equivalent
     assert len(node.project(rows[stream])) == len(rows[stream])
+
+
+# -- ADR-0187: ChainQuoteRows, the bounded archived-chain reader ----------------------------
+
+from datetime import time  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from dskit.onboarding.libs.cboe import CHAIN_FIELDS, parse_occ  # noqa: E402
+
+from index_options.observations import ChainQuoteRows, IndexCloseRows  # noqa: E402
+
+
+def _close_utc(day):
+    """The archive's 16:00 New York close of ``day`` in UTC, as the pack spells it."""
+    local = datetime.combine(datetime.fromisoformat(day).date(), time(16, 0),
+                             tzinfo=ZoneInfo("America/New_York"))
+    return local.astimezone(timezone.utc).isoformat()
+
+
+def _chain(option, day, underlying_price, underlying=None, root=None, **over):
+    occ_root, expiry, right, strike = parse_occ(option)
+    row = {"underlying": underlying or occ_root, "option": option, "root": root or occ_root,
+           "expiry": expiry, "right": right, "strike": strike, "bid": 1.0, "bid_size": 10,
+           "ask": 1.2, "ask_size": 12, "iv": 0.2, "open_interest": 5, "volume": 1,
+           "delta": None, "gamma": None, "vega": None, "theta": None,
+           "last_trade_price": None, "last_trade_time": None,
+           "underlying_price": underlying_price, "quote_time": _close_utc(day)}
+    row.update(over)
+    assert set(row) == set(CHAIN_FIELDS)
+    return row
+
+
+CHAIN_PARAMS = {"symbol": "SPY", "dte_min": 30, "dte_max": 45, "max_abs_log_moneyness": 0.2}
+
+#: Quote date 2025-01-02 (a Thursday), SPY at 100: one row per intake rule.
+CHAIN_ROWS = [
+    _chain("SPY250207C00100000", "2025-01-02", 100.0),                    # kept: Fri Feb 7, DTE 36
+    _chain("SPY250208C00100000", "2025-01-02", 100.0),                    # kept: SATURDAY expiry -> Fri Feb 7
+    _chain("SPY250207P00099500", "2025-01-02", 100.0),                    # kept: on the 0.5 grid
+    _chain("SPY250207P00082000", "2025-01-02", 100.0),                    # kept: ln(0.82) = -0.198
+    _chain("SPYW250207C00100000", "2025-01-02", 100.0, underlying="SPY"),  # root != symbol
+    _chain("SPY250207C00100250", "2025-01-02", 100.0),                    # off the 0.5 grid
+    _chain("SPY250131C00100000", "2025-01-02", 100.0),                    # DTE 29 < 30
+    _chain("SPY250221C00100000", "2025-01-02", 100.0),                    # DTE 50 > 45
+    _chain("SPY250207C00125000", "2025-01-02", 100.0),                    # ln(1.25) = 0.223 > band
+    _chain("SPY250207C00101000", "2025-01-02", None),                     # no underlying close
+    _chain("QQQ250207C00100000", "2025-01-02", 100.0),                    # another underlying
+    _chain("SPY250207P00090000", "2025-01-02", 100.0,                     # kept: stamped 00:30 UTC
+           quote_time="2025-01-03T00:30:00+00:00"),                       #   = 19:30 New York, 01-02
+    _chain("SPY250217C00100000", "2025-01-03", 100.0),                    # kept: DTE 45 = dte_max
+    _chain("SPY250218C00100000", "2025-01-03", 100.0),                    # DTE 46 > 45
+    _chain("SPY250314C00100000", "2025-02-03", 100.0),                    # kept: a second date, DTE 39
+]
+
+
+def _chain_store(store_factory, rows=CHAIN_ROWS, name="chain"):
+    store = store_factory({"option_chain": rows}, name, source="optionshist-chain",
+                          effective_field="quote_time")
+    assert store.acquire("option_chain")["records"] == len(rows)
+    return store
+
+
+def test_chain_reader_knobs_are_narrowed_and_serving_refused(tmp_path):
+    assert ChainQuoteRows._PARAMS == ("root", "source", "since_ms", "as_of_acquisition_ms",
+                                      "symbol", "dte_min", "dte_max", "max_abs_log_moneyness")
+    assert ChainQuoteRows.serving_effect({}, {}) == "forbidden"
+    assert ChainQuoteRows.reuse_snapshot is True
+    base = {"root": str(tmp_path), "source": "optionshist-chain", **CHAIN_PARAMS}
+    node = ChainQuoteRows("chain", base)
+    assert (node.stream(), node.key_fields(), node.ts_field(), node.ts_unit(), node.ts_out()) == \
+        ("option_chain", ("option", "quote_time"), "quote_time", "iso", "asof_ms")
+    assert node.shared_fields() == ("underlying", "root", "expiry", "right", "quote_time")
+    assert node.keep_values() == {"underlying": ["SPY"]}
+    # a one-day bucket is legal; an inverted one names both bounds
+    assert ChainQuoteRows("chain", {**base, "dte_min": 45, "dte_max": 45}).params["dte_min"] == 45
+    with pytest.raises(ConfigError, match="dte_min 46 must not exceed dte_max 45"):
+        ChainQuoteRows("chain", {**base, "dte_min": 46})
+    for knob, value in [("stream", "x"), ("key_fields", ["option"]), ("ts_field", "x"),
+                        ("shared_fields", []), ("symbol", ""), ("symbol", None),
+                        ("dte_min", 0), ("dte_min", 46), ("dte_max", 2.5), ("dte_max", True),
+                        ("max_abs_log_moneyness", 0), ("max_abs_log_moneyness", "0.2"),
+                        ("surprise", 1)]:
+        with pytest.raises(ConfigError, match=knob):
+            ChainQuoteRows("chain", {**base, knob: value})
+    for missing in CHAIN_PARAMS:
+        with pytest.raises(ConfigError, match=missing):
+            ChainQuoteRows("chain", {k: v for k, v in base.items() if k != missing})
+
+
+def test_chain_intake_keeps_only_the_cells_rows_and_projects_fresh_envelopes(store_factory):
+    store = _chain_store(store_factory)
+    node = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS))
+    out = node.run(None, {})["records"]
+    # the seam's order: instant, then the OCC symbol (calls sort before puts)
+    assert [(r["date"], r["expiry"], r["settle_date"], r["dte"], r["right"], r["strike"])
+            for r in out] == [
+        ("2025-01-02", "2025-02-07", "2025-02-07", 36, "call", 100.0),
+        ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 82.0),
+        ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 99.5),
+        ("2025-01-02", "2025-02-08", "2025-02-07", 36, "call", 100.0),
+        ("2025-01-02", "2025-02-07", "2025-02-07", 36, "put", 90.0),  # the New York date, not UTC's
+        ("2025-01-03", "2025-02-17", "2025-02-17", 45, "call", 100.0),
+        ("2025-02-03", "2025-03-14", "2025-03-14", 39, "call", 100.0),
+    ]
+    assert set(out[0]) == {"instrument", "date", "expiry", "settle_date", "dte", "right",
+                           "strike", "bid", "ask", "bid_size", "ask_size", "iv",
+                           "underlying_price", "asof_ms"}
+    assert out[0]["instrument"] == "SPY" and out[0]["underlying_price"] == 100.0
+    assert (out[0]["bid"], out[0]["ask"], out[0]["bid_size"], out[0]["ask_size"],
+            out[0]["iv"]) == (1.0, 1.2, 10, 12, 0.2)
+    assert type(out[0]["asof_ms"]) is int
+    assert node.fingerprint()["rows"] == 7
+    # the projection is fresh per instance: a consumer's edit reaches no other reader
+    out[0]["bid"] = -1.0
+    assert ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"][0]["bid"] == 1.0
+
+
+def test_chain_reader_scans_the_store_once_per_process(store_factory, monkeypatch):
+    import dskit.onboarding.observations as seam
+
+    store = _chain_store(store_factory)
+    real, calls = seam.scan_stream, []
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(seam, "scan_stream", counting)
+    first = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS))
+    second = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS))
+    assert first.fingerprint() == second.fingerprint() and len(calls) == 1
+    assert calls[0]["keep_values"] == {"underlying": ["SPY"]} and callable(calls[0]["admit"])
+    assert first.run(None, {})["records"] == second.run(None, {})["records"]
+    # a different bucket is a different snapshot: DTE 46 and 50 join
+    wider = ChainQuoteRows("chain", store.node_params(**dict(CHAIN_PARAMS, dte_max=60)))
+    assert wider.fingerprint()["rows"] == 9 and len(calls) == 2
+
+
+def test_chain_reader_drops_a_zero_dte_and_reads_a_second_symbol_by_name(store_factory):
+    same_day = [_chain("SPY250102C00100000", "2025-01-02", 100.0),
+                _chain("SPY250103C00100000", "2025-01-02", 100.0),
+                _chain("QQQ250103C00100000", "2025-01-02", 100.0)]
+    store = _chain_store(store_factory, same_day, name="short")
+    params = store.node_params(**dict(CHAIN_PARAMS, dte_min=1, dte_max=3))
+    spy = ChainQuoteRows("chain", params).run(None, {})["records"]
+    assert [(r["expiry"], r["dte"]) for r in spy] == [("2025-01-03", 1)]
+    qqq = ChainQuoteRows("chain", dict(params, symbol="QQQ")).run(None, {})["records"]
+    assert [(r["instrument"], r["expiry"]) for r in qqq] == [("QQQ", "2025-01-03")]
+
+
+def test_a_put_far_below_the_band_is_dropped_like_a_call_far_above_it(store_factory, caplog):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 100.0),   # kept
+            _chain("SPY250207P00070000", "2025-01-02", 100.0),   # ln(0.70) = -0.357: dropped
+            _chain("SPY250207P00082000", "2025-01-02", 100.0),   # ln(0.82) = -0.198: kept
+            _chain("SPY250207C00125000", "2025-01-02", 100.0)]   # ln(1.25) = +0.223: dropped
+    store = _chain_store(store_factory, rows, name="band")
+    with caplog.at_level(logging.INFO):
+        out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert sorted((r["right"], r["strike"]) for r in out) == [("call", 100.0), ("put", 82.0)]
+    # a rule that dropped nothing logs 0, not a placeholder
+    assert ("chain intake for SPY: kept 2 row(s); dropped {'root': 0, 'strike_grid': 0, "
+            "'dte': 0, 'no_underlying_price': 0, 'band': 2}") in caplog.text
+
+
+def test_a_strike_a_thousandth_off_the_grid_on_either_side_is_dropped(store_factory):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 100.0),   # kept
+            _chain("SPY250207P00099999", "2025-01-02", 100.0),   # 99.999: below a grid point
+            _chain("SPY250207P00100001", "2025-01-02", 100.0)]   # 100.001: above one
+    store = _chain_store(store_factory, rows, name="grid")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert [r["strike"] for r in out] == [100.0]
+
+
+def test_the_intake_logs_its_drop_counts_by_first_failing_rule(store_factory, caplog):
+    # CHAIN_ROWS: one foreign root, one off-grid strike, three DTEs outside 30..45, one row
+    # without an underlying close, one call beyond the band; QQQ is never offered
+    store = _chain_store(store_factory)
+    with caplog.at_level(logging.INFO):
+        ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})
+    assert ("chain intake for SPY: kept 7 row(s); dropped {'root': 1, 'strike_grid': 1, "
+            "'dte': 3, 'no_underlying_price': 1, 'band': 1}") in caplog.text
+
+
+def test_a_nonpositive_underlying_price_is_dropped_not_divided_by(store_factory):
+    rows = [_chain("SPY250207C00100000", "2025-01-02", 0.0),      # dropped
+            _chain("SPY250207P00100000", "2025-01-02", -100.0),   # dropped
+            _chain("SPY250207C00101000", "2025-01-02", 100.0)]    # kept
+    store = _chain_store(store_factory, rows, name="level")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    assert [r["strike"] for r in out] == [101.0]
+
+
+def test_one_expiry_quoted_on_two_dates_stamps_each_row_with_its_own_date(store_factory):
+    # the same OCC expiry quoted on 01-02 (DTE 36) and again on 01-03 (DTE 35): the date
+    # and DTE belong to the QUOTE, not to the expiry (a memo keyed by the expiry would hand
+    # the second row the first row's date)
+    rows = CHAIN_ROWS + [_chain("SPY250207C00100000", "2025-01-03", 100.0)]
+    store = _chain_store(store_factory, rows, name="twodates")
+    out = ChainQuoteRows("chain", store.node_params(**CHAIN_PARAMS)).run(None, {})["records"]
+    calls_100 = sorted((r["date"], r["dte"]) for r in out
+                       if r["expiry"] == "2025-02-07" and r["right"] == "call"
+                       and r["strike"] == 100.0)
+    assert calls_100 == [("2025-01-02", 36), ("2025-01-03", 35)]
+
+
+def test_the_index_reader_refuses_an_empty_symbol(tmp_path):
+    with pytest.raises(ConfigError, match="symbol"):
+        IndexCloseRows("u", {"root": str(tmp_path), "source": "optionshist-chain", "symbol": ""})

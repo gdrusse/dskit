@@ -153,11 +153,23 @@ def config(base, **over):
     return cfg
 
 
-def read(cfg, state=None, mode="backfill"):
-    msgs = list(OptionsHistConnector().read(cfg, ["option_chain"], state or {}, mode))
+def read(cfg, state=None, mode="backfill", streams=("option_chain",)):
+    msgs = list(OptionsHistConnector().read(cfg, list(streams), state or {}, mode))
     for msg in msgs:
         assert check_message(msg) is not None  # every message envelope-valid
     return msgs
+
+
+#: The ``index_daily`` fields: the Cboe pack's six plus the archive's two corporate-action columns.
+INDEX_FIELDS_OUT = list(cboe.INDEX_FIELDS) + ["dividend_amount", "split_coefficient"]
+
+
+def read_index(cfg, state=None, mode="backfill"):
+    return read(cfg, state, mode, streams=("index_daily",))
+
+
+def index_keys(msgs):
+    return [(r["data"]["date"], r["data"]["symbol"]) for r in records(msgs)]
 
 
 def records(msgs):
@@ -183,8 +195,12 @@ def test_registered_kind_resolves():
     assert resolve_connector("optionshist") is OptionsHistConnector
 
 
-def test_discover_declares_the_cboe_chain_stream(archive):
+def test_discover_declares_the_cboe_chain_stream_and_the_index_stream(archive):
     assert OptionsHistConnector().discover(config(archive)) == [{
+        "stream": "index_daily",
+        "schema": {"fields": INDEX_FIELDS_OUT},
+        "primary_key": list(cboe.INDEX_KEY_FIELDS),
+    }, {
         "stream": "option_chain",
         "schema": {"fields": list(cboe.CHAIN_FIELDS)},
         "primary_key": list(cboe.CHAIN_KEY_FIELDS),
@@ -199,7 +215,7 @@ def test_read_validates_its_arguments(archive):
     conn = OptionsHistConnector()
     cfg = config(archive)
     for streams, state, mode, match in [
-        (["index_daily"], {}, "backfill", "unknown stream"),
+        (["greeks"], {}, "backfill", "unknown stream"),
         ([], {}, "backfill", "streams"),
         (["option_chain"], [], "backfill", "state"),
         (["option_chain"], {"option_chain": "x"}, "backfill", "state"),
@@ -586,3 +602,112 @@ def test_backfill_lands_the_chain_in_the_store_in_bounded_pulls(root, registry, 
     assert sorted((r["quote_time"][:10], r["underlying"], r["option"]) for r in rows) == \
         ALL_KEYS
     assert {r["quote_time"] for r in rows} >= {_utc("2025-03-10", 20), _utc("2024-12-31", 21)}
+
+
+# -- the index_daily stream (ADR-0187 item 2) ------------------------------------------------
+
+
+INDEX_KEYS = [
+    ("2024-12-31", "SPY"), ("2025-01-02", "QQQ"), ("2025-01-02", "SPY"),
+    ("2025-03-07", "SPY"), ("2025-03-10", "QQQ"), ("2025-03-10", "SPY"),
+    ("2025-07-01", "SPY"),
+]
+
+
+def test_index_rows_are_the_underlying_prices_one_per_symbol_and_date(archive):
+    msgs = read_index(config(archive))
+    assert msgs[0] == {"protocol": msgs[0]["protocol"], "type": "SCHEMA",
+                       "stream": "index_daily", "schema": {"fields": INDEX_FIELDS_OUT}}
+    assert index_keys(msgs) == INDEX_KEYS
+    first = records(msgs)[0]
+    assert first["stream"] == "index_daily" and first["kind"] == "observation"
+    assert first["effective_date"] == "2024-12-31"
+    assert first["data"] == {"symbol": "SPY", "date": "2024-12-31", "open": 586.08,
+                             "high": 586.08, "low": 586.08, "close": 586.08,
+                             "dividend_amount": 0.0, "split_coefficient": 1.0}
+    assert all(list(r["data"]) == INDEX_FIELDS_OUT for r in records(msgs))
+    assert msgs[-1]["state"] == {"index_daily": {"cursor": "2025-07-01"}}
+
+
+def test_index_null_dividend_split_and_open_pass_through_as_none(tmp_path):
+    base = str(tmp_path / "a")
+    write_rows(os.path.join(base, "iwm", "options_2025.parquet"),
+               [opt("IWM250117C00220000", "2025-01-02")])
+    rows = closes("IWM", [("2025-01-02", 221.5), ("2025-01-03", 222.0)])
+    for row in rows:
+        row["dividend_amount"] = row["split_coefficient"] = None
+    rows[1]["open"] = None
+    write_rows(os.path.join(base, "iwm", "underlying_prices.parquet"), rows)
+    recs = records(read_index(config(base, symbols=["IWM"])))
+    assert [r["data"]["dividend_amount"] for r in recs] == [None, None]
+    assert [r["data"]["split_coefficient"] for r in recs] == [None, None]
+    assert recs[1]["data"]["open"] is None and recs[1]["data"]["close"] == 222.0
+
+
+@pytest.mark.parametrize("mode", ["backfill", "live"])
+def test_index_cursor_is_the_max_date_and_a_pull_emits_only_later_dates(archive, mode):
+    state = {"index_daily": {"cursor": "2025-01-02"}, "option_chain": {"cursor": "x"}}
+    msgs = read_index(config(archive, max_days=1), state=state, mode=mode)
+    assert index_keys(msgs) == INDEX_KEYS[3:]  # max_days never bounds this stream
+    assert msgs[-1]["state"] == {"index_daily": {"cursor": "2025-07-01"},
+                                 "option_chain": {"cursor": "x"}}
+    again = read_index(config(archive), state=msgs[-1]["state"])
+    assert not records(again) and again[-1]["state"]["index_daily"]["cursor"] == "2025-07-01"
+
+
+def test_index_stream_requires_its_eight_columns_while_the_chain_needs_three(tmp_path):
+    base = str(tmp_path / "a")
+    write_rows(os.path.join(base, "spy", "options_2025.parquet"),
+               [opt("SPY250117C00600000", "2025-01-02")])
+    write_rows(os.path.join(base, "spy", "underlying_prices.parquet"),
+               closes("SPY", [("2025-01-02", 584.64)]), drop=("dividend_amount",))
+    cfg = config(base, symbols=["SPY"])
+    OptionsHistConnector().check(cfg)
+    assert len(records(read(cfg))) == 1
+    with pytest.raises(AssetError, match="dividend_amount"):
+        read_index(cfg)
+
+
+@pytest.mark.parametrize("rows, match", [
+    (closes("SPY", [("2025-01-02", 584.64), ("2025-01-02", 584.7)]), "repeat"),
+    (closes("QQQ", [("2025-01-02", 584.64)]), "symbol"),
+    (closes("SPY", [("2025-01-02", float("nan"))]), "close"),
+    (closes("SPY", [("01/02/2025", 584.64)]), "date"),
+])
+def test_a_bad_underlying_file_refuses_the_index_stream(tmp_path, rows, match):
+    base = str(tmp_path / "a")
+    write_rows(os.path.join(base, "spy", "options_2025.parquet"),
+               [opt("SPY250117C00600000", "2025-01-02")])
+    write_rows(os.path.join(base, "spy", "underlying_prices.parquet"), rows)
+    with pytest.raises(AssetError, match=match):
+        read_index(config(base, symbols=["SPY"]))
+
+
+def test_a_changed_underlying_file_refuses_the_index_stream_by_hash(archive):
+    cfg = config(archive)
+    write_rows(os.path.join(archive, "spy", "underlying_prices.parquet"),
+               closes("SPY", [("2024-12-31", 586.08)]))
+    with pytest.raises(AssetError, match="sha256"):
+        read_index(cfg)
+
+
+def test_both_streams_in_one_read_leave_the_chain_output_unchanged(archive):
+    alone = records(read(config(archive)))
+    both = read(config(archive), streams=("option_chain", "index_daily"))
+    chain = [m for m in both if m["type"] == "RECORD" and m["stream"] == "option_chain"]
+    assert chain == alone
+    assert [m["type"] for m in both].count("SCHEMA") == 2 and both[-1]["type"] == "STATE"
+    assert both[-1]["state"] == {"option_chain": {"cursor": _utc("2025-07-01", 20)},
+                                 "index_daily": {"cursor": "2025-07-01"}}
+
+
+def test_backfill_lands_the_index_rows_in_the_store(root, registry, hist_source):
+    first = run_acquisition(root, registry, "optionshist", "index_daily", "backfill")
+    assert first["records"] == len(INDEX_KEYS) and first["state_saved"]
+    assert load_state(root, "optionshist", "index_daily", "backfill") == {
+        "index_daily": {"cursor": "2025-07-01"}}
+    assert run_acquisition(root, registry, "optionshist", "index_daily", "backfill")["records"] == 0
+    rows = scan_stream(root.root, "optionshist", "index_daily",
+                       key_fields=cboe.INDEX_KEY_FIELDS)
+    assert sorted((r["date"], r["symbol"]) for r in rows) == sorted(INDEX_KEYS)
+    assert {r["dividend_amount"] for r in rows} == {0.0}

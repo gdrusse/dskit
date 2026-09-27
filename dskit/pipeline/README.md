@@ -802,7 +802,8 @@ dskit/pipeline/
 │                      optuna, pyomo, sb3, lightgbm (fitted volatility-scale rung, ADR-0181),
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
-│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
+│                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```

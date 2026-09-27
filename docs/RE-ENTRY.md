@@ -1,5 +1,76 @@
 # Re-entry
 
+## ADR-0187 built, reviewed, all six owner questions answered, MERGED to main (2026-09-27)
+
+- **Owner directive:** build the code needed to run the index-options
+  backtests, sweep dskit first, no rework; the process is HPO plus model zoos.
+- **Where:** merged to `main` (was branch `claude/index-options-quote-backtest`,
+  fast-forwarded, no conflicts — `main` had not moved since the branch point).
+  All six questions are now answered (2026-09-27, see the ADR's "Owner
+  answers"): five confirm the proposed default already built (bucket units,
+  IWM restricted, the zero-size quote rule, snapshot reuse, `carry_rate`
+  0.055); question 4 changes scope — the model-comparison zoo and per-fold
+  HPO, originally scoped to one worked cell, now ship for every one of the
+  21 cells.
+- **Landed on `main`:** dskit — `ObservationRows.keep_values()/admit()`
+  hooks and opt-in `reuse_snapshot` (one parsed snapshot per class per
+  process), `dskit.onboarding.observations.stream_members`, the optionshist
+  `index_daily` stream (raw closes + dividends + splits). Child —
+  `contracts.quote_problems/condor_credit/american_short_charge` +
+  `CONDOR_LEGS`, `ChainQuoteRows`, `IndexCloseRows` dividend/split rules,
+  `_CondorBacktestBase` + `CondorQuoteBacktest`, `index_options/grid.py` and
+  the 147 generated `configs/grid/` documents (21 har-vix cells; every
+  cell's other rungs, zoo and two `hpo-grid` documents — expanded from 27
+  and one worked cell per owner question 4, 2026-09-27). Docs and trees
+  updated; the ADR carries the build record.
+- **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
+  purity gates); child 661 passed (every suite, manifest, an end-to-end cell
+  walk over a scripted archive store); ruff clean on the branch's files.
+- **Review — LOCKED at `e8b0e7f` (owner ruling 2026-09-26: only Critical/Major
+  block; Minors and Nits are recorded, not fixed):** six review rounds plus
+  two convergence checkpoints, summarized in full in the ADR-0187 build
+  record. Rounds 1–5 each found production clean but one or more test-only
+  Majors of ONE recurring family — a fixture whose value could not separate
+  a rule from a plausible substitute (a payoff sign, a gate reading the
+  credit instead of the expectation, a classification order, a dead knob, a
+  metric denominator). Two independent checkpoints changed the approach
+  when the family kept recurring: the first hand-inventoried every rule
+  against its nearest substitute; the second made the catalogue GENERATED —
+  an AST operator-mutation sweep (1,843 mutants) over every child scope the
+  build added, plus an 83-mutant hand catalogue of the operator classes the
+  generator cannot emit, with every survivor either killed by a fixture or
+  adjudicated equivalent by a runnable probe. Round 6, two fresh lenses on
+  the sweep's final tests-only candidate `e8b0e7f`, reported zero
+  Critical/Major from both: correctness C0 M0 m0 n1; tests (the full sweep
+  and catalogue re-run in full, every survivor re-adjudicated, 37 more
+  mutants of its own, 768+ hand-computed values) C0 M0 m3 n3. Per the
+  skill, two independent lenses at zero Critical/Major closes the
+  candidate. **Production, dskit and all 27 `configs/grid` identity hashes
+  are those of `00f0579`** — six rounds of review changed zero lines of
+  production code, only tests. The full Minor/Nit backlog (not fixed;
+  fixing any item would open a new candidate) is in the ADR record.
+- **Owner question 4's expansion, separately reviewed:** the grid-generator
+  change and 120 new documents (commit `d292b8e`, above `e8b0e7f`) do not
+  touch `nodes.py`/`contracts.py`/`observations.py`/dskit — confirmed
+  untouched by both this commit and every commit since the lock. One
+  independent lens (proportionate to the change's size: a loop over
+  already-reviewed generator functions, not new pricing/gating logic)
+  verified it from scratch — blob-level git diffs, fresh document loads
+  through the real planner, and mutation testing proving the generalized
+  tests actually discriminate correct from broken generator output.
+  Verdict C0 M0 m1 n0, PASS: one Minor, a test-count miscount in the
+  commit message and this record (126 generalized cases, not 155 — fixed
+  here; zero functional impact, the generalization itself was proven
+  correct by the reviewer's own mutation tests).
+- **Next bounded actions:** (1) step 0 on the owner's machine:
+  `acquire --stream index_daily` for `optionshist-chain`, then time one
+  bounded `ChainQuoteRows` scan (bound: 30 min, 6 GB) and check that
+  `dividend_amount` is 0, not null, on SPY/QQQ non-ex-dates (a null in a
+  window refuses the entry); (2) run `walkforward` over the grid, the 21
+  cells' zoos and their HPO documents; (3) run the evaluator on the
+  output; (4) work the backlog
+  if and when it matters (none of it is reachable on any shipped document).
+
 ## F5a source branch retired; its evidence is on main (2026-09-26)
 
 - **Owner decision A (2026-09-26):** `origin/cursor/r5-f5a-private-plan-0f39@c489199`

@@ -75,7 +75,16 @@ on it without breaking its rulings.
   not a document knob), and override `project()` to turn the deduplicated
   rows into their record envelope. The scan is memoized per INSTANCE, so
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
-  `scan_stream` is imported inside the scan, never at module top.
+  `scan_stream` is imported inside the scan, never at module top. Two
+  more seams (ADR-0187): the accessor hooks `keep_values()` / `admit()`
+  forward the seam's own intake bounds (default `None`, no new
+  semantics), and a subclass that sets `reuse_snapshot = True` shares ONE
+  stamped, pre-projection snapshot per class across instances whose
+  canonical params and store token (`dskit.onboarding.observations.
+  stream_members`) agree — a walk-forward then parses a large stream once
+  per process instead of once per fold. `project()` still runs per
+  instance and MUST return fresh objects; the scan refuses a projection
+  that hands the shared list itself downstream. The base never reuses.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
 - **Distribution forecasts** (ADR-0168) — a forecast is a SAMPLE SET per
   row (`samples`), scored in the document's reference units by
