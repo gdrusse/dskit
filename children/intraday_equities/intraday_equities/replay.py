@@ -1212,7 +1212,14 @@ class SessionShareBook:
         return [(self.LEAD, self._lot(symbol))]
 
     def close_lot(self, symbol, lead):
-        """Flatten ``symbol`` and return the position it held, as a lot."""
+        """Flatten ``symbol`` and return the position it held, as a lot.
+
+        It flattens by rebuilding the ledger without the symbol
+        (``PositionBook.from_obj`` over ``to_obj`` less that instrument),
+        which is equivalent to folding a flattening fill: ``PositionBook``
+        deletes an instrument's log when its position reaches flat. The sale
+        itself (price, fee, ``reason``) is the caller's fill row.
+        """
         self._refuse_lead(lead)
         if not self.shares(symbol):
             raise ConfigError([f"share book: no open position in {symbol!r} to close"])
@@ -1691,6 +1698,8 @@ class EquityReplay:
                 "reason": "lead", "decision_ms": decision["asof_ms"],
             })
             return
+        if self._share_mode:
+            self._require_whole_shares(symbol, decision)
         decision_index = self._index_of[symbol].get(int(decision["asof_ms"]))
         seq = self._by_symbol[symbol]
         if decision_index is None:
@@ -1727,6 +1736,23 @@ class EquityReplay:
         if isinstance(lead, bool) or not isinstance(lead, int):
             return False
         return lead == SessionShareBook.LEAD if self._share_mode else lead >= 1
+
+    def _require_whole_shares(self, symbol, decision):
+        """Refuse the run, by name, on a share order whose qty is not a positive ``int`` (ADR-0188).
+
+        A malformed decision record is a producer fault, so it raises here,
+        at the boundary, before anything is queued or filled, as lot mode
+        raises on a malformed qty. Only a Python ``int`` passes: never a
+        bool, never a float (even an integral ``10.0``), never a numpy
+        scalar. :meth:`SessionShareBook._whole` stays the book's own
+        last-line check.
+        """
+        qty = decision[self._policy.qty_field]
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            raise ConfigError([
+                f"share order for {symbol!r} at decision bar asof_ms={decision['asof_ms']!r}: "
+                f"qty must be a positive whole number of shares (an int), got {qty!r}"
+            ])
 
     def _portfolio(self, asof):
         """Live account state at tick ``asof`` for a per-tick decider (ADR-0184 S6).
@@ -2332,9 +2358,14 @@ class EquityReplay:
     def _share_refusal(self, symbol, index, nth, side):
         """Why the ``nth`` share order landing on fill bar ``index`` may not fill, or None (ADR-0188).
 
-        One order per name per fill bar: a later one refuses
+        One order per name per fill bar: the first order to arrive in the
+        bar's queue is processed and every later arrival refuses
         ``duplicate_order`` (a decider nets a name's trade into one order,
-        and the fill ids stay unique, :func:`_share_fill_id`). No buy on the
+        and the fill ids stay unique, :func:`_share_fill_id`). Arrival is
+        enqueue order, which a halt queue can reorder: an order it pushes
+        off a halted bar joins the next bar's queue when the halt is
+        processed, behind every order already queued there and ahead of any
+        enqueued after, whatever the decision times. No buy on the
         name's session-last bar, where the backstop has just flattened it, so
         the book is flat by the close: ``buy_at_session_close`` (a sell there
         finds no shares and refuses ``oversell``).

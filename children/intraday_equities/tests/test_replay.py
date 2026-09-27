@@ -3101,3 +3101,92 @@ def test_a_share_order_that_would_fill_in_a_later_session_refuses_fill_next_sess
     # The lot book keeps its overnight fills (a Friday close fills Monday, ADR-0184).
     lot = ReplayAdapter(_policy()).replay(bars, [_decision("AAA", _m(2), 1)])
     assert [(f["kind"], f["asof_ms"]) for f in lot["fills"]] == [("entry", _m(0, 1)), ("exit", _m(1, 1))]
+
+
+def test_a_share_order_whose_qty_is_not_whole_shares_refuses_the_run_at_enqueue():
+    np = pytest.importorskip("numpy")
+    bars = _session([10.0] * 4)
+    for qty in (10.0, 9.999999998, np.float64(10.0), np.int64(10), True, 0, -3):
+        replay = EquityReplay(_shares_policy(_ZERO_FEES))
+        with pytest.raises(ConfigError, match="whole number of shares") as refused:
+            replay.run(bars, [_order("AAA", _m(1), qty)])
+        message = str(refused.value)
+        assert "'AAA'" in message and f"asof_ms={_m(1)}" in message and repr(qty) in message
+        # Refused at the boundary: nothing queued, nothing filled, the ledger untouched.
+        assert not any(replay._pending["AAA"].values())
+        assert replay.fills == [] and replay._book._ledger.to_obj() == {}
+    # A decider's malformed order refuses the run the same way, before it is queued.
+    stub = _Orders({_m(0): [_order("AAA", _m(0), 10.0)]})
+    replay = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub)
+    with pytest.raises(ConfigError, match="whole number of shares"):
+        replay.run(bars)
+    assert replay.fills == []
+    # The same tape fills an int order.
+    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, [_order("AAA", _m(1), 10)])
+    assert [(f["kind"], f["qty"]) for f in out["fills"]] == [("entry", 10), ("exit", 10)]
+
+
+def test_a_share_buy_beyond_cash_refuses_insufficient_cash_and_a_sale_funds_the_next_buy():
+    # Funded 1000 + 20 at the tape start (the shipped daily cash-flow policy); no fees.
+    out = EquityReplay(_shares_policy(_ZERO_FEES), _cash_flow_policy()).run(_session([10.0] * 6), [
+        _order("AAA", _m(0), 200),  # 2000 > 1020: refused
+        _order("AAA", _m(1), 100),  # 1000 of 1020: fills, 20 left
+        _order("AAA", _m(2), 100, side="sell"),  # a sale is never refused for cash: 1020
+        _order("AAA", _m(3), 102),  # 1020 of 1020: fills on the sale's proceeds
+    ])
+    assert out["refused"] == [
+        {"symbol": "AAA", "asof_ms": _m(1), "lead": 0, "reason": "insufficient_cash", "decision_ms": _m(0)},
+    ]
+    assert [(f["kind"], f["side"], f["qty"], f["asof_ms"]) for f in out["fills"]] == [
+        ("entry", "buy", 100, _m(2)), ("entry", "sell", 100, _m(3)),
+        ("entry", "buy", 102, _m(4)), ("exit", "sell", 102, _m(5)),
+    ]
+
+
+def test_min_price_refuses_a_share_order_on_either_side_but_never_the_backstop():
+    policy = _shares_policy(_ZERO_FEES)
+    assert 4.0 < policy.min_price
+    out = EquityReplay(policy).run(_session([10.0, 10.0, 4.0, 4.0, 4.0, 4.0]), [
+        _order("AAA", _m(0), 10),  # fills at 10.0
+        _order("AAA", _m(2), 4, side="sell"),  # lands at 4.0, under the floor
+        _order("AAA", _m(3), 3),  # a buy under the floor too
+    ])
+    assert out["refused"] == [
+        {"symbol": "AAA", "asof_ms": _m(3), "lead": 0, "reason": "min_price", "decision_ms": _m(2)},
+        {"symbol": "AAA", "asof_ms": _m(4), "lead": 0, "reason": "min_price", "decision_ms": _m(3)},
+    ]
+    # The backstop is a forced exit: it sells the held position below the floor.
+    assert [(f["kind"], f["side"], f["qty"], f["asof_ms"], f["price"], f.get("reason")) for f in out["fills"]] == [
+        ("entry", "buy", 10, _m(1), 10.0, None), ("exit", "sell", 10, _m(5), 4.0, "session_close"),
+    ]
+
+
+def test_sessions_group_by_new_york_date_across_the_spring_forward_weekend():
+    # DST starts Sunday 2026-03-08: Friday is EST (UTC-5), Monday is EDT (UTC-4).
+    friday, monday = date(2026, 3, 6), date(2026, 3, 9)
+    times = [
+        _ny_ms(friday, 15, 58), _ny_ms(friday, 15, 59),
+        _ny_ms(friday, 19, 59),  # 00:59 UTC Saturday: grouping by UTC date would split Friday
+        _ny_ms(monday, 0, 30),  # 04:30 UTC: a fixed UTC-5 offset would date it Sunday
+        _ny_ms(monday, 9, 30), _ny_ms(monday, 9, 31),
+    ]
+    assert datetime.fromtimestamp(times[2] / 1000, timezone.utc).date() == date(2026, 3, 7)
+    assert (datetime.fromtimestamp(times[3] / 1000, timezone.utc) - timedelta(hours=5)).date() == date(2026, 3, 8)
+    stub = _Orders({
+        times[0]: [_order("AAA", times[0], 10)],  # fills at 15:59, inside Friday's session
+        times[2]: [_order("AAA", times[2], 5)],  # Friday's last bar: its fill bar is Monday
+        times[3]: [_order("AAA", times[3], 3)],  # Monday 00:30 fills at 09:30, the same session
+    })
+    out = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub).run(
+        [_bar("AAA", ms, 10.0, 10.0) for ms in times],
+    )
+    assert [(f["kind"], f["qty"], f["asof_ms"], f["origin"]) for f in out["fills"]] == [
+        ("entry", 10, times[1], "decision"), ("exit", 10, times[2], "backstop"),
+        ("entry", 3, times[4], "decision"), ("exit", 3, times[5], "backstop"),
+    ]
+    assert out["refused"] == [
+        {"symbol": "AAA", "asof_ms": times[2], "lead": 0, "reason": "fill_next_session", "decision_ms": times[2]},
+    ]
+    assert [stub.seen[ms]["session_last_ms"] for ms in times] == (
+        [{"AAA": times[2]}] * 3 + [{"AAA": times[5]}] * 3
+    )
