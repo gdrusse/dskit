@@ -2813,6 +2813,48 @@ class TestJointFalseSignalIsolation:
         assert aapl > msft
 
 
+class TestJointHfdrPoolsAcrossNames:
+    """Tests-lens gap (skeptic round 2): ``domain_constraints`` builds ONE
+    combined HFDR row across every name and tranche (confirmed correct
+    against the ADR's formula by the round-2 reviewer):
+    ``sum_i sum_k (pi_widened_i(k) - q) * price_i * e_i(k) <= 0``. Splitting
+    it into N independent per-name rows — which would silently remove the
+    documented cross-name risk netting — passed the whole suite untouched:
+    no existing test used more than one name with tranches under a binding
+    HFDR budget (``TestJointFalseSignalIsolation`` gives both names
+    IDENTICAL returns, so a degenerate all-into-the-favorable-name solution
+    satisfies its assertions too, whether or not the row is really pooled).
+    Here AAPL's favorable rate (below ``q``) is the ONLY reason MSFT's
+    unfavorable rate (above ``q``) can carry any exposure at all; MSFT is
+    also priced to be the more profitable name, so the solver has a strict
+    incentive to fund it, which is what makes the nonzero result a proof of
+    pooling rather than a coincidence of solver tie-breaking."""
+
+    def test_a_favorable_names_room_permits_an_unfavorable_names_exposure(self, tmp_path):
+        aapl = _path_row(
+            "AAPL", 100.0, _flat_steps([0.01, 0.01]), pi_widened_path=[0.05, 0.05]
+        )
+        msft = _path_row(
+            "MSFT", 100.0, _flat_steps([0.05, 0.05]), pi_widened_path=[0.65, 0.65]
+        )
+        portfolio = _portfolio(
+            cash=100_000.0, buying_power=100_000.0, positions={}, gross_limit=100_000.0,
+        )
+        out = _joint_run(
+            tmp_path, [aapl, msft], portfolio=portfolio, hfdr_q=0.30, **FREE_COSTS
+        )
+        aapl_notional = 100.0 * out["target"].get("AAPL", 0)
+        msft_notional = 100.0 * out["target"].get("MSFT", 0)
+        # A per-name row on MSFT alone, (0.65 - 0.30) * msft_notional <= 0,
+        # forces msft_notional to 0 given e(i, k) >= 0 — exactly the
+        # exposure the combined row below keeps strictly positive instead,
+        # funded by AAPL's favorable (rate < q) slack.
+        assert msft_notional > 0.0
+        assert (0.65 - 0.30) * msft_notional > 1e-6  # a per-name MSFT row would forbid this
+        assert (0.05 - 0.30) * aapl_notional + (0.65 - 0.30) * msft_notional <= 1e-6
+        assert out["target"] == {"AAPL": 584, "MSFT": 416}
+
+
 class TestJointIntegerCashStress:
     """Test plan item 6: adversarial states, including cash below one share of
     anything; every answer whole, non-negative, funded and unlevered."""
@@ -3163,6 +3205,77 @@ class TestJointNeverTrimsToFitAnAggregateLimit:
         out = _joint_run(tmp_path, self._bundle(), portfolio=self._account(1000.0, None))
         assert out["trades"] == {}
         assert out["target"] == {"AAPL": self.HELD}
+
+
+class TestJointMandatoryExitExcludedFromGrossLimit:
+    """Skeptic round 2 (correctness, both lenses): ``held_mark`` in the
+    pre-solve refusal above summed every held name in the solve, including
+    mandatory exits — but an exit's ``x_max`` is pinned to 0
+    (:meth:`JointEquityKellyMIO._mandatory_exit_row`), so ``elig_hi`` forces
+    its ``model.x`` to 0 unconditionally and it can never make the
+    doorway's ``gross_exposure`` row (``sum_i x_i <= gross_limit``) bind.
+    A ``gross_limit`` sized to cover cash plus every LIVE holding, but not a
+    SIMULTANEOUSLY-EXITING holding's mark, refused the whole minute even
+    though the real solve sells the exit in full and never touches the live
+    holdings — precisely a release-boundary mass-liquidation minute, the
+    scenario mandatory exits exist for. Reproducer from the round-2
+    correctness reviewer: AAPL held $15,000 (live/gated) + XOM held $5,000
+    (mandatory exit) + cash $1,000, gross_limit $16,000 (covers cash + AAPL,
+    not XOM)."""
+
+    AAPL_PRICE, AAPL_HELD = 150.0, 100  # $15,000, LIVE: held and gated
+    XOM_PRICE, XOM_HELD = 100.0, 50  # $5,000, a mandatory exit (no bundle row)
+    CASH = 1_000.0
+
+    def _bundle(self):
+        costs = _schwab()
+        round_trip = costs.buy_per_share(
+            "AAPL", self.AAPL_PRICE, FILL_MS
+        ) + costs.sell_per_share("AAPL", self.AAPL_PRICE, FILL_MS)
+        gain = 0.5 * round_trip / self.AAPL_PRICE  # worth keeping, not worth adding to
+        return [_path_row("AAPL", self.AAPL_PRICE, _flat_steps([gain, gain]))]
+
+    def _portfolio(self, gross_limit):
+        return _portfolio(
+            cash=self.CASH, buying_power=self.CASH,
+            positions={"AAPL": self.AAPL_HELD, "XOM": self.XOM_HELD},
+            mark_prices={"XOM": self.XOM_PRICE},
+            gross_limit=gross_limit,
+        )
+
+    def test_a_gross_limit_covering_cash_and_live_holdings_but_not_the_exit_still_solves(
+        self, tmp_path
+    ):
+        live_mark = self.AAPL_PRICE * self.AAPL_HELD  # 15,000
+        exit_mark = self.XOM_PRICE * self.XOM_HELD  # 5,000
+        gross_limit = self.CASH + live_mark  # 16,000: covers cash + AAPL, not XOM
+        assert gross_limit < self.CASH + live_mark + exit_mark  # below the full NAV
+        bundle = self._bundle()
+        portfolio = self._portfolio(gross_limit)
+        # The narrowed check must not raise: XOM's mark is excluded from it.
+        names, rows, _account = _joint_node(bundle).instruments(
+            _joint_inputs(bundle, portfolio=portfolio)
+        )
+        assert set(names) == {"AAPL", "XOM"}
+        assert rows["XOM"]["x_max"] == 0.0
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"] == {"XOM": {"buy": 0, "sell": self.XOM_HELD}}
+        assert "AAPL" not in out["trades"]
+        assert out["target"] == {"AAPL": self.AAPL_HELD}
+        assert "XOM" not in out["target"]
+
+    def test_a_gross_limit_below_the_live_holdings_alone_still_refuses(self, tmp_path):
+        # Narrowing the check to LIVE names must not widen it beyond that:
+        # a limit that cannot even cover AAPL's own mark still refuses by
+        # name, XOM's presence and mark notwithstanding.
+        live_mark = self.AAPL_PRICE * self.AAPL_HELD  # 15,000
+        gross_limit = 0.5 * live_mark  # 7,500: below AAPL alone
+        bundle = self._bundle()
+        portfolio = self._portfolio(gross_limit)
+        with pytest.raises(
+            ValueError, match="no-leverage bound is below the marked holdings"
+        ):
+            _joint_run(tmp_path, bundle, portfolio=portfolio)
 
 
 class TestJointSellsAreDecisions:

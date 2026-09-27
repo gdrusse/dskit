@@ -246,7 +246,10 @@ JOINT_REFUSED_PARAMS = {
         "max(G, price x held), so a holding that appreciated is never forced "
         "to sell by its own row; the account's aggregate bound G is the "
         "no-leverage bound, NAV, refused by name when it sits below the marked "
-        "holdings (ADR-0188 question F(a))"
+        "holdings of the LIVE names in the solve — a mandatory exit's own mark "
+        "is excluded from that check, since its target is already pinned to "
+        "zero and it can never bind the aggregate row itself (ADR-0188 "
+        "question F(a))"
     ),
     "lot_size": (
         "it only scaled the no-trade band's floor, which the joint kind does "
@@ -2167,10 +2170,16 @@ class JointEquityKellyMIO(EquityKellyMIO):
       forced to sell by its own row. The account's aggregate bound is the
       no-leverage bound, NAV with cash >= 0, so the doorway's gross row
       never binds the no-trade point either: a declared ``gross_limit``
-      below the marked holdings of the names in the solve would make that
-      row trim a wanted position, and refuses the minute by name instead
-      (ADR-0188 F(a)). Only the priced objective and the risk rows the
-      owner kept (CVaR, HFDR) move a holding.
+      below the marked holdings of the LIVE names in the solve would make
+      that row trim a wanted position, and refuses the minute by name
+      instead (ADR-0188 F(a)). A mandatory exit's own mark is excluded
+      from that check: its ``x_max`` is pinned to 0
+      (:meth:`_mandatory_exit_row`), so it is never forced to sell BY ITS
+      OWN ROW and can never bind the doorway's gross row regardless of
+      ``gross_limit`` — charging its mark against the limit would refuse
+      a minute the real solve could always fund by liquidating it in
+      full. Only the priced objective and the risk rows the owner kept
+      (CVaR, HFDR) move a holding.
     * **HFDR per tranche.** ADR-0088's row applied to each tranche:
       ``sum_i sum_k (pi_widened_i(k) - q) p_i e_i(k) <= 0``, reading
       :data:`HFDR_PATH_FIELD`. No band rows.
@@ -2357,9 +2366,11 @@ class JointEquityKellyMIO(EquityKellyMIO):
             A row lacks or malforms its path outputs; a producer-fault route
             (a row from the future, a cap mismatch) on any row; a skipped or
             exiting held name with no usable mark; a declared
-            ``gross_limit`` below the marked holdings of the names in the
-            solve (the no-leverage bound cannot sit under them); a priced
-            name with no fill instant.
+            ``gross_limit`` below the marked holdings of the LIVE names in
+            the solve (the no-leverage bound cannot sit under them; a
+            mandatory exit's own mark is excluded, since its target is
+            already pinned to zero and it can never bind that row); a
+            priced name with no fill instant.
         """
         bundle = inputs["bundle"]
         portfolio = inputs["portfolio"]
@@ -2434,19 +2445,36 @@ class JointEquityKellyMIO(EquityKellyMIO):
             }
         gross_limit = portfolio.get("gross_limit")
         held_mark = sum(prices[name] * held.get(name, 0) for name in names)
-        if gross_limit is not None and float(gross_limit) < held_mark * (
+        # The refusal below reads ONLY the live (`by_name`) names: a
+        # mandatory exit's x_max is pinned to 0 (`_mandatory_exit_row`), so
+        # `elig_hi` forces `model.x[name] == 0` no matter what and it can
+        # never bind the doorway's `gross_exposure` row (`sum_i model.x[i]
+        # <= gross_limit`) — charging its mark against `gross_limit` would
+        # refuse a minute the real solve can always fund by liquidating it
+        # in full. `held_mark` above still counts it for the `bound`
+        # fallback below, where that is correct: its sale proceeds really
+        # do fund a live name's ceiling this same minute.
+        live_held_mark = sum(
+            prices[name] * held.get(name, 0) for name in names if name in by_name
+        )
+        if gross_limit is not None and float(gross_limit) < live_held_mark * (
             1.0 - _GROSS_LIMIT_REL_TOLERANCE
         ):
             listing = ", ".join(
-                f"{name} {held[name]} x {prices[name]!r}" for name in names if held.get(name, 0)
+                f"{name} {held[name]} x {prices[name]!r}"
+                for name in names
+                if name in by_name and held.get(name, 0)
             )
             raise ValueError(
-                f"{self.key}: portfolio.gross_limit {float(gross_limit)!r} is below the marked "
-                f"holdings of the names in the solve, {held_mark!r} ({listing}), shortfall "
-                f"{held_mark - float(gross_limit)!r} — the no-leverage bound is below the "
-                "marked holdings; the joint kind never trims a holding to fit an aggregate "
-                "limit, ADR-0188 F(a): the aggregate bound must be the no-leverage bound, NAV "
-                "with cash >= 0"
+                f"{self.key}: portfolio.gross_limit {float(gross_limit)!r} is below the "
+                f"marked holdings of the LIVE names in the solve, {live_held_mark!r} "
+                f"({listing}), shortfall {live_held_mark - float(gross_limit)!r} — the "
+                "no-leverage bound is below the marked holdings; the joint kind never "
+                "trims a holding to fit an aggregate limit, ADR-0188 F(a): the aggregate "
+                "bound must be the no-leverage bound, NAV with cash >= 0. A mandatory "
+                "exit's own mark is excluded from this check: its x_max is already pinned "
+                "to 0, so it is never forced to sell BY ITS OWN ROW and can never bind the "
+                "gross_exposure row regardless of gross_limit"
             )
         if gross_limit is not None:
             bound = float(gross_limit)
