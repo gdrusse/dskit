@@ -709,6 +709,7 @@ class TestScenarioUtilityPlumbingWithoutPyomo:
                 "cvar_eta": 0.0,
                 "wealth_min": 42.0,
                 "wealth_max": 42.0,
+                "tranches": {},
             },
         }
 
@@ -1196,9 +1197,72 @@ class TestScenarioUtilityTranches:
         )
         assert notional <= 120.0 + 1e-6
 
-    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, "10"])
+    def test_the_empty_gate_still_carries_the_outside_wealth(self, tmp_path):
+        # Skeptic round 1: the empty-gate return path must report the same
+        # wealth and the same metrics keys as a solved tick.
+        fixture = _su_fixture()
+        fixture["names"] = []
+        fixture["rows"] = {}
+        fixture["account"]["carried_wealth"] = 2500.0
+        out = _su_node().run(_ctx(tmp_path), fixture)
+        assert out["target"] == {} and out["trades"] == {}
+        assert out["cash_after"] == pytest.approx(fixture["account"]["cash"])
+        assert out["metrics"]["wealth_min"] == pytest.approx(fixture["account"]["cash"] + 2500.0)
+        assert out["metrics"]["wealth_max"] == pytest.approx(fixture["account"]["cash"] + 2500.0)
+        assert out["metrics"]["tranches"] == {}
+
+    @pytest.mark.parametrize("bad", [float("nan"), -1.0, "10", True])
+    def test_a_bad_carried_wealth_is_refused_on_the_empty_gate_too(self, tmp_path, bad):
+        fixture = _su_fixture()
+        fixture["names"] = []
+        fixture["rows"] = {}
+        fixture["account"]["carried_wealth"] = bad
+        with pytest.raises(ValueError, match="carried_wealth"):
+            _su_node().run(_ctx(tmp_path), fixture)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, "10", True])
     def test_a_bad_carried_wealth_is_refused_by_name(self, tmp_path, bad):
         fixture = _su_fixture()
         fixture["account"]["carried_wealth"] = bad
         with pytest.raises(ValueError, match="carried_wealth"):
             _su_node().run(_ctx(tmp_path), fixture)
+
+
+class TestScenarioUtilityTimeLimit:
+    """Plan §4.4's breaker: a declared solver time limit is a HALT, never a
+    degraded fill. Under appsi_highs the limit is HiGHS's own ``time_limit``
+    option, declared through ``solver_options`` and applied verbatim (the
+    determinism pins merge under it). A halt that found an incumbent
+    returns ``maxTimeLimit``, which ``extract`` refuses by name; a halt
+    before any incumbent makes appsi raise from ``solve`` itself, which the
+    doorway re-raises naming the node. Either way nothing is sized."""
+
+    def test_the_time_limit_reaches_highs_through_solver_options(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "pyomo", None)
+        options = _su_node(solver_options={"time_limit": 8.0})._solver_options()
+        assert options == {"mip_rel_gap": 0, "threads": 1, "random_seed": 0, "time_limit": 8.0}
+
+    def test_a_generous_time_limit_solves_exactly_like_none(self, tmp_path):
+        free = _su_node().run(_ctx(tmp_path), _su_fixture())
+        limited = _su_node(solver_options={"time_limit": 30.0}).run(_ctx(tmp_path), _su_fixture())
+        assert limited["target"] == free["target"]
+        assert limited["trades"] == free["trades"]
+
+    def test_a_halt_before_any_incumbent_refuses_by_name(self, tmp_path):
+        # time_limit 0 stops HiGHS before it finds any feasible point.
+        node = _su_node(solver_options={"time_limit": 0.0})
+        with pytest.raises(RuntimeError, match=r"^size: the solver returned no loadable solution"):
+            node.run(_ctx(tmp_path), _su_fixture())
+        assert node.solve_record is None  # the solve raised: no record, no target
+
+    def test_the_refusal_keeps_the_solvers_own_words(self, tmp_path):
+        node = _su_node(solver_options={"time_limit": 0.0})
+        with pytest.raises(RuntimeError, match="[Ff]easible solution"):
+            node.run(_ctx(tmp_path), _su_fixture())
+
+    def test_a_halt_with_an_incumbent_is_refused_by_extract(self):
+        from types import SimpleNamespace
+
+        results = SimpleNamespace(solver=SimpleNamespace(termination_condition="maxTimeLimit"))
+        with pytest.raises(RuntimeError, match=r"^size: .*'maxTimeLimit', not 'optimal'"):
+            _su_node().extract(None, results)

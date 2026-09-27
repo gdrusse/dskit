@@ -71,6 +71,18 @@ Every owner-only risk number (``risk_aversion_gamma``, ``cardinality``,
 REQUIRED param with no code-level default — a document that omits one
 refuses to plan.
 
+**The joint kind.** :class:`JointEquityKellyMIO`
+(``intraday_equities-joint-kelly-mio``) is ADR-0188's formulation B: ONE
+solve per minute over every held and admitted name, holdings in and whole
+target shares out, sells and trims as ordinary decisions, and each name's
+target split across its exit horizons (the doorway's tranches) so the whole
+forecast path is used rather than one admitted lead. It keeps every input
+check and the cost model of :class:`EquityKellyMIO`, applies the HFDR row
+per tranche, and refuses the hard-row knobs by name
+(:data:`JOINT_REFUSED_PARAMS`): costs live in the objective, never in a cap
+that shrinks the feasible set (owner rulings 2026-09-25). The base kind is
+unchanged.
+
 Import cost: stdlib + dskit. numpy and pyomo are reached only through the
 doorway inside run-path methods, so a document naming this kind plans on a
 machine with neither installed.
@@ -98,6 +110,7 @@ from dskit.pipeline.uncertainty_intake import (
 
 from .final_model import HEADS
 from .forecast_bundle import (
+    _PATH_FIELDS,
     BUNDLE_UNIT,
     KNOWN_AT_FIELDS,
     UNCERTAINTY_ARTIFACT_FIELDS,
@@ -113,8 +126,15 @@ __all__ = [
     "CAP_LOOK_AHEAD_DISCLOSURE",
     "DEFAULT_LOT_SIZE",
     "HFDR_COEFFICIENT_FIELD",
+    "HFDR_PATH_FIELD",
+    "JOINT_PATH_OUTPUTS",
+    "JOINT_REFUSED_PARAMS",
     "REQUIRED_INTAKES",
+    "ROUTE_PERMANENT",
+    "ROUTE_PRODUCER_FAULT",
+    "ROUTE_TRANSIENT",
     "EquityKellyMIO",
+    "JointEquityKellyMIO",
     "NODE_KINDS",
     "SchwabCostModel",
 ]
@@ -183,6 +203,77 @@ _WEALTH_ENVELOPE_PAD = 1.5
 #: A floor under the padded envelope's half-width, so a quiet bundle (every
 #: scenario return near zero) still gives the solver a workable interval.
 _WEALTH_ENVELOPE_FLOOR_FRAC = 0.05
+
+#: The structured reason codes :meth:`EquityKellyMIO._routed_rows` returns
+#: beside its human-readable messages (ADR-0188). The messages stay the base
+#: kind's ``evidence["routed_out"]`` strings, pinned by its tests; a policy
+#: keys on the codes, never on the text. PERMANENT: the name left the
+#: admitted set at a release boundary (not a ``stat_test`` survivor, no cap,
+#: a zero cap).
+ROUTE_PERMANENT = frozenset(("not_survivor", "no_cap", "zero_cap"))
+
+#: TRANSIENT reason codes: a condition of this minute (a stale row, a price
+#: under ``min_price``), expected to clear.
+ROUTE_TRANSIENT = frozenset(("stale", "below_min_price"))
+
+#: PRODUCER-FAULT reason codes: a row stamped after the decision instant, or
+#: a horizon the confirmed cap does not confirm. Both come from the producer
+#: that built the bundle and its cap, so neither is a market condition.
+ROUTE_PRODUCER_FAULT = frozenset(("future", "cap_mismatch"))
+
+#: The base kind's knobs :class:`JointEquityKellyMIO` refuses BY NAME, each
+#: with the reason its refusal gives. Owner rulings 2026-09-25: costs belong
+#: in the objective, never in a hard cap that shrinks the feasible set
+#: (ADR-0188 questions F(a) and G(a)); even the value that would make a knob
+#: inert refuses, so a document cannot carry a dead cap.
+JOINT_REFUSED_PARAMS = {
+    "band_bps": (
+        "the no-trade band is a hard row; inaction emerges from the costs the "
+        "objective already charges every trade (ADR-0188 question G(a))"
+    ),
+    "cardinality": (
+        "a cap on the number of names held shrinks the feasible set; "
+        "concentration is priced by the utility's curvature, the CVaR row and "
+        "the no-leverage bound"
+    ),
+    "min_ticket": (
+        "a minimum ticket is a hard floor; whole shares are the only "
+        "granularity and every trade pays its cost in the objective"
+    ),
+    "max_position_notional": (
+        "the per-name ceiling is replaced by the no-leverage bound "
+        "max(G, price x held), so a holding that appreciated is never forced "
+        "to sell (ADR-0188 question F(a))"
+    ),
+    "lot_size": (
+        "it only scaled the no-trade band's floor, which the joint kind does "
+        "not build; shares are plain integers"
+    ),
+}
+
+#: What the joint kind hands the doorway for the two gating knobs the doorway
+#: requires: no cardinality row and no minimum ticket.
+_JOINT_DOORWAY_PARAMS = {"cardinality": None, "min_ticket": 0.0}
+
+#: The assembled exit-horizon outputs every joint bundle row must carry
+#: (``ForecastBundle``'s path rows, ADR-0188 formulation B).
+JOINT_PATH_OUTPUTS = (
+    "admitted_horizon",
+    "plan_horizon",
+    "mu_gross_path",
+    "pi_hat_path",
+    "pi_widened_path",
+    "scenarios_path",
+)
+
+#: Which path field the joint kind's per-tranche HFDR row reads: the path
+#: counterpart of :data:`HFDR_COEFFICIENT_FIELD`, one widened POINT ESTIMATE
+#: per lead, so the row is no more a chance constraint than the base's.
+HFDR_PATH_FIELD = "pi_widened_path"
+
+#: Any of these on a bundle row marks it a PATH row: the assembled outputs
+#: plus ``ForecastBundle``'s input path fields (``yhat_path``).
+_PATH_ROW_MARKERS = frozenset(JOINT_PATH_OUTPUTS) | _PATH_FIELDS
 
 
 def _ceil_div(numerator, denominator):
@@ -725,6 +816,121 @@ def _bundle_problems(bundle):
     return problems
 
 
+def _path_cell_id(symbol, lead):
+    """Return the ``SYM:hNN`` id of one ``(symbol, lead)`` calibration cell.
+
+    The key a path release's per-cell artifacts carry (the gate's
+    false-signal cells, ``ForecastPublisher.path_envelopes``), e.g.
+    ``_path_cell_id("LLY", 1) == "LLY:h01"``.
+    """
+    return f"{symbol}:h{lead:02d}"
+
+
+def _path_output_problems(bundle):
+    """List problems with a joint bundle's exit-horizon outputs, empty when none.
+
+    Called only on a bundle whose flat contract :func:`_bundle_problems`
+    already accepted. A bundle can reach the capital node without passing
+    through ``ForecastBundle``, so the shape the joint program reads is
+    checked here, by entity: every row carries all of
+    :data:`JOINT_PATH_OUTPUTS`; ``scenarios_path`` is 1..10 steps, each as
+    long as the row's weights and every return finite and > -1;
+    ``admitted_horizon`` and ``plan_horizon`` are integer steps; the three
+    per-step lists carry one finite entry per step, the two rates in
+    [0, 1] with ``pi_hat`` never above ``pi_widened``; and the flat fields
+    ARE the path's first step (``lead`` 1, ``pi_hat``, ``pi_widened`` and
+    ``scenarios``), so the numbers the admitted false-signal artifact binds
+    are the ones the first tranche reads.
+
+    Parameters
+    ----------
+    bundle : list of dict
+        The bundle rows.
+
+    Returns
+    -------
+    list of str
+        One problem per defect, each naming the row and the field.
+    """
+    problems = []
+    for index, row in enumerate(bundle):
+        tag = f"bundle[{index}] ({row['entity']!r})"
+        missing = [field for field in JOINT_PATH_OUTPUTS if field not in row]
+        if missing:
+            problems.append(
+                f"{tag} is missing the path output(s) {missing} — the joint kind "
+                "sizes every name from its exit-horizon path (ADR-0188 formulation "
+                "B), so a flat row refuses by name"
+            )
+            continue
+        path = row["scenarios_path"]
+        if not isinstance(path, (list, tuple)) or not 1 <= len(path) <= len(HEADS):
+            problems.append(
+                f"{tag}.scenarios_path must be a list of 1..{len(HEADS)} steps, "
+                f"got {path!r}"
+            )
+            continue
+        n_steps, n_scenarios = len(path), len(row["weights"])
+        steps_ok = []
+        for step, values in enumerate(path, start=1):
+            if not isinstance(values, (list, tuple)) or len(values) != n_scenarios:
+                problems.append(
+                    f"{tag}.scenarios_path[{step}] must be a list as long as weights "
+                    f"({n_scenarios})"
+                )
+            elif not all(number_ok(v) and v > -1.0 for v in values):
+                problems.append(
+                    f"{tag}.scenarios_path[{step}] must be all finite simple returns > -1"
+                )
+            else:
+                steps_ok.append(step)
+        for field in ("admitted_horizon", "plan_horizon"):
+            value = row[field]
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= n_steps:
+                problems.append(
+                    f"{tag}.{field} must be an integer step 1..{n_steps}, got {value!r}"
+                )
+        rates = {}
+        for field in ("mu_gross_path", "pi_hat_path", HFDR_PATH_FIELD):
+            values = row[field]
+            if not isinstance(values, (list, tuple)) or len(values) != n_steps:
+                problems.append(
+                    f"{tag}.{field} must carry one entry per step ({n_steps}), got {values!r}"
+                )
+            elif not all(number_ok(v) for v in values):
+                problems.append(f"{tag}.{field} must be all finite numbers")
+            elif field != "mu_gross_path" and not all(0.0 <= v <= 1.0 for v in values):
+                problems.append(f"{tag}.{field} must be all in [0, 1]")
+            else:
+                rates[field] = [float(v) for v in values]
+        if "pi_hat_path" in rates and HFDR_PATH_FIELD in rates and any(
+            hat > widened for hat, widened in zip(rates["pi_hat_path"], rates[HFDR_PATH_FIELD])
+        ):
+            problems.append(f"{tag}.pi_hat_path must not exceed {HFDR_PATH_FIELD} at any step")
+        if row["lead"] != 1:
+            problems.append(
+                f"{tag}.lead must be 1 on a path row — its flat fields are the "
+                f"path's first step, got {row['lead']!r}"
+            )
+        first_step = [
+            (flat, rates[field][0])
+            for flat, field in (("pi_hat", "pi_hat_path"), (HFDR_COEFFICIENT_FIELD, HFDR_PATH_FIELD))
+            if field in rates
+        ]
+        if 1 in steps_ok:
+            first_step.append(("scenarios", [float(v) for v in path[0]]))
+        for flat, expected in first_step:
+            actual = row[flat]
+            actual = [float(v) for v in actual] if isinstance(actual, (list, tuple)) else float(actual)
+            if actual != expected:
+                problems.append(
+                    f"{tag}.{flat} {row[flat]!r} must equal the path's first step "
+                    f"{expected!r} — the flat fields ARE step 1, and they are the "
+                    "numbers the admitted artifacts bind"
+                )
+    return problems
+
+
 class EquityKellyMIO(ScenarioUtilitySolve):
     """Size intraday_equities' capital step from a forecast bundle plus portfolio state.
 
@@ -877,9 +1083,28 @@ class EquityKellyMIO(ScenarioUtilitySolve):
 
     @classmethod
     def validate_params(cls, params):
-        """Problems with ``params``, empty when none — the doorway's, then this kind's."""
+        """Problems with ``params``, empty when none — the doorway's, then this kind's.
+
+        The kind's own checks live in per-concern helpers
+        (:meth:`_cost_problems`, :meth:`_hfdr_problems`,
+        :meth:`_trade_limit_problems`, :meth:`_provenance_problems`,
+        :meth:`_intake_policy_problems`), run in this order, so a subclass
+        can keep the checks it shares without inheriting the knobs it
+        refuses (:class:`JointEquityKellyMIO`).
+        """
         problems = super().validate_params(params)
-        problems.extend(SchwabCostModel.spread_problems(params))
+        problems.extend(cls._cost_problems(params))
+        problems.extend(cls._hfdr_problems(params))
+        problems.extend(cls._trade_limit_problems(params))
+        problems.extend(cls._provenance_problems(params))
+        problems.extend(cls._intake_policy_problems(params))
+        check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
+        return problems
+
+    @classmethod
+    def _cost_problems(cls, params):
+        """Problems with the Schwab cost knobs, empty when none."""
+        problems = list(SchwabCostModel.spread_problems(params))
         for name in ("taf_per_share", "sec31_bps"):
             if name not in params:
                 problems.append(
@@ -894,6 +1119,12 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             )
         elif not number_ok(params["min_price"]) or params["min_price"] <= 0.0:
             problems.append(f"min_price must be a finite number > 0, got {params['min_price']!r}")
+        return problems
+
+    @classmethod
+    def _hfdr_problems(cls, params):
+        """Problems with ``hfdr_q``, ADR-0088's false-discovery threshold, empty when none."""
+        problems = []
         if "hfdr_q" not in params:
             problems.append(
                 "hfdr_q is required — ADR-0088's false-discovery threshold is an owner "
@@ -901,6 +1132,17 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             )
         elif not number_ok(params["hfdr_q"]) or not 0.0 < params["hfdr_q"] < 1.0:
             problems.append(f"hfdr_q must be a finite number in (0, 1), got {params['hfdr_q']!r}")
+        return problems
+
+    @classmethod
+    def _trade_limit_problems(cls, params):
+        """Problems with the two hard-row knobs, empty when none.
+
+        ``band_bps`` (the no-trade band) and ``max_position_notional`` (the
+        uniform per-name ceiling): owner risk decisions this kind requires
+        and the joint kind refuses by name (:data:`JOINT_REFUSED_PARAMS`).
+        """
+        problems = []
         if "band_bps" not in params:
             problems.append(
                 "band_bps is required — the no-trade band is an owner risk decision, "
@@ -918,6 +1160,12 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 f"max_position_notional must be a finite number > 0, got "
                 f"{params['max_position_notional']!r}"
             )
+        return problems
+
+    @classmethod
+    def _provenance_problems(cls, params):
+        """Problems with the staleness, provenance-pin, deployment and look-ahead knobs."""
+        problems = []
         if "bundle_max_staleness_ms" not in params:
             problems.append(
                 "bundle_max_staleness_ms is required — how stale a bundle may be before "
@@ -973,8 +1221,6 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 "cap_evidence_look_ahead may be true only with deployment_mode false — "
                 "caps built on post-selection evidence never authorize deployment"
             )
-        problems.extend(cls._intake_policy_problems(params))
-        check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
         return problems
 
     @classmethod
@@ -1016,6 +1262,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         bundle_problems = _bundle_problems(bundle)
         problems = list(bundle_problems)
         if not bundle_problems and isinstance(bundle, (list, tuple)):
+            mode_problems = self._bundle_mode_problems(bundle)
+            if mode_problems:
+                # Before the digest pin, which cannot hash a malformed path.
+                return mode_problems
             digest = ForecastBundle.digest(bundle)
             if digest != self.params["bundle_artifact_sha256"]:
                 problems.append(
@@ -1206,6 +1456,37 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                     f"cap.generated_ms {confirmed.generated_ms!r} is after bundle "
                     f"decision_ts {bundle[0]['decision_ts']!r} — the cap must exist "
                     "before it can authorize that forecast decision"
+                )
+        return problems
+
+    def _bundle_mode_problems(self, bundle):
+        """Problems with the bundle's MODE for this kind, empty when none.
+
+        This kind sizes each name at its row's one lead, so a PATH row
+        (ADR-0188: one carrying the exit-horizon fields) refuses by name
+        rather than being sized at its path's first step with the rest of
+        the curve silently ignored. :class:`JointEquityKellyMIO` overrides
+        this the other way round.
+
+        Parameters
+        ----------
+        bundle : list of dict
+            Rows whose flat contract :func:`_bundle_problems` accepted.
+
+        Returns
+        -------
+        list of str
+            One problem per path row, naming it and the joint kind.
+        """
+        problems = []
+        for index, row in enumerate(bundle):
+            carried = sorted(set(row) & _PATH_ROW_MARKERS)
+            if carried:
+                problems.append(
+                    f"bundle[{index}] ({row['entity']!r}) carries the exit-horizon path "
+                    f"field(s) {carried} — a path bundle must be sized by the joint kind "
+                    "intraday_equities-joint-kelly-mio (ADR-0188); this kind reads one "
+                    "lead and would size every name at its path's first step"
                 )
         return problems
 
@@ -1402,43 +1683,19 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         """
         bundle = inputs["bundle"]
         portfolio = inputs["portfolio"]
+        mode_problems = self._bundle_mode_problems(bundle)
+        if mode_problems:
+            raise ValueError(f"{self.key}: " + "; ".join(mode_problems))
         survivors = set(inputs["survivors"])
         confirmed = ConfirmedCaps(inputs["cap"])
-        asof_ms = portfolio["asof_ms"]
-        max_stale = int(self.params["bundle_max_staleness_ms"])
-        min_price = float(self.params["min_price"])
         max_notional = float(self.params["max_position_notional"])
         lot = int(self.params.get("lot_size", DEFAULT_LOT_SIZE))
 
         held = {k: int(v) for k, v in portfolio.get("positions", {}).items() if int(v) != 0}
         mark_prices = portfolio.get("mark_prices", {})
-        routed_out = {}
-        by_name = {}
-        for row in bundle:
-            entity = row["entity"]
-            if entity not in survivors:
-                routed_out[entity] = "not a stat_test survivor"
-                continue
-            capped_horizon = confirmed.capped_horizon(entity)
-            if capped_horizon is None:
-                routed_out[entity] = "no confirmed cap for symbol"
-                continue
-            if capped_horizon == 0:
-                routed_out[entity] = "zero confirmed cap"
-                continue
-            if row["lead"] > capped_horizon:
-                routed_out[entity] = (
-                    f"lead {row['lead']} is above confirmed cap {capped_horizon}"
-                )
-                continue
-            age_ms = asof_ms - row["decision_ts"]
-            if age_ms < 0 or age_ms > max_stale:
-                routed_out[entity] = f"bundle stale or from the future: age_ms={age_ms}"
-                continue
-            if float(row["price"]) < min_price:
-                routed_out[entity] = f"price {row['price']!r} below min_price {min_price!r}"
-                continue
-            by_name[entity] = row
+        by_name, routed_out, _codes = self._routed_rows(
+            bundle, survivors, confirmed, portfolio["asof_ms"], horizon_of=lambda row: row["lead"]
+        )
 
         names = sorted(set(by_name) | set(held))
         self._evidence = {
@@ -1471,54 +1728,18 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             row = by_name.get(name)
             h = held.get(name, 0)
             if row is None:
-                # Held but the bundle dropped it: mandatory exit only. No
-                # live belief exists for it, so the HFDR row must not bind
-                # it either — a zero coefficient keeps its (pi_i - q) term
-                # negative, and x_max=0 (below) already forces q=0 whatever
-                # the HFDR row says.
-                mark = mark_prices.get(name)
-                if not number_ok(mark) or mark <= 0.0:
-                    raise ValueError(
-                        f"{self.key}: {name!r} is held ({h} shares) but absent from the "
-                        "surviving bundle rows and portfolio.mark_prices carries no usable "
-                        f"price for it (got {mark!r}) — a mandatory exit needs a finite mark "
-                        "> 0 to trade against"
-                    )
-                price = float(mark)
-                pi_widened_i = 0.0
-                x_max = 0.0
-                scenarios = [0.0] * len(shared_weights)
+                exit_row = self._mandatory_exit_row(
+                    name, h, mark_prices.get(name), len(shared_weights)
+                )
+                price, pi_widened_i = exit_row["price"], exit_row["pi_widened"]
+                x_max, scenarios = exit_row["x_max"], exit_row["scenarios"]
             else:
                 price = float(row["price"])
                 pi_widened_i = float(row[HFDR_COEFFICIENT_FIELD])
                 x_max = max_notional
                 scenarios = [float(v) for v in row["scenarios"]]
-            # Uncapped TAF lives in SchwabCostModel (see that class and the
-            # module docstring) — never a size-referenced rate. The per-name
-            # half-spread, keyed on the name's FILL minute, is the SAME one
-            # the replay bills this name's fill at that minute.
-            if name not in fill_ms:
-                raise ValueError(
-                    f"{self.key}: {name!r} has no portfolio.fill_ms instant — the "
-                    "time-of-day spread is keyed on the fill minute, so an unkeyed name "
-                    "cannot be priced"
-                )
-            spread = costs.buy_per_share(name, price, fill_ms[name])
-            sell_cost = costs.sell_per_share(name, price, fill_ms[name])
-            rows[name] = {
-                "price": price,
-                "held": h,
-                "x_max": x_max,
-                "cost_buy": spread,
-                "cost_sell": sell_cost,
-                # Liquidating at the horizon pays the same sell-side costs
-                # as an ordinary exit (§5.3's exit_cost_o(q)) — never left
-                # at the doorway's zero default, or the CVaR cap and the
-                # objective both silently price every position as
-                # free-to-unwind.
-                "exit_cost_per_share": sell_cost,
-                "lot": lot,
-            }
+            rows[name] = self._cost_row(costs, fill_ms, name, price, h, x_max)
+            rows[name]["lot"] = lot
             pi_widened[name] = pi_widened_i
             payoffs_r[name] = scenarios
             if row is None:
@@ -1531,14 +1752,231 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             best_r = max(best_r, max(scenarios))
         self._pi_widened, self._band_shares = pi_widened, band_shares
         self._payoffs = (shared_weights, payoffs_r)
+        return names, rows, self._account_envelope(rows, portfolio, worst_r, best_r, 0.0)
 
+    def _routed_rows(self, bundle, survivors, confirmed, asof_ms, horizon_of):
+        """Route every bundle row through the gate, the cap, staleness and the price floor.
+
+        Checks run in a fixed order and the first failure routes the row
+        out: not a ``stat_test`` survivor, no confirmed cap, a zero cap,
+        a horizon the cap does not confirm (:meth:`_cap_route_reason`), a
+        row stale past ``bundle_max_staleness_ms`` or stamped after
+        ``asof_ms``, a price below ``min_price``.
+
+        Parameters
+        ----------
+        bundle : list of dict
+            The validated bundle rows.
+        survivors : set of str
+            The ``stat_test`` survivors.
+        confirmed : ConfirmedCaps
+            The admitted confirmed-cap artifact.
+        asof_ms : int
+            The decision instant (``portfolio.asof_ms``).
+        horizon_of : callable
+            ``row -> int``, the horizon the cap check reads: the base kind
+            passes the row's ``lead``, the joint kind its
+            ``admitted_horizon``.
+
+        Returns
+        -------
+        by_name : dict
+            ``entity -> row`` for every row that enters the program.
+        routed_out : dict
+            ``entity -> reason`` for every row routed out, in the words the
+            base kind's ``evidence["routed_out"]`` has always carried.
+        routed_codes : dict
+            ``entity -> code`` for the same rows, one member of
+            :data:`ROUTE_PERMANENT`, :data:`ROUTE_TRANSIENT` or
+            :data:`ROUTE_PRODUCER_FAULT` — what a policy keys on, never
+            the text.
+        """
+        max_stale = int(self.params["bundle_max_staleness_ms"])
+        min_price = float(self.params["min_price"])
+
+        def route(row):
+            """``(reason, code)`` for a row routed out, ``None`` for one kept."""
+            entity = row["entity"]
+            if entity not in survivors:
+                return "not a stat_test survivor", "not_survivor"
+            capped_horizon = confirmed.capped_horizon(entity)
+            if capped_horizon is None:
+                return "no confirmed cap for symbol", "no_cap"
+            if capped_horizon == 0:
+                return "zero confirmed cap", "zero_cap"
+            reason = self._cap_route_reason(horizon_of(row), capped_horizon)
+            if reason is not None:
+                return reason, "cap_mismatch"
+            age_ms = asof_ms - row["decision_ts"]
+            if age_ms < 0 or age_ms > max_stale:
+                code = "future" if age_ms < 0 else "stale"
+                return f"bundle stale or from the future: age_ms={age_ms}", code
+            if float(row["price"]) < min_price:
+                return f"price {row['price']!r} below min_price {min_price!r}", "below_min_price"
+            return None
+
+        by_name, routed_out, routed_codes = {}, {}, {}
+        for row in bundle:
+            routed = route(row)
+            if routed is None:
+                by_name[row["entity"]] = row
+            else:
+                routed_out[row["entity"]], routed_codes[row["entity"]] = routed
+        return by_name, routed_out, routed_codes
+
+    @staticmethod
+    def _cap_route_reason(horizon, capped_horizon):
+        """Why a row at ``horizon`` fails a positive confirmed cap, or ``None``.
+
+        The base kind routes out a lead ABOVE the cap, in the words
+        ``evidence["routed_out"]`` has always carried.
+        """
+        if horizon > capped_horizon:
+            return f"lead {horizon} is above confirmed cap {capped_horizon}"
+        return None
+
+    def _mandatory_exit_row(self, name, held, mark, n_scenarios):
+        """Return the sell-only terms of a held name the program may no longer hold.
+
+        No live belief exists for it, so the HFDR row must not bind it
+        either: a zero coefficient keeps its ``(pi_i - q)`` term negative,
+        and ``x_max = 0`` already forces ``q = 0`` whatever the HFDR row
+        says. Its sale proceeds are certain, so its scenario returns are
+        all zero.
+
+        Parameters
+        ----------
+        name : str
+            The held name.
+        held : int
+            Its held shares.
+        mark : object
+            The price it sells at; must be a finite number > 0.
+        n_scenarios : int
+            The batch's scenario count.
+
+        Returns
+        -------
+        dict
+            ``price``, ``pi_widened`` (0.0), ``x_max`` (0.0) and
+            ``scenarios`` (``n_scenarios`` zeros).
+
+        Raises
+        ------
+        ValueError
+            ``mark`` is not a finite number > 0.
+        """
+        if not number_ok(mark) or mark <= 0.0:
+            raise ValueError(
+                f"{self.key}: {name!r} is held ({held} shares) but absent from the "
+                "surviving bundle rows and portfolio.mark_prices carries no usable "
+                f"price for it (got {mark!r}) — a mandatory exit needs a finite mark "
+                "> 0 to trade against"
+            )
+        return {
+            "price": float(mark),
+            "pi_widened": 0.0,
+            "x_max": 0.0,
+            "scenarios": [0.0] * n_scenarios,
+        }
+
+    def _cost_row(self, costs, fill_ms, name, price, held, x_max):
+        """One name's doorway row: its price, holding, bound and per-share costs.
+
+        Uncapped TAF lives in :class:`SchwabCostModel` (see that class and
+        the module docstring), never a size-referenced rate. The per-name
+        half-spread, keyed on the name's FILL minute, is the SAME one the
+        replay bills this name's fill at that minute.
+
+        Parameters
+        ----------
+        costs : SchwabCostModel
+            The cost model built from this node's params.
+        fill_ms : dict
+            ``portfolio.fill_ms``.
+        name : str
+            The name priced.
+        price : float
+            Its decision price.
+        held : int
+            Its held shares.
+        x_max : float
+            Its target-notional bound.
+
+        Returns
+        -------
+        dict
+            ``price``, ``held``, ``x_max``, ``cost_buy``, ``cost_sell`` and
+            ``exit_cost_per_share``.
+
+        Raises
+        ------
+        ValueError
+            ``name`` has no ``portfolio.fill_ms`` instant.
+        """
+        if name not in fill_ms:
+            raise ValueError(
+                f"{self.key}: {name!r} has no portfolio.fill_ms instant — the "
+                "time-of-day spread is keyed on the fill minute, so an unkeyed name "
+                "cannot be priced"
+            )
+        spread = costs.buy_per_share(name, price, fill_ms[name])
+        sell_cost = costs.sell_per_share(name, price, fill_ms[name])
+        return {
+            "price": price,
+            "held": held,
+            "x_max": x_max,
+            "cost_buy": spread,
+            "cost_sell": sell_cost,
+            # Liquidating at the horizon pays the same sell-side costs
+            # as an ordinary exit (§5.3's exit_cost_o(q)) — never left
+            # at the doorway's zero default, or the CVaR cap and the
+            # objective both silently price every position as
+            # free-to-unwind.
+            "exit_cost_per_share": sell_cost,
+        }
+
+    @staticmethod
+    def _account_envelope(rows, portfolio, worst_r, best_r, cost_bound, carried_wealth=None):
+        """Return the doorway's ``account``: the cash terms plus a padded wealth envelope.
+
+        Parameters
+        ----------
+        rows : dict
+            The doorway rows (``price``, ``held``, ``x_max``) of every name
+            in the program.
+        portfolio : dict
+            The validated account state: ``cash``, ``buying_power`` and the
+            optional ``sale_credit``, ``cash_reserve`` and ``gross_limit``.
+        worst_r, best_r : float
+            The most negative and the most positive scenario return the
+            program can realize, each already bounded by zero on its own
+            side. The caller computes them over whatever payoffs it built.
+        cost_bound : float
+            Dollars taken off the envelope's lower edge, inside its floor,
+            for costs the return span does not already cover. Both kinds
+            pass 0.
+        carried_wealth : float or None
+            Wealth held outside the program: a constant added to the
+            wealth mark (so the envelope brackets the doorway's own
+            ``w0_mark``) and passed on as ``account["carried_wealth"]``.
+            ``None`` (the base kind) adds nothing and leaves the key out.
+
+        Returns
+        -------
+        dict
+            ``cash``, ``buying_power``, ``sale_credit``, ``cash_reserve``,
+            ``gross_limit``, ``wealth_lo`` and ``wealth_hi``, plus
+            ``carried_wealth`` when given.
+        """
+        carried = 0.0 if carried_wealth is None else float(carried_wealth)
         notional_cap = sum(r["x_max"] for r in rows.values())
         gross_limit = portfolio.get("gross_limit")
         if gross_limit is not None:
             notional_cap = min(notional_cap, float(gross_limit))
         w0_mark = float(portfolio.get("cash", 0.0)) + sum(
             r["price"] * r["held"] for r in rows.values()
-        )
+        ) + carried
         span = notional_cap * max(abs(worst_r), abs(best_r), _WEALTH_ENVELOPE_FLOOR_FRAC)
         span = max(span, _WEALTH_ENVELOPE_FLOOR_FRAC * max(w0_mark, 1.0)) * _WEALTH_ENVELOPE_PAD
         account = {
@@ -1558,10 +1996,12 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             # _WEALTH_ENVELOPE_FLOOR_FRAC term never vanishes), so
             # wealth_lo < w0_mark < wealth_hi holds BY CONSTRUCTION at
             # every scale, never just for dollar-sized accounts.
-            "wealth_lo": max(w0_mark * 0.01, w0_mark - span),
+            "wealth_lo": max(w0_mark * 0.01, w0_mark - span - cost_bound),
             "wealth_hi": w0_mark + span,
         }
-        return names, rows, account
+        if carried_wealth is not None:
+            account["carried_wealth"] = carried
+        return account
 
     def payoffs(self, inputs):
         """Return the batch's shared scenario weights + per-name gross-return matrix.
@@ -1676,10 +2116,422 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             self._evidence = None
 
 
+class JointEquityKellyMIO(EquityKellyMIO):
+    """Size every held and admitted name in ONE per-minute solve over exit-horizon tranches.
+
+    The ``intraday_equities-joint-kelly-mio`` kind: formulation B of
+    ADR-0188
+    (``children/intraday_equities/docs/research/mio-joint-policy/2026-09-26-from-scratch-formulation.md``).
+    Every minute it takes the whole shares carried and the cash, plus each
+    name's forecast PATH, and chooses whole shares to buy or sell now
+    (filled at the next bar; ``q_i = h_i + b_i - s_i >= 0``): sells and
+    trims are ordinary decisions. A name's target is split across its exit
+    horizons ``k = 1..K_i`` (``K_i`` is the row's ``plan_horizon``) by
+    continuous tranches ``e_i(k) >= 0`` summing to ``q_i``, an expectation
+    of WHEN the shares are sold, never an order, and tranche ``k`` is
+    valued at the name's step-``k`` scenario returns (the doorway's tranche
+    mechanism). Terminal wealth per scenario is the cash after this
+    minute's costed trades, plus every tranche at ``p_i (1 + r_io(k)) -
+    kappa^x_i``, plus ``carried_wealth``; the objective is the doorway's
+    tangent-linearized CRRA with its one CVaR row. Nothing from an earlier
+    solve is read: the next minute solves again from the new state.
+
+    Kept from :class:`EquityKellyMIO`: every input check (the bundle
+    contract, the provenance pins, the cap, the attested uncertainty), the
+    Schwab cost model keyed on the fill minute, the routing and its
+    evidence strings, the mandatory-exit route, and the doorway's objective
+    and CVaR row. Changed:
+
+    * **No hard caps.** The knobs in :data:`JOINT_REFUSED_PARAMS` are
+      refused by name; the doorway gets no cardinality row and a zero
+      minimum ticket. Inaction emerges from the costs the objective
+      charges (owner rulings 2026-09-25).
+    * **The per-name bound is the no-leverage bound.** ``x_max_i =
+      max(G, p_i h_i)``. ``G`` is ``portfolio.gross_limit`` when declared
+      (the replay passes NAV; the doorway's gross row already holds the
+      sum of target notionals under it, so a per-name bound of ``G`` is
+      never tighter than that row); when ``gross_limit`` is null, ``G`` is
+      ``buying_power + sum_i p_i h_i`` over the names in the solve, the
+      most notional any one name can reach when every other held name is
+      sold and all buying power spent (sale credit at most 1), so the row
+      only hands the doorway a finite bound. Either way a holding worth
+      more than ``G`` is never forced to sell by its own row.
+    * **HFDR per tranche.** ADR-0088's row applied to each tranche:
+      ``sum_i sum_k (pi_widened_i(k) - q) p_i e_i(k) <= 0``, reading
+      :data:`HFDR_PATH_FIELD`. No band rows.
+    * **Routing classification.** A routed-out HELD name is classed by
+      its structured code, never its text. Permanent
+      (:data:`ROUTE_PERMANENT`): a mandatory exit, sold in full now.
+      Transient (:data:`ROUTE_TRANSIENT`): skipped this minute, its
+      position kept, its ``shares x mark`` added to ``carried_wealth``.
+      A producer fault (:data:`ROUTE_PRODUCER_FAULT`) on ANY row, held or
+      not, refuses the whole minute: nothing trades. A held name with no
+      row at all is a mandatory exit, as in the base kind.
+
+    Inputs are the base kind's with three differences: every bundle row
+    must be an assembled PATH row carrying :data:`JOINT_PATH_OUTPUTS` (its
+    flat fields are its first step); the ``uncertainty`` port carries a
+    path release's PER-CELL artifacts (``ForecastPublisher.path_envelopes``,
+    keyed ``SYM:hNN``), admitted by the base kind's intake screens and
+    bound to each row per cell (:meth:`_entity_problems`); and
+    ``portfolio`` may carry ``carried_wealth`` (finite, >= 0): the mark of
+    positions the caller left out of ``positions`` this minute, such as a
+    name with a queued order. A mark comes from ``portfolio.mark_prices``
+    first (the replay marks its NAV, and so the ``gross_limit`` it passes,
+    there), else from the name's own bundle row.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`EquityKellyMIO`'s params minus :data:`JOINT_REFUSED_PARAMS`.
+        A declared solver time limit (``solver_options: {"time_limit":
+        seconds}`` under appsi_highs) is a halt: a solve that ends without
+        an optimal solution refuses by name and nothing trades.
+
+    Notes
+    -----
+    Outputs are the base kind's. ``target`` maps each name in the solve to
+    its whole target shares (zero targets omitted; a skipped name is absent
+    and keeps its shares); ``trades`` maps each name that trades to
+    ``{"buy": int, "sell": int}``, never both sides; ``metrics`` carries the
+    doorway's ``tranches``; ``evidence`` carries the base kind's keys plus
+    ``routed_codes``, ``carried_wealth`` (the total constant: the caller's
+    plus every skipped position's), ``skipped_transient``,
+    ``mandatory_exits``, ``plan_horizons``, ``no_leverage_bound`` (``G``)
+    and ``tranches``. Disclosed, not modelled here: a later tranche's exit
+    cost is priced at this minute's fill instant, not at its own exit
+    minute; and the per-cell measured coverage the publisher screens each
+    plan against rides in the release, not in the attested artifact, so
+    this node admits the band on its one artifact-level coverage and takes
+    the row's ``plan_horizon`` as screened.
+
+    Examples
+    --------
+    One two-tranche path row and no position (``params`` are the base
+    kind's reference params without the refused knobs)::
+
+        node = JointEquityKellyMIO("size", params)
+        out = node.run(ctx, {"bundle": path_rows, "portfolio": portfolio,
+                             "survivors": ["AAPL"], "cap": cap, "uncertainty": port})
+        out["trades"]                # {"AAPL": {"buy": 52, "sell": 0}}
+        out["evidence"]["tranches"]  # {"AAPL": [0.0, 52.0]}
+    """
+
+    _PARAMS = tuple(name for name in EquityKellyMIO._PARAMS if name not in JOINT_REFUSED_PARAMS)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Each knob in :data:`JOINT_REFUSED_PARAMS` refuses by name with its
+        reason; every other check is the base kind's own (the doorway's
+        knobs, costs, ``hfdr_q``, provenance, the intake policy), with the
+        doorway's required gating knobs supplied as
+        ``cardinality: null, min_ticket: 0``.
+        """
+        problems = [
+            f"{name} is refused by the joint kind: {reason}"
+            for name, reason in JOINT_REFUSED_PARAMS.items()
+            if name in params
+        ]
+        kept = {name: value for name, value in params.items() if name not in JOINT_REFUSED_PARAMS}
+        reject_unknown_params(problems, kept, cls._PARAMS)
+        doorway = {name: value for name, value in kept.items() if name in ScenarioUtilitySolve._PARAMS}
+        problems.extend(ScenarioUtilitySolve.validate_params({**doorway, **_JOINT_DOORWAY_PARAMS}))
+        problems.extend(cls._cost_problems(kept))
+        problems.extend(cls._hfdr_problems(kept))
+        problems.extend(cls._provenance_problems(kept))
+        problems.extend(cls._intake_policy_problems(kept))
+        return problems
+
+    def _bundle_mode_problems(self, bundle):
+        """Problems with the bundle's MODE for this kind, empty when none.
+
+        The joint kind sizes every name from its exit-horizon path, so a
+        FLAT row (no path outputs) or a malformed path refuses by name
+        (:func:`_path_output_problems`). The base kind runs this before its
+        digest pin, which cannot hash a non-finite number.
+        """
+        return _path_output_problems(bundle)
+
+    def validate_inputs(self, inputs):
+        """Problems with the materialized ``inputs``, empty when none.
+
+        The base kind's checks (a flat row or a malformed path refuses by
+        name first, through :meth:`_bundle_mode_problems`), plus
+        ``portfolio.carried_wealth`` (finite, >= 0, when given).
+        """
+        problems = super().validate_inputs(inputs)
+        portfolio = inputs.get("portfolio")
+        if isinstance(portfolio, dict) and "carried_wealth" in portfolio:
+            carried = portfolio["carried_wealth"]
+            if not number_ok(carried) or carried < 0.0:
+                problems.append(
+                    f"portfolio.carried_wealth must be a finite number >= 0 when given, "
+                    f"got {carried!r} — the mark of positions held outside this solve, "
+                    "never cash"
+                )
+        return problems
+
+    @staticmethod
+    def _entity_problems(index, row, slot, artifact):
+        """Problems binding ONE path row to ONE admitted artifact, per cell.
+
+        A path release's artifacts are keyed per cell ``SYM:hNN``, not per
+        entity (``ForecastPublisher.path_envelopes``). For a row admitting
+        ``H`` leads, step ``k`` (1-based) binds to:
+
+        * the false-signal cell ``SYM:h{min(k, H):02d}``, for EVERY step the
+          row carries: ``pi_hat_path[k-1]`` and ``pi_widened_path[k-1]``
+          must equal the admitted artifact's numbers there (past the cap the
+          last admitted cell's rates carry forward, exactly as
+          ``ForecastBundle`` assembles them, since nothing is calibrated
+          past the cap);
+        * the outcome band's cell ``SYM:h{k:02d}``, for every step the solve
+          reads (``k <= plan_horizon``): the band must cover it.
+
+        The flat fields are step 1 (:func:`_path_output_problems`), so they
+        bind to ``SYM:h01`` through the path. An entity-keyed artifact (the
+        base kind's lead-group shape) carries no cell and refuses here.
+        """
+        entity = row["entity"]
+        where = f"bundle[{index}] ({entity!r})"
+        if slot == "outcome":
+            missing = [
+                _path_cell_id(entity, k)
+                for k in range(1, int(row["plan_horizon"]) + 1)
+                if _path_cell_id(entity, k) not in artifact.lower_offset
+            ]
+            if missing:
+                return [
+                    f"{where} has no calibrated outcome band for cell(s) {missing} — the "
+                    "admitted realized-outcome artifact covers "
+                    f"{sorted(artifact.lower_offset)!r}"
+                ]
+            return []
+        problems = []
+        admitted = int(row["admitted_horizon"])
+        for k in range(1, len(row["scenarios_path"]) + 1):
+            cell = _path_cell_id(entity, min(k, admitted))
+            if cell not in artifact.pi_hat:
+                problems.append(
+                    f"{where} step {k} has no cell {cell!r} in the admitted false-signal "
+                    f"artifact, which covers {sorted(artifact.pi_hat)!r}"
+                )
+                continue
+            for field, attested in (
+                ("pi_hat_path", artifact.pi_hat[cell]),
+                (HFDR_PATH_FIELD, artifact.pi_widened[cell]),
+            ):
+                value = row[field][k - 1]
+                if float(value) != float(attested):
+                    problems.append(
+                        f"{where}.{field}[{k - 1}] {value!r} does not match the admitted "
+                        f"false-signal artifact's {attested!r} for cell {cell!r} — the "
+                        "number the capital program reads must be the number that was "
+                        "attested"
+                    )
+        return problems
+
+    def instruments(self, inputs):
+        """Classify, route and price the path rows -> ``(names, rows, account)``.
+
+        Raises
+        ------
+        ValueError
+            A row lacks or malforms its path outputs; a producer-fault route
+            (a row from the future, a cap mismatch) on any row; a skipped or
+            exiting held name with no usable mark; a priced name with no fill
+            instant.
+        """
+        bundle = inputs["bundle"]
+        portfolio = inputs["portfolio"]
+        problems = self._bundle_mode_problems(bundle)
+        if problems:
+            raise ValueError(f"{self.key}: " + "; ".join(problems))
+        held = {k: int(v) for k, v in portfolio.get("positions", {}).items() if int(v) != 0}
+        mark_prices = portfolio.get("mark_prices", {})
+        rows_of = {row["entity"]: row for row in bundle}
+        by_name, routed_out, routed_codes = self._routed_rows(
+            bundle,
+            set(inputs["survivors"]),
+            ConfirmedCaps(inputs["cap"]),
+            portfolio["asof_ms"],
+            horizon_of=lambda row: row["admitted_horizon"],
+        )
+        faults = sorted(name for name, code in routed_codes.items() if code in ROUTE_PRODUCER_FAULT)
+        if faults:
+            raise ValueError(
+                f"{self.key}: producer fault, so the minute's solve refuses and nothing "
+                "trades — "
+                + "; ".join(f"{name}: {routed_codes[name]} ({routed_out[name]})" for name in faults)
+            )
+
+        carried = float(portfolio.get("carried_wealth", 0.0))
+        skipped = {}
+        for name in sorted(held):
+            if routed_codes.get(name) not in ROUTE_TRANSIENT:
+                continue
+            # A routed code comes from the name's own row, so a mark exists.
+            mark, source = self._mark_of(name, rows_of.get(name), mark_prices)
+            skipped[name] = {
+                "code": routed_codes[name], "shares": held[name], "mark": mark, "mark_source": source,
+            }
+            carried += held[name] * mark
+        names = sorted(set(by_name) | (set(held) - set(skipped)))
+        self._evidence = {
+            "n_bundle_rows": len(bundle),
+            "n_gated": len(by_name),
+            "n_held": len(held),
+            "routed_out": routed_out,
+            "uncertainty": self._intake_evidence(inputs),
+            "routed_codes": routed_codes,
+            "carried_wealth": carried,
+            "skipped_transient": skipped,
+            "mandatory_exits": {},
+            "plan_horizons": {name: int(by_name[name]["plan_horizon"]) for name in sorted(by_name)},
+            "no_leverage_bound": None,
+        }
+        if not names:
+            # Wealth outside the solve is still wealth on the empty gate: the
+            # doorway reports it in wealth_min/wealth_max.
+            self._pi_widened, self._band_shares = {}, {}
+            return [], {}, {"cash": float(portfolio.get("cash", 0.0)), "carried_wealth": carried}
+
+        # One certain scenario when only mandatory exits remain (their sale
+        # proceeds are riskless), as in the base kind.
+        shared_weights = list(next(iter(by_name.values()))["weights"]) if by_name else [1.0]
+        exits, exit_rows, prices = {}, {}, {}
+        for name in names:
+            if name in by_name:
+                prices[name] = float(by_name[name]["price"])
+                continue
+            mark, source = self._mark_of(name, rows_of.get(name), mark_prices)
+            exit_rows[name] = self._mandatory_exit_row(name, held[name], mark, len(shared_weights))
+            prices[name] = exit_rows[name]["price"]
+            exits[name] = {
+                "code": routed_codes.get(name, "no_row"),
+                "shares": held[name],
+                "mark": prices[name],
+                "mark_source": source,
+            }
+        gross_limit = portfolio.get("gross_limit")
+        if gross_limit is not None:
+            bound = float(gross_limit)
+        else:
+            bound = float(portfolio.get("buying_power", 0.0)) + sum(
+                prices[name] * held.get(name, 0) for name in names
+            )
+        bound = max(bound, 0.0)
+
+        rows, coefficients, payoffs_r = {}, {}, {}
+        worst_r, best_r = 0.0, 0.0
+        costs = SchwabCostModel({name: self.params[name] for name in SchwabCostModel._PARAMS})
+        fill_ms = portfolio.get("fill_ms")
+        fill_ms = fill_ms if isinstance(fill_ms, dict) else {}
+        for name in names:
+            h = held.get(name, 0)
+            row = by_name.get(name)
+            if row is None:
+                exit_row = exit_rows[name]
+                x_max, path, rates = exit_row["x_max"], [exit_row["scenarios"]], [exit_row["pi_widened"]]
+            else:
+                steps = int(row["plan_horizon"])
+                x_max = max(bound, prices[name] * h)
+                path = [[float(v) for v in step] for step in row["scenarios_path"][:steps]]
+                rates = [float(v) for v in row[HFDR_PATH_FIELD][:steps]]
+            rows[name] = self._cost_row(costs, fill_ms, name, prices[name], h, x_max)
+            coefficients[name] = rates
+            payoffs_r[name] = path[0] if len(path) == 1 else path
+            worst_r = min(worst_r, min(min(step) for step in path))
+            best_r = max(best_r, max(max(step) for step in path))
+        self._pi_widened, self._band_shares = coefficients, {}
+        self._payoffs = (shared_weights, payoffs_r)
+        self._evidence["mandatory_exits"] = exits
+        self._evidence["no_leverage_bound"] = bound
+        account = self._account_envelope(rows, portfolio, worst_r, best_r, 0.0, carried_wealth=carried)
+        return names, rows, account
+
+    @staticmethod
+    def _cap_route_reason(horizon, capped_horizon):
+        """Why a path row's ``admitted_horizon`` fails a positive cap, or ``None``.
+
+        A path row's admitted horizon IS the gate's confirmed cap (both come
+        from the same gate artifact), so any difference, above or below, is
+        a producer inconsistency: the joint kind refuses the minute on it.
+        """
+        if horizon != capped_horizon:
+            return f"admitted_horizon {horizon} differs from confirmed cap {capped_horizon}"
+        return None
+
+    @staticmethod
+    def _mark_of(name, row, mark_prices):
+        """Return the price a held name is marked or sold at, as ``(mark, source)``.
+
+        ``portfolio.mark_prices`` first: the replay marks its NAV, and so
+        the ``gross_limit`` it hands the solve, at those prices. The name's
+        own bundle row otherwise (a routed-out row still carries its
+        validated decision price). ``(None, None)`` when neither exists.
+        """
+        mark = mark_prices.get(name)
+        if number_ok(mark) and mark > 0.0:
+            return float(mark), "mark_prices"
+        if row is not None:
+            return float(row["price"]), "bundle_row"
+        return None, None
+
+    def build_model(self, inputs, params):
+        """Build the doorway's program with no cardinality row and no minimum ticket."""
+        return super().build_model(inputs, {**params, **_JOINT_DOORWAY_PARAMS})
+
+    def domain_constraints(self, model, inputs, params):
+        """Add ADR-0088's HFDR row once per exit-horizon tranche; no band rows.
+
+        ``sum_i sum_k (pi_widened_i(k) - q) * p_i * e_i(k) <= 0``. A name
+        with one tranche contributes ``(pi_widened_i(1) - q) * x_i``, its
+        target notional (``model.x``); a name with ``K > 1`` tranches
+        contributes each ``model.e[i, k]`` at the price, at its own lead's
+        widened rate. A mandatory exit's coefficient is 0 and its target 0.
+        Like the base kind's row, this reads a widened POINT ESTIMATE
+        (:data:`HFDR_PATH_FIELD`), so it is not a chance constraint.
+        """
+        from pyomo.environ import Constraint
+
+        rows = model._scn["rows"]
+        tranches = model._scn["tranches"]
+        q = float(params["hfdr_q"])
+        terms = []
+        for name in model._scn["names"]:
+            rates = self._pi_widened[name]
+            if len(rates) != tranches[name]:
+                raise RuntimeError(
+                    f"{self.key}: {name!r} carries {len(rates)} HFDR rates for "
+                    f"{tranches[name]} tranches — the payoff and the HFDR row must be "
+                    "built from the same path"
+                )
+            if tranches[name] == 1:
+                terms.append((rates[0] - q) * model.x[name])
+            else:
+                price = float(rows[name]["price"])
+                terms.extend(
+                    (rates[k] - q) * price * model.e[name, k] for k in range(tranches[name])
+                )
+        model.hfdr = Constraint(expr=sum(terms) <= 0)
+
+    def run(self, ctx, inputs):
+        """Solve, then attach the joint evidence, the tranche split included."""
+        out = super().run(ctx, inputs)
+        out["evidence"]["tranches"] = {
+            name: list(split) for name, split in out["metrics"].get("tranches", {}).items()
+        }
+        return out
+
+
 #: kind name -> class: what the registry, the conformance suite, and a
 #: document's ``uses`` all key off.
 NODE_KINDS = {
     "intraday_equities-kelly-mio": EquityKellyMIO,
+    "intraday_equities-joint-kelly-mio": JointEquityKellyMIO,
 }
 
 # Import = registration (``owned`` deliberately NOT set — see CLAUDE.md).

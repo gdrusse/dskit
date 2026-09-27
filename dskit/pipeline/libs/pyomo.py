@@ -518,7 +518,7 @@ class PyomoSolve(Node):
         name = self.params.get("solver", DEFAULT_SOLVER)
         self.log.info("solving with %r", name)
         started = time.perf_counter()
-        results = solver.solve(model)
+        results = self._solve(solver, model)
         seconds = time.perf_counter() - started
         self.solve_record = SolveRecord.from_solve(model, results, name, seconds)
         extracted = self.extract(model, results)
@@ -528,6 +528,15 @@ class PyomoSolve(Node):
                 f"outputs as a dict, got {type(extracted).__name__}"
             )
         return extracted
+
+    def _solve(self, solver, model):
+        """Run ``solver`` on ``model`` and return its results.
+
+        The generic base adds nothing. A subclass that must name its own
+        refusal when the solver RAISES instead of returning a termination
+        condition overrides this (:class:`ScenarioUtilitySolve`).
+        """
+        return solver.solve(model)
 
     def _solver_options(self):
         """The options :meth:`_resolve_solver` will apply, as one dict.
@@ -898,6 +907,35 @@ class ScenarioUtilitySolve(PyomoSolve):
             return options
         return {**self._HIGHS_DETERMINISM, **options}
 
+    def _solve(self, solver, model):
+        """Solve; a solve that returns no loadable solution refuses by name.
+
+        A declared solver time limit is a HALT, never a degraded fill
+        (plan §4.4). Under appsi_highs the limit is HiGHS's own
+        ``time_limit`` option, declared as ``solver_options: {"time_limit":
+        seconds}`` and applied verbatim. A halt that found an incumbent
+        returns ``maxTimeLimit``, which :meth:`extract` refuses by name. A
+        halt before any incumbent, like an infeasible program, makes appsi
+        raise ``RuntimeError`` from ``solve`` itself; that is re-raised
+        here naming this node and keeping the solver's own words, so the
+        caller's refusal record says what happened. Nothing is sized
+        either way, and :attr:`solve_record` stays ``None`` for a solve
+        that raised.
+
+        Raises
+        ------
+        RuntimeError
+            The solver returned no loadable solution.
+        """
+        try:
+            return solver.solve(model)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{self.key}: the solver returned no loadable solution (an infeasible "
+                "program, or a time limit reached before any incumbent) — refusing: no "
+                f"target is read and nothing trades ({exc})"
+            ) from exc
+
     @classmethod
     def validate_params(cls, params):
         problems = super().validate_params(params)
@@ -1009,6 +1047,16 @@ class ScenarioUtilitySolve(PyomoSolve):
                 "%s: no eligible or held instrument — zero target, solver not invoked", self.key
             )
             cash = float(account.get("cash", 0.0)) if account else 0.0
+            # The wealth held outside this solve is wealth on the empty gate
+            # too (skeptic round 1 on ADR-0188 slice 1: the sibling return
+            # path had dropped it), validated exactly as build_model does.
+            carried = account.get("carried_wealth", 0.0) if account else 0.0
+            if not number_ok(carried) or carried < 0.0:
+                raise ValueError(
+                    f"{self.key}: account['carried_wealth'] must be a finite number >= 0 "
+                    f"when given, got {carried!r} — it is wealth held outside this solve, "
+                    "never cash"
+                )
             return {
                 "target": {},
                 "trades": {},
@@ -1022,8 +1070,9 @@ class ScenarioUtilitySolve(PyomoSolve):
                     "cash_after": cash,
                     "cvar": 0.0,
                     "cvar_eta": 0.0,
-                    "wealth_min": cash,
-                    "wealth_max": cash,
+                    "wealth_min": cash + float(carried),
+                    "wealth_max": cash + float(carried),
+                    "tranches": {},
                 },
             }
         self._scn = {"names": list(names), "rows": rows, "account": account}

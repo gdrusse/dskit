@@ -51,8 +51,10 @@ from dskit.pipeline.uncertainty_intake import (
 
 from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
+    JOINT_REFUSED_PARAMS,
     NODE_KINDS,
     EquityKellyMIO,
+    JointEquityKellyMIO,
     SchwabCostModel,
     _bundle_problems,
 )
@@ -2242,3 +2244,992 @@ class TestCapEvidenceLookAhead:
         problems = node.validate_inputs(_uinputs(cap=given))
         assert any(needle in p for p in problems), problems
         assert not any("from the future" in p or "after bundle decision_ts" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0188 formulation B: JointEquityKellyMIO, ONE solve per minute over every
+# held and admitted name, each name's shares split across its exit horizons.
+# Path rows are built as ASSEMBLED dicts (the shape ForecastBundle emits, see
+# tests/test_forecast_bundle.py::TestPathRows) so every scenario return is
+# exact; TestJointPathContract also assembles one tick through ForecastBundle.
+# ---------------------------------------------------------------------------
+
+JOINT_KIND = "intraday_equities-joint-kelly-mio"
+
+#: The base kind's reference params minus every knob the joint kind refuses.
+JOINT_PARAMS = {name: value for name, value in PARAMS.items() if name not in JOINT_REFUSED_PARAMS}
+
+#: A cost model that charges nothing, for the frictionless cases.
+FREE_COSTS = {
+    "half_spread_bps": {},
+    "default_half_spread_bps": 0.0,
+    "taf_per_share": 0.0,
+    "sec31_bps": 0.0,
+}
+
+#: The fill instant every fixture name trades at (the replay's next bar).
+FILL_MS = ASOF_MS + 60_000
+
+
+def _flat_steps(means, spread=1e-6, n=8):
+    """A near-riskless path: step ``k``'s draws sit ``spread`` either side of ``means[k]``."""
+    jitter = [spread if i % 2 == 0 else -spread for i in range(n)]
+    return [[m + j for j in jitter] for m in means]
+
+
+def _path_row(
+    entity,
+    price,
+    path,
+    pi_widened_path=None,
+    admitted=None,
+    plan=None,
+    pi_hat_path=None,
+    weights=None,
+    decision_ts=DECISION_TS,
+):
+    """One assembled path row: ``path[k]`` is step ``k + 1``'s scenario returns.
+
+    The flat fields are the path's first step (``lead`` 1), exactly as
+    ``ForecastBundle`` assembles a path row; the rates default to the
+    entity's fixture rates at every step.
+    """
+    path = [[float(v) for v in step] for step in path]
+    n_steps = len(path)
+    if pi_widened_path is None:
+        pi_widened_path = [PI_WIDENED_BY_ENTITY[entity]] * n_steps
+    if pi_hat_path is None:
+        pi_hat_path = [min(PI_HAT_BY_ENTITY[entity], w) for w in pi_widened_path]
+    weights = list(weights or _weights(len(path[0])))
+    row = _row(
+        entity, price, pi_widened_path[0], path[0],
+        decision_ts=decision_ts, weights=weights, pi_hat=pi_hat_path[0],
+    )
+    row["lead"] = 1
+    row.update(
+        {
+            "admitted_horizon": n_steps if admitted is None else admitted,
+            "plan_horizon": n_steps if plan is None else plan,
+            "mu_gross_path": [
+                sum(w * v for w, v in zip(weights, step)) / (1.0 - hat)
+                for step, hat in zip(path, pi_hat_path)
+            ],
+            "pi_hat_path": list(pi_hat_path),
+            "pi_widened_path": list(pi_widened_path),
+            "scenarios_path": path,
+        }
+    )
+    return row
+
+
+def _joint_cap(bundle, **overrides):
+    """A cap artifact confirming exactly each path row's admitted horizon."""
+    caps = [{"symbol": row["entity"], "capped_horizon": row["admitted_horizon"]} for row in bundle]
+    return _cap(caps=caps or [{"symbol": "AAPL", "capped_horizon": 1}], **overrides)
+
+
+def _joint_params(bundle, cap=None, **params):
+    cap = _joint_cap(bundle) if cap is None else cap
+    pins = {
+        "cap_artifact_sha256": ConfirmedCaps.digest(cap),
+        "cap_producer_document_sha256": CAP_PRODUCER_DOCUMENT_SHA256,
+        "cap_producer_node": "confirm",
+        "cap_evidence_sha256": CAP_EVIDENCE_SHA256,
+    }
+    return {**JOINT_PARAMS, **_bundle_pins(bundle), **pins, **params}
+
+
+def _joint_node(bundle, cap=None, **params):
+    return JointEquityKellyMIO("joint", _joint_params(bundle, cap=cap, **params))
+
+
+def _cell(symbol, lead):
+    return f"{symbol}:h{lead:02d}"
+
+
+def _cell_false_signal_artifact(bundle):
+    """A path release's rates: one per ADMITTED cell, read off the rows' paths."""
+    pi_hat, pi_widened = {}, {}
+    for row in bundle:
+        for lead in range(1, row["admitted_horizon"] + 1):
+            pi_hat[_cell(row["entity"], lead)] = row["pi_hat_path"][lead - 1]
+            pi_widened[_cell(row["entity"], lead)] = row["pi_widened_path"][lead - 1]
+    return FalseSignalEstimate(
+        pi_hat=pi_hat, pi_widened=pi_widened, evidence={"estimator": RATE_PRODUCER}
+    )
+
+
+def _cell_outcome_artifact(cells):
+    """A block-conformal band over ``cells`` (``SYM:hNN``), the path mode's joint panel."""
+    names = tuple(sorted(cells))
+    panel = [
+        tuple(
+            0.01 * (r + 1) * (c + 1) * (1 if (r + c) % 2 == 0 else -1)
+            for c in range(len(names))
+        )
+        for r in range(8)
+    ]
+    residuals = BlockResiduals(
+        names=names, rows=panel, blocks=["s1", "s1", "s2", "s2", "s3", "s3", "s4", "s4"]
+    )
+    return BlockConformalInterval().calibrate(residuals, coverage=0.6, window_blocks=2)
+
+
+def _bundle_cells(bundle):
+    """Every calibrated cell the rows carry: each row's steps ``1..len(scenarios_path)``."""
+    return [
+        _cell(row["entity"], k)
+        for row in bundle
+        for k in range(1, len(row["scenarios_path"]) + 1)
+    ]
+
+
+def _joint_uncertainty(bundle, false_signal=None, outcome=None):
+    """The ``uncertainty`` port of a path release: both artifacts keyed per cell.
+
+    The shape ``ForecastPublisher.path_envelopes`` rebuilds: the rates over
+    every admitted cell, the band over every calibrated cell.
+    """
+    if false_signal is None:
+        false_signal = _cell_false_signal_artifact(bundle)
+    if outcome is None:
+        outcome = _cell_outcome_artifact(_bundle_cells(bundle))
+    return {
+        "false_signal": AttestedFalseSignalRate(
+            false_signal, _attestation(FALSE_SIGNAL_ID, producer=RATE_PRODUCER)
+        ),
+        "outcome": AttestedOutcomeBand(outcome, _attestation(OUTCOME_ID)),
+    }
+
+
+def _joint_inputs(bundle, cap=None, portfolio=None, survivors=None, uncertainty=None):
+    return {
+        "bundle": bundle,
+        "portfolio": _portfolio() if portfolio is None else portfolio,
+        "survivors": sorted(row["entity"] for row in bundle) if survivors is None else survivors,
+        "cap": _joint_cap(bundle) if cap is None else cap,
+        "uncertainty": _joint_uncertainty(bundle) if uncertainty is None else uncertainty,
+    }
+
+
+def _joint_run(tmp_path, bundle, cap=None, portfolio=None, survivors=None, **params):
+    node = _joint_node(bundle, cap=cap, **params)
+    return node.run(
+        _ctx(tmp_path), _joint_inputs(bundle, cap=cap, portfolio=portfolio, survivors=survivors)
+    )
+
+
+def _schwab(**params):
+    """The cost model a joint node with ``params`` sizes with."""
+    merged = {**JOINT_PARAMS, **params}
+    return SchwabCostModel({name: merged[name] for name in SchwabCostModel._PARAMS})
+
+
+def _one_name_account(cash, positions=None, price=100.0, name="AAPL"):
+    """A portfolio whose gross limit is its NAV (the replay's no-leverage rule)."""
+    positions = positions or {}
+    nav = cash + sum(price * shares for shares in positions.values())
+    return _portfolio(cash=cash, buying_power=cash, positions=positions, gross_limit=nav)
+
+
+class TestJointRegistration:
+    def test_it_is_registered_under_its_kind_name(self):
+        assert NODE_KINDS[JOINT_KIND] is JointEquityKellyMIO
+        cls, owned = DEFAULT_NODE_KINDS.get(JOINT_KIND)
+        assert cls is JointEquityKellyMIO
+        assert owned is False
+
+    def test_it_extends_the_equity_kind_and_is_concrete(self):
+        assert issubclass(JointEquityKellyMIO, EquityKellyMIO)
+        assert JointEquityKellyMIO.role == "capital"
+        assert JointEquityKellyMIO.outputs == EquityKellyMIO.outputs
+        assert not node_class_errors(JointEquityKellyMIO, JOINT_KIND)
+
+    def test_the_base_kind_keeps_its_name(self):
+        assert NODE_KINDS[KIND] is EquityKellyMIO
+
+
+class TestJointParams:
+    def test_the_reference_params_validate_clean(self):
+        assert JointEquityKellyMIO.validate_params(JOINT_PARAMS) == []
+
+    def test_the_refused_set_is_exactly_the_hard_row_knobs(self):
+        assert set(JOINT_REFUSED_PARAMS) == {
+            "band_bps", "cardinality", "min_ticket", "max_position_notional", "lot_size",
+        }
+        assert set(JointEquityKellyMIO._PARAMS) == set(EquityKellyMIO._PARAMS) - set(JOINT_REFUSED_PARAMS)
+
+    @pytest.mark.parametrize(
+        "name, value",
+        [
+            ("band_bps", 0.0),
+            ("cardinality", None),
+            ("min_ticket", 0.0),
+            ("max_position_notional", 5000.0),
+            ("lot_size", 1),
+        ],
+    )
+    def test_a_hard_cap_knob_is_refused_by_name_with_its_reason(self, name, value):
+        # Even the value that would make the knob inert refuses: ruling G(a).
+        problems = JointEquityKellyMIO.validate_params({**JOINT_PARAMS, name: value})
+        named = [p for p in problems if p.startswith(f"{name} is refused")]
+        assert len(named) == 1, problems
+        assert JOINT_REFUSED_PARAMS[name] in named[0]
+        assert not any("unknown param" in p for p in problems), problems
+
+    def test_construction_refuses_a_hard_cap_knob(self):
+        with pytest.raises(ConfigError, match="band_bps is refused"):
+            JointEquityKellyMIO("joint", {**JOINT_PARAMS, "band_bps": 10.0})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "risk_aversion_gamma", "cvar_alpha", "cvar_limit", "hfdr_q", "taf_per_share",
+            "sec31_bps", "min_price", "half_spread_bps", "eq_ratio", "spread_time_of_day",
+            "bundle_max_staleness_ms", "cap_max_staleness_ms", "cap_artifact_sha256",
+            "bundle_producer_node", "deployment_mode", "uncertainty_min_coverage",
+            "uncertainty_max_calibration_age_ms",
+        ],
+    )
+    def test_the_kept_owner_knobs_are_still_required(self, name):
+        params = {k: v for k, v in JOINT_PARAMS.items() if k != name}
+        problems = JointEquityKellyMIO.validate_params(params)
+        assert any(name in p and "required" in p for p in problems), problems
+
+    @pytest.mark.parametrize(
+        "name, value",
+        [("hfdr_q", 1.5), ("risk_aversion_gamma", 0.5), ("cvar_alpha", 1.0), ("taf_per_share", -1.0)],
+    )
+    def test_a_bad_kept_value_is_refused(self, name, value):
+        problems = JointEquityKellyMIO.validate_params({**JOINT_PARAMS, name: value})
+        assert any(name in p for p in problems), problems
+
+    def test_unknown_knobs_are_refused_by_name(self):
+        problems = JointEquityKellyMIO.validate_params({**JOINT_PARAMS, "bogus": 1})
+        assert any("bogus" in p and "unknown" in p for p in problems)
+
+    def test_the_doorway_builds_no_cardinality_ticket_or_band_rows(self, tmp_path):
+        built = []
+
+        class Spy(JointEquityKellyMIO):
+            def build_model(self, inputs, params):
+                built.append(super().build_model(inputs, params))
+                return built[-1]
+
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.004, 0.005]))]
+        Spy("joint", _joint_params(bundle)).run(_ctx(tmp_path), _joint_inputs(bundle))
+        model = built[0]
+        assert model._scn["cardinality"] is None
+        assert model._scn["min_ticket"] == 0.0
+        for component in ("cardinality", "a", "band_buy_floor", "band_sell_floor", "band_hi"):
+            assert not hasattr(model, component), component
+        assert hasattr(model, "hfdr")
+
+
+class TestJointPathContract:
+    def test_a_flat_row_is_refused_by_name(self):
+        bundle = [_row("AAPL", 190.0, 0.20, [0.01] * 8)]
+        node = _joint_node(bundle, cap=_cap())
+        inputs = _joint_inputs(bundle, cap=_cap(), uncertainty=_uncertainty(bundle))
+        problems = node.validate_inputs(inputs)
+        assert any("AAPL" in p and "path output" in p for p in problems), problems
+        with pytest.raises(ValueError, match="path output"):
+            node.instruments(inputs)
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("plan_horizon", 0),
+            ("plan_horizon", 4),
+            ("admitted_horizon", True),
+            ("pi_widened_path", [0.20, 0.20]),
+            ("pi_hat_path", [0.04, 0.50, 0.04]),
+            ("mu_gross_path", [0.0, float("inf"), 0.0]),
+            ("scenarios_path", [[0.01] * 8, [0.01] * 7, [0.01] * 8]),
+            ("scenarios_path", [[0.01] * 8, [float("nan")] * 8, [0.01] * 8]),
+            ("scenarios_path", [[0.01] * 8, [-1.0] * 8, [0.01] * 8]),
+            ("lead", 2),
+        ],
+    )
+    def test_a_malformed_path_is_refused_by_entity_and_field(self, field, value):
+        # Checked before the digest pin, which cannot hash a non-finite
+        # number and would raise without naming the row.
+        row = _path_row("AAPL", 190.0, [[0.01] * 8] * 3)
+        node = _joint_node([row], cap=_cap())
+        bundle = [dict(row, **{field: value})]
+        inputs = _joint_inputs(bundle, cap=_cap(), uncertainty=_joint_uncertainty([row]))
+        problems = node.validate_inputs(inputs)
+        assert any("AAPL" in p and field in p for p in problems), problems
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [("pi_widened", 0.21), ("pi_hat", 0.03), ("scenarios", [0.02] * 8)],
+    )
+    def test_the_flat_fields_must_be_the_first_step(self, field, value):
+        row = _path_row("AAPL", 190.0, [[0.01] * 8] * 3)
+        node = _joint_node([row])
+        bundle = [dict(row, **{field: value})]
+        problems = node.validate_inputs(_joint_inputs(bundle))
+        assert any("AAPL" in p and "first step" in p for p in problems), problems
+
+    def test_the_payoffs_are_each_names_path_cut_at_its_plan_horizon(self):
+        path = [[0.001 * (k + 1) + 0.0001 * i for i in range(8)] for k in range(4)]
+        bundle = [
+            _path_row("AAPL", 190.0, path, admitted=2, plan=3),
+            _path_row("MSFT", 410.0, path, admitted=4, plan=1),
+        ]
+        node = _joint_node(bundle)
+        inputs = _joint_inputs(bundle)
+        names, rows, account = node.instruments(inputs)
+        weights, payoffs = node.payoffs(inputs)
+        assert names == ["AAPL", "MSFT"]
+        assert weights == _weights(8)
+        assert payoffs["AAPL"] == path[:3]
+        assert payoffs["MSFT"] == path[0]  # one tranche IS the flat case
+        assert account["carried_wealth"] == 0.0
+
+    def test_a_forecast_bundle_path_tick_reaches_the_solver(self, tmp_path):
+        known = {
+            "sigma": ASOF_MS - 61_000, "beta": ASOF_MS - 61_000, "reference": ASOF_MS - 61_000,
+            "price": ASOF_MS - 61_000, "yhat": ASOF_MS - 61_000, "pi_hat": ASOF_MS - 500_000,
+            "pi_widened": ASOF_MS - 500_000, "scenarios": ASOF_MS - 61_000,
+        }
+        steps = [[-0.4, 0.0, 0.9], [-0.5, 0.1, 0.8], [-0.6, 0.2, 0.7], [-0.7, 0.3, 0.6]]
+
+        def input_row(entity, price):
+            return {
+                "entity": entity, "decision_ts": DECISION_TS, "lead": 1, "price": price,
+                "yhat": 0.5, "sigma_t": 0.0012, "beta_t": 1.1, "pi_hat": 0.10, "pi_widened": 0.20,
+                "weights": [0.5, 0.25, 0.25], "scenarios": list(steps[0]),
+                "label": default_label_contract(), "known_at": dict(known),
+                "admitted_horizon": 2, "plan_horizon": 3, "yhat_path": [0.5, 0.8, 0.9, 1.0],
+                "pi_hat_path": [0.10, 0.15], "pi_widened_path": [0.20, 0.30],
+                "scenarios_path": [list(step) for step in steps],
+            }
+
+        assembled = ForecastBundle(
+            RELEASE,
+            [input_row("AAPL", 190.0), input_row("MSFT", 410.0)],
+            producer=dict(BUNDLE_PRODUCER),
+            model_manifest_sha256=MODEL_MANIFEST_SHA256,
+            uncertainty=dict(UNCERTAINTY_IDS),
+        )
+        assert assembled.has_paths is True
+        bundle = assembled.rows
+        out = _joint_run(tmp_path, bundle)
+        assert out["evidence"]["plan_horizons"] == {"AAPL": 3, "MSFT": 3}
+        assert out["evidence"]["solve"]["termination"] == "optimal"
+        for name, split in out["evidence"]["tranches"].items():
+            assert len(split) == 3
+            assert sum(split) == pytest.approx(out["target"].get(name, 0), abs=1e-6)
+
+
+class TestJointFrictionlessDominance:
+    """Test plan item 1: with zero costs and no per-name ceiling, a name that
+    gains in every scenario at every step is bought to the no-leverage limit."""
+
+    def test_a_dominant_name_is_bought_to_the_no_leverage_limit(self, tmp_path):
+        aapl = [[0.010 + 0.001 * i for i in range(8)], [0.012 + 0.001 * i for i in range(8)]]
+        msft = [[v - 0.005 for v in step] for step in aapl]  # dominated, still positive
+        bundle = [_path_row("AAPL", 100.0, aapl), _path_row("MSFT", 100.0, msft)]
+        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0), **FREE_COSTS)
+        assert out["target"] == {"AAPL": 100}
+        assert out["trades"] == {"AAPL": {"buy": 100, "sell": 0}}
+        assert out["cash_after"] == pytest.approx(0.0, abs=1e-6)
+        assert out["metrics"]["gross_exposure"] == pytest.approx(10_000.0)
+
+
+class TestJointCostBreakEven:
+    """Test plan item 2 and T3/T4: a flat name is bought exactly when its best
+    expected path gain beats the round trip; a held name is kept for any
+    positive remaining gain, because its entry cost is sunk. Inaction comes
+    from the costs, not from a band."""
+
+    PRICE = 100.0
+
+    def _round_trip(self):
+        costs = _schwab()
+        return costs.buy_per_share("AAPL", self.PRICE, FILL_MS) + costs.sell_per_share(
+            "AAPL", self.PRICE, FILL_MS
+        )
+
+    @pytest.mark.parametrize("ratio", [0.5, 0.9, 1.1, 2.0])
+    def test_a_flat_name_is_bought_exactly_when_its_best_path_gain_beats_the_round_trip(
+        self, tmp_path, ratio
+    ):
+        best = ratio * self._round_trip() / self.PRICE
+        # A hump: the gain peaks at minute two; minutes one and three fall short.
+        bundle = [_path_row("AAPL", self.PRICE, _flat_steps([0.4 * best, best, 0.7 * best]))]
+        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0))
+        if ratio < 1.0:
+            assert out["trades"] == {}
+            assert out["target"] == {}
+            return
+        buy_cost = _schwab().buy_per_share("AAPL", self.PRICE, FILL_MS)
+        affordable = int(10_000.0 // (self.PRICE + buy_cost))
+        assert out["trades"] == {"AAPL": {"buy": affordable, "sell": 0}}
+        split = out["evidence"]["tranches"]["AAPL"]
+        assert split[1] == pytest.approx(affordable, abs=1e-6)
+
+    def test_a_held_name_is_kept_where_a_flat_name_is_not_bought(self, tmp_path):
+        gain = 0.5 * self._round_trip() / self.PRICE  # positive, below the round trip
+        bundle = [_path_row("AAPL", self.PRICE, _flat_steps([gain, gain, gain]))]
+        flat = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0))
+        assert flat["trades"] == {}
+        held = _joint_run(
+            tmp_path, bundle, portfolio=_one_name_account(5_000.0, positions={"AAPL": 50})
+        )
+        assert held["trades"] == {}
+        assert held["target"] == {"AAPL": 50}
+
+
+class TestJointHorizonUse:
+    """Test plan item 3: two curves equal at the horizon but different in
+    between produce different tranches and different orders."""
+
+    def test_curves_equal_at_the_horizon_but_not_between_are_told_apart(self, tmp_path):
+        hump = _flat_steps([0.001, 0.006, 0.003])  # peaks at minute two
+        climb = _flat_steps([0.001, 0.002, 0.003])  # rises to the same minute-three value
+        bundle = [_path_row("AAPL", 100.0, hump), _path_row("MSFT", 100.0, climb)]
+        assert bundle[0]["scenarios_path"][-1] == bundle[1]["scenarios_path"][-1]
+        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0))
+        bought = {name: trade["buy"] for name, trade in out["trades"].items()}
+        assert bought.get("AAPL", 0) > bought.get("MSFT", 0)
+        aapl_split = out["evidence"]["tranches"]["AAPL"]
+        assert aapl_split[1] == pytest.approx(out["target"]["AAPL"], abs=1e-6)
+        # Alone, the climbing curve is held to minute three instead.
+        alone = [_path_row("MSFT", 100.0, climb)]
+        msft = _joint_run(tmp_path, alone, portfolio=_one_name_account(10_000.0))
+        msft_split = msft["evidence"]["tranches"]["MSFT"]
+        assert msft_split[2] == pytest.approx(msft["target"]["MSFT"], abs=1e-6)
+        assert msft["target"]["MSFT"] > 0
+
+
+class TestJointFalseSignalIsolation:
+    """Test plan item 5: identical returns, different widened rates; the HFDR
+    row, applied per tranche, moves exposure the haircut (already inside the
+    identical returns) cannot."""
+
+    def test_a_tranche_whose_widened_rate_passes_q_loses_shares_to_one_that_does_not(
+        self, tmp_path
+    ):
+        path = _flat_steps([0.004, 0.005, 0.006])  # the best tranche is minute three
+        low = [_path_row("AAPL", 100.0, path, pi_widened_path=[0.10, 0.10, 0.10])]
+        high = [_path_row("AAPL", 100.0, path, pi_widened_path=[0.10, 0.60, 0.60])]
+        assert low[0]["scenarios_path"] == high[0]["scenarios_path"]
+        portfolio = _one_name_account(10_000.0)
+        out_low = _joint_run(tmp_path, low, portfolio=portfolio, hfdr_q=0.30)
+        out_high = _joint_run(tmp_path, high, portfolio=portfolio, hfdr_q=0.30)
+        split_low = out_low["evidence"]["tranches"]["AAPL"]
+        split_high = out_high["evidence"]["tranches"]["AAPL"]
+        assert split_low[2] == pytest.approx(out_low["target"]["AAPL"], abs=1e-6)
+        # (0.10 - 0.30) e1 + (0.60 - 0.30) (e2 + e3) <= 0, per tranche:
+        assert -0.20 * split_high[0] + 0.30 * (split_high[1] + split_high[2]) <= 1e-6
+        assert split_high[0] >= 0.6 * out_high["target"]["AAPL"] - 1e-6
+        assert split_high[0] > split_low[0] + 1.0
+
+    def test_a_name_whose_every_tranche_passes_q_is_not_bought(self, tmp_path):
+        path = _flat_steps([0.004, 0.005])
+        bundle = [_path_row("XOM", 100.0, path, pi_widened_path=[0.60, 0.60])]
+        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0), hfdr_q=0.30)
+        assert out["target"] == {}
+
+    def test_a_tight_q_caps_the_riskier_name_against_the_other(self, tmp_path):
+        path = _flat_steps([0.004, 0.005])  # identical returns for both names
+        bundle = [
+            _path_row("AAPL", 100.0, path, pi_widened_path=[0.05, 0.05]),
+            _path_row("MSFT", 100.0, path, pi_widened_path=[0.60, 0.60]),
+        ]
+        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0), hfdr_q=0.30)
+        aapl = 100.0 * out["target"].get("AAPL", 0)
+        msft = 100.0 * out["target"].get("MSFT", 0)
+        assert (0.60 - 0.30) * msft + (0.05 - 0.30) * aapl <= 1e-6
+        assert aapl > msft
+
+
+class TestJointIntegerCashStress:
+    """Test plan item 6: adversarial states, including cash below one share of
+    anything; every answer whole, non-negative, funded and unlevered."""
+
+    PRICES = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
+
+    def test_cash_below_one_share_of_anything_buys_nothing(self, tmp_path):
+        bundle = [
+            _path_row(name, price, _flat_steps([0.01, 0.02]))
+            for name, price in self.PRICES.items()
+        ]
+        portfolio = _portfolio(cash=50.0, buying_power=50.0, gross_limit=50.0)
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio, **FREE_COSTS)
+        assert out["trades"] == {}
+        assert out["target"] == {}
+        assert out["cash_after"] == pytest.approx(50.0)
+
+    @pytest.mark.parametrize("seed", range(8))
+    def test_every_answer_is_whole_non_negative_funded_and_unlevered(self, tmp_path, seed):
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        n_steps = int(rng.integers(1, 4))
+        bundle = []
+        for name, price in self.PRICES.items():
+            means = rng.normal(0.001, 0.004, n_steps)
+            path = [[float(m + d) for d in rng.normal(0.0, 0.004, 8)] for m in means]
+            bundle.append(_path_row(name, price, path))
+        positions = {name: int(rng.integers(0, 12)) for name in self.PRICES}
+        cash = float(rng.choice([0.0, 50.0, 300.0, 2500.0]))
+        if cash == 0.0 and not any(positions.values()):
+            cash = 50.0
+        nav = cash + sum(self.PRICES[name] * shares for name, shares in positions.items())
+        portfolio = _portfolio(
+            cash=cash, buying_power=cash, positions=positions, gross_limit=nav,
+            mark_prices=dict(self.PRICES),
+        )
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        costs = _schwab()
+        spent = received = 0.0
+        for name, trade in out["trades"].items():
+            buy, sell = trade["buy"], trade["sell"]
+            assert isinstance(buy, int) and isinstance(sell, int)
+            assert buy >= 0 and sell >= 0 and not (buy and sell)
+            assert sell <= positions[name]
+            price = self.PRICES[name]
+            spent += buy * (price + costs.buy_per_share(name, price, FILL_MS))
+            received += sell * (price - costs.sell_per_share(name, price, FILL_MS))
+        for name in self.PRICES:
+            trade = out["trades"].get(name, {"buy": 0, "sell": 0})
+            expected = positions[name] + trade["buy"] - trade["sell"]
+            assert out["target"].get(name, 0) == expected
+            assert isinstance(out["target"].get(name, 0), int) and expected >= 0
+        assert spent <= cash + received + 1e-6  # real cash plus this tick's proceeds
+        assert out["cash_after"] >= -1e-6
+        gross = sum(self.PRICES[name] * shares for name, shares in out["target"].items())
+        assert gross <= nav + 1e-6
+
+
+class TestJointStatelessness:
+    """Test plan item 7: a cold solve of the next minute equals the live one;
+    nothing from the previous minute's tranches persists on the node."""
+
+    def test_a_cold_solve_of_the_next_minute_equals_the_live_decision(self, tmp_path):
+        import numpy as np
+
+        rng = np.random.default_rng(11)
+        prices = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
+        bundle = [
+            _path_row(
+                name, price,
+                [[float(m + d) for d in rng.normal(0.0, 0.004, 8)] for m in (0.001, 0.002, 0.0025)],
+            )
+            for name, price in prices.items()
+        ]
+        live = _joint_node(bundle)
+        start = _portfolio(
+            cash=6000.0, buying_power=6000.0, positions={"AAPL": 10},
+            gross_limit=6000.0 + 1900.0, mark_prices=dict(prices),
+        )
+        first = live.run(_ctx(tmp_path), _joint_inputs(bundle, portfolio=start))
+        positions = dict(first["target"])
+        cash = first["cash_after"]
+        after = _portfolio(
+            cash=cash, buying_power=cash, positions=positions,
+            gross_limit=cash + sum(prices[n] * s for n, s in positions.items()),
+            mark_prices=dict(prices),
+        )
+        warm = live.run(_ctx(tmp_path), _joint_inputs(bundle, portfolio=after))
+        cold = _joint_node(bundle).run(_ctx(tmp_path), _joint_inputs(bundle, portfolio=after))
+        for key in ("target", "trades", "cash_after"):
+            assert warm[key] == cold[key]
+        assert warm["evidence"]["tranches"] == cold["evidence"]["tranches"]
+        assert live._payoffs is None and live._pi_widened is None and live._evidence is None
+
+
+class TestJointRoutingClassification:
+    """ADR-0188 question L(a) and T45: a routed-out HELD name is classed by its
+    reason code: permanent -> a mandatory exit, transient -> skipped with its
+    mark carried, producer fault -> the minute refuses."""
+
+    def _bundle(self):
+        path = _flat_steps([0.001, 0.002])
+        return [
+            _path_row("AAPL", 190.0, path),
+            _path_row("MSFT", 410.0, path),
+            _path_row("XOM", 110.0, path),
+        ]
+
+    def test_a_permanent_route_out_of_a_held_name_is_a_mandatory_exit(self, tmp_path):
+        bundle = self._bundle()
+        portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio, survivors=["AAPL", "MSFT"])
+        assert out["trades"]["XOM"] == {"buy": 0, "sell": 20}
+        assert "XOM" not in out["target"]
+        evidence = out["evidence"]
+        assert evidence["routed_codes"] == {"XOM": "not_survivor"}
+        assert evidence["routed_out"] == {"XOM": "not a stat_test survivor"}
+        assert evidence["mandatory_exits"]["XOM"]["code"] == "not_survivor"
+        assert evidence["mandatory_exits"]["XOM"]["shares"] == 20
+        assert evidence["skipped_transient"] == {}
+
+    @pytest.mark.parametrize(
+        "xom_cap, code",
+        [(None, "no_cap"), (0, "zero_cap")],
+    )
+    def test_no_cap_or_a_zero_cap_is_a_mandatory_exit_too(self, tmp_path, xom_cap, code):
+        bundle = self._bundle()
+        caps = [{"symbol": "AAPL", "capped_horizon": 2}, {"symbol": "MSFT", "capped_horizon": 2}]
+        if xom_cap is not None:
+            caps.append({"symbol": "XOM", "capped_horizon": xom_cap})
+        cap = _cap(caps=caps)
+        portfolio = _portfolio(positions={"XOM": 7}, mark_prices={"XOM": 108.0})
+        out = _joint_run(tmp_path, bundle, cap=cap, portfolio=portfolio)
+        assert out["trades"]["XOM"] == {"buy": 0, "sell": 7}
+        assert out["evidence"]["routed_codes"]["XOM"] == code
+
+    def test_a_held_name_the_bundle_dropped_is_a_mandatory_exit(self, tmp_path):
+        bundle = [row for row in self._bundle() if row["entity"] != "XOM"]
+        portfolio = _portfolio(positions={"XOM": 5}, mark_prices={"XOM": 108.0})
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"]["XOM"] == {"buy": 0, "sell": 5}
+        assert out["evidence"]["mandatory_exits"]["XOM"]["code"] == "no_row"
+        assert "XOM" not in out["evidence"]["routed_codes"]
+
+    def test_a_transient_route_out_skips_the_held_name_and_carries_its_mark(self, tmp_path):
+        bundle = self._bundle()
+        bundle[2] = dict(bundle[2], price=1.0)  # below min_price 5.0
+        portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
+        node = _joint_node(bundle)
+        inputs = _joint_inputs(bundle, portfolio=portfolio)
+        names, _rows, account = node.instruments(inputs)
+        assert "XOM" not in names
+        assert account["carried_wealth"] == pytest.approx(20 * 108.0)
+        out = _joint_node(bundle).run(_ctx(tmp_path), inputs)
+        assert "XOM" not in out["trades"]
+        assert "XOM" not in out["target"]
+        evidence = out["evidence"]
+        assert evidence["routed_codes"]["XOM"] == "below_min_price"
+        assert evidence["carried_wealth"] == pytest.approx(2160.0)
+        assert evidence["skipped_transient"]["XOM"] == {
+            "code": "below_min_price", "shares": 20, "mark": 108.0, "mark_source": "mark_prices",
+        }
+        assert evidence["mandatory_exits"] == {}
+
+    def test_without_a_portfolio_mark_a_skip_is_carried_at_its_rows_price(self, tmp_path):
+        bundle = self._bundle()
+        bundle[2] = dict(bundle[2], price=4.5)
+        portfolio = _portfolio(positions={"XOM": 20})
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["evidence"]["carried_wealth"] == pytest.approx(90.0)
+        assert out["evidence"]["skipped_transient"]["XOM"]["mark_source"] == "bundle_row"
+
+    def test_a_stale_tick_skips_every_held_name_and_trades_nothing(self, tmp_path):
+        bundle = self._bundle()  # decision_ts is 1000 ms before asof_ms
+        portfolio = _portfolio(
+            positions={"AAPL": 3, "XOM": 20}, mark_prices={"AAPL": 190.0, "XOM": 108.0}
+        )
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio, bundle_max_staleness_ms=500)
+        assert out["trades"] == {}
+        assert set(out["evidence"]["routed_codes"].values()) == {"stale"}
+        assert out["evidence"]["carried_wealth"] == pytest.approx(3 * 190.0 + 20 * 108.0)
+        assert out["evidence"]["solve"] is None  # nothing left to size
+        # the skipped positions are still wealth on the empty gate
+        assert out["metrics"]["wealth_min"] == pytest.approx(20_000.0 + 2730.0)
+
+    def test_the_decider_s_carried_wealth_is_added_to_the_skipped_marks(self, tmp_path):
+        bundle = self._bundle()
+        bundle[2] = dict(bundle[2], price=1.0)
+        portfolio = _portfolio(
+            positions={"XOM": 20}, mark_prices={"XOM": 108.0}, carried_wealth=1000.0
+        )
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["evidence"]["carried_wealth"] == pytest.approx(3160.0)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, "1000"])
+    def test_a_bad_portfolio_carried_wealth_is_refused_by_name(self, bad):
+        bundle = self._bundle()
+        problems = _joint_node(bundle).validate_inputs(
+            _joint_inputs(bundle, portfolio=_portfolio(carried_wealth=bad))
+        )
+        assert any("carried_wealth" in p for p in problems), problems
+
+    @pytest.mark.parametrize("capped, held", [(3, {}), (1, {}), (3, {"MSFT": 4})])
+    def test_a_cap_mismatch_refuses_the_whole_minute(self, tmp_path, capped, held):
+        bundle = self._bundle()  # every row admits two minutes
+        cap = _cap(caps=[
+            {"symbol": "AAPL", "capped_horizon": 2},
+            {"symbol": "MSFT", "capped_horizon": capped},
+            {"symbol": "XOM", "capped_horizon": 2},
+        ])
+        portfolio = _portfolio(positions=held, mark_prices={"MSFT": 410.0})
+        with pytest.raises(ValueError, match=r"MSFT: cap_mismatch"):
+            _joint_run(tmp_path, bundle, cap=cap, portfolio=portfolio)
+
+    def test_a_row_from_the_future_refuses_the_whole_minute(self, tmp_path):
+        bundle = self._bundle()
+        cap = _joint_cap(bundle, generated_ms=DECISION_TS - 100)
+        portfolio = _portfolio(asof_ms=DECISION_TS - 10)  # the rows are stamped 10 ms later
+        with pytest.raises(ValueError, match=r"AAPL: future"):
+            _joint_run(tmp_path, bundle, cap=cap, portfolio=portfolio)
+
+    def test_the_classification_keys_on_the_code_never_the_text(self, tmp_path):
+        class Scrambled(JointEquityKellyMIO):
+            def _routed_rows(self, *args, **kwargs):
+                by_name, routed_out, codes = super()._routed_rows(*args, **kwargs)
+                return by_name, {name: "unrelated words" for name in routed_out}, codes
+
+        bundle = self._bundle()
+        bundle[1] = dict(bundle[1], price=1.0)  # MSFT: transient
+        portfolio = _portfolio(
+            positions={"MSFT": 2, "XOM": 20}, mark_prices={"MSFT": 410.0, "XOM": 108.0}
+        )
+        inputs = _joint_inputs(bundle, portfolio=portfolio, survivors=["AAPL", "MSFT"])
+        plain = _joint_node(bundle).run(_ctx(tmp_path), inputs)
+        scrambled = Scrambled("joint", _joint_params(bundle)).run(_ctx(tmp_path), inputs)
+        assert scrambled["trades"] == plain["trades"]
+        assert scrambled["trades"]["XOM"] == {"buy": 0, "sell": 20}
+        assert "MSFT" not in scrambled["trades"]
+        assert scrambled["evidence"]["carried_wealth"] == plain["evidence"]["carried_wealth"]
+
+    def test_the_base_kind_s_evidence_shape_is_unchanged(self, tmp_path):
+        out = _node().run(_ctx(tmp_path), _uinputs())
+        assert "routed_codes" not in out["evidence"]
+        assert "carried_wealth" not in out["evidence"]
+
+
+class TestJointNeverForcesASaleByACap:
+    """ADR-0188 F(a) and T27: the per-name bound is max(G, price x held), so a
+    holding above any former ceiling is kept while its path still pays."""
+
+    def test_a_holding_above_the_former_ceiling_is_never_forced_to_sell(self, tmp_path):
+        price, held = 190.0, 100  # $19,000: far above the base kind's $4,000 ceiling
+        costs = _schwab()
+        round_trip = costs.buy_per_share("AAPL", price, FILL_MS) + costs.sell_per_share(
+            "AAPL", price, FILL_MS
+        )
+        gain = 0.5 * round_trip / price  # worth keeping, not worth adding to
+        portfolio = _portfolio(
+            cash=1000.0, buying_power=1000.0, positions={"AAPL": held},
+            gross_limit=1000.0 + price * held,
+        )
+        bundle = [_path_row("AAPL", price, _flat_steps([gain, gain]))]
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"] == {}
+        assert out["target"] == {"AAPL": held}
+        # The base kind's per-name ceiling would have forced the trim.
+        flat = [_row("AAPL", price, 0.20, _flat_steps([gain])[0])]
+        base = _node(bundle=flat).run(
+            _ctx(tmp_path),
+            {"bundle": flat, "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap(),
+             "uncertainty": _uncertainty(flat)},
+        )
+        assert base["trades"]["AAPL"]["sell"] >= 79
+
+    @pytest.mark.parametrize(
+        "gross_limit, expected",
+        [(20_000.0, 20_000.0), (10_000.0, 19_000.0), (None, 1000.0 + 19_000.0)],
+    )
+    def test_x_max_is_the_no_leverage_bound_or_the_holding(self, gross_limit, expected):
+        portfolio = _portfolio(
+            cash=1000.0, buying_power=1000.0, positions={"AAPL": 100}, gross_limit=gross_limit,
+        )
+        bundle = [_path_row("AAPL", 190.0, _flat_steps([0.001, 0.001]))]
+        node = _joint_node(bundle)
+        _names, rows, _account = node.instruments(_joint_inputs(bundle, portfolio=portfolio))
+        assert rows["AAPL"]["x_max"] == pytest.approx(expected)
+
+
+class TestJointSellsAreDecisions:
+    """ADR-0188: holdings are inputs and target shares the output; a sell or a
+    trim is an ordinary decision."""
+
+    def test_a_held_name_whose_curve_turned_negative_is_sold(self, tmp_path):
+        price = 190.0
+        bundle = [_path_row("AAPL", price, _flat_steps([-0.001, -0.002, -0.003]))]
+        portfolio = _portfolio(
+            cash=1000.0, buying_power=1000.0, positions={"AAPL": 50},
+            gross_limit=1000.0 + price * 50,
+        )
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"] == {"AAPL": {"buy": 0, "sell": 50}}
+        assert out["target"] == {}
+        proceeds = 50 * (price - _schwab().sell_per_share("AAPL", price, FILL_MS))
+        assert out["cash_after"] == pytest.approx(1000.0 + proceeds)
+
+    def test_a_cvar_cap_trims_a_held_name(self, tmp_path):
+        price = 190.0
+        swing = [0.03, -0.03, 0.035, -0.025, 0.03, -0.03, 0.04, -0.02]
+        bundle = [_path_row("AAPL", price, [swing, [1.2 * v for v in swing]])]
+        portfolio = _portfolio(
+            cash=1000.0, buying_power=1000.0, positions={"AAPL": 100},
+            gross_limit=1000.0 + price * 100,
+        )
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio, cvar_limit=250.0)
+        sold = out["trades"]["AAPL"]["sell"]
+        assert 0 < sold < 100
+        assert out["trades"]["AAPL"]["buy"] == 0
+        assert out["metrics"]["cvar"] <= 250.0 + 1e-6
+
+    def test_loosening_the_cvar_cap_never_lowers_the_objective(self, tmp_path):
+        # Test plan item 4: the recomputed CVaR respects each cap, and a
+        # looser cap (a larger feasible set) never scores lower.
+        price = 190.0
+        swing = [0.03, -0.03, 0.035, -0.025, 0.03, -0.03, 0.04, -0.02]
+        bundle = [_path_row("AAPL", price, [swing, [1.2 * v for v in swing]])]
+        portfolio = _portfolio(
+            cash=1000.0, buying_power=1000.0, positions={"AAPL": 100},
+            gross_limit=1000.0 + price * 100,
+        )
+        objectives = []
+        for limit in (150.0, 250.0, 500.0, None):
+            out = _joint_run(tmp_path, bundle, portfolio=portfolio, cvar_limit=limit)
+            if limit is not None:
+                assert out["metrics"]["cvar"] <= limit + 1e-6
+            objectives.append(out["metrics"]["objective"])
+        assert objectives == sorted(objectives)
+
+
+class TestJointSolverHalt:
+    """Plan §4.4: a declared solver time limit is a halt, never a degraded fill."""
+
+    def test_a_time_limit_halt_refuses_the_minute_by_name(self, tmp_path):
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.004, 0.005]))]
+        with pytest.raises(RuntimeError, match=r"^joint: the solver returned no loadable solution"):
+            _joint_run(tmp_path, bundle, solver_options={"time_limit": 0.0})
+
+
+class TestJointEvidence:
+    def test_the_evidence_carries_the_joint_record(self, tmp_path):
+        bundle = [
+            _path_row("AAPL", 190.0, _flat_steps([0.001, 0.003])),
+            _path_row("MSFT", 410.0, _flat_steps([0.002])),
+        ]
+        portfolio = _portfolio(positions={"XOM": 4}, mark_prices={"XOM": 108.0})
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        evidence = out["evidence"]
+        assert {
+            "n_bundle_rows", "n_gated", "n_held", "routed_out", "uncertainty", "solve",
+            "routed_codes", "carried_wealth", "skipped_transient", "mandatory_exits",
+            "plan_horizons", "no_leverage_bound", "tranches",
+        } <= set(evidence)
+        assert evidence["plan_horizons"] == {"AAPL": 2, "MSFT": 1}
+        assert evidence["tranches"] == out["metrics"]["tranches"]
+        assert set(evidence["tranches"]) <= {"AAPL"}
+        assert evidence["no_leverage_bound"] == pytest.approx(12_000.0)
+        assert evidence["mandatory_exits"]["XOM"]["code"] == "no_row"
+        assert evidence["uncertainty"]["hfdr_coefficient"]["chance_constraint"] is False
+
+    def test_an_empty_minute_still_records_the_joint_keys(self, tmp_path):
+        bundle = [_path_row("AAPL", 190.0, _flat_steps([0.001, 0.002]))]
+        out = _joint_run(tmp_path, bundle, survivors=[])
+        evidence = out["evidence"]
+        assert out["trades"] == {}
+        assert evidence["tranches"] == {}
+        assert evidence["mandatory_exits"] == {}
+        assert evidence["routed_codes"] == {"AAPL": "not_survivor"}
+
+
+class TestJointPerCellBinding:
+    """The joint kind's ``uncertainty`` port is a path release's PER-CELL
+    artifacts (``ForecastPublisher.path_envelopes``, keyed ``SYM:hNN``): step
+    ``k`` of a row admitting ``H`` leads binds to the false-signal cell
+    ``SYM:h{min(k, H):02d}`` and to the outcome band's ``SYM:h{k:02d}``."""
+
+    def _bundle(self):
+        path = _flat_steps([0.001, 0.002, 0.003, 0.0035])
+        return [
+            _path_row(
+                "AAPL", 190.0, path, admitted=2, plan=3,
+                pi_widened_path=[0.20, 0.25, 0.25, 0.25], pi_hat_path=[0.04, 0.05, 0.05, 0.05],
+            ),
+            _path_row("MSFT", 410.0, path[:2], admitted=2, plan=2),
+        ]
+
+    def _problems(self, bundle, **port):
+        return _joint_node(bundle).validate_inputs(
+            _joint_inputs(bundle, uncertainty=_joint_uncertainty(bundle, **port))
+        )
+
+    def test_a_per_cell_port_binds_clean_and_solves(self, tmp_path):
+        bundle = self._bundle()
+        assert self._problems(bundle) == []
+        out = _joint_run(tmp_path, bundle)
+        assert out["evidence"]["solve"]["termination"] == "optimal"
+
+    def test_the_rates_cover_admitted_cells_only(self):
+        artifact = _cell_false_signal_artifact(self._bundle())
+        assert sorted(artifact.pi_hat) == ["AAPL:h01", "AAPL:h02", "MSFT:h01", "MSFT:h02"]
+
+    def test_an_entity_keyed_port_is_refused_by_cell(self):
+        bundle = self._bundle()
+        problems = _joint_node(bundle).validate_inputs(
+            _joint_inputs(bundle, uncertainty=_uncertainty(bundle))
+        )
+        assert any("AAPL:h01" in p and "false-signal" in p for p in problems), problems
+        assert any("AAPL:h01" in p and "outcome band" in p for p in problems), problems
+
+    def test_a_rate_that_differs_from_its_cell_is_refused_at_every_step_reading_it(self):
+        bundle = self._bundle()
+        artifact = _cell_false_signal_artifact(bundle)
+        pi_widened = dict(artifact.pi_widened)
+        pi_widened["AAPL:h02"] = 0.26
+        forged = FalseSignalEstimate(
+            pi_hat=dict(artifact.pi_hat), pi_widened=pi_widened, evidence=dict(artifact.evidence)
+        )
+        problems = self._problems(bundle, false_signal=forged)
+        # step 2 reads its own cell; steps 3 and 4 carry the cap's cell forward
+        for step in (1, 2, 3):
+            assert any(
+                f"pi_widened_path[{step}]" in p and "AAPL:h02" in p for p in problems
+            ), problems
+        assert not any("pi_widened_path[0]" in p for p in problems), problems
+
+    def test_a_missing_admitted_cell_is_refused(self):
+        bundle = self._bundle()
+        artifact = _cell_false_signal_artifact(bundle)
+        kept = [cell for cell in artifact.pi_hat if cell != "MSFT:h02"]
+        forged = FalseSignalEstimate(
+            pi_hat={cell: artifact.pi_hat[cell] for cell in kept},
+            pi_widened={cell: artifact.pi_widened[cell] for cell in kept},
+            evidence=dict(artifact.evidence),
+        )
+        problems = self._problems(bundle, false_signal=forged)
+        assert any("MSFT:h02" in p and "no cell" in p for p in problems), problems
+
+    def test_the_band_must_cover_every_step_the_solve_reads(self):
+        bundle = self._bundle()  # AAPL plans three steps
+        cells = [cell for cell in _bundle_cells(bundle) if cell != "AAPL:h03"]
+        problems = self._problems(bundle, outcome=_cell_outcome_artifact(cells))
+        assert any("AAPL:h03" in p and "outcome band" in p for p in problems), problems
+
+    def test_the_band_need_not_cover_a_step_past_the_plan(self):
+        bundle = self._bundle()  # AAPL carries four steps and plans three
+        cells = [cell for cell in _bundle_cells(bundle) if cell != "AAPL:h04"]
+        assert self._problems(bundle, outcome=_cell_outcome_artifact(cells)) == []
+
+
+class TestTheBaseKindRefusesAPathBundle:
+    """Each kind refuses the other kind's bundle mode by name: the base kind
+    reads one lead, so a path row would otherwise be sized at its first step
+    with the rest of its curve silently ignored; the joint kind refuses a flat
+    row (``TestJointPathContract.test_a_flat_row_is_refused_by_name``)."""
+
+    def _inputs(self, bundle):
+        return {
+            "bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL"},
+            "cap": _cap(), "uncertainty": _uncertainty(bundle),
+        }
+
+    def test_a_path_row_is_refused_by_name_pointing_at_the_joint_kind(self, tmp_path):
+        bundle = [_path_row("AAPL", 190.0, _flat_steps([0.001, 0.002]))]
+        node = _node(bundle=bundle)
+        problems = node.validate_inputs(self._inputs(bundle))
+        assert len(problems) == 1
+        assert "AAPL" in problems[0] and JOINT_KIND in problems[0]
+        with pytest.raises(ValueError, match=JOINT_KIND):
+            node.run(_ctx(tmp_path), self._inputs(bundle))
+        with pytest.raises(ValueError, match=JOINT_KIND):
+            node.instruments(self._inputs(bundle))
+
+    def test_one_path_field_is_enough_to_refuse(self):
+        bundle = [dict(_bundle()[0], mu_gross_path=[0.001])]
+        problems = _node(bundle=bundle).validate_inputs(self._inputs(bundle))
+        assert any("mu_gross_path" in p and JOINT_KIND in p for p in problems), problems
+
