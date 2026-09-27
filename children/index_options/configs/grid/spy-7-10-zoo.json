@@ -107,8 +107,8 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
-        "approved_by": "PENDING-PLAN-REVIEW",
+        "approved_inventory_sha256": "af158ad4d8a060201b00b789d11cdca5745c9c74a2c44c430b697b51409d965c",
+        "approved_by": "owner directive 2026-09-27",
         "approval_note": "First invocation is plan-only. Review the frozen inventory, then replace both PENDING values before any candidate may fit."
       }
     },
