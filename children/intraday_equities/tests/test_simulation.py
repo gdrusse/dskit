@@ -2952,3 +2952,697 @@ def test_path_row_refuses_what_the_screen_forbids(ppub):
     block = next(b for b in ppub["default"]["ticks"] if b["symbol"] == "LLY")
     with pytest.raises(ValueError, match="yhat_by_lead"):
         MinuteForecastPublisher.path_tick(block, 0)
+
+
+# --- ADR-0188 formulation B, slice 6: the per-minute JOINT decider -------------
+
+from intraday_equities.nodes_capital import JOINT_REFUSED_PARAMS, JointEquityKellyMIO
+from intraday_equities.simulation import JointMinuteMioDecider, MinuteDevelopmentSimulation
+
+#: The joint kind's ``mio`` block: the fixture's lead-group params without the
+#: knobs the joint kind refuses by name.
+JOINT_MIO = {name: value for name, value in MIO.items() if name not in JOINT_REFUSED_PARAMS}
+#: The shipped fill policy on the share book: ``forced_exit_at`` alone differs.
+SHARES_POLICY = FillPolicy({**FILL_POLICY.to_obj(), "forced_exit_at": "session_close"})
+#: The path fixture's admitted names (ANET is modeled, never admitted).
+JOINT_NAMES = ("LLY", "LRCX", "NOW")
+_MINUTE = 60_000
+
+
+def _joint_mio(published, fx, **overrides):
+    """The ``decide`` node's output under ``policy: "joint"``."""
+    node = MioDeciderNode("decide", {"mio": {**JOINT_MIO, **overrides}, "policy": "joint"})
+    return node.run(fx["ctx"], {"releases": published["releases"]})["mio"]
+
+
+def _joint_decider(published, fx, policy=SHARES_POLICY, **kwargs):
+    return JointMinuteMioDecider(
+        published["releases"][0], published["ticks"], _joint_mio(published, fx), policy, fx["ctx"],
+        _closes(fx), TZ, **kwargs,
+    )
+
+
+def _jbook(fx, asof_ms, positions=None, pending=(), closes=None):
+    """A share-book portfolio: the minute book, NAV with its positions, and each name's session close."""
+    book = _mbook(fx, asof_ms, positions, pending)
+    book["gross_limit"] = book["cash"] + sum(q * book["mark_prices"][s] for s, q in book["positions"].items())
+    close = _closes(fx)[_local_day(asof_ms)]
+    book["session_last_ms"] = {**{symbol: close for symbol in JOINT_NAMES}, **(closes or {})}
+    return book
+
+
+def _spy_joint(monkeypatch):
+    """Record every joint solve's bundle rows, portfolio and output."""
+    seen = []
+    real = JointEquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        call = {"bundle": [dict(row) for row in inputs["bundle"]], "portfolio": dict(inputs["portfolio"])}
+        seen.append(call)
+        call["out"] = real(self, ctx, inputs)
+        return call["out"]
+
+    monkeypatch.setattr(JointEquityKellyMIO, "run", spy)
+    return seen
+
+
+def _drop_ticks(published, symbol, stamps):
+    """Delete ``symbol``'s path tick at each of ``stamps`` from every column of its block."""
+    block = next(b for b in published["ticks"] if b["symbol"] == symbol)
+    for stamp in sorted(stamps, reverse=True):
+        k = block["ts"].index(stamp)
+        for column in ("ts", "price", "yhat", "sigma", "beta"):
+            del block[column][k]
+        for column in block["yhat_by_lead"]:
+            del column[k]
+
+
+def _mid(published, minute=60):
+    """A decision minute well inside the segment's first session."""
+    return _open(published["releases"][0]) + minute * _MINUTE
+
+
+def test_decide_node_joint_policy_is_validated_against_the_joint_kind_and_emitted(ppub):
+    fx = ppub["fx"]
+    check = MioDeciderNode.validate_params
+    assert check({"mio": JOINT_MIO, "policy": "joint"}) == []
+    out = MioDeciderNode("decide", {"mio": JOINT_MIO, "policy": "joint"}).run(
+        fx["ctx"], {"releases": ppub["path"]["releases"]}
+    )
+    assert json.loads(json.dumps(out)) == out
+    assert out == {"mio": {"params": JOINT_MIO, "lead_groups": [1, 2], "policy": "joint"}}
+    # A declared lead_groups policy is emitted and validates exactly as the default does.
+    assert check({"mio": MIO, "policy": "lead_groups"}) == []
+    declared = MioDeciderNode("decide", {"mio": MIO, "policy": "lead_groups"}).run(
+        fx["ctx"], {"releases": ppub["default"]["releases"]}
+    )
+    assert declared == {"mio": {"params": MIO, "lead_groups": [1, 2], "policy": "lead_groups"}}
+    default = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": ppub["default"]["releases"]})
+    assert default == {"mio": {"params": MIO, "lead_groups": [1, 2]}}
+
+
+def test_decide_node_joint_policy_refuses_the_joint_kinds_knobs_and_unknown_policies_by_name():
+    check = MioDeciderNode.validate_params
+    for knob in JOINT_REFUSED_PARAMS:
+        problems = check({"mio": {**JOINT_MIO, knob: MIO.get(knob, 1)}, "policy": "joint"})
+        assert any(p.startswith(f"mio: {knob} is refused by the joint kind") for p in problems), problems
+    # The lead-group block carries four of them: each surfaces by name through the node.
+    problems = check({"mio": MIO, "policy": "joint"})
+    named = {p.split()[1] for p in problems if "refused by the joint kind" in p}
+    assert named == set(MIO) & set(JOINT_REFUSED_PARAMS) == {"band_bps", "cardinality", "min_ticket", "max_position_notional"}
+    # The joint block is not a lead-group one either.
+    assert any("band_bps is required" in p for p in check({"mio": JOINT_MIO}))
+    # The node's own rules hold under both policies.
+    assert any("must not carry" in p for p in check({"mio": {**JOINT_MIO, "eq_ratio": 0.9}, "policy": "joint"}))
+    lagged = {**JOINT_MIO, "cap_evidence_look_ahead": False}
+    assert any("declared true" in p for p in check({"mio": lagged, "policy": "joint"}))
+    for policy in ("JOINT", "joint_mio", "", None, 1, ["joint"]):
+        assert any(p.startswith("policy must be one of") for p in check({"mio": JOINT_MIO, "policy": policy}))
+
+
+def test_decide_node_joint_policy_refuses_releases_without_a_path_block(ppub):
+    fx = ppub["fx"]
+    node = MioDeciderNode("decide", {"mio": JOINT_MIO, "policy": "joint"})
+    flat = ppub["default"]["releases"]
+    problems = node.validate_inputs({"releases": flat})
+    assert len(problems) == 1 and "carry no path block" in problems[0] and flat[0]["release_id"] in problems[0]
+    with pytest.raises(ValueError, match="no path block"):
+        node.run(fx["ctx"], {"releases": flat})
+    assert node.validate_inputs({"releases": ppub["path"]["releases"]}) == []
+    # The lead-group policy never reads the path block.
+    assert MioDeciderNode("decide", {"mio": MIO}).validate_inputs({"releases": flat}) == []
+
+
+def test_joint_decider_sizes_every_ticking_name_in_one_solve_and_orders_one_side_per_name(ppub, monkeypatch):
+    from dskit.pipeline.libs.pyomo import SolveRecord
+
+    seen = _spy_joint(monkeypatch)
+    published, fx = ppub["path"], ppub["fx"]
+    decider = _joint_decider(published, fx)
+    for minute in range(5, 40):
+        t = _mid(published, minute)
+        seen.clear()
+        orders = decider.decide(t, _jbook(fx, t))
+        (call,) = seen
+        assert [row["entity"] for row in call["bundle"]] == list(JOINT_NAMES)
+        # Mid-session the close never binds: each plan is the screened min(K_i, kstar_i).
+        assert {row["entity"]: row["plan_horizon"] for row in call["bundle"]} == {"LLY": 3, "LRCX": 3, "NOW": 2}
+        assert call["portfolio"]["positions"] == {} and call["portfolio"]["carried_wealth"] == 0.0
+        if orders:
+            break
+    else:
+        pytest.fail("the fixture must trade for this test to mean anything")
+    trades = call["out"]["trades"]
+    assert orders == [
+        {
+            "symbol": symbol, "asof_ms": t, "lead": 0,
+            "qty": trade["buy"] or trade["sell"], "side": "buy" if trade["buy"] else "sell",
+        }
+        for symbol, trade in sorted(trades.items())
+    ]
+    for order in orders:
+        assert order["lead"] == 0 and type(order["qty"]) is int and order["qty"] > 0
+        assert order["side"] in ("buy", "sell")
+    assert len({order["symbol"] for order in orders}) == len(orders)
+    # Every solve is kept with lead 0, the lead-group decider's record shape.
+    assert decider.solves and all(row["lead"] == 0 for row in decider.solves)
+    assert all(set(row) == {"asof_ms", "lead", *SolveRecord.field_names()} for row in decider.solves)
+    assert decider.n_solves == len(decider.solves) and decider.refused == [] and decider.skipped == []
+
+
+def test_joint_decider_leaves_queued_and_no_tick_names_out_of_the_solve_and_carries_their_mark(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
+    published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
+    t = _mid(published)
+    _drop_ticks(published, "LRCX", [t])
+    decider = _joint_decider(published, fx)
+    queued_sell = {"symbol": "NOW", "lead": 0, "qty": 2, "side": "sell", "decision_ms": t - _MINUTE, "fill_ms": t + _MINUTE}
+    book = _jbook(fx, t, positions={"LLY": 4, "LRCX": 3, "NOW": 2}, pending=[queued_sell])
+    orders = decider.decide(t, book)
+    assert decider.skipped == [
+        {"symbol": "LRCX", "asof_ms": t, "lead": 0, "reason": "no_tick"},
+        {"symbol": "NOW", "asof_ms": t, "lead": 0, "reason": "pending_order_at_decision"},
+    ]
+    (call,) = seen
+    assert [row["entity"] for row in call["bundle"]] == ["LLY"]
+    portfolio, marks = call["portfolio"], book["mark_prices"]
+    assert portfolio["positions"] == {"LLY": 4}
+    assert portfolio["carried_wealth"] == pytest.approx(3 * marks["LRCX"] + 2 * marks["NOW"])
+    # The excluded shares stay in NAV (the gross limit) and fund nothing: cash is the replay's own.
+    assert portfolio["gross_limit"] == book["gross_limit"]
+    assert portfolio["cash"] == portfolio["buying_power"] == book["cash"]
+    assert {order["symbol"] for order in orders} <= {"LLY"}
+    # A queued BUY of an unheld name: skipped, its cost reserved, nothing carried.
+    seen.clear()
+    decided = t - _MINUTE
+    queued_buy = {"symbol": "NOW", "lead": 0, "qty": 3, "side": "buy", "decision_ms": decided, "fill_ms": t + _MINUTE}
+    later = _joint_decider(published, fx)
+    later.decide(t, _jbook(fx, t, pending=[queued_buy]))
+    block = next(b for b in published["ticks"] if b["symbol"] == "NOW")
+    price = block["price"][block["ts"].index(decided)]
+    reserved = 3 * price + 3 * SHARES_POLICY.costs.buy_per_share("NOW", price, t + _MINUTE)
+    (call,) = seen
+    assert call["portfolio"]["cash"] == pytest.approx(1020.0 - reserved)
+    assert call["portfolio"]["positions"] == {} and call["portfolio"]["carried_wealth"] == 0.0
+    # LRCX (unheld, no tick) is simply not a candidate; NOW waits for its queued order.
+    assert [row["entity"] for row in call["bundle"]] == ["LLY"]
+    assert later.skipped == [{"symbol": "NOW", "asof_ms": t, "lead": 0, "reason": "pending_order_at_decision"}]
+
+
+def test_joint_decider_keeps_a_last_decision_name_outside_the_solve(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
+    published, fx = ppub["path"], ppub["fx"]
+    t = _mid(published)
+    decider = _joint_decider(published, fx)
+    # LLY's fill bar IS its session close; NOW's falls after it (t closed NOW's session).
+    book = _jbook(fx, t, positions={"LLY": 4}, closes={"LLY": t + _MINUTE, "NOW": t})
+    orders = decider.decide(t, book)
+    assert decider.skipped == [
+        {"symbol": "LLY", "asof_ms": t, "lead": 0, "reason": "last_decision"},
+        {"symbol": "NOW", "asof_ms": t, "lead": 0, "reason": "last_decision"},
+    ]
+    (call,) = seen
+    assert [row["entity"] for row in call["bundle"]] == ["LRCX"]
+    assert call["portfolio"]["positions"] == {}
+    assert call["portfolio"]["carried_wealth"] == pytest.approx(4 * book["mark_prices"]["LLY"])
+    assert all(order["symbol"] == "LRCX" for order in orders)
+    # One bar before that, the fill bar precedes the close: LLY is sized on a one-tranche plan.
+    seen.clear()
+    decider.decide(t, _jbook(fx, t, positions={"LLY": 4}, closes={"LLY": t + 2 * _MINUTE}))
+    (call,) = seen
+    assert call["portfolio"]["positions"] == {"LLY": 4}
+    assert {row["entity"]: row["plan_horizon"] for row in call["bundle"]}["LLY"] == 1
+    # The whole book at its last decision: nothing to solve, so no node and no refusal.
+    seen.clear()
+    last = _joint_decider(published, fx)
+    every = {symbol: t + _MINUTE for symbol in JOINT_NAMES}
+    assert last.decide(t, _jbook(fx, t, positions={"LLY": 4}, closes=every)) == []
+    assert seen == [] and last.solves == [] and last.refused == [] and last.n_solves == 0
+    assert [r["symbol"] for r in last.skipped if r["reason"] == "last_decision"] == list(JOINT_NAMES)
+
+
+def test_joint_decider_truncates_each_plan_at_the_close_counting_the_names_own_ticks(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
+    published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
+    t = _mid(published)
+    # LRCX printed no tick at t+2 and t+3: from its fill bar (t+1) to its close (t+4) it ticks twice.
+    _drop_ticks(published, "LRCX", [t + 2 * _MINUTE, t + 3 * _MINUTE])
+    decider = _joint_decider(published, fx)
+    closes = {"LLY": t + 3 * _MINUTE, "LRCX": t + 4 * _MINUTE, "NOW": t + 4 * _MINUTE}
+    decider.decide(t, _jbook(fx, t, closes=closes))
+    (call,) = seen
+    # k_t = min(plan, n - 1): LLY min(3, 3 - 1) = 2 (the close binds); LRCX min(3, 2 - 1) = 1 (its
+    # own ticks bind, though four minutes remain); NOW min(2, 4 - 1) = 2 (its screened plan binds).
+    assert {row["entity"]: row["plan_horizon"] for row in call["bundle"]} == {"LLY": 2, "LRCX": 1, "NOW": 2}
+    # The truncation shortens the plan only: every scored head still rides the row.
+    assert {row["entity"]: len(row["mu_gross_path"]) for row in call["bundle"]} == {"LLY": 3, "LRCX": 3, "NOW": 2}
+
+
+def test_joint_decider_sells_a_held_name_whose_screened_plan_is_empty(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
+    published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
+    release = published["releases"][0]
+    release["path"]["cell_coverage"]["LLY:h01"] = 0.0  # a lead-1 breach: LLY is sell-only (question I(a))
+    assert ForecastPublisher.path_plans(release, JOINT_MIO["uncertainty_min_coverage"])["LLY"]["plan"] == 0
+    t = _mid(published)
+    decider = _joint_decider(published, fx)
+    orders = decider.decide(t, _jbook(fx, t, positions={"LLY": 4}))
+    (call,) = seen
+    assert [row["entity"] for row in call["bundle"]] == ["LRCX", "NOW"]
+    assert call["portfolio"]["positions"] == {"LLY": 4} and call["portfolio"]["carried_wealth"] == 0.0
+    assert call["out"]["evidence"]["mandatory_exits"]["LLY"]["code"] == "no_row"
+    assert {"symbol": "LLY", "asof_ms": t, "lead": 0, "qty": 4, "side": "sell"} in orders
+    assert decider.skipped == [] and decider.refused == []
+    # Unheld, the same name is simply not sized.
+    seen.clear()
+    flat = _joint_decider(published, fx)
+    assert all(order["symbol"] != "LLY" for order in flat.decide(t, _jbook(fx, t)))
+    assert flat.skipped == [{"symbol": "LLY", "asof_ms": t, "lead": 0, "reason": "no_calibrated_plan"}]
+    assert [row["entity"] for row in seen[0]["bundle"]] == ["LRCX", "NOW"]
+
+
+def test_joint_decider_cannot_sell_a_lone_mandatory_exit_through_an_empty_bundle(ppub):
+    # The joint kind inherits the base kind's guard: an EMPTY bundle may not authorize the
+    # liquidation of a held position. A held plan-0 name at a minute where no other name has a
+    # row therefore refuses the minute by name (it is sold at the first minute another name
+    # carries a row, or by the backstop at the close).
+    published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
+    release = published["releases"][0]
+    release["path"]["cell_coverage"]["LLY:h01"] = 0.0
+    t = _mid(published)
+    _drop_ticks(published, "LRCX", [t])
+    _drop_ticks(published, "NOW", [t])
+    decider = _joint_decider(published, fx)
+    assert decider.decide(t, _jbook(fx, t, positions={"LLY": 4})) == []
+    (refusal,) = decider.refused
+    assert refusal["reason"] == "mio_refused"
+    assert "an empty bundle cannot authorize liquidation" in refusal["detail"]
+
+
+def test_joint_decider_at_t_reads_no_tick_value_after_t(ppub):
+    published, fx = ppub["path"], ppub["fx"]
+    t = _mid(published)
+    book = _jbook(fx, t, positions={"LLY": 4})
+    first = _joint_decider(published, fx)
+    orders = first.decide(t, book)
+    moved = json.loads(json.dumps(published))
+    for block in moved["ticks"]:
+        for k, stamp in enumerate(block["ts"]):
+            if stamp > t:
+                block["price"][k] *= 1.5
+                block["sigma"][k] *= 3.0
+                block["beta"][k] += 1.0
+                block["yhat"][k] += 5.0
+                for column in block["yhat_by_lead"]:
+                    column[k] += 5.0
+    second = _joint_decider(moved, fx)
+    assert second.decide(t, book) == orders
+    strip = [{k: v for k, v in row.items() if k != "seconds"} for row in first.solves]
+    assert [{k: v for k, v in row.items() if k != "seconds"} for row in second.solves] == strip
+    assert strip, "the decision must solve for this test to mean anything"
+
+
+def test_joint_decider_records_a_producer_fault_and_aborts_after_the_refusal_streak(ppub):
+    published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
+    release = published["releases"][0]
+    for row in release["cap"]["caps"]:
+        if row["symbol"] == "LLY":
+            row["capped_horizon"] = 3  # the gate no longer confirms the path's admitted horizon 2
+    decider = _joint_decider(published, fx, max_consecutive_refusals=3)
+    minutes = [_mid(published, 60 + k) for k in range(4)]
+    for t in minutes[:2]:
+        assert decider.decide(t, _jbook(fx, t)) == []
+    assert [(r["asof_ms"], r["lead"], r["reason"]) for r in decider.refused] == [
+        (minutes[0], 0, "producer_fault"), (minutes[1], 0, "producer_fault"),
+    ]
+    assert all("LLY: cap_mismatch (" in r["detail"] for r in decider.refused)
+    with pytest.raises(ValueError, match=r"refused 3 consecutive decision minutes.*producer_fault.*cap_mismatch"):
+        decider.decide(minutes[2], _jbook(fx, minutes[2]))
+    assert len(decider.refused) == 3
+    # Aborted: every later call raises the same, whatever the minute.
+    with pytest.raises(ValueError, match="refused 3 consecutive"):
+        decider.decide(minutes[3], _jbook(fx, minutes[3]))
+    assert len(decider.refused) == 3
+    # Refused before the solver: nothing was solved or counted.
+    assert decider.solves == [] and decider.n_solves == 0
+
+
+def test_joint_decider_resets_the_refusal_streak_on_a_solved_minute_only(ppub, monkeypatch):
+    real = JointEquityKellyMIO.run
+    refuse_at = set()
+
+    def flaky(self, ctx, inputs):
+        if inputs["portfolio"]["asof_ms"] in refuse_at:
+            raise ValueError(f"{self.key}: a refusal that names no producer fault")
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(JointEquityKellyMIO, "run", flaky)
+    published, fx = ppub["path"], ppub["fx"]
+    minutes = [_mid(published, 60 + k) for k in range(5)]
+    refuse_at.update(minutes[:1] + minutes[2:])
+    decider = _joint_decider(published, fx, max_consecutive_refusals=3)
+    for t in minutes[:4]:  # refused, solved (the count resets), refused, refused
+        assert decider.decide(t, _jbook(fx, t)) == [] or t == minutes[1]
+    # A minute with nothing to size builds no node: the count neither grows nor resets.
+    quiet = minutes[3] + _MINUTE // 2
+    assert decider.decide(quiet, _jbook(fx, quiet)) == []
+    assert [r["asof_ms"] for r in decider.refused] == [minutes[0], minutes[2], minutes[3]]
+    assert {r["reason"] for r in decider.refused} == {"mio_refused"}
+    with pytest.raises(ValueError, match="refused 3 consecutive decision minutes.*mio_refused"):
+        decider.decide(minutes[4], _jbook(fx, minutes[4]))
+
+
+def test_joint_decider_counts_a_solve_the_solver_halted_before_any_incumbent(ppub, monkeypatch):
+    import time
+
+    def halted(self, ctx, inputs):
+        time.sleep(0.05)
+        raise RuntimeError(f"{self.key}: the solver returned no loadable solution (a time limit reached)")
+
+    monkeypatch.setattr(JointEquityKellyMIO, "run", halted)
+    published, fx = ppub["path"], ppub["fx"]
+    t = _mid(published)
+    decider = _joint_decider(published, fx)
+    assert decider.decide(t, _jbook(fx, t)) == []
+    # No solve record exists, yet the halt is counted and its time is not free.
+    assert decider.solves == [] and decider.n_solves == 1 and decider.solve_seconds >= 0.05
+    assert [(r["reason"], r["lead"]) for r in decider.refused] == [("mio_refused", 0)]
+
+
+def test_joint_decider_refuses_a_minute_whose_trades_are_not_one_whole_side_within_the_book(ppub, monkeypatch):
+    import re
+
+    published, fx = ppub["path"], ppub["fx"]
+    t = _mid(published)
+    for trades, match in (
+        ({"LLY": {"buy": 2, "sell": 1}}, "exactly one positive whole number"),
+        ({"LLY": {"buy": 0, "sell": 0}}, "exactly one positive whole number"),
+        ({"LLY": {"buy": 2.0, "sell": 0}}, "exactly one positive whole number"),
+        ({"LLY": {"buy": 0, "sell": 5}}, "sold 5 LLY .* the solve held 4"),
+        ({"ANET": {"buy": 1, "sell": 0}}, "bought ANET .* no path row"),
+    ):
+        monkeypatch.setattr(JointEquityKellyMIO, "run", lambda self, ctx, inputs, trades=trades: {"trades": trades})
+        decider = _joint_decider(published, fx)
+        assert decider.decide(t, _jbook(fx, t, positions={"LLY": 4})) == []
+        (refusal,) = decider.refused
+        assert refusal["reason"] == "mio_refused" and re.search(match, refusal["detail"]), refusal
+
+
+def test_joint_decider_is_stateless_the_same_state_gives_the_same_orders(ppub):
+    published, fx = ppub["path"], ppub["fx"]
+    first = _joint_decider(published, fx)
+    for minute in range(60, 120):
+        t = _mid(published, minute)
+        book = _jbook(fx, t, positions={"LLY": 4, "NOW": 2})
+        orders = first.decide(t, book)
+        if any(order["side"] == "sell" for order in orders):
+            break
+    else:
+        pytest.fail("the fixture must sell a held name for this test to mean anything")
+    first.decide(t + _MINUTE, _jbook(fx, t + _MINUTE))  # another minute in between
+    assert first.decide(t, book) == orders
+    fresh = _joint_decider(published, fx)
+    assert fresh.decide(t, book) == orders
+    strip = [{k: v for k, v in row.items() if k != "seconds"} for row in fresh.solves]
+    assert [{k: v for k, v in row.items() if k != "seconds"} for row in first.solves[-1:]] == strip
+
+
+def test_joint_decider_builds_no_node_on_a_minute_with_nothing_to_size(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
+    published, fx = ppub["path"], ppub["fx"]
+    t = _mid(published) + _MINUTE // 2  # between two minutes: no name ticks
+    decider = _joint_decider(published, fx)
+    assert decider.decide(t, _jbook(fx, t)) == []
+    assert (seen, decider.skipped, decider.refused, decider.solves) == ([], [], [], [])
+    # A held name with no tick is left out and kept; still nothing to solve.
+    assert decider.decide(t, _jbook(fx, t, positions={"LLY": 4})) == []
+    assert seen == [] and decider.skipped == [{"symbol": "LLY", "asof_ms": t, "lead": 0, "reason": "no_tick"}]
+
+
+def test_joint_decider_without_kept_solves_holds_no_rows_but_counts_them(ppub):
+    published, fx = ppub["path"], ppub["fx"]
+    decider = _joint_decider(published, fx, keep_solves=False)
+    for minute in (5, 6, 7):
+        t = _mid(published, minute)
+        decider.decide(t, _jbook(fx, t))
+    assert decider.solves == [] and decider.n_solves == 3 and decider.solve_seconds > 0.0
+
+
+def test_joint_decider_refuses_what_it_cannot_run_by_name(ppub):
+    from intraday_equities.simulation import MinuteMioDecider
+
+    published, fx = ppub["path"], ppub["fx"]
+    release, ticks = published["releases"][0], published["ticks"]
+    mio = _joint_mio(published, fx)
+    tail = (fx["ctx"], _closes(fx), TZ)
+    with pytest.raises(ValueError, match="forced_exit_at 'session_close'"):
+        JointMinuteMioDecider(release, ticks, mio, FILL_POLICY, *tail)
+    with pytest.raises(ValueError, match="no path block"):
+        JointMinuteMioDecider(ppub["default"]["releases"][0], ppub["default"]["ticks"], mio, SHARES_POLICY, *tail)
+    with pytest.raises(ValueError, match="yhat_by_lead"):
+        JointMinuteMioDecider(release, ppub["default"]["ticks"], mio, SHARES_POLICY, *tail)
+    lead_groups = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    with pytest.raises(ValueError, match="policy 'joint', got 'lead_groups'"):
+        JointMinuteMioDecider(release, ticks, lead_groups, SHARES_POLICY, *tail)
+    with pytest.raises(ValueError, match="policy 'lead_groups', got 'joint'"):
+        MinuteMioDecider(release, ticks, mio, FILL_POLICY, *tail)
+    banded = {**mio, "params": {**mio["params"], "band_bps": 0.0}}
+    with pytest.raises(ValueError, match="band_bps is refused by the joint kind"):
+        JointMinuteMioDecider(release, ticks, banded, SHARES_POLICY, *tail)
+    for limit in (0, -1, True, 1.5, "30", None):
+        with pytest.raises(ValueError, match="max_consecutive_refusals must be an int >= 1"):
+            JointMinuteMioDecider(release, ticks, mio, SHARES_POLICY, *tail, max_consecutive_refusals=limit)
+    decider = JointMinuteMioDecider(release, ticks, mio, SHARES_POLICY, *tail)
+    t = _mid(published)
+    book = _jbook(fx, t)
+    del book["session_last_ms"]
+    with pytest.raises(ValueError, match="no session_last_ms"):
+        decider.decide(t, book)
+    with pytest.raises(ValueError, match=r"positions\['LLY'\] must be whole shares"):
+        decider.decide(t, _jbook(fx, t, positions={"LLY": 4.0}))
+    book = _jbook(fx, t)
+    del book["session_last_ms"]["LLY"]
+    with pytest.raises(ValueError, match="no session close for 'LLY'"):
+        decider.decide(t, book)
+    book = _jbook(fx, t)
+    del book["fill_ms"]["NOW"]
+    with pytest.raises(ValueError, match="no fill instant for 'NOW'"):
+        decider.decide(t, book)
+    queued = {"symbol": "LLY", "lead": 0, "qty": 4, "side": "sell", "decision_ms": t - _MINUTE, "fill_ms": t + _MINUTE}
+    book = _jbook(fx, t, positions={"LLY": 4}, pending=[queued])
+    del book["mark_prices"]["LLY"]
+    with pytest.raises(ValueError, match="held 'LLY' sits outside this minute's solve but"):
+        decider.decide(t, book)
+
+
+# --- the joint policy through the minute simulation and the report ----------------------
+
+
+def _shares_fill_policy(root):
+    """The shipped fill policy under ``forced_exit_at: "session_close"``, written to ``root``: ``(path, digest)``."""
+    with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
+        raw = json.load(handle)
+    path = os.path.join(root, "fill-policy-joint.json")
+    _dump(path, {**raw, "forced_exit_at": "session_close"})
+    return path, FillPolicy.from_path(path).digest()
+
+
+@pytest.fixture(scope="module")
+def jsim(ppub, tmp_path_factory):
+    """Two funded sessions of the path release, decided jointly on the share book, then reported."""
+    fx, published = ppub["fx"], ppub["path"]
+    path, digest = _shares_fill_policy(str(tmp_path_factory.mktemp("jsim")))
+    end = published["releases"][0]["segment_end_ms"]
+    bars = [b for b in _minute_bars(published, fx, days=(0, 1), head=12, tail=8) if b["asof_ms"] < end]
+    params = _sim_params(first=2, last=2, fill_policy=path, fill_policy_sha256=digest)
+    mio = _joint_mio(published, fx)
+    inputs = {"bars": list(bars), "releases": published["releases"], "ticks": published["ticks"], "mio": mio}
+    out = MinuteDevelopmentSimulation("simulate", params).run(fx["ctx"], inputs)
+    ports = ("fills", "skipped", "refused", "cash", "metadata")
+    report = SimulationReport("report", {}).run(
+        fx["ctx"], {**{port: out[port] for port in ports}, "releases": published["releases"]}
+    )
+    return {"fx": fx, "published": published, "bars": bars, "params": params, "mio": mio, "out": out, "report": report}
+
+
+def test_joint_simulation_trades_both_sides_and_is_flat_at_every_session_close(jsim):
+    out = jsim["out"]
+    fills = out["fills"]
+    assert fills and {f["lead"] for f in fills} == {0} and {f["fold"] for f in fills} == {2}
+    decision = [f for f in fills if f["origin"] == "decision"]
+    backstop = [f for f in fills if f["origin"] == "backstop"]
+    assert {f["kind"] for f in decision} == {"entry"} and {f["side"] for f in decision} == {"buy", "sell"}
+    assert backstop and {(f["kind"], f["side"], f["reason"]) for f in backstop} == {("exit", "sell", "session_close")}
+    # Flat by every session close: each name's shares net to zero over each local date ...
+    net = Counter()
+    for f in fills:
+        net[(f["symbol"], _local_day(f["asof_ms"]))] += f["qty"] if f["side"] == "buy" else -f["qty"]
+    assert set(net.values()) == {0} and len({day for _, day in net}) == 2
+    # ... the backstop sells only at a name's last bar of the date ...
+    last = {}
+    for bar in jsim["bars"]:
+        key = (bar["symbol"], _local_day(bar["asof_ms"]))
+        last[key] = max(last.get(key, 0), bar["asof_ms"])
+    assert all(f["asof_ms"] == last[(f["symbol"], _local_day(f["asof_ms"]))] for f in backstop)
+    # ... and the replay's own day close holds no position: NAV is cash, never below zero.
+    assert len(out["cash"]) == 2
+    assert all(row["nav_close"] == pytest.approx(row["cash_close"]) for row in out["cash"])
+    assert all(row["cash_close"] >= 0.0 for row in out["cash"])
+    # The last-decision rule keeps every order off a closing bar: the share book refused none there.
+    reasons = {row["reason"] for row in out["refused"]}
+    assert not reasons & {"oversell", "buy_at_session_close", "fill_next_session", "duplicate_order", "lead"}
+    assert {row["reason"] for row in out["skipped"]} >= {"last_decision"}
+    assert out["solves"] and {row["lead"] for row in out["solves"]} == {0}
+    assert len({row["asof_ms"] for row in out["solves"]}) == len(out["solves"])
+
+
+def test_joint_simulation_report_counts_buys_sells_and_backstop_exits(jsim):
+    fills, report, out = jsim["out"]["fills"], jsim["report"], jsim["out"]
+    summary, daily = report["summary"], report["daily"]
+    expected = {
+        "buys": sum(1 for f in fills if f["origin"] == "decision" and f["side"] == "buy"),
+        "sells": sum(1 for f in fills if f["origin"] == "decision" and f["side"] == "sell"),
+        "backstop_exits": sum(1 for f in fills if f["origin"] == "backstop"),
+    }
+    assert summary["fills_by_origin"] == expected and sum(expected.values()) == len(fills)
+    assert all(count > 0 for count in expected.values())
+    # entries/exits keep counting kinds; the share counters ride beside them, per day and in total.
+    assert summary["fills_by_kind"] == {"entry": expected["buys"] + expected["sells"], "exit": expected["backstop_exits"]}
+    for key, total in expected.items():
+        assert sum(row[key] for row in daily) == total
+    assert all(row["entries"] == row["buys"] + row["sells"] and row["exits"] == row["backstop_exits"] for row in daily)
+    # Attribution collapses to the one lead bucket 0 and still sums to the totals.
+    assert set(summary["by_lead"]) == {"0"} and {v["lead"] for v in summary["by_symbol"].values()} == {0}
+    assert summary["by_lead"]["0"]["realised_pnl"] == pytest.approx(summary["realised_pnl"])
+    # Cash and NAV agree between the replay's day closes and the report's WindowBook fold.
+    assert [row["replay_cash"] for row in daily] == [row["cash_close"] for row in out["cash"]]
+    assert [row["replay_nav"] for row in daily] == [row["nav_close"] for row in out["cash"]]
+    assert summary["max_abs_nav_discrepancy"] == pytest.approx(0.0, abs=1e-6)
+    assert summary["unrealised_pnl"] == pytest.approx(0.0, abs=1e-9)
+    assert summary["refusals_by_reason"] == dict(Counter(row["reason"] for row in out["refused"]))
+    # Fills without the share book's origin (the lead-group runs') get no share counters at all.
+    ports = {port: out[port] for port in ("skipped", "refused", "cash", "metadata")}
+    plain = [{k: v for k, v in f.items() if k not in ("origin", "fill_id")} for f in fills]
+    lots = SimulationReport("report", {}).run(jsim["fx"]["ctx"], {**ports, "fills": plain, "releases": jsim["published"]["releases"]})
+    assert "fills_by_origin" not in lots["summary"]
+    assert not {"buys", "sells", "backstop_exits"} & set(lots["daily"][0])
+    # A share run's fill that is neither a decision buy or sell nor a backstop sale refuses.
+    stray = [dict(fills[0], origin="override")] + fills[1:]
+    with pytest.raises(ConfigError, match="carries origin 'override'"):
+        SimulationReport("report", {}).run(jsim["fx"]["ctx"], {**ports, "fills": stray, "releases": jsim["published"]["releases"]})
+
+
+def test_joint_simulation_keeps_the_metadata_shape(jsim):
+    metadata = jsim["out"]["metadata"]
+    assert set(metadata) == {
+        *DISCLOSURE, "evidence_end", "first_fold", "last_fold", "fill_policy_sha256", "cash_flow_policy_sha256",
+        "currency", "timezone", "segments", "bars_outside_segments", "bars_not_admitted", "open_at_evidence_end",
+    }
+    (segment,) = metadata["segments"]
+    assert set(segment) == {
+        "fold", "release_id", "segment_start_ms", "segment_end_ms", "opening_cash", "closing_cash",
+        "trading_days", "bars", "fills", "carried_out",
+    }
+    assert segment["carried_out"] == [] and metadata["open_at_evidence_end"] == []
+    assert metadata["fill_policy_sha256"] == jsim["params"]["fill_policy_sha256"] != FILL_POLICY.digest()
+
+
+def test_joint_simulation_pairs_each_policy_with_its_fill_policy_and_bounds_the_streak_param(jsim):
+    fx, published, mio = jsim["fx"], jsim["published"], jsim["mio"]
+    lead_groups = MioDeciderNode("decide", {"mio": MIO}).run(fx["ctx"], {"releases": published["releases"]})["mio"]
+    shipped, joint = _sim_params(first=2, last=2), jsim["params"]
+    ports = {"bars": [], "releases": published["releases"], "ticks": published["ticks"]}
+    lots = MinuteDevelopmentSimulation("simulate", shipped)
+    shares = MinuteDevelopmentSimulation("simulate", joint)
+    assert lots.validate_inputs({**ports, "mio": lead_groups}) == []
+    assert shares.validate_inputs({**ports, "mio": mio}) == []
+    assert any("needs a fill policy declaring forced_exit_at 'session_close'" in p for p in lots.validate_inputs({**ports, "mio": mio}))
+    assert any("forced_exit_at 'horizon_expiry'" in p for p in shares.validate_inputs({**ports, "mio": lead_groups}))
+    assert any("mio.policy 'other'" in p for p in shares.validate_inputs({**ports, "mio": {**mio, "policy": "other"}}))
+    with pytest.raises(ConfigError, match="forced_exit_at 'session_close'"):
+        lots.run(fx["ctx"], {**ports, "bars": list(jsim["bars"]), "mio": mio})
+    # The lattice simulation decides by lead group only.
+    lattice = DevelopmentSimulation("simulate", joint)
+    bundles = {"bars": [], "releases": published["releases"], "bundles": []}
+    assert any("mio.policy 'joint' is not one this simulation runs" in p for p in lattice.validate_inputs({**bundles, "mio": mio}))
+    # max_consecutive_refusals: an int >= 1 on the minute kind, for the joint policy only.
+    check = MinuteDevelopmentSimulation.validate_params
+    assert check({**joint, "max_consecutive_refusals": 5}) == []
+    for bad in (0, -3, True, 2.5, "5", None):
+        assert any("max_consecutive_refusals" in p for p in check({**joint, "max_consecutive_refusals": bad}))
+    assert any("max_consecutive_refusals" in p for p in DevelopmentSimulation.validate_params({**shipped, "max_consecutive_refusals": 5}))
+    capped = MinuteDevelopmentSimulation("simulate", {**shipped, "max_consecutive_refusals": 5})
+    assert any("max_consecutive_refusals" in p for p in capped.validate_inputs({**ports, "mio": lead_groups}))
+
+
+def test_joint_simulation_aborts_the_run_on_a_persistent_producer_fault(jsim):
+    fx = jsim["fx"]
+    published = json.loads(json.dumps(jsim["published"]))
+    for row in published["releases"][0]["cap"]["caps"]:
+        if row["symbol"] == "LLY":
+            row["capped_horizon"] = 3
+    inputs = {"bars": list(jsim["bars"]), "releases": published["releases"], "ticks": published["ticks"], "mio": jsim["mio"]}
+    with pytest.raises(ConfigError, match="refused 2 consecutive decision minutes.*cap_mismatch"):
+        MinuteDevelopmentSimulation("simulate", {**jsim["params"], "max_consecutive_refusals": 2}).run(fx["ctx"], inputs)
+
+
+def test_joint_simulation_carries_a_share_position_a_halted_close_left_open(jsim):
+    ny = ZoneInfo("America/New_York")
+
+    def at(day, minute):
+        return int(datetime(2025, 1, 15 + day, 15, 55 + minute, tzinfo=ny).timestamp() * 1000)
+
+    node = MinuteDevelopmentSimulation("simulate", jsim["params"])
+    first = [
+        {"symbol": "LLY", "asof_ms": at(0, m), "open": 100.0, "close": 100.0, "halted": m == 2}
+        for m in range(3)
+    ]
+    buy = {"symbol": "LLY", "asof_ms": at(0, 0), "lead": 0, "qty": 3, "side": "buy"}
+    result = node._replay(None, _Scripted({at(0, 0): [buy]}), []).run(first)
+    # The closing bar was halted, so the backstop could not sell: the shares roll on as a share row.
+    lots = node._carry({"fold": 2}, result)
+    assert lots == [{"symbol": "LLY", "lead": 0, "qty": 3, "side": "buy", "exit_in": 0}]
+    assert node._segment_extras(lots) == {"carried_out": lots}
+    assert [(f["kind"], f["asof_ms"]) for f in result["fills"]] == [("entry", at(0, 1))]
+    second = [
+        {"symbol": "LLY", "asof_ms": at(1, m), "open": 101.0, "close": 101.0, "halted": False}
+        for m in range(3)
+    ]
+    stub = _Scripted({})
+    result = node._replay(None, stub, lots).run(second)
+    assert stub.seen[at(1, 0)]["positions"] == {"LLY": 3}
+    assert [(f["kind"], f["asof_ms"], f["qty"], f["reason"], f["origin"]) for f in result["fills"]] == [
+        ("exit", at(1, 2), 3, "session_close", "backstop"),
+    ]
+    assert node._carry({"fold": 3}, result) == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "replay.py (slice 5) fills a bar's share orders symbol by symbol in tape order, so a later "
+    "symbol's same-bar SALE cannot fund an earlier symbol's BUY, which is refused insufficient_cash; "
+    "the joint decider sizes with sale_credit 1.0 (ADR-0188 J4: sale proceeds reusable at once)"
+))
+def test_a_same_bar_sale_funds_a_same_bar_buy_on_the_share_book():
+    ny = ZoneInfo("America/New_York")
+
+    def at(minute):
+        return int(datetime(2025, 1, 15, 10, minute, tzinfo=ny).timestamp() * 1000)
+
+    policy = FillPolicy({**_zero_fee_policy().to_obj(), "forced_exit_at": "session_close"})
+    bars = [
+        {"symbol": symbol, "asof_ms": at(m), "open": 10.0, "close": 10.0, "halted": False}
+        for symbol in ("AAA", "BBB") for m in range(4)
+    ]
+    carried = [{"symbol": "BBB", "lead": 0, "qty": 100, "side": "buy", "exit_in": 0}]
+    # 150 AAA at 10 costs 1,500: only the 1,020 of cash PLUS the 1,000 the BBB sale raises on the
+    # same fill bar pays for it, exactly as the joint program's buying-power row (J4) sized it.
+    orders = [
+        {"symbol": "BBB", "asof_ms": at(0), "lead": 0, "qty": 100, "side": "sell"},
+        {"symbol": "AAA", "asof_ms": at(0), "lead": 0, "qty": 150, "side": "buy"},
+    ]
+    out = EquityReplay(
+        policy, CASH_POLICY, decider=_Scripted({at(0): orders}), carried_lots=carried, carry_lots=True,
+    ).run(bars)
+    assert out["refused"] == []
+    decided = sorted((f["symbol"], f["side"], f["qty"]) for f in out["fills"] if f["origin"] == "decision")
+    assert decided == [("AAA", "buy", 150), ("BBB", "sell", 100)]

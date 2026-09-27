@@ -25,6 +25,14 @@ after-close units, and :class:`MinuteDevelopmentSimulation` carries a lot
 open at a release boundary into the next release. Scoring, calibration,
 false signal and caps stay on the 30-minute lattice rows.
 
+ADR-0188 (formulation B) adds the JOINT policy, declared on the ``decide``
+node (``policy: "joint"``) and run by :class:`MinuteDevelopmentSimulation`
+under a ``session_close`` fill policy: every minute
+:class:`JointMinuteMioDecider` sizes every held and admitted name in ONE
+``JointEquityKellyMIO`` solve from the path release's exit-horizon rows and
+the share book's holdings, and emits one net buy or sell per name. The
+lead-group policy stays the default, unchanged.
+
 Point in time, by construction rather than by care: a release's
 calibration reads ONLY rows of earlier folds stamped before its cutoff,
 and the tick path reads ``yhat`` through a column projection that never
@@ -39,7 +47,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from bisect import bisect_right
+import time
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -88,7 +97,13 @@ from .final_gates import (
 from .final_model import _epoch_ms
 from .forecast_bundle import ConfirmedCaps, ForecastBundle
 from .model_zoo import TRADE_CACHE_PREFIX
-from .nodes_capital import CAP_LOOK_AHEAD_DISCLOSURE, EquityKellyMIO, SchwabCostModel
+from .nodes_capital import (
+    CAP_LOOK_AHEAD_DISCLOSURE,
+    ROUTE_PRODUCER_FAULT,
+    EquityKellyMIO,
+    JointEquityKellyMIO,
+    SchwabCostModel,
+)
 from .nodes import (
     LABEL_PARAMS,
     LABEL_RETURN_BASIS,
@@ -105,6 +120,7 @@ __all__ = [
     "NODE_KINDS",
     "DevelopmentSimulation",
     "ForecastPublisher",
+    "JointMinuteMioDecider",
     "MinuteDevelopmentSimulation",
     "MinuteForecastPublisher",
     "MinuteMioDecider",
@@ -1749,7 +1765,8 @@ class MioDecider:
         ``bundles`` entries; only this release's are used.
     mio : dict
         The ``decide`` node's ``mio`` output: ``params`` (the
-        ``EquityKellyMIO`` base params) and ``lead_groups`` (ascending).
+        ``EquityKellyMIO`` base params) and ``lead_groups`` (ascending);
+        a declared ``policy`` must be ``lead_groups`` (ADR-0188).
     fill_policy : intraday_equities.replay.FillPolicy
         Source of the Schwab cost knobs.
     ctx : dskit.pipeline.node.NodeContext
@@ -1767,7 +1784,17 @@ class MioDecider:
         decider.refused  # [{"asof_ms": ..., "lead": 2, "reason": "mio_refused", ...}]
     """
 
+    #: The ``decide`` node policy this decider runs (ADR-0188); an output
+    #: declaring another one refuses by name.
+    _POLICY = "lead_groups"
+
     def __init__(self, release, bundles, mio, fill_policy, ctx, keep_solves=True):
+        policy = mio.get("policy", "lead_groups")
+        if policy != self._POLICY:
+            raise ValueError(
+                f"{type(self).__name__} runs the decide node's policy {self._POLICY!r}, got "
+                f"{policy!r}"
+            )
         if list(release["lead_groups"]) != list(mio["lead_groups"]):
             raise ValueError(
                 f"release {release['release_id']} lead groups {release['lead_groups']} "
@@ -2011,6 +2038,372 @@ class MinuteMioDecider(MioDecider):
         return ForecastPublisher.bundle_rows(self._release, lead, rows)
 
 
+#: How many decision minutes in a row the joint decider may refuse before it
+#: aborts the run (ADR-0188 T50): ``max_consecutive_refusals``' default.
+_MAX_CONSECUTIVE_REFUSALS = 30
+
+
+class JointMinuteMioDecider(MinuteMioDecider):
+    """ONE ``JointEquityKellyMIO`` solve per minute over every held and admitted name (ADR-0188 B).
+
+    The ``joint`` policy of the ``decide`` node (:class:`MioDeciderNode`),
+    run under the ``session_close`` share book
+    (:class:`~intraday_equities.replay.SessionShareBook`). At each minute it
+    hands the joint capital node the whole shares carried and the cash,
+    plus one exit-horizon PATH row per name that ticks there
+    (:meth:`ForecastPublisher.path_row`), and turns the node's trades into
+    ONE net order per name, a buy or a sell with ``lead`` 0. Nothing from
+    an earlier minute is read: the next minute solves again from the
+    replay's book (receding horizon).
+
+    Each minute's candidates are the names with a tick at that minute plus
+    the held names; each one is, in this order:
+
+    * skipped ``pending_order_at_decision`` when an order of either side
+      is queued for it (a queued buy's cost is reserved from the cash, as
+      :meth:`_reserved` does for the lead-group decider; a queued sell's
+      proceeds are not credited until it fills);
+    * skipped ``no_tick`` when it is held and printed no tick;
+    * at its LAST DECISION when its fill bar is its session close or falls
+      after it: skipped ``last_decision``, never sized (the replay's
+      backstop sells a held one at the close). The plan is truncated at the
+      close as ``k_t = min(plan, n - 1)``: ``plan`` is the publisher's
+      screened ``min(K_i, kstar_i)`` (:meth:`ForecastPublisher.path_plans`
+      at the ``mio`` block's ``uncertainty_min_coverage``) and ``n`` counts
+      the name's tick stamps from its fill instant (``portfolio.fill_ms``)
+      through its session close (``portfolio.session_last_ms``, the bar the
+      backstop sells at), both inclusive; ``n - 1 <= 0`` is the last
+      decision. The count reads WHICH of the name's minutes up to the
+      close carry a tick -- the tape's minute pattern, never a value, the
+      same knowledge ``session_last_ms`` (the last minute that printed)
+      carries; on a complete minute tape it is the minute count;
+    * with an empty screened plan (a lead-1 cell below the coverage floor,
+      owner question I(a)): skipped ``no_calibrated_plan`` when unheld;
+      when held it stays IN the solve with no row, so the node sells it in
+      full (its mandatory exit, code ``no_row``);
+    * otherwise sized: its path row with ``plan_horizon`` ``k_t``.
+
+    A held name left out of the solve (queued, no tick, last decision) is
+    still wealth: its ``shares x mark`` is the node's ``carried_wealth``, a
+    constant beside the solve that is never cash. The node's ``positions``
+    are the held names in the solve, ``gross_limit`` the replay's NAV, and
+    ``cash``/``buying_power`` the replay's cash less the queued buys'
+    reservation. A minute with no row and no position in the solve builds
+    no node.
+
+    A refused minute (``ValueError``/``RuntimeError`` from the node, or
+    trades that are not one positive whole side per name within the
+    solve's holdings) trades nothing and is recorded ``mio_refused`` with
+    the node's words, or ``producer_fault`` when the node refused on a
+    producer fault: its message names a
+    :data:`~intraday_equities.nodes_capital.ROUTE_PRODUCER_FAULT` code (a
+    row from the future, a cap mismatch) as ``SYMBOL: code (...)``.
+    ``max_consecutive_refusals`` refused minutes in a row raise, and so
+    does every later call (ADR-0188 T50: a persistent fault aborts the run
+    instead of trading nothing silently); a solved minute resets the count
+    and a minute that builds no node leaves it alone.
+
+    Counters as the parent's consumers read them: a solve that left a
+    record is counted and kept (``lead`` 0) with the record's solver
+    seconds; one that raised ``RuntimeError`` without a record (the
+    doorway's refusal of a solver that returned nothing loadable: a time
+    limit reached before any incumbent, or an infeasible program) is
+    counted with the call's own ``perf_counter`` time, so a halt is never
+    free in :attr:`solve_seconds`.
+
+    Parameters
+    ----------
+    release : dict
+        One ``releases`` entry published with ``leads: "path"``.
+    ticks : list of dict
+        The publisher's path ``ticks``: every block of this release carries
+        ``yhat_by_lead``.
+    mio : dict
+        The ``decide`` node's output under ``policy: "joint"``; its
+        ``params`` are validated against the joint kind here.
+    fill_policy : intraday_equities.replay.FillPolicy
+        Must declare ``forced_exit_at: "session_close"``.
+    ctx, closes, tz, keep_solves
+        As :class:`MinuteMioDecider`; the per-symbol session closes are
+        read from the replay's ``portfolio.session_last_ms``, not from
+        ``closes``.
+    max_consecutive_refusals : int, optional
+        Refused minutes in a row that abort the run (>= 1). Default 30.
+
+    Raises
+    ------
+    ValueError
+        The fill policy is not ``session_close``, the ``mio`` output is not
+        the joint policy's or its params are not the joint kind's, the
+        release carries no path block, a tick block has no path, no
+        ``yhat_by_lead`` or unordered stamps, or
+        ``max_consecutive_refusals`` is not an int >= 1.
+
+    Examples
+    --------
+    ::
+
+        decider = JointMinuteMioDecider(release, ticks, mio, policy, ctx, closes, ZoneInfo("America/New_York"))
+        EquityReplay(policy, cash_policy, decider=decider).run(bars)
+        decider.refused  # [{"asof_ms": ..., "lead": 0, "reason": "mio_refused", "detail": ...}, ...]
+    """
+
+    _POLICY = "joint"
+
+    def __init__(
+        self, release, ticks, mio, fill_policy, ctx, closes, tz, keep_solves=True,
+        max_consecutive_refusals=_MAX_CONSECUTIVE_REFUSALS,
+    ):
+        if fill_policy.forced_exit_at != "session_close":
+            raise ValueError(
+                "the joint decider trades whole shares on the session_close share book "
+                "(ADR-0188): the fill policy must declare forced_exit_at 'session_close', got "
+                f"{fill_policy.forced_exit_at!r}"
+            )
+        limit = max_consecutive_refusals
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError(f"max_consecutive_refusals must be an int >= 1, got {limit!r}")
+        super().__init__(release, ticks, mio, fill_policy, ctx, closes, tz, keep_solves=keep_solves)
+        problems = JointEquityKellyMIO.validate_params({**self._params, **_BOUND_PLACEHOLDERS})
+        if problems:
+            raise ValueError("the joint decider's mio params: " + "; ".join(problems))
+        self._floor = float(self._params["uncertainty_min_coverage"])
+        self._plans = ForecastPublisher.path_plans(release, self._floor)
+        self._path_envelopes = ForecastPublisher.path_envelopes(release)
+        for symbol, block in sorted(self._blocks.items()):
+            if symbol not in self._plans:
+                raise ValueError(
+                    f"tick block {symbol!r} has no path in release {release['release_id']}: the "
+                    f"path covers {sorted(self._plans)} (ADR-0188)"
+                )
+            if "yhat_by_lead" not in block:
+                raise ValueError(
+                    f"tick block {symbol!r} carries no yhat_by_lead: its publisher did not declare "
+                    "leads 'path' (ADR-0188)"
+                )
+            stamps = block["ts"]
+            if any(later <= earlier for earlier, later in zip(stamps, stamps[1:])):
+                raise ValueError(
+                    f"tick block {symbol!r} stamps are not unique and time-ordered: the session-close "
+                    "truncation counts them"
+                )
+        self._max_refusals = limit
+        self._streak = 0
+        self._aborted = None
+
+    def decide(self, asof_ms, portfolio):
+        """Return this minute's orders: one ``{"symbol", "asof_ms", "lead": 0, "qty", "side"}`` per name.
+
+        Parameters
+        ----------
+        asof_ms : int
+            The decision instant, epoch ms.
+        portfolio : dict
+            :meth:`~intraday_equities.replay.EquityReplay._portfolio` under
+            ``session_close``: ``positions`` (whole shares), ``pending``
+            (queued orders of both sides), ``cash``, ``mark_prices``,
+            ``gross_limit`` (NAV), ``fill_ms`` and ``session_last_ms``.
+
+        Returns
+        -------
+        list of dict
+            Empty on a refused minute and on a minute with nothing to solve.
+
+        Raises
+        ------
+        ValueError
+            The portfolio carries no ``session_last_ms``, a held count is
+            not whole shares, a sized name has no fill instant or session
+            close, a held name outside the solve has no mark; or the
+            refusal streak reached ``max_consecutive_refusals`` (every later
+            call raises the same).
+        """
+        if self._aborted is not None:
+            raise ValueError(self._aborted)
+        closes = portfolio.get("session_last_ms")
+        if not isinstance(closes, dict):
+            raise ValueError(
+                "portfolio carries no session_last_ms: the joint decider truncates each plan at the "
+                "session close the share book's backstop sells at (forced_exit_at 'session_close')"
+            )
+        context = self._context(asof_ms, portfolio)
+        held = self._held(portfolio["positions"])
+        rows, positions, outside = self._path_rows(
+            asof_ms, portfolio["fill_ms"], closes, held, context["pending"]
+        )
+        if not rows and not positions:
+            return []
+        rows = ForecastPublisher.path_bundle_rows(self._release, rows)
+        node = JointEquityKellyMIO("mio_joint", {**self._params, **self._costs, **self._pins(rows)})
+        inputs = {
+            "bundle": rows,
+            "portfolio": {
+                "asof_ms": asof_ms,
+                "cash": context["cash"],
+                "buying_power": context["cash"],
+                "positions": positions,
+                "mark_prices": portfolio["mark_prices"],
+                "gross_limit": portfolio["gross_limit"],
+                "cash_reserve": 0.0,
+                "sale_credit": 1.0,
+                # Each name's fill-bar instant: sizing keys the time-of-day
+                # spread on it exactly as the replay bills.
+                "fill_ms": portfolio["fill_ms"],
+                "carried_wealth": self._carried(outside, held, portfolio["mark_prices"]),
+            },
+            "survivors": list(self._release["survivors"]),
+            "cap": self._release["cap"],
+            "uncertainty": self._path_envelopes,
+        }
+        started = time.perf_counter()
+        try:
+            out = node.run(self._ctx, inputs)
+        except (ValueError, RuntimeError) as exc:
+            self._count_solve(node, asof_ms, time.perf_counter() - started, isinstance(exc, RuntimeError))
+            return self._refuse(asof_ms, exc)
+        self._count_solve(node, asof_ms, time.perf_counter() - started, False)
+        try:
+            orders = self._orders(asof_ms, out["trades"], rows, positions)
+        except ValueError as exc:
+            return self._refuse(asof_ms, exc)
+        self._streak = 0
+        return orders
+
+    @staticmethod
+    def _held(positions):
+        """Return ``{symbol: whole shares}`` of every open position; a count that is not an int >= 0 refuses."""
+        held = {}
+        for symbol, shares in sorted(positions.items()):
+            if isinstance(shares, bool) or not isinstance(shares, int) or shares < 0:
+                raise ValueError(
+                    f"portfolio.positions[{symbol!r}] must be whole shares (an int >= 0) under the "
+                    f"share book, got {shares!r}"
+                )
+            if shares:
+                held[symbol] = shares
+        return held
+
+    def _path_rows(self, asof_ms, fill_ms, closes, held, pending):
+        """Classify this minute's candidates; return ``(rows, positions_solve, outside)``.
+
+        ``rows`` are the sized names' path input rows, ``positions_solve``
+        the held names in the solve (a mandatory exit included) and
+        ``outside`` the held names left out of it. Every skip is recorded.
+        """
+        ticking = {symbol for symbol, at in self._at.items() if asof_ms in at}
+        rows, positions, outside = [], {}, []
+        for symbol in sorted(ticking | set(held)):
+            if symbol in pending:
+                reason = "pending_order_at_decision"
+            elif symbol not in ticking:
+                reason = "no_tick"
+            else:
+                steps = self._steps_to_close(symbol, asof_ms, fill_ms, closes)
+                plan = self._plans[symbol]["plan"]
+                if steps <= 0:
+                    reason = "last_decision"
+                elif plan == 0 and symbol not in held:
+                    reason = "no_calibrated_plan"
+                else:
+                    if plan:
+                        tick = MinuteForecastPublisher.path_tick(self._blocks[symbol], self._at[symbol][asof_ms])
+                        rows.append(ForecastPublisher.path_row(
+                            self._release, symbol, asof_ms, tick["price"], tick["yhat_path"],
+                            tick["sigma"], tick["beta"], self._floor, plan_horizon=min(plan, steps),
+                        ))
+                    if symbol in held:
+                        positions[symbol] = held[symbol]
+                    continue
+            self.skipped.append({"symbol": symbol, "asof_ms": asof_ms, "lead": 0, "reason": reason})
+            if symbol in held:
+                outside.append(symbol)
+        return rows, positions, outside
+
+    def _steps_to_close(self, symbol, asof_ms, fill_ms, closes):
+        """Return ``n - 1``: ``symbol``'s tick stamps from its fill instant through its session close, less one.
+
+        Both ends inclusive, so a fill bar AT the close gives 0 and one
+        after it a negative number: the last decision.
+        """
+        fill, close = fill_ms.get(symbol), closes.get(symbol)
+        if fill is None:
+            raise ValueError(f"portfolio.fill_ms names no fill instant for {symbol!r} at {asof_ms}")
+        if close is None:
+            raise ValueError(
+                f"portfolio.session_last_ms names no session close for {symbol!r} at {asof_ms}: the "
+                "tape holds no bar of its session, so its plan cannot be truncated at the close"
+            )
+        stamps = self._blocks[symbol]["ts"]
+        return bisect_right(stamps, close) - bisect_left(stamps, fill) - 1
+
+    @staticmethod
+    def _carried(outside, held, marks):
+        """Return the ``shares x mark`` of the held names outside the solve; a missing mark refuses."""
+        total = 0.0
+        for symbol in outside:
+            mark = marks.get(symbol)
+            if (
+                isinstance(mark, bool) or not isinstance(mark, (int, float))
+                or not math.isfinite(mark) or mark <= 0.0
+            ):
+                raise ValueError(
+                    f"held {symbol!r} sits outside this minute's solve but portfolio.mark_prices "
+                    f"gives it no usable mark ({mark!r}): its shares x mark is wealth the solve carries"
+                )
+            total += held[symbol] * float(mark)
+        return total
+
+    def _count_solve(self, node, asof_ms, seconds, raised_runtime):
+        """Count one node call: its solve record (kept, ``lead`` 0), or a solver refusal timed here."""
+        if node.solve_record is not None:
+            self._keep_solve(node, asof_ms, 0)
+        elif raised_runtime:
+            self.n_solves += 1
+            self.solve_seconds += float(seconds)
+
+    @staticmethod
+    def _orders(asof_ms, trades, rows, positions):
+        """Map the node's ``trades`` to one net order per name; anything else refuses the minute."""
+        sized = {row["entity"] for row in rows}
+        orders = []
+        for symbol, trade in sorted(trades.items()):
+            buy, sell = trade.get("buy"), trade.get("sell")
+            whole = all(
+                isinstance(qty, int) and not isinstance(qty, bool) and qty >= 0 for qty in (buy, sell)
+            )
+            if not whole or (buy > 0) == (sell > 0):
+                raise ValueError(
+                    f"mio_joint traded {symbol} {trade!r} at {asof_ms}: a net order is exactly one "
+                    "positive whole number of shares on one side"
+                )
+            if buy and symbol not in sized:
+                raise ValueError(f"mio_joint bought {symbol} at {asof_ms}, which had no path row")
+            if sell > positions.get(symbol, 0):
+                raise ValueError(
+                    f"mio_joint sold {sell} {symbol} at {asof_ms}, but the solve held "
+                    f"{positions.get(symbol, 0)}"
+                )
+            side, qty = ("buy", buy) if buy else ("sell", sell)
+            orders.append({"symbol": symbol, "asof_ms": asof_ms, "lead": 0, "qty": qty, "side": side})
+        return orders
+
+    def _refuse(self, asof_ms, exc):
+        """Record a refused minute and count the streak; raise once it reaches the limit (ADR-0188 T50)."""
+        detail = str(exc)
+        fault = any(f": {code} (" in detail for code in ROUTE_PRODUCER_FAULT)
+        reason = "producer_fault" if fault else "mio_refused"
+        self.refused.append({"asof_ms": asof_ms, "lead": 0, "reason": reason, "detail": detail})
+        self._streak += 1
+        if self._streak >= self._max_refusals:
+            self._aborted = (
+                f"the joint decider refused {self._streak} consecutive decision minutes "
+                f"(max_consecutive_refusals {self._max_refusals}, ADR-0188 T50): a persistent fault "
+                f"aborts the run; the last, at {asof_ms}, was {reason}: {detail}"
+            )
+            raise ValueError(self._aborted)
+        return []
+
+
 class MioDeciderNode(Node):
     """Carry the validated per-tick MIO params to the simulation (ADR-0184 S6, Revision 3).
 
@@ -2023,14 +2416,27 @@ class MioDeciderNode(Node):
     and this document's survivor set is the pinned gate admission carried
     on each release (ADR-0184 Revision 1), never a new test.
 
+    ADR-0188 adds the optional ``policy`` param, a sibling of ``mio``:
+    ``"lead_groups"`` (the default: :class:`MioDecider` and
+    :class:`MinuteMioDecider`, one ``EquityKellyMIO`` per lead group) or
+    ``"joint"`` (:class:`JointMinuteMioDecider`, one
+    ``JointEquityKellyMIO`` per minute). Under ``joint`` the ``mio`` block
+    is validated against the joint kind, which refuses ``band_bps``,
+    ``cardinality``, ``min_ticket``, ``max_position_notional`` and
+    ``lot_size`` by name, and every release must carry a path block (the
+    publisher's ``leads: "path"``). ``policy`` is emitted only when
+    declared, so a document without it emits exactly ``{"params",
+    "lead_groups"}``.
+
     Parameters
     ----------
     params : dict
-        ``mio``: the ``EquityKellyMIO`` params WITHOUT the bundle/cap pins
+        ``mio``: the capital kind's params WITHOUT the bundle/cap pins
         and Schwab cost knobs (bound per tick), and with
         ``cap_evidence_look_ahead`` declared true -- the P16 caps are
         post-selection, so the switch is stated in the document, never
-        implied.
+        implied. ``policy`` (optional): ``"lead_groups"`` (default) or
+        ``"joint"``.
 
     Examples
     --------
@@ -2039,17 +2445,28 @@ class MioDeciderNode(Node):
         node = MioDeciderNode("decide", {"mio": {..., "cap_evidence_look_ahead": True}})
         node.run(ctx, {"releases": releases})["mio"]
         # -> {"params": {...}, "lead_groups": [1, 2, 3, 4, 5, 6, 10]}
+        joint = MioDeciderNode("decide", {"mio": {...}, "policy": "joint"})
+        joint.run(ctx, {"releases": path_releases})["mio"]["policy"]  # 'joint'
     """
 
     role = "transform"
     outputs = ("mio",)
-    _PARAMS = ("mio",)
+    _PARAMS = ("mio", "policy")
+    #: The optional ``policy`` param's closed vocabulary (ADR-0188), each
+    #: with the capital kind its ``mio`` block is validated against.
+    _POLICIES = {"lead_groups": EquityKellyMIO, "joint": JointEquityKellyMIO}
 
     @classmethod
     def validate_params(cls, params):
         """Problems with ``params``, empty when none."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        policy = params.get("policy", "lead_groups")
+        kind = cls._POLICIES.get(policy) if isinstance(policy, str) else None
+        if kind is None:
+            problems.append(
+                f"policy must be one of {sorted(cls._POLICIES)} (default 'lead_groups'), got {policy!r}"
+            )
         mio = params.get("mio")
         if not isinstance(mio, dict):
             return problems + [f"mio must be a mapping of EquityKellyMIO params, got {mio!r}"]
@@ -2064,29 +2481,39 @@ class MioDeciderNode(Node):
                 "mio.cap_evidence_look_ahead must be declared true: the gate caps use "
                 "post-selection evidence (ADR-0184 Revision 2)"
             )
-        problems.extend(
-            f"mio: {problem}"
-            for problem in EquityKellyMIO.validate_params({**mio, **_BOUND_PLACEHOLDERS})
-        )
+        if kind is not None:
+            problems.extend(
+                f"mio: {problem}" for problem in kind.validate_params({**mio, **_BOUND_PLACEHOLDERS})
+            )
         return problems
 
     def validate_inputs(self, inputs):
-        """Require a non-empty ``releases`` list that agrees on its lead groups."""
+        """Require a non-empty ``releases`` list that agrees on its lead groups (path releases when joint)."""
         releases = inputs.get("releases")
         if not isinstance(releases, list) or not releases:
             return ["releases must be a non-empty list"]
         groups = {json.dumps(release.get("lead_groups")) for release in releases}
         if len(groups) != 1:
             return [f"releases disagree on their lead groups: {sorted(groups)}"]
+        if self.params.get("policy") == "joint":
+            flat = [release.get("release_id") for release in releases if not isinstance(release.get("path"), dict)]
+            if flat:
+                return [
+                    f"policy 'joint' sizes every name from its exit-horizon path, but release(s) {flat} "
+                    "carry no path block: publish them with leads 'path' (ADR-0188)"
+                ]
         return []
 
     def run(self, ctx, inputs):
-        """Emit ``mio``: the base params and the ascending lead-group order (JSON)."""
+        """Emit ``mio``: the params, the ascending lead-group order and a declared ``policy`` (JSON)."""
         problems = self.validate_inputs(inputs)
         if problems:
             raise ValueError(f"{self.key}: " + "; ".join(problems))
         leads = sorted(int(lead) for lead in inputs["releases"][0]["lead_groups"])
-        return {"mio": {"params": dict(self.params["mio"]), "lead_groups": leads}}
+        mio = {"params": dict(self.params["mio"]), "lead_groups": leads}
+        if "policy" in self.params:
+            mio["policy"] = self.params["policy"]
+        return {"mio": mio}
 
 
 #: Stamped on every ``simulate``/``report`` row, the summary and the run
@@ -2206,8 +2633,14 @@ class DevelopmentSimulation(DevelopmentReplay):
         "last_fold",
     )
     _OPTIONAL_PARAMS = ("consume_bars", "keep_solves")
+    #: The optional knobs that are JSON bools (the minute kind adds an int one).
+    _BOOL_PARAMS = ("consume_bars", "keep_solves")
     #: The publisher port this node sizes from; the minute subclass reads ``ticks``.
     _TICK_PORT = "bundles"
+    #: The ``decide`` node policies this simulation runs, each with the fill
+    #: policy ``forced_exit_at`` its position book needs (ADR-0188): lead-group
+    #: lots expire by lead; only the minute kind runs the joint share book.
+    _DECIDER_POLICIES = {"lead_groups": "horizon_expiry"}
 
     @classmethod
     def validate_params(cls, params):
@@ -2218,13 +2651,18 @@ class DevelopmentSimulation(DevelopmentReplay):
                 problems.extend(ForecastPublisher._int_problems(params, name, 2))
         if not problems and params["last_fold"] < params["first_fold"]:
             problems.append("last_fold must be >= first_fold")
-        for name in cls._OPTIONAL_PARAMS:
+        for name in cls._BOOL_PARAMS:
             if not isinstance(params.get(name, False), bool):
                 problems.append(f"{name} must be a JSON bool, got {params[name]!r}")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require ``bars``/``bundles`` (or ``ticks``) lists, a non-empty ``releases`` list and a ``mio`` mapping."""
+        """Require ``bars``/``bundles`` (or ``ticks``) lists, a non-empty ``releases`` list and a ``mio`` mapping.
+
+        The ``mio`` output's ``policy`` (default ``lead_groups``) must be one
+        this simulation runs, under a fill policy whose ``forced_exit_at``
+        books it (:attr:`_DECIDER_POLICIES`, ADR-0188).
+        """
         problems = []
         for port in ("bars", self._TICK_PORT, "releases"):
             if not isinstance(inputs.get(port), list):
@@ -2234,6 +2672,18 @@ class DevelopmentSimulation(DevelopmentReplay):
         mio = inputs.get("mio")
         if not isinstance(mio, dict) or not {"params", "lead_groups"} <= set(mio):
             problems.append("mio must be the decide node's {params, lead_groups}")
+            return problems
+        policy = mio.get("policy", "lead_groups")
+        booked = self._DECIDER_POLICIES.get(policy) if isinstance(policy, str) else None
+        if booked is None:
+            problems.append(
+                f"mio.policy {policy!r} is not one this simulation runs: {sorted(self._DECIDER_POLICIES)}"
+            )
+        elif self._policy.forced_exit_at != booked:
+            problems.append(
+                f"the decide node's policy {policy!r} needs a fill policy declaring forced_exit_at "
+                f"{booked!r}, got {self._policy.forced_exit_at!r} (ADR-0188)"
+            )
         return problems
 
     def run(self, ctx, inputs):
@@ -2453,10 +2903,22 @@ class MinuteDevelopmentSimulation(DevelopmentSimulation):
     ``carried_out``; one open at the evidence end stays marked in NAV and is
     listed in the metadata's ``open_at_evidence_end``.
 
+    Under the ``decide`` node's ``policy: "joint"`` (ADR-0188) each segment
+    decides through :class:`JointMinuteMioDecider` on the share book, which
+    needs a fill policy declaring ``forced_exit_at: "session_close"`` and
+    path releases; a lead-group ``mio`` needs ``horizon_expiry``. Every
+    position is flat by its session close (the replay's backstop); a
+    position a halted closing bar left open is carried into the next
+    release as a share row (``lead`` 0, ``exit_in`` 0) and listed in
+    ``carried_out`` as a lot is.
+
     Parameters
     ----------
     params : dict
-        :class:`DevelopmentSimulation`'s.
+        :class:`DevelopmentSimulation`'s, plus the optional
+        ``max_consecutive_refusals`` (an int >= 1, default 30; joint
+        policy only): the refused decision minutes in a row that abort
+        the run (ADR-0188 T50).
 
     Examples
     --------
@@ -2467,6 +2929,28 @@ class MinuteDevelopmentSimulation(DevelopmentSimulation):
     """
 
     _TICK_PORT = "ticks"
+    _OPTIONAL_PARAMS = DevelopmentSimulation._OPTIONAL_PARAMS + ("max_consecutive_refusals",)
+    _DECIDER_POLICIES = {"lead_groups": "horizon_expiry", "joint": "session_close"}
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none: the lattice kind's, plus ``max_consecutive_refusals``."""
+        problems = super().validate_params(params)
+        if "max_consecutive_refusals" in params:
+            problems.extend(ForecastPublisher._int_problems(params, "max_consecutive_refusals", 1))
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Return the lattice kind's problems, and refuse ``max_consecutive_refusals`` outside the joint policy."""
+        problems = super().validate_inputs(inputs)
+        mio = inputs.get("mio")
+        joint = isinstance(mio, dict) and mio.get("policy") == "joint"
+        if "max_consecutive_refusals" in self.params and not joint:
+            problems.append(
+                "max_consecutive_refusals bounds the joint decider's refused minutes (ADR-0188 T50); "
+                "the decide node's policy is not 'joint'"
+            )
+        return problems
 
     @staticmethod
     def _decision_rows(ticks):
@@ -2474,11 +2958,19 @@ class MinuteDevelopmentSimulation(DevelopmentSimulation):
         return [{"asof_ms": max(block["ts"])} for block in ticks if block["ts"]]
 
     def _decider(self, release, ticks, mio, ctx, bars, tz):
-        """Build the minute decider, its closes read from this segment's bars."""
+        """Build the minute decider (the joint one under ``policy: "joint"``), its closes read from this segment's bars."""
         closes = {}
         for bar in bars:
             day = _local_date(bar["asof_ms"], tz)
             closes[day] = max(closes.get(day, 0), int(bar["asof_ms"]))
+        if mio.get("policy") == "joint":
+            return JointMinuteMioDecider(
+                release, ticks, mio, self._policy, ctx, closes, tz,
+                keep_solves=self.params.get("keep_solves", True),
+                max_consecutive_refusals=self.params.get(
+                    "max_consecutive_refusals", _MAX_CONSECUTIVE_REFUSALS
+                ),
+            )
         return MinuteMioDecider(
             release, ticks, mio, self._policy, ctx, closes, tz,
             keep_solves=self.params.get("keep_solves", True),
@@ -2520,6 +3012,11 @@ class MinuteDevelopmentSimulation(DevelopmentSimulation):
             ])
 
 
+#: The share book's fill counters (ADR-0188): decision fills by side, and
+#: the session-close backstop's exits.
+_SHARE_FILL_COUNTS = ("buys", "sells", "backstop_exits")
+
+
 class SimulationReport(Node):
     """Fold the simulation's fills into a daily NAV/P&L report (ADR-0184 S7).
 
@@ -2553,11 +3050,16 @@ class SimulationReport(Node):
         (gross notional / NAV), ``entries``/``exits``, ``drawdown`` (the
         daily net P&L's peak-to-date less its value), ``replay_cash``,
         ``replay_nav``, ``nav_discrepancy``, the fold and the disclosure.
+        When the fills carry the share book's ``origin`` (ADR-0188), also
+        ``buys``/``sells`` (decision fills by ``side``) and
+        ``backstop_exits`` (the session-close exits), beside
+        ``entries``/``exits``, which count every decision fill as an entry.
     ``summary``
         Totals, ``max_drawdown`` (``WindowBook.drawdown``: fill-resolution
         net P&L path), fills by kind, refusals and skips by reason,
         attribution by symbol and by lead, per-segment release evidence,
-        the disclosure and the run metadata.
+        the disclosure and the run metadata; with share-book fills, also
+        ``fills_by_origin`` (``buys``, ``sells``, ``backstop_exits``).
 
     Examples
     --------
@@ -2600,10 +3102,12 @@ class SimulationReport(Node):
         attribution = {}
         daily, peak, fees_to_date, gross, navs = [], Fraction(0), Fraction(0), Fraction(0), []
         marks = {}
+        shares = self._share_fills(inputs["fills"])
         for cash in inputs["cash"]:
             day = cash["date"]
             fees = buy = sell = Fraction(0)
             entries = exits = 0
+            origins = Counter({key: 0 for key in _SHARE_FILL_COUNTS}) if shares else None
             for index, row in by_day.pop(day, ()):
                 fill = self._fill(index, row, metadata["currency"])
                 account.apply(fill)
@@ -2624,6 +3128,8 @@ class SimulationReport(Node):
                     sell += Fraction(notional)
                 entries += row["kind"] == "entry"
                 exits += row["kind"] == "exit"
+                if origins is not None:
+                    origins[self._share_fill_count(row)] += 1
             marks = cash["marks"]
             contributed = Fraction(Decimal(cash["contributions_to_date"]))
             pnl = account.pnl(marks.get)
@@ -2647,6 +3153,7 @@ class SimulationReport(Node):
                 "turnover": float((buy + sell) / nav) if nav > 0 else None,
                 "entries": entries,
                 "exits": exits,
+                **(dict(origins) if origins is not None else {}),
                 "drawdown": float(peak - pnl),
                 "replay_cash": cash["cash_close"],
                 "replay_nav": cash["nav_close"],
@@ -2683,6 +3190,24 @@ class SimulationReport(Node):
     def _counts(rows):
         """``{reason: count}`` over rows."""
         return dict(Counter(row["reason"] for row in rows))
+
+    @staticmethod
+    def _share_fills(fills):
+        """Whether ``fills`` are the share book's (ADR-0188): any row carries its ``origin``."""
+        return any("origin" in row for row in fills)
+
+    @staticmethod
+    def _share_fill_count(row):
+        """Which :data:`_SHARE_FILL_COUNTS` counter a share-book fill row adds to; any other row refuses."""
+        origin, side = row.get("origin"), row.get("side")
+        if origin == "backstop" and side == "sell":
+            return "backstop_exits"
+        if origin == "decision" and side in ("buy", "sell"):
+            return f"{side}s"
+        raise ConfigError([
+            f"fill {row.get('symbol')!r} at {row.get('asof_ms')!r} carries origin {origin!r} and side "
+            f"{side!r}: a share-book run's every fill is a decision buy or sell or a backstop sale"
+        ])
 
     def _summary(self, inputs, daily, account, marks, symbols, leads, attribution, gross, navs):
         """Return the run's totals, attribution and evidence (JSON)."""
@@ -2731,6 +3256,10 @@ class SimulationReport(Node):
             "fills_by_kind": {
                 kind: sum(1 for row in inputs["fills"] if row["kind"] == kind) for kind in ("entry", "exit")
             },
+            **(
+                {"fills_by_origin": {key: sum(row[key] for row in daily) for key in _SHARE_FILL_COUNTS}}
+                if self._share_fills(inputs["fills"]) else {}
+            ),
             "refusals_by_reason": refusals,
             "skips_by_reason": self._counts(inputs["skipped"]),
             "mio_refused": refusals.get("mio_refused", 0),
