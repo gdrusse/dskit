@@ -1,336 +1,470 @@
-## Decision
+## Correction and final model
 
-The selected exact-expiry variability model is a two-member, 16-channel TCN,
-fitted separately for SPY, QQQ, and IWM. On each quote date it emits one row
-for every observed expiry from one through 45 actual calendar days away. It
-does not emit seven bucket diagnostics.
+The final exact-expiry variability model is **ElasticNet**, fitted separately
+for SPY, QQQ, and IWM with shared hyperparameters `alpha=0.03` and
+`l1_ratio=0.75`. It forecasts daily RMS volatility over each row's actual
+quote-to-expiry sessions. Exact integrated variance is a deterministic derived
+output, `daily_rms_hat² × sessions_to_expiry`.
 
-The model is a research champion, not a released production artifact. Recent
-skill is concentrated in QQQ and is negative for SPY and IWM, so the result
-does not justify trading.
+This replaces the first version of this memo. That version learned raw summed
+variance with one cross-maturity model per index, which unfairly required
+linear models to learn a multiplicative horizon relationship. The resulting
+low Ridge/ElasticNet scores and TCN selection are superseded.
+
+The tables below now include the observation count for every exact-DTE cell
+and explicit training/validation sizes for every development and evaluation
+fold.
 
 ## What one prediction means
 
-For an index, after-close quote date, and exact expiry, the model forecasts
+For index (i), after-close quote date (t), and exact expiry (e), let
+(S(e)) be the last trading session on or before expiry and (N_{t,e}) the
+number of future trading sessions. The learned target is
 
 \[
-\widehat V_{t,e}\approx
-\sum_{s=t+1}^{S(e)}\left[\log(P_s/P_{s-1})\right]^2,
+y_{i,t,e}=\sqrt{\frac{1}{N_{t,e}}
+\sum_{s=t+1}^{S(e)}\left[\log(P_{i,s}/P_{i,s-1})\right]^2}.
 \]
 
-the total close-to-close realized variance from the next session through the
-last trading session on or before expiry. It is stored as
-`integrated_variance_hat`.
-
-For interpretation only, the output also includes
+`daily_rms_hat` is one scalar in daily log-return volatility units. The output
+also carries exact expiry metadata and two deterministic transforms:
 
 \[
-\widehat\sigma_{daily}=\sqrt{\widehat V/N},\qquad
-\widehat\sigma_{annual}=\sqrt{252}\,\widehat\sigma_{daily},
+\widehat V_{t,e}=N_{t,e}\widehat y_{t,e}^{,2},\qquad
+\widehat\sigma_{annual}=\sqrt{252}\widehat y_{t,e}.
 \]
-
-where \(N\) is the actual number of remaining trading sessions. Those are
-deterministic transforms of the same prediction, not additional learned
-targets.
 
 The output schema is:
 
 | Column | Meaning |
 |---|---|
 | `symbol` | SPY, QQQ, or IWM |
-| `quote_date` | after-close forecast timestamp |
+| `quote_date` | after-close forecast date |
 | `expiry` | exact archive expiration date |
 | `settlement_date` | last trading session on or before expiry |
-| `calendar_dte` | actual calendar days from quote to settlement |
-| `sessions_to_expiry` | actual intervening trading sessions |
-| `integrated_variance_hat` | learned total-variance forecast |
-| `rms_daily_hat` | square root of variance divided by sessions |
-| `annualized_vol_hat` | daily RMS multiplied by square root of 252 |
+| `calendar_dte` | actual calendar days to settlement |
+| `sessions_to_expiry` | actual future trading sessions |
+| `daily_rms_hat` | learned exact-window daily RMS forecast |
+| `integrated_variance_hat` | `daily_rms_hat² × sessions_to_expiry` |
+| `annualized_vol_hat` | `daily_rms_hat × sqrt(252)` |
 
-For a concrete historical example, on 2025-11-12 for the 2025-12-12 expiry,
-calendar DTE was 30 and the actual trading-session count was 21:
+For example, on 2025-11-12 the 2025-12-12 expiry was exactly 30 calendar days
+and 21 trading sessions away:
 
-| Index | Integrated variance | Daily RMS | Annualized interpretation |
+| Index | Daily RMS forecast | Integrated variance | Annualized interpretation |
 |---|---:|---:|---:|
-| SPY | 0.001947 | 0.9628% | 15.28% |
-| QQQ | 0.002775 | 1.1496% | 18.25% |
-| IWM | 0.003407 | 1.2738% | 20.22% |
+| SPY | 0.8603% | 0.001554 | 13.66% |
+| QQQ | 1.2675% | 0.003374 | 20.12% |
+| IWM | 1.1962% | 0.003005 | 18.99% |
 
-Thus a 30-day and 45-day expiry are different rows with their own exact
-settlement and session counts. No 22-session substitute is used.
+A 30-day and 45-day option are separate rows with their actual expiry and
+session count. No horizon is approximated to 22 sessions.
 
-## What the model looks like
+## What the final model looks like
 
-Each index model receives the same selected 49 columns:
+Every index model uses the same 38 columns:
 
 - `ret_lag_0` through `ret_lag_21`;
-- `rv_1`, `rv_5`, `rv_22`, `rv_66`, and index-specific `own_iv`;
-- exact `calendar_dte`, `sessions_to_expiry`, both log transforms;
-- archived series age and total tenor in calendar and trading units;
-- calendar and session elapsed-life fractions and calendar-days per session;
-- VIX, VIX9D, VIX3M, VIX6M, VIX1Y, VVIX, SKEW, and four tenor-minus-VIX
-  spreads.
+- `rv_1`, `rv_5`, `rv_22`, and `rv_66`;
+- `own_iv`: VIX for SPY, VXN for QQQ, RVX for IWM;
+- calendar and trading-session DTE plus their log transforms;
+- first-seen series age and total tenor in calendar and session units;
+- calendar/session elapsed-life fractions;
+- calendar days per remaining trading session.
 
-The 22 return columns form a chronological sequence. The other 27 columns are
-static state and are broadcast along that sequence, producing 28 input
-channels. Each ensemble member applies:
+First-seen series age is a causal archive proxy because the source does not
+provide the exchange's authoritative listing timestamp.
 
-1. a causal width-two convolution, dilation one, from 28 to 16 channels;
-2. ReLU;
-3. a causal width-two convolution, dilation two, from 16 to 16 channels;
-4. ReLU and a linear head from the last state to one standardized target.
-
-The two convolution layers have a four-session receptive field. The model is
-given the common 22-lag matrix for a fair zoo, but this TCN's forecast uses the
-four most recent returns; the older 18 return lags are outside its receptive
-field. All 27 static features remain visible because they are repeated at each
-step.
-
-Each seed has 1,457 trainable parameters; seeds 0 and 1 are trained separately
-and averaged. Training uses 15 epochs, batch size 2,048, learning rate 0.001,
-and weight decay 0.0001 on CUDA. Inputs and target are centered and scaled
-from training rows only. The physical-unit prediction is
+Training-fold medians replace missing inputs. Means and scales are fitted on
+training rows only. For standardized inputs (z_j) and target mean/scale
+((\mu_y,s_y)), the forecast is
 
 \[
-\widehat V=\max\left(0,\mu_V+s_V\frac{f_0(X)+f_1(X)}{2}\right).
+\widehat y=\max\left(0,\mu_y+s_y\left[b+\sum_{j=1}^{38}\beta_jz_j\right]\right).
 \]
 
-The clamp is material: 8.99% of validation forecasts are exactly zero (SPY
-11.13%, QQQ 7.69%, IWM 7.35%). A later positive head or log-variance target is
-preferable before productionization.
+The coefficients minimize
 
-## Training and validation procedure
+\[
+\frac{1}{2n}\lVert z_y-X_z\beta\rVert_2^2
++0.03\left(0.75\lVert\beta\rVert_1
++0.125\lVert\beta\rVert_2^2\right).
+\]
 
-The procedure has three distinct stages.
+The L1-heavy mixture removes redundant features while the L2 component
+stabilizes correlated lags and maturity variables. The full-history
+explanatory refits are:
 
-1. **Feature-family development, 2013-2018.** Ridge and LightGBM screened eight
-   bundles on annual expanding folds. The selected 49-feature family was
-   frozen before the architecture zoo.
-2. **Architecture comparison, 2019-2025.** Eighteen models used identical
-   features and rows in seven annual expanding folds for each index. The
-   primary objective equally weighted every index/calendar-DTE cell.
-3. **TCN HPO and gate.** Thirty-six TCN settings were searched on 2013-2018.
-   The development winner doubled training to 30 epochs, but its later score
-   was worse, so the 15-epoch zoo specification was retained.
+| Index | Labeled rows | Date span | Nonzero coefficients | Largest standardized effects |
+|---|---:|---|---:|---|
+| SPY | 44,770 | 2008-01-02–2025-12-11 | 9/38 | `own_iv +0.387`, `rv_5 +0.242`, `ret_lag_1 -0.066`, `ret_lag_0 -0.055`, `log_sessions +0.051` |
+| QQQ | 32,639 | 2011-03-23–2025-12-12 | 11/38 | `own_iv +0.434`, `rv_5 +0.133`, `log_sessions +0.067`, `rv_22 +0.060`, `ret_lag_1 -0.057` |
+| IWM | 31,946 | 2008-01-02–2025-12-12 | 15/38 | `rv_22 +0.214`, `own_iv +0.177`, `rv_5 +0.173`, `log_sessions +0.078`, `ret_lag_1 -0.069` |
 
-Within every annual fold:
+The negative recent-return coefficients are consistent with the familiar
+leverage/asymmetry effect. Unlike the rejected raw-variance TCN, the final
+ElasticNet produces no zero-clamped validation predictions.
 
-- features end at the quote close, so the timestamp is explicitly after-close;
-- a training row is admitted only when its settlement target ends strictly
+These full-history fits describe model shape. Every skill number below comes
+only from out-of-sample annual validation forecasts.
+
+## Development, HPO, and validation procedure
+
+There are three disjoint roles for the rows:
+
+1. **Feature-family development, 2013-2018.** Eight bundles were screened with
+   Ridge and LightGBM. This selected the 38-feature core-maturity set.
+2. **Architecture comparison, 2019-2025.** Eighteen models used identical rows
+   and selected features. Each architecture produced 68,084 validation
+   forecasts across 21 index-year folds.
+3. **ElasticNet HPO, 2013-2018.** Ninety endpoint-inclusive candidates used the
+   development folds only: 1,620 fits and 33,528 validation predictions per
+   candidate. The selected pair was then evaluated on 2019-2025.
+
+For every fold:
+
+- features end at the quote close;
+- a training row is admitted only when its target settlement ends strictly
   before January 1 of the validation year;
-- expiry must be fully covered by the underlying-price archive;
-- missing inputs use training-fold medians;
-- feature and target standardization use training rows only;
-- the model is fit once, then forecasts every eligible validation row without
-  refitting inside the year;
-- negative physical-unit predictions are clamped to zero.
+- the underlying-price archive must cover the entire expiry window;
+- feature imputation, feature scaling, and target scaling use training rows
+  only;
+- the model fits once and forecasts the whole validation year without
+  within-year refitting.
 
-The empirical baseline is the expanding-training mean target conditioned on
-the same exact calendar DTE. This prevents the model from receiving free skill
-merely by knowing that a 45-day interval contains more variance than a 5-day
-interval. The secondary baseline is trailing integrated variance over exactly
-the same number of trading sessions as the future target.
+The empirical baseline is the expanding-training mean daily RMS conditioned
+on exact calendar DTE. The persistence baseline is trailing RMS over exactly
+the same number of trading sessions as the future window.
 
-The corrected 2019-2025 evaluation has 68,084 forecasts: 27,608 SPY, 21,493
-QQQ, and 18,983 IWM. Architecture selection viewed this period, so it is not a
-pristine family lockbox; future data are the next honest promotion test.
+### Development fold sizes
+
+Each entry is `training rows / validation rows`. Validation totals 33,528 rows.
+
+| Year | SPY | QQQ | IWM |
+|---:|---:|---:|---:|
+| 2013 | 3,129 / 1,406 | 1,312 / 1,406 | 3,125 / 1,396 |
+| 2014 | 4,528 / 1,717 | 2,708 / 1,716 | 4,511 / 1,717 |
+| 2015 | 6,205 / 1,728 | 4,384 / 1,711 | 6,188 / 1,717 |
+| 2016 | 7,959 / 2,139 | 6,123 / 1,682 | 7,931 / 1,689 |
+| 2017 | 10,028 / 2,931 | 7,799 / 1,620 | 9,616 / 1,620 |
+| 2018 | 12,959 / 4,051 | 9,419 / 1,641 | 11,236 / 1,641 |
+
+### Final evaluation fold sizes
+
+Each entry is `training rows / validation rows`. Validation totals 68,084
+rows: 27,608 SPY, 21,493 QQQ, and 18,983 IWM.
+
+| Year | SPY | QQQ | IWM |
+|---:|---:|---:|---:|
+| 2019 | 16,946 / 4,246 | 11,055 / 1,677 | 12,872 / 1,669 |
+| 2020 | 21,197 / 4,316 | 12,724 / 1,717 | 14,533 / 1,717 |
+| 2021 | 25,509 / 4,296 | 14,458 / 3,506 | 16,267 / 2,334 |
+| 2022 | 29,791 / 4,230 | 17,818 / 4,173 | 18,455 / 4,077 |
+| 2023 | 34,135 / 3,505 | 22,104 / 3,495 | 22,655 / 2,592 |
+| 2024 | 37,626 / 3,691 | 25,595 / 3,591 | 25,244 / 3,303 |
+| 2025 | 41,317 / 3,324 | 29,176 / 3,334 | 28,526 / 3,291 |
+
+The HPO grid included exact Ridge and Lasso endpoints. Its deterministic
+closed-form/FISTA solver passed a `1e-5` KKT residual check on all 1,620 fits;
+the worst residual was `9.997e-6`.
 
 ## Aggregate skill
 
 Skill is `1 - model SSE / baseline SSE`; positive is better.
 
-| Period | Index | Forecasts | Equal-day skill vs DTE mean | Pooled skill vs DTE mean | Pooled skill vs persistence | Positive days |
+| Period | Index | Observations | Equal-day skill | Pooled skill vs DTE mean | Pooled skill vs persistence | Positive days |
 |---|---|---:|---:|---:|---:|---:|
-| 2019-2025 | SPY | 27,608 | 18.06% | 14.33% | 32.35% | 42/45 |
-| 2019-2025 | QQQ | 21,493 | 23.52% | 20.38% | 32.15% | 44/45 |
-| 2019-2025 | IWM | 18,983 | 6.39% | 15.94% | 30.06% | 39/45 |
-| 2022-2025 | SPY | 14,750 | -4.54% | -10.89% | 12.56% | 19/45 |
-| 2022-2025 | QQQ | 14,593 | 26.55% | 27.03% | 20.27% | 43/45 |
-| 2022-2025 | IWM | 13,263 | -20.71% | -24.96% | 11.30% | 8/45 |
+| 2019-2025 | SPY | 27,608 | 41.92% | 45.13% | 34.28% | 44/45 |
+| 2019-2025 | QQQ | 21,493 | 47.32% | 45.51% | 36.11% | 45/45 |
+| 2019-2025 | IWM | 18,983 | 31.86% | 33.40% | 35.41% | 44/45 |
+| 2022-2025 | SPY | 14,750 | 43.37% | 40.50% | 39.50% | 45/45 |
+| 2022-2025 | QQQ | 14,593 | 52.61% | 47.65% | 37.19% | 45/45 |
+| 2022-2025 | IWM | 13,263 | 20.80% | 19.15% | 40.14% | 41/45 |
 
-Overall equal-index/day skill is 15.99%; pooled skill is 16.42% versus the DTE
-mean and 31.58% versus matched persistence. Recent equal-index/day skill is
-only 0.43%. QQQ is durable; recent SPY and IWM are not.
+Overall equal-index/day skill is 40.37%; pooled skill is 42.24% versus the
+DTE-conditioned mean and 35.19% versus matched persistence. Recent
+equal-index/day skill is 38.93%.
 
 ## Exact-day skill versus the DTE-conditioned mean, 2019-2025
 
 | DTE | SPY | QQQ | IWM |
 |---:|---:|---:|---:|
-| 1 | -60.9% | -42.8% | -372.0% |
-| 2 | 32.0% | 19.9% | -49.0% |
-| 3 | 37.7% | 43.1% | 21.9% |
-| 4 | 46.7% | 35.4% | 12.7% |
-| 5 | 39.0% | 12.4% | -31.8% |
-| 6 | 43.7% | 35.2% | 8.4% |
-| 7 | 38.5% | 36.5% | 18.9% |
-| 8 | 35.4% | 36.5% | 25.4% |
-| 9 | 31.4% | 29.0% | 17.8% |
-| 10 | 31.8% | 32.3% | 26.9% |
-| 11 | 36.9% | 34.3% | 32.0% |
-| 12 | 30.4% | 28.8% | -5.3% |
-| 13 | 32.6% | 30.6% | -7.4% |
-| 14 | 24.9% | 27.5% | 21.1% |
-| 15 | 29.4% | 32.4% | 34.0% |
-| 16 | 23.3% | 22.9% | 25.7% |
-| 17 | 25.0% | 27.9% | 28.1% |
-| 18 | 23.8% | 27.7% | 26.4% |
-| 19 | 25.4% | 48.9% | 50.5% |
-| 20 | 26.2% | 35.6% | 42.4% |
-| 21 | 21.2% | 25.8% | 25.0% |
-| 22 | 21.4% | 28.5% | 29.5% |
-| 23 | 14.8% | 20.2% | 23.1% |
-| 24 | 16.3% | 24.3% | 22.2% |
-| 25 | 14.1% | 21.5% | 16.6% |
-| 26 | 15.9% | 39.0% | 14.1% |
-| 27 | 17.5% | 30.8% | 19.7% |
-| 28 | 15.3% | 22.8% | 17.9% |
-| 29 | 13.6% | 20.6% | 19.7% |
-| 30 | 11.7% | 16.3% | 15.7% |
-| 31 | 10.7% | 19.7% | 16.9% |
-| 32 | 10.6% | 21.3% | 15.0% |
-| 33 | 12.8% | 40.6% | 15.2% |
-| 34 | 13.6% | 26.3% | 9.0% |
-| 35 | 10.7% | 18.6% | 12.6% |
-| 36 | 10.2% | 17.8% | 14.0% |
-| 37 | 5.8% | 13.7% | 14.2% |
-| 38 | 8.6% | 16.6% | 12.9% |
-| 39 | 4.4% | 16.1% | 13.0% |
-| 40 | -6.6% | 3.2% | -9.3% |
-| 41 | 2.4% | 10.7% | 0.3% |
-| 42 | 5.4% | 13.2% | 9.9% |
-| 43 | 6.0% | 14.5% | 14.1% |
-| 44 | -0.7% | 9.1% | 9.9% |
-| 45 | 3.6% | 13.1% | 9.7% |
+| 1 | 31.8% | 18.2% | 15.1% |
+| 2 | 43.8% | 29.9% | 22.6% |
+| 3 | 38.7% | 30.9% | 29.2% |
+| 4 | 50.1% | 40.3% | 32.6% |
+| 5 | 49.3% | 41.1% | 15.6% |
+| 6 | 53.9% | 45.3% | 25.2% |
+| 7 | 52.4% | 44.5% | 33.5% |
+| 8 | 52.8% | 47.0% | 38.3% |
+| 9 | 51.1% | 44.1% | 36.4% |
+| 10 | 50.9% | 47.3% | 41.5% |
+| 11 | 55.1% | 51.4% | 43.3% |
+| 12 | 52.3% | 54.0% | 28.5% |
+| 13 | 52.4% | 49.7% | 24.3% |
+| 14 | 49.4% | 47.0% | 35.4% |
+| 15 | 53.2% | 56.7% | 48.3% |
+| 16 | 49.6% | 50.3% | 42.8% |
+| 17 | 50.2% | 52.9% | 47.1% |
+| 18 | 53.0% | 56.0% | 48.8% |
+| 19 | 52.6% | 73.3% | 43.7% |
+| 20 | 53.4% | 65.1% | 47.8% |
+| 21 | 48.7% | 55.9% | 45.5% |
+| 22 | 50.1% | 55.8% | 47.4% |
+| 23 | 44.7% | 48.0% | 39.5% |
+| 24 | 43.7% | 51.3% | 42.5% |
+| 25 | 46.0% | 54.4% | 41.2% |
+| 26 | 44.5% | 69.5% | 17.8% |
+| 27 | 45.9% | 61.2% | 33.0% |
+| 28 | 43.0% | 53.9% | 39.4% |
+| 29 | 41.1% | 49.8% | 37.9% |
+| 30 | 38.9% | 44.9% | 33.6% |
+| 31 | 39.0% | 49.0% | 39.1% |
+| 32 | 39.7% | 51.5% | 38.0% |
+| 33 | 38.9% | 69.8% | 11.7% |
+| 34 | 39.9% | 60.9% | 21.1% |
+| 35 | 36.5% | 50.6% | 35.6% |
+| 36 | 34.4% | 46.3% | 31.6% |
+| 37 | 28.6% | 37.7% | 27.8% |
+| 38 | 32.8% | 43.8% | 33.6% |
+| 39 | 30.5% | 42.0% | 31.2% |
+| 40 | -1.2% | 13.6% | -17.9% |
+| 41 | 22.7% | 30.6% | 10.9% |
+| 42 | 28.1% | 38.7% | 25.0% |
+| 43 | 26.2% | 38.1% | 25.4% |
+| 44 | 21.1% | 31.0% | 17.4% |
+| 45 | 26.6% | 36.3% | 25.2% |
 
-Coverage is uneven because real listings cluster at weekly/monthly expiries.
-For example, DTE 40 has only 23/16/12 SPY/QQQ/IWM forecasts and DTE 41 has
-40/31/27; their cell percentages are not reliable. Most shorter-DTE cells
-have hundreds to more than one thousand observations.
-
-## Exact-day skill versus matched-session persistence, 2019-2025
+### Observation count for each 2019-2025 cell
 
 | DTE | SPY | QQQ | IWM |
 |---:|---:|---:|---:|
-| 1 | -9.2% | 7.7% | -106.6% |
-| 2 | 34.5% | 21.8% | -56.7% |
-| 3 | 19.3% | 53.1% | 2.7% |
-| 4 | 39.1% | 53.7% | 37.9% |
-| 5 | 12.8% | 54.9% | 38.4% |
-| 6 | 29.2% | 41.9% | 20.7% |
-| 7 | 25.1% | 25.5% | 4.9% |
-| 8 | 15.9% | 31.4% | 27.6% |
-| 9 | 15.7% | 24.0% | 11.3% |
-| 10 | 24.4% | 41.8% | 29.3% |
-| 11 | 31.6% | 47.7% | 45.7% |
-| 12 | 22.9% | 51.6% | 56.6% |
-| 13 | 34.5% | 50.9% | 51.6% |
-| 14 | 25.5% | 41.8% | 32.8% |
-| 15 | 30.5% | 39.2% | 40.5% |
-| 16 | 26.9% | 32.0% | 34.1% |
-| 17 | 18.5% | 31.0% | 23.5% |
-| 18 | 19.4% | 23.1% | 18.3% |
-| 19 | 16.0% | -40.2% | -57.9% |
-| 20 | 24.3% | 11.3% | 26.9% |
-| 21 | 21.9% | 13.4% | 15.7% |
-| 22 | 27.9% | 27.3% | 28.3% |
-| 23 | 28.8% | 28.0% | 30.1% |
-| 24 | 29.8% | 35.3% | 32.2% |
-| 25 | 30.0% | 31.9% | 29.8% |
-| 26 | 24.0% | -27.6% | 1.8% |
-| 27 | 25.5% | -45.0% | -19.9% |
-| 28 | 31.3% | 20.3% | 21.6% |
-| 29 | 32.8% | 27.2% | 30.5% |
-| 30 | 39.4% | 32.8% | 35.0% |
-| 31 | 34.6% | 40.7% | 36.2% |
-| 32 | 39.3% | 43.9% | 39.9% |
-| 33 | 30.1% | -17.6% | 9.2% |
-| 34 | 33.7% | -14.0% | 4.8% |
-| 35 | 35.2% | 22.1% | 22.0% |
-| 36 | 38.7% | 32.7% | 33.5% |
-| 37 | 38.1% | 38.4% | 37.0% |
-| 38 | 33.7% | 39.8% | 34.3% |
-| 39 | 52.1% | 45.0% | 40.0% |
-| 40 | -2.1% | 1.0% | 0.3% |
-| 41 | 0.8% | 5.3% | 3.6% |
-| 42 | 29.3% | 31.5% | 26.4% |
-| 43 | 43.9% | 43.7% | 41.2% |
-| 44 | 32.4% | 35.1% | 32.8% |
-| 45 | 33.9% | 37.4% | 28.3% |
+| 1 | 1,003 | 886 | 729 |
+| 2 | 831 | 724 | 635 |
+| 3 | 809 | 706 | 626 |
+| 4 | 807 | 689 | 604 |
+| 5 | 841 | 612 | 505 |
+| 6 | 1,006 | 774 | 598 |
+| 7 | 1,321 | 1,096 | 923 |
+| 8 | 1,018 | 892 | 741 |
+| 9 | 827 | 720 | 631 |
+| 10 | 806 | 704 | 624 |
+| 11 | 805 | 687 | 600 |
+| 12 | 838 | 609 | 500 |
+| 13 | 1,001 | 769 | 590 |
+| 14 | 1,291 | 1,065 | 900 |
+| 15 | 591 | 461 | 429 |
+| 16 | 547 | 438 | 414 |
+| 17 | 544 | 438 | 416 |
+| 18 | 520 | 400 | 376 |
+| 19 | 410 | 174 | 127 |
+| 20 | 429 | 190 | 142 |
+| 21 | 752 | 521 | 475 |
+| 22 | 582 | 452 | 424 |
+| 23 | 546 | 434 | 411 |
+| 24 | 543 | 435 | 413 |
+| 25 | 518 | 397 | 373 |
+| 26 | 407 | 171 | 125 |
+| 27 | 426 | 185 | 140 |
+| 28 | 748 | 511 | 467 |
+| 29 | 579 | 451 | 424 |
+| 30 | 543 | 432 | 409 |
+| 31 | 539 | 431 | 410 |
+| 32 | 517 | 396 | 371 |
+| 33 | 403 | 167 | 121 |
+| 34 | 427 | 185 | 139 |
+| 35 | 746 | 513 | 468 |
+| 36 | 576 | 444 | 419 |
+| 37 | 368 | 362 | 358 |
+| 38 | 536 | 426 | 405 |
+| 39 | 348 | 332 | 326 |
+| 40 | 23 | 16 | 12 |
+| 41 | 40 | 31 | 27 |
+| 42 | 370 | 361 | 359 |
+| 43 | 364 | 355 | 352 |
+| 44 | 236 | 229 | 225 |
+| 45 | 226 | 222 | 220 |
+
+DTE 40 and 41 have exceptionally low coverage because of real listing
+patterns. Their skill estimates are not stable and should not drive a decision.
+
+## Exact-day skill versus matched-session persistence, 2019-2025
+
+The observation counts are identical to the preceding count grid.
+
+| DTE | SPY | QQQ | IWM |
+|---:|---:|---:|---:|
+| 1 | 50.1% | 48.0% | 48.2% |
+| 2 | 36.5% | 37.4% | 36.3% |
+| 3 | 31.1% | 41.7% | 39.4% |
+| 4 | 37.5% | 51.9% | 45.8% |
+| 5 | 28.4% | 50.4% | 49.6% |
+| 6 | 29.1% | 36.5% | 42.6% |
+| 7 | 24.7% | 27.1% | 34.3% |
+| 8 | 26.3% | 28.4% | 36.0% |
+| 9 | 22.1% | 23.0% | 27.0% |
+| 10 | 25.1% | 32.7% | 34.9% |
+| 11 | 34.2% | 41.3% | 43.0% |
+| 12 | 28.3% | 40.6% | 48.3% |
+| 13 | 34.4% | 37.8% | 44.9% |
+| 14 | 32.2% | 36.1% | 36.2% |
+| 15 | 32.5% | 36.3% | 31.5% |
+| 16 | 31.0% | 30.2% | 28.6% |
+| 17 | 25.7% | 29.1% | 26.5% |
+| 18 | 32.5% | 28.8% | 29.7% |
+| 19 | 26.1% | 14.8% | 25.8% |
+| 20 | 29.9% | 10.7% | 23.8% |
+| 21 | 28.9% | 20.9% | 21.5% |
+| 22 | 35.2% | 31.1% | 28.0% |
+| 23 | 34.2% | 25.6% | 26.2% |
+| 24 | 33.7% | 33.0% | 30.4% |
+| 25 | 38.7% | 36.4% | 31.1% |
+| 26 | 29.2% | -6.8% | 9.1% |
+| 27 | 30.8% | -27.2% | -0.1% |
+| 28 | 35.2% | 24.5% | 23.1% |
+| 29 | 36.5% | 29.4% | 27.7% |
+| 30 | 39.2% | 30.1% | 28.4% |
+| 31 | 37.6% | 38.4% | 33.4% |
+| 32 | 42.1% | 40.7% | 34.8% |
+| 33 | 33.6% | -1.9% | 19.6% |
+| 34 | 36.7% | -3.5% | 13.0% |
+| 35 | 36.8% | 26.4% | 25.4% |
+| 36 | 39.1% | 33.0% | 30.0% |
+| 37 | 37.7% | 37.5% | 30.8% |
+| 38 | 36.2% | 37.3% | 33.3% |
+| 39 | 48.9% | 42.9% | 35.0% |
+| 40 | -1.8% | 1.5% | -0.2% |
+| 41 | 15.3% | 17.9% | 14.7% |
+| 42 | 35.2% | 38.6% | 28.7% |
+| 43 | 40.3% | 42.1% | 33.4% |
+| 44 | 32.4% | 34.4% | 25.2% |
+| 45 | 36.4% | 38.9% | 29.8% |
 
 ## Recent exact-day skill versus the DTE mean, 2022-2025
 
 | DTE | SPY | QQQ | IWM |
 |---:|---:|---:|---:|
-| 1 | -12.5% | -9.1% | -36.3% |
-| 2 | 38.1% | 29.9% | 8.0% |
-| 3 | 61.2% | 58.4% | 16.8% |
-| 4 | 46.7% | 30.3% | -19.1% |
-| 5 | 19.5% | 18.8% | -11.5% |
-| 6 | 27.9% | 34.2% | -0.4% |
-| 7 | 28.4% | 32.6% | -19.7% |
-| 8 | 9.2% | 23.4% | -30.9% |
-| 9 | 8.0% | 24.4% | -40.5% |
-| 10 | 19.2% | 32.3% | -26.0% |
-| 11 | 28.0% | 26.9% | -6.0% |
-| 12 | 7.6% | 24.0% | -9.1% |
-| 13 | 17.2% | 27.4% | -16.3% |
-| 14 | -3.3% | 22.9% | -25.2% |
-| 15 | 2.4% | 16.5% | -5.2% |
-| 16 | -8.6% | 20.0% | 1.1% |
-| 17 | 14.8% | 31.8% | -13.7% |
-| 18 | -30.5% | 26.8% | -67.4% |
-| 19 | -24.3% | 31.7% | -51.2% |
-| 20 | -0.0% | 27.3% | -32.7% |
-| 21 | 5.4% | 32.0% | -6.1% |
-| 22 | 16.2% | 34.0% | 14.8% |
-| 23 | -36.8% | 24.1% | -6.2% |
-| 24 | -11.1% | 33.1% | -28.2% |
-| 25 | -48.4% | 29.1% | -73.8% |
-| 26 | -36.8% | 42.6% | -26.7% |
-| 27 | -9.5% | 31.4% | -55.5% |
-| 28 | -2.1% | 32.8% | -11.2% |
-| 29 | 4.4% | 30.1% | 8.4% |
-| 30 | -19.3% | 23.2% | -12.1% |
-| 31 | -25.0% | 29.1% | -41.8% |
-| 32 | -49.1% | 30.3% | -65.1% |
-| 33 | -41.0% | 38.7% | -19.9% |
-| 34 | -26.1% | 30.6% | -54.7% |
-| 35 | -15.5% | 31.4% | -15.6% |
-| 36 | -0.5% | 28.4% | 2.7% |
-| 37 | -25.2% | 17.3% | -22.0% |
-| 38 | -9.7% | 29.3% | -37.9% |
-| 39 | -43.7% | 20.7% | -79.4% |
-| 40 | 3.0% | -2.4% | 88.2% |
-| 41 | 18.9% | 20.4% | 56.1% |
-| 42 | -8.1% | 22.8% | -32.9% |
-| 43 | -7.6% | 21.9% | -12.3% |
-| 44 | -56.4% | 9.6% | -45.4% |
-| 45 | -29.5% | 23.7% | -70.3% |
+| 1 | 20.5% | 18.4% | 8.0% |
+| 2 | 32.2% | 30.2% | 11.8% |
+| 3 | 29.5% | 28.9% | 13.5% |
+| 4 | 35.7% | 33.9% | 14.0% |
+| 5 | 38.6% | 41.5% | 14.0% |
+| 6 | 43.2% | 44.5% | 18.5% |
+| 7 | 44.3% | 42.3% | 19.3% |
+| 8 | 41.8% | 41.4% | 17.1% |
+| 9 | 39.7% | 42.3% | 16.8% |
+| 10 | 43.9% | 45.9% | 21.2% |
+| 11 | 44.2% | 47.2% | 21.8% |
+| 12 | 45.0% | 53.4% | 24.6% |
+| 13 | 41.4% | 49.6% | 18.1% |
+| 14 | 39.4% | 45.0% | 16.0% |
+| 15 | 43.1% | 56.4% | 29.2% |
+| 16 | 44.7% | 57.5% | 27.6% |
+| 17 | 46.9% | 58.1% | 32.9% |
+| 18 | 50.0% | 62.1% | 31.8% |
+| 19 | 56.8% | 74.8% | -3.3% |
+| 20 | 49.9% | 70.3% | 10.1% |
+| 21 | 52.2% | 64.4% | 38.6% |
+| 22 | 51.1% | 61.0% | 32.8% |
+| 23 | 45.3% | 57.7% | 25.3% |
+| 24 | 46.3% | 60.1% | 31.5% |
+| 25 | 48.8% | 63.1% | 32.5% |
+| 26 | 66.1% | 78.2% | -0.1% |
+| 27 | 50.3% | 69.2% | -6.1% |
+| 28 | 49.0% | 63.1% | 39.1% |
+| 29 | 47.6% | 60.5% | 35.5% |
+| 30 | 41.9% | 57.2% | 27.5% |
+| 31 | 45.6% | 60.4% | 31.9% |
+| 32 | 47.7% | 62.9% | 34.3% |
+| 33 | 56.6% | 76.0% | -24.2% |
+| 34 | 49.7% | 71.3% | 5.0% |
+| 35 | 49.6% | 64.5% | 42.8% |
+| 36 | 46.2% | 60.0% | 36.0% |
+| 37 | 35.0% | 47.8% | 14.7% |
+| 38 | 45.4% | 60.1% | 34.8% |
+| 39 | 37.8% | 52.5% | 19.3% |
+| 40 | 27.4% | 0.5% | 53.5% |
+| 41 | 32.9% | 28.8% | 13.7% |
+| 42 | 41.5% | 52.7% | 22.2% |
+| 43 | 39.9% | 51.6% | 19.5% |
+| 44 | 30.6% | 46.8% | 2.7% |
+| 45 | 36.7% | 53.2% | 10.4% |
 
-The 40-41 DTE recent values are dominated by tiny samples and should not be
-interpreted as stable edge. The robust message is broader: QQQ retained skill
-across 43 of 45 days, while recent SPY and IWM did not.
+### Observation count for each 2022-2025 cell
+
+| DTE | SPY | QQQ | IWM |
+|---:|---:|---:|---:|
+| 1 | 693 | 693 | 558 |
+| 2 | 534 | 534 | 464 |
+| 3 | 517 | 518 | 459 |
+| 4 | 514 | 515 | 455 |
+| 5 | 534 | 535 | 474 |
+| 6 | 691 | 692 | 561 |
+| 7 | 869 | 870 | 740 |
+| 8 | 695 | 695 | 569 |
+| 9 | 531 | 531 | 461 |
+| 10 | 513 | 514 | 455 |
+| 11 | 512 | 513 | 451 |
+| 12 | 531 | 532 | 469 |
+| 13 | 684 | 685 | 551 |
+| 14 | 840 | 839 | 717 |
+| 15 | 268 | 264 | 257 |
+| 16 | 250 | 248 | 243 |
+| 17 | 252 | 250 | 249 |
+| 18 | 228 | 226 | 227 |
+| 19 | 102 | 97 | 96 |
+| 20 | 112 | 106 | 103 |
+| 21 | 301 | 295 | 292 |
+| 22 | 259 | 254 | 251 |
+| 23 | 249 | 245 | 241 |
+| 24 | 250 | 247 | 246 |
+| 25 | 227 | 224 | 225 |
+| 26 | 100 | 94 | 94 |
+| 27 | 109 | 102 | 102 |
+| 28 | 296 | 288 | 287 |
+| 29 | 257 | 251 | 249 |
+| 30 | 246 | 242 | 239 |
+| 31 | 247 | 243 | 243 |
+| 32 | 224 | 222 | 223 |
+| 33 | 97 | 91 | 91 |
+| 34 | 109 | 101 | 100 |
+| 35 | 295 | 287 | 286 |
+| 36 | 255 | 248 | 246 |
+| 37 | 207 | 202 | 199 |
+| 38 | 245 | 239 | 239 |
+| 39 | 189 | 186 | 186 |
+| 40 | 14 | 6 | 5 |
+| 41 | 23 | 14 | 12 |
+| 42 | 210 | 202 | 201 |
+| 43 | 205 | 198 | 196 |
+| 44 | 134 | 128 | 125 |
+| 45 | 132 | 127 | 126 |
+
+The recent negative IWM cells at DTE 19, 26, 27, and 33 have only 96, 94,
+102, and 91 observations respectively. They are meaningful cautions, but much
+less precisely estimated than the high-frequency weekly cells.
 
 ## What exists today
 
-The local evidence includes fold metrics, 68,084 out-of-sample prediction rows,
-the exact-day grids, output examples, feature identities, and model anatomy.
-`final_tcn_predictions.parquet` is research evidence, not a deployable model.
-There is no released serialized TCN, data-freshness contract, distribution
-head, or option-entry node.
+The corrected local evidence contains all fold metrics, HPO diagnostics,
+68,084 out-of-sample prediction rows, exact-day skill and count grids, and
+three explanatory full-history coefficient/scaler descriptions.
+`final_elasticnet_predictions.parquet` is research evidence, not a released
+model. There is no production serialization, freshness contract, calibrated
+distribution head, option payoff model, or entry node.
 
-Before promotion, the model needs a positive scale specification, a truly new
-forward fold, and a calibrated distribution conditional on the scale forecast.
-Only after that should an option payoff or entry rule be evaluated.
+The next honest evidence is a future fold. The next modeling layer is a
+calibrated return distribution conditional on this scale forecast. Neither is
+permission to trade.
 
 ## Evidence
 
-Ignored local evidence is under
-`children/index_options/pipeline_runs/exact_maturity_20260928/`:
+Corrected ignored evidence is under
+`children/index_options/pipeline_runs/exact_maturity_rms_20260928/`:
 
-- final folds: `05b50a20e726ec39d705c2b299a941e3cac934f5199065696a942656560fc592`
-- final summary: `7543c69451f551d5e24f7f8cb673d53e8d32a7f136c8cd96439002ad50d8bb29`
-- exact-day long grid: `37bdb0f8837fbdd9d71a5539f09979ece8bb3c7578f05a6116abee803d26b4b4`
-- model anatomy: `c9a2dfeaf1958facbc37bef1d45b4957676796df17c9701451f9593ee25ebb36`
-- HPO candidate summary: `1e9d0ad47d79d4ffbc3b27ab6da5b842fd3ea65049639e596d719e4aa3237d70`
-- final stability decision: `aea21e4d1b0ab20c94c5286618226331a54868fd134d1bd3c113c9f29b10cfc5`
+- final folds: `6c6758beed9fde198aaf75b7d3d5b5839ba292fa95b1acf2d08fb18689d124f3`
+- final summary: `86a02044efc793af1b75c9e083eb19de894f1f30acda6e8db856d989f26ddab5`
+- predictions: `15a506251a0a857a670cc81067090e1ade42a7b4293e77b3922efd101fce89b1`
+- exact-day skill/count rows: `6c66076fc42cf694bc3c713910c4340c020a9856dfb2044b8bfa1cb1a95cea07`
+- final coefficient/scaler description: `b6759100ce1b3de3a4b93111e6d083640240b7ae5d2587b5d63635616a078fe2`
+- HPO decision: `c69f108e3589914a36ea9d4ecf7d1d1851d59bcbf20bdb37e4d1999cca08886e`
