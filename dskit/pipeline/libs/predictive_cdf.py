@@ -27,6 +27,10 @@ class _Curve(ABC):
     def quantile(self, probabilities):
         """Evaluate rowwise inverse cumulative probabilities."""
 
+    @abstractmethod
+    def _arrays(self):
+        """Return exact numerical research state, without executable objects."""
+
 
 class MixtureCurve(_Curve):
     """Finite Gaussian mixture, with analytic CDF and numerical inverse.
@@ -56,6 +60,11 @@ class MixtureCurve(_Curve):
                 or (self.weights < 0).any() or (self.scales <= 0).any()
                 or not np.allclose(self.weights.sum(1), 1, atol=1e-7)):
             raise ValueError("invalid mixture weights, means or scales")
+        self.weights = self.weights/self.weights.sum(1, keepdims=True)
+
+    def _arrays(self):
+        return {"kind": "mixture", "weights": self.weights,
+                "means": self.means, "scales": self.scales}
 
     def cdf(self, values):
         """Return cumulative probabilities.
@@ -73,7 +82,8 @@ class MixtureCurve(_Curve):
         import numpy as np
         from scipy.special import ndtr
 
-        values = np.broadcast_to(values, (len(self.weights), np.shape(values)[-1]))
+        values = np.atleast_1d(values)
+        values = np.broadcast_to(values, (len(self.weights), values.shape[-1]))
         result = np.zeros_like(values, dtype=float)
         for j in range(self.weights.shape[1]):
             result += self.weights[:, j, None] * ndtr(
@@ -96,7 +106,8 @@ class MixtureCurve(_Curve):
         import numpy as np
         from scipy.special import ndtri
 
-        p = np.broadcast_to(probabilities, (len(self.weights), np.shape(probabilities)[-1]))
+        probabilities = np.atleast_1d(probabilities)
+        p = np.broadcast_to(probabilities, (len(self.weights), probabilities.shape[-1]))
         if not np.isfinite(p).all() or (p <= 0).any() or (p >= 1).any():
             raise ValueError("quantile probabilities must be strictly inside (0,1)")
         component = self.means[:, :, None] + self.scales[:, :, None] * ndtri(p[:, None, :])
@@ -139,6 +150,9 @@ class GridCurve(_Curve):
                 or not (self.probabilities[:, -1] == 1).all()):
             raise ValueError("invalid CDF grid or endpoints")
 
+    def _arrays(self):
+        return {"kind": "grid", "values": self.values, "probabilities": self.probabilities}
+
     def cdf(self, values):
         """Interpolate CDF queries, using zero/one outside the declared tails.
 
@@ -154,7 +168,8 @@ class GridCurve(_Curve):
         """
         import numpy as np
 
-        queries = np.broadcast_to(values, (len(self.values), np.shape(values)[-1]))
+        values = np.atleast_1d(values)
+        queries = np.broadcast_to(values, (len(self.values), values.shape[-1]))
         return np.array([np.interp(q, x, p, left=0, right=1)
                          for q, x, p in zip(queries, self.values, self.probabilities)])
 
@@ -173,7 +188,8 @@ class GridCurve(_Curve):
         """
         import numpy as np
 
-        queries = np.broadcast_to(probabilities, self.values.shape[:1] + (np.shape(probabilities)[-1],))
+        probabilities = np.atleast_1d(probabilities)
+        queries = np.broadcast_to(probabilities, self.values.shape[:1] + (probabilities.shape[-1],))
         if not np.isfinite(queries).all() or (queries < 0).any() or (queries > 1).any():
             raise ValueError("probabilities outside [0,1]")
         return np.array([np.interp(q, p, x) for q, x, p in
@@ -207,6 +223,10 @@ class CalibratedCurve(_Curve):
         # Endpoint anchors retain a proper CDF, including tails absent in cal.
         self.map = GridCurve(np.r_[0., np.clip(x[1:-1], 1e-9, 1-1e-9), 1.][None, :], p[None, :])
         self.base = base
+
+    def _arrays(self):
+        return {**self.base._arrays(), "calibration_x": self.map.values,
+                "calibration_p": self.map.probabilities}
 
     def cdf(self, values):
         """Apply the monotone map to base CDF values.
@@ -677,7 +697,7 @@ class ChronologicalCDFStudy:
     KEYS = {"features", "group", "date", "end", "horizon", "target", "reference",
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
-            "comparison_references", "notes"}
+            "comparison_references", "identity", "series_identity", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
@@ -722,7 +742,7 @@ class ChronologicalCDFStudy:
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
         metrics = [m for m in metrics if m in scores]
         records, grids = [], []
-        keys = [c["group"], c["date"], c["end"], c["horizon"]]
+        keys = c["identity"]
         for metric in metrics:
             mean = picked.groupby(cells+["model"])[metric].mean().unstack("model")
             ratio = mean.div(mean[baseline], axis=0)
@@ -736,7 +756,7 @@ class ChronologicalCDFStudy:
                 f = picked[picked.model == model]
                 records.append({"model": model, "variant": selected[model], "metric": metric,
                                 "n": len(f), "dates": f[c["date"]].nunique(),
-                                "expiry_series": f[[c["group"], c["end"]]].drop_duplicates().shape[0],
+                                "expiry_series": f[c["series_identity"]].drop_duplicates().shape[0],
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
                                                      if metric in ("crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
@@ -747,10 +767,15 @@ class ChronologicalCDFStudy:
         for reference in c["comparison_references"]:
             base_rows = picked[picked.model == reference].set_index(keys).crps
             for model in c["models"]:
-                compare = picked[picked.model == model].set_index(keys).crps
+                model_rows = picked[picked.model == model].set_index(keys)
+                compare = model_rows.crps
                 if not compare.index.is_unique or not base_rows.index.is_unique or set(compare.index) != set(base_rows.index):
                     raise ValueError("comparison rows are not exactly paired")
-                pair = pd.concat([compare.rename("candidate"), base_rows.rename("reference")], axis=1).reset_index()
+                pair = pd.concat([compare.rename("candidate"), base_rows.rename("reference")], axis=1)
+                for field in (c["group"], c["date"], c["horizon"]):
+                    if field not in keys:
+                        pair[field] = model_rows[field]
+                pair = pair.reset_index()
                 a = pair.pivot_table(index=c["date"], columns=cells, values="candidate", aggfunc="sum").fillna(0).to_numpy()
                 b = pair.pivot_table(index=c["date"], columns=cells, values="reference", aggfunc="sum").fillna(0).to_numpy()
                 for width in c["bootstrap"]["blocks"]:
@@ -875,6 +900,8 @@ class ChronologicalCDFStudy:
                 or not np.isfinite(frame[[c["target"], c["reference"]]]).all().all()
                 or (frame[c["end"]] <= frame[c["date"]]).any()):
             raise ValueError("invalid target, reference or nonfuture outcome date")
+        if frame[c["identity"]].isna().any().any() or frame.duplicated(c["identity"]).any():
+            raise ValueError("missing or duplicate forecast identity")
         results, counts = [], []
         for group, group_frame in frame.groupby(c["group"]):
             for year in c["years"]:
@@ -885,6 +912,7 @@ class ChronologicalCDFStudy:
                 for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
                     count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
                                    "ends": band[c["end"]].nunique(),
+                                   "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
                                    "first": band[c["date"]].min(), "last": band[c["date"]].max(),
                                    "latest_label": band[c["end"]].max()}
                 imputer = SimpleImputer(strategy="median", keep_empty_features=True)
@@ -905,7 +933,9 @@ class ChronologicalCDFStudy:
                         variants["calibrated"] = raw
                     for variant, curve in variants.items():
                         scored, draws = self.scores(curve, yv, c["samples"], c["tail_intervals"], c["tail_points"])
-                        part = val[[c["group"], c["date"], c["end"], c["horizon"]]].copy()
+                        columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
+                                                      c["group"], c["date"], c["end"], c["horizon"]]))
+                        part = val[columns].copy()
                         part["year"], part["model"], part["variant"] = year, name, variant
                         for metric, values in scored.items():
                             part[metric] = values
@@ -914,17 +944,17 @@ class ChronologicalCDFStudy:
                             for metric, values in diagnostic(val, curve, draws).items():
                                 part[metric] = values
                         results.append(part)
-                        # Last evaluation-year curves are sufficient to reproduce price queries;
-                        # all years retain paired row scores. No pickle/serving contract is created.
-                        if year == max(c["years"]) and variant == "calibrated":
-                            np.savez_compressed(output/f"{group}-{name}-curves.npz",
+                        # Retain both exact grids/maps/mixtures and quadrature draws.
+                        # This is numerical research evidence, not a serving artifact.
+                        if year == max(c["years"]):
+                            np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
                                                 draws=draws.astype("float32"),
                                                 reference=val[c["reference"]].to_numpy(),
-                                                row_index=val.index.to_numpy())
-                            if isinstance(raw, MixtureCurve):
-                                np.savez_compressed(output/f"{group}-{name}-mixture.npz",
-                                                    weights=raw.weights, means=raw.means, scales=raw.scales)
+                                                identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
+                                                row_index=val.index.to_numpy(), **curve._arrays())
                     count[name+"_seconds"] = time.monotonic()-start
+                    if isinstance(model, MixtureMLPCDF):
+                        count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
                     print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)

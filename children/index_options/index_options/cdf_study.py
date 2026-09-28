@@ -61,6 +61,10 @@ class ExactExpiryCDFPanel:
         meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
         calendar = xc.get_calendar("XNYS", start="1998-01-01", end="2026-12-31")
         sessions = calendar.sessions.tz_localize(None)
+        # Fixed planned convention: regular holidays, never future ad-hoc closures.
+        # Actual session dates remain the label/purge truth, not model predictors.
+        planned = pd.bdate_range(sessions[0], sessions[-1], freq="C",
+                                 holidays=calendar.regular_holidays.holidays(sessions[0], sessions[-1]))
         panels, refused = [], {}
         self.reader_fingerprints = {}
         for symbol, iv_symbol in c["symbols"].items():
@@ -74,15 +78,23 @@ class ExactExpiryCDFPanel:
             expiry = pd.DatetimeIndex(pd.to_datetime(rows.expiry))
             end_index = sessions.searchsorted(expiry, side="right")-1
             rows["settlement_date"] = sessions[end_index].strftime("%Y-%m-%d")
-            rows["calendar_dte"] = (pd.to_datetime(rows.settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
-            rows = rows[(rows.calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])].copy()
+            rows["actual_calendar_dte"] = (pd.to_datetime(rows.settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
+            planned_end = planned[planned.searchsorted(expiry, side="right")-1]
+            rows["planned_settlement_date"] = planned_end.strftime("%Y-%m-%d")
+            rows["calendar_dte"] = (pd.to_datetime(rows.planned_settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
+            rows = rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])].copy()
             entry_index = sessions.get_indexer(pd.to_datetime(rows.quote_date))
             end_index = sessions.get_indexer(pd.to_datetime(rows.settlement_date))
             valid_dates = (entry_index >= 0) & (end_index >= 0)
             refused[symbol] = {"non_session_quote": int((~valid_dates).sum())}
             rows = rows[valid_dates].copy()
             entry_index, end_index = entry_index[valid_dates], end_index[valid_dates]
-            rows["sessions_to_expiry"] = end_index-entry_index
+            rows["actual_sessions_to_expiry"] = end_index-entry_index
+            rows["sessions_to_expiry"] = (planned.get_indexer(pd.to_datetime(rows.planned_settlement_date))
+                                           - planned.get_indexer(pd.to_datetime(rows.quote_date)))
+            refused[symbol]["planned_and_actual_horizons_differ"] = int(
+                ((rows.actual_calendar_dte != rows.calendar_dte)
+                 | (rows.actual_sessions_to_expiry != rows.sessions_to_expiry)).sum())
             # Reindex exposes missing interior observations instead of treating a gap as one day.
             closes = price_frame.close.reindex(sessions.strftime("%Y-%m-%d"))
             dividends = price_frame.dividend_amount.reindex(closes.index)

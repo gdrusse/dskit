@@ -26580,3 +26580,17 @@ final correctness/test-quality reviews gate readiness. Exit: all methods run on
 all three indexes, reproducible artifacts, empirical recommendation and clear
 limits. No claim of American-option execution profitability or model selection
 on untouched future data.
+
+### ADR-0189 review correction, 2026-09-28
+
+Both independent lenses on `9bac2e9c` found two Majors: dropping nominal expiry
+breaks paired identities when several series share settlement; final historical
+calendars reveal later-announced ad-hoc closures. The correction preserves the
+configured `(symbol, quote_date, expiry)` identity. Actual settlement and session
+counts remain label/purge/reporting information. Model horizons and every derived
+tenor, fraction and reference scale use a fixed regular-holiday planned schedule,
+which deliberately does not anticipate exceptional closures. This is not a
+22-session horizon proxy. The grid separately reports actual calendar days.
+The first development run is retained but superseded; the recommendation must
+come from a fresh immutable-source run. Exact numerical curve grids/mixtures and
+calibration maps are retained for both raw and calibrated variants.

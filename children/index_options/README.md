@@ -8,6 +8,17 @@ recorder, VIX-proxy condor backtest; see below) — still no broker or serving.
 
 ## Install and test (WSL2)
 
+The separate ADR-0189 CDF comparison is optional research work:
+`python -m pip install -e '.[cdf]'`, then
+`python -m index_options.cdf_study configs/run-predictive-cdf-comparison.json`
+from this child directory, with the configured archives/caches available.
+The checked-in configuration explicitly requires CUDA for the MLP; a CPU run
+must explicitly change its `device` knobs. Output directories refuse overwrite.
+`index_options/cdf_study.py` owns exact-expiry assembly and condor diagnostics;
+`dskit.pipeline.libs.predictive_cdf` owns fitting/scoring. The fixed planned
+calendar ignores future exceptional closures; actual settlement remains the
+outcome and reporting date. This does not authorize trading or serving.
+
 From this child directory, use a dedicated environment with a trusted DSKIT
 checkout. Replace the placeholder with that checkout's absolute path:
 
@@ -18,7 +29,7 @@ python -m pip install -e /absolute/path/to/dskit -e . pytest
 python -m pytest tests -q
 ```
 
-No heavy dependencies. Do not install this child into another project's active
+The synthetic demo needs no heavy dependencies. Do not install this child into another project's active
 environment. After graduation, the same child and installed DSKIT suffice;
 there is no import from a parent repository path.
 

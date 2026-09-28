@@ -73,3 +73,55 @@ def test_panel_exact_holiday_settlement_missing_path_and_dividend_flag(tmp_path,
         np.array([prices['2023-06-30'], prices['2023-07-03']])/prices['2023-06-29']))
     assert adapter.refused['IWM']['incomplete_path'] == 1
     assert adapter.refused['IWM']['non_session_quote'] == 1
+
+
+def test_future_unscheduled_closure_is_label_information_only(tmp_path, monkeypatch):
+    import exchange_calendars as xc
+    from index_options.cdf_study import ExactExpiryCDFPanel
+
+    dates = xc.get_calendar('XNYS').sessions_in_range('2024-01-02', '2025-01-10')
+    prices = {d.strftime('%Y-%m-%d'): 100+i*.1 for i, d in enumerate(dates)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params['symbol']
+
+        def run(self, ctx, inputs):
+            return {'records': [
+                {'date': d, 'close': 20. if self.symbol == 'VIX' else price,
+                 'asof_ms': int(pd.Timestamp(d).timestamp()*1000),
+                 'instrument': self.symbol, 'contract': self.symbol,
+                 'group': self.symbol, 'dividend_amount': 0.}
+                for d, price in prices.items()]}
+
+        def fingerprint(self):
+            return {'sha256': 'fixture'}
+
+    monkeypatch.setattr('index_options.cdf_study.IndexCloseRows', Reader)
+    rows = pd.DataFrame({'symbol': ['SPY', 'SPY'], 'quote_date': ['2024-12-26']*2,
+                         'expiry': ['2025-01-08', '2025-01-09'],
+                         'chain_underlying_price': [prices['2024-12-26']]*2})
+    surface, lifecycle = tmp_path/'surface.parquet', tmp_path/'lifecycle.parquet'
+    rows.to_parquet(surface)
+    rows[['symbol', 'quote_date', 'expiry']].assign(first_seen_date='2024-12-02').to_parquet(lifecycle)
+    adapter = ExactExpiryCDFPanel({'root': 'fixture', 'surface': str(surface), 'lifecycle': str(lifecycle),
+                                  'symbols': {'SPY': 'VIX'}, 'price_source': 'fixture', 'iv_source': 'fixture',
+                                  'since': '2024-01-01', 'max_dte': 45, 'lags': 22,
+                                  'windows': [1, 5, 22, 66], 'feature_gap_days': 7,
+                                  'reference_floor': .001, 'spot_tolerance': .02})
+    out = adapter.read()
+    assert out.expiry.tolist() == ['2025-01-08', '2025-01-09']
+    assert out.settlement_date.tolist() == ['2025-01-08']*2
+    assert out.actual_calendar_dte.tolist() == [13, 13]
+    assert out.calendar_dte.tolist() == [13, 14]
+    assert out.actual_sessions_to_expiry.tolist() == [8, 8]
+    assert out.sessions_to_expiry.tolist() == [8, 9]
+    np.testing.assert_allclose(out.log_calendar_dte, np.log([13, 14]))
+    np.testing.assert_allclose(out.log_sessions_to_expiry, np.log([8, 9]))
+    np.testing.assert_allclose(out.series_total_tenor_calendar, out.series_age_calendar+[13, 14])
+    np.testing.assert_allclose(out.series_total_tenor_sessions, out.series_age_sessions+[8, 9])
+    np.testing.assert_allclose(out.life_fraction_calendar,
+                               out.series_age_calendar/(out.series_age_calendar+[13, 14]))
+    np.testing.assert_allclose(out.life_fraction_sessions,
+                               out.series_age_sessions/(out.series_age_sessions+[8, 9]))
+    np.testing.assert_allclose(out.reference_scale, np.maximum(out.rv_22, .001)*np.sqrt([8, 9]))

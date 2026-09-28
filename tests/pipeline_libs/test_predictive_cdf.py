@@ -16,6 +16,28 @@ def test_mixture_cdf_hand_values_and_extremes():
     np.testing.assert_allclose(actual, [[0., 0.5, 1.]])
 
 
+def test_scalar_queries_and_normalized_near_unit_weights():
+    curve = MixtureCurve([[1.000009]], [[0]], [[1]])
+    np.testing.assert_allclose(curve.cdf(np.inf), [[1.]])
+    np.testing.assert_allclose(curve.cdf(0), [[.5]])
+    np.testing.assert_allclose(curve.quantile(.5), [[0]])
+    grid = GridCurve([[0, 1]], [0, 1])
+    np.testing.assert_allclose(grid.cdf(.5), [[.5]])
+    np.testing.assert_allclose(grid.quantile(.5), [[.5]])
+
+
+def test_saved_curve_arrays_preserve_calibration_and_exact_parameters(tmp_path):
+    base = MixtureCurve([[.2, .8]], [[-1, 1]], [[.5, 1.]])
+    curve = CalibratedCurve(base, [.1, .2, .5, .8], 5)
+    path = tmp_path/'curve.npz'
+    np.savez_compressed(path, **curve._arrays())
+    with np.load(path, allow_pickle=False) as a:
+        restored = MixtureCurve(a['weights'], a['means'], a['scales'])
+        expected = np.interp(restored.cdf([-3, 0, 2]), a['calibration_x'][0], a['calibration_p'][0])
+        np.testing.assert_allclose(curve.cdf([-3, 0, 2]), expected, rtol=0, atol=0)
+    np.testing.assert_allclose(GridCurve([[0, 1]], [0, 1])._arrays()['values'], [[0, 1]])
+
+
 def test_split_purges_both_boundaries_and_never_reuses_rows():
     frame = pd.DataFrame({
         'date': ['2016-06-01', '2017-12-20', '2018-02-01',
@@ -110,13 +132,28 @@ def test_study_unknown_config_refuses():
         ChronologicalCDFStudy({'typo': 1})
 
 
+def test_quantile_rearrangement_actually_repairs_crossing():
+    class FixedHead:
+        def __init__(self, value):
+            self.value = value
+
+        def predict(self, x):
+            return np.full(len(x), self.value)
+
+    model = QuantileCDF([.05, .5, .95])
+    model.models = [FixedHead(1), FixedHead(-1), FixedHead(0)]
+    np.testing.assert_allclose(model.curve(np.zeros((1, 2))).quantile([.05, .5, .95]), [[-1, 0, 1]])
+
+
 def test_study_end_to_end_paired_counts_and_zero_baseline_skill(tmp_path):
     rows = []
     for year in range(2014, 2020):
         for day in range(1, 13):
             rows.append({'unit': 'A', 'date': f'{year}-03-{day:02}',
                          'end': f'{year}-03-{day+1:02}', 'h': 1,
-                         'scale': 1., 'y': (day-6)/5})
+                         'scale': 1., 'y': (day-6)/5, 'expiry': f'{year}-03-{day+1:02}'})
+    # Distinct nominal series share one settlement; both must survive pairing.
+    rows.append({**rows[-1], 'expiry': '2019-03-13-series-B'})
     frame = pd.DataFrame(rows)
     c = {'features': ['h', 'scale'], 'group': 'unit', 'date': 'date', 'end': 'end',
          'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017, 2019],
@@ -124,14 +161,17 @@ def test_study_end_to_end_paired_counts_and_zero_baseline_skill(tmp_path):
          'tail_points': 41, 'calibration_knots': 5, 'development_end': 2017,
          'bootstrap': {'blocks': [3], 'replicates': 10, 'seed': 4},
          'reference_model': 'reference', 'comparison_references': ['reference'],
+         'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
          'models': {'reference': {'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
                                   'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
                                   'calibrate': True}}}
     study = ChronologicalCDFStudy(c)
     scores = study.run(frame)
     summary = study.summarize(scores)
-    assert len(scores) == 48
-    assert summary['metrics'][0]['n'] == 12
+    assert len(scores) == 50
+    assert summary['metrics'][0]['n'] == 13
+    assert summary['metrics'][0]['expiry_series'] == 13
+    assert not scores.duplicated(['unit', 'date', 'expiry', 'model', 'variant']).any()
     assert summary['metrics'][0]['equal_cell_skill'] == pytest.approx(0)
     assert summary['paired_block_intervals'][0]['lo'] == pytest.approx(0)
     assert summary['paired_block_intervals'][0]['hi'] == pytest.approx(0)

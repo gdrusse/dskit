@@ -13,9 +13,11 @@
   "study": {
     "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "rv_1", "rv_5", "rv_22", "rv_66", "own_iv", "calendar_dte", "sessions_to_expiry", "log_calendar_dte", "log_sessions_to_expiry", "series_age_calendar", "series_age_sessions", "series_total_tenor_calendar", "series_total_tenor_sessions", "life_fraction_calendar", "life_fraction_sessions", "calendar_days_per_session", "reference_scale"],
     "group": "symbol", "date": "quote_date", "end": "settlement_date",
-    "horizon": "calendar_dte", "target": "terminal_return", "reference": "reference_scale",
+    "horizon": "actual_calendar_dte", "target": "terminal_return", "reference": "reference_scale",
+    "identity": ["symbol", "quote_date", "expiry"],
+    "series_identity": ["symbol", "expiry"],
     "years": [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
-    "output": "pipeline_runs/predictive_cdf_20260928",
+    "output": "pipeline_runs/predictive_cdf_reviewed_20260928",
     "samples": 401, "tail_intervals": [[-2.5, -0.5], [0.5, 2.5]], "tail_points": 201,
     "calibration_knots": 21,
     "development_end": 2018,
