@@ -1,73 +1,83 @@
-# Joint simulation Fold 2 attempt — 2026-09-28
+# Joint simulation Fold 2 result — 2026-09-28
 
 ## Disposition
 
-The interrupted `joint-simulation-2026-09-28-36bec3d6` attempt completed
-Fold 2 (`[2022-09-09, 2022-11-11)`) and began Fold 3. Its Fold 2 boundary
-was flat, but its financial result is provisional and must not be presented
-as the corrected backtest result: it used fill-policy digest
-`4a5df9dfb31314f6dd75c573ea9c20a3ff9e264905140033f99d12d6af11e890`,
-which priced the mandatory close exit at the bar open and derived the session
-close from the last observed bar. Candidate `22d3689` replaces that policy
-with the bounded XNYS calendar and close-price digest
-`0ef3f05dfcd4d0a90511d830b9704779e84a48a253cc2c30993822cea890e5da`.
+The corrected candidate at `22d3689` completed Fold 2
+(`[2022-09-09, 2022-11-11)`) in run
+`joint-simulation-2026-09-28-4ed41813` and handed its flat portfolio to
+Fold 3. The full folds 2–19 simulation is still running, so the figures below
+are a trade-ledger reconstruction; the official ADR-0183 evaluator remains
+pending until the simulation node publishes its buffered artifacts.
 
-## Observed Fold 2 boundary
+This result uses fill-policy digest
+`0ef3f05dfcd4d0a90511d830b9704779e84a48a253cc2c30993822cea890e5da`,
+which prices the mandatory session-close exit at the close and obtains each
+close from the bounded XNYS calendar.
 
-- Closing NAV/cash: `$10,949.3323185029935119126` (`$10,949.33`).
-- Portfolio cost basis (contributed capital): `$12,500`.
+## Fold 2 result
+
+- Closing NAV/cash: `$10,444.5118916454190048244` (`$10,444.51`).
+- Portfolio cost basis (cumulative contributed capital): `$12,500`.
+- P&L versus contributed capital: `-$2,055.4881083545809951756`
+  (`-$2,055.49`).
 - Open positions: none; open-security basis: `$0`.
-- P&L versus portfolio cost basis: `-$1,550.6676814970065`
-  (`-$1,550.67`).
-- Reconstructed decision fills: `20,992`.
-- Reconstructed evaluator-style maximum dollar drawdown: `$1,907.7359`
-  (cumulative-P&L peak `$21.8617` on 2022-09-09 to trough
-  `-$1,885.8742` on 2022-10-12).
+- Reconstructed decision fills: `20,933` across 45 sessions.
+- Refused ticks: zero; no oversells or negative-cash states were observed.
+- Every session ended flat. On the final session, 2022-11-10, the portfolio
+  was flat by 15:56 America/New_York and gained `$142.13` versus the prior
+  session's close.
+- Reconstructed daily-close maximum dollar drawdown: `$2,219.478935659970`
+  from cumulative-P&L peak `$21.861724330825` on 2022-09-09 to trough
+  `-$2,197.617211329145` on 2022-11-09.
 
-The count and drawdown are monitor reconstructions, not completed evaluator
-outputs: the simulation node buffers the official artifacts until the full
-folds 2–19 node finishes, and this attempt was deliberately stopped during
-Fold 3.
+The fill count and daily-close drawdown are live monitor reconstructions, not
+completed evaluator outputs. The official evaluator can differ from the
+daily-close drawdown if its configured curve includes a deeper intraday mark.
 
-The Fold 2 boundary is evidenced by the next replay segment's first ledger
-state: at `2022-11-11 09:30 America/New_York` it books a carry deposit of
-`10949.3323185029935119126` USD and records `positions: {}`. The surviving
-temporary evidence is
-`/tmp/gate5-replay-7ckzo3yh/serve/8538ee3b-a93b-4fce-af65-c09decaed8e9/ledger/ledger.0001.jsonl`
-(cash-flow row 5; first snapshot row 8).
+The Fold 2 boundary is independently evidenced by Fold 3's first replay
+ledger state. At `2022-11-11 09:30 America/New_York` it books a carry deposit
+of `10444.5118916454190094947` USD and records no positions. The small final
+decimal difference is serialization at the fold boundary; it does not affect
+the cent-level result.
 
 ## Timing
 
-- Pipeline start: `2026-09-27 23:05:29.420 America/New_York`.
-- Simulation start: `2026-09-27 23:10:36.915 America/New_York`.
-- Last Fold 2 tick: `2026-09-28 02:09:30.185 America/New_York`
-  (`2:58:53.270` after simulation start).
+- Pipeline start: `2026-09-28 09:59:33.670 America/New_York`.
+- Simulation start: `2026-09-28 10:04:48.990 America/New_York`.
+- First Fold 2 solve: `2026-09-28 10:05:06.354 America/New_York`.
+- Last Fold 2 solve: `2026-09-28 13:05:43.082 America/New_York`.
 - Fold 3 replay creation, proving Fold 2 had returned:
-  `2026-09-28 02:14:24.806 America/New_York`.
-- Fold 2 therefore finalized within `3:03:48` of simulation time
-  (`3:08:55` from pipeline start).
-- The whole interrupted attempt ran `9:30:51`, including `9:25:44` in the
-  simulation node, before it was stopped after the old policy was observed
-  processing Black Friday post-close bars in Fold 3.
+  `2026-09-28 13:12:08.803 America/New_York`.
+- Fold 2 solve span: `3:00:36.728`.
+- Simulation-start to Fold 3 handoff: `3:07:19.813`.
+- Pipeline-start to Fold 3 handoff: `3:12:35.133`.
 
 The pipeline log is
-`pipeline_runs/joint-simulation-2026-09-28-36bec3d6/run.log`; it records the
-pipeline and simulation starts. Because the process was stopped rather than
-completed, it contains no final evaluation report.
+`pipeline_runs/joint-simulation-2026-09-28-4ed41813/run.log`. The simulation
+continues under the 18 GiB address-space cap with one fold worker; the joint
+Pyomo/HiGHS model is persistent and uses warm starts when the solve topology
+is unchanged.
 
-The monitor reconstruction is preserved in the Codex rollout at
-`C:\Users\russe\.codex\sessions\2026\09\27\rollout-2026-09-27T10-44-55-01a0e353-7eb6-7cf1-9db9-c43525a683c3.jsonl`:
-line 12598 is the last Fold 2 tick, 12605 is its flat end-of-day
-reconstruction, 12676 is the Fold 3 carry ledger, and 12713 applies the
-three previously omitted `$500` deposits to the Fold 2 boundary figure.
+## Operational observation
 
-Fold 3 remained diagnostically valid through the 2022-11-23 close
-(`$12,065.14`, flat); 2022-11-25 and later state from this
-attempt is invalid because the old policy continued after the 13:00 XNYS
-close.
+Late-session trades were allowed only on paths truncated to the minutes left
+before the calendar close. Some positions were sold by the optimizer before
+the final minute and some reached the close backstop. All 45 Fold 2 sessions
+were liquid by the close, with no execution refusal or portfolio-limit breach.
+This validates the operational contract, not economic quality: the official
+evaluator's attribution remains the authority after the full run completes.
+
+## Superseded attempt
+
+The earlier interrupted run `joint-simulation-2026-09-28-36bec3d6` reported
+provisional Fold 2 NAV `$10,949.33` and P&L `-$1,550.67`. Do not use those
+figures: that attempt used the superseded fill-policy digest
+`4a5df9dfb31314f6dd75c573ea9c20a3ff9e264905140033f99d12d6af11e890`,
+which used the bar open for the mandatory exit and inferred session close from
+the last observed bar.
 
 ## Next action
 
-Run the reviewed `22d3689` candidate end to end. Treat its Fold 2 NAV, P&L,
-drawdown, trade attribution, and flat-close checks as the first reportable
-result; the figures above are diagnostic evidence only.
+Let folds 2–19 finish, run the ADR-0183 backtest evaluator on the published
+artifacts, and replace the reconstructed drawdown and attribution with the
+official report while retaining this Fold 2 boundary as an operational audit.
