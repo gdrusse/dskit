@@ -1,5 +1,45 @@
 # Re-entry
 
+## ADR-0191 additional CDF methods completed (2026-09-28)
+
+- Owner requested all three proposed methods, Sol build and Luna review.
+  Source locked at `1302738e3a38d9ae635ae5b3b2ae2a25028ee122` from base
+  `9d1814eb`: QRF (not Fourier-MMD DRF), Normal-CRPS NGBoost, and exact
+  empirical/MLP probability blends in the existing generic CDF pack.
+- One standardized JSON: `children/index_options/configs/run-predictive-cdf-methods.json`.
+  All nine development candidates, selection, four frozen evaluation
+  partitions and final evaluator completed. No one-off execution script,
+  failed/dropped stage, silent fallback, live model or trading.
+- Two fresh Luna final lenses: C0/M0; 93 focused/purity + 28 child integration
+  tests. Additional Luna artifact audits verified hashes, paired identities,
+  purges, unchanged selected specs and representative exact curve/PIT recovery.
+  Actual retained evidence: `docs/review-evidence/ADR-0191.md`. Deferred Minor:
+  convex inverse can fall about 1e-19 below an atom; no post-lock nit changes.
+- Finalists: raw QRF leaf100, NGBoost depth2/leaf20/rate.03, 25% MLP blend,
+  plus empirical and pooled-MLP controls. Blend/control fit-state equivalence
+  verified in all ten years; shared neural settings/seeds remain unchanged.
+- Primary full-CDF equal-cell skill: QRF -3.639%, NGBoost -1.029%, blend
+  +0.818%, MLP -1.917%. Blend index means: SPY +0.966%, QQQ +1.227%,
+  IWM +0.261%; positive in 123/135 cells. 30–45-day blend skill +0.481%
+  overall, IWM -0.040%. Carry blend as research challenger, retain empirical.
+- Blend nominal 95% paired block intervals above zero, but these are
+  unadjusted, dependent, reused-history comparisons. Its downside exceedance
+  is 8.039% instead of 5%. No fresh-data or profitable-trading claim.
+- 18,616 development forecasts/133 cells; 68,084 evaluation forecasts,
+  1,746 dates/3,495 series/all135 cells. Full grid, annual train/cal/validation
+  counts, cutoff example, uncertainty and recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-methods.md`.
+- All execution in WSL2; neural fits use CUDA, tree libraries CPU. Every
+  stage under 30 min/6 GiB; slowest 5:10.85, peak process RSS 3.250 GiB.
+  Separate private .venv; no shared-environment mutation; no full test suite.
+- Preserve `/home/russell/dskit-cdf-methods-20260928` for ignored outputs
+  `children/index_options/pipeline_runs/predictive_cdf_methods_20260928`
+  and sibling logs `cdf_methods_logs_20260928`, plus private dependencies.
+  Also preserve the older feature-research and HPO worktrees/artifacts.
+- Next research, not started: genuinely new-data validation and predeclared
+  downside/strike objectives. The current bounded implementation/review/run
+  gate is complete and ready for its authorized wrap/push.
+
 ## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
 
 - Merged/pushed to remote main: implementation `f396baca`, complete memo/evidence
