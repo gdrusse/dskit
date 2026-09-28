@@ -27200,3 +27200,10 @@ across changing annual training sets; non-pooled fits additionally key the group
 Saved-curve convergence audits recover rows by the already-required unique
 forecast identity, not caller DataFrame index labels. Multi-year/multi-group
 and duplicate/non-contiguous-index tests pin both rules through report audit.
+
+Second final-review correction: every public study run validates the complete
+unfiltered panel's entry and outcome fields as present, real, canonical
+`YYYY-MM-DD` calendar dates with outcome strictly after entry. The public split
+helper enforces the same contract. Validation precedes cutoff, group and fold
+filters, so missing or malformed metadata cannot silently remove identities or
+enter lexical date bands; caller DataFrame index labels remain irrelevant.

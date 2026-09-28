@@ -20,6 +20,23 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve", "CDFEs
            "EmpiricalMLPBlendCDF", "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
 
 
+def _validate_temporal_frame(frame, date_field, end_field):
+    """Refuse incomplete or noncanonical temporal metadata before filtering."""
+    import pandas as pd
+
+    parsed = []
+    for field in (date_field, end_field):
+        values = frame[field]
+        strings = values.map(lambda value: isinstance(value, str))
+        dates = pd.to_datetime(values.where(strings), format="%Y-%m-%d", errors="coerce")
+        canonical = dates.dt.strftime("%Y-%m-%d").eq(values)
+        if values.isna().any() or not (strings & dates.notna() & canonical).all():
+            raise ValueError(f"invalid canonical ISO date metadata: {field}")
+        parsed.append(dates)
+    if not (parsed[1] > parsed[0]).all():
+        raise ValueError("outcome date must be strictly after forecast date")
+
+
 class _Curve(ABC):
     @abstractmethod
     def cdf(self, values):
@@ -1278,6 +1295,12 @@ class ChronologicalCDFStudy:
         tuple of DataFrame
             Training, calibration, evaluation rows.
         """
+        _validate_temporal_frame(frame, date_field, end_field)
+        return ChronologicalCDFStudy._split_validated(frame, year, date_field, end_field)
+
+    @staticmethod
+    def _split_validated(frame, year, date_field, end_field):
+        """Split a frame whose temporal columns were already validated."""
         c, v, stop = f"{year-1}-01-01", f"{year}-01-01", f"{year+1}-01-01"
         date, end = frame[date_field], frame[end_field]
         return (frame[(date < c) & (end < c)],
@@ -1346,6 +1369,7 @@ class ChronologicalCDFStudy:
         from sklearn.impute import SimpleImputer
 
         c = self.config
+        _validate_temporal_frame(frame, c["date"], c["end"])
         output = Path(c["output"])
         output.mkdir(parents=True, exist_ok=False)
         from dskit.pipeline.base import config_hash
@@ -1374,7 +1398,7 @@ class ChronologicalCDFStudy:
         equivalence = {}
         for group, group_frame in frame.groupby(c["group"]):
             for year in c["years"]:
-                fit, cal, val = self.split(group_frame, year, c["date"], c["end"])
+                fit, cal, val = self._split_validated(group_frame, year, c["date"], c["end"])
                 if min(len(fit), len(cal), len(val)) < 1:
                     raise ValueError(f"empty band: {group} {year}")
                 count = {"group": group, "year": year}
@@ -1391,7 +1415,8 @@ class ChronologicalCDFStudy:
                     pooled = spec.get("pooled", False)
                     new_fit = not (pooled and key in pooled_cache)
                     if new_fit:
-                        model_fit, model_cal, _ = self.split(frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
+                        model_fit, model_cal, _ = self._split_validated(
+                            frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
                         for band in (model_fit, model_cal, val):
@@ -1795,6 +1820,7 @@ class CDFHyperparameterStudy:
         c, e = self.base, self.experiment
         if stage not in ("search", "select", "evaluate", "report") or not provenance:
             raise ValueError("invalid stage or missing provenance")
+        _validate_temporal_frame(frame, c["date"], c["end"])
         if frame.duplicated(c["identity"]).any() or frame[c["identity"]].isna().any().any():
             raise ValueError("missing or duplicate panel identities")
         mapping = e["task_features"]

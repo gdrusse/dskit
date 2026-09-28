@@ -328,6 +328,39 @@ def _hpo_fixture(tmp_path):
     return {'study': c, 'experiment': e}, pd.DataFrame(rows)
 
 
+@pytest.mark.parametrize(('field', 'value'), [
+    ('end', None), ('end', np.nan), ('end', pd.NaT),
+    ('end', '2017-99-99'), ('end', '2017-02-29'),
+    ('date', '2017-1-01'), ('date', '2017-99-99'),
+])
+def test_study_entrypoints_refuse_incomplete_or_noncanonical_temporal_metadata(
+        tmp_path, field, value):
+    import copy
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    config, frame = _hpo_fixture(tmp_path)
+    frame.loc[0, field] = value  # Outside active folds: validation must precede filtering.
+    direct = copy.deepcopy(config['study'])
+    direct['output'] = str(tmp_path/'direct-invalid')
+    with pytest.raises(ValueError, match='date|temporal'):
+        ChronologicalCDFStudy(direct).run(frame)
+    with pytest.raises(ValueError, match='date|temporal'):
+        pack.CDFHyperparameterStudy(config).run(
+            frame, stage='search', partition='separate', provenance={'fixture': 1})
+    assert not (tmp_path/'direct-invalid').exists()
+    assert not (tmp_path/'hpo/search/separate').exists()
+
+
+def test_split_validates_temporal_metadata_but_accepts_duplicate_frame_index():
+    frame = pd.DataFrame({'date': ['2016-01-01', '2018-01-01'],
+                          'end': ['2016-01-02', '2018-01-02']}, index=[0, 0])
+    fit, cal, val = ChronologicalCDFStudy.split(frame, 2019, 'date', 'end')
+    assert len(fit) == 1 and len(cal) == 1 and val.empty
+    frame.iloc[0, frame.columns.get_loc('date')] = 'not-a-date'
+    with pytest.raises(ValueError, match='date|temporal'):
+        ChronologicalCDFStudy.split(frame, 2019, 'date', 'end')
+
+
 def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs(tmp_path):
     import json
     import dskit.pipeline.libs.predictive_cdf as pack
