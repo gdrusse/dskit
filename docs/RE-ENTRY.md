@@ -1,5 +1,34 @@
 # Re-entry
 
+## ADR-0189 predictive price-CDF comparison completed (2026-09-28)
+
+- Owner asked to build the four researched distribution approaches, retain
+  MLP, compare and recommend. This is terminal-return CDF research, separate
+  from the prior exact-expiry daily-RMS/ElasticNet work; no trading.
+- Source locked at `0fa4da8b` after two fresh independent final lenses:
+  correctness C0/M0/m1/n0; tests/integration C0/M0/m2/n0. Focused tests plus
+  pipeline purity: 43 passed; ruff clean. Retained outputs and all five
+  deferred Minor families: `docs/review-evidence/ADR-0189.md`.
+- Corrected full run `children/index_options/pipeline_runs/predictive_cdf_reviewed_20260928`
+  exited 0 in 10:29.56, peak host RSS 2.91 GiB, CUDA MLPs. Six forecasters,
+  30 index/year folds, identical 39 learned-model inputs; 19,014 development
+  and 68,084 research-evaluation observations, 135 exact-calendar-day cells.
+  Both chronological label purges and nominal expiry identity are preserved;
+  model horizons use regular-holiday planned calendars, not hindsight closures.
+- Recommendation: keep horizon empirical as reference. No learned model has
+  positive overall equal-cell CRPS skill. MLP-3 is a SPY research challenger:
+  SPY +1.41%, QQQ −0.84%, IWM −4.73%; SPY 30–45 days only +0.14%. Do not
+  promote to final model or trading; tail calibration remains inadequate.
+- Full counts, exact-day grid, training/calibration procedure and an actual
+  strike-query/payoff example:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-comparison.md`.
+  Earlier `predictive_cdf_20260928` is superseded, not final evidence.
+- Remaining: a predeclared development-only tuning/calibration study, new-data
+  evaluation, then executable strategy research if supported. No new run,
+  optimizer, serving model, IWM dividend-null entry or live trade is authorized
+  by these results. Previous ADR-0187 next-actions below are historical, not
+  the current instruction to run a trading grid.
+
 ## ADR-0187 built, reviewed, all six owner questions answered, MERGED to main (2026-09-27)
 
 - **Owner directive:** build the code needed to run the index-options
