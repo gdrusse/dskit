@@ -39,6 +39,7 @@ from dskit.pipeline.node import (
     Node,
     ServingContract,
     check_int_param,
+    class_ref,
     register_node_kind,
     reject_unknown_params,
 )
@@ -70,14 +71,21 @@ from dskit.production.records import (
     Quote,
 )
 from dskit.production.release import (
+    CALENDAR_CLASS_KEY,
     ReleaseManifest,
     RuntimeFingerprint,
     artifact_digest,
+    fingerprint_class,
     runtime_capture_memo,
 )
+from dskit.production.sessions import CALENDAR_KINDS
 from dskit.production.state import PositionBook
 
 from .nodes_capital import SchwabCostModel
+
+
+#: Raw equity bars are one-minute period-start rows (child invariant).
+_BAR_MS = 60_000
 
 __all__ = [
     "BarTape",
@@ -106,6 +114,40 @@ class _HashView:
         return self._obj
 
 
+def _calendar_site_problems(site):
+    """Return problems with a ``{uses, params}`` session-calendar selector."""
+    if not isinstance(site, dict):
+        return [f"session_calendar must be an object, got {site!r}"]
+    problems = []
+    reject_unknown_params(problems, site, ("uses", "params", "notes"))
+    uses = site.get("uses")
+    if not isinstance(uses, str) or not uses:
+        problems.append(f"session_calendar.uses must be a non-empty string, got {uses!r}")
+        return problems
+    params = site["params"] if "params" in site else {}
+    if not isinstance(params, dict):
+        problems.append(f"session_calendar.params must be an object, got {params!r}")
+        return problems
+    try:
+        cls = CALENDAR_KINDS.resolve(uses)
+    except ProductionError as exc:
+        problems.extend(f"session_calendar: {problem}" for problem in exc.problems)
+        return problems
+    problems.extend(
+        f"session_calendar: {problem}" for problem in cls.validate_params(params)
+    )
+    return problems
+
+
+def _calendar_for(policy):
+    """Build the policy's validated session calendar, or return ``None``."""
+    site = policy.session_calendar
+    if site is None:
+        return None
+    cls = CALENDAR_KINDS.resolve(site["uses"])
+    return cls(dict(site.get("params") or {}))
+
+
 class FillPolicy:
     """Validated fill-model bundle. Values come from the document, never defaults.
 
@@ -117,7 +159,9 @@ class FillPolicy:
         refuses. ``forced_exit_at`` also picks the position book:
         ``horizon_expiry`` the lead-keyed lots of :class:`HorizonBook`,
         ``session_close`` the whole shares of :class:`SessionShareBook`
-        (ADR-0188). ``notes`` is allowed.
+        (ADR-0188). ``session_calendar`` is required for ``session_close``
+        and refused otherwise; it is a production ``{uses, params}``
+        calendar selector. ``notes`` is allowed.
 
     Examples
     --------
@@ -167,6 +211,7 @@ class FillPolicy:
         "fill_suffix_bars",
         "fill_suffix_weekdays",
     )
+    _OPTIONAL_PARAMS = ("session_calendar",)
     _VOCAB = {
         "order_type": ("market",),
         "rejections": ("none",),
@@ -189,6 +234,7 @@ class FillPolicy:
         self._params = dict(params)
         for name in self._PARAMS:
             setattr(self, name, params[name])
+        self.session_calendar = params.get("session_calendar")
         cost_cls = import_ref(params["cost_model"])
         self.costs = cost_cls({name: params[name] for name in SchwabCostModel._PARAMS})
 
@@ -202,7 +248,7 @@ class FillPolicy:
     def validate_params(cls, params):
         """Problems with ``params``, empty when none."""
         problems = []
-        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        reject_unknown_params(problems, params, cls._PARAMS + cls._OPTIONAL_PARAMS + ("notes",))
         for name in cls._PARAMS:
             if name not in params:
                 problems.append(f"{name} is required")
@@ -233,6 +279,17 @@ class FillPolicy:
                 problems.append(
                     f"{name} must be one of {list(allowed)}, got {params[name]!r}"
                 )
+        calendar = params.get("session_calendar")
+        if params["forced_exit_at"] == "session_close" and calendar is None:
+            problems.append(
+                "session_calendar is required when forced_exit_at is 'session_close'"
+            )
+        if params["forced_exit_at"] != "session_close" and calendar is not None:
+            problems.append(
+                "session_calendar is only admitted when forced_exit_at is 'session_close'"
+            )
+        if calendar is not None:
+            problems.extend(_calendar_site_problems(calendar))
         for name in ("decision_price_field", "fill_price_field", "forced_exit_price_field",
                      "halt_field", "horizon_field", "symbol_field", "qty_field", "side_field"):
             if not isinstance(params[name], str) or not params[name]:
@@ -1009,24 +1066,23 @@ def _share_fill_id(symbol, asof_ms, side, origin):
     return f"{symbol}-{int(asof_ms)}-{side}-{origin}"
 
 
-def _session_date(asof_ms, zone):
-    """Return an instant's session: its local date in ``zone``."""
-    return datetime.fromtimestamp(int(asof_ms) / 1000, tz=timezone.utc).astimezone(zone).date()
-
-
-def _session_last_indices(seq, zone):
-    """Each session's last-bar index in one symbol's time-sorted bars, keyed by session date.
-
-    The session is a bar's local date in ``zone`` (:func:`_session_date`);
-    its last bar is the last one the tape holds for that date, so a missing
-    closing minute moves the session close to the last minute that printed.
-    The backstop, ``_portfolio``'s ``session_last_ms`` and the
-    ``fill_next_session`` refusal all read this one definition (ADR-0188).
-    """
-    last = {}
+def _session_markers(seq, calendar):
+    """Map calendar session bounds to their exact one-minute close marker and index."""
+    sessions = {}
     for position, bar in enumerate(seq):
-        last[_session_date(bar["asof_ms"], zone)] = position
-    return last
+        asof_ms = int(bar["asof_ms"])
+        if not calendar.is_open(asof_ms):
+            continue
+        bounds = tuple(calendar.window("session", asof_ms))
+        marker = int(bounds[1]) - _BAR_MS
+        if marker < bounds[0]:
+            raise ConfigError([
+                f"session {bounds!r} is shorter than the {_BAR_MS} ms raw-bar interval"
+            ])
+        item = sessions.setdefault(bounds, {"marker_ms": marker, "index": None})
+        if asof_ms == marker:
+            item["index"] = position
+    return sessions
 
 
 class SessionShareBook:
@@ -1045,17 +1101,16 @@ class SessionShareBook:
       ledger is touched, and the caller records ``oversell``:
       ``PositionBook`` would carry the position through flat (its ``_step``
       rebases at the crossing), which a long-only book must never do.
-    - ``expiring`` names the whole position only at the last bar the tape
-      holds for the name's local session date (in the fill policy's
-      ``spread_time_of_day.timezone``). That is the ``session_close``
-      backstop; ``same_tick_order: exits_then_entries`` runs it before the
-      bar's queued orders, so the book is flat by the close (owner ruling
-      A(a)). Nothing expires by lead.
-    - ``session_last_ms`` names each symbol's session-close bar (the one
-      the backstop sells at) on an instant's session date, and
-      ``same_session`` whether two bars share a session date: the
-      decider's and the ``fill_next_session`` rule's view of the same
-      definition (:func:`_session_last_indices`).
+    - ``expiring`` names the whole position only at the configured
+      calendar session's exact final one-minute bar (``close - 60s``).
+      That is the ``session_close`` backstop; ``same_tick_order:
+      exits_then_entries`` runs it before the bar's queued orders, so the
+      book is flat by the close (owner ruling A(a)). A missing final bar
+      never moves the close earlier, and a post-close bar never moves it
+      later. Nothing expires by lead.
+    - ``session_last_ms`` names each symbol's configured close marker and
+      ``same_session`` requires both bars to be open in the same calendar
+      window: the decider and ``fill_next_session`` share one definition.
     - ``close_lot`` flattens: the position leaves the ledger.
       ``PositionBook`` realises an instrument's log when it reaches flat, so
       this leaves exactly the state a flattening sale would; the sale itself
@@ -1075,8 +1130,8 @@ class SessionShareBook:
     Parameters
     ----------
     policy : FillPolicy
-        ``fill_price_field`` prices each fill; ``spread_time_of_day``'s
-        ``timezone`` dates the sessions.
+        ``fill_price_field`` prices each fill; ``session_calendar`` owns
+        the exact session windows, holidays, and special closes.
 
     Examples
     --------
@@ -1098,7 +1153,11 @@ class SessionShareBook:
 
     def __init__(self, policy):
         self._policy = policy
-        self._zone = ZoneInfo(policy.spread_time_of_day["timezone"])
+        self._calendar = _calendar_for(policy)
+        if self._calendar is None:
+            raise ConfigError([
+                "session_calendar is required for the session_close share book"
+            ])
         self._ledger = PositionBook()
         self._bars = {}
         self._session_last = {}
@@ -1112,43 +1171,69 @@ class SessionShareBook:
         """
         self._bars = dict(by_symbol)
         self._session_last = {
-            symbol: _session_last_indices(seq, self._zone) for symbol, seq in self._bars.items()
+            symbol: _session_markers(seq, self._calendar)
+            for symbol, seq in self._bars.items()
         }
         self._closes = {
-            symbol: frozenset(by_date.values()) for symbol, by_date in self._session_last.items()
+            symbol: frozenset(
+                item["index"] for item in sessions.values() if item["index"] is not None
+            )
+            for symbol, sessions in self._session_last.items()
         }
 
     def shares(self, symbol):
         """Whole shares held in ``symbol``, an ``int`` (0 when flat)."""
         return int(self._ledger.net_qty(symbol))
 
+    @property
+    def calendar(self):
+        """The validated calendar shared by scheduling and share exits."""
+        return self._calendar
+
     def is_session_last(self, symbol, index):
-        """Return whether bar ``index`` is the last bar of its local session date for ``symbol``."""
+        """Return whether bar ``index`` is the configured session's exact close marker."""
         return index in self._sessions(symbol)
 
     def same_session(self, symbol, first, second):
-        """Return whether bars ``first`` and ``second`` of ``symbol`` share a session date."""
-        return (
-            _session_date(self._bar(symbol, first)["asof_ms"], self._zone)
-            == _session_date(self._bar(symbol, second)["asof_ms"], self._zone)
+        """Return whether two open bars belong to the same configured session."""
+        one = int(self._bar(symbol, first)["asof_ms"])
+        two = int(self._bar(symbol, second)["asof_ms"])
+        if not self._calendar.is_open(one) or not self._calendar.is_open(two):
+            return False
+        return tuple(self._calendar.window("session", one)) == tuple(
+            self._calendar.window("session", two)
         )
 
+    def calendar_open(self, asof_ms):
+        """Return whether the configured session calendar admits ``asof_ms``."""
+        return bool(self._calendar.is_open(int(asof_ms)))
+
     def session_last_ms(self, asof_ms):
-        """Each symbol's session-close instant on ``asof_ms``'s session date.
+        """Each symbol's configured close marker in ``asof_ms``'s session.
 
         Returns
         -------
         dict
-            ``{symbol: asof_ms of its last bar that date}`` for every symbol
-            the tape holds on that date: the bar :meth:`expiring` names for
-            the backstop.
+            ``{symbol: expected close-marker ms}`` for every symbol with a
+            bar in that session. The marker is reported even when its bar
+            is absent; only an exact marker bar can make :meth:`expiring`
+            run the backstop.
         """
-        day = _session_date(asof_ms, self._zone)
+        if not self.calendar_open(asof_ms):
+            return {}
+        bounds = tuple(self._calendar.window("session", int(asof_ms)))
         return {
-            symbol: int(self._bars[symbol][by_date[day]]["asof_ms"])
-            for symbol, by_date in sorted(self._session_last.items())
-            if day in by_date
+            symbol: int(sessions[bounds]["marker_ms"])
+            for symbol, sessions in sorted(self._session_last.items())
+            if bounds in sessions
         }
+
+    def last_session_ms(self, symbol):
+        """Return the expected close-bar marker for ``symbol``'s last bound session."""
+        sessions = self._session_last.get(symbol) or {}
+        if not sessions:
+            raise ConfigError([f"share book: no open session is bound for {symbol!r}"])
+        return int(sessions[sorted(sessions)[-1]]["marker_ms"])
 
     def is_open(self, symbol, lead):
         """Return whether ``symbol`` holds shares."""
@@ -1654,7 +1739,9 @@ class EquityReplay:
             # A share position the backstop could not sell (its last bar was
             # halted) is open at its session close, not owed past the tape.
             self.refused.append({
-                "symbol": sym, "asof_ms": last.get(sym), "lead": lead, "qty": lot["qty"],
+                "symbol": sym,
+                "asof_ms": self._book.last_session_ms(sym) if self._share_mode else last.get(sym),
+                "lead": lead, "qty": lot["qty"],
                 "reason": "open_at_session_close" if self._share_mode else "expiry_past_tape",
             })
             self._book.close_lot(sym, lead)
@@ -1696,6 +1783,12 @@ class EquityReplay:
             self.refused.append({
                 "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
                 "reason": "lead", "decision_ms": decision["asof_ms"],
+            })
+            return
+        if self._share_mode and not self._book.calendar_open(decision["asof_ms"]):
+            self.refused.append({
+                "symbol": symbol, "asof_ms": decision["asof_ms"], "lead": lead,
+                "reason": "calendar_closed", "decision_ms": decision["asof_ms"],
             })
             return
         if self._share_mode:
@@ -1781,13 +1874,13 @@ class EquityReplay:
         Under ``session_close`` (ADR-0188) ``positions`` holds each name's
         whole shares (an ``int``) with NO fill-bar filter: nothing expires by
         lead, so a position stays listed through its session's last
-        decision, and the backstop sells it at the session's last bar before
-        that bar's queued orders (a sell landing there refuses ``oversell``,
-        a buy ``buy_at_session_close``). ``pending`` lists queued orders of
-        both sides, each with ``lead`` 0. ``session_last_ms`` maps every
-        symbol the tape holds on the tick's session date to the instant of
-        its last bar that date: the bar the backstop sells at, from the one
-        definition the backstop reads (:func:`_session_last_indices`).
+        decision, and the backstop sells it at the configured calendar's
+        exact close marker before that bar's queued orders (a sell landing
+        there refuses ``oversell``, a buy ``buy_at_session_close``).
+        ``pending`` lists queued orders of both sides, each with ``lead`` 0.
+        ``session_last_ms`` maps every symbol with a bar in the tick's
+        session to that expected marker, even when the marker bar is absent;
+        only an exact marker bar can trigger the backstop.
         """
         policy = self._policy
         marks = {}
@@ -1874,11 +1967,15 @@ class EquityReplay:
         try:
             run_dir, artifact, ob_root = _write_serving_run(work, policy)
             document = ServeDocument.from_obj(
-                _serve_document(run_dir, series_id, symbols, times, guards=self._guards)
+                _serve_document(
+                    run_dir, series_id, symbols, times, guards=self._guards,
+                    calendar_site=policy.session_calendar,
+                )
             )
             release = _release_for(
                 run_dir, artifact, symbols, digest, self._source,
                 document, tape.start_ms(), ob_root,
+                calendar=self._book.calendar if self._share_mode else None,
             )
             serve = ServeRoot(os.path.join(work, "serve"), series_id)
             lock = InstanceLock(serve.lock_path)
@@ -2643,7 +2740,7 @@ def _write_serving_run(work, policy):
     return run_dir, artifact, ob.root
 
 
-def _serve_document(run_dir, series_id, symbols, times, guards=None):
+def _serve_document(run_dir, series_id, symbols, times, guards=None, calendar_site=None):
     """Shadow ServeDocument compose.bundles_for accepts; cadence is overlaid to the tape.
 
     ``guards`` is the document's guard map; ``None`` declares ``{}`` so every
@@ -2679,7 +2776,7 @@ def _serve_document(run_dir, series_id, symbols, times, guards=None):
         "feed": {"uses": "replay"},
         "schedule": {
             "clock": {"uses": "replay"},
-            "calendar": {"uses": "always-open"},
+            "calendar": {"uses": "always-open"} if calendar_site is None else calendar_site,
             "cadence": {"uses": "fixed-interval", "params": {"period_ms": 1000}},
             "dead_after_ms": horizon_ms,
             "max_staleness_ms": horizon_ms,
@@ -2762,17 +2859,31 @@ def _guard_problems(guards):
     return []
 
 
-def _release_for(run_dir, artifact, symbols, digest, source_hash, document, created_ms, ob_root):
+def _release_for(
+    run_dir, artifact, symbols, digest, source_hash, document, created_ms, ob_root,
+    calendar=None,
+):
     """Build a ReleaseManifest whose feed_spec matches ``_TapeEntry``'s contract."""
     hex64 = digest
     keys = list(symbols) or ["AAA"]
+    classes = {
+        "replay": {"ref": "intraday_equities.replay:FillPolicy", "code_digest": hex64}
+    }
+    if calendar is not None:
+        data_digest = calendar.data_fingerprint()
+        if data_digest is not None:
+            classes[CALENDAR_CLASS_KEY] = {
+                "ref": class_ref(type(calendar)),
+                "code_digest": fingerprint_class(type(calendar)),
+                "data_digest": data_digest,
+            }
     return ReleaseManifest(
         series_id=document.series_id,
         doc_hash=document.doc_hash,
         run_hash=hex64,
         serving_hash=hex64,
         artifacts={"policy": {"digest": artifact_digest(artifact), "timestamp_ms": created_ms}},
-        classes={"replay": {"ref": "intraday_equities.replay:FillPolicy", "code_digest": hex64}},
+        classes=classes,
         adapter={"name": "intraday_equities", "digest": hex64},
         feed_spec={
             "source_binding": {

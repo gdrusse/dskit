@@ -166,7 +166,7 @@
         "deployment_eligible": false,
         "evidence_end": "2025-10-16",
         "fill_policy": "configs/fill-policy-joint.json",
-        "fill_policy_sha256": "4a5df9dfb31314f6dd75c573ea9c20a3ff9e264905140033f99d12d6af11e890",
+        "fill_policy_sha256": "0ef3f05dfcd4d0a90511d830b9704779e84a48a253cc2c30993822cea890e5da",
         "caps": "development-only",
         "cash_flow_policy": "configs/cash-flow-policy-biweekly.json",
         "cash_flow_policy_sha256": "03c31ce2d6bebaaee6eac2f9916ea7e96137f7787e566d45ebfd3acfc25a1a68",

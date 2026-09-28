@@ -3050,8 +3050,25 @@ JOINT_MIO = {
     "mean_uncertainty_budget": 1.0,
     "mean_deviation_multipliers": {name: 1.0 for name in JOINT_NAMES},
 }
-#: The shipped fill policy on the share book: ``forced_exit_at`` alone differs.
-SHARES_POLICY = FillPolicy({**FILL_POLICY.to_obj(), "forced_exit_at": "session_close"})
+SESSION_CALENDAR = {
+    "uses": "weekly-sessions",
+    "params": {
+        "tz": "America/New_York",
+        "sessions": [{
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            # This synthetic tape is deliberately shifted one hour from XNYS.
+            "open": "10:30",
+            "close": "17:00",
+        }],
+    },
+}
+#: The shipped fill policy on the calendar-owned share book.
+SHARES_POLICY = FillPolicy({
+    **FILL_POLICY.to_obj(),
+    "forced_exit_at": "session_close",
+    "forced_exit_price_field": "close",
+    "session_calendar": SESSION_CALENDAR,
+})
 _MINUTE = 60_000
 
 
@@ -3566,7 +3583,12 @@ def _shares_fill_policy(root):
     with open(os.path.join(CONFIGS, "fill-policy.json"), encoding="utf-8") as handle:
         raw = json.load(handle)
     path = os.path.join(root, "fill-policy-joint.json")
-    _dump(path, {**raw, "forced_exit_at": "session_close"})
+    _dump(path, {
+        **raw,
+        "forced_exit_at": "session_close",
+        "forced_exit_price_field": "close",
+        "session_calendar": SESSION_CALENDAR,
+    })
     return path, FillPolicy.from_path(path).digest()
 
 
@@ -3846,7 +3868,7 @@ def test_joint_simulation_carries_a_share_position_a_halted_close_left_open(jsim
     ny = ZoneInfo("America/New_York")
 
     def at(day, minute):
-        return int(datetime(2025, 1, 15 + day, 15, 55 + minute, tzinfo=ny).timestamp() * 1000)
+        return int(datetime(2025, 1, 15 + day, 16, 57 + minute, tzinfo=ny).timestamp() * 1000)
 
     node = MinuteDevelopmentSimulation("simulate", jsim["params"])
     first = [
@@ -3877,9 +3899,14 @@ def test_a_same_bar_sale_funds_a_same_bar_buy_on_the_share_book():
     ny = ZoneInfo("America/New_York")
 
     def at(minute):
-        return int(datetime(2025, 1, 15, 10, minute, tzinfo=ny).timestamp() * 1000)
+        return int(datetime(2025, 1, 15, 10, 30 + minute, tzinfo=ny).timestamp() * 1000)
 
-    policy = FillPolicy({**_zero_fee_policy().to_obj(), "forced_exit_at": "session_close"})
+    policy = FillPolicy({
+        **_zero_fee_policy().to_obj(),
+        "forced_exit_at": "session_close",
+        "forced_exit_price_field": "close",
+        "session_calendar": SESSION_CALENDAR,
+    })
     bars = [
         {"symbol": symbol, "asof_ms": at(m), "open": 10.0, "close": 10.0, "halted": False}
         for symbol in ("AAA", "BBB") for m in range(4)

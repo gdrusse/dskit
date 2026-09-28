@@ -2194,8 +2194,8 @@ class JointMinuteMioDecider(MinuteMioDecider):
       backstop sells at), both inclusive; ``n - 1 <= 0`` is the last
       decision. The count reads WHICH of the name's minutes up to the
       close carry a tick -- the tape's minute pattern, never a value, the
-      same knowledge ``session_last_ms`` (the last minute that printed)
-      carries; on a complete minute tape it is the minute count;
+      same configured calendar marker ``session_last_ms`` carries; on a
+      complete minute tape it is the minute count;
     * with an empty screened plan (a lead-1 cell below the coverage floor,
       owner question I(a)): skipped ``no_calibrated_plan`` when unheld;
       when held it stays IN the solve with no row, so the node sells it in

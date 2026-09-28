@@ -2663,9 +2663,117 @@ def _zero_fee():
 _SHIPPED_FILL_POLICY_SHA256 = "e4ffcd138fd30acf11794d7137ff98d5f09135c80d4017dc474b2e46f26d607e"
 
 
-def _shares_policy(overrides=None):
+def _weekly_calendar(close="09:36", special_closes=(), open_="09:30"):
+    """A config-owned weekday calendar for synthetic one-minute sessions."""
+    return {
+        "uses": "weekly-sessions",
+        "params": {
+            "tz": "America/New_York",
+            "sessions": [{
+                "days": ["mon", "tue", "wed", "thu", "fri"],
+                "open": open_,
+                "close": close,
+            }],
+            "special_closes": list(special_closes),
+        },
+    }
+
+
+def _shares_policy(overrides=None, close="09:36"):
     """The shipped fill policy under ``forced_exit_at: "session_close"`` (the share book)."""
-    return _policy({"forced_exit_at": "session_close", **(overrides or {})})
+    return _policy({
+        "forced_exit_at": "session_close",
+        "forced_exit_price_field": "close",
+        "session_calendar": _weekly_calendar(close),
+        **(overrides or {}),
+    })
+
+
+def test_black_friday_uses_the_exchange_close_not_the_last_bar_seen():
+    """The 13:00 XNYS close owns the backstop even when later bars exist."""
+    zone = ZoneInfo("America/New_York")
+
+    def at(hour, minute):
+        stamp = datetime(2022, 11, 25, hour, minute, tzinfo=zone)
+        return int(stamp.timestamp() * 1000)
+
+    bars = [
+        _bar("AAA", at(12, 57), 10.0, 10.5),
+        _bar("AAA", at(12, 58), 11.0, 11.5),
+        _bar("AAA", at(12, 59), 12.0, 12.5),
+        _bar("AAA", at(13, 0), 13.0, 13.5),
+        _bar("AAA", at(14, 8), 14.0, 14.5),
+    ]
+    seen = _Orders()
+    calendar = _weekly_calendar(
+        "16:00", special_closes=[{"date": "2022-11-25", "close": "13:00"}]
+    )
+    policy = _shares_policy({"session_calendar": calendar})
+    replay = EquityReplay(policy, decider=seen)
+    out = replay.run(bars, [_order("AAA", at(12, 57), 10)])
+
+    assert sorted(seen.seen) == [at(12, 57), at(12, 58), at(12, 59)]
+    assert [
+        (row["kind"], row["asof_ms"], row["price"], row.get("reason"))
+        for row in out["fills"]
+    ] == [
+        ("entry", at(12, 58), 11.0, None),
+        ("exit", at(12, 59), 12.5, "session_close"),
+    ]
+    buy, sell = out["fills"]
+    expected = (
+        -buy["price"] * buy["qty"] - buy["fee"]
+        + sell["price"] * sell["qty"] - sell["fee"]
+    )
+    assert buy["fee"] > 0 and sell["fee"] > 0
+    assert float(replay.cash_balance) == pytest.approx(expected)
+
+
+def test_a_decision_on_a_closed_raw_bar_refuses_instead_of_filling_next_session():
+    zone = ZoneInfo("America/New_York")
+
+    def at(year, month, day, hour, minute):
+        stamp = datetime(year, month, day, hour, minute, tzinfo=zone)
+        return int(stamp.timestamp() * 1000)
+
+    friday_close = at(2022, 11, 25, 13, 0)
+    monday_open = at(2022, 11, 28, 9, 30)
+    calendar = _weekly_calendar(
+        "16:00", special_closes=[{"date": "2022-11-25", "close": "13:00"}]
+    )
+    out = EquityReplay(
+        _shares_policy({**_ZERO_FEES, "session_calendar": calendar})
+    ).run([
+        _bar("AAA", friday_close, 10.0, 10.0),
+        _bar("AAA", monday_open, 11.0, 11.0),
+    ], [_order("AAA", friday_close, 10)])
+    assert out["fills"] == []
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": friday_close, "lead": 0,
+        "reason": "calendar_closed", "decision_ms": friday_close,
+    }]
+
+
+def test_a_regular_session_uses_1559_as_the_one_minute_close_marker():
+    zone = ZoneInfo("America/New_York")
+
+    def at(minute):
+        stamp = datetime(2022, 11, 23, 15, minute, tzinfo=zone)
+        return int(stamp.timestamp() * 1000)
+
+    bars = [
+        _bar("AAA", at(57), 10.0, 10.5),
+        _bar("AAA", at(58), 11.0, 11.5),
+        _bar("AAA", at(59), 12.0, 12.5),
+    ]
+    out = EquityReplay(
+        _shares_policy({**_ZERO_FEES, "session_calendar": _weekly_calendar("16:00")})
+    ).run(bars, [_order("AAA", at(57), 10)])
+    assert [(row["kind"], row["asof_ms"], row["price"]) for row in out["fills"]] == [
+        ("entry", at(58), 11.0),
+        ("exit", at(59), 12.5),
+    ]
+    assert out["fills"][-1]["reason"] == "session_close"
 
 
 def _order(symbol, asof_ms, qty, side="buy"):
@@ -2696,6 +2804,10 @@ def _ledger_ids(book, symbol="AAA"):
 def test_forced_exit_at_admits_session_close_and_refuses_any_other_member():
     assert FillPolicy._VOCAB["forced_exit_at"] == ("horizon_expiry", "session_close")
     assert _shares_policy().forced_exit_at == "session_close"
+    with pytest.raises(ConfigError, match="session_calendar is required"):
+        _policy({"forced_exit_at": "session_close"})
+    with pytest.raises(ConfigError, match="session_calendar is only admitted"):
+        _policy({"session_calendar": _weekly_calendar()})
     for member in ("lead_expiry", "close", "SESSION_CLOSE", "", None):
         with pytest.raises(ConfigError, match="forced_exit_at must be one of"):
             _policy({"forced_exit_at": member})
@@ -2708,11 +2820,27 @@ def test_the_new_member_leaves_the_shipped_fill_policy_and_its_pinned_digest_unt
     assert _shares_policy().digest() != _SHIPPED_FILL_POLICY_SHA256
 
 
+def test_the_joint_policy_materializes_xnys_black_fridays_bounded_close():
+    pytest.importorskip("exchange_calendars")
+    policy = FillPolicy.from_path(os.path.join(CONFIGS, "fill-policy-joint.json"))
+    calendar = SessionShareBook(policy).calendar
+    zone = ZoneInfo("America/New_York")
+
+    def at(hour, minute):
+        return int(datetime(2022, 11, 25, hour, minute, tzinfo=zone).timestamp() * 1000)
+
+    assert policy.forced_exit_price_field == "close"
+    assert calendar.window("session", at(12, 59))[1] == at(13, 0)
+    assert calendar.is_open(at(12, 59)) and not calendar.is_open(at(13, 0))
+    assert calendar.data_fingerprint()
+
+
 def test_the_position_book_follows_forced_exit_at_and_an_unknown_member_refuses():
     assert type(EquityReplay(_policy())._book) is HorizonBook
     assert type(EquityReplay(_shares_policy())._book) is SessionShareBook
     for member in FillPolicy._VOCAB["forced_exit_at"]:
-        EquityReplay(_policy({"forced_exit_at": member}))
+        policy = _shares_policy() if member == "session_close" else _policy()
+        EquityReplay(policy)
     policy = _shares_policy()
     policy.forced_exit_at = "lead_expiry"
     with pytest.raises(ConfigError, match="forced_exit_at 'lead_expiry'"):
@@ -2791,20 +2919,35 @@ def test_the_share_book_carries_whole_shares_and_refuses_a_lot_shaped_carry():
 
 
 def test_the_share_book_expires_the_whole_position_only_at_each_sessions_last_bar():
-    # BBB prints 18:58-19:01 New York, which straddles UTC midnight: still ONE session.
-    evening = [_bar("BBB", _m(0) + (9 * 60 + 28 + i) * 60_000, 5.0, 5.0) for i in range(4)]
-    utc_dates = {datetime.fromtimestamp(bar["asof_ms"] / 1000, timezone.utc).date() for bar in evening}
-    assert len(utc_dates) == 2
-    book = SessionShareBook(_shares_policy())
-    book.bind({"AAA": _session([10.0] * 4) + _session([11.0] * 3, day=1), "BBB": evening})
+    book = SessionShareBook(_shares_policy(close="09:34"))
+    book.bind({
+        "AAA": _session([10.0] * 4) + _session([11.0] * 3, day=1),
+        "BBB": _session([5.0] * 4, symbol="BBB"),
+    })
     assert book.expiring("AAA", 3) == []
     assert book.open_lot("AAA", 0, 10, "buy", 1)
-    assert [i for i in range(7) if book.expiring("AAA", i)] == [3, 6]
+    # Day 0 has the exact 09:33 marker. Day 1 stops at 09:32, so it must
+    # neither redefine the close nor trigger an early backstop.
+    assert [i for i in range(7) if book.expiring("AAA", i)] == [3]
     assert book.expiring("AAA", 3) == [(0, _held(10))]
     assert [i for i in range(4) if book.is_session_last("BBB", i)] == [3]
     assert book.same_session("BBB", 1, 2) and not book.same_session("AAA", 3, 4)
-    assert book.session_last_ms(evening[0]["asof_ms"]) == {"AAA": _m(3), "BBB": evening[3]["asof_ms"]}
-    assert book.session_last_ms(_m(0, 1)) == {"AAA": _m(2, 1)}
+    assert book.session_last_ms(_m(0)) == {"AAA": _m(3), "BBB": _m(3)}
+    assert book.session_last_ms(_m(0, 1)) == {"AAA": _m(3, 1)}
+
+    # A configured evening session may cross UTC midnight without splitting.
+    evening = [_bar("BBB", _m(0) + (9 * 60 + 28 + i) * 60_000, 5.0, 5.0) for i in range(4)]
+    utc_dates = {datetime.fromtimestamp(bar["asof_ms"] / 1000, timezone.utc).date() for bar in evening}
+    assert len(utc_dates) == 2
+    evening_book = SessionShareBook(
+        _shares_policy({"session_calendar": _weekly_calendar("19:02", open_="18:58")})
+    )
+    evening_book.bind({"BBB": evening})
+    assert [i for i in range(4) if evening_book.is_session_last("BBB", i)] == [3]
+    assert evening_book.same_session("BBB", 1, 2)
+    assert evening_book.session_last_ms(evening[0]["asof_ms"]) == {
+        "BBB": evening[3]["asof_ms"]
+    }
 
 
 def test_share_buys_and_sells_fill_next_bar_at_the_fill_price_and_the_policys_costs():
@@ -2848,7 +2991,7 @@ def test_a_trim_sells_part_of_a_position_and_the_rest_rides_to_the_backstop():
 
 def test_the_backstop_flattens_the_last_bar_before_its_queued_orders_which_then_refuse():
     bars = _session([10.0, 11.0, 12.0, 13.0]) + _session([20.0] * 4, "BBB")
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(bars, [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(2), 10, side="sell"),  # lands on the last bar, after the backstop
         _order("BBB", _m(2), 5),  # a buy there would be open at the close
@@ -2866,7 +3009,7 @@ def test_the_backstop_flattens_the_last_bar_before_its_queued_orders_which_then_
 
 def test_the_backstop_runs_at_every_sessions_last_bar_and_nowhere_else():
     bars = _session([10.0] * 4) + _session([11.0] * 4, day=1)
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(bars, [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(0, 1), 3),
     ])
@@ -2877,40 +3020,55 @@ def test_the_backstop_runs_at_every_sessions_last_bar_and_nowhere_else():
     assert out["refused"] == [] and out["skipped"] == []
 
 
-def test_a_position_open_when_the_tape_ends_is_closed_by_the_backstop_on_its_last_bar():
-    # The tape stops mid-session, so its last bar is this session's last bar here.
+def test_a_position_open_when_the_tape_ends_before_close_is_not_backstopped_early():
+    # The tape stops at 09:32, before the configured 09:33 close marker.
     bars = _session([10.0, 11.0, 12.0])
-    for carry in (False, True):
-        out = EquityReplay(_shares_policy(_ZERO_FEES), carry_lots=carry).run(bars, [_order("AAA", _m(0), 10)])
-        exit_ = out["fills"][-1]
-        assert (exit_["kind"], exit_["asof_ms"], exit_["qty"], exit_["reason"], exit_["origin"]) == (
-            "exit", _m(2), 10, "session_close", "backstop",
-        )
-        assert exit_["fill_id"] == f"AAA-{_m(2)}-sell-backstop"
-        assert out["refused"] == []
-        assert out.get("open_lots", []) == []
+    policy = _shares_policy(_ZERO_FEES, close="09:34")
+    out = EquityReplay(policy).run(bars, [_order("AAA", _m(0), 10)])
+    assert [(fill["kind"], fill["asof_ms"]) for fill in out["fills"]] == [
+        ("entry", _m(1))
+    ]
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _m(3), "lead": 0, "qty": 10,
+        "reason": "open_at_session_close",
+    }]
+
+    carried = EquityReplay(policy, carry_lots=True).run(bars, [_order("AAA", _m(0), 10)])
+    assert [(fill["kind"], fill["asof_ms"]) for fill in carried["fills"]] == [
+        ("entry", _m(1))
+    ]
+    assert carried["refused"] == []
+    assert carried["open_lots"] == [
+        {"symbol": "AAA", "lead": 0, "qty": 10, "side": "buy", "exit_in": 0}
+    ]
 
 
 def test_a_halted_last_bar_leaves_the_shares_open_at_session_close_never_expiry_past_tape():
     bars = _session([10.0, 11.0, 12.0, 13.0], halted=(3,))
     decisions = [_order("AAA", _m(0), 10)]
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, decisions)
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(bars, decisions)
     assert [f["kind"] for f in out["fills"]] == ["entry"]
     assert out["skipped"] == [{"symbol": "AAA", "asof_ms": _m(3), "lead": 0, "reason": "halted"}]
     assert out["refused"] == [
         {"symbol": "AAA", "asof_ms": _m(3), "lead": 0, "qty": 10, "reason": "open_at_session_close"},
     ]
-    carried = EquityReplay(_shares_policy(_ZERO_FEES), carry_lots=True).run(bars, decisions)
+    carried = EquityReplay(
+        _shares_policy(_ZERO_FEES, close="09:34"), carry_lots=True
+    ).run(bars, decisions)
     assert carried["open_lots"] == [{"symbol": "AAA", "lead": 0, "qty": 10, "side": "buy", "exit_in": 0}]
     assert type(carried["open_lots"][0]["exit_in"]) is int and carried["refused"] == []
 
 
 def test_a_halted_session_close_mid_tape_rolls_the_shares_into_the_next_session():
-    bars = _session([10.0] * 4, halted=(3,)) + _session([11.0] * 3, day=1)
+    bars = _session([10.0] * 4, halted=(3,)) + _session([11.0] * 4, day=1)
     stub = _Orders()
-    out = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub).run(bars, [_order("AAA", _m(0), 10)])
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES, close="09:34"), decider=stub
+    ).run(bars, [_order("AAA", _m(0), 10)])
     assert stub.seen[_m(0, 1)]["positions"] == {"AAA": 10}
-    assert [(f["kind"], f["asof_ms"]) for f in out["fills"]] == [("entry", _m(1)), ("exit", _m(2, 1))]
+    assert [(f["kind"], f["asof_ms"]) for f in out["fills"]] == [
+        ("entry", _m(1)), ("exit", _m(3, 1))
+    ]
     assert out["skipped"] == [{"symbol": "AAA", "asof_ms": _m(3), "lead": 0, "reason": "halted"}]
     assert out["refused"] == []
 
@@ -2920,7 +3078,8 @@ def test_a_carried_share_position_is_seeded_held_through_its_last_decision_and_b
     bars = _session([11.0, 12.0, 13.0], day=1)
     stub = _Orders()
     out = EquityReplay(
-        _shares_policy(_ZERO_FEES), decider=stub, carried_lots=[lot], carry_lots=True,
+        _shares_policy(_ZERO_FEES, close="09:33"), decider=stub,
+        carried_lots=[lot], carry_lots=True,
     ).run(bars)
     assert stub.seen[_m(0, 1)]["positions"] == {"AAA": 10}
     assert stub.seen[_m(0, 1)]["gross_limit"] == pytest.approx(10 * 11.0)
@@ -2933,11 +3092,13 @@ def test_a_carried_share_position_is_seeded_held_through_its_last_decision_and_b
     assert out["open_lots"] == []
     for bad in ({**lot, "lead": 2}, {**lot, "exit_in": 3}):
         with pytest.raises(ConfigError):
-            EquityReplay(_shares_policy(), carried_lots=[bad], carry_lots=True).run(bars)
+            EquityReplay(
+                _shares_policy(close="09:33"), carried_lots=[bad], carry_lots=True
+            ).run(bars)
 
 
 def test_share_rows_carry_lead_zero_and_a_decision_with_a_horizon_refuses_lead():
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(_session([10.0] * 4), [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(_session([10.0] * 4), [
         _decision("AAA", _m(0), 1),
         _decision("AAA", _m(0), True),
         _decision("AAA", _m(0), 0.0),
@@ -2948,7 +3109,7 @@ def test_share_rows_carry_lead_zero_and_a_decision_with_a_horizon_refuses_lead()
 
 
 def test_share_fill_ids_name_symbol_bar_side_and_origin_and_lot_rows_carry_none():
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(_session([10.0] * 4), [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(_session([10.0] * 4), [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(1), 4, side="sell"),
     ])
@@ -2967,7 +3128,7 @@ def test_share_fill_ids_name_symbol_bar_side_and_origin_and_lot_rows_carry_none(
 
 
 def test_a_halted_close_carries_into_the_next_segment_and_fill_ids_never_repeat():
-    policy = _shares_policy(_ZERO_FEES)
+    policy = _shares_policy(_ZERO_FEES, close="09:34")
     first = EquityReplay(policy, carry_lots=True).run(
         _session([10.0] * 4, halted=(3,)), [_order("AAA", _m(0), 10)],
     )
@@ -2996,7 +3157,7 @@ def test_the_share_book_folds_each_decision_fill_under_its_rows_fill_id():
             return []
 
     peek = _Peek()
-    peek.replay = EquityReplay(_shares_policy(_ZERO_FEES), decider=peek)
+    peek.replay = EquityReplay(_shares_policy(_ZERO_FEES, close="09:35"), decider=peek)
     out = peek.replay.run(_session([10.0] * 5), [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(1), 4, side="sell"),
@@ -3007,7 +3168,7 @@ def test_the_share_book_folds_each_decision_fill_under_its_rows_fill_id():
 
 
 def test_a_second_order_for_one_name_on_one_fill_bar_refuses_duplicate_order():
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(_session([10.0] * 4), [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34")).run(_session([10.0] * 4), [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(0), 3, side="sell"),
     ])
@@ -3016,7 +3177,9 @@ def test_a_second_order_for_one_name_on_one_fill_bar_refuses_duplicate_order():
     ]
     assert [(f["kind"], f["qty"]) for f in out["fills"]] == [("entry", 10), ("exit", 10)]
     # A halt queue can stack two orders on one bar too: the first in the bar's queue fills.
-    queued = EquityReplay(_shares_policy({"halt_handling": "queue", **_ZERO_FEES})).run(
+    queued = EquityReplay(_shares_policy(
+        {"halt_handling": "queue", **_ZERO_FEES}, close="09:35"
+    )).run(
         _session([10.0] * 5, halted=(1,)), [_order("AAA", _m(0), 10), _order("AAA", _m(1), 5)],
     )
     assert [(f["kind"], f["qty"], f["asof_ms"]) for f in queued["fills"]] == [
@@ -3026,7 +3189,9 @@ def test_a_second_order_for_one_name_on_one_fill_bar_refuses_duplicate_order():
 
 
 def test_same_lead_override_never_closes_a_share_position():
-    policy = _shares_policy({"same_lead_overlap": "override", **_ZERO_FEES})
+    policy = _shares_policy(
+        {"same_lead_overlap": "override", **_ZERO_FEES}, close="09:35"
+    )
     out = EquityReplay(policy).run(_session([10.0] * 5), [_order("AAA", _m(0), 10), _order("AAA", _m(1), 5)])
     assert [(f["kind"], f["qty"], f["asof_ms"], f.get("reason")) for f in out["fills"]] == [
         ("entry", 10, _m(1), None), ("entry", 5, _m(2), None), ("exit", 15, _m(4), "session_close"),
@@ -3039,7 +3204,7 @@ def test_share_mode_portfolio_holds_int_shares_float_nav_and_pending_orders_of_b
         _m(0): [_order("AAA", _m(0), 10), _order("BBB", _m(0), 5)],
         _m(3): [_order("AAA", _m(3), 4, side="sell"), _order("BBB", _m(3), 2, side="sell")],
     })
-    EquityReplay(_shares_policy(_ZERO_FEES), decider=stub).run(bars)
+    EquityReplay(_shares_policy(_ZERO_FEES, close="09:38"), decider=stub).run(bars)
     seen = stub.seen
     assert seen[_m(1)]["positions"] == {"AAA": 10}
     assert seen[_m(1)]["pending"] == seen[_m(2)]["pending"] == [
@@ -3060,7 +3225,7 @@ def test_share_fill_rows_fold_through_records_fill_as_the_report_builds_them():
     # records.Fill needs no change: it has no lead or kind field and ``sell`` is a side.
     from intraday_equities.simulation import SimulationReport
 
-    out = EquityReplay(_shares_policy()).run(_session([10.0] * 5), [
+    out = EquityReplay(_shares_policy(close="09:35")).run(_session([10.0] * 5), [
         _order("AAA", _m(0), 10),
         _order("AAA", _m(1), 4, side="sell"),
     ])
@@ -3083,18 +3248,28 @@ def test_portfolio_names_each_symbols_session_close_the_bar_the_backstop_fires_o
         _m(0): [_order("AAA", _m(0), 10), _order("BBB", _m(0), 5)],
         _m(0, 1): [_order("AAA", _m(0, 1), 3)],
     })
-    out = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub).run(bars)
-    assert [stub.seen[_m(i)]["session_last_ms"] for i in range(5)] == [{"AAA": _m(4), "BBB": _m(2)}] * 5
-    assert [stub.seen[_m(i, 1)]["session_last_ms"] for i in range(4)] == [{"AAA": _m(3, 1)}] * 4
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES, close="09:35"), decider=stub
+    ).run(bars)
+    assert [stub.seen[_m(i)]["session_last_ms"] for i in range(5)] == [
+        {"AAA": _m(4), "BBB": _m(4)}
+    ] * 5
+    assert [stub.seen[_m(i, 1)]["session_last_ms"] for i in range(4)] == [
+        {"AAA": _m(4, 1)}
+    ] * 4
     backstops = [f for f in out["fills"] if f.get("origin") == "backstop"]
-    assert [(f["symbol"], f["asof_ms"]) for f in backstops] == [
-        ("BBB", _m(2)), ("AAA", _m(4)), ("AAA", _m(3, 1)),
-    ]
+    assert [(f["symbol"], f["asof_ms"]) for f in backstops] == [("AAA", _m(4))]
     for fill in backstops:
         # The decider sees the backstop's bar a tick ahead, and at the bar itself.
         before = max(t for t in stub.seen if t < fill["asof_ms"])
         assert stub.seen[before]["session_last_ms"][fill["symbol"]] == fill["asof_ms"]
         assert stub.seen[fill["asof_ms"]]["session_last_ms"][fill["symbol"]] == fill["asof_ms"]
+    assert out["refused"] == [
+        {"symbol": "AAA", "asof_ms": _m(4, 1), "lead": 0, "qty": 3,
+         "reason": "open_at_session_close"},
+        {"symbol": "BBB", "asof_ms": _m(4), "lead": 0, "qty": 5,
+         "reason": "open_at_session_close"},
+    ]
     lot_stub = _Orders()
     EquityReplay(_policy(), decider=lot_stub).run(_session([10.0] * 2))
     assert lot_stub.seen and all("session_last_ms" not in seen for seen in lot_stub.seen.values())
@@ -3102,7 +3277,7 @@ def test_portfolio_names_each_symbols_session_close_the_bar_the_backstop_fires_o
 
 def test_a_share_order_that_would_fill_in_a_later_session_refuses_fill_next_session():
     bars = _session([10.0] * 3) + _session([11.0] * 3, day=1)
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, [
+    out = EquityReplay(_shares_policy(_ZERO_FEES, close="09:33")).run(bars, [
         _order("AAA", _m(2), 10),  # decided at day 0's last bar: its fill bar opens day 1
         _order("AAA", _m(0, 1), 4),
     ])
@@ -3113,11 +3288,15 @@ def test_a_share_order_that_would_fill_in_a_later_session_refuses_fill_next_sess
         ("entry", 4, _m(1, 1)), ("exit", 4, _m(2, 1)),
     ]
     # With fill_bar_offset 2, a decision one bar before the close crosses too.
-    two = EquityReplay(_shares_policy({"fill_bar_offset": 2, **_ZERO_FEES})).run(bars, [_order("AAA", _m(1), 10)])
+    two = EquityReplay(_shares_policy(
+        {"fill_bar_offset": 2, **_ZERO_FEES}, close="09:33"
+    )).run(bars, [_order("AAA", _m(1), 10)])
     assert [(row["reason"], row["decision_ms"]) for row in two["refused"]] == [("fill_next_session", _m(1))]
     assert two["fills"] == []
     # A halt queue cannot carry an order across the close either: refused at the halted bar.
-    queued = EquityReplay(_shares_policy({"halt_handling": "queue", **_ZERO_FEES})).run(
+    queued = EquityReplay(_shares_policy(
+        {"halt_handling": "queue", **_ZERO_FEES}, close="09:33"
+    )).run(
         _session([10.0] * 3, halted=(2,)) + _session([11.0] * 3, day=1), [_order("AAA", _m(1), 10)],
     )
     assert queued["fills"] == [] and queued["skipped"] == []
@@ -3133,7 +3312,7 @@ def test_a_share_order_whose_qty_is_not_whole_shares_refuses_the_run_at_enqueue(
     np = pytest.importorskip("numpy")
     bars = _session([10.0] * 4)
     for qty in (10.0, 9.999999998, np.float64(10.0), np.int64(10), True, 0, -3):
-        replay = EquityReplay(_shares_policy(_ZERO_FEES))
+        replay = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34"))
         with pytest.raises(ConfigError, match="whole number of shares") as refused:
             replay.run(bars, [_order("AAA", _m(1), qty)])
         message = str(refused.value)
@@ -3143,12 +3322,14 @@ def test_a_share_order_whose_qty_is_not_whole_shares_refuses_the_run_at_enqueue(
         assert replay.fills == [] and replay._book._ledger.to_obj() == {}
     # A decider's malformed order refuses the run the same way, before it is queued.
     stub = _Orders({_m(0): [_order("AAA", _m(0), 10.0)]})
-    replay = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub)
+    replay = EquityReplay(_shares_policy(_ZERO_FEES, close="09:34"), decider=stub)
     with pytest.raises(ConfigError, match="whole number of shares"):
         replay.run(bars)
     assert replay.fills == []
     # The same tape fills an int order.
-    out = EquityReplay(_shares_policy(_ZERO_FEES)).run(bars, [_order("AAA", _m(1), 10)])
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES, close="09:34")
+    ).run(bars, [_order("AAA", _m(1), 10)])
     assert [(f["kind"], f["qty"]) for f in out["fills"]] == [("entry", 10), ("exit", 10)]
 
 
@@ -3204,7 +3385,8 @@ def test_a_same_bar_sell_on_one_symbol_funds_a_same_bar_buy_on_another_symbol():
         _order("AAA", _m(0), 150),
     ]
     out = EquityReplay(
-        _shares_policy(_ZERO_FEES), _cash_flow_policy(), carried_lots=carried, carry_lots=True,
+        _shares_policy(_ZERO_FEES, close="09:34"), _cash_flow_policy(),
+        carried_lots=carried, carry_lots=True,
     ).run(bars, orders)
     assert out["refused"] == []
     decided = sorted((f["symbol"], f["side"], f["qty"]) for f in out["fills"] if f["origin"] == "decision")
@@ -3222,7 +3404,8 @@ def test_the_same_bar_sale_credit_holds_with_the_sell_symbol_first_in_tape_order
         _order("AAA", _m(0), 150),
     ]
     out = EquityReplay(
-        _shares_policy(_ZERO_FEES), _cash_flow_policy(), carried_lots=carried, carry_lots=True,
+        _shares_policy(_ZERO_FEES, close="09:34"), _cash_flow_policy(),
+        carried_lots=carried, carry_lots=True,
     ).run(bars, orders)
     assert out["refused"] == []
     decided = sorted((f["symbol"], f["side"], f["qty"]) for f in out["fills"] if f["origin"] == "decision")
@@ -3247,32 +3430,40 @@ def test_min_price_refuses_a_share_order_on_either_side_but_never_the_backstop()
     ]
 
 
-def test_sessions_group_by_new_york_date_across_the_spring_forward_weekend():
+def test_calendar_sessions_stay_dst_aware_across_the_spring_forward_weekend():
     # DST starts Sunday 2026-03-08: Friday is EST (UTC-5), Monday is EDT (UTC-4).
     friday, monday = date(2026, 3, 6), date(2026, 3, 9)
     times = [
-        _ny_ms(friday, 15, 58), _ny_ms(friday, 15, 59),
-        _ny_ms(friday, 19, 59),  # 00:59 UTC Saturday: grouping by UTC date would split Friday
+        _ny_ms(friday, 15, 57), _ny_ms(friday, 15, 58), _ny_ms(friday, 15, 59),
+        _ny_ms(friday, 19, 59),  # 00:59 UTC Saturday, but closed in New York
         _ny_ms(monday, 0, 30),  # 04:30 UTC: a fixed UTC-5 offset would date it Sunday
-        _ny_ms(monday, 9, 30), _ny_ms(monday, 9, 31),
+        _ny_ms(monday, 9, 30), _ny_ms(monday, 9, 31), _ny_ms(monday, 9, 32),
+        _ny_ms(monday, 15, 59),
     ]
-    assert datetime.fromtimestamp(times[2] / 1000, timezone.utc).date() == date(2026, 3, 7)
-    assert (datetime.fromtimestamp(times[3] / 1000, timezone.utc) - timedelta(hours=5)).date() == date(2026, 3, 8)
+    assert datetime.fromtimestamp(times[3] / 1000, timezone.utc).date() == date(2026, 3, 7)
+    assert (datetime.fromtimestamp(times[4] / 1000, timezone.utc) - timedelta(hours=5)).date() == date(2026, 3, 8)
     stub = _Orders({
-        times[0]: [_order("AAA", times[0], 10)],  # fills at 15:59, inside Friday's session
-        times[2]: [_order("AAA", times[2], 5)],  # Friday's last bar: its fill bar is Monday
-        times[3]: [_order("AAA", times[3], 3)],  # Monday 00:30 fills at 09:30, the same session
+        times[0]: [_order("AAA", times[0], 10)],
     })
-    out = EquityReplay(_shares_policy(_ZERO_FEES), decider=stub).run(
+    out = EquityReplay(
+        _shares_policy(_ZERO_FEES, close="16:00"), decider=stub
+    ).run(
         [_bar("AAA", ms, 10.0, 10.0) for ms in times],
+        [_order("AAA", times[3], 5), _order("AAA", times[4], 4)],
     )
     assert [(f["kind"], f["qty"], f["asof_ms"], f["origin"]) for f in out["fills"]] == [
         ("entry", 10, times[1], "decision"), ("exit", 10, times[2], "backstop"),
-        ("entry", 3, times[4], "decision"), ("exit", 3, times[5], "backstop"),
     ]
     assert out["refused"] == [
-        {"symbol": "AAA", "asof_ms": times[2], "lead": 0, "reason": "fill_next_session", "decision_ms": times[2]},
+        {"symbol": "AAA", "asof_ms": times[3], "lead": 0,
+         "reason": "calendar_closed", "decision_ms": times[3]},
+        {"symbol": "AAA", "asof_ms": times[4], "lead": 0,
+         "reason": "calendar_closed", "decision_ms": times[4]},
     ]
-    assert [stub.seen[ms]["session_last_ms"] for ms in times] == (
-        [{"AAA": times[2]}] * 3 + [{"AAA": times[5]}] * 3
-    )
+    assert sorted(stub.seen) == [times[i] for i in (0, 1, 2, 5, 6, 7, 8)]
+    assert [stub.seen[times[i]]["session_last_ms"] for i in (0, 1, 2)] == [
+        {"AAA": times[2]}
+    ] * 3
+    assert [stub.seen[times[i]]["session_last_ms"] for i in (5, 6, 7, 8)] == [
+        {"AAA": times[8]}
+    ] * 4

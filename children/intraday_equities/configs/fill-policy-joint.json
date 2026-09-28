@@ -10,8 +10,20 @@
   "halt_handling": "skip",
   "halted_true": true,
   "forced_exit_at": "session_close",
+  "session_calendar": {
+    "uses": "dskit.production.libs.exchange_calendars:ExchangeCalendar",
+    "params": {
+      "exchange": "XNYS",
+      "bounds": {
+        "from": "2022-09-01",
+        "until": "2025-10-17"
+      },
+      "after_open_s": 0,
+      "before_close_s": 0
+    }
+  },
   "forced_exit_horizon_basis": "fill",
-  "forced_exit_price_field": "open",
+  "forced_exit_price_field": "close",
   "half_spread_bps": {
     "ADBE": 2.72,
     "CIEN": 4.12,
