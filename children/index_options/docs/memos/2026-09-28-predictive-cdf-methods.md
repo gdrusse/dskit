@@ -604,8 +604,11 @@ identity, numerical data and frozen selection:
 | report/convergence.json | d707c64c5c52257a46153e76f5bf394600e90a82801ad56dbca262d8d59e905c |
 | report/complete.json | 55733d5d1940ffe11be9ddd75ac250a34cb7d13f5c59221742f7133025c18505 |
 
-The complete report and review gate are finished; repository publication is
-the remaining handoff step. Preserve this worktree's ignored outputs/private
+The complete report and review gate are finished and published on remote main:
+source `1302738e`, results/evidence `df3cec80bd6ec373de724d04116b632db9d31d6e`,
+with remote containment verified after fetch. WSL's credential-helper bridge
+failed for push; existing Windows Git credentials published the same worktree,
+without running experiments on Windows. Preserve this worktree's ignored outputs/private
 environment and the older feature-research worktree containing upstream cache
 files. No live model, broker, optimal-contract selector, untouched-data test,
 full-suite run or broader model search was performed.

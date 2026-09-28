@@ -2,6 +2,11 @@
 
 ## ADR-0191 additional CDF methods completed (2026-09-28)
 
+- Merged/pushed to remote main: reviewed source `1302738e`, complete results
+  and evidence `df3cec80bd6ec373de724d04116b632db9d31d6e`; remote containment
+  verified after fetch. WSL's credential bridge failed for push, so existing
+  Windows Git credentials published the same worktree. All computation stayed
+  in WSL2. The following handoff-only update does not alter reviewed identities.
 - Owner requested all three proposed methods, Sol build and Luna review.
   Source locked at `1302738e3a38d9ae635ae5b3b2ae2a25028ee122` from base
   `9d1814eb`: QRF (not Fourier-MMD DRF), Normal-CRPS NGBoost, and exact
@@ -38,7 +43,7 @@
   Also preserve the older feature-research and HPO worktrees/artifacts.
 - Next research, not started: genuinely new-data validation and predeclared
   downside/strike objectives. The current bounded implementation/review/run
-  gate is complete and ready for its authorized wrap/push.
+  gate is complete and published; no further experiment is running.
 
 ## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
 
