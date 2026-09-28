@@ -2216,7 +2216,7 @@ def test_an_existing_non_empty_ledger_dir_is_refused_before_the_replay_runs(tmp_
 def test_a_guard_breach_still_fails_the_replay_loudly():
     bars, decisions = _findings_tape()
     replay = EquityReplay(_policy(_ZERO_FEES), guards=_observational_guards(max_qty="1"))
-    with pytest.raises(ConfigError, match="queued but never submitted"):
+    with pytest.raises(ConfigError, match="unacknowledged proposal"):
         replay.run(bars, decisions)
     # Every refused leg is still reported, with no fill to join to.
     assert replay.findings
@@ -2727,6 +2727,83 @@ def test_black_friday_uses_the_exchange_close_not_the_last_bar_seen():
     )
     assert buy["fee"] > 0 and sell["fee"] > 0
     assert float(replay.cash_balance) == pytest.approx(expected)
+
+
+def test_black_friday_closed_raw_bars_do_not_desync_the_monday_replay_ledger(tmp_path):
+    """Closed raw bars are not scheduler ticks or replay-feed entries."""
+    zone = ZoneInfo("America/New_York")
+
+    def at(day, hour, minute):
+        stamp = datetime(2022, 11, day, hour, minute, tzinfo=zone)
+        return int(stamp.timestamp() * 1000)
+
+    friday_open = [at(25, 12, 58), at(25, 12, 59)]
+    friday_closed = [at(25, 13, 0), at(25, 13, 1)]
+    monday_open = [at(28, 9, 30), at(28, 9, 31), at(28, 9, 32)]
+    calendar = _weekly_calendar(
+        "16:00", special_closes=[{"date": "2022-11-25", "close": "13:00"}]
+    )
+    seen = _Orders({
+        monday_open[0]: [_order("AAA", monday_open[0], 10)],
+    })
+    target = tmp_path / "kept"
+    replay = EquityReplay(
+        _shares_policy({**_ZERO_FEES, "session_calendar": calendar}),
+        decider=seen,
+        ledger_dir=str(target),
+    )
+    out = replay.run([
+        _bar("AAA", ms, 10.0, 10.0)
+        for ms in [*friday_open, *friday_closed, *monday_open]
+    ])
+
+    expected = [*friday_open, *monday_open]
+    assert sorted(seen.seen) == expected
+    assert [(row["side"], row["asof_ms"]) for row in out["fills"]] == [
+        ("buy", monday_open[1]),
+    ]
+
+    reader = _read_back(target, replay.series_id)
+    starts = list(reader.scan(kind="tick_start"))
+    decisions = list(reader.scan(kind="decision"))
+    ticks = list(reader.scan(kind="tick"))
+    assert [row["body"]["tick_at_ms"] for row in starts] == expected
+    assert [row["recorded_at_ms"] for row in decisions] == expected
+    assert [row["body"]["tick_at"] for row in ticks] == expected
+    assert [row["body"]["observed_at_ms"] for row in ticks] == expected
+    assert [row["recorded_at_ms"] for row in ticks] == expected
+
+
+def test_a_rejected_buy_cannot_create_a_later_accepted_sell():
+    """An unacknowledged tentative fill stops replay before its phantom state can trade."""
+    zone = ZoneInfo("America/New_York")
+
+    def at(minute):
+        stamp = datetime(2022, 11, 25, 12, minute, tzinfo=zone)
+        return int(stamp.timestamp() * 1000)
+
+    times = [at(minute) for minute in (56, 57, 58, 59)]
+    calendar = _weekly_calendar(
+        "16:00", special_closes=[{"date": "2022-11-25", "close": "13:00"}]
+    )
+    seen = _Orders({
+        times[0]: [_order("AAA", times[0], 10)],
+        # The rejected buy is tentatively visible here; this one-share sale
+        # passes the size guard and would become an accepted naked sale on
+        # the next tick unless replay stops at the unacknowledged proposal.
+        times[1]: [_order("AAA", times[1], 1, side="sell")],
+    })
+    replay = EquityReplay(
+        _shares_policy({**_ZERO_FEES, "session_calendar": calendar}),
+        decider=seen,
+        guards=_observational_guards(max_qty="1"),
+    )
+
+    with pytest.raises(ConfigError, match="previous tick left 1 unacknowledged proposal"):
+        replay.run([_bar("AAA", ms, 10.0, 10.0) for ms in times])
+
+    assert replay.fills == []
+    assert sorted(seen.seen) == times[:2]
 
 
 def test_a_decision_on_a_closed_raw_bar_refuses_instead_of_filling_next_session():

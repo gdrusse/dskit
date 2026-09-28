@@ -1693,6 +1693,7 @@ class EquityReplay:
         policy = self._policy
         by_symbol = defaultdict(list)
         halt_field = policy.halt_field
+        session_bars = []
         for bar in bars:
             row = dict(bar)
             row["asof_ms"] = int(row["asof_ms"])
@@ -1705,6 +1706,13 @@ class EquityReplay:
             ):
                 if field in row:
                     _refuse_non_finite_price(row[field], field, row["asof_ms"])
+            # Session-share replay consumes only calendar-open observations.
+            # Leaving closed raw bars on either the bar index or replay tape
+            # lets calendar-gated ticks skip their feed pulls, desynchronising
+            # the tape cursor from the next open scheduler tick.
+            if self._share_mode and not self._book.calendar_open(row["asof_ms"]):
+                continue
+            session_bars.append(row)
             by_symbol[row[policy.symbol_field]].append(row)
         for seq in by_symbol.values():
             seq.sort(key=lambda row: row["asof_ms"])
@@ -1731,7 +1739,7 @@ class EquityReplay:
         # One process mints this release and re-verifies it every tick: the
         # inventory is re-read only when it moved (ADR-0184 S7(d)).
         with runtime_capture_memo():
-            self._run_loop(bars)
+            self._run_loop(session_bars)
         if self._carry_lots:
             return {**self._result(), "open_lots": self._open_lots()}
         last = {symbol: seq[-1]["asof_ms"] for symbol, seq in self._by_symbol.items()}
@@ -2191,6 +2199,20 @@ class EquityReplay:
 
     def read_entry(self, tick_at_ms):
         """Freeze every name's bar at this tick as the entry batch."""
+        if self._pending_by_id:
+            # The share/lot book and cash are tentatively advanced when a
+            # proposal is formed, before LegPipeline submits it.  An entry
+            # still pending here therefore belongs to a prior tick whose
+            # plan never received an execution acknowledgement.  Refuse
+            # before evaluating another decision so that tentative holdings
+            # can never authorize a later (potentially naked) trade.
+            fault = ConfigError([
+                f"previous tick left {len(self._pending_by_id)} unacknowledged "
+                "proposal(s); refusing before tentative state reaches another decision"
+            ])
+            if self._fault is None:
+                self._fault = fault
+            raise self._fault
         asof = int(tick_at_ms)
         self._submit_due_cash_flows(asof)
         records = []
