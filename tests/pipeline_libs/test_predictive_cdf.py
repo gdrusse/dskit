@@ -177,3 +177,248 @@ def test_study_end_to_end_paired_counts_and_zero_baseline_skill(tmp_path):
     assert summary['paired_block_intervals'][0]['hi'] == pytest.approx(0)
     with pytest.raises(FileExistsError):
         study.run(frame)
+
+
+def test_student_curve_density_family_inverse_and_saved_degrees():
+    import dskit.pipeline.libs.predictive_cdf as pack
+    from scipy.stats import t
+    assert hasattr(pack, 'StudentMixtureCurve'), 'Student CDF family is missing'
+    curve = pack.StudentMixtureCurve([[.3, .7]], [[-1, 2]], [[.5, 1.2]], degrees=3)
+    q = np.array([-np.inf, -6, -1, 0, 2, 8, np.inf])
+    expected = .3*t.cdf(q, 3, loc=-1, scale=.5)+.7*t.cdf(q, 3, loc=2, scale=1.2)
+    np.testing.assert_allclose(curve.cdf(q)[0], expected, atol=1e-12)
+    p = np.array([.0001, .01, .5, .99, .9999])
+    np.testing.assert_allclose(curve.cdf(curve.quantile(p))[0], p, atol=1e-10)
+    assert curve._arrays()['kind'] == 'student_mixture'
+    assert curve._arrays()['degrees'] == 3
+    for degrees in [2, 0, -1, np.inf, np.nan, True]:
+        with pytest.raises(ValueError):
+            pack.StudentMixtureCurve([[1]], [[0]], [[1]], degrees=degrees)
+
+
+def test_mlp_head_routing_and_configurable_layers():
+    import torch
+    try:
+        model = MixtureMLPCDF(components=1, hidden=[4], epochs=1, seeds=[11],
+                              head_features=[1, 2], activation='relu', dropout=0., device='cpu')
+    except TypeError as error:
+        pytest.fail(f'head/layer controls are missing: {error}')
+    x = np.array([[0., 1, 0], [1., 0, 1], [2., 1, 0], [3., 0, 1]])
+    model.fit(x, np.zeros(4), x, np.zeros(4))
+    linear = [layer for layer in model.models[0] if isinstance(layer, torch.nn.Linear)]
+    assert len(linear) == 2
+    assert linear[-1].out_features == 6
+    with torch.no_grad():
+        linear[-1].weight.zero_()
+        linear[-1].bias.copy_(torch.tensor([0., -2., 0., 0., 3., 0.]))
+    np.testing.assert_allclose(model.curve(x).means[:, 0], [-2, 3, -2, 3])
+    for bad in [[0, 0], [1, 1], [np.nan, 0], [.5, .5]]:
+        with pytest.raises(ValueError, match='head'):
+            model.curve(np.array([[0., *bad]]))
+    unseen = MixtureMLPCDF(components=1, hidden=4, epochs=1, seeds=[11],
+                           head_features=[1, 2], device='cpu')
+    unseen.fit(x[[0, 2]], np.zeros(2), x[[0, 2]], np.zeros(2))
+    with pytest.raises(ValueError, match='unseen'):
+        unseen.curve(x[[1]])
+
+
+def test_student_mlp_likelihood_and_curve_agree():
+    import torch
+    import dskit.pipeline.libs.predictive_cdf as pack
+    from scipy.stats import t
+    assert hasattr(pack, 'StudentMixtureMLPCDF'), 'Student likelihood family is missing'
+    model = pack.StudentMixtureMLPCDF(degrees=5, components=1, hidden=[4, 3],
+                                     epochs=2, seeds=[7], device='cpu')
+    y = torch.tensor([[0.], [3.]])
+    mu = torch.tensor([[1.], [-1.]])
+    scale = torch.tensor([[2.], [.5]])
+    np.testing.assert_allclose(model._logp(y, mu, scale).numpy(),
+                               t.logpdf(y.numpy(), 5, loc=mu.numpy(), scale=scale.numpy()), rtol=1e-6)
+    x = np.arange(24, dtype=float).reshape(12, 2)/10
+    model.fit(x[:8], x[:8, 0], x[8:10], x[8:10, 0])
+    curve = model.curve(x[10:])
+    assert isinstance(curve, pack.StudentMixtureCurve)
+    assert curve.degrees == 5
+    assert np.isfinite(curve.quantile([.01, .5, .99])).all()
+
+
+def test_pooled_study_fits_once_and_keeps_index_calibration_and_counts(tmp_path, monkeypatch):
+    import json
+    import dskit.pipeline.libs.predictive_cdf as pack
+    calls = []
+
+    class Spy(pack.CDFEstimator):
+        def fit(self, x, y, cal_x, cal_y):
+            calls.append((x.copy(), y.copy(), cal_x.copy(), cal_y.copy()))
+            return self
+
+        def curve(self, x):
+            return MixtureCurve(np.ones((len(x), 1)), np.zeros((len(x), 1)), np.ones((len(x), 1)))
+
+    monkeypatch.setattr(pack, '_PooledSpy', Spy, raising=False)
+    rows = [{'unit': unit, 'date': f'{year}-03-01', 'end': f'{year}-03-02',
+             'expiry': f'{year}-03-02', 'h': 1, 'scale': 1., 'y': j+year-2014,
+             'task': j} for year in range(2014, 2020) for j, unit in enumerate(['A', 'B'])]
+    rows += [{**rows[0], 'date': '2014-03-03', 'end': '2014-03-04', 'expiry': '2014-03-04'},
+             {'unit': 'A', 'date': '2015-12-31', 'end': '2016-01-02',
+              'expiry': '2016-01-02', 'h': 1, 'scale': 1., 'y': 999., 'task': 0},
+             {'unit': 'B', 'date': '2016-12-31', 'end': '2017-01-02',
+              'expiry': '2017-01-02', 'h': 1, 'scale': 1., 'y': 888., 'task': 1}]
+    for row in rows:
+        row['signal'] = 1000. if row['date'] >= '2016' else 7.
+    rows[0]['signal'] = np.nan
+    c = {'features': ['h', 'scale', 'task', 'signal'], 'group': 'unit', 'date': 'date', 'end': 'end',
+         'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017],
+         'output': str(tmp_path/'pool'), 'samples': 21, 'tail_intervals': [[-2, -1]],
+         'tail_points': 21, 'calibration_knots': 3, 'development_end': 2017,
+         'bootstrap': {'blocks': [1], 'replicates': 3, 'seed': 4},
+         'reference_model': 'pool', 'comparison_references': ['pool'],
+         'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+         'models': {'pool': {'class': 'dskit.pipeline.libs.predictive_cdf:_PooledSpy',
+                            'params': {}, 'calibrate': True, 'pooled': True}}}
+    scores = ChronologicalCDFStudy(c).run(pd.DataFrame(rows))
+    assert len(calls) == 1, 'pooled model must fit once, not once per index'
+    x, y, xc, yc = calls[0]
+    assert len(x) == 5 and len(xc) == 2
+    assert (x[:, 3] == 7).all(), 'imputation must not use the 1000-valued calibration/validation rows'
+    assert (x[:, 2] == 0).sum() == 3 and (x[:, 2] == 1).sum() == 2
+    assert set(x[:, 2]) == {0, 1} and set(xc[:, 2]) == {0, 1}
+    assert 999 not in y and 888 not in yc
+    assert len(scores) == 4 and set(scores.unit) == {'A', 'B'}
+    counts = json.loads((tmp_path/'pool'/'counts.json').read_text())
+    assert all(r['pool_fit']['n'] == 5 for r in counts)
+    assert all(r['pool_fit']['groups'] == {'A': 3, 'B': 2} for r in counts)
+    assert sum(r['pool_fit']['new_fit'] for r in counts) == 1
+    c['models']['pool']['pooled_typo'] = True
+    with pytest.raises(ValueError, match='model'):
+        ChronologicalCDFStudy(c)
+
+
+def _hpo_fixture(tmp_path):
+    rows = [{'unit': u, 'date': f'{y}-03-{d:02}', 'end': f'{y}-03-{d+1:02}',
+             'expiry': f'{y}-03-{d+1:02}', 'h': 1, 'scale': 1., 'y': (d-3)/5,
+             'is_A': int(u == 'A'), 'is_B': int(u == 'B')}
+            for u in ['A', 'B'] for y in range(2014, 2020) for d in range(1, 6)]
+    rows.append({**rows[0], 'date': '2017-12-15', 'end': '2018-01-15', 'expiry': '2018-01-15'})
+    reference = {'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+                 'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 21}, 'calibrate': False}
+    c = {'features': ['h', 'scale', 'is_A', 'is_B'], 'group': 'unit', 'date': 'date', 'end': 'end',
+         'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017, 2019],
+         'output': str(tmp_path/'unused'), 'samples': 41, 'tail_intervals': [[-2, -1]],
+         'tail_points': 21, 'calibration_knots': 3, 'development_end': 2017,
+         'bootstrap': {'blocks': [1], 'replicates': 5, 'seed': 4},
+         'reference_model': 'reference', 'comparison_references': ['reference'],
+         'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+         'models': {'reference': reference}}
+    candidate = {'class': 'dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF',
+                 'params': {'components': 1, 'hidden': [3], 'epochs': 1, 'seeds': [11], 'device': 'cpu'},
+                 'calibrate': True, 'pooled': False}
+    e = {'output': str(tmp_path/'hpo'), 'development_years': [2017], 'label_cutoff': '2018-01-01',
+         'final_seeds': [11, 29], 'screen_seed': 11, 'max_candidates': 1,
+         'candidates': {'candidate': candidate},
+         'candidate_labels': {'candidate': {'sharing': 'separate', 'family': 'normal', 'bundle': 'a'}},
+         'axes': {'sharing': ['separate'], 'family': ['normal'], 'bundle': ['a']},
+         'task_features': {'A': 'is_A', 'B': 'is_B'},
+         'resolutions': {'screen_samples': 21, 'final_samples': 41, 'tail_points': 21,
+                         'integration_points': 21, 'audit_samples': [21, 41, 81], 'audit_rows': 2},
+         'expected_cells': {k: {'A': [1], 'B': [1]} for k in ['development', 'evaluation']},
+         'search_partitions': {'separate': ['candidate']},
+         'evaluation_partitions': {'development': [2017], 'later': [2019]}}
+    return {'study': c, 'experiment': e}, pd.DataFrame(rows)
+
+
+def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs(tmp_path):
+    import json
+    import dskit.pipeline.libs.predictive_cdf as pack
+    assert hasattr(pack, 'CDFHyperparameterStudy'), 'standard JSON HPO orchestration is missing'
+    config, frame = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    provenance = {'sources': {'test': 'pinned'}, 'readers': {'fixture': 1}}
+    with pytest.raises((FileNotFoundError, ValueError)):
+        study.run(frame, stage='select', provenance=provenance)
+    study.run(frame, stage='search', partition='separate', provenance=provenance)
+    search = pd.read_parquet(tmp_path/'hpo/search/separate/scores.parquet')
+    assert (search.end < '2018-01-01').all()
+    assert len(search) == 40  # 10 paired rows x 2 variants x 2 models; crossing label excluded
+    with pytest.raises(ValueError, match='identity|provenance'):
+        study.run(frame, stage='select', provenance={'sources': 'changed'})
+    selected = study.run(frame, stage='select', provenance=provenance)
+    assert selected['models']['candidate']['params']['seeds'] == [11, 29]
+    assert selected['screen_spec_hash'] != selected['final_spec_hash']
+    assert selected['variants']['reference'] == 'raw'
+    study.run(frame, stage='evaluate', partition='development', provenance=provenance)
+    study.run(frame, stage='evaluate', partition='later', provenance=provenance)
+    report = study.run(frame, stage='report', provenance=provenance)
+    assert report['selected_variants_from_development'] == selected['variants']
+    assert all(m['n'] == 10 for m in report['metrics'])
+    assert json.loads((tmp_path/'hpo/report/complete.json').read_text())['stage'] == 'report'
+    assert (tmp_path/'hpo/report/convergence.json').exists()
+    with pytest.raises(FileExistsError):
+        study.run(frame, stage='search', partition='separate', provenance=provenance)
+    scores_path = tmp_path/'hpo/search/separate/scores.parquet'
+    search.iloc[:-1].to_parquet(scores_path, index=False)
+    with pytest.raises(ValueError, match='hash|artifact'):
+        study.run(frame, stage='select', provenance=provenance)
+
+
+@pytest.mark.parametrize('mutation', ['head_nan', 'wrong_symbol', 'missing_cell', 'candidate_label', 'seed', 'resolution', 'extra_key'])
+def test_hpo_refuses_invalid_contract_before_fits(tmp_path, mutation):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    assert hasattr(pack, 'CDFHyperparameterStudy'), 'standard JSON HPO orchestration is missing'
+    config, frame = _hpo_fixture(tmp_path)
+    if mutation == 'head_nan':
+        frame.loc[0, 'is_A'] = np.nan
+    elif mutation == 'wrong_symbol':
+        frame.loc[0, ['is_A', 'is_B']] = [0, 1]
+    elif mutation == 'missing_cell':
+        config['experiment']['expected_cells']['development']['A'] = [1, 2]
+    elif mutation == 'candidate_label':
+        config['experiment']['candidate_labels']['candidate']['family'] = 'student'
+    elif mutation == 'seed':
+        config['experiment']['candidates']['candidate']['params']['seeds'] = [29]
+    elif mutation == 'resolution':
+        config['experiment']['resolutions']['final_samples'] = 99
+    else:
+        config['experiment']['accidental_typo'] = True
+    with pytest.raises(ValueError):
+        pack.CDFHyperparameterStudy(config).run(frame, stage='search', partition='separate', provenance={'fixture': 1})
+    assert not (tmp_path/'hpo/search/separate').exists()
+
+
+@pytest.mark.parametrize('band_year', [2014, 2016, 2017])
+def test_direct_study_rejects_raw_head_nan_before_imputation(tmp_path, band_year):
+    config, frame = _hpo_fixture(tmp_path)
+    c = config['study']
+    c['years'] = [2017]
+    c['models'] = {'head': {**config['experiment']['candidates']['candidate'],
+                          'params': {**config['experiment']['candidates']['candidate']['params'], 'head_features': [2, 3]},
+                          'pooled': True}}
+    frame.loc[(frame.date.str[:4] == str(band_year)) & (frame.unit == 'A'), 'is_A'] = np.nan
+    with pytest.raises(ValueError, match='head'):
+        ChronologicalCDFStudy(c).run(frame)
+    assert not (tmp_path/'unused/scores.parquet').exists()
+
+
+@pytest.mark.parametrize('defect', ['missing', 'substituted', 'duplicate', 'extra_model', 'nan_score', 'wrong_year'])
+def test_hpo_pairing_checks_actual_identities_not_counts(tmp_path, defect):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, frame = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    expected = frame[frame.date.str.startswith('2017') & (frame.end < '2018-01-01')]
+    scores = pd.concat([expected.assign(model='reference', variant=v, crps=1., year=2017)
+                        for v in ['raw', 'calibrated']], ignore_index=True)
+    study._check_scores(scores, expected, ['reference'])
+    if defect == 'missing':
+        scores = scores.iloc[:-1]
+    elif defect == 'substituted':
+        scores.loc[0, 'expiry'] = '2017-04-01'
+    elif defect == 'duplicate':
+        scores = pd.concat([scores, scores.iloc[:1]])
+    elif defect == 'extra_model':
+        scores.loc[0, 'model'] = 'unknown'
+    elif defect == 'nan_score':
+        scores.loc[0, 'crps'] = np.nan
+    else:
+        scores.loc[0, 'year'] = 2019
+    with pytest.raises(ValueError):
+        study._check_scores(scores, expected, ['reference'])

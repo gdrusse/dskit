@@ -19,6 +19,30 @@ must explicitly change its `device` knobs. Output directories refuse overwrite.
 calendar ignores future exceptional closures; actual settlement remains the
 outcome and reporting date. This does not authorize trading or serving.
 
+ADR-0190 HPO uses `configs/run-predictive-cdf-hpo.json` through the same CLI:
+
+```bash
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage search --partition separate
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage search --partition pooled
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage search --partition heads
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage select
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage evaluate --partition development
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage evaluate --partition early
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage evaluate --partition middle
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage evaluate --partition late
+python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage report
+```
+
+Use `timeout 1800` around each execution partition to enforce the research cap.
+An interrupted directory is incomplete and cannot be selected; preserve it and
+use a new declared output root for a fresh full experiment. Do not manufacture a
+completion marker or silently omit a candidate. Search includes 24 neural
+candidates plus repeated controls. Choices use exactly 133 pre-2019 cells
+(QQQ/IWM day 26 absent); combined later evaluation requires all 135. Controls
+must agree across partitions. Features, task mappings, years, resolutions and
+all hyperparameters live in JSON, not custom execution scripts. Cached input
+paths are local and must point to the real archive/artifacts before execution.
+
 From this child directory, use a dedicated environment with a trusted DSKIT
 checkout. Replace the placeholder with that checkout's absolute path:
 

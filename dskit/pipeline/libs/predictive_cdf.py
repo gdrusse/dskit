@@ -15,7 +15,8 @@ import time
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "CDFEstimator",
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
-           "QuantileCDF", "MixtureMLPCDF", "ChronologicalCDFStudy"]
+           "QuantileCDF", "MixtureMLPCDF", "StudentMixtureCurve",
+           "StudentMixtureMLPCDF", "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
 
 
 class _Curve(ABC):
@@ -66,6 +67,14 @@ class MixtureCurve(_Curve):
         return {"kind": "mixture", "weights": self.weights,
                 "means": self.means, "scales": self.scales}
 
+    def _standard_cdf(self, values):
+        from scipy.special import ndtr
+        return ndtr(values)
+
+    def _standard_quantile(self, probabilities):
+        from scipy.special import ndtri
+        return ndtri(probabilities)
+
     def cdf(self, values):
         """Return cumulative probabilities.
 
@@ -80,13 +89,12 @@ class MixtureCurve(_Curve):
             Probabilities with query shape.
         """
         import numpy as np
-        from scipy.special import ndtr
 
         values = np.atleast_1d(values)
         values = np.broadcast_to(values, (len(self.weights), values.shape[-1]))
         result = np.zeros_like(values, dtype=float)
         for j in range(self.weights.shape[1]):
-            result += self.weights[:, j, None] * ndtr(
+            result += self.weights[:, j, None] * self._standard_cdf(
                 (values - self.means[:, j, None]) / self.scales[:, j, None])
         return result
 
@@ -104,20 +112,57 @@ class MixtureCurve(_Curve):
             Quantiles; bisection bounds cover the requested normal quantiles.
         """
         import numpy as np
-        from scipy.special import ndtri
 
         probabilities = np.atleast_1d(probabilities)
         p = np.broadcast_to(probabilities, (len(self.weights), probabilities.shape[-1]))
         if not np.isfinite(p).all() or (p <= 0).any() or (p >= 1).any():
             raise ValueError("quantile probabilities must be strictly inside (0,1)")
-        component = self.means[:, :, None] + self.scales[:, :, None] * ndtri(p[:, None, :])
+        component = self.means[:, :, None] + self.scales[:, :, None] * self._standard_quantile(p[:, None, :])
         lo, hi = component.min(1), component.max(1)
+        if self.weights.shape[1] == 1:
+            return lo
         for _ in range(42):
             mid = (lo + hi) / 2
             mask = self.cdf(mid) < p
             lo = np.where(mask, mid, lo)
             hi = np.where(mask, hi, mid)
         return (lo + hi) / 2
+
+
+class StudentMixtureCurve(MixtureCurve):
+    """Fixed-degree Student mixtures; scale is not standard deviation.
+
+    Parameters
+    ----------
+    weights, means, scales : array-like
+        Matching row/component arrays, as for MixtureCurve.
+    degrees : float
+        Finite degrees of freedom above two (finite log-return variance).
+
+    Examples
+    --------
+    A heavy-tailed curve::
+
+        curve = StudentMixtureCurve([[1]], [[0]], [[1]], degrees=5)
+    """
+
+    def __init__(self, weights, means, scales, degrees):
+        import math
+        if isinstance(degrees, bool) or not math.isfinite(degrees) or degrees <= 2:
+            raise ValueError("degrees must be finite and greater than two")
+        self.degrees = degrees
+        super().__init__(weights, means, scales)
+
+    def _standard_cdf(self, values):
+        from scipy.special import stdtr
+        return stdtr(self.degrees, values)
+
+    def _standard_quantile(self, probabilities):
+        from scipy.special import stdtrit
+        return stdtrit(self.degrees, probabilities)
+
+    def _arrays(self):
+        return {**super()._arrays(), "kind": "student_mixture", "degrees": self.degrees}
 
 
 class GridCurve(_Curve):
@@ -286,6 +331,9 @@ class CDFEstimator(ABC):
     @abstractmethod
     def curve(self, x):
         """Return one curve per feature row."""
+
+    def _validate_x(self, x):
+        """Validate raw identity features before optional imputation."""
 
 
 class HorizonEmpiricalCDF(CDFEstimator):
@@ -574,6 +622,10 @@ class MixtureMLPCDF(CDFEstimator):
         Explicit torch device. CUDA failure refuses instead of silently using CPU.
     learning_rate, weight_decay, min_scale : float
         Optimizer controls and positive standardized scale floor.
+    activation, dropout, head_features : str, float, list or None
+        Hidden activation, dropout probability, and raw one-hot task columns.
+        A list for hidden declares individual layer widths; an integer keeps
+        the legacy two-layer architecture. Heads share only the trunk.
 
     Examples
     --------
@@ -584,13 +636,65 @@ class MixtureMLPCDF(CDFEstimator):
 
     def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
                  seeds=(11, 29), device="cuda", learning_rate=.001,
-                 weight_decay=.01, min_scale=.1):
-        if (min(components, hidden, epochs, batch_size, learning_rate, min_scale) <= 0
-                or weight_decay < 0 or not seeds or len(set(seeds)) != len(seeds)):
+                 weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
+                 head_features=None):
+        import math
+        widths = [hidden, hidden] if type(hidden) is int else hidden
+        if (not isinstance(widths, (list, tuple)) or not widths
+                or any(type(v) is not int or v <= 0 for v in [components, epochs, batch_size, *widths])
+                or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
+                or min(learning_rate, min_scale) <= 0 or weight_decay < 0
+                or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
+                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
             raise ValueError("invalid mixture training parameters")
-        self.components, self.hidden, self.epochs = components, hidden, epochs
+        if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
+                or any(type(v) is not int or v < 0 for v in head_features)):
+            raise ValueError("invalid head feature positions")
+        self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
+        self.activation, self.dropout = activation, dropout
+        self.head_features = tuple(head_features or ())
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if self.head_features:
+            if x.ndim != 2 or max(self.head_features) >= x.shape[1]:
+                raise ValueError("head feature positions outside input")
+            ids = x[:, self.head_features]
+            if (not np.isfinite(ids).all() or not np.isin(ids, [0, 1]).all()
+                    or not (ids.sum(1) == 1).all()):
+                raise ValueError("head identifiers must be finite binary one-hot")
+
+    def _heads(self, x):
+        import numpy as np
+        self._validate_x(x)
+        return np.asarray(x)[:, self.head_features].argmax(1) if self.head_features else np.zeros(len(x), dtype=int)
+
+    def _build_module(self, features):
+        import torch
+        activation = {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
+        layers = []
+        for width in self.hidden:
+            layers.extend([torch.nn.Linear(features, width), activation()])
+            if self.dropout:
+                layers.append(torch.nn.Dropout(self.dropout))
+            features = width
+        layers.append(torch.nn.Linear(features, 3*self.components*max(1, len(self.head_features))))
+        return torch.nn.Sequential(*layers).to(self.device)
+
+    def _forward(self, model, x, heads):
+        import torch
+        output = model(x).reshape(len(x), max(1, len(self.head_features)), 3*self.components)
+        return self._parts(output[torch.arange(len(x), device=x.device), heads])
+
+    def _logp(self, y, mu, sigma):
+        import math
+        return -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
+
+    def _curve(self, weights, means, scales):
+        return MixtureCurve(weights, means, scales)
 
     def _parts(self, output):
         import torch
@@ -612,19 +716,20 @@ class MixtureMLPCDF(CDFEstimator):
         self
             Fitted ensemble, retaining networks for exact CDF queries.
         """
-        import numpy as np
         import torch
         from sklearn.preprocessing import StandardScaler
 
+        self._validate_x(cal_x)
+        heads = self._heads(x)
+        self.seen_heads = set(heads)
+        hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         self.scaler = StandardScaler().fit(x)
         xx = torch.tensor(self.scaler.transform(x), dtype=torch.float32, device=self.device)
         yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
         self.models, self.losses = [], []
         for seed in self.seeds:
             torch.manual_seed(seed)
-            model = torch.nn.Sequential(torch.nn.Linear(x.shape[1], self.hidden), torch.nn.Tanh(),
-                                        torch.nn.Linear(self.hidden, self.hidden), torch.nn.Tanh(),
-                                        torch.nn.Linear(self.hidden, 3*self.components)).to(self.device)
+            model = self._build_module(x.shape[1])
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
@@ -633,8 +738,8 @@ class MixtureMLPCDF(CDFEstimator):
                 total = 0.
                 for start in range(0, len(xx), self.batch_size):
                     ix = order[start:start+self.batch_size]
-                    logw, mu, sigma = self._parts(model(xx[ix]))
-                    logp = -.5*((yy[ix]-mu)/sigma)**2 - sigma.log() - .5*np.log(2*np.pi)
+                    logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
+                    logp = self._logp(yy[ix], mu, sigma)
                     loss = -torch.logsumexp(logw+logp, dim=1).mean()
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite mixture likelihood")
@@ -665,16 +770,49 @@ class MixtureMLPCDF(CDFEstimator):
         import numpy as np
         import torch
 
+        heads = self._heads(x)
+        if not set(heads).issubset(self.seen_heads):
+            raise ValueError("unseen head requested")
+        hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         xx = torch.tensor(self.scaler.transform(x), dtype=torch.float32, device=self.device)
         weights, means, scales = [], [], []
         with torch.no_grad():
             for model in self.models:
-                logw, mu, sigma = self._parts(model(xx))
+                logw, mu, sigma = self._forward(model, xx, hh)
                 weights.append(logw.exp().cpu().numpy()/len(self.models))
                 means.append(mu.cpu().numpy())
                 scales.append(sigma.cpu().numpy())
-        return MixtureCurve(np.concatenate(weights, 1), np.concatenate(means, 1),
-                            np.concatenate(scales, 1))
+        return self._curve(np.concatenate(weights, 1), np.concatenate(means, 1),
+                           np.concatenate(scales, 1))
+
+
+class StudentMixtureMLPCDF(MixtureMLPCDF):
+    """Student likelihood and CDF with the same fixed degrees and scale.
+
+    Parameters
+    ----------
+    degrees : float
+        Finite, above two; scale is not standard deviation.
+    **settings : dict
+        MixtureMLPCDF settings, including optional task heads.
+
+    Examples
+    --------
+    A single heavy-tailed component::
+
+        model = StudentMixtureMLPCDF(degrees=5, components=1)
+    """
+
+    def __init__(self, degrees, **settings):
+        self.degrees = StudentMixtureCurve([[1]], [[0]], [[1]], degrees).degrees
+        super().__init__(**settings)
+
+    def _logp(self, y, mu, sigma):
+        from torch.distributions import StudentT
+        return StudentT(self.degrees, mu, sigma).log_prob(y)
+
+    def _curve(self, weights, means, scales):
+        return StudentMixtureCurve(weights, means, scales, self.degrees)
 
 
 class ChronologicalCDFStudy:
@@ -704,15 +842,26 @@ class ChronologicalCDFStudy:
         missing = self.KEYS-{"notes"}-set(config)
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
+        for spec in config["models"].values():
+            if (set(spec)-{"class", "params", "calibrate", "pooled", "notes"}
+                    or not {"class", "params", "calibrate"}.issubset(spec)
+                    or type(spec.get("pooled", False)) is not bool):
+                raise ValueError("invalid model specification keys or pooled flag")
         self.config = config
 
-    def summarize(self, scores):
+    def to_obj(self):
+        """Return the JSON configuration for the canonical identity owner."""
+        return self.config
+
+    def summarize(self, scores, selected_variants=None):
         """Select calibration on development only; report paired later scores.
 
         Parameters
         ----------
         scores : DataFrame
             Output of run, including development and research-validation years.
+        selected_variants : dict or None
+            Optional variants frozen by a prior development-only HPO stage.
 
         Returns
         -------
@@ -736,6 +885,10 @@ class ChronologicalCDFStudy:
         selected = {name: min(("raw", "calibrated"), key=lambda v: dev_rel[(name, v)])
                     for name in c["models"]}
         selected[baseline] = "raw"
+        if selected_variants is not None:
+            if set(selected_variants) != set(c["models"]) or any(v not in ("raw", "calibrated") for v in selected_variants.values()):
+                raise ValueError("invalid frozen variants")
+            selected = selected_variants
         picked = pd.concat([later[(later.model == name) & (later.variant == variant)]
                             for name, variant in selected.items()])
         metrics = ["crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse",
@@ -890,11 +1043,15 @@ class ChronologicalCDFStudy:
         c = self.config
         output = Path(c["output"])
         output.mkdir(parents=True, exist_ok=False)
-        identity = hashlib.sha256(json.dumps(c, sort_keys=True).encode()).hexdigest()
-        (output/"protocol.json").write_text(json.dumps({"identity": identity, **c}, indent=2))
+        from dskit.pipeline.base import config_hash
+        (output/"protocol.json").write_text(json.dumps({**c, "config_sha256": config_hash(self, exclude=())}, indent=2))
         frame.to_parquet(output/"input_panel.parquet", index=False)
         from importlib.metadata import version
         versions = {name: version(name) for name in ("numpy", "pandas", "scipy", "scikit-learn", "torch", "lightgbm")}
+        import torch
+        versions["cuda"] = torch.version.cuda
+        versions["deterministic_algorithms"] = torch.are_deterministic_algorithms_enabled()
+        versions["cudnn_deterministic"] = torch.backends.cudnn.deterministic
         (output/"versions.json").write_text(json.dumps(versions, indent=2))
         if ((frame[c["reference"]] <= 0).any()
                 or not np.isfinite(frame[[c["target"], c["reference"]]]).all().all()
@@ -902,7 +1059,7 @@ class ChronologicalCDFStudy:
             raise ValueError("invalid target, reference or nonfuture outcome date")
         if frame[c["identity"]].isna().any().any() or frame.duplicated(c["identity"]).any():
             raise ValueError("missing or duplicate forecast identity")
-        results, counts = [], []
+        results, counts, pooled_cache = [], [], {}
         for group, group_frame in frame.groupby(c["group"]):
             for year in c["years"]:
                 fit, cal, val = self.split(group_frame, year, c["date"], c["end"])
@@ -915,15 +1072,34 @@ class ChronologicalCDFStudy:
                                    "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
                                    "first": band[c["date"]].min(), "last": band[c["date"]].max(),
                                    "latest_label": band[c["end"]].max()}
-                imputer = SimpleImputer(strategy="median", keep_empty_features=True)
-                x = imputer.fit_transform(fit[c["features"]])
-                xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
-                y, yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (fit, cal, val)]
+                yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
                 for name, spec in c["models"].items():
                     start = time.monotonic()
-                    module, cls = spec["class"].split(":")
-                    model = getattr(importlib.import_module(module), cls)(**spec["params"])
-                    model.fit(x, y, xc, yc)
+                    key = (year, name, json.dumps(spec, sort_keys=True))
+                    pooled = spec.get("pooled", False)
+                    new_fit = not (pooled and key in pooled_cache)
+                    if new_fit:
+                        model_fit, model_cal, _ = self.split(frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
+                        module, cls = spec["class"].split(":")
+                        model = getattr(importlib.import_module(module), cls)(**spec["params"])
+                        for band in (model_fit, model_cal, val):
+                            model._validate_x(band[c["features"]].to_numpy())
+                        imputer = SimpleImputer(strategy="median", keep_empty_features=True)
+                        x = imputer.fit_transform(model_fit[c["features"]])
+                        model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
+                                  imputer.transform(model_cal[c["features"]]),
+                                  (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
+                        fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
+                                     "groups": model_fit.groupby(c["group"]).size().to_dict(),
+                                     "latest_label": model_fit[c["end"]].max()}
+                        if pooled:
+                            pooled_cache[key] = model, imputer, fit_count
+                    else:
+                        model, imputer, fit_count = pooled_cache[key]
+                    for band in (cal, val):
+                        model._validate_x(band[c["features"]].to_numpy())
+                    xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
+                    count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
                     raw = model.curve(xv)
                     variants = {"raw": raw}
                     if spec["calibrate"]:
@@ -960,3 +1136,339 @@ class ChronologicalCDFStudy:
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
         return pd.concat(results, ignore_index=True)
+
+
+class CDFHyperparameterStudy:
+    """Bounded JSON inventory, development selection and frozen CDF evaluation.
+
+    Parameters
+    ----------
+    config : dict
+        A study plus experiment (axes, candidate specs, partitions, task mapping,
+        exact cell sets, cutoff, resolutions and seeds). Data/diagnostic metadata
+        can also be included; all are part of the canonical experiment identity.
+
+    Examples
+    --------
+    Run one declared partition; every fit delegates to ChronologicalCDFStudy::
+
+        study = CDFHyperparameterStudy(config)
+        study.run(panel, stage="search", partition="separate", provenance=sources)
+    """
+
+    _KEYS = {"output", "development_years", "label_cutoff", "final_seeds", "screen_seed",
+             "max_candidates", "candidates", "candidate_labels", "axes", "task_features",
+             "resolutions", "expected_cells", "search_partitions", "evaluation_partitions"}
+
+    def __init__(self, config):
+        import copy
+        import itertools
+        from dskit.pipeline.kinds_search import CandidateInventory
+
+        self.config = copy.deepcopy(config)
+        if set(config)-{"study", "experiment", "data", "diagnostic", "notes"}:
+            raise ValueError("unknown HPO document keys")
+        self.base, self.experiment = self.config["study"], self.config["experiment"]
+        c, e = self.base, self.experiment
+        ChronologicalCDFStudy(c)
+        if set(e)-self._KEYS-{"notes"} or self._KEYS-set(e):
+            raise ValueError("unknown or missing experiment keys")
+        self.inventory = CandidateInventory({"candidate": list(e["candidates"])}, max_candidates=e["max_candidates"])
+        axes = e["axes"]
+        if set(axes) != {"sharing", "family", "bundle"}:
+            raise ValueError("candidate axes must declare sharing, family, bundle")
+        expected = set(itertools.product(axes["sharing"], axes["family"], axes["bundle"]))
+        labels = e["candidate_labels"]
+        if set(labels) != set(e["candidates"]) or any(set(v) != set(axes) for v in labels.values()):
+            raise ValueError("candidate label identity mismatch")
+        actual = [(v["sharing"], v["family"], v["bundle"]) for v in labels.values()]
+        if set(actual) != expected or len(actual) != len(expected):
+            raise ValueError("candidate inventory is not the declared Cartesian product")
+        parts = e["search_partitions"]
+        if set(parts) != set(axes["sharing"]):
+            raise ValueError("search partitions must match sharing groups")
+        for sharing, names in parts.items():
+            if len(names) != len(set(names)) or set(names) != {n for n, v in labels.items() if v["sharing"] == sharing}:
+                raise ValueError("search partition candidate mismatch")
+        if set(c["models"]) & set(e["candidates"]):
+            raise ValueError("control and candidate names overlap")
+        if (not e["final_seeds"] or len(set(e["final_seeds"])) != len(e["final_seeds"])
+                or any(type(s) is not int for s in [e["screen_seed"], *e["final_seeds"]])):
+            raise ValueError("invalid frozen seeds")
+        mapping = e["task_features"]
+        if not mapping or len(set(mapping.values())) != len(mapping) or not set(mapping.values()).issubset(c["features"]):
+            raise ValueError("invalid task feature mapping")
+        head_positions = [c["features"].index(v) for v in mapping.values()]
+        for name, spec in e["candidates"].items():
+            label, p = labels[name], spec["params"]
+            cls = {"normal": "MixtureMLPCDF", "student": "StudentMixtureMLPCDF"}.get(label["family"])
+            if (cls is None or spec["class"] != f"dskit.pipeline.libs.predictive_cdf:{cls}"
+                    or label["sharing"] not in ("separate", "pooled", "heads")
+                    or spec.get("pooled", False) != (label["sharing"] != "separate")
+                    or p.get("head_features", []) != (head_positions if label["sharing"] == "heads" else [])
+                    or p.get("seeds") != [e["screen_seed"]]):
+                raise ValueError("candidate labels, class, heads or seed disagree")
+            ChronologicalCDFStudy({**c, "models": {name: spec}})
+            globals()[cls](**p)  # Constructor-only validation; no fitting or device allocation.
+        r = e["resolutions"]
+        if (set(r) != {"screen_samples", "final_samples", "tail_points", "integration_points", "audit_samples", "audit_rows"}
+                or any(type(r[k]) is not int or r[k] < 1 for k in r if k != "audit_samples")
+                or r["final_samples"] != c["samples"] or r["tail_points"] != c["tail_points"]
+                or not {r["screen_samples"], r["final_samples"]}.issubset(r["audit_samples"])
+                or any(type(n) is not int or n < 1 for n in r["audit_samples"])
+                or ("diagnostic" in config and r["integration_points"] != config["diagnostic"]["integration_points"])):
+            raise ValueError("invalid or mixed scoring resolution")
+        dev = e["development_years"]
+        years = [y for values in e["evaluation_partitions"].values() for y in values]
+        if (not dev or len(set(dev)) != len(dev) or any(type(y) is not int for y in years+dev)
+                or max(dev) != c["development_end"] or e["label_cutoff"] != f"{max(dev)+1}-01-01"
+                or e["evaluation_partitions"].get("development") != dev
+                or len(years) != len(set(years)) or set(years) != set(c["years"])):
+            raise ValueError("development cutoff or evaluation year partition mismatch")
+        if set(e["expected_cells"]) != {"development", "evaluation"}:
+            raise ValueError("expected cells must declare development and evaluation")
+        self.output = Path(e["output"])
+
+    def to_obj(self):
+        """Return the full JSON experiment for the canonical identity owner."""
+        return self.config
+
+    @staticmethod
+    def _digest(value):
+        from types import SimpleNamespace
+        from dskit.pipeline.base import config_hash
+        return config_hash(SimpleNamespace(to_obj=lambda: value), exclude=())
+
+    @staticmethod
+    def _file_hash(path):
+        with Path(path).open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+
+    def _frame_hash(self, frame, keys):
+        import pandas as pd
+        f = frame.sort_values(keys).reindex(sorted(frame.columns), axis=1)
+        schema = self._digest({k: str(v) for k, v in f.dtypes.items()})
+        return hashlib.sha256(schema.encode()+pd.util.hash_pandas_object(f, index=False).values.tobytes()).hexdigest()
+
+    @staticmethod
+    def _write(path, value):
+        from dskit.pipeline.node import atomic_write
+        atomic_write(str(path), json.dumps(value, indent=2, allow_nan=False).encode())
+
+    def _complete(self, path, identity, stage, partition, **extra):
+        files = {str(p.relative_to(path)): self._file_hash(p) for p in sorted(path.rglob("*")) if p.is_file()}
+        self._write(path/"complete.json", {"identity": identity, "stage": stage, "partition": partition,
+                                           "files": files, **extra})
+
+    def _load(self, path, identity, stage, partition):
+        record = json.loads((path/"complete.json").read_text())
+        if record["identity"] != identity or record["stage"] != stage or record["partition"] != partition:
+            raise ValueError("artifact identity/provenance mismatch")
+        actual_files = {str(p.relative_to(path)) for p in path.rglob("*") if p.is_file() and p != path/"complete.json"}
+        if actual_files != set(record["files"]):
+            raise ValueError("artifact file inventory mismatch")
+        for name, digest in record["files"].items():
+            if self._file_hash(path/name) != digest:
+                raise ValueError("artifact hash mismatch")
+        return record
+
+    def _check_cells(self, frame, which):
+        c = self.base
+        expected = {(g, h) for g, horizons in self.experiment["expected_cells"][which].items() for h in horizons}
+        actual = set(frame[[c["group"], c["horizon"]]].itertuples(index=False, name=None))
+        if actual != expected:
+            raise ValueError(f"{which} cell set mismatch: missing {expected-actual}, extra {actual-expected}")
+
+    def _expected(self, frame, years):
+        return frame[frame[self.base["date"]].str[:4].astype(int).isin(years)]
+
+    def _check_scores(self, scores, expected, models):
+        import numpy as np
+        c = self.base
+        columns = list(dict.fromkeys([*c["identity"], c["group"], c["date"], c["end"], c["horizon"]]))
+        want = expected[columns].sort_values(c["identity"]).reset_index(drop=True)
+        if set(scores.model) != set(models) or set(scores.variant) != {"raw", "calibrated"}:
+            raise ValueError("score model or variant inventory mismatch")
+        if scores.duplicated([*c["identity"], "model", "variant"]).any():
+            raise ValueError("duplicate score identity")
+        numeric = scores.select_dtypes(include="number")
+        if not np.isfinite(numeric.to_numpy()).all():
+            raise ValueError("nonfinite score; cells cannot be silently dropped")
+        for name in models:
+            for variant in ("raw", "calibrated"):
+                rows = scores[(scores.model == name) & (scores.variant == variant)]
+                got = rows[columns].sort_values(c["identity"]).reset_index(drop=True)
+                if not got.equals(want) or not (rows.year == rows[c["date"]].str[:4].astype(int)).all():
+                    raise ValueError("unpaired or substituted score identities/years")
+
+    def _rank(self, scores):
+        c = self.base
+        means = scores.groupby([c["group"], c["horizon"], "model", "variant"]).crps.mean().unstack(["model", "variant"])
+        if means.isna().any().any() or (means[(c["reference_model"], "raw")] <= 0).any():
+            raise ValueError("incomplete cells or nonpositive reference CRPS")
+        return means.div(means[(c["reference_model"], "raw")], axis=0).mean()
+
+    def _select(self, frame, identity):
+        import copy
+        import pandas as pd
+        e, c = self.experiment, self.base
+        expected = self._expected(frame, e["development_years"])
+        all_scores, controls, screen_specs, selected, variants = [], None, {}, {}, {}
+        rankings = {}
+        for partition, names in e["search_partitions"].items():
+            path = self.output/"search"/partition
+            self._load(path, identity, "search", partition)
+            scores = pd.read_parquet(path/"scores.parquet")
+            self._check_scores(scores, expected, [*c["models"], *names])
+            repeated = scores[scores.model.isin(c["models"])].sort_values(["model", "variant", *c["identity"]]).reset_index(drop=True)
+            if controls is not None and not controls.equals(repeated):
+                raise ValueError("repeated control scores disagree")
+            controls = repeated
+            rank = self._rank(scores)
+            rankings.update({f"{n}:{v}": float(rank[(n, v)]) for n in names for v in ("raw", "calibrated")})
+            name, variant = min(((n, v) for n in names for v in ("raw", "calibrated")), key=lambda nv: rank[nv])
+            screen_specs[name] = copy.deepcopy(e["candidates"][name])
+            selected[name] = copy.deepcopy(screen_specs[name])
+            selected[name]["params"]["seeds"] = list(e["final_seeds"])
+            variants[name] = variant
+            all_scores.append(scores[scores.model.isin(names)])
+        rank = self._rank(controls)
+        for name, spec in c["models"].items():
+            selected[name] = copy.deepcopy(spec)
+            variants[name] = min(("raw", "calibrated"), key=lambda v: rank[(name, v)])
+        variants[c["reference_model"]] = "raw"
+        payload = {"models": selected, "variants": variants, "ranking": rankings,
+                   "screen_spec_hash": self._digest(screen_specs), "final_spec_hash": self._digest(selected),
+                   "screen_specs": screen_specs, "expected_identity_hash": self._frame_hash(expected[c["identity"]], c["identity"]),
+                   "n": len(expected), "cells": len(expected[[c["group"], c["horizon"]]].drop_duplicates())}
+        path = self.output/"selection"
+        path.mkdir(parents=True, exist_ok=False)
+        self._write(path/"selected.json", payload)
+        pd.concat([controls, *all_scores], ignore_index=True).to_parquet(path/"development_scores.parquet", index=False)
+        self._complete(path, identity, "select", None)
+        return payload
+
+    def _selection(self, identity):
+        path = self.output/"selection"
+        record = self._load(path, identity, "select", None)
+        payload = json.loads((path/"selected.json").read_text())
+        return payload, record["files"]["selected.json"]
+
+    def _audit(self, paths, frame, diagnostic):
+        import numpy as np
+        c, r = self.base, self.experiment["resolutions"]
+        records = []
+        for path in paths:
+            for file in sorted(path.glob("*-curves.npz")):
+                with np.load(file, allow_pickle=False) as a:
+                    n = len(a["row_index"])
+                    ix = np.linspace(0, n-1, min(n, r["audit_rows"]), dtype=int)
+                    kind = str(a["kind"])
+                    if kind == "grid":
+                        curve = GridCurve(a["values"][ix], a["probabilities"][ix])
+                    else:
+                        args = [a[k][ix] for k in ("weights", "means", "scales")]
+                        curve = StudentMixtureCurve(*args, degrees=float(a["degrees"])) if kind == "student_mixture" else MixtureCurve(*args)
+                    if "calibration_x" in a:
+                        calibrated = object.__new__(CalibratedCurve)
+                        calibrated.base, calibrated.map = curve, GridCurve(a["calibration_x"], a["calibration_p"])
+                        curve = calibrated
+                    band = frame.loc[a["row_index"][ix]]
+                    y = (band[c["target"]]/band[c["reference"]]).to_numpy()
+                    values = []
+                    for nodes in r["audit_samples"]:
+                        metrics, draws = ChronologicalCDFStudy.scores(curve, y, nodes, c["tail_intervals"], nodes)
+                        if diagnostic:
+                            metrics.update(diagnostic(band, curve, draws))
+                        values.append({"samples": nodes, "crps": float(metrics["crps"].mean()),
+                                       "tail_points": nodes, "tail_crps": float(metrics["tail_crps"].mean()),
+                                       "max_payoff_gap": float(np.max(metrics.get("payoff_quadrature_gap", [0])))})
+                    records.append({"file": str(file), "rows": len(ix), "resolutions": values})
+        return records
+
+    def run(self, frame, diagnostic=None, *, stage, partition=None, provenance):
+        """Execute a declared stage; incomplete or unpaired inputs always refuse.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            Complete causal panel with declared raw one-hot task columns.
+        diagnostic : callable or None
+            Existing bounded domain diagnostic.
+        stage, partition : str, str or None
+            search/select/evaluate/report and an explicit declared partition.
+        provenance : dict
+            Nonempty upstream file/reader fingerprints, pinned across stages.
+
+        Returns
+        -------
+        DataFrame or dict
+            Partition scores, frozen selection, or the completed report.
+        """
+        import pandas as pd
+        c, e = self.base, self.experiment
+        if stage not in ("search", "select", "evaluate", "report") or not provenance:
+            raise ValueError("invalid stage or missing provenance")
+        if frame.duplicated(c["identity"]).any() or frame[c["identity"]].isna().any().any():
+            raise ValueError("missing or duplicate panel identities")
+        mapping = e["task_features"]
+        if set(frame[c["group"]]) != set(mapping):
+            raise ValueError("unknown or missing task symbols")
+        for group, feature in mapping.items():
+            if not (frame[feature] == (frame[c["group"]] == group).astype(int)).all():
+                raise ValueError("raw one-hot task features disagree with symbol mapping")
+        dev = frame[frame[c["end"]] < e["label_cutoff"]]
+        self._check_cells(self._expected(dev, e["development_years"]), "development")
+        later_years = [y for y in c["years"] if y > c["development_end"]]
+        self._check_cells(self._expected(frame, later_years), "evaluation")
+        identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
+                    "provenance": self._digest(provenance), "inventory": self.inventory.digest,
+                    "implementation": self._file_hash(__file__),
+                    "resolutions": e["resolutions"]}
+        if stage == "select":
+            if partition is not None:
+                raise ValueError("select does not accept partition")
+            return self._select(dev, identity)
+        if stage == "search":
+            if partition not in e["search_partitions"]:
+                raise ValueError("unknown search partition")
+            models = {**c["models"], **{n: e["candidates"][n] for n in e["search_partitions"][partition]}}
+            years, panel, samples = e["development_years"], dev, e["resolutions"]["screen_samples"]
+            selection_hash = None
+        else:
+            selection, selection_hash = self._selection(identity)
+            models = selection["models"]
+            if stage == "report":
+                if partition is not None:
+                    raise ValueError("report does not accept partition")
+                parts, paths = [], []
+                for name, years in e["evaluation_partitions"].items():
+                    path = self.output/"evaluate"/name
+                    record = self._load(path, identity, "evaluate", name)
+                    if record["selection_hash"] != selection_hash:
+                        raise ValueError("frozen selection hash mismatch")
+                    part = pd.read_parquet(path/"scores.parquet")
+                    self._check_scores(part, self._expected(dev if name == "development" else frame, years), models)
+                    parts.append(part)
+                    paths.append(path)
+                scores = pd.concat(parts, ignore_index=True)
+                path = self.output/"report"
+                path.mkdir(parents=True, exist_ok=False)
+                study = ChronologicalCDFStudy({**c, "output": str(path), "models": models})
+                result = study.summarize(scores, selection["variants"])
+                scores.to_parquet(path/"scores.parquet", index=False)
+                self._write(path/"convergence.json", self._audit(paths, frame, diagnostic))
+                self._complete(path, identity, stage, None, selection_hash=selection_hash)
+                return result
+            if partition not in e["evaluation_partitions"]:
+                raise ValueError("unknown evaluation partition")
+            years = e["evaluation_partitions"][partition]
+            panel = dev if partition == "development" else frame
+            samples = e["resolutions"]["final_samples"]
+        path = self.output/stage/partition
+        study = ChronologicalCDFStudy({**c, "output": str(path), "years": years, "samples": samples, "models": models})
+        scores = study.run(panel, diagnostic)
+        self._check_scores(scores, self._expected(panel, years), models)
+        self._write(path/"data_provenance.json", provenance)
+        self._complete(path, identity, stage, partition, selection_hash=selection_hash)
+        return scores

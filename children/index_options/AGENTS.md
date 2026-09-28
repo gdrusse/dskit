@@ -54,7 +54,7 @@ Use README.md for installation, the temporary demo and focused tests.
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
-                           # cdf_study.py: exact-expiry panel + condor diagnostic (ADR-0189)
+                           # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)

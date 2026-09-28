@@ -1,0 +1,1357 @@
+{
+  "notes": "ADR-0190 standardized CDF HPO. Run via python -m index_options.cdf_study CONFIG --stage search --partition separate (then pooled, heads), --stage select, --stage evaluate --partition development (then early, middle, late), --stage report. Each execution partition has an external 1800-second cap. All settings and partition inventories live here; no one-off training scripts. Reused 2019-2025 is research evaluation, not an untouched holdout.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {
+      "SPY": "VIX",
+      "QQQ": "VXN",
+      "IWM": "RVX"
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_SPY",
+      "is_QQQ",
+      "is_IWM"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "years": [
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "output": "pipeline_runs/predictive_cdf_hpo_20260928/base",
+    "samples": 401,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical",
+      "scaled_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        60,
+        120
+      ],
+      "replicates": 400,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": true
+      },
+      "scaled_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF",
+        "params": {
+          "alpha": 10,
+          "floor": 0.02,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "monotone_cdf": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MonotoneCDF",
+        "params": {
+          "thresholds": [
+            -4,
+            -3,
+            -2.5,
+            -2,
+            -1.5,
+            -1,
+            -0.5,
+            0,
+            0.5,
+            1,
+            1.5,
+            2,
+            2.5,
+            3,
+            4
+          ],
+          "trees": 120,
+          "leaves": 7,
+          "min_child": 200,
+          "threads": 2,
+          "tail_width": 4
+        },
+        "calibrate": true
+      },
+      "quantile_lightgbm": {
+        "class": "dskit.pipeline.libs.predictive_cdf:QuantileCDF",
+        "params": {
+          "probabilities": [
+            0.005,
+            0.01,
+            0.025,
+            0.05,
+            0.1,
+            0.2,
+            0.35,
+            0.5,
+            0.65,
+            0.8,
+            0.9,
+            0.95,
+            0.975,
+            0.99,
+            0.995
+          ],
+          "trees": 120,
+          "leaves": 7,
+          "min_child": 100,
+          "threads": 2,
+          "tail_width": 4
+        },
+        "calibrate": true
+      },
+      "mlp_1": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": 32,
+          "epochs": 20,
+          "seeds": [
+            11,
+            29
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true
+      },
+      "mlp_3": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": 32,
+          "epochs": 20,
+          "seeds": [
+            11,
+            29
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true
+      }
+    }
+  },
+  "experiment": {
+    "notes": "Four predeclared bundles, two tail families, three sharing structures. Single fixed seed screening; two fixed ensemble seeds for finalists. Student scale is not SD. Pooled fitting is row-weighted and probability calibration remains index-specific. Selection must not read evaluation partitions.",
+    "output": "pipeline_runs/predictive_cdf_hpo_20260928",
+    "development_years": [
+      2016,
+      2017,
+      2018
+    ],
+    "label_cutoff": "2019-01-01",
+    "final_seeds": [
+      11,
+      29
+    ],
+    "max_candidates": 24,
+    "candidates": {
+      "separate_normal_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_normal_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_normal_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_normal_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_student_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 8
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_student_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_student_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "separate_student_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 3
+        },
+        "calibrate": true,
+        "pooled": false
+      },
+      "pooled_normal_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_normal_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_normal_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_normal_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda"
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_student_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 8
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_student_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_student_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "pooled_student_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 3
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_normal_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_normal_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_normal_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_normal_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_student_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 8,
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_student_b": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 512,
+          "learning_rate": 0.001,
+          "weight_decay": 0.1,
+          "min_scale": 0.05,
+          "activation": "silu",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5,
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_student_c": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            32
+          ],
+          "epochs": 40,
+          "batch_size": 1024,
+          "learning_rate": 0.001,
+          "weight_decay": 0.01,
+          "min_scale": 0.05,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 5,
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      },
+      "heads_student_d": {
+        "class": "dskit.pipeline.libs.predictive_cdf:StudentMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32,
+            16
+          ],
+          "epochs": 60,
+          "batch_size": 1024,
+          "learning_rate": 0.0003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "silu",
+          "dropout": 0.1,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "degrees": 3,
+          "head_features": [
+            39,
+            40,
+            41
+          ]
+        },
+        "calibrate": true,
+        "pooled": true
+      }
+    },
+    "search_partitions": {
+      "separate": [
+        "separate_normal_a",
+        "separate_normal_b",
+        "separate_normal_c",
+        "separate_normal_d",
+        "separate_student_a",
+        "separate_student_b",
+        "separate_student_c",
+        "separate_student_d"
+      ],
+      "pooled": [
+        "pooled_normal_a",
+        "pooled_normal_b",
+        "pooled_normal_c",
+        "pooled_normal_d",
+        "pooled_student_a",
+        "pooled_student_b",
+        "pooled_student_c",
+        "pooled_student_d"
+      ],
+      "heads": [
+        "heads_normal_a",
+        "heads_normal_b",
+        "heads_normal_c",
+        "heads_normal_d",
+        "heads_student_a",
+        "heads_student_b",
+        "heads_student_c",
+        "heads_student_d"
+      ]
+    },
+    "evaluation_partitions": {
+      "development": [
+        2016,
+        2017,
+        2018
+      ],
+      "early": [
+        2019,
+        2020,
+        2021
+      ],
+      "middle": [
+        2022,
+        2023
+      ],
+      "late": [
+        2024,
+        2025
+      ]
+    },
+    "candidate_labels": {
+      "separate_normal_a": {
+        "sharing": "separate",
+        "family": "normal",
+        "bundle": "a"
+      },
+      "separate_normal_b": {
+        "sharing": "separate",
+        "family": "normal",
+        "bundle": "b"
+      },
+      "separate_normal_c": {
+        "sharing": "separate",
+        "family": "normal",
+        "bundle": "c"
+      },
+      "separate_normal_d": {
+        "sharing": "separate",
+        "family": "normal",
+        "bundle": "d"
+      },
+      "separate_student_a": {
+        "sharing": "separate",
+        "family": "student",
+        "bundle": "a"
+      },
+      "separate_student_b": {
+        "sharing": "separate",
+        "family": "student",
+        "bundle": "b"
+      },
+      "separate_student_c": {
+        "sharing": "separate",
+        "family": "student",
+        "bundle": "c"
+      },
+      "separate_student_d": {
+        "sharing": "separate",
+        "family": "student",
+        "bundle": "d"
+      },
+      "pooled_normal_a": {
+        "sharing": "pooled",
+        "family": "normal",
+        "bundle": "a"
+      },
+      "pooled_normal_b": {
+        "sharing": "pooled",
+        "family": "normal",
+        "bundle": "b"
+      },
+      "pooled_normal_c": {
+        "sharing": "pooled",
+        "family": "normal",
+        "bundle": "c"
+      },
+      "pooled_normal_d": {
+        "sharing": "pooled",
+        "family": "normal",
+        "bundle": "d"
+      },
+      "pooled_student_a": {
+        "sharing": "pooled",
+        "family": "student",
+        "bundle": "a"
+      },
+      "pooled_student_b": {
+        "sharing": "pooled",
+        "family": "student",
+        "bundle": "b"
+      },
+      "pooled_student_c": {
+        "sharing": "pooled",
+        "family": "student",
+        "bundle": "c"
+      },
+      "pooled_student_d": {
+        "sharing": "pooled",
+        "family": "student",
+        "bundle": "d"
+      },
+      "heads_normal_a": {
+        "sharing": "heads",
+        "family": "normal",
+        "bundle": "a"
+      },
+      "heads_normal_b": {
+        "sharing": "heads",
+        "family": "normal",
+        "bundle": "b"
+      },
+      "heads_normal_c": {
+        "sharing": "heads",
+        "family": "normal",
+        "bundle": "c"
+      },
+      "heads_normal_d": {
+        "sharing": "heads",
+        "family": "normal",
+        "bundle": "d"
+      },
+      "heads_student_a": {
+        "sharing": "heads",
+        "family": "student",
+        "bundle": "a"
+      },
+      "heads_student_b": {
+        "sharing": "heads",
+        "family": "student",
+        "bundle": "b"
+      },
+      "heads_student_c": {
+        "sharing": "heads",
+        "family": "student",
+        "bundle": "c"
+      },
+      "heads_student_d": {
+        "sharing": "heads",
+        "family": "student",
+        "bundle": "d"
+      }
+    },
+    "axes": {
+      "sharing": [
+        "separate",
+        "pooled",
+        "heads"
+      ],
+      "family": [
+        "normal",
+        "student"
+      ],
+      "bundle": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    "task_features": {
+      "SPY": "is_SPY",
+      "QQQ": "is_QQQ",
+      "IWM": "is_IWM"
+    },
+    "screen_seed": 11,
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 401,
+      "tail_points": 201,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        401,
+        1601
+      ],
+      "audit_rows": 12
+    },
+    "expected_cells": {
+      "development": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      },
+      "evaluation": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      }
+    }
+  }
+}

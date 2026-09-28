@@ -27,6 +27,20 @@ def test_cdf_integral_agrees_with_payoff_quadrature_and_loss_sign():
     assert metrics['condor_loss_bias'][0] > 0
 
 
+def test_student_extreme_draws_preserve_bounded_payoff_without_overflow():
+    from dskit.pipeline.libs.predictive_cdf import StudentMixtureCurve
+    frame = pd.DataFrame({'reference_scale': [.04], 'spot': [100.], 'terminal_price': [100.]})
+    curve = StudentMixtureCurve([[1]], [[0]], [[1]], degrees=3)
+    diagnostic = CondorCDFDiagnostic([-2, -1, 1, 2], 1001)
+    with np.errstate(over='raise', invalid='raise'):
+        extreme = diagnostic(frame, curve, np.array([[-1e6, 1e6]]))
+    clipped = diagnostic(frame, curve, np.array([[-2., 2.]]))
+    for key in extreme:
+        np.testing.assert_allclose(extreme[key], clipped[key])
+    draws = curve.quantile((np.arange(8001)+.5)/8001)
+    assert diagnostic(frame, curve, draws)['payoff_quadrature_gap'][0] < .0001
+
+
 def test_panel_exact_holiday_settlement_missing_path_and_dividend_flag(tmp_path, monkeypatch):
     import exchange_calendars as xc
     from index_options.cdf_study import ExactExpiryCDFPanel

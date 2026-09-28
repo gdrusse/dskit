@@ -10,7 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy, CDFHyperparameterStudy
 from .observations import IndexCloseRows
 from .contracts import CONDOR_LEGS
 
@@ -147,7 +147,10 @@ class ExactExpiryCDFPanel:
         self.refused = refused
         self.source_hashes = {name: hashlib.sha256(Path(c[name]).read_bytes()).hexdigest()
                               for name in ("surface", "lifecycle")}
-        return pd.concat(panels, ignore_index=True)
+        result = pd.concat(panels, ignore_index=True)
+        for symbol in c["symbols"]:
+            result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
+        return result
 
 
 class CondorCDFDiagnostic:
@@ -188,7 +191,7 @@ class CondorCDFDiagnostic:
         """
         import numpy as np
 
-        result = np.zeros_like(levels)
+        result = np.zeros_like(levels, dtype=float)
         for j, (right, sign) in enumerate(CONDOR_LEGS):
             intrinsic = strikes[:, j, None]-levels if right == "put" else levels-strikes[:, j, None]
             result += sign*np.maximum(intrinsic, 0)
@@ -216,7 +219,10 @@ class CondorCDFDiagnostic:
         scale, spot = frame.reference_scale.to_numpy(), frame.spot.to_numpy()
         strikes = spot[:, None]*np.exp(scale[:, None]*self.strikes_z)
         width = np.maximum(strikes[:, 1]-strikes[:, 0], strikes[:, 3]-strikes[:, 2])
-        mean_loss = -self.payoff(spot[:, None]*np.exp(scale[:, None]*draws), strikes).mean(1)
+        # Bounded wing payoff is constant outside the outer strikes. Avoid
+        # exponentiating unbounded Student tails; the CDF itself is unchanged.
+        bounded = np.clip(draws, self.strikes_z[0], self.strikes_z[-1])
+        mean_loss = -self.payoff(spot[:, None]*np.exp(scale[:, None]*bounded), strikes).mean(1)
         realized = -self.payoff(frame.terminal_price.to_numpy()[:, None], strikes)[:, 0]
         integral = np.zeros(len(frame))
         for a, b, put in [(0, 1, True), (2, 3, False)]:
@@ -237,14 +243,27 @@ class CondorCDFDiagnostic:
 def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
+    parser.add_argument("--stage", choices=["search", "select", "evaluate", "report"])
+    parser.add_argument("--partition")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
     adapter = ExactExpiryCDFPanel(config["data"])
     frame = adapter.read()
+    provenance = {"refused": adapter.refused, "sha256": adapter.source_hashes,
+                  "readers": adapter.reader_fingerprints,
+                  "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
+    if "experiment" in config:
+        if not args.stage:
+            parser.error("HPO requires an explicit --stage")
+        CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
+                                            partition=args.partition, provenance=provenance)
+        return
+    if args.stage or args.partition:
+        parser.error("stage/partition require an experiment document")
     output = Path(config["study"]["output"])
     if output.exists():
         raise FileExistsError(output)
-    diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     study = ChronologicalCDFStudy(config["study"])
     print("panel", len(frame), adapter.refused, flush=True)
     scores = study.run(frame, diagnostic)

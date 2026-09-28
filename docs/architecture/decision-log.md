@@ -26594,3 +26594,108 @@ which deliberately does not anticipate exceptional closures. This is not a
 The first development run is retained but superseded; the recommendation must
 come from a fresh immutable-source run. Exact numerical curve grids/mixtures and
 calibration maps are retained for both raw and calibrated variants.
+
+## ADR-0190 — Bounded distribution HPO and pooled index heads
+
+2026-09-28. Owner: index_options. Base: `86447b4d`. The owner requested HPO
+over architectures/training settings, research into distribution assumptions,
+and explicitly added pooling with separate heads and another completion memo.
+This records that approved extension of ADR-0189, not a trading authorization.
+
+Extend the existing predictive_cdf pack, not its package structure: configurable
+MLP hidden layers/activation/dropout; Gaussian and fixed-degree Student-t
+mixtures; optional one-hot-selected output heads; optional pooled training for
+named study models. Separate-index baselines remain separate. The shared-head
+and separate-head pooled candidates use the same 39 causal features plus three
+index identity indicators as the separate models. A pooled network is fitted
+once per model/year using strictly purged histories from all indexes; held-out
+probability calibration remains index-specific. Report model-specific training
+counts and never count repeated pooled fits or correlated indexes as new dates.
+Student-t is a sensitivity family, not presumed truth: log-return Student-t
+has no finite positive exponential moment. Only finite CRPS and bounded-condor
+CDF integrals are in scope; unbounded call expectations are not computed.
+
+Bounded experiment: four declared training/architecture bundles crossed with
+Gaussian/Student-t and separate/pooled-shared/pooled-heads = 24 neural candidates.
+Each uses one fixed seed for screening; no best-seed selection. Keep empirical
+and the original MLP controls, and modest monotone/quantile boosting controls.
+HPO uses 2016–2018 predictions with all labels settled before 2019, choosing
+one candidate per sharing structure by equal index/exact-day CRPS. Freeze these
+three configurations before evaluating 2019–2025 with the same two ensemble
+seeds as before. Calibration variants are chosen on development only. The
+primary score stays all 1–45 actual-day cells; 30–45-day, tail and bounded-payoff
+scores are explicitly secondary. These previously inspected years are research
+evaluation, not an untouched holdout. Each execution phase is capped at 30 min;
+stop and report incomplete phases rather than silently narrowing the search.
+
+Allowed paths: existing generic pack/tests, child panel/tests, HPO JSON,
+requested memo/research note, layout documentation, review evidence, re-entry
+and append-only journal. No new reader, generic runner, dependency, live model,
+optimizer or broker connection. Existing public defaults and Gaussian artifacts
+must remain compatible. New degrees/head settings and nested model keys refuse
+invalid values. Exact numerical Student curve state retains degrees of freedom.
+
+Acceptance matrix: normal compatibility; Student CDF/inverse against SciPy and
+finite bounded-loss quadrature; head routing and no cross-head output selection;
+train-only preprocessing and both strict purges for pooled and separate paths;
+one fit per pooled model/year; missing/unseen task refusal; development-only
+selection with labels clipped at the selection cutoff; paired 135-cell reports
+and raw counts; CUDA without fallback. In-process configuration is trusted
+research input, not a hostile-code security boundary. Independent design review
+precedes RED; two fresh final correctness/integration lenses gate delivery.
+
+Owner clarification, same session: all experiments must be JSON-driven and
+standardized, with no one-off execution scripts; skeptic reviews must use Luna.
+Therefore the orchestration is a reusable `CDFHyperparameterStudy` in the
+existing pack, delegating every fit to `ChronologicalCDFStudy`, reached through
+the existing child CLI. This replaces the phrase "no new generic runner" above
+only to add this bounded reusable orchestration seam, not a parallel training
+loop. One master JSON declares candidate bundles, sharing partitions, cutoff,
+score resolution, final seeds and evaluation-year partitions. CLI stages are
+search, select, evaluate and report, with explicit partition selection. Search
+uses 101 common quantile nodes, final evaluation 401; tail convergence is audited.
+Each output refuses overwrite and selection verifies all declared partitions
+and paired identities before freezing one candidate per sharing structure.
+Development labels are cut before 2019, including when final seeds are fitted
+on development. Later-year score files never enter the selection stage.
+All pooled training is row-weighted, not equal-task-weighted; calibration is
+still index-specific. Raw one-hot identifiers must validate before imputation.
+The refreshed Phase-0 and both final reviews use `gpt-5.6-luna` as requested.
+
+Phase-0 contract clarification (before fitting): explicit candidate labels must
+equal the declared sharing/family/bundle Cartesian product, including class,
+head mapping, degrees and screening seed consistency. Raw task indicators are
+finite binary one-hot and must match the declared symbol-to-feature mapping
+before any imputation. Imputation is fitted only on the same strictly purged
+training rows as its model. Pooled cache lifetime is one run; its identity binds
+year and full model spec. Unequal task counts remain row-weighted.
+
+Search includes all controls so their raw/calibrated variants also freeze in
+the selection artifact before later-year execution. Selection pins complete
+model specs, variants and final ensemble seeds [11,29]; no best-seed selection.
+All partitions bind the full canonical configuration, canonical panel values,
+upstream file hashes and reader fingerprints, and each score-file hash. A
+completion marker is atomically written LAST; an interrupted partition cannot
+be selected or resumed as complete. Selection rejects missing/extra/duplicate
+or unpaired prediction identities and evaluation rows, and mixed resolutions.
+The selection digest is required by every evaluation and reporting partition.
+
+The inspected, strictly pre-2019 development set has 18,616 rows and exactly
+133 index/day cells: SPY 1–45; QQQ/IWM 1–45 except 26 (not observed). This exact
+set is declared before tuning, rather than inventing observations. The combined
+2019–2025 evaluation requires all 135 cells. Partition-specific years and rows
+must match the pinned panel exactly; equal-cell scoring cannot drop NaN cells.
+Screen CRPS uses 101 nodes, final 401, tail integration 201, payoff integration
+101. The report audits fixed deterministic saved-curve rows at 101/401/1601;
+these declared resolutions are stored and hashed, not performance-tuned.
+
+Student payoff evaluation clamps sampled standardized outcomes to the OUTER
+strikes before exponentiation, preserving the constant bounded wing payoff
+outside those strikes. It does not truncate the CDF or assert finite unbounded
+price moments. Regression cases include standardized draws at +/-1e6. CUDA,
+Torch versions and determinism settings are recorded; unavailable CUDA refuses.
+Tests cover strict cutoff leakage, raw malformed task inputs at both entry
+points, train-only pooled imputation, exact inventory, frozen artifacts and
+partial/hash/identity substitution refusal, final seed/variant locking, counts,
+and bounded Student numerical convergence. These are design acceptance tests,
+not a claim they already pass.
