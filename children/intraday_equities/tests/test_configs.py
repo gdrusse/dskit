@@ -1634,6 +1634,49 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
     assert "events" in the_plan.order
 
 
+def test_joint_simulation_wires_share_events_into_the_evaluator():
+    """ADR-0188: the tracked full run ends in the ADR-0183 evaluator."""
+    from dskit.pipeline.planner import plan
+
+    from intraday_equities.evaluation import ShareReplayEvents
+
+    raw = _raw(JOINT_SIMULATION_DOC)
+    pipe = raw["pipeline"]
+    assert pipe["preflight"]["inputs"] == {
+        "bars": "$bars.merged",
+        "releases": "$publish.releases",
+        "ticks": "$publish.ticks",
+    }
+    events = pipe["events"]
+    assert events["uses"] == "intraday_equities-share-replay-events"
+    assert events["inputs"] == {
+        "fills": "$simulate.fills",
+        "skipped": "$simulate.skipped",
+        "refused": "$simulate.refused",
+        "cash": "$simulate.cash",
+        "metadata": "$simulate.metadata",
+    }
+    assert ShareReplayEvents.validate_params(events["params"]) == []
+    evaluation = pipe["evaluation"]
+    assert evaluation["uses"] == "dskit.evaluation.nodes:EvaluationReport"
+    assert evaluation["inputs"] == {"events": "$events.events"}
+    assert evaluation["params"]["out_dir"] == "evaluation"
+    assert "evaluation" in plan(load_document(_path(JOINT_SIMULATION_DOC))).order
+
+
+def test_joint_simulation_ships_the_documented_18_gib_harness():
+    """ADR-0188: the supported launch applies the hard cap before Python starts."""
+    harness = os.path.join(os.path.dirname(CHILD_ROOT), "..", "tools", "run_joint_simulation.sh")
+    harness = os.path.realpath(harness)
+    with open(harness, encoding="utf-8") as handle:
+        script = handle.read()
+    assert os.access(harness, os.X_OK)
+    assert "prlimit --as=19327352832" in script
+    assert "configs/run-joint-simulation.json" in script
+    assert "DSKIT_PYTHON" in script and "PYTHONPATH" in script
+    assert "tools/run_joint_simulation.sh" in _raw(JOINT_SIMULATION_DOC)["notes"]
+
+
 # ADR-0184's pinned P16 evidence: the gate inventory manifest fa061189 and
 # the gate artifact 77a7ab08 (the development_outer fold walk behind them).
 _P16_RUNS = "/home/russell/dskit/children/intraday_equities/pipeline_runs"

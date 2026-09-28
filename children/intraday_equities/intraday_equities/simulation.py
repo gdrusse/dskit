@@ -68,6 +68,12 @@ from dskit.pipeline.false_signal import (
     SignalEvidence,
 )
 from dskit.pipeline.node import ConfigError, Node, class_ref, register_node_kind, reject_unknown_params
+from dskit.pipeline.mean_interval import (
+    ClusterBootstrapInterval,
+    ConfidenceInterval,
+    MeanConfidenceFamily,
+    MeanEvidence,
+)
 from dskit.pipeline.outcome_interval import (
     MAX_SCENARIOS,
     MIN_SCENARIOS,
@@ -79,6 +85,7 @@ from dskit.pipeline.program_calendar import load_program_calendar
 from dskit.pipeline.stages import Stage, is_sha256hex
 from dskit.pipeline.uncertainty_intake import (
     AttestedFalseSignalRate,
+    AttestedMeanConfidenceFamily,
     AttestedOutcomeBand,
     CoverageEvidence,
     UncertaintyAttestation,
@@ -121,6 +128,7 @@ __all__ = [
     "DevelopmentSimulation",
     "ForecastPublisher",
     "JointMinuteMioDecider",
+    "JointSimulationPreflight",
     "MinuteDevelopmentSimulation",
     "MinuteForecastPublisher",
     "MinuteMioDecider",
@@ -134,6 +142,11 @@ __all__ = [
 #: reading. It is NOT measured on this panel; the evidence id says so.
 _FALSE_SIGNAL_ATTAINMENT_FLOOR = 0.53
 _FALSE_SIGNAL_EVIDENCE_ID = "ADR-0152-synthetic-attainment-floor-not-measured-on-this-panel"
+_MEAN_METHOD_ATTAINMENT_FLOOR = 0.946
+_MEAN_METHOD_EVIDENCE_ID = (
+    "tests/pipeline/test_mean_interval.py::TestMeasuredCoverage::"
+    "test_the_units_path_delivers_its_nominal_level"
+)
 
 _DAY_MS = 86_400_000
 _SCAN_KIND = "intraday_equities-no-information-scan"
@@ -761,7 +774,7 @@ class ForecastPublisher(Node):
         )
         return panel, band
 
-    def _outcome(self, walk, index, components, tag, release_id):
+    def _outcome(self, walk, index, components, tag, release_id, calibrated=None):
         """Calibrate the attested outcome band (JSON), its scenario set and measured coverage.
 
         Parameters
@@ -788,7 +801,10 @@ class ForecastPublisher(Node):
         """
         knobs = self.params["uncertainty"]
         cutoff_ms = walk.folds[index]["cutoff_ms"]
-        panel, band = self._calibrated(walk, index, cutoff_ms, components, tag)
+        panel, band = (
+            self._calibrated(walk, index, cutoff_ms, components, tag)
+            if calibrated is None else calibrated
+        )
         scenarios = BlockConformalInterval().scenarios(panel, knobs["n_scenarios"], knobs["seed"])
         measured, per_component, n_units = self._measured_coverage(walk, index, components, tag)
         artifact = _dataclass_obj(band)
@@ -950,7 +966,7 @@ class ForecastPublisher(Node):
     def _envelopes_of(group):
         """Rebuild the ``false_signal``/``outcome`` envelopes of one ``uncertainty`` group's JSON."""
         signal, outcome = group["false_signal"], group["outcome"]
-        return {
+        envelopes = {
             "false_signal": AttestedFalseSignalRate(
                 FalseSignalEstimate(**signal["artifact"]), _attestation_from(signal["attestation"])
             ),
@@ -958,6 +974,16 @@ class ForecastPublisher(Node):
                 OutcomeIntervalResult(**outcome["artifact"]), _attestation_from(outcome["attestation"])
             ),
         }
+        if "mean" in group:
+            mean = group["mean"]
+            family = MeanConfidenceFamily({
+                cell: ConfidenceInterval(**interval)
+                for cell, interval in mean["artifact"]["members"].items()
+            })
+            envelopes["mean"] = AttestedMeanConfidenceFamily(
+                family, _attestation_from(mean["attestation"])
+            )
+        return envelopes
 
     @staticmethod
     def _path_block(release):
@@ -1012,7 +1038,7 @@ class ForecastPublisher(Node):
         """
         signal = release["uncertainty"][str(lead)]["false_signal"]["artifact"]
         cutoff_ms = release["segment_start_ms"]
-        return {
+        row = {
             "entity": symbol,
             "decision_ts": stamp,
             "lead": lead,
@@ -1027,6 +1053,7 @@ class ForecastPublisher(Node):
             "label": contract,
             "known_at": ForecastPublisher._known_at(stamp, cutoff_ms),
         }
+        return row
 
     @staticmethod
     def _known_at(stamp, cutoff_ms):
@@ -1186,16 +1213,24 @@ class ForecastPublisher(Node):
         """
         plan = cls.path_plan(release, symbol, coverage_floor)
         screened, calibrated, admitted = plan["plan"], plan["calibrated"], plan["admitted"]
-        if screened == 0:
-            raise ValueError(
-                f"{symbol} gets no path row: its lead-1 cell measured coverage below the per-cell "
-                f"floor {coverage_floor!r} (kstar 0, owner question I(a)) -- the name is sell-only"
-            )
         if plan_horizon is None:
+            if screened == 0:
+                raise ValueError(
+                    f"{symbol} gets no path row because kstar 0 leaves an empty screened plan; "
+                    "only a held name's decider may request explicit plan_horizon 0 as "
+                    "authenticated mandatory-exit evidence"
+                )
             plan_horizon = screened
-        elif isinstance(plan_horizon, bool) or not isinstance(plan_horizon, int) or not 1 <= plan_horizon <= screened:
+        if (
+            isinstance(plan_horizon, bool)
+            or not isinstance(plan_horizon, int)
+            or plan_horizon < 0
+            or plan_horizon > screened
+            or (screened > 0 and plan_horizon == 0)
+        ):
             raise ValueError(
-                f"{symbol}: plan_horizon must be an int in 1..{screened} (min(K_i, kstar_i)) -- a "
+                f"{symbol}: plan_horizon must be an int in "
+                f"{'0' if screened == 0 else f'1..{screened}'} (min(K_i, kstar_i)) -- a "
                 f"caller may shorten the screened plan, never extend it -- got {plan_horizon!r}"
             )
         if not isinstance(yhat_path, (list, tuple)) or len(yhat_path) != calibrated:
@@ -1205,13 +1240,14 @@ class ForecastPublisher(Node):
             )
         path = release["path"]
         signal = path["uncertainty"]["false_signal"]["artifact"]
+        means = path["uncertainty"]["mean"]["artifact"]["members"]
         draws = path["tick_constants"]["scenarios"]
         cells = [cls._cell_id(symbol, lead) for lead in range(1, calibrated + 1)]
         yhat_path = list(yhat_path)
         pi_hat_path = [signal["pi_hat"][cell] for cell in cells[:admitted]]
         pi_widened_path = [signal["pi_widened"][cell] for cell in cells[:admitted]]
         scenarios_path = [list(draws[cell]) for cell in cells]
-        return {
+        row = {
             "entity": symbol,
             "decision_ts": stamp,
             "lead": 1,
@@ -1231,7 +1267,10 @@ class ForecastPublisher(Node):
             "pi_hat_path": pi_hat_path,
             "pi_widened_path": pi_widened_path,
             "scenarios_path": scenarios_path,
+            "mean_interval_path": [dict(means[cell]) for cell in cells[:admitted]],
         }
+        row["known_at"]["mean_interval"] = release["segment_start_ms"]
+        return row
 
     @classmethod
     def path_rows(cls, release, stamp, ticks, coverage_floor):
@@ -1279,6 +1318,13 @@ class ForecastPublisher(Node):
         identity on every row. An empty tick is the empty gate; any row
         without the path fields refuses.
         """
+        if not rows:
+            return []
+        if any(not isinstance(row, dict) or "yhat_path" not in row for row in rows):
+            raise ValueError(
+                "path_bundle_rows assembles path rows only -- a flat row belongs in "
+                "bundle_rows (ADR-0188)"
+            )
         bundle = cls._assembled(release, cls._path_block(release)["uncertainty"], rows)
         if rows and not bundle.has_paths:
             raise ValueError(
@@ -1296,7 +1342,10 @@ class ForecastPublisher(Node):
             sorted(rows, key=lambda row: row["entity"]),
             producer={"document_sha256": producer["document_sha256"], "node": producer["node"], "output": "bundle"},
             model_manifest_sha256=release["model_manifest_sha256"],
-            uncertainty={slot: group[slot]["attestation"]["artifact_id"] for slot in ("false_signal", "outcome")},
+            uncertainty={
+                slot: group[slot]["attestation"]["artifact_id"]
+                for slot in (("false_signal", "outcome", "mean") if "mean" in group else ("false_signal", "outcome"))
+            },
         )
 
     def _tick_rows(self, walk, index, release, scenarios):
@@ -1511,9 +1560,29 @@ class MinuteForecastPublisher(ForecastPublisher):
     @classmethod
     def validate_params(cls, params):
         """:meth:`ForecastPublisher.validate_params`, plus the optional ``leads`` (default ``"cap"``)."""
-        problems = super().validate_params({name: value for name, value in params.items() if name != "leads"})
+        base = {name: value for name, value in params.items() if name != "leads"}
+        path_mode = params.get("leads", "cap") == "path"
+        knobs = base.get("uncertainty")
+        if path_mode and isinstance(knobs, dict):
+            base["uncertainty"] = {name: knobs[name] for name in _UNCERTAINTY_KNOBS if name in knobs}
+        problems = super().validate_params(base)
         if "leads" in params and params["leads"] not in cls._LEADS:
             problems.append(f"leads must be one of {list(cls._LEADS)} (default 'cap'), got {params['leads']!r}")
+        if path_mode:
+            wanted = set(_UNCERTAINTY_KNOBS) | {"mean_replicates", "mean_min_coverage_units"}
+            if not isinstance(knobs, dict) or set(knobs) != wanted:
+                problems.append(
+                    "path uncertainty must carry exactly "
+                    f"{sorted(wanted)!r}, got {knobs!r}"
+                )
+            else:
+                problems.extend(cls._int_problems(knobs, "mean_replicates", 1))
+                problems.extend(cls._int_problems(knobs, "mean_min_coverage_units", 10))
+                if knobs["coverage"] != 0.95:
+                    problems.append(
+                        "uncertainty.coverage must be 0.95 in path mode: the registered "
+                        "mean-confidence method was measured at that level"
+                    )
         return problems
 
     def fingerprint(self):
@@ -1533,6 +1602,10 @@ class MinuteForecastPublisher(ForecastPublisher):
         In path mode the release also carries :meth:`_path_release`'s block,
         projected from the SAME false-signal estimate the lead groups read.
         """
+        if self._path_mode():
+            # Fail the release's declared horizon inventory before doing
+            # any expensive uncertainty calibration.
+            walk.calibrated_horizons()
         estimate = self._false_signal(walk, index) if self._path_mode() else None
         release, scenarios = super()._release(walk, index, producer, estimate=estimate)
         _market, contract = walk.market(index)
@@ -1577,8 +1650,13 @@ class MinuteForecastPublisher(ForecastPublisher):
             for symbol in sorted(horizons)
             for lead in range(1, horizons[symbol] + 1)
         }
-        outcome, scenarios, measured, per_cell = self._outcome(walk, index, cells, "path", release_id)
+        cutoff_ms = release["segment_start_ms"]
+        calibrated = self._calibrated(walk, index, cutoff_ms, cells, "path")
+        outcome, scenarios, measured, per_cell = self._outcome(
+            walk, index, cells, "path", release_id, calibrated=calibrated
+        )
         admitted = {cell: cell for cell, (symbol, lead) in cells.items() if lead <= release["lead_map"][symbol]}
+        mean = self._mean_family(calibrated[0], admitted, release_id, cutoff_ms)
         weights, draws = scenarios.weighted_draws()
         return {
             "horizons": horizons,
@@ -1588,6 +1666,7 @@ class MinuteForecastPublisher(ForecastPublisher):
                     estimate, admitted, "path", release_id, release["segment_start_ms"]
                 ),
                 "outcome": outcome,
+                "mean": mean,
             },
             "measured_coverage": measured,
             "cell_coverage": per_cell,
@@ -1596,6 +1675,45 @@ class MinuteForecastPublisher(ForecastPublisher):
                 "scenarios": {cell: list(draws[cell]) for cell in cells},
             },
         }
+
+    def _mean_family(self, panel, admitted, release_id, cutoff_ms):
+        """Estimate and attest admitted cells' mean residuals over whole UTC sessions."""
+        knobs = self.params["uncertainty"]
+        positions = {name: index for index, name in enumerate(panel.names)}
+        members = {}
+        for cell in admitted:
+            interval = ClusterBootstrapInterval(
+                replicates=knobs["mean_replicates"], seed=knobs["seed"], label=cell
+            ).interval(
+                MeanEvidence(
+                    [row[positions[cell]] for row in panel.rows],
+                    units=[str(unit) for unit in panel.blocks],
+                ),
+                level=knobs["coverage"],
+            )
+            if interval.independent_units < knobs["mean_min_coverage_units"]:
+                raise ValueError(
+                    f"path mean uncertainty refused {cell}: "
+                    f"{interval.independent_units} independent UTC sessions is below "
+                    f"mean_min_coverage_units {knobs['mean_min_coverage_units']}"
+                )
+            members[cell] = interval
+        family = MeanConfidenceFamily(members)
+        artifact = _dataclass_obj(family)
+        attestation = UncertaintyAttestation(
+            artifact_id=f"{release_id}:path:mean:{canonical_hash(artifact)[:16]}",
+            model_identity=release_id,
+            calibration_end_ms=cutoff_ms - 1,
+            known_at_ms=cutoff_ms,
+            producer=class_ref(ClusterBootstrapInterval),
+            coverage=CoverageEvidence(
+                target=family.level,
+                measured=_MEAN_METHOD_ATTAINMENT_FLOOR,
+                evidence_id=_MEAN_METHOD_EVIDENCE_ID,
+                n_units=1000,
+            ),
+        )
+        return {"artifact": artifact, "attestation": _dataclass_obj(attestation)}
 
     def _publish_ticks(self, walk, index, release, scenarios):
         """Per admitted unit, the segment's per-minute tick columns (every head's too, in path mode)."""
@@ -2052,9 +2170,10 @@ class JointMinuteMioDecider(MinuteMioDecider):
     hands the joint capital node the whole shares carried and the cash,
     plus one exit-horizon PATH row per name that ticks there
     (:meth:`ForecastPublisher.path_row`), and turns the node's trades into
-    ONE net order per name, a buy or a sell with ``lead`` 0. Nothing from
-    an earlier minute is read: the next minute solves again from the
-    replay's book (receding horizon).
+    ONE net order per name, a buy or a sell with ``lead`` 0. The next
+    minute's economic state is read afresh from the replay's book
+    (receding horizon); the release-local node and solver are reused, with
+    the prior optimum serving only as a numerical warm-start hint.
 
     Each minute's candidates are the names with a tick at that minute plus
     the held names; each one is, in this order:
@@ -2190,6 +2309,8 @@ class JointMinuteMioDecider(MinuteMioDecider):
         self._max_refusals = limit
         self._streak = 0
         self._aborted = None
+        self._node = None
+        self.robust_protection = {"count": 0, "sum": 0.0, "min": None, "max": None}
 
     def decide(self, asof_ms, portfolio):
         """Return this minute's orders: one ``{"symbol", "asof_ms", "lead": 0, "qty", "side"}`` per name.
@@ -2234,7 +2355,13 @@ class JointMinuteMioDecider(MinuteMioDecider):
         if not rows and not positions:
             return []
         rows = ForecastPublisher.path_bundle_rows(self._release, rows)
-        node = JointEquityKellyMIO("mio_joint", {**self._params, **self._costs, **self._pins(rows)})
+        if self._node is None:
+            self._node = JointEquityKellyMIO(
+                "mio_joint", {**self._params, **self._costs, **self._pins(rows)}
+            )
+        else:
+            self._node._rebind_bundle(rows)
+        node = self._node
         inputs = {
             "bundle": rows,
             "portfolio": {
@@ -2261,7 +2388,9 @@ class JointMinuteMioDecider(MinuteMioDecider):
         except (ValueError, RuntimeError) as exc:
             self._count_solve(node, asof_ms, time.perf_counter() - started, isinstance(exc, RuntimeError))
             return self._refuse(asof_ms, exc)
-        self._count_solve(node, asof_ms, time.perf_counter() - started, False)
+        self._count_solve(
+            node, asof_ms, time.perf_counter() - started, False, metrics=out.get("metrics")
+        )
         try:
             orders = self._orders(asof_ms, out["trades"], rows, positions)
         except ValueError as exc:
@@ -2305,12 +2434,14 @@ class JointMinuteMioDecider(MinuteMioDecider):
                 elif plan == 0 and symbol not in held:
                     reason = "no_calibrated_plan"
                 else:
-                    if plan:
-                        tick = MinuteForecastPublisher.path_tick(self._blocks[symbol], self._at[symbol][asof_ms])
-                        rows.append(ForecastPublisher.path_row(
-                            self._release, symbol, asof_ms, tick["price"], tick["yhat_path"],
-                            tick["sigma"], tick["beta"], self._floor, plan_horizon=min(plan, steps),
-                        ))
+                    tick = MinuteForecastPublisher.path_tick(
+                        self._blocks[symbol], self._at[symbol][asof_ms]
+                    )
+                    rows.append(ForecastPublisher.path_row(
+                        self._release, symbol, asof_ms, tick["price"], tick["yhat_path"],
+                        tick["sigma"], tick["beta"], self._floor,
+                        plan_horizon=0 if plan == 0 else min(plan, steps),
+                    ))
                     if symbol in held:
                         positions[symbol] = held[symbol]
                     continue
@@ -2353,13 +2484,20 @@ class JointMinuteMioDecider(MinuteMioDecider):
             total += held[symbol] * float(mark)
         return total
 
-    def _count_solve(self, node, asof_ms, seconds, raised_runtime):
+    def _count_solve(self, node, asof_ms, seconds, raised_runtime, metrics=None):
         """Count one node call: its solve record (kept, ``lead`` 0), or a solver refusal timed here."""
         if node.solve_record is not None:
             self._keep_solve(node, asof_ms, 0)
         elif raised_runtime:
             self.n_solves += 1
             self.solve_seconds += float(seconds)
+        if metrics is not None and "robust_protection" in metrics:
+            value = float(metrics["robust_protection"])
+            robust = self.robust_protection
+            robust["count"] += 1
+            robust["sum"] += value
+            robust["min"] = value if robust["min"] is None else min(robust["min"], value)
+            robust["max"] = value if robust["max"] is None else max(robust["max"], value)
 
     @staticmethod
     def _orders(asof_ms, trades, rows, positions):
@@ -2501,6 +2639,19 @@ class MioDeciderNode(Node):
                 return [
                     f"policy 'joint' sizes every name from its exit-horizon path, but release(s) {flat} "
                     "carry no path block: publish them with leads 'path' (ADR-0188)"
+                ]
+            admitted = {
+                symbol
+                for release in releases
+                for symbol in release.get("survivors", ())
+                if isinstance(symbol, str)
+            }
+            multipliers = self.params["mio"].get("mean_deviation_multipliers", {})
+            if isinstance(multipliers, dict) and set(multipliers) != admitted:
+                return [
+                    "mio.mean_deviation_multipliers must cover exactly the names admitted "
+                    f"across the releases: expected {sorted(admitted)!r}, got "
+                    f"{sorted(str(name) for name in multipliers)!r}"
                 ]
         return []
 
@@ -2713,6 +2864,7 @@ class DevelopmentSimulation(DevelopmentReplay):
         carried = Decimal("0")
         contributed = Decimal("0")
         lots, open_at_end, solves = [], [], {"count": 0, "seconds": 0.0}
+        robust = {"count": 0, "sum": 0.0, "min": None, "max": None}
         for index, release in enumerate(releases):
             bars, segments[index] = segments[index], None
             self._refuse_price_disagreement(release, bundles, bars)
@@ -2730,6 +2882,19 @@ class DevelopmentSimulation(DevelopmentReplay):
             out["refused"].extend({**row, **stamp} for row in result["refused"] + decider.refused)
             solves["count"] += decider.n_solves
             solves["seconds"] += decider.solve_seconds
+            observed = getattr(decider, "robust_protection", None)
+            if observed is not None:
+                robust["count"] += observed["count"]
+                robust["sum"] += observed["sum"]
+                if observed["min"] is not None:
+                    robust["min"] = (
+                        observed["min"] if robust["min"] is None
+                        else min(robust["min"], observed["min"])
+                    )
+                    robust["max"] = (
+                        observed["max"] if robust["max"] is None
+                        else max(robust["max"], observed["max"])
+                    )
             if self.params.get("keep_solves", True):
                 out["solves"].extend({**row, **stamp} for row in decider.solves)
             rows, contributed = self._cash_rows(
@@ -2765,6 +2930,15 @@ class DevelopmentSimulation(DevelopmentReplay):
         }
         if not self.params.get("keep_solves", True):
             out["metadata"]["solves"] = solves
+        if inputs["mio"].get("policy") == "joint":
+            count = robust["count"]
+            out["metadata"]["robust_protection"] = {
+                "count": count,
+                "sum": robust["sum"],
+                "mean": robust["sum"] / count if count else 0.0,
+                "min": robust["min"] if robust["min"] is not None else 0.0,
+                "max": robust["max"] if robust["max"] is not None else 0.0,
+            }
         return out
 
     # -- hooks the minute subclass overrides (ADR-0186) -------------------
@@ -2889,6 +3063,173 @@ class DevelopmentSimulation(DevelopmentReplay):
         return rows, contributed
 
 
+class JointSimulationPreflight(Node):
+    """Gate a full joint run after publishing and before replay starts.
+
+    It verifies the exact fold span and path/tick coverage, then projects
+    the observed WSL process high-water RSS by the separately measured
+    simulation headroom.  The small ``passed`` output is a hard dependency
+    of the simulation node, making this check part of the tracked run.
+    """
+
+    role = "transform"
+    outputs = ("passed",)
+    _PARAMS = (
+        "first_fold",
+        "last_fold",
+        "memory_limit_bytes",
+        "simulation_headroom_bytes",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require one fold span and a positive byte budget."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in cls._PARAMS:
+            value = params.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                problems.append(f"{name} must be an int >= 0, got {value!r}")
+        if not problems and params["first_fold"] < 2:
+            problems.append("first_fold must be >= 2")
+        if not problems and params["last_fold"] < params["first_fold"]:
+            problems.append("last_fold must be >= first_fold")
+        if not problems and params["memory_limit_bytes"] <= 0:
+            problems.append("memory_limit_bytes must be > 0")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the publisher's releases/ticks and the simulation bars."""
+        return [
+            f"{name} must be a list"
+            for name in ("releases", "ticks", "bars") if not isinstance(inputs.get(name), list)
+        ]
+
+    def run(self, ctx, inputs):
+        """Return measured/projected memory evidence or refuse the run."""
+        del ctx
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ConfigError([f"{self.key}: {problem}" for problem in problems])
+        releases = sorted(inputs["releases"], key=lambda release: release.get("fold", -1))
+        wanted = list(range(self.params["first_fold"], self.params["last_fold"] + 1))
+        folds = sorted(release.get("fold") for release in releases)
+        if folds != wanted:
+            raise ConfigError([
+                f"{self.key}: publisher releases cover folds {folds}, expected {wanted}"
+            ])
+        missing_path = [release["release_id"] for release in releases if not release.get("path")]
+        if missing_path:
+            raise ConfigError([
+                f"{self.key}: publisher releases have no path block: {missing_path}"
+            ])
+        by_id = {release["release_id"]: release for release in releases}
+        expected = {
+            (release["release_id"], symbol)
+            for release in releases for symbol in release["path"]["horizons"]
+        }
+        blocks, block_problems = {}, []
+        for row in inputs["ticks"]:
+            key = (row.get("release_id"), row.get("symbol"))
+            if key in blocks:
+                block_problems.append(f"duplicate tick block {key}")
+                continue
+            blocks[key] = row
+            release = by_id.get(key[0])
+            if release is None:
+                block_problems.append(f"tick block {key} names no release")
+                continue
+            if key not in expected:
+                block_problems.append(f"tick block {key} names no path symbol")
+                continue
+            stamps = row.get("ts")
+            if not isinstance(stamps, list) or not stamps:
+                block_problems.append(f"tick block {key} must carry a non-empty ts list")
+                continue
+            if any(
+                isinstance(stamp, bool) or not isinstance(stamp, int)
+                for stamp in stamps
+            ) or any(later <= earlier for earlier, later in zip(stamps, stamps[1:])):
+                block_problems.append(f"tick block {key} timestamps are not increasing ints")
+                continue
+            if stamps[0] < release["segment_start_ms"] or stamps[-1] >= release["segment_end_ms"]:
+                block_problems.append(f"tick block {key} falls outside its release segment")
+            horizon = int(release["path"]["horizons"][key[1]])
+            columns = row.get("yhat_by_lead")
+            if not isinstance(columns, list) or len(columns) != horizon:
+                block_problems.append(
+                    f"tick block {key} carries {0 if not isinstance(columns, list) else len(columns)} "
+                    f"forecast columns, expected horizon {horizon}"
+                )
+            vectors = [row.get(name) for name in ("price", "sigma", "beta")]
+            if any(not isinstance(values, list) or len(values) != len(stamps) for values in vectors):
+                block_problems.append(f"tick block {key} market columns differ from ts length")
+            if isinstance(columns, list) and any(
+                not isinstance(values, list) or len(values) != len(stamps) for values in columns
+            ):
+                block_problems.append(f"tick block {key} forecast columns differ from ts length")
+        actual = set(blocks)
+        if actual != expected:
+            block_problems.append(
+                "path/tick symbols differ: "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+        if block_problems:
+            raise ConfigError([f"{self.key}: {problem}" for problem in block_problems])
+
+        starts = [release["segment_start_ms"] for release in releases]
+        ends = [release["segment_end_ms"] for release in releases]
+        positions = {key: 0 for key in expected}
+        for bar in inputs["bars"]:
+            stamp = int(bar["asof_ms"])
+            index = bisect_right(starts, stamp) - 1
+            if index < 0 or stamp >= ends[index]:
+                continue
+            key = (releases[index]["release_id"], bar.get("symbol"))
+            if key not in expected:
+                continue
+            position = positions[key]
+            stamps = blocks[key]["ts"]
+            # The market tape is one-minute data while model decisions use
+            # the publisher's scored cadence (currently five minutes) and
+            # begin only when the feature contract is warm.  Extra bars are
+            # therefore expected; every published decision stamp, however,
+            # must appear in the tape in the same order.
+            if position < len(stamps) and stamps[position] == stamp:
+                positions[key] = position + 1
+        incomplete = [
+            (key, positions[key], len(blocks[key]["ts"]), blocks[key]["ts"][positions[key]])
+            for key in sorted(expected) if positions[key] != len(blocks[key]["ts"])
+        ]
+        if incomplete:
+            raise ConfigError([
+                f"{self.key}: bar/tick timestamps differ for path symbols; "
+                f"unmatched prediction stamps={incomplete[:5]}"
+            ])
+        peak = self._peak_rss_bytes()
+        projected = peak + self.params["simulation_headroom_bytes"]
+        limit = self.params["memory_limit_bytes"]
+        if projected >= limit:
+            raise ConfigError([
+                f"{self.key}: projected peak RSS {projected} bytes is not below the "
+                f"{limit}-byte memory limit (observed {peak} + declared simulation headroom "
+                f"{self.params['simulation_headroom_bytes']})"
+            ])
+        return {"passed": {
+            "release_count": len(releases),
+            "peak_rss_bytes": peak,
+            "projected_peak_rss_bytes": projected,
+            "memory_limit_bytes": limit,
+        }}
+
+    @staticmethod
+    def _peak_rss_bytes():
+        """Return Linux/WSL's process high-water resident set in bytes."""
+        import resource
+
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+
+
 class MinuteDevelopmentSimulation(DevelopmentSimulation):
     """Replay every release deciding EVERY MINUTE (ADR-0186).
 
@@ -2943,6 +3284,11 @@ class MinuteDevelopmentSimulation(DevelopmentSimulation):
     def validate_inputs(self, inputs):
         """Return the lattice kind's problems, and refuse ``max_consecutive_refusals`` outside the joint policy."""
         problems = super().validate_inputs(inputs)
+        preflight = inputs.get("preflight")
+        if preflight is not None and (
+            not isinstance(preflight, dict) or preflight.get("release_count") is None
+        ):
+            problems.append("preflight must be the joint simulation preflight's passed output")
         mio = inputs.get("mio")
         joint = isinstance(mio, dict) and mio.get("policy") == "joint"
         if "max_consecutive_refusals" in self.params and not joint:
@@ -3052,8 +3398,8 @@ class SimulationReport(Node):
         ``replay_nav``, ``nav_discrepancy``, the fold and the disclosure.
         When the fills carry the share book's ``origin`` (ADR-0188), also
         ``buys``/``sells`` (decision fills by ``side``) and
-        ``backstop_exits`` (the session-close exits), beside
-        ``entries``/``exits``, which count every decision fill as an entry.
+        ``backstop_exits`` (the session-close exits). ``entries`` counts
+        decision buys; ``exits`` counts decision and backstop sells.
     ``summary``
         Totals, ``max_drawdown`` (``WindowBook.drawdown``: fill-resolution
         net P&L path), fills by kind, refusals and skips by reason,
@@ -3422,6 +3768,7 @@ NODE_KINDS = {
     "intraday_equities-forecast-publisher": ForecastPublisher,
     "intraday_equities-minute-forecast-publisher": MinuteForecastPublisher,
     "intraday_equities-mio-decider": MioDeciderNode,
+    "intraday_equities-joint-simulation-preflight": JointSimulationPreflight,
     "intraday_equities-development-simulation": DevelopmentSimulation,
     "intraday_equities-minute-development-simulation": MinuteDevelopmentSimulation,
     "intraday_equities-simulation-report": SimulationReport,

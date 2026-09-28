@@ -90,16 +90,19 @@ machine with neither installed.
 
 from __future__ import annotations
 
+import math
 import numbers
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
+from dskit.pipeline.uncertainty_set import BudgetedMeanSet
 from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stages import is_sha256hex
 from dskit.pipeline.uncertainty_intake import (
     AttestedFalseSignalRate,
+    AttestedMeanConfidenceFamily,
     AttestedOutcomeBand,
     AttestedUncertainty,
     DecisionDemand,
@@ -211,7 +214,7 @@ _WEALTH_ENVELOPE_FLOOR_FRAC = 0.05
 #: keys on the codes, never on the text. PERMANENT: the name left the
 #: admitted set at a release boundary (not a ``stat_test`` survivor, no cap,
 #: a zero cap).
-ROUTE_PERMANENT = frozenset(("not_survivor", "no_cap", "zero_cap"))
+ROUTE_PERMANENT = frozenset(("not_survivor", "no_cap", "zero_cap", "empty_plan"))
 
 #: TRANSIENT reason codes: a condition of this minute (a stale row, a price
 #: under ``min_price``), expected to clear.
@@ -283,6 +286,9 @@ JOINT_PATH_OUTPUTS = (
     "pi_hat_path",
     "pi_widened_path",
     "scenarios_path",
+    "sigma_t",
+    "mean_deviation_below_path",
+    "mean_deviation_above_path",
 )
 
 #: Which path field the joint kind's per-tranche HFDR row reads: the path
@@ -522,7 +528,7 @@ class SchwabCostModel:
         return problems
 
     def time_of_day_multiplier(self, fill_ms):
-        """The spread multiplier for a fill at epoch ms ``fill_ms``.
+        """Return the spread multiplier for a fill at epoch ms ``fill_ms``.
 
         The fill instant's wall-clock minute in the schedule's timezone
         (DST-aware) selects the one window containing it; a minute in no
@@ -546,7 +552,7 @@ class SchwabCostModel:
         return self._default_multiplier
 
     def half_spread_bps(self, symbol, fill_ms):
-        """The half-spread ``symbol`` pays per side on a fill at ``fill_ms``, in bp.
+        """Return the half-spread ``symbol`` pays per side at ``fill_ms``, in bp.
 
         Quoted x ``eq_ratio`` x the fill minute's time-of-day multiplier.
 
@@ -737,13 +743,15 @@ def _bundle_problems(bundle):
                 problems.append(
                     f"bundle[{i}] ({entity!r}).producer.output must be 'bundle'"
                 )
+        path_row = bool(set(row) & _PATH_ROW_MARKERS)
+        uncertainty_fields = UNCERTAINTY_ARTIFACT_FIELDS + (("mean",) if path_row else ())
         uncertainty = row["uncertainty"]
         if not isinstance(uncertainty, dict) or set(uncertainty) != set(
-            UNCERTAINTY_ARTIFACT_FIELDS
+            uncertainty_fields
         ):
             problems.append(
                 f"bundle[{i}] ({entity!r}).uncertainty must carry exactly "
-                f"{sorted(UNCERTAINTY_ARTIFACT_FIELDS)!r} — one calibration "
+                f"{sorted(uncertainty_fields)!r} — one calibration "
                 "artifact identity per estimand"
             )
         elif any(not isinstance(v, str) or not v for v in uncertainty.values()):
@@ -766,10 +774,11 @@ def _bundle_problems(bundle):
                 f"{alias!r}, renamed {WITHDRAWN_FIELD_ALIASES[alias]!r} "
                 "(ADR-0152)"
             )
-        if not isinstance(known_at, dict) or set(known_at) != set(KNOWN_AT_FIELDS):
+        known_at_fields = KNOWN_AT_FIELDS + (("mean_interval",) if path_row else ())
+        if not isinstance(known_at, dict) or set(known_at) != set(known_at_fields):
             problems.append(
                 f"bundle[{i}] ({entity!r}).known_at must carry exactly "
-                f"{list(KNOWN_AT_FIELDS)!r}"
+                f"{list(known_at_fields)!r}"
             )
         elif isinstance(decision_ts, int) and not isinstance(decision_ts, bool):
             for field, stamp in sorted(known_at.items()):
@@ -906,9 +915,10 @@ def _path_output_problems(bundle):
                 steps_ok.append(step)
         for field in ("admitted_horizon", "plan_horizon"):
             value = row[field]
-            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= n_steps:
+            low = 1 if field == "admitted_horizon" else 0
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= n_steps:
                 problems.append(
-                    f"{tag}.{field} must be an integer step 1..{n_steps}, got {value!r}"
+                    f"{tag}.{field} must be an integer step {low}..{n_steps}, got {value!r}"
                 )
         rates = {}
         for field in ("mu_gross_path", "pi_hat_path", HFDR_PATH_FIELD):
@@ -923,6 +933,21 @@ def _path_output_problems(bundle):
                 problems.append(f"{tag}.{field} must be all in [0, 1]")
             else:
                 rates[field] = [float(v) for v in values]
+        sigma = row["sigma_t"]
+        vol_floor = float(row["label"]["vol_floor"])
+        if not number_ok(sigma) or sigma <= vol_floor:
+            problems.append(
+                f"{tag}.sigma_t must be a finite number above the pinned label "
+                f"contract's vol_floor {vol_floor!r}, got {sigma!r}"
+            )
+        for field in ("mean_deviation_below_path", "mean_deviation_above_path"):
+            values = row[field]
+            if not isinstance(values, (list, tuple)) or len(values) != n_steps:
+                problems.append(
+                    f"{tag}.{field} must carry one entry per step ({n_steps}), got {values!r}"
+                )
+            elif not all(number_ok(value) and value >= 0.0 for value in values):
+                problems.append(f"{tag}.{field} must be all finite numbers >= 0")
         if "pi_hat_path" in rates and HFDR_PATH_FIELD in rates and any(
             hat > widened for hat, widened in zip(rates["pi_hat_path"], rates[HFDR_PATH_FIELD])
         ):
@@ -1510,6 +1535,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 )
         return problems
 
+    @classmethod
+    def required_intakes(cls):
+        """Return the attested uncertainty slots this capital kind consumes."""
+        return REQUIRED_INTAKES
+
     def decision_demand(self, bundle):
         """State what this tick demands of any uncertainty it consumes.
 
@@ -1551,7 +1581,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
 
     def _uncertainty_problems(self, inputs, bundle, bundle_problems):
         """Problems with the ``uncertainty`` port, empty when none."""
-        slots = sorted(name for name, _ in REQUIRED_INTAKES)
+        required = self.required_intakes()
+        slots = sorted(name for name, _ in required)
         if "uncertainty" not in inputs:
             return [
                 f"uncertainty is required — one attested artifact per {slots!r}; "
@@ -1566,7 +1597,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 f"{port!r}"
             ]
         problems = []
-        for slot, _member in REQUIRED_INTAKES:
+        for slot, _member in required:
             envelope = port[slot]
             if not isinstance(envelope, AttestedUncertainty):
                 problems.append(
@@ -1580,7 +1611,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         demand = self.decision_demand(bundle)
         if demand is None:
             return problems
-        for slot, member in REQUIRED_INTAKES:
+        for slot, member in required:
             # The FUNCTION, never the envelope's own method: a method is
             # resolved through the envelope's class, and that class is
             # exactly what capital has no reason to trust. admission_problems
@@ -1603,7 +1634,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         problems = []
         for index, row in enumerate(bundle):
             entity = row["entity"]
-            for slot, member in REQUIRED_INTAKES:
+            for slot, member in self.required_intakes():
                 envelope = port[slot]
                 # artifact_of/attestation_of, never the properties: a
                 # consumer reads the SAME values the seam screened, rather
@@ -1659,7 +1690,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         demand = self.decision_demand(inputs["bundle"])
         port = inputs["uncertainty"]
         admitted = {}
-        for slot, _member in REQUIRED_INTAKES:
+        for slot, _member in self.required_intakes():
             attestation = attestation_of(port[slot])
             coverage = attestation.coverage
             admitted[slot] = {
@@ -2153,8 +2184,10 @@ class JointEquityKellyMIO(EquityKellyMIO):
     mechanism). Terminal wealth per scenario is the cash after this
     minute's costed trades, plus every tranche at ``p_i (1 + r_io(k)) -
     kappa^x_i``, plus ``carried_wealth``; the objective is the doorway's
-    tangent-linearized CRRA with its one CVaR row. Nothing from an earlier
-    solve is read: the next minute solves again from the new state.
+    tangent-linearized CRRA with its one CVaR row. The next minute's
+    economic inputs come only from the new replay state; a persistent
+    solver may retain the earlier optimal variable values solely as a
+    numerical warm-start hint.
 
     Kept from :class:`EquityKellyMIO`: every input check (the bundle
     contract, the provenance pins, the cap, the attested uncertainty), the
@@ -2249,7 +2282,34 @@ class JointEquityKellyMIO(EquityKellyMIO):
         out["evidence"]["tranches"]  # {"AAPL": [0.0, 52.0]}
     """
 
-    _PARAMS = tuple(name for name in EquityKellyMIO._PARAMS if name not in JOINT_REFUSED_PARAMS)
+    _PARAMS = tuple(name for name in EquityKellyMIO._PARAMS if name not in JOINT_REFUSED_PARAMS) + (
+        "mean_uncertainty_budget",
+        "mean_deviation_multipliers",
+    )
+    _mean_uncertainty = None
+    _PERSISTENT_MODEL_REUSE = True
+
+    def _persistent_params(self):
+        """Return the joint kind's fixed doorway policy for cached model preparation."""
+        return {**self.params, **_JOINT_DOORWAY_PARAMS}
+
+    def _persistent_domain_signature(self, inputs, prepared, params):
+        """HFDR's structure is fixed by the base key's names/tranches."""
+        del inputs, prepared
+        return ("joint_hfdr", float(params["hfdr_q"]))
+
+    def _rebind_bundle(self, rows):
+        """Bind this release-local node to the current minute's authenticated rows."""
+        self.params["bundle_artifact_sha256"] = ForecastBundle.digest(rows)
+
+    def _refresh_domain_constraints(self, model, inputs, params):
+        """Refresh every per-tranche HFDR coefficient on a persistent hit."""
+        del inputs
+        model.input_hfdr_q.set_value(float(params["hfdr_q"]))
+        for name in model._scn["names"]:
+            rates = self._pi_widened[name]
+            for k, rate in enumerate(rates):
+                model.input_hfdr_rate[name, k].set_value(float(rate))
 
     @classmethod
     def validate_params(cls, params):
@@ -2274,7 +2334,42 @@ class JointEquityKellyMIO(EquityKellyMIO):
         problems.extend(cls._hfdr_problems(kept))
         problems.extend(cls._provenance_problems(kept))
         problems.extend(cls._intake_policy_problems(kept))
+        if "mean_uncertainty_budget" not in kept:
+            problems.append(
+                "mean_uncertainty_budget is required — the Bertsimas-Sim budget has no default"
+            )
+        elif not number_ok(kept["mean_uncertainty_budget"]) or kept["mean_uncertainty_budget"] <= 0.0:
+            problems.append(
+                "mean_uncertainty_budget must be a finite number > 0, got "
+                f"{kept['mean_uncertainty_budget']!r}"
+            )
+        multipliers = kept.get("mean_deviation_multipliers")
+        if multipliers is None:
+            problems.append(
+                "mean_deviation_multipliers is required — per-name kappa values have no default"
+            )
+        elif not isinstance(multipliers, dict) or not multipliers:
+            problems.append(
+                "mean_deviation_multipliers must be a non-empty mapping of name -> finite number > 0"
+            )
+        else:
+            for name, value in multipliers.items():
+                if not isinstance(name, str) or not name:
+                    problems.append(
+                        "mean_deviation_multipliers keys must be non-empty strings, "
+                        f"got {name!r}"
+                    )
+                elif not number_ok(value) or value <= 0.0:
+                    problems.append(
+                        f"mean_deviation_multipliers[{name!r}] must be a finite number > 0, "
+                        f"got {value!r}"
+                    )
         return problems
+
+    @classmethod
+    def required_intakes(cls):
+        """Add the path release's attested family of mean-confidence intervals."""
+        return super().required_intakes() + (("mean", AttestedMeanConfidenceFamily),)
 
     def _bundle_mode_problems(self, bundle):
         """Problems with the bundle's MODE for this kind, empty when none.
@@ -2303,6 +2398,34 @@ class JointEquityKellyMIO(EquityKellyMIO):
                     f"got {carried!r} — the mark of positions held outside this solve, "
                     "never cash"
                 )
+        bundle = inputs.get("bundle")
+        multipliers = self.params["mean_deviation_multipliers"]
+        if isinstance(bundle, (list, tuple)):
+            names = sorted(
+                row["entity"]
+                for row in bundle
+                if isinstance(row, dict) and isinstance(row.get("entity"), str)
+                and row["entity"] not in multipliers
+            )
+            if names:
+                problems.append(
+                    "mean_deviation_multipliers has no kappa for bundle name(s) "
+                    f"{names!r}"
+                )
+            if isinstance(portfolio, dict) and isinstance(portfolio.get("positions", {}), dict):
+                held = portfolio.get("positions", {})
+                unheld = sorted(
+                    row["entity"]
+                    for row in bundle
+                    if isinstance(row, dict)
+                    and row.get("plan_horizon") == 0
+                    and not (number_ok(held.get(row.get("entity"), 0)) and held.get(row.get("entity"), 0) > 0)
+                )
+                if unheld:
+                    problems.append(
+                        "a zero plan is authenticated mandatory-exit evidence only for a held "
+                        f"positive-share name; unheld row(s) {unheld!r} refuse"
+                    )
         return problems
 
     @staticmethod
@@ -2341,6 +2464,43 @@ class JointEquityKellyMIO(EquityKellyMIO):
                     f"{sorted(artifact.lower_offset)!r}"
                 ]
             return []
+        if slot == "mean":
+            problems = []
+            admitted = int(row["admitted_horizon"])
+            sigma = float(row["sigma_t"])
+            for k in range(1, len(row["scenarios_path"]) + 1):
+                cell = _path_cell_id(entity, min(k, admitted))
+                if cell not in artifact.members:
+                    problems.append(
+                        f"{where} step {k} has no cell {cell!r} in the admitted mean "
+                        f"confidence family, which covers {sorted(artifact.members)!r}"
+                    )
+                    continue
+                interval = artifact.members[cell]
+                scale = 1.0 if k <= admitted else math.sqrt(admitted / k)
+                center = float(row["mu_gross_path"][k - 1])
+                label_center = math.log1p(center) / (sigma * math.sqrt(k))
+                lower = math.expm1(
+                    (label_center + (interval.low - interval.mean) * scale)
+                    * sigma * math.sqrt(k)
+                )
+                upper = math.expm1(
+                    (label_center + (interval.high - interval.mean) * scale)
+                    * sigma * math.sqrt(k)
+                )
+                haircut = 1.0 - float(row["pi_hat_path"][k - 1])
+                expected = {
+                    "mean_deviation_below_path": haircut * (center - lower),
+                    "mean_deviation_above_path": haircut * (upper - center),
+                }
+                for field, wanted in expected.items():
+                    actual = float(row[field][k - 1])
+                    if not math.isclose(actual, wanted, rel_tol=1e-12, abs_tol=1e-15):
+                        problems.append(
+                            f"{where}.{field}[{k - 1}] {actual!r} does not match "
+                            f"the admitted mean interval for cell {cell!r}: {wanted!r}"
+                        )
+            return problems
         problems = []
         admitted = int(row["admitted_horizon"])
         for k in range(1, len(row["scenarios_path"]) + 1):
@@ -2380,6 +2540,7 @@ class JointEquityKellyMIO(EquityKellyMIO):
             already pinned to zero and it can never bind that row); a
             priced name with no fill instant.
         """
+        self._mean_uncertainty = None
         bundle = inputs["bundle"]
         portfolio = inputs["portfolio"]
         problems = self._bundle_mode_problems(bundle)
@@ -2395,6 +2556,12 @@ class JointEquityKellyMIO(EquityKellyMIO):
             portfolio["asof_ms"],
             horizon_of=lambda row: row["admitted_horizon"],
         )
+        for name in sorted(
+            name for name, row in by_name.items() if int(row["plan_horizon"]) == 0
+        ):
+            del by_name[name]
+            routed_out[name] = "authenticated path has an empty screened plan"
+            routed_codes[name] = "empty_plan"
         faults = sorted(name for name, code in routed_codes.items() if code in ROUTE_PRODUCER_FAULT)
         if faults:
             raise ValueError(
@@ -2511,12 +2678,54 @@ class JointEquityKellyMIO(EquityKellyMIO):
             payoffs_r[name] = path[0] if len(path) == 1 else path
             worst_r = min(worst_r, min(min(step) for step in path))
             best_r = max(best_r, max(max(step) for step in path))
+        if by_name:
+            multipliers = self.params["mean_deviation_multipliers"]
+            below = {}
+            above = {}
+            for name, row in sorted(by_name.items()):
+                steps = int(row["plan_horizon"])
+                kappa = float(multipliers[name])
+                below[name] = [
+                    kappa * float(value)
+                    for value in row["mean_deviation_below_path"][:steps]
+                ]
+                above[name] = [
+                    kappa * float(value)
+                    for value in row["mean_deviation_above_path"][:steps]
+                ]
+            self._mean_uncertainty = {
+                "budget": float(self.params["mean_uncertainty_budget"]),
+                "deviation_below": below,
+                "deviation_above": above,
+            }
         self._pi_widened, self._band_shares = coefficients, {}
         self._payoffs = (shared_weights, payoffs_r)
         self._evidence["mandatory_exits"] = exits
         self._evidence["no_leverage_bound"] = bound
-        account = self._account_envelope(rows, portfolio, worst_r, best_r, 0.0, carried_wealth=carried)
+        robust_bound = 0.0
+        if self._mean_uncertainty is not None:
+            impacts = {
+                name: float(rows[name]["x_max"])
+                * max(self._mean_uncertainty["deviation_below"][name])
+                for name in self._mean_uncertainty["deviation_below"]
+            }
+            impacts = {name: value for name, value in impacts.items() if value > 0.0}
+            if impacts:
+                robust_bound = BudgetedMeanSet(
+                    nominal={name: 0.0 for name in impacts},
+                    deviation_below=impacts,
+                    deviation_above=impacts,
+                    budget=min(float(self.params["mean_uncertainty_budget"]), len(impacts)),
+                ).protection({name: 1.0 for name in impacts})
+        account = self._account_envelope(
+            rows, portfolio, worst_r, best_r, robust_bound, carried_wealth=carried
+        )
         return names, rows, account
+
+    def mean_uncertainty(self, inputs):
+        """Return this minute's name-budgeted, kappa-scaled mean deviations."""
+        del inputs
+        return self._mean_uncertainty
 
     @staticmethod
     def _cap_route_reason(horizon, capped_horizon):
@@ -2561,12 +2770,12 @@ class JointEquityKellyMIO(EquityKellyMIO):
         Like the base kind's row, this reads a widened POINT ESTIMATE
         (:data:`HFDR_PATH_FIELD`), so it is not a chance constraint.
         """
-        from pyomo.environ import Constraint
+        from pyomo.environ import Constraint, Param
 
-        rows = model._scn["rows"]
         tranches = model._scn["tranches"]
+        rate_ix = []
+        initial_rates = {}
         q = float(params["hfdr_q"])
-        terms = []
         for name in model._scn["names"]:
             rates = self._pi_widened[name]
             if len(rates) != tranches[name]:
@@ -2575,12 +2784,28 @@ class JointEquityKellyMIO(EquityKellyMIO):
                     f"{tranches[name]} tranches — the payoff and the HFDR row must be "
                     "built from the same path"
                 )
+            for k, rate in enumerate(rates):
+                rate_ix.append((name, k))
+                initial_rates[name, k] = float(rate)
+
+        model.input_hfdr_q = Param(mutable=True, initialize=q)
+        model.input_hfdr_rate = Param(
+            rate_ix,
+            mutable=True,
+            initialize=lambda m, name, k: initial_rates[name, k],
+        )
+        terms = []
+        for name in model._scn["names"]:
             if tranches[name] == 1:
-                terms.append((rates[0] - q) * model.x[name])
+                terms.append(
+                    (model.input_hfdr_rate[name, 0] - model.input_hfdr_q) * model.x[name]
+                )
             else:
-                price = float(rows[name]["price"])
                 terms.extend(
-                    (rates[k] - q) * price * model.e[name, k] for k in range(tranches[name])
+                    (model.input_hfdr_rate[name, k] - model.input_hfdr_q)
+                    * model.input_price[name]
+                    * model.e[name, k]
+                    for k in range(tranches[name])
                 )
         model.hfdr = Constraint(expr=sum(terms) <= 0)
 

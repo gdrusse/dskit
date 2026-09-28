@@ -16,7 +16,7 @@ stay cheap exactly as before.
 from dskit.pipeline.libs.torch_ts import register as _register_torch_ts
 
 from .connectors import AlpacaBars, SchwabBars
-from .evaluation import ReplayEvents
+from .evaluation import ReplayEvents, ShareReplayEvents
 from .feature_cache import SessionFeatureCache
 from .metrics import EquityEventAdapter, SignalDecay
 from .nodes import (
@@ -58,6 +58,7 @@ __all__ = [
     "PortfolioSelect",
     "ReplayAdapter",
     "ReplayEvents",
+    "ShareReplayEvents",
     "SchwabBars",
     "SessionFeatureRows",
     "SignalDecay",

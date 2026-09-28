@@ -2820,7 +2820,7 @@ def test_share_buys_and_sells_fill_next_bar_at_the_fill_price_and_the_policys_co
         "decision_ms": _m(0),
     }
     assert {key: sell[key] for key in keys} == {
-        "kind": "entry", "side": "sell", "qty": 10, "asof_ms": _m(3), "price": 13.0, "lead": 0,
+        "kind": "exit", "side": "sell", "qty": 10, "asof_ms": _m(3), "price": 13.0, "lead": 0,
         "decision_ms": _m(2),
     }
     assert buy["fee"] == pytest.approx(policy.costs.buy_per_share("AAA", 11.0, _m(1)) * 10)
@@ -2841,7 +2841,7 @@ def test_a_trim_sells_part_of_a_position_and_the_rest_rides_to_the_backstop():
         {}, {"AAA": 10}, {"AAA": 6}, {"AAA": 6}, {"AAA": 6}, {},
     ]
     assert [(f["kind"], f["side"], f["qty"], f["asof_ms"]) for f in out["fills"]] == [
-        ("entry", "buy", 10, _m(1)), ("entry", "sell", 4, _m(2)), ("exit", "sell", 6, _m(5)),
+        ("entry", "buy", 10, _m(1)), ("exit", "sell", 4, _m(2)), ("exit", "sell", 6, _m(5)),
     ]
     assert out["fills"][-1]["reason"] == "session_close"
 
@@ -2956,6 +2956,11 @@ def test_share_fill_ids_name_symbol_bar_side_and_origin_and_lot_rows_carry_none(
         (f"AAA-{_m(1)}-buy-decision", "decision"),
         (f"AAA-{_m(2)}-sell-decision", "decision"),
         (f"AAA-{_m(3)}-sell-backstop", "backstop"),
+    ]
+    assert [(f["kind"], f["origin"], f["side"]) for f in out["fills"]] == [
+        ("entry", "decision", "buy"),
+        ("exit", "decision", "sell"),
+        ("exit", "backstop", "sell"),
     ]
     lot = ReplayAdapter(_policy()).replay(_session([10.0] * 4), [_decision("AAA", _m(0), 1)])
     assert lot["fills"] and not any({"fill_id", "origin"} & set(row) for row in lot["fills"])
@@ -3159,7 +3164,7 @@ def test_a_share_buy_beyond_cash_refuses_insufficient_cash_and_a_sale_funds_the_
         {"symbol": "AAA", "asof_ms": _m(1), "lead": 0, "reason": "insufficient_cash", "decision_ms": _m(0)},
     ]
     assert [(f["kind"], f["side"], f["qty"], f["asof_ms"]) for f in out["fills"]] == [
-        ("entry", "buy", 100, _m(2)), ("entry", "sell", 100, _m(3)),
+        ("entry", "buy", 100, _m(2)), ("exit", "sell", 100, _m(3)),
         ("entry", "buy", 102, _m(4)), ("exit", "sell", 102, _m(5)),
     ]
 

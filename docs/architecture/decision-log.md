@@ -26541,3 +26541,342 @@ After that approval:
 1. Run `python -m dskit.pipeline run configs/run-joint-simulation.json --adapter intraday_equities` from the child root (as the config's own notes say to).
 2. Run `dskit.evaluation`'s backtest evaluator (ADR-0183) on the result, per the owner's stated pickup plan.
 3. Before either step, the owner should see and rule on the four open items surfaced above (the gross-limit tolerance interaction, the empty-plan-held-name gap, the upstream mandatory-exit-mark question, and IWM's modelled-vs-measured spread), and should decide whether Bertsimas-Sim robustness is wanted before or after a first real run.
+
+### Approved robust-optimization extension (2026-09-27)
+
+**Status.** Owner-approved on 2026-09-27, including `Gamma = 1.0`, every
+`kappa_i = 1.0`, and the evaluator tail in the same harness-tracked run
+document. The owner also directed that every review requested as Sonnet in
+this task use Terra instead. The phase-0 Terra design skeptic returned C2/M3;
+the five findings and their design resolutions are recorded below. After two
+resolution passes, the same reviewer returned **C0/M0**. The owner approved
+the newly exposed availability policy `mean_min_coverage_units = 10` on
+2026-09-27, so the RED gate is open.
+
+**Research and sweep.** The source-backed record is
+`children/intraday_equities/docs/research/hfdr-mio-uncertainty/2026-09-27-bertsimas-sim-joint-mio.md`
+(journal actions A54579--A54580). It reads Bertsimas and Sim (2004), especially
+Theorem 1 and the portfolio application in section 6.2, against ADR-0151,
+ADR-0156, the three existing child uncertainty notes, and the actual publisher,
+bundle, capital and evaluator seams. The sweep ran before the names below over
+six refs and two other worktrees. It found the intended reuse points
+(`AttestedMeanConfidence`, `ReplayEvents`) and no existing names or mechanisms
+for `MeanConfidenceFamily`, `AttestedMeanConfidenceFamily`,
+`mean_uncertainty`, `mean_uncertainty_budget`,
+`mean_deviation_multipliers`, `ShareReplayEvents`, or
+`allows_empty_bundle_liquidation`.
+
+#### Decision proposed
+
+1. **Uncertain subject: `U_mu`, not another `U_r`.** The blocked joint
+   residual scenarios and CVaR already describe realized-return dispersion.
+   The new set describes estimation error in the conditional mean. Each
+   admitted `(name, exit horizon)` cell gets a whole-session
+   `ClusterBootstrapInterval` over strictly prior out-of-fold label residuals.
+   UTC trading sessions are the resampling units. The current archive does not
+   include seed/refit/HPO variation, so this remains developmental evidence and
+   says so in every report; it is not deployment validation.
+
+2. **Center and deviations.** For each cell the interval mean is the estimated
+   residual bias. `ForecastBundle` adds that center to the head's label-unit
+   prediction, converts it through the existing `gross_return` owner, applies
+   the same false-signal haircut as scenario recentering, and recenters the
+   scenario row on that corrected mean. Its lower and upper interval endpoints
+   go through the identical conversion. The bundle carries the resulting
+   simple-return deviations plus `sigma_t`; capital re-derives and binds them
+   to the admitted interval family rather than trusting precomputed widths.
+   Past the admitted horizon, the last admitted mean and its endpoints carry
+   forward under the same `sqrt(admitted / k)` label scaling already used by
+   the point forecast.
+
+3. **One attested family.** Add `MeanConfidenceFamily` to the existing
+   `mean_interval.py`, a frozen named mapping of `ConfidenceInterval` members
+   with one level and registered producer. Add
+   `AttestedMeanConfidenceFamily` to `uncertainty_intake.py`; it admits only
+   that type and the existing mean-interval producer registry. The path
+   release carries one family over its admitted cells, and every bundle binds
+   to its content identity. Do not score a mean confidence interval against a
+   next-session realization: that would measure predictive coverage for a
+   different estimand. The coverage attestation instead cites the repository's
+   existing known-true-mean Monte Carlo for `ClusterBootstrapInterval`
+   (`tests/pipeline/test_mean_interval.py::TestMeasuredCoverage`): nominal
+   0.95, conservative measured value 0.946, and 1,000 independent Monte Carlo
+   trials. This is method evidence conditional on genuinely independent
+   whole-session units, not a claim that the result transfers out of sample to
+   these equities. Each interval separately reports the number of input
+   sessions. The publisher gains required `mean_min_coverage_units`; a release
+   is explicitly unavailable unless every cell has at least that many input
+   sessions. Proposed value is 10 for the first developmental run. This is an
+   availability gate, never coverage validation. The owner approved 10 on
+   2026-09-27. The existing 0.53 intake
+   floor applies to the disclosed method evidence. A real-data publisher
+   preflight must pass the unit-count gate for all 18 releases before the
+   multi-hour solve begins; otherwise stop and return to the owner.
+
+4. **Budget by name, widths by horizon.** A Bertsimas-Sim component is one
+   name, not one tranche. All horizon errors of a name move in the same adverse
+   direction at their own interval widths. If `e_ik >= 0` is the continuous
+   target-share allocation to horizon `k`, `p_i` is price, `d_ik` is the
+   downward simple-return deviation and `kappa_i` its declared multiplier,
+   define
+
+       a_i(e) = kappa_i p_i sum_k d_ik e_ik.
+
+   The exact dollar protection is
+
+       P(e) = min Gamma theta + sum_i rho_i
+              s.t. theta + rho_i >= a_i(e), theta,rho_i >= 0.
+
+   Budgeting tranches separately is rejected: because `e_ik` is fractional,
+   the optimizer could split one share target across correlated horizons and
+   dilute protection whenever `Gamma` is below the tranche count. The
+   name-level factor removes that artifact. `Gamma_eff` is
+   `min(mean_uncertainty_budget, n_live_uncertain_names)`; mandatory exits have
+   no uncertain coefficient and are outside the set.
+
+5. **Exact robust wealth, once.** A mean-error realization is common to every
+   outcome scenario, so it subtracts the same `P(e)` from every nominal
+   scenario wealth. Since CRRA utility is increasing, minimizing expected
+   utility over this set is exactly the same as using
+   `W_robust[o] = W_nominal[o] - P(e)` in every wealth identity. Those robust
+   wealth variables feed both tangent-CRRA and CVaR. There is one protection
+   block, not one independent nature choice per scenario. Units are dollars:
+   return deviation times price times shares. This is the derived robust
+   counterpart the old `epsilon*(Gamma*theta+sum p)` objective penalty was not.
+   The child computes a safe maximum protection from each name's `x_max` and
+   largest tranche deviation, evaluates the same name-budget protection on
+   those maxima, and passes it through `_account_envelope`'s lower-edge cost
+   bound. The upper edge is unchanged because protection is non-negative.
+   The existing one-percent-of-mark lower edge is treated honestly as an
+   explicit solvency constraint, not described as a nonbinding envelope: the
+   robust `W[o]` variable remains bounded below by `wealth_lo`, and extraction
+   reports that `wealth_lo` beside realized robust wealth. A solution with
+   positive wealth below that declared floor is intentionally infeasible.
+
+6. **Generic doorway, child evidence.** `ScenarioUtilitySolve` gains one
+   opt-in concrete hook, `mean_uncertainty(inputs)`, default `None`, returning
+   the budget and name-aligned tranche deviations. It constructs the
+   name-level protection rows and stores their data for extraction. Existing
+   subclasses and flat payoffs remain byte-for-byte nominal. Exact extraction
+   independently evaluates the solved allocation with
+   `BudgetedMeanSet.protection`, then recomputes robust scenario wealth,
+   utility and CVaR; it reports `robust_protection` and both nominal and robust
+   wealth ranges. Producing, attesting, converting and binding the intervals
+   stays in `intraday_equities`. The base capital kind also replaces its
+   hard-coded intake constant reads with a protected `required_intakes()` hook
+   whose default is exactly today's false-signal/outcome pair. The joint path
+   kind alone appends the mean-family slot. `ForecastBundle` likewise requires
+   that third identity only when every row is a path row; flat and empty
+   bundles retain their exact two-slot contract.
+
+7. **Required policy, no defaults.** `JointEquityKellyMIO` requires
+   `mean_uncertainty_budget` and `mean_deviation_multipliers`; the latter is a
+   mapping covering every admitted name, validated against the releases by
+   `MioDeciderNode`. Neither is inferred from interval coverage. Proposed
+   values for the first developmental full run are `Gamma = 1.0` and
+   `kappa_i = 1.0` for every admitted name: the smallest non-zero budget and
+   the intervals as measured, explicitly a baseline rather than a tuned
+   optimum. The publisher adds required `mean_replicates = 2000` and reuses
+   the declared `coverage = 0.95` and `seed = 0`. Folds 2--19 may evaluate
+   these values but may not select them.
+
+#### Carried open items
+
+- **Empty-plan mandatory exit: fix without an empty-bundle bypass.** Keep the
+  base `EquityKellyMIO` guard unchanged. When a held name's authenticated path
+  has screened plan zero, `JointMinuteMioDecider` emits its full path row with
+  `plan_horizon = 0` rather than dropping it. The row passes the same bundle
+  digest, producer, model-manifest, cap, decision-time and uncertainty-family
+  bindings as a live path row. `JointEquityKellyMIO` admits zero only for a
+  currently held positive-share name, consumes it solely as mandatory-exit
+  evidence, pins target zero, and refuses an unheld zero-plan row or a held
+  zero-plan name lacking that row. The existing delayed-refusal test becomes
+  a same-minute authenticated sale regression.
+- **Mandatory-exit mark versus NAV: resolved, test rather than change.**
+  `EquityReplay._portfolio` computes NAV from cash plus every open share at its
+  mark before any solve filtering, then passes that NAV as `gross_limit`.
+  `JointEquityKellyMIO` correctly excludes a forced-zero mandatory exit only
+  from the pre-solve LIVE-holdings refusal. Add a decider-level regression
+  proving the exit's mark remains in upstream NAV and sale funding. No
+  accounting code change is proposed.
+- **Decision sell mislabeled `entry`: fix at the source and evaluator.** Make
+  `_queue_fill` receive share-mode `origin` explicitly. Decision orders pass
+  `decision` whether buy or sell; the session-close backstop passes `backstop`.
+  Then a decision buy emits fill kind `entry`, while a decision sell or
+  backstop sell emits `exit`, without deriving origin from kind. Add
+  `ShareReplayEvents` beside `ReplayEvents` to
+  emit schema-v1 decision/order/fill/cashflow/mark/refusal/skip events from the
+  joint share rows; decision sells have action `exit` at their original
+  `decision_ms`. `SimulationReport`'s legacy kind counts then become semantic,
+  while its existing origin counts remain.
+- **Gross tolerance and IWM spread:** unchanged and re-flagged. The relative
+  gross doorway tolerance and IWM's modelled 0.43 bp half-spread remain the
+  disclosed ADR-0188 caveats; this task supplies no new measurement that could
+  honestly change them.
+
+#### TDD, review and execution gates
+
+RED tests precede each slice: the generic protection rows against
+`BudgetedMeanSet.protection` (integer/fractional Gamma, asymmetric widths,
+flat and tranche payoffs, no-uncertainty identity, robust CVaR and exact
+recompute); interval-family invariants/intake attacks; publisher causality and
+prospective coverage; conversion/binding and split-dilution resistance; empty
+bundle same-minute liquidation; upstream NAV; fill action semantics; mapper
+census and P&L attribution; config validation. Focused suites and ruff run
+after each slice. The final frozen commit then receives two fresh Terra
+lenses (mathematical correctness/evidence and tests/integration); every change
+resets both, and completion requires C0/M0 from both.
+
+Before the full solve: re-run the T12 benchmark with the protection block and
+the T47 18-release publisher preflight, confirm projected peak memory below
+18 GB, and stop on a material cost or coverage regression. Then run the exact
+`configs/run-joint-simulation.json` folds 2--19 document under the Windows
+harness: one tracked WSL process, never detached, polled in at most ten-minute
+waits. The same document gains `ShareReplayEvents` and
+`dskit.evaluation.nodes:EvaluationReport`, so the evaluator runs after the
+simulation without a second untracked workflow. Report contributed capital,
+final NAV, net/gross P&L, fees, maximum drawdown, by-name attribution, refusals
+and the robust-protection diagnostics, all labelled developmental
+post-selection evidence.
+
+#### Phase-0 Terra skeptic record
+
+The independent Terra design review returned **C2/M3** before RED:
+
+1. C1: a boolean empty-bundle exception authenticated no per-name exit.
+   Resolved by deleting that hook from the design and carrying authenticated
+   zero-plan path rows, as specified above.
+2. C2: changing fill kind alone would make `_queue_fill` infer `backstop` for
+   a decision sell. Resolved by making share origin explicit and testing both
+   action and attribution.
+3. M1: protection was absent from the wealth envelope. Resolved with the safe
+   exact-budget protection bound on the lower edge.
+4. M2: base bundle/intake contracts hard-coded two slots. Resolved with a
+   default-preserving protected intake hook and path-only third identity.
+5. M3: fold 2 had too few fold transitions to support a coverage claim.
+   The first attempted resolution incorrectly scored a mean CI against a next
+   session, and a second Terra pass rejected it. The final design uses only the
+   existing known-true-mean Monte Carlo as conditional method evidence, labels
+   transfer to equities unvalidated, and keeps a separate input-session
+   availability gate; the owner approved the first-run value 10 on
+   2026-09-27.
+6. Second-pass M2: the one-percent lower edge could exclude positive robust
+   wealth. Resolved by naming it as the existing explicit solvency constraint
+   and reporting `wealth_lo`, rather than claiming it is nonbinding.
+
+The third Terra pass found no remaining Critical or Major issue: **C0/M0**.
+
+### Approved persistent-solve performance amendment (2026-09-27)
+
+**Status.** Owner-approved direction: do not rebuild the per-minute Pyomo
+program when its algebraic shape is unchanged, and warm-start HiGHS from the
+last optimal solution. This changes no feasible set, objective, authenticated
+input, portfolio-state transition, exact extraction or optimal-only gate. One
+solver-native behavior is necessarily visible: when two portfolios have
+exactly the same primary objective, a warm incumbent may select a different
+tied optimum than a cold search. The owner explicitly directed use of a warm
+start on 2026-09-27. No new economic tie-break objective is invented; the run
+keeps the pinned single-thread/zero-gap/random-seed HiGHS policy and records
+this tied-vertex caveat rather than falsely promising cold-path order identity.
+
+`ScenarioUtilitySolve` owns a small instance-local LRU of persistent solve
+entries. A structural identity includes the ordered instrument names, scenario
+count, tranche count per name, uncertain-name set, and the presence/value-shape
+of optional cardinality, gross, CVaR, robust, and subclass domain blocks. A
+miss builds a model and solver. A hit updates every numeric coefficient through
+mutable Pyomo parameters on the SAME model, asks the SAME APPsi persistent
+solver to update, and supplies the prior optimal variable values as a MIP
+start. A structural change never mutates an incompatible model. The cache is
+bounded to four shapes and belongs to one node instance; it is never shared
+across releases, folds, processes, or threads.
+
+The opt-in subclass supplies distinct domain-build, domain-refresh and
+domain-structure hooks. The joint kind builds its HFDR row once from mutable
+price/rate/target parameters, refreshes every per-tranche widened rate on each
+hit, and includes the HFDR block plus any structural domain policy in the key.
+After every refresh, `model._scn` is replaced wholesale with a complete
+current-call snapshot of rows, weights, returns, account values, tranches and
+mean-uncertainty data before solve or extraction; no mapping or array from the
+previous minute is used for exact recomputation.
+
+The warm start is only a computational hint. The existing zero MIP-gap pin and
+`optimal` termination requirement still apply, and exact extraction still
+recomputes cash, holdings, wealth, protection, CVaR and constraints from the
+new minute's values. The first solve of a shape is cold. A solve or extraction
+failure evicts that shape, so an invalid incumbent or partially updated solver
+cannot reach a later minute. If a warm attempt raises or returns non-optimal,
+the SAME minute is retried once on a newly built cold model and solver; only a
+failure of that cold attempt becomes a refused minute. A cached-hit extraction
+failure takes the same cold-retry route: it may prove the persistent interface
+missed a changed mutable coefficient or bound, not that the new inputs are
+invalid. Only an extraction failure from the newly built cold attempt refuses
+loudly. Solvers that do not report both persistence and warm-start support
+retain the cold build/solve path.
+
+The joint minute decider reuses one `JointEquityKellyMIO` instance for its
+release and rebinds only the freshly recomputed bundle digest before each
+call. Every other producer/cap/model pin is immutable for that release and is
+checked on every call as before. Economic state still comes solely from the
+replay's current cash, positions, pending orders and marks; prior decision
+variables are not portfolio state and cannot authorize or force a trade.
+
+**Phase-0 invariants and test matrix.** RED tests must prove: (1) two
+same-shape minutes retain model and solver object identity, refresh every
+coefficient family (including HFDR and Bertsimas-Sim rows), and request a warm
+start only after an optimal solve; (2) a non-tied representative sequence
+matches independent cold solves, while a forced tie remains feasible, primary-
+optimal and repeatable without claiming the same cold vertex; (3) a shape
+change builds an isolated entry and an LRU eviction cannot
+leak values; (4) every cached-hit solve or extraction failure is evicted and
+retried cold for the same inputs, while a cold failure is evicted and never
+seeds the next minute; (5) empty-gate behavior and non-persistent solvers remain unchanged;
+and (6) the decider constructs one joint node per release while validating a
+different bundle digest each minute.
+The final candidate requires the existing two fresh Terra lenses at C0/M0 and
+a measured representative-sequence latency comparison before it may replace
+the running cold-path backtest.
+
+**Phase-0 Terra skeptic record.** The first bounded pass returned C0/M3:
+stale `model._scn` could corrupt exact extraction; the subclass had no defined
+HFDR refresh seam; and an infeasible prior incumbent could make a warm attempt
+refuse inputs a cold solve would accept. The complete-snapshot rule, explicit
+domain hooks and same-minute cold retry above resolve those three findings.
+The second pass returned C0/M1 because a cached solve could report optimal on
+stale coefficients and fail only in exact extraction; extending the same-minute
+cold retry to every cached-hit failure resolves that persistence/availability
+gap.
+The third pass returned C0/M1 because a warm incumbent can legitimately change
+which exactly tied optimum HiGHS returns. The owner had explicitly directed a
+warm start; the amended contract above now discloses that consequential but
+primary-objective-neutral behavior instead of claiming cold-order identity.
+
+**Execution gates and evaluator integration (2026-09-28).** The T12 tool now
+has an executable `--persistent-robust` mode: one changing 12-name,
+128-scenario sequence carries the Bertsimas-Sim protection and a mutable
+price-weighted HFDR tranche row through one APPsi model. The 100-minute gate
+completed 100/100 optimal, built one model, used 99 warm starts, and measured
+wall median 0.4103 s, p99 0.7401 s, max 0.7424 s (solve median 0.3320 s);
+robust protection was positive on all minutes (0.3471--1.7975 dollars).
+
+T47 is also executable inside the tracked document. After publishing, the
+`JointSimulationPreflight` node requires exactly folds 2--19, a path block and
+ticks for every release, reads WSL's process high-water RSS, adds a conservative
+2 GiB simulation allowance (above T47's measured roughly 1.2 GB increment),
+and refuses unless the projection is below 18 GiB. The preceding cold-path run
+had already completed this exact publisher over all 18 releases; while solving
+it showed `VmHWM = 7,640,020 kB`, so the conservative projection is about
+9.29 GiB. The independent `prlimit --as=18 GiB` remains the outer hard cap.
+The supported, committed `tools/run_joint_simulation.sh` applies that cap
+before the Python interpreter starts; `DSKIT_PYTHON` selects the WSL project
+environment, and the document's own notes name this harness rather than an
+uncapped raw-Python command.
+
+The same document now maps the joint share ledger through
+`ShareReplayEvents` into `dskit.evaluation.nodes:EvaluationReport`. It preserves
+decision sells as `exit` actions at their original `decision_ms`, distinguishes
+session-close backstops, carries cash-policy contributions and day-close marks,
+and writes the event-backed report under the tracked run directory.
+The run start carries the aggregate exact post-solve robust protection
+(`count`, `sum`, `mean`, `min`, `max`) as a typed diagnostic, and the
+evaluator renders it in the provenance section of the summary and HTML report
+rather than leaving it only in the simulation side output.

@@ -1,6 +1,6 @@
 {
   "name": "joint-simulation",
-  "notes": "ADR-0188 formulation B (owner question K(a), recommended): a STANDALONE non-staged document -- unlike run-retrain-simulation.json -- pinning the STOPPED run's inventory and gates artifacts directly by sha256 (retrain-simulation-staged-2026-02-28-4bfcaaea's own stages/inventory.json and stages/gates.json), the same way run-development-simulation.json pins them, so only the simulation half (publish -> decide -> simulate -> report) runs; re-staging the template would rerun every upstream stage (walk, gates, etc.), since stage tokens hash the whole staged document. Runs the per-minute JOINT policy (ADR-0188 formulation B: one exit-horizon-tranche MIO per minute, holdings and sells/trims as decisions, flat by the session close) instead of ADR-0184/0185's per-lead-group policy: publish emits path releases (leads: path), decide selects policy: joint (JointEquityKellyMIO -- no band_bps/cardinality/min_ticket/max_position_notional/lot_size; HFDR per tranche; no leverage bound = NAV; carried_wealth for names skipped or excluded from the solve this minute), and simulate runs under fill-policy-joint.json (forced_exit_at: session_close over dskit's PositionBook share ledger; IWM's half_spread_bps, 0.43 bp modelled, owner question J(a), see that config's own notes for provenance and caveat) with the joint decider's consecutive-refusal abort (ADR T50) at max_consecutive_refusals. DEVELOPMENTAL POST-SELECTION, deployment_eligible=false throughout, same disclosure as run-development-simulation.json: the tradable set, leads and caps are the P16 gate admission (gates 33756fe0..., evidence through 2025-10-16), cap_evidence_look_ahead true. Every MIO risk knob in decide is the owner-delegated growth-policy-v1 (2026-09-25), except the knobs the joint kind refuses by name. This is a BUILD-COMPLETE, SKEPTIC-REVIEWED (two Sonnet lenses, two rounds on the changed code) config -- it has not yet been RUN, and the owner has not yet approved running the multi-day backtest. Run from the child root: python -m dskit.pipeline run configs/run-joint-simulation.json --adapter intraday_equities. Outputs land beside the run dir under ./pipeline_runs (no $run_dir reference exists); a second run refuses to overwrite them.",
+  "notes": "ADR-0188 formulation B (owner question K(a), recommended): a STANDALONE non-staged document -- unlike run-retrain-simulation.json -- pinning the STOPPED run's inventory and gates artifacts directly by sha256 (retrain-simulation-staged-2026-02-28-4bfcaaea's own stages/inventory.json and stages/gates.json), the same way run-development-simulation.json pins them, so only the simulation half (publish -> decide -> simulate -> report) runs; re-staging the template would rerun every upstream stage (walk, gates, etc.), since stage tokens hash the whole staged document. Runs the per-minute JOINT policy (ADR-0188 formulation B: one exit-horizon-tranche MIO per minute, holdings and sells/trims as decisions, flat by the session close) instead of ADR-0184/0185's per-lead-group policy: publish emits path releases (leads: path), decide selects policy: joint (JointEquityKellyMIO -- no band_bps/cardinality/min_ticket/max_position_notional/lot_size; HFDR per tranche; no leverage bound = NAV; carried_wealth for names skipped or excluded from the solve this minute), and simulate runs under fill-policy-joint.json (forced_exit_at: session_close over dskit's PositionBook share ledger; IWM's half_spread_bps, 0.43 bp modelled, owner question J(a), see that config's own notes for provenance and caveat) with the joint decider's consecutive-refusal abort (ADR T50) at max_consecutive_refusals. DEVELOPMENTAL POST-SELECTION, deployment_eligible=false throughout, same disclosure as run-development-simulation.json: the tradable set, leads and caps are the P16 gate admission (gates 33756fe0..., evidence through 2025-10-16), cap_evidence_look_ahead true. Every MIO risk knob in decide is the owner-delegated growth-policy-v1 (2026-09-25), except the knobs the joint kind refuses by name. The completed implementation is reviewed with Terra lenses; the owner approved this full run on 2026-09-27. Run from the repository root with tools/run_joint_simulation.sh; it applies the mandatory 18 GiB address-space cap before Python starts. Outputs land beside the run dir under ./pipeline_runs (no $run_dir reference exists); a second run refuses to overwrite them.",
   "pipeline": {
     "bars_a": {
       "uses": "intraday_equities-bars",
@@ -38,15 +38,34 @@
       },
       "notes": "Split-adjusted SIP minutes holding the admitted ADBE, CIEN, LITE, LRCX, LULU, MSTR, NOW, PANW, TER. Same window as bars_a."
     },
+    "bars_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "/home/russell/dskit/children/intraday_equities/ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1662681600000,
+        "end_ms": 1760659200000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "Split-adjusted SIP minutes holding admitted IWM. Same window as bars_a."
+    },
     "bars": {
       "uses": "concat",
       "inputs": {
         "a": "$bars_a.records",
+        "c": "$bars_c.records",
         "e": "$bars_e.records"
       },
       "params": {
         "shape": "records",
-        "provenance_waiver": "Each bar record already carries its source; the two sources' symbol namespaces are disjoint and checked below.",
+        "provenance_waiver": "Each bar record already carries its source; the three sources' symbol namespaces are disjoint and checked below.",
         "key": "symbol",
         "consume_inputs": true
       }
@@ -70,6 +89,8 @@
           "coverage": 0.95,
           "window_blocks": 10,
           "null_draws": 999,
+          "mean_replicates": 2000,
+          "mean_min_coverage_units": 10,
           "seed": 0
         }
       },
@@ -94,6 +115,21 @@
           "deployment_mode": false,
           "uncertainty_max_calibration_age_ms": 5529600000,
           "uncertainty_min_coverage": 0.53,
+          "mean_uncertainty_budget": 1.0,
+          "mean_deviation_multipliers": {
+            "ADBE": 1.0,
+            "CIEN": 1.0,
+            "IWM": 1.0,
+            "LITE": 1.0,
+            "LLY": 1.0,
+            "LRCX": 1.0,
+            "LULU": 1.0,
+            "MSTR": 1.0,
+            "NOW": 1.0,
+            "PANW": 1.0,
+            "TER": 1.0,
+            "XLK": 1.0
+          },
           "cap_evidence_look_ahead": true,
           "solver_options": {
             "time_limit": 8.0
@@ -102,13 +138,29 @@
       },
       "notes": "The JointEquityKellyMIO growth policy (ADR-0188 formulation B), owner-delegated best judgement continued from ADR-0185's lead-group values where the joint kind keeps the same knob: growth-oriented CRRA gamma 2.0; 32 tangents; 128 scenarios; 95% CVaR capped at $500; HFDR q 0.20 on pi_widened per exit-horizon tranche (a widened point estimate, not a bound); zero bundle staleness; 64-day cap/calibration age; 0.53 uncertainty coverage floor (equal to the publisher's attested false-signal attainment); a 8.0 s per-minute solver time limit (T12: the real 12-name/32-scenario/tranche instances measured median 0.34 s, p99 0.54 s, so 8 s is a generous, never-binding guard, not the production halt). band_bps, cardinality, min_ticket, max_position_notional and lot_size are OMITTED: the joint kind refuses them by name (owner ruling 2026-09-25 and G(a): costs live in the objective, never a hard cap that shrinks the feasible set; the doorway's own no-leverage bound, NAV, is the only aggregate limit). max_consecutive_refusals 30 (ADR T50): a persistent producer fault or infeasibility aborts the run loudly rather than silently trading nothing for the rest of the walk; this is the joint decider's own default, pinned here so the document states it rather than relying on the code's default. cap_evidence_look_ahead remains true because gate admission uses all 20 folds, so this remains developmental post-selection and is not deployment evidence. These are explicit policy choices, not tuned optima."
     },
+    "preflight": {
+      "uses": "intraday_equities-joint-simulation-preflight",
+      "inputs": {
+        "bars": "$bars.merged",
+        "releases": "$publish.releases",
+        "ticks": "$publish.ticks"
+      },
+      "params": {
+        "first_fold": 2,
+        "last_fold": 19,
+        "memory_limit_bytes": 19327352832,
+        "simulation_headroom_bytes": 2147483648
+      },
+      "notes": "Executable T47 gate: require all 18 path releases and tick coverage, then add a conservative 2 GiB simulation allowance to the observed post-publisher WSL peak and require the projection to remain below 18 GiB."
+    },
     "simulate": {
       "uses": "intraday_equities-minute-development-simulation",
       "inputs": {
         "bars": "$bars.merged",
         "releases": "$publish.releases",
         "ticks": "$publish.ticks",
-        "mio": "$decide.mio"
+        "mio": "$decide.mio",
+        "preflight": "$preflight.passed"
       },
       "params": {
         "deployment_eligible": false,
@@ -135,6 +187,36 @@
         "cash": "$simulate.cash",
         "metadata": "$simulate.metadata",
         "releases": "$publish.releases"
+      }
+    },
+    "events": {
+      "uses": "intraday_equities-share-replay-events",
+      "inputs": {
+        "fills": "$simulate.fills",
+        "skipped": "$simulate.skipped",
+        "refused": "$simulate.refused",
+        "cash": "$simulate.cash",
+        "metadata": "$simulate.metadata"
+      },
+      "params": {
+        "title": "ADR-0188 joint per-minute simulation",
+        "project": "intraday_equities",
+        "tz": "America/New_York",
+        "model": "JointEquityKellyMIO",
+        "units": {
+          "money": "USD"
+        }
+      },
+      "notes": "Maps the joint share ledger directly onto ADR-0183 events. Decision sells remain exit decisions at their original decision_ms; session-close backstops are distinct exits."
+    },
+    "evaluation": {
+      "uses": "dskit.evaluation.nodes:EvaluationReport",
+      "inputs": {
+        "events": "$events.events"
+      },
+      "params": {
+        "out_dir": "evaluation",
+        "title": "ADR-0188 joint per-minute simulation"
       }
     },
     "write_fills": {

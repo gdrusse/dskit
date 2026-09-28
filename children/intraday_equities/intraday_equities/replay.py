@@ -994,7 +994,7 @@ class HorizonBook:
 
 
 def _share_fill_id(symbol, asof_ms, side, origin):
-    """The id of one share-book fill: ``{symbol}-{asof_ms}-{side}-{origin}`` (ADR-0188).
+    """Return one share-book fill id: ``{symbol}-{asof_ms}-{side}-{origin}`` (ADR-0188).
 
     ``origin`` is ``decision`` (an order a decision queued), ``backstop``
     (the ``session_close`` exit) or ``carried`` (a position an earlier
@@ -1010,7 +1010,7 @@ def _share_fill_id(symbol, asof_ms, side, origin):
 
 
 def _session_date(asof_ms, zone):
-    """The session an instant belongs to: its local date in ``zone``."""
+    """Return an instant's session: its local date in ``zone``."""
     return datetime.fromtimestamp(int(asof_ms) / 1000, tz=timezone.utc).astimezone(zone).date()
 
 
@@ -1203,7 +1203,7 @@ class SessionShareBook:
         self._fold(symbol, "buy", shares, 0, self._bar(symbol, 0)["asof_ms"], "carried")
 
     def expiring(self, symbol, index):
-        """The whole position when ``index`` is ``symbol``'s session-last bar, else nothing.
+        """Return the whole position at ``symbol``'s session-last bar, else nothing.
 
         This is the ``session_close`` backstop: no share expires by lead.
         """
@@ -2311,6 +2311,7 @@ class EquityReplay:
             self._queue_fill(
                 "exit", symbol, lead, side, lot["qty"], price, bar["asof_ms"], fee, index,
                 reason=policy.forced_exit_at,
+                origin="backstop" if self._share_mode else None,
             )
             self._book.close_lot(symbol, lead)
 
@@ -2392,8 +2393,10 @@ class EquityReplay:
                 })
                 continue
             self._queue_fill(
-                "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
+                "exit" if self._share_mode and side == "sell" else "entry",
+                symbol, lead, side, qty, price, bar["asof_ms"], fee, index,
                 decision_ms=decision["asof_ms"],
+                origin="decision" if self._share_mode else None,
             )
 
     def _share_refusal(self, symbol, index, nth, side):
@@ -2418,7 +2421,7 @@ class EquityReplay:
         return None
 
     def _within_session(self, symbol, bar, nxt, incoming):
-        """The halted ``bar``'s share orders whose next bar ``nxt`` is still their decision's session.
+        """Keep halted-bar share orders whose next bar remains in the decision's session.
 
         A halt queue never carries a share order across a session close
         (ADR-0188): an order it would push into a later session is refused
@@ -2441,7 +2444,7 @@ class EquityReplay:
         return kept
 
     def _scheduled_fill_ms(self, symbol, decision):
-        """The ``asof_ms`` of ``decision``'s scheduled fill bar: its decision bar + ``fill_bar_offset``.
+        """Return ``decision``'s scheduled fill instant: decision bar + fill offset.
 
         :meth:`_enqueue_decision` admitted only decisions whose scheduled
         fill bar is on the tape, so both lookups hold.
@@ -2452,25 +2455,30 @@ class EquityReplay:
 
     def _queue_fill(
         self, kind, symbol, lead, side, qty, price, asof_ms, fee, index,
-        reason=None, decision_ms=None,
+        reason=None, decision_ms=None, origin=None,
     ):
         """Remember one fill so ``proposals`` can hand it to LegPipeline.
 
-        ``decision_ms`` is the decision bar an entry (or the override exit
+        ``decision_ms`` is the decision bar an entry, decision sale (or the override exit
         it forces) answers; ``reason`` is why an exit happened — the
         policy's ``forced_exit_at`` name or ``same_lead_override``. Both
         ride onto the output fill row so a report can join a fill back to
         the decision that caused it (ADR-0183). Under ``session_close`` the
-        row also carries ``origin`` (``decision``, or ``backstop`` for the
+        row also carries explicit ``origin`` (``decision``, or ``backstop`` for the
         session-close exit) and ``fill_id`` (:func:`_share_fill_id`, the id
         the share book folds the same fill under; ADR-0188).
         """
         prefix = "0" if kind == "exit" else "1"
         client_ref = f"{prefix}-{kind}-{symbol}-{lead}-{index}"
-        fill_id = origin = None
+        fill_id = None
         if self._share_mode:
-            origin = "backstop" if kind == "exit" else "decision"
+            if origin not in ("decision", "backstop"):
+                raise ConfigError([
+                    f"share-book fill origin must be 'decision' or 'backstop', got {origin!r}"
+                ])
             fill_id = _share_fill_id(symbol, asof_ms, side, origin)
+        elif origin is not None:
+            raise ConfigError([f"lot-book fill must not carry share origin {origin!r}"])
         meta = {
             "id": client_ref,
             "kind": kind,

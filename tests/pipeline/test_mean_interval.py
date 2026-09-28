@@ -15,6 +15,7 @@ from dskit.pipeline.mean_interval import (
     ClusterBootstrapInterval,
     ConfidenceInterval,
     MeanEvidence,
+    MeanConfidenceFamily,
     MeanIntervalEstimator,
     MeanIntervalResult,
     NeweyWestInterval,
@@ -22,6 +23,69 @@ from dskit.pipeline.mean_interval import (
     mean_interval_estimator,
     register_mean_interval_estimator,
 )
+
+
+def _confidence_member(name="a", level=0.95, method=None, units=12):
+    return ConfidenceInterval(
+        mean=0.01,
+        standard_error=0.002,
+        low=0.006,
+        high=0.014,
+        level=level,
+        independent_units=units,
+        method=method or "dskit.pipeline.mean_interval:ClusterBootstrapInterval",
+    )
+
+
+class TestMeanConfidenceFamily:
+    def test_it_is_a_sorted_immutable_snapshot_with_one_method_and_level(self):
+        source = {"B:h02": _confidence_member(), "A:h01": _confidence_member()}
+        family = MeanConfidenceFamily(source)
+        source["C:h03"] = _confidence_member()
+        assert tuple(family.members) == ("A:h01", "B:h02")
+        assert family.level == pytest.approx(0.95)
+        assert family.method.endswith(":ClusterBootstrapInterval")
+        assert family.minimum_independent_units == 12
+        with pytest.raises(TypeError):
+            family.members["C:h03"] = _confidence_member()
+
+    def test_an_empty_family_refuses(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            MeanConfidenceFamily({})
+
+    @pytest.mark.parametrize("bad", ["", 3, None])
+    def test_a_bad_cell_name_refuses(self, bad):
+        with pytest.raises(ValueError, match="name"):
+            MeanConfidenceFamily({bad: _confidence_member()})
+
+    def test_a_non_confidence_member_refuses(self):
+        widened = WidenedInterval(**{
+            **_confidence_member().__dict__,
+            "method": "dskit.pipeline.mean_interval:NeweyWestInterval",
+        })
+        with pytest.raises(ValueError, match="ConfidenceInterval"):
+            MeanConfidenceFamily({"A:h01": widened})
+
+    @pytest.mark.parametrize(
+        "members, match",
+        [
+            ({"A:h01": _confidence_member(), "B:h01": _confidence_member(level=0.90)}, "level"),
+            (
+                {
+                    "A:h01": _confidence_member(),
+                    "B:h01": _confidence_member(method="tests:Other"),
+                },
+                "method",
+            ),
+        ],
+    )
+    def test_members_must_share_one_level_and_registered_method(self, members, match):
+        with pytest.raises(ValueError, match=match):
+            MeanConfidenceFamily(members)
+
+    def test_an_unregistered_method_refuses_even_when_every_member_agrees(self):
+        with pytest.raises(ValueError, match="registered"):
+            MeanConfidenceFamily({"A:h01": _confidence_member(method="tests:Other")})
 from dskit.pipeline.stats import cluster_bootstrap_t, dm_lags, newey_west_mean
 
 

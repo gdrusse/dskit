@@ -133,7 +133,9 @@ across modules" forbids. No third-party dependency.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from dskit.pipeline.node import class_ref
 from dskit.pipeline.records import cluster_ok, number_ok
@@ -148,6 +150,7 @@ __all__ = [
     "ClusterBootstrapInterval",
     "ConfidenceInterval",
     "MeanEvidence",
+    "MeanConfidenceFamily",
     "MeanIntervalEstimator",
     "MeanIntervalResult",
     "NeweyWestInterval",
@@ -555,6 +558,64 @@ class ConfidenceInterval(MeanIntervalResult):
         type(out) is ConfidenceInterval
         # -> True
     """
+
+
+@dataclass(frozen=True)
+class MeanConfidenceFamily:
+    """A named, immutable family of confidence intervals from one procedure.
+
+    Every member has one shared confidence level and one registered producer.
+    The keys are caller-owned cell names; this type gives them a canonical
+    sorted order and snapshots the mapping so a release cannot change after
+    its identity was computed.
+    """
+
+    members: Mapping
+
+    def __post_init__(self):
+        """Validate, sort and freeze the named interval mapping."""
+        if not isinstance(self.members, Mapping) or not self.members:
+            raise ValueError("members must be a non-empty mapping of cell name -> ConfidenceInterval")
+        copied = {}
+        for name, interval in self.members.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"member name must be a non-empty string, got {name!r}")
+            if not isinstance(interval, ConfidenceInterval):
+                raise ValueError(
+                    f"members[{name!r}] must be a ConfidenceInterval, got "
+                    f"{type(interval).__name__}"
+                )
+            copied[name] = interval
+        levels = {interval.level for interval in copied.values()}
+        if len(levels) != 1:
+            raise ValueError(f"members must share one confidence level, got {sorted(levels)!r}")
+        methods = {interval.method for interval in copied.values()}
+        if len(methods) != 1:
+            raise ValueError(f"members must share one method, got {sorted(methods)!r}")
+        method = next(iter(methods))
+        registered = {class_ref(entry["cls"]) for entry in MEAN_INTERVAL_ESTIMATORS.values()}
+        if method not in registered:
+            raise ValueError(
+                f"member method {method!r} is not a registered mean-interval producer"
+            )
+        object.__setattr__(
+            self, "members", MappingProxyType(dict(sorted(copied.items())))
+        )
+
+    @property
+    def level(self):
+        """The confidence level shared by every member."""
+        return next(iter(self.members.values())).level
+
+    @property
+    def method(self):
+        """The registered estimator shared by every member."""
+        return next(iter(self.members.values())).method
+
+    @property
+    def minimum_independent_units(self):
+        """The least input-unit count among the named cells."""
+        return min(interval.independent_units for interval in self.members.values())
 
 
 @dataclass(frozen=True)

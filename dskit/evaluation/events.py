@@ -424,6 +424,7 @@ class RunStart(Event):
         _count("trials", 1, required=False),
         _mapping("units", required=False),
         _mapping("sources", required=False),
+        _mapping("diagnostics", required=False),
     )
 
     #: The keys ``units`` may declare.
@@ -1512,4 +1513,3 @@ class EventLog:
         if problems:
             raise EvaluationError(problems)
         return cls(objs)
-

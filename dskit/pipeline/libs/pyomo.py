@@ -69,6 +69,7 @@ import math
 import re
 import time
 from abc import abstractmethod
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 
@@ -901,13 +902,21 @@ class ScenarioUtilitySolve(PyomoSolve):
     #: Set by :meth:`run` for the duration of one solve; ``None`` otherwise.
     _scn = None
 
+    #: Persistent reuse is deliberately opt-in: an arbitrary subclass's
+    #: domain rows may bake input values that the generic doorway cannot
+    #: know how to refresh. Opting in accepts the build/refresh/signature
+    #: contract below. Four shapes covers the common full-book/pending-name
+    #: alternation without retaining an unbounded family of solver models.
+    _PERSISTENT_MODEL_REUSE = False
+    _PERSISTENT_CACHE_SIZE = 4
+
     def _solver_options(self):
         options = super()._solver_options()
         if self.params.get("solver", DEFAULT_SOLVER) != DEFAULT_SOLVER:
             return options
         return {**self._HIGHS_DETERMINISM, **options}
 
-    def _solve(self, solver, model):
+    def _solve(self, solver, model, *, warmstart=False):
         """Solve; a solve that returns no loadable solution refuses by name.
 
         A declared solver time limit is a HALT, never a degraded fill
@@ -928,6 +937,8 @@ class ScenarioUtilitySolve(PyomoSolve):
             The solver returned no loadable solution.
         """
         try:
+            if warmstart:
+                return solver.solve(model, warmstart=True)
             return solver.solve(model)
         except RuntimeError as exc:
             raise RuntimeError(
@@ -935,6 +946,19 @@ class ScenarioUtilitySolve(PyomoSolve):
                 "program, or a time limit reached before any incumbent) — refusing: no "
                 f"target is read and nothing trades ({exc})"
             ) from exc
+
+    def _persistent_params(self):
+        """Model params for the persistent path; subclasses may add fixed doorway pins."""
+        return self.params
+
+    def _persistent_domain_signature(self, inputs, prepared, params):
+        """Hashable shape identity for an opting-in subclass's own rows."""
+        del inputs, prepared, params
+        return ()
+
+    def _refresh_domain_constraints(self, model, inputs, params):
+        """Refresh mutable coefficients owned by an opting-in subclass."""
+        del model, inputs, params
 
     @classmethod
     def validate_params(cls, params):
@@ -1019,6 +1043,19 @@ class ScenarioUtilitySolve(PyomoSolve):
         """Return ``(weights, r)`` — see the class docstring."""
         raise NotImplementedError
 
+    def mean_uncertainty(self, inputs):
+        """Return an optional name-budgeted mean-error set.
+
+        The default is ``None`` and preserves the nominal model exactly. An
+        opting-in subclass returns ``budget`` plus ``deviation_below`` and
+        ``deviation_above`` mappings. Each mapping may cover a subset of the
+        live instrument names (certain mandatory exits stay absent), and each
+        value is one non-negative return deviation per payoff tranche. The
+        budget is spent over NAMES: every horizon of one name moves together.
+        """
+        del inputs
+        return None
+
     @abstractmethod
     def domain_constraints(self, model, inputs, params):
         """Add the caller's own rows to ``model`` IN PLACE; return nothing.
@@ -1077,9 +1114,349 @@ class ScenarioUtilitySolve(PyomoSolve):
             }
         self._scn = {"names": list(names), "rows": rows, "account": account}
         try:
+            if self._PERSISTENT_MODEL_REUSE:
+                return self._run_persistent(ctx, inputs)
             return super().run(ctx, inputs)
         finally:
             self._scn = None
+
+    def _run_persistent(self, ctx, inputs):
+        """Reuse one model/solver per algebraic shape, with a safe cold fallback."""
+        del ctx
+        declared = type(self).outputs
+        if declared is None:
+            raise TypeError(
+                f"{type(self).__name__} declares no outputs contract — a concrete "
+                "PyomoSolve subclass must declare `outputs = (...)` so its run() "
+                "return is checkable (an undeclared contract is a contract nothing "
+                "can check)"
+            )
+        params = self._persistent_params()
+        prepared = self._prepare_model(inputs, params)
+        signature = self._persistent_signature(inputs, prepared, params)
+        cache = getattr(self, "_persistent_cache", None)
+        if cache is None:
+            cache = self._persistent_cache = OrderedDict()
+        entry = cache.pop(signature, None)
+        if entry is None:
+            return self._cold_persistent_attempt(inputs, params, prepared, signature, cache)
+
+        cache[signature] = entry
+        self.solve_record = None
+        try:
+            self._refresh_model(entry["model"], inputs, params, prepared)
+            return self._solve_and_extract(
+                entry["solver"], entry["model"], warmstart=True
+            )
+        except Exception:
+            # A persistent-interface miss can surface as a solve error,
+            # non-optimal result, OR an exact-extraction failure. None is a
+            # refusal until the same current inputs fail on a new cold model.
+            cache.pop(signature, None)
+            return self._cold_persistent_attempt(inputs, params, prepared, signature, cache)
+
+    def _cold_persistent_attempt(self, inputs, params, prepared, signature, cache):
+        """Build and solve once; cache only a fully extracted optimal result."""
+        self.solve_record = None
+        self._prepared_for_build = prepared
+        try:
+            model = self.build_model(inputs, params)
+        finally:
+            self._prepared_for_build = None
+        solver = self._resolve_solver()
+        out = self._solve_and_extract(solver, model, warmstart=False)
+        if self._solver_supports_reuse(solver):
+            cache[signature] = {"model": model, "solver": solver}
+            cache.move_to_end(signature)
+            while len(cache) > self._PERSISTENT_CACHE_SIZE:
+                cache.popitem(last=False)
+        return out
+
+    def _solve_and_extract(self, solver, model, *, warmstart):
+        """One timed solve plus the ordinary SolveRecord/output contract."""
+        name = self.params.get("solver", DEFAULT_SOLVER)
+        self.log.info("solving with %r%s", name, " (warm start)" if warmstart else "")
+        started = time.perf_counter()
+        results = self._solve(solver, model, warmstart=warmstart)
+        seconds = time.perf_counter() - started
+        self.solve_record = SolveRecord.from_solve(model, results, name, seconds)
+        extracted = self.extract(model, results)
+        if not isinstance(extracted, dict):
+            raise TypeError(
+                f"{type(self).__name__}.extract() must return the node's named "
+                f"outputs as a dict, got {type(extracted).__name__}"
+            )
+        return extracted
+
+    @staticmethod
+    def _solver_supports_reuse(solver):
+        """Whether this resolved interface promises both required contracts."""
+        try:
+            return bool(solver.is_persistent() and solver.warm_start_capable())
+        except (AttributeError, TypeError):
+            return False
+
+    def _persistent_signature(self, inputs, prepared, params):
+        """The exact algebraic shape and every base coefficient baked as a constant."""
+        mean = prepared["mean_uncertainty"]
+        domain = self._persistent_domain_signature(inputs, prepared, params)
+        signature = (
+            tuple(prepared["names"]),
+            len(prepared["weights"]),
+            tuple((name, prepared["tranches"][name]) for name in prepared["names"]),
+            () if mean is None else tuple(mean["names"]),
+            prepared["gross_limit"] is not None,
+            prepared["cardinality"],
+            prepared["cvar_limit"],
+            prepared["min_ticket"],
+            prepared["cvar_alpha"],
+            prepared["gamma"],
+            prepared["n_tangents"],
+            self.params.get("solver", DEFAULT_SOLVER),
+            tuple(sorted((self.params.get("solver_options") or {}).items())),
+            domain,
+        )
+        try:
+            hash(signature)
+        except TypeError as exc:
+            raise TypeError(
+                f"{self.key}: _persistent_domain_signature() must return hashable "
+                f"shape data, got {domain!r}"
+            ) from exc
+        return signature
+
+    def _prepare_model(self, inputs, params):
+        """Validate and normalize one tick without constructing a Pyomo model."""
+        import numpy as np
+
+        state = self._scn
+        if state is None:
+            raise RuntimeError(
+                f"{self.key}: build_model is driven by run(), which resolves instruments() "
+                "and the empty-gate check first — no current state is set"
+            )
+        names = list(state["names"])
+        rows, account = state["rows"], state["account"]
+        weights, payoffs_r = self.payoffs(inputs)
+        weights = np.asarray(weights, dtype=float)
+        if weights.ndim != 1 or weights.size == 0:
+            raise ValueError(f"{self.key}: payoffs() weights must be a non-empty 1-d vector")
+        if not np.all(np.isfinite(weights)) or bool(np.any(weights < 0.0)):
+            raise ValueError(f"{self.key}: payoffs() weights must be finite and >= 0")
+        if abs(float(weights.sum()) - 1.0) > 1e-8:
+            raise ValueError(
+                f"{self.key}: payoffs() weights must sum to 1, got {float(weights.sum())!r}"
+            )
+        n_omega = int(weights.shape[0])
+        n_scenarios_max = int(params.get("n_scenarios_max", DEFAULT_N_SCENARIOS_MAX))
+        if n_omega > n_scenarios_max:
+            raise ValueError(
+                f"{self.key}: payoffs() carries {n_omega} scenarios, exceeding the "
+                f"declared n_scenarios_max={n_scenarios_max}"
+            )
+        if set(payoffs_r) != set(names):
+            raise ValueError(
+                f"{self.key}: payoffs() names {sorted(payoffs_r)} do not match "
+                f"instruments() names {sorted(names)}"
+            )
+        r, tranches = {}, {}
+        for name in names:
+            try:
+                arr = np.asarray(payoffs_r[name], dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{self.key}: payoffs()[{name!r}] must be a scenario vector or a "
+                    "matrix of equal-length tranche vectors"
+                ) from exc
+            if arr.ndim == 1:
+                if arr.shape != (n_omega,):
+                    raise ValueError(
+                        f"{self.key}: payoffs()[{name!r}] has shape {arr.shape}, expected "
+                        f"({n_omega},)"
+                    )
+                tranches[name] = 1
+            elif arr.ndim == 2:
+                if arr.shape[0] < 1 or arr.shape[1] != n_omega:
+                    raise ValueError(
+                        f"{self.key}: payoffs()[{name!r}] has shape {arr.shape}, expected "
+                        f"(n_tranches >= 1, {n_omega})"
+                    )
+                tranches[name] = int(arr.shape[0])
+                if tranches[name] == 1:
+                    arr = arr[0]
+            else:
+                raise ValueError(
+                    f"{self.key}: payoffs()[{name!r}] has {arr.ndim} dimensions; a "
+                    "scenario vector or a tranche matrix is expected"
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    f"{self.key}: payoffs()[{name!r}] must be all finite numbers, got {arr!r}"
+                )
+            r[name] = arr
+
+        raw_mean = self.mean_uncertainty(inputs)
+        mean_uncertainty = None
+        if raw_mean is not None:
+            wanted = {"budget", "deviation_below", "deviation_above"}
+            if not isinstance(raw_mean, Mapping) or set(raw_mean) != wanted:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty() must return None or a mapping "
+                    f"carrying exactly {sorted(wanted)!r}, got {raw_mean!r}"
+                )
+            budget = raw_mean["budget"]
+            if not number_ok(budget) or budget <= 0.0:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty budget must be a finite number > 0, "
+                    f"got {budget!r}"
+                )
+            below, above = raw_mean["deviation_below"], raw_mean["deviation_above"]
+            if not isinstance(below, Mapping) or not isinstance(above, Mapping):
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty deviation halves must be mappings"
+                )
+            if set(below) != set(above):
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty deviation names differ: "
+                    f"below={sorted(str(v) for v in below)!r}, "
+                    f"above={sorted(str(v) for v in above)!r}"
+                )
+            uncertain_names = sorted(below)
+            if not uncertain_names:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty carries no names; return None for the "
+                    "nominal model"
+                )
+            unknown = sorted(set(uncertain_names) - set(names))
+            if unknown:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty names {unknown!r} are not live instruments"
+                )
+            halves = {}
+            for label, source in (("deviation_below", below), ("deviation_above", above)):
+                parsed = {}
+                for name in uncertain_names:
+                    values = source[name]
+                    if not isinstance(values, (list, tuple)) or len(values) != tranches[name]:
+                        raise ValueError(
+                            f"{self.key}: mean_uncertainty {label}[{name!r}] must carry "
+                            f"{tranches[name]} tranches, got {values!r}"
+                        )
+                    if any(not number_ok(value) or value < 0.0 for value in values):
+                        raise ValueError(
+                            f"{self.key}: mean_uncertainty {label}[{name!r}] must contain "
+                            f"finite deviations >= 0, got {values!r}"
+                        )
+                    parsed[name] = tuple(float(value) for value in values)
+                halves[label] = parsed
+            mean_uncertainty = {
+                "budget": min(float(budget), float(len(uncertain_names))),
+                "declared_budget": float(budget),
+                "names": uncertain_names,
+                **halves,
+            }
+
+        for key in ("wealth_lo", "wealth_hi", "cash", "buying_power", "sale_credit"):
+            if key not in account or not number_ok(account[key]):
+                raise ValueError(
+                    f"{self.key}: account[{key!r}] must be a finite number, got "
+                    f"{account.get(key)!r}"
+                )
+        if "cash_reserve" in account and not number_ok(account["cash_reserve"]):
+            raise ValueError(
+                f"{self.key}: account['cash_reserve'] must be a finite number when given, "
+                f"got {account['cash_reserve']!r}"
+            )
+        if account.get("gross_limit") is not None and not number_ok(account["gross_limit"]):
+            raise ValueError(
+                f"{self.key}: account['gross_limit'] must be a finite number or null "
+                f"(unconstrained), got {account['gross_limit']!r}"
+            )
+        carried = account.get("carried_wealth", 0.0)
+        if not number_ok(carried) or carried < 0.0:
+            raise ValueError(
+                f"{self.key}: account['carried_wealth'] must be a finite number >= 0 "
+                f"when given, got {carried!r} — it is wealth held outside this solve, "
+                "never cash"
+            )
+        carried = float(carried)
+        cash0 = float(account["cash"])
+        buying_power0 = float(account["buying_power"])
+        sale_credit = float(account["sale_credit"])
+        cash_reserve = float(account.get("cash_reserve", 0.0))
+        gross_limit = account.get("gross_limit")
+        w0_mark = (
+            cash0
+            + sum(float(rows[name]["price"]) * float(rows[name]["held"]) for name in names)
+            + carried
+        )
+        if w0_mark <= 0.0:
+            raise ValueError(
+                f"{self.key}: account net worth (cash + mark value of held instruments) "
+                f"must be > 0, got {w0_mark!r} — the tangent-plane utility objective "
+                "(tangent_utility, gamma-relative to this mark) is undefined at or below "
+                "zero wealth; a zero/negative-cash account with nothing held cannot be "
+                "sized, and must refuse by name rather than reach the solver as NaN"
+            )
+        w_lo, w_hi = float(account["wealth_lo"]), float(account["wealth_hi"])
+        if w_lo <= 0.0:
+            raise ValueError(
+                f"{self.key}: account wealth_lo {w_lo!r} must be > 0 — tangent_utility "
+                "(and the tangent knots built from this interval) is undefined at or below "
+                "zero wealth"
+            )
+        if not w_lo < w_hi:
+            raise ValueError(
+                f"{self.key}: account wealth_lo {w_lo!r} must be < wealth_hi {w_hi!r}"
+            )
+
+        gamma = float(params["risk_aversion_gamma"])
+        n_tangents = int(params.get("n_tangents", DEFAULT_N_TANGENTS))
+        cardinality = None if params["cardinality"] is None else int(params["cardinality"])
+        min_ticket = float(params["min_ticket"])
+        cvar_alpha = float(params["cvar_alpha"])
+        cvar_limit = params["cvar_limit"]
+        omega_ix = list(range(n_omega))
+        buy_room = {
+            name: int(float(rows[name]["x_max"]) / float(rows[name]["price"]))
+            + int(rows[name]["held"])
+            + 1
+            if float(rows[name]["price"]) > 0
+            else int(rows[name]["held"]) + 1
+            for name in names
+        }
+        knots = np.linspace(w_lo, w_hi, n_tangents)
+        utility, slope = tangent_utility(knots, w0_mark, gamma)
+        return {
+            "names": names,
+            "rows": rows,
+            "account": account,
+            "weights": weights,
+            "r": r,
+            "tranches": tranches,
+            "mean_uncertainty": mean_uncertainty,
+            "cash0": cash0,
+            "buying_power0": buying_power0,
+            "sale_credit": sale_credit,
+            "cash_reserve": cash_reserve,
+            "gross_limit": None if gross_limit is None else float(gross_limit),
+            "carried_wealth": carried,
+            "w0_mark": w0_mark,
+            "w_lo": w_lo,
+            "w_hi": w_hi,
+            "gamma": gamma,
+            "n_tangents": n_tangents,
+            "cardinality": cardinality,
+            "min_ticket": min_ticket,
+            "cvar_alpha": cvar_alpha,
+            "cvar_limit": cvar_limit,
+            "omega_ix": omega_ix,
+            "buy_room": buy_room,
+            "tangent_intercept": [
+                float(utility[j] - slope[j] * knots[j]) for j in range(n_tangents)
+            ],
+            "tangent_slope": [float(slope[j]) for j in range(n_tangents)],
+        }
 
     def build_model(self, inputs, params):
         import numpy as np
@@ -1091,6 +1468,7 @@ class ScenarioUtilitySolve(PyomoSolve):
             NonNegativeIntegers,
             NonNegativeReals,
             Objective,
+            Param,
             Reals,
             Var,
             maximize,
@@ -1161,6 +1539,67 @@ class ScenarioUtilitySolve(PyomoSolve):
                     f"{self.key}: payoffs()[{i!r}] must be all finite numbers, got {arr!r}"
                 )
             r[i] = arr
+
+        raw_mean = self.mean_uncertainty(inputs)
+        mean_uncertainty = None
+        if raw_mean is not None:
+            wanted = {"budget", "deviation_below", "deviation_above"}
+            if not isinstance(raw_mean, Mapping) or set(raw_mean) != wanted:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty() must return None or a mapping "
+                    f"carrying exactly {sorted(wanted)!r}, got {raw_mean!r}"
+                )
+            budget = raw_mean["budget"]
+            if not number_ok(budget) or budget <= 0.0:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty budget must be a finite number > 0, "
+                    f"got {budget!r}"
+                )
+            below, above = raw_mean["deviation_below"], raw_mean["deviation_above"]
+            if not isinstance(below, Mapping) or not isinstance(above, Mapping):
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty deviation halves must be mappings"
+                )
+            if set(below) != set(above):
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty deviation names differ: "
+                    f"below={sorted(str(v) for v in below)!r}, "
+                    f"above={sorted(str(v) for v in above)!r}"
+                )
+            uncertain_names = sorted(below)
+            if not uncertain_names:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty carries no names; return None for the "
+                    "nominal model"
+                )
+            unknown = sorted(set(uncertain_names) - set(names))
+            if unknown:
+                raise ValueError(
+                    f"{self.key}: mean_uncertainty names {unknown!r} are not live instruments"
+                )
+            halves = {}
+            for label, source in (("deviation_below", below), ("deviation_above", above)):
+                parsed = {}
+                for i in uncertain_names:
+                    values = source[i]
+                    if not isinstance(values, (list, tuple)) or len(values) != tranches[i]:
+                        raise ValueError(
+                            f"{self.key}: mean_uncertainty {label}[{i!r}] must carry "
+                            f"{tranches[i]} tranches, got {values!r}"
+                        )
+                    if any(not number_ok(v) or v < 0.0 for v in values):
+                        raise ValueError(
+                            f"{self.key}: mean_uncertainty {label}[{i!r}] must contain "
+                            f"finite deviations >= 0, got {values!r}"
+                        )
+                    parsed[i] = tuple(float(v) for v in values)
+                halves[label] = parsed
+            mean_uncertainty = {
+                "budget": min(float(budget), float(len(uncertain_names))),
+                "declared_budget": float(budget),
+                "names": uncertain_names,
+                **halves,
+            }
 
         for key in ("wealth_lo", "wealth_hi", "cash", "buying_power", "sale_credit"):
             if key not in account or not number_ok(account[key]):
@@ -1243,8 +1682,75 @@ class ScenarioUtilitySolve(PyomoSolve):
             else int(rows[i]["held"]) + 1
             for i in names
         }
+        knots = np.linspace(w_lo, w_hi, n_tangents)
+        u, du = tangent_utility(knots, w0_mark, gamma)
 
         model = ConcreteModel(name="scenario-utility-solve")
+        all_tranche_ix = [(i, k) for i in names for k in range(tranches[i])]
+        unit_ix = [(i, k, o) for i, k in all_tranche_ix for o in omega_ix]
+
+        def _unit_value_now(i, k, o):
+            row_return = float(r[i][o]) if tranches[i] == 1 else float(r[i][k][o])
+            return float(rows[i]["price"]) * (1.0 + row_return) - float(
+                rows[i].get("exit_cost_per_share", 0.0)
+            )
+
+        model.input_price = Param(
+            names, mutable=True, initialize=lambda m, i: float(rows[i]["price"])
+        )
+        model.input_held = Param(
+            names, mutable=True, initialize=lambda m, i: int(rows[i]["held"])
+        )
+        model.input_x_max = Param(
+            names, mutable=True, initialize=lambda m, i: float(rows[i]["x_max"])
+        )
+        model.input_cost_buy = Param(
+            names, mutable=True, initialize=lambda m, i: float(rows[i]["cost_buy"])
+        )
+        model.input_cost_sell = Param(
+            names, mutable=True, initialize=lambda m, i: float(rows[i]["cost_sell"])
+        )
+        model.input_exit_cost = Param(
+            names,
+            mutable=True,
+            initialize=lambda m, i: float(rows[i].get("exit_cost_per_share", 0.0)),
+        )
+        model.input_buy_room = Param(
+            names, mutable=True, initialize=lambda m, i: buy_room[i]
+        )
+        model.input_cash = Param(mutable=True, initialize=cash0)
+        model.input_buying_power = Param(mutable=True, initialize=buying_power0)
+        model.input_sale_credit = Param(mutable=True, initialize=sale_credit)
+        model.input_cash_reserve = Param(mutable=True, initialize=cash_reserve)
+        model.input_carried_wealth = Param(mutable=True, initialize=carried)
+        model.input_w0_mark = Param(mutable=True, initialize=w0_mark)
+        model.input_scenario_weight = Param(
+            omega_ix, mutable=True, initialize=lambda m, o: float(weights[o])
+        )
+        model.input_unit_value = Param(
+            unit_ix, mutable=True, initialize=lambda m, i, k, o: _unit_value_now(i, k, o)
+        )
+        model.input_tangent_intercept = Param(
+            range(n_tangents),
+            mutable=True,
+            initialize=lambda m, j: float(u[j] - du[j] * knots[j]),
+        )
+        model.input_tangent_slope = Param(
+            range(n_tangents), mutable=True, initialize=lambda m, j: float(du[j])
+        )
+        if gross_limit is not None:
+            model.input_gross_limit = Param(mutable=True, initialize=float(gross_limit))
+        if mean_uncertainty is not None:
+            model.input_robust_budget = Param(
+                mutable=True, initialize=float(mean_uncertainty["budget"])
+            )
+            model.input_mean_deviation = Param(
+                [(i, k) for i in mean_uncertainty["names"] for k in range(tranches[i])],
+                mutable=True,
+                initialize=lambda m, i, k: float(
+                    mean_uncertainty["deviation_below"][i][k]
+                ),
+            )
         model.b = Var(names, domain=NonNegativeIntegers)
         model.s = Var(
             names, domain=NonNegativeIntegers,
@@ -1269,19 +1775,19 @@ class ScenarioUtilitySolve(PyomoSolve):
         model.z = Var(omega_ix, domain=NonNegativeReals)
 
         model.q = Expression(
-            names, rule=lambda m, i: float(rows[i]["held"]) + m.b[i] - m.s[i]
+            names, rule=lambda m, i: m.input_held[i] + m.b[i] - m.s[i]
         )
-        model.x = Expression(names, rule=lambda m, i: float(rows[i]["price"]) * m.q[i])
+        model.x = Expression(names, rule=lambda m, i: m.input_price[i] * m.q[i])
 
         model.nonneg_q = Constraint(names, rule=lambda m, i: m.q[i] >= 0)
         model.buy_only = Constraint(
-            names, rule=lambda m, i: m.b[i] <= buy_room[i] * m.d[i]
+            names, rule=lambda m, i: m.b[i] <= m.input_buy_room[i] * m.d[i]
         )
         model.sell_only = Constraint(
-            names, rule=lambda m, i: m.s[i] <= int(rows[i]["held"]) * (1 - m.d[i])
+            names, rule=lambda m, i: m.s[i] <= m.input_held[i] * (1 - m.d[i])
         )
         model.elig_hi = Constraint(
-            names, rule=lambda m, i: m.x[i] <= float(rows[i]["x_max"]) * m.y[i]
+            names, rule=lambda m, i: m.x[i] <= m.input_x_max[i] * m.y[i]
         )
         model.elig_lo = Constraint(
             names, rule=lambda m, i: m.x[i] >= min_ticket * m.d[i]
@@ -1292,28 +1798,29 @@ class ScenarioUtilitySolve(PyomoSolve):
             )
 
         model.cash_after = Expression(
-            expr=cash0
+            expr=model.input_cash
             + sum(
-                (float(rows[i]["price"]) - float(rows[i]["cost_sell"])) * model.s[i]
-                - (float(rows[i]["price"]) + float(rows[i]["cost_buy"])) * model.b[i]
+                (model.input_price[i] - model.input_cost_sell[i]) * model.s[i]
+                - (model.input_price[i] + model.input_cost_buy[i]) * model.b[i]
                 for i in names
             )
         )
-        model.cash_floor = Constraint(expr=model.cash_after >= cash_reserve)
+        model.cash_floor = Constraint(expr=model.cash_after >= model.input_cash_reserve)
         model.buying_power = Constraint(
             expr=sum(
-                (float(rows[i]["price"]) + float(rows[i]["cost_buy"])) * model.b[i] for i in names
+                (model.input_price[i] + model.input_cost_buy[i]) * model.b[i]
+                for i in names
             )
-            <= buying_power0
-            + sale_credit
+            <= model.input_buying_power
+            + model.input_sale_credit
             * sum(
-                (float(rows[i]["price"]) - float(rows[i]["cost_sell"])) * model.s[i]
+                (model.input_price[i] - model.input_cost_sell[i]) * model.s[i]
                 for i in names
             )
         )
         if gross_limit is not None:
             model.gross_exposure = Constraint(
-                expr=sum(model.x[i] for i in names) <= float(gross_limit)
+                expr=sum(model.x[i] for i in names) <= model.input_gross_limit
             )
 
         # Exit-horizon tranches (ADR-0188 formulation B): a name whose payoff
@@ -1329,45 +1836,69 @@ class ScenarioUtilitySolve(PyomoSolve):
                 rule=lambda m, i: sum(m.e[i, k] for k in range(tranches[i])) == m.q[i],
             )
 
-        def _unit_value(i, k, o):
-            row_return = float(r[i][o]) if tranches[i] == 1 else float(r[i][k][o])
-            return float(rows[i]["price"]) * (1.0 + row_return) - float(
-                rows[i].get("exit_cost_per_share", 0.0)
+        if mean_uncertainty is not None:
+            uncertain_names = mean_uncertainty["names"]
+            model.robust_theta = Var(domain=NonNegativeReals)
+            model.robust_rho = Var(uncertain_names, domain=NonNegativeReals)
+
+            def _impact(m, i):
+                if tranches[i] == 1:
+                    return m.input_price[i] * m.input_mean_deviation[i, 0] * m.q[i]
+                return m.input_price[i] * sum(
+                    m.input_mean_deviation[i, k] * m.e[i, k]
+                    for k in range(tranches[i])
+                )
+
+            model.robust_impact = Expression(uncertain_names, rule=_impact)
+            model.robust_counterpart = Constraint(
+                uncertain_names,
+                rule=lambda m, i: m.robust_theta + m.robust_rho[i]
+                >= m.robust_impact[i],
+            )
+            model.robust_protection = Expression(
+                expr=model.input_robust_budget * model.robust_theta
+                + sum(model.robust_rho[i] for i in uncertain_names)
             )
 
         def _wealth_rule(m, o):
-            return m.W[o] == m.cash_after + carried + sum(
+            nominal = m.cash_after + m.input_carried_wealth + sum(
                 (
-                    m.q[i] * _unit_value(i, 0, o)
+                    m.q[i] * m.input_unit_value[i, 0, o]
                     if tranches[i] == 1
-                    else sum(m.e[i, k] * _unit_value(i, k, o) for k in range(tranches[i]))
+                    else sum(
+                        m.e[i, k] * m.input_unit_value[i, k, o]
+                        for k in range(tranches[i])
+                    )
                 )
                 for i in names
             )
+            protection = m.robust_protection if mean_uncertainty is not None else 0.0
+            return m.W[o] == nominal - protection
 
         model.wealth = Constraint(omega_ix, rule=_wealth_rule)
 
-        knots = np.linspace(w_lo, w_hi, n_tangents)
-        u, du = tangent_utility(knots, w0_mark, gamma)
         tangent_ix = [(o, j) for o in omega_ix for j in range(n_tangents)]
         model.tangent = Constraint(
             tangent_ix,
             rule=lambda m, o, j: m.t[o]
-            <= float(u[j]) + float(du[j]) * (m.W[o] - float(knots[j])),
+            <= m.input_tangent_intercept[j] + m.input_tangent_slope[j] * m.W[o],
         )
 
         model.cvar_row = Constraint(
-            omega_ix, rule=lambda m, o: m.z[o] >= (w0_mark - m.W[o]) - m.eta
+            omega_ix,
+            rule=lambda m, o: m.z[o] >= (m.input_w0_mark - m.W[o]) - m.eta,
         )
         if cvar_limit is not None:
             model.cvar_cap = Constraint(
                 expr=model.eta
-                + (1.0 / (1.0 - cvar_alpha)) * sum(float(weights[o]) * model.z[o] for o in omega_ix)
+                + (1.0 / (1.0 - cvar_alpha))
+                * sum(model.input_scenario_weight[o] * model.z[o] for o in omega_ix)
                 <= float(cvar_limit)
             )
 
         model.objective = Objective(
-            expr=sum(float(weights[o]) * model.t[o] for o in omega_ix), sense=maximize
+            expr=sum(model.input_scenario_weight[o] * model.t[o] for o in omega_ix),
+            sense=maximize,
         )
 
         # Underscore-prefixed: plain bookkeeping for extract(), invisible
@@ -1395,10 +1926,92 @@ class ScenarioUtilitySolve(PyomoSolve):
             "gamma": gamma,
             "tranches": tranches,
             "carried_wealth": carried,
+            "mean_uncertainty": mean_uncertainty,
         }
 
         self.domain_constraints(model, inputs, params)
         return model
+
+    @staticmethod
+    def _metadata(prepared):
+        """Complete current-call snapshot used only by exact extraction."""
+        return {
+            "names": list(prepared["names"]),
+            "rows": prepared["rows"],
+            "weights": prepared["weights"],
+            "r": prepared["r"],
+            "w_lo": prepared["w_lo"],
+            "w_hi": prepared["w_hi"],
+            "w0_mark": prepared["w0_mark"],
+            "cash0": prepared["cash0"],
+            "buying_power0": prepared["buying_power0"],
+            "sale_credit": prepared["sale_credit"],
+            "cash_reserve": prepared["cash_reserve"],
+            "gross_limit": prepared["gross_limit"],
+            "cardinality": prepared["cardinality"],
+            "min_ticket": prepared["min_ticket"],
+            "cvar_alpha": prepared["cvar_alpha"],
+            "cvar_limit": prepared["cvar_limit"],
+            "gamma": prepared["gamma"],
+            "tranches": prepared["tranches"],
+            "carried_wealth": prepared["carried_wealth"],
+            "mean_uncertainty": prepared["mean_uncertainty"],
+        }
+
+    def _refresh_model(self, model, inputs, params, prepared):
+        """Replace every mutable coefficient and bound for one cache hit."""
+        names = prepared["names"]
+        rows = prepared["rows"]
+        tranches = prepared["tranches"]
+        returns = prepared["r"]
+        for name in names:
+            row = rows[name]
+            model.input_price[name].set_value(float(row["price"]))
+            model.input_held[name].set_value(int(row["held"]))
+            model.input_x_max[name].set_value(float(row["x_max"]))
+            model.input_cost_buy[name].set_value(float(row["cost_buy"]))
+            model.input_cost_sell[name].set_value(float(row["cost_sell"]))
+            model.input_exit_cost[name].set_value(
+                float(row.get("exit_cost_per_share", 0.0))
+            )
+            model.input_buy_room[name].set_value(prepared["buy_room"][name])
+            model.s[name].setub(int(row["held"]))
+            for k in range(tranches[name]):
+                for outcome in prepared["omega_ix"]:
+                    ret = (
+                        float(returns[name][outcome])
+                        if tranches[name] == 1
+                        else float(returns[name][k][outcome])
+                    )
+                    model.input_unit_value[name, k, outcome].set_value(
+                        float(row["price"]) * (1.0 + ret)
+                        - float(row.get("exit_cost_per_share", 0.0))
+                    )
+        model.input_cash.set_value(prepared["cash0"])
+        model.input_buying_power.set_value(prepared["buying_power0"])
+        model.input_sale_credit.set_value(prepared["sale_credit"])
+        model.input_cash_reserve.set_value(prepared["cash_reserve"])
+        model.input_carried_wealth.set_value(prepared["carried_wealth"])
+        model.input_w0_mark.set_value(prepared["w0_mark"])
+        for outcome, weight in enumerate(prepared["weights"]):
+            model.input_scenario_weight[outcome].set_value(float(weight))
+            model.W[outcome].setlb(prepared["w_lo"])
+            model.W[outcome].setub(prepared["w_hi"])
+        for j in range(prepared["n_tangents"]):
+            model.input_tangent_intercept[j].set_value(
+                prepared["tangent_intercept"][j]
+            )
+            model.input_tangent_slope[j].set_value(prepared["tangent_slope"][j])
+        if prepared["gross_limit"] is not None:
+            model.input_gross_limit.set_value(prepared["gross_limit"])
+        mean = prepared["mean_uncertainty"]
+        if mean is not None:
+            model.input_robust_budget.set_value(mean["budget"])
+            for name in mean["names"]:
+                for k, deviation in enumerate(mean["deviation_below"][name]):
+                    model.input_mean_deviation[name, k].set_value(deviation)
+        model._scn = self._metadata(prepared)
+        self._refresh_domain_constraints(model, inputs, params)
 
     def extract(self, model, results):
         """Read the solved model and recompute every reported number exactly.
@@ -1526,7 +2139,7 @@ class ScenarioUtilitySolve(PyomoSolve):
                 rows[i].get("exit_cost_per_share", 0.0)
             )
 
-        wealth = np.array(
+        nominal_wealth = np.array(
             [
                 cash_after
                 + carried
@@ -1545,6 +2158,33 @@ class ScenarioUtilitySolve(PyomoSolve):
             ],
             dtype=float,
         )
+        mean_uncertainty = meta["mean_uncertainty"]
+        protection = 0.0
+        if mean_uncertainty is not None:
+            from dskit.pipeline.uncertainty_set import BudgetedMeanSet
+
+            impacts = {}
+            below = mean_uncertainty["deviation_below"]
+            for i in mean_uncertainty["names"]:
+                pieces = [float(target.get(i, 0))] if tranches[i] == 1 else allocation[i]
+                impacts[i] = float(rows[i]["price"]) * sum(
+                    float(width) * float(shares)
+                    for width, shares in zip(below[i], pieces)
+                )
+            unit_set = BudgetedMeanSet(
+                nominal={i: 0.0 for i in impacts},
+                deviation_below={i: 1.0 for i in impacts},
+                deviation_above={i: 1.0 for i in impacts},
+                budget=float(mean_uncertainty["budget"]),
+            )
+            protection = float(unit_set.protection(impacts))
+            solved_protection = float(model.robust_protection())
+            if abs(solved_protection - protection) > 1e-6 * max(1.0, protection):
+                raise AssertionError(
+                    f"{self.key}: robust counterpart protection {solved_protection!r} "
+                    f"differs from BudgetedMeanSet.protection {protection!r}"
+                )
+        wealth = nominal_wealth - protection
         if not bool(np.all(wealth > 0.0)):
             raise AssertionError(
                 f"{self.key}: insolvent in some scenario on exact recompute: {wealth!r}"
@@ -1561,23 +2201,33 @@ class ScenarioUtilitySolve(PyomoSolve):
             )
 
         objective = model.objective()
+        metrics = {
+            "objective": float(objective) if objective is not None else 0.0,
+            "expected_utility": expected_utility,
+            "n_held": len(target),
+            "n_traded": len(trades),
+            "gross_exposure": float(gross),
+            "cash_after": float(cash_after),
+            "cvar": cvar,
+            "cvar_eta": cvar_eta,
+            "wealth_min": float(wealth.min()),
+            "wealth_max": float(wealth.max()),
+            "tranches": allocation,
+        }
+        if mean_uncertainty is not None:
+            metrics.update({
+                "robust_protection": protection,
+                "mean_uncertainty_budget": float(mean_uncertainty["declared_budget"]),
+                "mean_uncertainty_budget_effective": float(mean_uncertainty["budget"]),
+                "nominal_wealth_min": float(nominal_wealth.min()),
+                "nominal_wealth_max": float(nominal_wealth.max()),
+                "wealth_lo": float(meta["w_lo"]),
+            })
         return {
             "target": target,
             "trades": trades,
             "cash_after": float(cash_after),
-            "metrics": {
-                "objective": float(objective) if objective is not None else 0.0,
-                "expected_utility": expected_utility,
-                "n_held": len(target),
-                "n_traded": len(trades),
-                "gross_exposure": float(gross),
-                "cash_after": float(cash_after),
-                "cvar": cvar,
-                "cvar_eta": cvar_eta,
-                "wealth_min": float(wealth.min()),
-                "wealth_max": float(wealth.max()),
-                "tranches": allocation,
-            },
+            "metrics": metrics,
         }
 
 

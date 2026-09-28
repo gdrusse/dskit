@@ -22,6 +22,7 @@ its ``reason``.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dskit.evaluation.events import KIND_ORDER, SCHEMA
@@ -44,6 +45,7 @@ _MARK_MODES = ("traded", "all")
 #: forecast of ``y_next``, the next bar's LOG return (``ReturnWindows.
 #: return_kind``), and the account is in US dollars.
 DEFAULT_UNITS = {"score": "log_return", "money": "USD"}
+SHARE_UNITS = {"money": "USD"}
 
 
 def _int_ms(value):
@@ -490,6 +492,175 @@ class ReplayEvents(Node):
         return event
 
 
+class ShareReplayEvents(ReplayEvents):
+    """Map the joint share replay onto ``dskit-eval-v1`` events.
+
+    The share replay already records each fill's original decision instant
+    and each day-close mark snapshot, so this adapter does not retain a
+    second copy of the bar stream.
+    """
+
+    _PARAMS = ("title", "project", "tz")
+    _OPTIONAL = ("criteria", "trials", "model", "units")
+    _LISTS = ("fills", "refused", "skipped", "cash")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require report identity and reject knobs from the lot adapter."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + cls._OPTIONAL)
+        for name in ("title", "project"):
+            value = params.get(name)
+            if not isinstance(value, str) or not value:
+                problems.append(f"{name} is required and must be a non-empty string, got {value!r}")
+        try:
+            ZoneInfo(params.get("tz"))
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            problems.append(f"tz must be an IANA time zone, got {params.get('tz')!r}")
+        criteria = params.get("criteria", [])
+        if not isinstance(criteria, list) or not all(isinstance(item, dict) for item in criteria):
+            problems.append(f"criteria must be a list of objects, got {criteria!r}")
+        trials = params.get("trials", 1)
+        if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
+            problems.append(f"trials must be an int >= 1, got {trials!r}")
+        model = params.get("model", "")
+        if not isinstance(model, str):
+            problems.append(f"model must be a string, got {model!r}")
+        units = params.get("units", SHARE_UNITS)
+        if not isinstance(units, dict) or not all(isinstance(v, str) for v in units.values()):
+            problems.append(f"units must be an object of strings, got {units!r}")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the joint simulation's four row ports and metadata."""
+        problems = [
+            f"{port} must be a list of rows, got {type(inputs.get(port)).__name__}"
+            for port in self._LISTS if not isinstance(inputs.get(port), (list, tuple))
+        ]
+        if not isinstance(inputs.get("metadata"), dict):
+            problems.append(
+                f"metadata must be an object, got {type(inputs.get('metadata')).__name__}"
+            )
+        return problems
+
+    def run(self, ctx, inputs):
+        """Return one valid, linked event log for the joint share replay."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError("; ".join(problems))
+        tz = ZoneInfo(self.params["tz"])
+        body = []
+        activity = defaultdict(list)
+        model = self.params.get("model")
+
+        for row in inputs["fills"]:
+            at = int(row["asof_ms"])
+            decision_at = int(row.get("decision_ms") or at)
+            fill_id = row["fill_id"]
+            decision_id = f"d-{fill_id}"
+            order_id = f"o-{fill_id}"
+            reason = row.get("reason") or (
+                "mio_target" if row.get("origin") == "decision" else row.get("origin", "fill")
+            )
+            decision = {
+                "decision_id": decision_id,
+                "chosen": row["symbol"],
+                "action": "enter" if row["side"] == "buy" else "exit",
+                "reason": reason,
+            }
+            if model:
+                decision["model"] = model
+            body.append((decision_at, "decision", row["symbol"], decision))
+            body.append((decision_at, "order", row["symbol"], {
+                "order_id": order_id,
+                "decision_id": decision_id,
+                "side": row["side"],
+                "qty": row["qty"],
+            }))
+            body.append((at, "fill", row["symbol"], {
+                "fill_id": fill_id,
+                "order_id": order_id,
+                "side": row["side"],
+                "qty": row["qty"],
+                "price": row["price"],
+                "fee": row["fee"],
+                "tag": row.get("origin", row["kind"]),
+            }))
+            activity[self._day(at, tz)].extend((decision_at, at))
+
+        for kind, port in (("refusal", "refused"), ("skip", "skipped")):
+            for index, row in enumerate(inputs[port]):
+                at = int(row["asof_ms"])
+                decision_at = int(row.get("decision_ms") or at)
+                symbol = row.get("symbol")
+                decision_id = f"d-{kind}-{index}-{symbol or 'portfolio'}-{decision_at}"
+                decision = {
+                    "decision_id": decision_id,
+                    "chosen": symbol,
+                    "action": "refuse" if kind == "refusal" else "skip",
+                    "reason": row["reason"],
+                }
+                if model:
+                    decision["model"] = model
+                body.append((decision_at, "decision", symbol, decision))
+                body.append((at, kind, symbol, {
+                    "decision_id": decision_id,
+                    "reason": row["reason"],
+                }))
+                activity[self._day(at, tz)].extend((decision_at, at))
+
+        for row in inputs["cash"]:
+            day = row["date"]
+            stamps = activity.get(day, ())
+            first = min(stamps) if stamps else self._session_stamp(day, time(9, 30), tz)
+            last = max(stamps) if stamps else self._session_stamp(day, time(16, 0), tz)
+            contribution = float(row["contribution"])
+            if contribution:
+                body.append((first, "cashflow", None, {
+                    "amount": contribution,
+                    "rule": "simulation_cash_policy",
+                }))
+            for symbol, price in sorted(row.get("marks", {}).items()):
+                if float(price) > 0.0:
+                    body.append((last, "mark", symbol, {"price": float(price)}))
+
+        self._share_metadata = inputs["metadata"]
+        try:
+            return {"events": self._envelope(ctx, body)}
+        finally:
+            self._share_metadata = None
+
+    def _run_start(self, ctx, ledger=None):
+        """Use share-account units by default."""
+        del ledger
+        params = self.params
+        event = {
+            "run_id": params["title"],
+            "title": params["title"],
+            "project": params["project"],
+            "tz": params["tz"],
+            "criteria": list(params.get("criteria", [])),
+            "trials": params.get("trials", 1),
+            "units": dict(params.get("units", SHARE_UNITS)),
+        }
+        event.update(run_dir_provenance(getattr(ctx, "run_dir", None)))
+        robust = (getattr(self, "_share_metadata", None) or {}).get("robust_protection")
+        if isinstance(robust, dict):
+            event.setdefault("diagnostics", {})["robust_protection"] = dict(robust)
+            event.setdefault("sources", {})["robust_protection"] = (
+                "aggregate of exact post-solve Bertsimas-Sim protection recomputations"
+            )
+        return event
+
+    @staticmethod
+    def _day(stamp, tz):
+        return datetime.fromtimestamp(stamp / 1000, tz).date().isoformat()
+
+    @staticmethod
+    def _session_stamp(day, wall, tz):
+        return int(datetime.combine(date.fromisoformat(day), wall, tzinfo=tz).timestamp() * 1000)
+
+
 def _finding(stored):
     """Return a stored ``Finding`` object as an event finding, decimals as numbers."""
     out = {key: stored.get(key) for key in ("guard", "measure", "verdict", "reason", "window",
@@ -501,6 +672,7 @@ def _finding(stored):
 
 NODE_KINDS = {
     "intraday_equities-replay-events": ReplayEvents,
+    "intraday_equities-share-replay-events": ShareReplayEvents,
 }
 
 for _name, _cls in NODE_KINDS.items():

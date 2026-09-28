@@ -52,6 +52,31 @@ UNCERTAINTY_IDS = {
     "false_signal": "fs-calibration-0001",
     "outcome": "outcome-calibration-0001",
 }
+PATH_UNCERTAINTY_IDS = {
+    **UNCERTAINTY_IDS,
+    "mean": "mean-calibration-0001",
+}
+MEAN_METHOD = "dskit.pipeline.mean_interval:ClusterBootstrapInterval"
+PATH_MEAN_INTERVALS = [
+    {
+        "mean": 0.2,
+        "standard_error": 0.1,
+        "low": -0.1,
+        "high": 0.5,
+        "level": 0.95,
+        "independent_units": 12,
+        "method": MEAN_METHOD,
+    },
+    {
+        "mean": 0.4,
+        "standard_error": 0.2,
+        "low": -0.2,
+        "high": 0.8,
+        "level": 0.95,
+        "independent_units": 12,
+        "method": MEAN_METHOD,
+    },
+]
 
 
 def _input_row(entity, **overrides):
@@ -87,12 +112,14 @@ def _input_row(entity, **overrides):
 def _bundle(rows=None):
     from intraday_equities.forecast_bundle import ForecastBundle
 
+    materialized = [_input_row("AAPL"), _input_row("MSFT")] if rows is None else rows
+    uncertainty = PATH_UNCERTAINTY_IDS if materialized and "mean_interval_path" in materialized[0] else UNCERTAINTY_IDS
     return ForecastBundle(
         RELEASE,
-        [_input_row("AAPL"), _input_row("MSFT")] if rows is None else rows,
+        materialized,
         producer=BUNDLE_PRODUCER,
         model_manifest_sha256=MODEL_MANIFEST_SHA256,
-        uncertainty=dict(UNCERTAINTY_IDS),
+        uncertainty=dict(uncertainty),
     )
 
 
@@ -723,8 +750,10 @@ def _path_row(entity, **overrides):
             "pi_hat_path": list(PATH_PI_HAT),
             "pi_widened_path": list(PATH_PI_WIDENED),
             "scenarios_path": [list(step) for step in PATH_SCENARIOS],
+            "mean_interval_path": [dict(interval) for interval in PATH_MEAN_INTERVALS],
         }
     )
+    row["known_at"]["mean_interval"] = ASOF_MS - 500_000
     row.update(overrides)
     return row
 
@@ -747,19 +776,21 @@ class TestPathRows:
         assert _bundle_problems(bundle.rows) == []
         for out in bundle.rows:
             assert out["lead"] == 1
-            assert out["mu_gross"] == pytest.approx(gross_return(0.5, 0.0012, 1))
+            assert out["mu_gross"] == pytest.approx(
+                gross_return(0.5 + PATH_MEAN_INTERVALS[0]["mean"], 0.0012, 1)
+            )
             assert "yhat_path" not in out  # label units are consumed, never re-offered
 
     def test_expected_returns_follow_the_admitted_heads_then_go_flat(self):
         out = _bundle([_path_row("AAPL")]).rows[0]
         path = out["mu_gross_path"]
         assert len(path) == 4
-        assert path[0] == pytest.approx(gross_return(0.5, 0.0012, 1))
-        assert path[1] == pytest.approx(gross_return(0.8, 0.0012, 2))
+        assert path[0] == pytest.approx(gross_return(0.5 + 0.2, 0.0012, 1))
+        assert path[1] == pytest.approx(gross_return(0.8 + 0.4, 0.0012, 2))
         # Zero expected increment past the admitted cap (owner ruling B(a)):
         # the unadmitted heads' predictions are never used.
-        assert path[2] == path[1]
-        assert path[3] == path[1]
+        assert path[2] == pytest.approx(path[1])
+        assert path[3] == pytest.approx(path[1])
 
     def test_every_step_is_recentered_to_its_own_false_signal_haircut(self):
         out = _bundle([_path_row("AAPL")]).rows[0]
@@ -768,6 +799,24 @@ class TestPathRows:
             assert _weighted_mean(out["weights"], out["scenarios_path"][k]) == pytest.approx(
                 haircut * out["mu_gross_path"][k]
             )
+
+    def test_mean_confidence_bounds_become_asymmetric_simple_return_deviations(self):
+        out = _bundle([_path_row("AAPL")]).rows[0]
+        for k in (1, 2):
+            interval = PATH_MEAN_INTERVALS[k - 1]
+            center = gross_return(PATH_YHAT[k - 1] + interval["mean"], 0.0012, k)
+            low = gross_return(PATH_YHAT[k - 1] + interval["low"], 0.0012, k)
+            high = gross_return(PATH_YHAT[k - 1] + interval["high"], 0.0012, k)
+            haircut = 1.0 - PATH_PI_HAT[k - 1]
+            assert out["mean_deviation_below_path"][k - 1] == pytest.approx(haircut * (center - low))
+            assert out["mean_deviation_above_path"][k - 1] == pytest.approx(haircut * (high - center))
+        assert out["mean_deviation_below_path"][2:] == pytest.approx(
+            [out["mean_deviation_below_path"][1]] * 2
+        )
+        assert out["mean_deviation_above_path"][2:] == pytest.approx(
+            [out["mean_deviation_above_path"][1]] * 2
+        )
+        assert out["sigma_t"] == 0.0012
 
     def test_dispersion_keeps_growing_past_the_cap(self):
         out = _bundle([_path_row("AAPL")]).rows[0]
@@ -834,7 +883,6 @@ class TestPathRows:
             {"admitted_horizon": 0},
             {"admitted_horizon": True},
             {"plan_horizon": True},
-            {"plan_horizon": 0},
             {"plan_horizon": 5},
             {"plan_horizon": 2.0},
             {"pi_hat_path": [0.10]},
@@ -851,6 +899,10 @@ class TestPathRows:
     def test_a_malformed_path_refuses_by_entity(self, overrides):
         with pytest.raises(ValueError, match="AAPL"):
             _bundle([_path_row("AAPL", **overrides)])
+
+    def test_a_zero_plan_remains_authenticated_mandatory_exit_evidence(self):
+        out = _bundle([_path_row("AAPL", plan_horizon=0)]).rows[0]
+        assert out["plan_horizon"] == 0
 
     def test_pi_hat_path_above_pi_widened_path_refuses(self):
         with pytest.raises(ValueError, match="pi_hat_path"):
@@ -893,5 +945,35 @@ class TestPathRows:
                 "pi_hat_path",
                 "pi_widened_path",
                 "scenarios_path",
+                "mean_interval_path",
             )
         )
+
+    def test_path_rows_require_the_mean_artifact_and_stamp_but_flat_rows_do_not(self):
+        with pytest.raises(ValueError, match="mean"):
+            from intraday_equities.forecast_bundle import ForecastBundle
+
+            ForecastBundle(
+                RELEASE,
+                [_path_row("AAPL")],
+                producer=BUNDLE_PRODUCER,
+                model_manifest_sha256=MODEL_MANIFEST_SHA256,
+                uncertainty=dict(UNCERTAINTY_IDS),
+            )
+        flat = _input_row("AAPL")
+        flat["known_at"]["mean_interval"] = ASOF_MS - 500_000
+        with pytest.raises(ValueError, match="mean_interval"):
+            _bundle([flat])
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            [],
+            PATH_MEAN_INTERVALS[:1],
+            [{**PATH_MEAN_INTERVALS[0], "mean": float("nan")}, PATH_MEAN_INTERVALS[1]],
+            [{**PATH_MEAN_INTERVALS[0], "low": 0.3}, PATH_MEAN_INTERVALS[1]],
+        ],
+    )
+    def test_a_malformed_mean_interval_path_refuses(self, value):
+        with pytest.raises(ValueError, match="mean_interval_path"):
+            _bundle([_path_row("AAPL", mean_interval_path=value)])

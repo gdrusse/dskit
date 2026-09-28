@@ -623,6 +623,13 @@ class TwoNameSolve(ScenarioUtilitySolve):
         pass
 
 
+class RobustTwoNameSolve(TwoNameSolve):
+    """The same fixture with an opt-in budgeted mean-error set."""
+
+    def mean_uncertainty(self, inputs):
+        return inputs.get("mean_uncertainty")
+
+
 def _su_fixture(**overrides):
     names = ["AAA", "BBB"]
     rows = {
@@ -1256,6 +1263,396 @@ class TestScenarioUtilityTranches:
         fixture["account"]["carried_wealth"] = bad
         with pytest.raises(ValueError, match="carried_wealth"):
             _su_node().run(_ctx(tmp_path), fixture)
+
+
+class TestScenarioUtilityMeanRobustness:
+    """Bertsimas-Sim mean uncertainty is opt-in, shared by every scenario,
+    and budgeted by name rather than by fractional exit tranche."""
+
+    @staticmethod
+    def _node():
+        return RobustTwoNameSolve(
+            "robust", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0}
+        )
+
+    @staticmethod
+    def _fixture(budget=1.5):
+        fixture = _su_fixture()
+        fixture["r"] = {
+            "AAA": [[0.08, 0.08], [0.10, 0.10]],
+            "BBB": [0.06, 0.06],
+        }
+        fixture["mean_uncertainty"] = {
+            "budget": budget,
+            "deviation_below": {"AAA": [0.01, 0.03], "BBB": [0.02]},
+            # Deliberately asymmetric: long-only target shares make only
+            # the downward half adverse, but the exact set still carries both.
+            "deviation_above": {"AAA": [0.07, 0.09], "BBB": [0.08]},
+        }
+        return fixture
+
+    def test_the_default_hook_keeps_the_nominal_output_contract_exact(self, tmp_path):
+        out = _su_node(cvar_limit=None).run(_ctx(tmp_path), _su_fixture())
+        assert "robust_protection" not in out["metrics"]
+        assert "nominal_wealth_min" not in out["metrics"]
+        assert "wealth_lo" not in out["metrics"]
+
+    @pytest.mark.parametrize("budget", [1.0, 1.5, 2.0])
+    def test_exact_protection_matches_budgeted_mean_set_by_name(self, tmp_path, budget):
+        from dskit.pipeline.uncertainty_set import BudgetedMeanSet
+
+        fixture = self._fixture(budget)
+        out = self._node().run(_ctx(tmp_path), fixture)
+        target = out["target"]
+        tranches = out["metrics"]["tranches"]
+        impacts = {
+            "AAA": 100.0
+            * sum(
+                width * shares
+                for width, shares in zip(
+                    fixture["mean_uncertainty"]["deviation_below"]["AAA"],
+                    tranches["AAA"],
+                )
+            ),
+            "BBB": 50.0
+            * fixture["mean_uncertainty"]["deviation_below"]["BBB"][0]
+            * target.get("BBB", 0),
+        }
+        exact = BudgetedMeanSet(
+            nominal={name: 0.0 for name in impacts},
+            deviation_below={name: 1.0 for name in impacts},
+            deviation_above={name: 1.0 for name in impacts},
+            budget=min(budget, len(impacts)),
+        ).protection(impacts)
+        assert out["metrics"]["robust_protection"] == pytest.approx(exact)
+        assert out["metrics"]["nominal_wealth_min"] - out["metrics"]["wealth_min"] == pytest.approx(exact)
+        assert out["metrics"]["nominal_wealth_max"] - out["metrics"]["wealth_max"] == pytest.approx(exact)
+
+    def test_fractional_tranche_splitting_cannot_dilute_one_names_component(self, tmp_path):
+        class SplitRobust(RobustTwoNameSolve):
+            def domain_constraints(self, model, inputs, params):
+                from pyomo.environ import Constraint
+
+                model.equal_split = Constraint(expr=2.0 * model.e["AAA", 0] == model.q["AAA"])
+
+        fixture = self._fixture(1.0)
+        fixture["names"] = ["AAA"]
+        fixture["rows"] = {"AAA": fixture["rows"]["AAA"]}
+        fixture["r"] = {"AAA": [[0.08, 0.08], [0.08, 0.08]]}
+        fixture["mean_uncertainty"] = {
+            "budget": 1.0,
+            "deviation_below": {"AAA": [0.02, 0.02]},
+            "deviation_above": {"AAA": [0.03, 0.03]},
+        }
+        out = SplitRobust(
+            "robust", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0}
+        ).run(_ctx(tmp_path), fixture)
+        shares = out["target"]["AAA"]
+        assert 0.0 < out["metrics"]["tranches"]["AAA"][0] < shares
+        assert out["metrics"]["robust_protection"] == pytest.approx(
+            100.0 * 0.02 * shares
+        )
+
+    def test_cvar_reads_robust_not_nominal_wealth(self, tmp_path):
+        fixture = self._fixture(1.0)
+        out = self._node().run(_ctx(tmp_path), fixture)
+        w0 = fixture["account"]["cash"]
+        protection = out["metrics"]["robust_protection"]
+        # Both scenario columns are identical, so CVaR is exactly the one
+        # robust loss: nominal loss plus the shared protection scalar.
+        nominal_loss = w0 - out["metrics"]["nominal_wealth_min"]
+        assert out["metrics"]["cvar"] == pytest.approx(nominal_loss + protection)
+        assert out["metrics"]["wealth_lo"] == fixture["account"]["wealth_lo"]
+
+    @pytest.mark.parametrize(
+        "uncertainty, match",
+        [
+            ({"budget": 1.0, "deviation_below": {"AAA": [0.1]}, "deviation_above": {}}, "names"),
+            (
+                {
+                    "budget": 1.0,
+                    "deviation_below": {"AAA": [0.1]},
+                    "deviation_above": {"AAA": [0.1]},
+                },
+                "tranches",
+            ),
+            (
+                {
+                    "budget": 1.0,
+                    "deviation_below": {"ZZZ": [0.1]},
+                    "deviation_above": {"ZZZ": [0.1]},
+                },
+                "instruments",
+            ),
+        ],
+    )
+    def test_malformed_mean_uncertainty_refuses_by_name(self, tmp_path, uncertainty, match):
+        fixture = self._fixture()
+        fixture["mean_uncertainty"] = uncertainty
+        with pytest.raises(ValueError, match=match):
+            self._node().run(_ctx(tmp_path), fixture)
+
+
+class ReusableRobustTwoNameSolve(RobustTwoNameSolve):
+    """The explicit persistent-model opt-in used by the lifecycle tests."""
+
+    _PERSISTENT_MODEL_REUSE = True
+
+
+class TestScenarioUtilityPersistentReuse:
+    """ADR-0188: same-shape ticks reuse one APPsi model and solver safely."""
+
+    @staticmethod
+    def _node(cls=ReusableRobustTwoNameSolve):
+        return cls("reuse", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+
+    @staticmethod
+    def _first():
+        return TestScenarioUtilityMeanRobustness._fixture(1.0)
+
+    @classmethod
+    def _second(cls):
+        fixture = json.loads(json.dumps(cls._first()))
+        fixture["weights"] = [0.7, 0.3]
+        fixture["rows"]["AAA"].update(
+            price=103.0, held=3, x_max=7200.0, cost_buy=0.08,
+            cost_sell=0.09, exit_cost_per_share=0.04,
+        )
+        fixture["rows"]["BBB"].update(
+            price=47.0, held=2, x_max=5400.0, cost_buy=0.03,
+            cost_sell=0.035, exit_cost_per_share=0.02,
+        )
+        fixture["r"] = {
+            "AAA": [[0.031, 0.025], [0.044, 0.038]],
+            "BBB": [0.019, 0.012],
+        }
+        fixture["account"].update(
+            cash=9300.0, buying_power=8800.0, wealth_lo=4800.0,
+            wealth_hi=17000.0, cash_reserve=125.0, gross_limit=9100.0,
+            carried_wealth=350.0,
+        )
+        fixture["mean_uncertainty"] = {
+            "budget": 1.7,
+            "deviation_below": {"AAA": [0.012, 0.027], "BBB": [0.016]},
+            "deviation_above": {"AAA": [0.021, 0.035], "BBB": [0.024]},
+        }
+        return fixture
+
+    def test_same_shape_reuses_model_solver_and_refreshes_all_base_families(self, tmp_path):
+        built, solvers, solve_calls = [], [], []
+
+        class Spy(ReusableRobustTwoNameSolve):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+            def _resolve_solver(self):
+                solver = super()._resolve_solver()
+                solvers.append(solver)
+                solve = solver.solve
+
+                def recorded(model, **kwargs):
+                    solve_calls.append((id(model), dict(kwargs)))
+                    return solve(model, **kwargs)
+
+                solver.solve = recorded
+                return solver
+
+        node = self._node(Spy)
+        node.run(_ctx(tmp_path), self._first())
+        warm = node.run(_ctx(tmp_path), self._second())
+        cold = RobustTwoNameSolve("cold", node.params).run(_ctx(tmp_path), self._second())
+
+        assert len(built) == len(solvers) == 1
+        assert [model_id for model_id, _ in solve_calls] == [id(built[0]), id(built[0])]
+        assert solve_calls[0][1].get("warmstart", False) is False
+        assert solve_calls[1][1]["warmstart"] is True
+        assert built[0]._scn["rows"]["AAA"]["price"] == 103.0
+        assert list(built[0]._scn["weights"]) == [0.7, 0.3]
+        assert built[0]._scn["cash0"] == 9300.0
+        assert built[0]._scn["mean_uncertainty"]["budget"] == pytest.approx(1.7)
+        assert built[0].input_price["AAA"].value == pytest.approx(103.0)
+        assert built[0].input_held["AAA"].value == 3
+        assert built[0].input_x_max["BBB"].value == pytest.approx(5400.0)
+        assert built[0].input_cost_buy["AAA"].value == pytest.approx(0.08)
+        assert built[0].input_cost_sell["BBB"].value == pytest.approx(0.035)
+        assert built[0].input_exit_cost["AAA"].value == pytest.approx(0.04)
+        assert built[0].input_cash.value == pytest.approx(9300.0)
+        assert built[0].input_buying_power.value == pytest.approx(8800.0)
+        assert built[0].input_cash_reserve.value == pytest.approx(125.0)
+        assert built[0].input_carried_wealth.value == pytest.approx(350.0)
+        assert built[0].input_scenario_weight[0].value == pytest.approx(0.7)
+        assert built[0].input_robust_budget.value == pytest.approx(1.7)
+        assert built[0].input_mean_deviation["AAA", 1].value == pytest.approx(0.027)
+        assert built[0].W[0].lb == pytest.approx(4800.0)
+        assert built[0].W[0].ub == pytest.approx(17000.0)
+        assert built[0].s["AAA"].ub == 3
+        assert warm["target"] == cold["target"]
+        assert warm["trades"] == cold["trades"]
+        for key in (
+            "cash_after", "gross_exposure", "cvar", "expected_utility",
+            "robust_protection", "wealth_min", "wealth_max",
+        ):
+            assert warm["metrics"][key] == pytest.approx(cold["metrics"][key])
+
+    def test_a_shape_change_builds_an_isolated_entry_then_reuses_the_old_shape(self, tmp_path):
+        built = []
+
+        class Spy(ReusableRobustTwoNameSolve):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+        node = self._node(Spy)
+        first = self._first()
+        node.run(_ctx(tmp_path), first)
+        changed = json.loads(json.dumps(first))
+        changed["weights"] = [0.4, 0.3, 0.3]
+        changed["r"] = {
+            "AAA": [[0.08, 0.08, 0.07], [0.10, 0.10, 0.09]],
+            "BBB": [0.06, 0.06, 0.05],
+        }
+        node.run(_ctx(tmp_path), changed)
+        node.run(_ctx(tmp_path), first)
+        assert len(built) == 2
+        assert len({id(model) for model in built}) == 2
+
+    def test_shape_cache_is_lru_bounded(self, tmp_path):
+        built = []
+
+        class Spy(ReusableRobustTwoNameSolve):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+        node = self._node(Spy)
+
+        def shaped(n_scenarios):
+            fixture = json.loads(json.dumps(self._first()))
+            fixture["weights"] = [1.0 / n_scenarios] * n_scenarios
+            fixture["r"] = {
+                "AAA": [[0.08] * n_scenarios, [0.10] * n_scenarios],
+                "BBB": [0.06] * n_scenarios,
+            }
+            return fixture
+
+        for n_scenarios in range(2, 7):
+            node.run(_ctx(tmp_path), shaped(n_scenarios))
+        assert len(node._persistent_cache) == node._PERSISTENT_CACHE_SIZE == 4
+        node.run(_ctx(tmp_path), shaped(2))
+        assert len(built) == 6  # the least-recently-used two-scenario shape was evicted
+
+    def test_solver_without_persistent_warm_support_stays_cold(self, tmp_path):
+        built, solve_calls = [], []
+
+        class NoReuse(ReusableRobustTwoNameSolve):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+            @staticmethod
+            def _solver_supports_reuse(solver):
+                del solver
+                return False
+
+            def _resolve_solver(self):
+                solver = super()._resolve_solver()
+                solve = solver.solve
+
+                def recorded(model, **kwargs):
+                    solve_calls.append(dict(kwargs))
+                    return solve(model, **kwargs)
+
+                solver.solve = recorded
+                return solver
+
+        node = self._node(NoReuse)
+        node.run(_ctx(tmp_path), self._first())
+        node.run(_ctx(tmp_path), self._second())
+        assert len(built) == 2
+        assert solve_calls == [{}, {}]
+        assert not node._persistent_cache
+
+    def test_any_cached_hit_failure_evicts_and_retries_the_same_input_cold(self, tmp_path):
+        built, resolved, warm_attempts = [], [], []
+
+        class WarmFails(ReusableRobustTwoNameSolve):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+            def _resolve_solver(self):
+                solver = super()._resolve_solver()
+                resolved.append(solver)
+                solve = solver.solve
+
+                def fail_warm(model, **kwargs):
+                    if kwargs.get("warmstart"):
+                        warm_attempts.append(id(model))
+                        raise RuntimeError("synthetic invalid warm incumbent")
+                    return solve(model, **kwargs)
+
+                solver.solve = fail_warm
+                return solver
+
+        node = self._node(WarmFails)
+        node.run(_ctx(tmp_path), self._first())
+        got = node.run(_ctx(tmp_path), self._second())
+        cold = RobustTwoNameSolve("cold", node.params).run(_ctx(tmp_path), self._second())
+        assert got["target"] == cold["target"] and got["trades"] == cold["trades"]
+        assert len(warm_attempts) == 1
+        assert len(built) == len(resolved) == 2
+        assert built[0] is not built[1]
+
+    def test_a_cached_extraction_failure_also_retries_cold(self, tmp_path):
+        built = []
+
+        class StaleExtract(ReusableRobustTwoNameSolve):
+            calls = 0
+
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+            def extract(self, model, results):
+                self.calls += 1
+                if self.calls == 2:
+                    raise AssertionError("synthetic stale persistent coefficients")
+                return super().extract(model, results)
+
+        node = self._node(StaleExtract)
+        node.run(_ctx(tmp_path), self._first())
+        got = node.run(_ctx(tmp_path), self._second())
+        assert got["target"]
+        assert node.calls == 3 and len(built) == 2
+
+    def test_a_forced_tie_is_primary_optimal_and_repeatable_not_cold_vertex_pinned(self, tmp_path):
+        first = _su_fixture()
+        first["r"] = {"AAA": [0.06, 0.06], "BBB": [0.01, 0.01]}
+        tied = _su_fixture()
+        tied["rows"]["AAA"]["price"] = tied["rows"]["BBB"]["price"] = 100.0
+        tied["rows"]["AAA"]["x_max"] = tied["rows"]["BBB"]["x_max"] = 5000.0
+        tied["r"] = {"AAA": [0.04, 0.04], "BBB": [0.04, 0.04]}
+        tied["account"]["gross_limit"] = 5000.0
+
+        def sequence():
+            node = ReusableRobustTwoNameSolve(
+                "tie", {**SU_PARAMS, "cardinality": 1, "min_ticket": 0.0}
+            )
+            node.run(_ctx(tmp_path), first)
+            return node.run(_ctx(tmp_path), tied)
+
+        one, two = sequence(), sequence()
+        cold = _su_node(cardinality=1, min_ticket=0.0).run(_ctx(tmp_path), tied)
+        assert one["target"] == two["target"] and one["trades"] == two["trades"]
+        assert one["metrics"]["objective"] == pytest.approx(cold["metrics"]["objective"])
+        assert one["metrics"]["gross_exposure"] <= 5000.0 + 1e-6
 
 
 #: appsi_highs' own words when a solve ends with no loadable solution (pyomo

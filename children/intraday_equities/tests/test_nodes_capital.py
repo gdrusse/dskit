@@ -13,6 +13,7 @@ covered directly below instead.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -30,7 +31,12 @@ from intraday_equities.forecast_bundle import (
     default_label_contract,
 )
 from dskit.pipeline.false_signal import FalseSignalEstimate, GrenanderLocalFdr
-from dskit.pipeline.mean_interval import ClusterBootstrapInterval, MeanEvidence
+from dskit.pipeline.mean_interval import (
+    ClusterBootstrapInterval,
+    ConfidenceInterval,
+    MeanConfidenceFamily,
+    MeanEvidence,
+)
 from dskit.pipeline.node import class_ref
 from dskit.pipeline.outcome_interval import (
     BlockConformalInterval,
@@ -42,6 +48,7 @@ from dskit.pipeline.uncertainty_intake import (
     REFUSAL_REASONS,
     AttestedFalseSignalRate,
     AttestedMeanConfidence,
+    AttestedMeanConfidenceFamily,
     AttestedOutcomeBand,
     CoverageEvidence,
     DecisionDemand,
@@ -103,6 +110,7 @@ ASOF_MS = 1_700_000_000_000
 DECISION_TS = ASOF_MS - 1000
 FALSE_SIGNAL_ID = "fs-calibration-0001"
 OUTCOME_ID = "outcome-calibration-0001"
+MEAN_ID = "mean-calibration-0001"
 UNCERTAINTY_IDS = {"false_signal": FALSE_SIGNAL_ID, "outcome": OUTCOME_ID}
 
 #: Owner-declared intake policy. Neither number is derived from anything
@@ -2323,7 +2331,11 @@ class TestCapEvidenceLookAhead:
 JOINT_KIND = "intraday_equities-joint-kelly-mio"
 
 #: The base kind's reference params minus every knob the joint kind refuses.
-JOINT_PARAMS = {name: value for name, value in PARAMS.items() if name not in JOINT_REFUSED_PARAMS}
+JOINT_PARAMS = {
+    **{name: value for name, value in PARAMS.items() if name not in JOINT_REFUSED_PARAMS},
+    "mean_uncertainty_budget": 1.0,
+    "mean_deviation_multipliers": {"AAPL": 1.0, "MSFT": 1.0, "XOM": 1.0},
+}
 
 #: A cost model that charges nothing, for the frictionless cases.
 FREE_COSTS = {
@@ -2383,8 +2395,22 @@ def _path_row(
             "pi_hat_path": list(pi_hat_path),
             "pi_widened_path": list(pi_widened_path),
             "scenarios_path": path,
+            "sigma_t": 0.001,
         }
     )
+    row["uncertainty"] = {**row["uncertainty"], "mean": MEAN_ID}
+    row["known_at"] = {**row["known_at"], "mean_interval": decision_ts - 1}
+    below, above = [], []
+    admitted_horizon = row["admitted_horizon"]
+    for k, (center, hat) in enumerate(zip(row["mu_gross_path"], row["pi_hat_path"]), start=1):
+        scale = 1.0 if k <= admitted_horizon else math.sqrt(admitted_horizon / k)
+        label_center = math.log1p(center) / (row["sigma_t"] * math.sqrt(k))
+        lower = math.expm1((label_center - 0.1 * scale) * row["sigma_t"] * math.sqrt(k))
+        upper = math.expm1((label_center + 0.2 * scale) * row["sigma_t"] * math.sqrt(k))
+        below.append((1.0 - hat) * (center - lower))
+        above.append((1.0 - hat) * (upper - center))
+    row["mean_deviation_below_path"] = below
+    row["mean_deviation_above_path"] = above
     return row
 
 
@@ -2441,6 +2467,23 @@ def _cell_outcome_artifact(cells):
     return BlockConformalInterval().calibrate(residuals, coverage=0.6, window_blocks=2)
 
 
+def _cell_mean_artifact(bundle):
+    """A confidence interval per admitted path cell, matching ``_path_row`` widths."""
+    members = {}
+    for row in bundle:
+        for lead in range(1, row["admitted_horizon"] + 1):
+            members[_cell(row["entity"], lead)] = ConfidenceInterval(
+                mean=0.0,
+                standard_error=0.05,
+                low=-0.1,
+                high=0.2,
+                level=0.95,
+                independent_units=20,
+                method=MEAN_PRODUCER,
+            )
+    return MeanConfidenceFamily(members)
+
+
 def _bundle_cells(bundle):
     """Every calibrated cell the rows carry: each row's steps ``1..len(scenarios_path)``."""
     return [
@@ -2450,7 +2493,7 @@ def _bundle_cells(bundle):
     ]
 
 
-def _joint_uncertainty(bundle, false_signal=None, outcome=None):
+def _joint_uncertainty(bundle, false_signal=None, outcome=None, mean=None):
     """The ``uncertainty`` port of a path release: both artifacts keyed per cell.
 
     The shape ``ForecastPublisher.path_envelopes`` rebuilds: the rates over
@@ -2460,11 +2503,16 @@ def _joint_uncertainty(bundle, false_signal=None, outcome=None):
         false_signal = _cell_false_signal_artifact(bundle)
     if outcome is None:
         outcome = _cell_outcome_artifact(_bundle_cells(bundle))
+    if mean is None:
+        mean = _cell_mean_artifact(bundle)
     return {
         "false_signal": AttestedFalseSignalRate(
             false_signal, _attestation(FALSE_SIGNAL_ID, producer=RATE_PRODUCER)
         ),
         "outcome": AttestedOutcomeBand(outcome, _attestation(OUTCOME_ID)),
+        "mean": AttestedMeanConfidenceFamily(
+            mean, _attestation(MEAN_ID, producer=MEAN_PRODUCER)
+        ),
     }
 
 
@@ -2523,7 +2571,9 @@ class TestJointParams:
         assert set(JOINT_REFUSED_PARAMS) == {
             "band_bps", "cardinality", "min_ticket", "max_position_notional", "lot_size",
         }
-        assert set(JointEquityKellyMIO._PARAMS) == set(EquityKellyMIO._PARAMS) - set(JOINT_REFUSED_PARAMS)
+        assert set(JointEquityKellyMIO._PARAMS) == (
+            set(EquityKellyMIO._PARAMS) - set(JOINT_REFUSED_PARAMS)
+        ) | {"mean_uncertainty_budget", "mean_deviation_multipliers"}
 
     @pytest.mark.parametrize(
         "name, value",
@@ -2555,12 +2605,27 @@ class TestJointParams:
             "bundle_max_staleness_ms", "cap_max_staleness_ms", "cap_artifact_sha256",
             "bundle_producer_node", "deployment_mode", "uncertainty_min_coverage",
             "uncertainty_max_calibration_age_ms",
+            "mean_uncertainty_budget", "mean_deviation_multipliers",
         ],
     )
     def test_the_kept_owner_knobs_are_still_required(self, name):
         params = {k: v for k, v in JOINT_PARAMS.items() if k != name}
         problems = JointEquityKellyMIO.validate_params(params)
         assert any(name in p and "required" in p for p in problems), problems
+
+    @pytest.mark.parametrize(
+        "update, match",
+        [
+            ({"mean_uncertainty_budget": 0.0}, "mean_uncertainty_budget"),
+            ({"mean_uncertainty_budget": float("inf")}, "mean_uncertainty_budget"),
+            ({"mean_deviation_multipliers": {}}, "mean_deviation_multipliers"),
+            ({"mean_deviation_multipliers": {"AAPL": 0.0}}, "AAPL"),
+            ({"mean_deviation_multipliers": {"": 1.0}}, "non-empty"),
+        ],
+    )
+    def test_robustness_knobs_fail_closed(self, update, match):
+        problems = JointEquityKellyMIO.validate_params({**JOINT_PARAMS, **update})
+        assert any(match in problem for problem in problems), problems
 
     @pytest.mark.parametrize(
         "name, value",
@@ -2605,7 +2670,7 @@ class TestJointPathContract:
     @pytest.mark.parametrize(
         "field, value",
         [
-            ("plan_horizon", 0),
+            ("plan_horizon", -1),
             ("plan_horizon", 4),
             ("admitted_horizon", True),
             ("pi_widened_path", [0.20, 0.20]),
@@ -2654,6 +2719,16 @@ class TestJointPathContract:
         assert payoffs["MSFT"] == path[0]  # one tranche IS the flat case
         assert account["carried_wealth"] == 0.0
 
+    def test_a_zero_plan_is_only_an_authenticated_held_name_mandatory_exit(self, tmp_path):
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.01, 0.02]), plan=0)]
+        node = _joint_node(bundle)
+        problems = node.validate_inputs(_joint_inputs(bundle))
+        assert any("zero plan" in problem and "AAPL" in problem for problem in problems)
+        portfolio = _one_name_account(9_000.0, positions={"AAPL": 10})
+        out = _joint_run(tmp_path, bundle, portfolio=portfolio)
+        assert out["trades"] == {"AAPL": {"buy": 0, "sell": 10}}
+        assert out["evidence"]["mandatory_exits"]["AAPL"]["code"] == "empty_plan"
+
     def test_a_forecast_bundle_path_tick_reaches_the_solver(self, tmp_path):
         known = {
             "sigma": ASOF_MS - 61_000, "beta": ASOF_MS - 61_000, "reference": ASOF_MS - 61_000,
@@ -2663,6 +2738,10 @@ class TestJointPathContract:
         steps = [[-0.4, 0.0, 0.9], [-0.5, 0.1, 0.8], [-0.6, 0.2, 0.7], [-0.7, 0.3, 0.6]]
 
         def input_row(entity, price):
+            interval = {
+                "mean": 0.0, "standard_error": 0.05, "low": -0.1, "high": 0.2,
+                "level": 0.95, "independent_units": 20, "method": MEAN_PRODUCER,
+            }
             return {
                 "entity": entity, "decision_ts": DECISION_TS, "lead": 1, "price": price,
                 "yhat": 0.5, "sigma_t": 0.0012, "beta_t": 1.1, "pi_hat": 0.10, "pi_widened": 0.20,
@@ -2671,14 +2750,19 @@ class TestJointPathContract:
                 "admitted_horizon": 2, "plan_horizon": 3, "yhat_path": [0.5, 0.8, 0.9, 1.0],
                 "pi_hat_path": [0.10, 0.15], "pi_widened_path": [0.20, 0.30],
                 "scenarios_path": [list(step) for step in steps],
+                "mean_interval_path": [dict(interval), dict(interval)],
             }
+
+        rows = [input_row("AAPL", 190.0), input_row("MSFT", 410.0)]
+        for row in rows:
+            row["known_at"]["mean_interval"] = ASOF_MS - 500_000
 
         assembled = ForecastBundle(
             RELEASE,
-            [input_row("AAPL", 190.0), input_row("MSFT", 410.0)],
+            rows,
             producer=dict(BUNDLE_PRODUCER),
             model_manifest_sha256=MODEL_MANIFEST_SHA256,
-            uncertainty=dict(UNCERTAINTY_IDS),
+            uncertainty={**UNCERTAINTY_IDS, "mean": MEAN_ID},
         )
         assert assembled.has_paths is True
         bundle = assembled.rows
@@ -2726,7 +2810,14 @@ class TestJointCostBreakEven:
         best = ratio * self._round_trip() / self.PRICE
         # A hump: the gain peaks at minute two; minutes one and three fall short.
         bundle = [_path_row("AAPL", self.PRICE, _flat_steps([0.4 * best, best, 0.7 * best]))]
-        out = _joint_run(tmp_path, bundle, portfolio=_one_name_account(10_000.0))
+        out = _joint_run(
+            tmp_path,
+            bundle,
+            portfolio=_one_name_account(10_000.0),
+            # This test isolates the transaction-cost break-even. Robust
+            # mean protection is covered separately below.
+            mean_deviation_multipliers={"AAPL": 1e-12},
+        )
         if ratio < 1.0:
             assert out["trades"] == {}
             assert out["target"] == {}
@@ -3488,10 +3579,32 @@ class TestJointPerCellBinding:
         artifact = _cell_false_signal_artifact(self._bundle())
         assert sorted(artifact.pi_hat) == ["AAPL:h01", "AAPL:h02", "MSFT:h01", "MSFT:h02"]
 
+    def test_the_mean_family_covers_admitted_cells_only(self):
+        artifact = _cell_mean_artifact(self._bundle())
+        assert sorted(artifact.members) == ["AAPL:h01", "AAPL:h02", "MSFT:h01", "MSFT:h02"]
+
+    def test_a_reported_mean_deviation_must_match_its_attested_interval(self):
+        bundle = self._bundle()
+        original = _cell_mean_artifact(bundle)
+        members = dict(original.members)
+        held = members["AAPL:h02"]
+        members["AAPL:h02"] = ConfidenceInterval(
+            mean=held.mean,
+            standard_error=held.standard_error,
+            low=-0.3,
+            high=held.high,
+            level=held.level,
+            independent_units=held.independent_units,
+            method=held.method,
+        )
+        problems = self._problems(bundle, mean=MeanConfidenceFamily(members))
+        assert any("mean_deviation_below_path" in problem and "AAPL:h02" in problem for problem in problems)
+
     def test_an_entity_keyed_port_is_refused_by_cell(self):
         bundle = self._bundle()
+        port = {**_uncertainty(bundle), "mean": _joint_uncertainty(bundle)["mean"]}
         problems = _joint_node(bundle).validate_inputs(
-            _joint_inputs(bundle, uncertainty=_uncertainty(bundle))
+            _joint_inputs(bundle, uncertainty=port)
         )
         assert any("AAPL:h01" in p and "false-signal" in p for p in problems), problems
         assert any("AAPL:h01" in p and "outcome band" in p for p in problems), problems
@@ -3536,6 +3649,101 @@ class TestJointPerCellBinding:
         assert self._problems(bundle, outcome=_cell_outcome_artifact(cells)) == []
 
 
+class TestJointRobustMean:
+    def test_the_hook_carries_budgeted_kappa_scaled_name_level_deviations(self):
+        bundle = [
+            _path_row("AAPL", 100.0, _flat_steps([0.01, 0.012]), plan=2),
+            _path_row("MSFT", 100.0, _flat_steps([0.009]), plan=1),
+        ]
+        node = _joint_node(
+            bundle,
+            mean_uncertainty_budget=1.5,
+            mean_deviation_multipliers={"AAPL": 2.0, "MSFT": 0.5, "XOM": 1.0},
+        )
+        inputs = _joint_inputs(bundle)
+        node.instruments(inputs)
+        robust = node.mean_uncertainty(inputs)
+        assert robust["budget"] == 1.5
+        assert robust["deviation_below"]["AAPL"] == pytest.approx(
+            [2.0 * value for value in bundle[0]["mean_deviation_below_path"][:2]]
+        )
+        assert robust["deviation_above"]["MSFT"] == pytest.approx(
+            [0.5 * bundle[1]["mean_deviation_above_path"][0]]
+        )
+
+    def test_a_missing_name_multiplier_refuses_before_the_solve(self):
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.01]))]
+        node = _joint_node(bundle, mean_deviation_multipliers={"MSFT": 1.0})
+        problems = node.validate_inputs(_joint_inputs(bundle))
+        assert any("mean_deviation_multipliers" in problem and "AAPL" in problem for problem in problems)
+
+    def test_the_real_joint_solve_reports_positive_robust_protection(self, tmp_path):
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.02, 0.025]))]
+        out = _joint_run(
+            tmp_path,
+            bundle,
+            portfolio=_one_name_account(10_000.0),
+            hfdr_q=0.30,
+            **FREE_COSTS,
+        )
+        assert out["metrics"]["robust_protection"] > 0.0
+        assert out["metrics"]["mean_uncertainty_budget"] == 1.0
+        assert out["metrics"]["wealth_min"] < out["metrics"]["nominal_wealth_min"]
+
+
+class TestJointPersistentSolveRefresh:
+    def test_same_shape_refreshes_hfdr_and_mean_rows_on_the_same_model(self, tmp_path):
+        first = [
+            _path_row(
+                "AAPL", 100.0, _flat_steps([0.020, 0.024]),
+                pi_widened_path=[0.05, 0.06], plan=2,
+            )
+        ]
+        second = [
+            _path_row(
+                "AAPL", 104.0, _flat_steps([0.012, 0.017]),
+                pi_widened_path=[0.24, 0.25], plan=2,
+            )
+        ]
+        built = []
+
+        class Spy(JointEquityKellyMIO):
+            def build_model(self, inputs, params):
+                model = super().build_model(inputs, params)
+                built.append(model)
+                return model
+
+        params = _joint_params(first, hfdr_q=0.30, **FREE_COSTS)
+        node = Spy("joint", params)
+        node.run(
+            _ctx(tmp_path),
+            _joint_inputs(first, portfolio=_one_name_account(10_000.0)),
+        )
+        node._rebind_bundle(second)
+        warm = node.run(
+            _ctx(tmp_path),
+            _joint_inputs(second, portfolio=_one_name_account(10_000.0, price=104.0)),
+        )
+        cold = _joint_run(
+            tmp_path,
+            second,
+            portfolio=_one_name_account(10_000.0, price=104.0),
+            hfdr_q=0.30,
+            **FREE_COSTS,
+        )
+        assert len(built) == 1
+        model = built[0]
+        assert model.input_hfdr_rate["AAPL", 0].value == pytest.approx(0.24)
+        assert model.input_hfdr_rate["AAPL", 1].value == pytest.approx(0.25)
+        assert model.input_mean_deviation["AAPL", 0].value == pytest.approx(
+            second[0]["mean_deviation_below_path"][0]
+        )
+        assert warm["target"] == cold["target"] and warm["trades"] == cold["trades"]
+        assert warm["metrics"]["robust_protection"] == pytest.approx(
+            cold["metrics"]["robust_protection"]
+        )
+
+
 class TestTheBaseKindRefusesAPathBundle:
     """Each kind refuses the other kind's bundle mode by name: the base kind
     reads one lead, so a path row would otherwise be sized at its first step
@@ -3560,7 +3768,9 @@ class TestTheBaseKindRefusesAPathBundle:
             node.instruments(self._inputs(bundle))
 
     def test_one_path_field_is_enough_to_refuse(self):
-        bundle = [dict(_bundle()[0], mu_gross_path=[0.001])]
+        row = dict(_bundle()[0], mu_gross_path=[0.001])
+        row["uncertainty"] = {**row["uncertainty"], "mean": MEAN_ID}
+        row["known_at"] = {**row["known_at"], "mean_interval": DECISION_TS - 1}
+        bundle = [row]
         problems = _node(bundle=bundle).validate_inputs(self._inputs(bundle))
         assert any("mu_gross_path" in p and JOINT_KIND in p for p in problems), problems
-

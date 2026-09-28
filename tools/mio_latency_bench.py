@@ -74,6 +74,7 @@ bound ADR-0188 T12 pins).
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -201,6 +202,71 @@ class LatencySolve(ScenarioUtilitySolve):
         self.last_model = model
 
 
+class RobustPersistentLatencySolve(LatencySolve):
+    """T12's robust, HFDR-shaped sequence on one persistent APPsi model."""
+
+    _PERSISTENT_MODEL_REUSE = True
+
+    def __init__(self, key, params):
+        super().__init__(key, params)
+        self.model_builds = 0
+        self.warm_starts = 0
+
+    def mean_uncertainty(self, inputs):
+        """Return the sequence minute's Bertsimas-Sim mean set."""
+        return inputs["mean_uncertainty"]
+
+    def build_model(self, inputs, params):
+        """Count the persistent cache's physical model builds."""
+        self.model_builds += 1
+        return super().build_model(inputs, params)
+
+    def domain_constraints(self, model, inputs, params):
+        """Add the joint kind's mutable price-weighted HFDR tranche row."""
+        from pyomo.environ import Constraint, Param
+
+        super().domain_constraints(model, inputs, params)
+        tranches = model._scn["tranches"]
+        rates = inputs["hfdr_rates"]
+        rate_ix = [(name, k) for name in model._scn["names"] for k in range(tranches[name])]
+        model.input_hfdr_q = Param(mutable=True, initialize=float(inputs["hfdr_q"]))
+        model.input_hfdr_rate = Param(
+            rate_ix,
+            mutable=True,
+            initialize=lambda m, name, k: float(rates[name][k]),
+        )
+        terms = []
+        for name in model._scn["names"]:
+            if tranches[name] == 1:
+                terms.append(
+                    (model.input_hfdr_rate[name, 0] - model.input_hfdr_q) * model.x[name]
+                )
+            else:
+                terms.extend(
+                    (model.input_hfdr_rate[name, k] - model.input_hfdr_q)
+                    * model.input_price[name]
+                    * model.e[name, k]
+                    for k in range(tranches[name])
+                )
+        model.hfdr = Constraint(expr=sum(terms) <= 0)
+
+    def _persistent_domain_signature(self, inputs, prepared, params):
+        del inputs, params
+        return ("joint_hfdr", tuple(prepared["tranches"][name] for name in prepared["names"]))
+
+    def _refresh_domain_constraints(self, model, inputs, params):
+        del params
+        model.input_hfdr_q.set_value(float(inputs["hfdr_q"]))
+        for name in model._scn["names"]:
+            for k, rate in enumerate(inputs["hfdr_rates"][name]):
+                model.input_hfdr_rate[name, k].set_value(float(rate))
+
+    def _solve(self, solver, model, *, warmstart=False):
+        if warmstart:
+            self.warm_starts += 1
+        return super()._solve(solver, model, warmstart=warmstart)
+
+
 def make_instance(seed):
     """Build one seeded per-minute joint instance (see the module docstring).
 
@@ -312,6 +378,36 @@ def make_instance(seed):
     return instance
 
 
+def make_persistent_robust_sequence(n_instances, base_seed=BASE_SEED):
+    """Return same-shape changing minutes with mean uncertainty and HFDR rows."""
+    if isinstance(n_instances, bool) or not isinstance(n_instances, int) or n_instances < 1:
+        raise ValueError(f"n_instances must be an int >= 1, got {n_instances!r}")
+    base = make_instance(base_seed)
+    sequence = []
+    for step in range(n_instances):
+        instance = copy.deepcopy(base)
+        rng = np.random.default_rng(base_seed + 100_000 + step)
+        below, above, rates = {}, {}, {}
+        for name in instance["names"]:
+            values = np.asarray(instance["r"][name], dtype=float)
+            shift = rng.normal(5e-4, 2e-5, size=(values.shape[0], 1))
+            instance["r"][name] = values + shift
+            below[name] = rng.uniform(2e-5, 8e-5, size=values.shape[0]).tolist()
+            above[name] = rng.uniform(2e-5, 8e-5, size=values.shape[0]).tolist()
+            rates[name] = rng.uniform(0.02, 0.18, size=values.shape[0]).tolist()
+        instance["mean_uncertainty"] = {
+            "budget": 1.0,
+            "deviation_below": below,
+            "deviation_above": above,
+        }
+        instance["hfdr_q"] = 0.2
+        instance["hfdr_rates"] = rates
+        instance["seed"] = base_seed + step
+        instance["digest"] = _digest(instance)
+        sequence.append(instance)
+    return sequence
+
+
 def _prove_feasible(instance):
     """Refuse an instance whose sell-everything point is not feasible."""
     rows, account = instance["rows"], instance["account"]
@@ -344,6 +440,9 @@ def _digest(instance):
         "account": instance["account"],
         "params": instance["params"],
     }
+    for name in ("mean_uncertainty", "hfdr_q", "hfdr_rates"):
+        if name in instance:
+            canonical[name] = instance[name]
     text = json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -391,6 +490,11 @@ def solve_instance(instance, run_dir, time_limit=HANG_GUARD_S):
     """
     params = {**instance["params"], "solver_options": {"time_limit": float(time_limit)}}
     node = LatencySolve("latency", params)
+    return _solve_on_node(node, instance, run_dir)
+
+
+def _solve_on_node(node, instance, run_dir):
+    """Time ``instance`` on an existing node, preserving its persistent cache."""
     ctx = NodeContext(name="latency", asof=ASOF, run_dir=str(run_dir))
     out, error = None, None
     started = time.perf_counter()
@@ -430,6 +534,7 @@ def solve_instance(instance, run_dir, time_limit=HANG_GUARD_S):
         "trades": None if out is None else out["trades"],
         "tranche_split": None if out is None else out["metrics"]["tranches"],
         "objective": None if record is None else record.objective,
+        "robust_protection": None if out is None else out["metrics"].get("robust_protection"),
     }
 
 
@@ -612,6 +717,34 @@ def run_benchmark(n_instances, base_seed=BASE_SEED, time_limit=HANG_GUARD_S, run
     return records, summarize(records)
 
 
+def run_persistent_robust_benchmark(
+    n_instances,
+    base_seed=BASE_SEED,
+    time_limit=HANG_GUARD_S,
+    run_dir=None,
+    progress=None,
+):
+    """Run a changing robust/HFDR sequence through one warm persistent model."""
+    sequence = make_persistent_robust_sequence(n_instances, base_seed)
+    params = {
+        **sequence[0]["params"],
+        "solver_options": {"time_limit": float(time_limit)},
+    }
+    node = RobustPersistentLatencySolve("persistent_robust_latency", params)
+    with tempfile.TemporaryDirectory() as scratch:
+        where = scratch if run_dir is None else run_dir
+        _warm_up(where, time_limit)
+        records = []
+        for instance in sequence:
+            record = _solve_on_node(node, instance, where)
+            records.append(record)
+            if progress is not None:
+                progress(record)
+    summary = summarize(records)
+    summary.update(model_builds=node.model_builds, warm_starts=node.warm_starts)
+    return records, summary
+
+
 def machine_info():
     """Return what the timings depend on: platform, CPUs, load and versions."""
     from importlib.metadata import PackageNotFoundError, version
@@ -665,6 +798,11 @@ def main(argv=None):
     parser.add_argument(
         "--time-limit", type=float, default=HANG_GUARD_S, help="HiGHS time_limit hang guard, s"
     )
+    parser.add_argument(
+        "--persistent-robust",
+        action="store_true",
+        help="time one changing Bertsimas-Sim/HFDR sequence on a reused warm model",
+    )
     parser.add_argument("--json", help="also write the report plus per-instance records here")
     args = parser.parse_args(argv)
     if args.n < 1:
@@ -672,7 +810,8 @@ def main(argv=None):
     if not args.time_limit > 0.0:
         parser.error("--time-limit must be > 0")
     _require_this_checkout()
-    records, summary = run_benchmark(args.n, args.seed, args.time_limit, progress=_progress_line)
+    runner = run_persistent_robust_benchmark if args.persistent_robust else run_benchmark
+    records, summary = runner(args.n, args.seed, args.time_limit, progress=_progress_line)
     report = {"summary": summary, "machine": machine_info(), "base_seed": args.seed}
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.json:

@@ -7,7 +7,13 @@ import pytest
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext
 
 
-from intraday_equities.evaluation import KIND_ORDER, NODE_KINDS, SCHEMA, ReplayEvents
+from intraday_equities.evaluation import (
+    KIND_ORDER,
+    NODE_KINDS,
+    SCHEMA,
+    ReplayEvents,
+    ShareReplayEvents,
+)
 from intraday_equities.nodes import portfolio_candidates
 from intraday_equities.replay import CashFlowPolicy, FillPolicy, ReplayAdapter
 
@@ -79,8 +85,12 @@ def _events(inputs, params=None, ctx=None):
 
 
 def test_the_kind_is_registered_as_a_transform():
-    assert NODE_KINDS == {"intraday_equities-replay-events": ReplayEvents}
+    assert NODE_KINDS == {
+        "intraday_equities-replay-events": ReplayEvents,
+        "intraday_equities-share-replay-events": ShareReplayEvents,
+    }
     assert DEFAULT_NODE_KINDS.get("intraday_equities-replay-events")[0] is ReplayEvents
+    assert DEFAULT_NODE_KINDS.get("intraday_equities-share-replay-events")[0] is ShareReplayEvents
     assert ReplayEvents.role == "transform"
     assert ReplayEvents.outputs == ("events",)
 

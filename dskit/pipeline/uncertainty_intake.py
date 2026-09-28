@@ -110,7 +110,7 @@ registry's purpose. None of that is repaired by another screen; it is the
 boundary, and it is stated rather than sealed against.
 
 **An admitted artifact is not evidence that a calibrated estimator
-produced it.** The three artifact types are plain frozen dataclasses whose
+produced it.** The four artifact types are plain frozen dataclasses whose
 ``__post_init__`` invariants hold for every instance, so an admitted
 artifact is internally consistent and nothing more; a hand-built one of
 the right shape is indistinguishable from a fitted one. The producer
@@ -153,6 +153,7 @@ from .false_signal import FALSE_SIGNAL_ESTIMATORS, FalseSignalEstimate
 from .mean_interval import (
     MEAN_INTERVAL_ESTIMATORS,
     ConfidenceInterval,
+    MeanConfidenceFamily,
     WidenedInterval,
 )
 from .node import class_ref
@@ -169,6 +170,7 @@ __all__ = [
     "attestation_of",
     "AttestedFalseSignalRate",
     "AttestedMeanConfidence",
+    "AttestedMeanConfidenceFamily",
     "AttestedOutcomeBand",
     "AttestedUncertainty",
     "CoverageEvidence",
@@ -1592,6 +1594,35 @@ class AttestedMeanConfidence(AttestedUncertainty):
         return getattr(artifact, "method", None)
 
 
+class AttestedMeanConfidenceFamily(AttestedUncertainty):
+    """A release's named family of confidence intervals for mean effects."""
+
+    @classmethod
+    def artifact_type(cls):
+        """Accept only :class:`MeanConfidenceFamily`."""
+        return MeanConfidenceFamily
+
+    @classmethod
+    def estimand(cls):
+        """Name the path-cell mean-confidence-family estimand."""
+        return "mean_confidence_family"
+
+    @classmethod
+    def excluded_types(cls):
+        """Return none; the family constructor excludes claim-free members."""
+        return ()
+
+    @classmethod
+    def registered_producers(cls):
+        """Use the same registered estimators as a single mean interval."""
+        return tuple(entry["cls"] for entry in MEAN_INTERVAL_ESTIMATORS.values())
+
+    @classmethod
+    def artifact_producer(cls, artifact):
+        """Give the one method shared by every family member."""
+        return getattr(artifact, "method", None)
+
+
 class AttestedOutcomeBand(AttestedUncertainty):
     """Uncertainty about a REALIZED OUTCOME, from a block-conformal calibration.
 
@@ -1870,6 +1901,11 @@ register_uncertainty_intake(
     "mean_confidence",
     AttestedMeanConfidence,
     doc="uncertainty about an expected effect, from a measured-coverage interval",
+)
+register_uncertainty_intake(
+    "mean_confidence_family",
+    AttestedMeanConfidenceFamily,
+    doc="a named release family of measured-coverage mean intervals",
 )
 register_uncertainty_intake(
     "outcome_band",

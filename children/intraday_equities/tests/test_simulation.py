@@ -28,6 +28,7 @@ from dskit.pipeline.predictions import TRADE_PREDICTIONS_FILE, PredictionWriter
 from dskit.pipeline.uncertainty_intake import DecisionDemand, admission_problems
 
 import intraday_equities.simulation as simulation_module
+from intraday_equities.evaluation import ShareReplayEvents
 from intraday_equities.feature_cache import write_feature_cache
 from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
@@ -38,6 +39,7 @@ from intraday_equities.replay import CashFlowPolicy, DevelopmentReplay, EquityRe
 from intraday_equities.simulation import (
     DevelopmentSimulation,
     ForecastPublisher,
+    JointSimulationPreflight,
     MioDecider,
     MioDeciderNode,
     SimulationReport,
@@ -2445,7 +2447,23 @@ def _prun(fx, leads="path"):
     from intraday_equities.simulation import MinuteForecastPublisher
 
     params = dict(fx["params"]) if leads is None else dict(fx["params"], leads=leads)
+    if leads == "path":
+        params["uncertainty"] = {
+            **params["uncertainty"],
+            "coverage": 0.95,
+            "mean_replicates": 99,
+            "mean_min_coverage_units": 10,
+        }
     return json.loads(json.dumps(MinuteForecastPublisher("publish", params).run(fx["ctx"], {})))
+
+
+def _large_path_fx(root):
+    """A path walk whose fold 6 has enough UTC-session units for 95% intervals."""
+    fx = _with_horizons(_build_fx(str(root), count=7, minute=True))
+    fx["params"]["first_fold"] = 6
+    fx["params"]["last_fold"] = 6
+    fx["params"]["uncertainty"] = {**fx["params"]["uncertainty"], "coverage": 0.95}
+    return fx
 
 
 def _path_ticks(published, stamp, release=0):
@@ -2468,7 +2486,12 @@ def _lattice_stamp(release, m=3):
 @pytest.fixture(scope="module")
 def ppub(tmp_path_factory):
     """One minute walk with calibrated horizons, published in path mode and with ``leads`` left out."""
-    fx = _with_horizons(_build_fx(str(tmp_path_factory.mktemp("path")), minute=True))
+    fx = _with_horizons(_build_fx(str(tmp_path_factory.mktemp("path")), count=7, minute=True))
+    # Fold 6 has 24 sessions for its path band, and fold 5 has 20 for the
+    # out-of-sample coverage measurement; both can support nominal 95%.
+    fx["params"]["first_fold"] = 6
+    fx["params"]["last_fold"] = 6
+    fx["params"]["uncertainty"] = {**fx["params"]["uncertainty"], "coverage": 0.95}
     return {"fx": fx, "path": _prun(fx), "default": _prun(fx, leads=None)}
 
 
@@ -2479,14 +2502,20 @@ def test_path_mode_is_declared_and_never_the_default(ppub):
     assert _canon(_prun(fx, leads="cap")) == _canon(ppub["default"])
     assert all("path" not in release for release in ppub["default"]["releases"])
     assert all("yhat_by_lead" not in block for block in ppub["default"]["ticks"])
-    assert MinuteForecastPublisher.validate_params(dict(fx["params"], leads="path")) == []
+    path_params = dict(fx["params"], leads="path")
+    path_params["uncertainty"] = {
+        **path_params["uncertainty"],
+        "mean_replicates": 99,
+        "mean_min_coverage_units": 10,
+    }
+    assert MinuteForecastPublisher.validate_params(path_params) == []
     assert MinuteForecastPublisher.validate_params(dict(fx["params"], leads="cap")) == []
     assert any("leads" in p for p in MinuteForecastPublisher.validate_params(dict(fx["params"], leads="joint")))
     # The lattice kind has no path mode: the knob is an unknown param there.
     assert any("leads" in p for p in ForecastPublisher.validate_params(dict(fx["params"], leads="path")))
     default = MinuteForecastPublisher("publish", fx["params"]).fingerprint()
     assert "leads" not in default
-    path = MinuteForecastPublisher("publish", dict(fx["params"], leads="path")).fingerprint()
+    path = MinuteForecastPublisher("publish", path_params).fingerprint()
     assert path == {**default, "leads": "path"}
 
 
@@ -2504,19 +2533,53 @@ def test_a_path_release_is_the_default_release_plus_one_path_block(ppub):
     assert block["cells"] == cells
     assert list(block["tick_constants"]["scenarios"]) == cells
     assert block["uncertainty"]["outcome"]["artifact"]["provenance"]["components"] == cells
+    mean = block["uncertainty"]["mean"]
+    assert sorted(mean["artifact"]["members"]) == [
+        "LLY:h01", "LLY:h02", "LRCX:h01", "LRCX:h02", "NOW:h01"
+    ]
+    assert {member["level"] for member in mean["artifact"]["members"].values()} == {0.95}
+    assert min(member["independent_units"] for member in mean["artifact"]["members"].values()) >= 10
+    assert mean["attestation"]["coverage"] == {
+        "target": 0.95,
+        "measured": 0.946,
+        "evidence_id": (
+            "tests/pipeline/test_mean_interval.py::TestMeasuredCoverage::"
+            "test_the_units_path_delivers_its_nominal_level"
+        ),
+        "n_units": 1000,
+    }
+
+
+def test_path_mode_requires_the_mean_uncertainty_knobs_and_measured_level(ppub):
+    from intraday_equities.simulation import MinuteForecastPublisher
+
+    base = dict(ppub["fx"]["params"], leads="path")
+    assert any("mean_replicates" in problem for problem in MinuteForecastPublisher.validate_params(base))
+    for update, match in (
+        ({"mean_replicates": 0, "mean_min_coverage_units": 10}, "mean_replicates"),
+        ({"mean_replicates": 99, "mean_min_coverage_units": 9}, "mean_min_coverage_units"),
+        ({"mean_replicates": 99, "mean_min_coverage_units": 10, "coverage": 0.90}, "coverage"),
+    ):
+        knobs = {**base["uncertainty"], **update}
+        params = {**base, "uncertainty": knobs}
+        assert any(match in problem for problem in MinuteForecastPublisher.validate_params(params))
+    flat = dict(ppub["fx"]["params"], leads="cap")
+    flat["uncertainty"] = {**flat["uncertainty"], "mean_replicates": 99, "mean_min_coverage_units": 10}
+    assert any("exactly" in problem for problem in MinuteForecastPublisher.validate_params(flat))
 
 
 def test_path_ticks_carry_every_scored_head_in_lead_order(ppub):
     from dskit.pipeline.predictions import read_predictions
 
     fx, published = ppub["fx"], ppub["path"]
+    fold = published["releases"][0]["fold"]
     names = ("ts", "series", "horizon", "yhat")
-    table = read_predictions(fx["runs"][2], columns=names, filename=TRADE_PREDICTIONS_FILE)
+    table = read_predictions(fx["runs"][fold], columns=names, filename=TRADE_PREDICTIONS_FILE)
     trade = {
         (symbol, int(lead), int(stamp)): float(value)
         for stamp, symbol, lead, value in zip(*(table[name] for name in names))
     }
-    lattice = set(fx["data"][(2, 1)]["LLY"][0])
+    lattice = set(fx["data"][(fold, 1)]["LLY"][0])
     checked = 0
     for block in published["ticks"]:
         symbol = block["symbol"]
@@ -2526,7 +2589,7 @@ def test_path_ticks_carry_every_scored_head_in_lead_order(ppub):
         assert columns[block["lead"] - 1] == block["yhat"]
         for lead, column in enumerate(columns, start=1):
             assert column == [trade[(symbol, lead, t)] for t in block["ts"]]
-            stamps, _y, yhat = fx["data"][(2, lead)][symbol]
+            stamps, _y, yhat = fx["data"][(fold, lead)][symbol]
             scored = dict(zip(stamps, yhat))
             for at, t in enumerate(block["ts"]):
                 if t in lattice:
@@ -2535,12 +2598,12 @@ def test_path_ticks_carry_every_scored_head_in_lead_order(ppub):
     assert checked == len(lattice) * sum(PATH_HORIZONS[b["symbol"]] for b in published["ticks"])
 
 
-def test_a_path_tick_refuses_a_minute_one_head_did_not_score(mfx):
-    _with_horizons(mfx)
-    target = _splits(2)["val_start_ms"] + OPEN_MS + 7 * 60_000
+def test_a_path_tick_refuses_a_minute_one_head_did_not_score(tmp_path):
+    mfx = _large_path_fx(tmp_path)
+    target = _splits(6)["val_start_ms"] + OPEN_MS + 7 * 60_000
 
     def dropped(i, n, lead, stamps, yhat):
-        keep = [k for k, t in enumerate(stamps) if (i, n, lead, t) != (2, "LRCX", 3, target)]
+        keep = [k for k, t in enumerate(stamps) if (i, n, lead, t) != (6, "LRCX", 3, target)]
         return [stamps[k] for k in keep], [yhat[k] for k in keep]
 
     _write_trade(mfx, dropped)
@@ -2567,7 +2630,7 @@ def test_path_rows_validate_through_the_bundle_as_path_rows(ppub):
         model_manifest_sha256=release["model_manifest_sha256"],
         uncertainty={
             slot: release["path"]["uncertainty"][slot]["attestation"]["artifact_id"]
-            for slot in ("false_signal", "outcome")
+            for slot in ("false_signal", "outcome", "mean")
         },
     )
     assert bundle.has_paths is True
@@ -2588,13 +2651,14 @@ def test_path_rows_validate_through_the_bundle_as_path_rows(ppub):
 def test_a_path_rows_curve_is_every_head_at_that_minute_in_lead_order(ppub):
     fx, published = ppub["fx"], ppub["path"]
     release = published["releases"][0]
+    fold = release["fold"]
     t = _lattice_stamp(release)
     rows = ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR)
     assert len(rows) == 3
     for row in rows:
         expected = []
         for lead in range(1, PATH_HORIZONS[row["entity"]] + 1):
-            stamps, _y, yhat = fx["data"][(2, lead)][row["entity"]]
+            stamps, _y, yhat = fx["data"][(fold, lead)][row["entity"]]
             expected.append(yhat[stamps.index(t)])
         assert row["yhat_path"] == pytest.approx(expected, rel=1e-6)
 
@@ -2720,14 +2784,14 @@ def test_per_cell_coverage_is_recorded_beside_the_artifact_level_reading(ppub):
     assert release["uncertainty"] == default["uncertainty"]
 
 
-def test_a_cell_that_misses_out_of_sample_is_screened_end_to_end(mfx):
-    # Release 2 measures coverage with the band calibrated before fold 1 and
-    # scored on fold 1. Wreck fold 1's LLY h3 and NOW h1 forecasts: those two
+def test_a_cell_that_misses_out_of_sample_is_screened_end_to_end(tmp_path):
+    # Release 6 measures coverage with the band calibrated before fold 5 and
+    # scored on fold 5. Wreck fold 5's LLY h3 and NOW h1 forecasts: those two
     # cells miss every out-of-sample row; no other cell's forecasts move.
-    _with_horizons(mfx)
-    wrecked = {(1, "LLY", 3), (1, "NOW", 1)}
-    _repin(mfx, lambda i, n, lead, s, y, yhat: (y, [v + 50.0 for v in yhat] if (i, n, lead) in wrecked else yhat))
-    published = _prun(mfx)
+    fx = _large_path_fx(tmp_path)
+    wrecked = {(5, "LLY", 3), (5, "NOW", 1)}
+    _repin(fx, lambda i, n, lead, s, y, yhat: (y, [v + 50.0 for v in yhat] if (i, n, lead) in wrecked else yhat))
+    published = _prun(fx)
     release = published["releases"][0]
     coverage = release["path"]["cell_coverage"]
     assert coverage["LLY:h03"] == coverage["NOW:h01"] == 0.0
@@ -2749,7 +2813,7 @@ def test_the_joint_draw_is_one_calibration_row_across_every_name_and_lead(ppub):
     cutoff = release["segment_start_ms"]
     start = cutoff - fx["params"]["calibration_window_days"] * 86_400_000
     by_stamp = {}
-    for index in range(2):
+    for index in range(release["fold"]):
         for unit in read_prediction_series(fx["runs"][index]):
             cell = f"{unit['symbol']}:h{unit['lead']:02d}"
             for stamp, y, yhat in zip(unit["stamps"], unit["y"], unit["yhat"]):
@@ -2790,7 +2854,9 @@ def test_path_rates_are_the_per_cell_estimate_at_admitted_leads_only(ppub):
     assert sorted(signal["pi_hat"]) == sorted(signal["pi_widened"]) == admitted
     walk = _MinuteWalk(fx["params"])
     try:
-        estimate = MinuteForecastPublisher("publish", fx["params"])._false_signal(walk, 2)
+        estimate = MinuteForecastPublisher("publish", fx["params"])._false_signal(
+            walk, release["fold"]
+        )
     finally:
         walk.close()
     for cell in admitted:
@@ -2828,6 +2894,7 @@ def test_a_path_rows_flat_fields_are_its_first_step_and_todays_tick_fields(ppub)
         assert row["known_at"] == {
             "sigma": t, "beta": t, "reference": t, "price": t, "yhat": t,
             "pi_hat": cutoff, "pi_widened": cutoff, "scenarios": cutoff,
+            "mean_interval": cutoff,
         }
     # NOW's cap is lead 1: its path row's flat fields are today's tick row's,
     # except the scenario draw, which is the joint one.
@@ -2839,7 +2906,7 @@ def test_a_path_rows_flat_fields_are_its_first_step_and_todays_tick_fields(ppub)
         group["weights"], group["scenarios"]["NOW"], release["label"],
     )
     now = next(row for row in rows if row["entity"] == "NOW")
-    same = set(flat) - {"weights", "scenarios"}
+    same = set(flat) - {"weights", "scenarios", "known_at"}
     assert {k: now[k] for k in same} == {k: flat[k] for k in same}
 
 
@@ -2857,8 +2924,8 @@ def test_a_path_row_at_t_reads_no_tick_after_t(ppub):
     assert ForecastPublisher.path_rows(release, t, _path_ticks(published, t), LOW_FLOOR) == before
 
 
-def test_path_calibration_reads_nothing_at_or_after_the_cutoff(mfx):
-    _with_horizons(mfx)
+def test_path_calibration_reads_nothing_at_or_after_the_cutoff(tmp_path):
+    mfx = _large_path_fx(tmp_path)
     before = _prun(mfx)
     cutoff = before["releases"][0]["segment_start_ms"]
     _repin(
@@ -2874,11 +2941,15 @@ def test_path_calibration_reads_nothing_at_or_after_the_cutoff(mfx):
 
 
 def test_path_envelopes_admit_through_the_uncertainty_intake(ppub):
-    from dskit.pipeline.uncertainty_intake import artifact_of, attestation_of
+    from dskit.pipeline.uncertainty_intake import (
+        AttestedMeanConfidenceFamily,
+        artifact_of,
+        attestation_of,
+    )
 
     release = ppub["path"]["releases"][0]
     envelopes = ForecastPublisher.path_envelopes(release)
-    members = dict(REQUIRED_INTAKES)
+    members = {**dict(REQUIRED_INTAKES), "mean": AttestedMeanConfidenceFamily}
     for when, admitted in (
         (release["segment_start_ms"] + 3_600_000, True),
         (release["segment_start_ms"] - 1, False),
@@ -2905,6 +2976,17 @@ def test_path_envelopes_admit_through_the_uncertainty_intake(ppub):
     assert sorted(artifact_of(envelopes["outcome"]).lower_offset) == sorted(release["path"]["cells"])
     assert sorted(artifact_of(envelopes["false_signal"]).pi_hat) == sorted(
         f"{s}:h{k:02d}" for s, cap in release["lead_map"].items() for k in range(1, cap + 1)
+    )
+    family = artifact_of(envelopes["mean"])
+    assert sorted(family.members) == sorted(
+        f"{s}:h{k:02d}" for s, cap in release["lead_map"].items() for k in range(1, cap + 1)
+    )
+    assert all(
+        row["mean_interval_path"] == [
+            release["path"]["uncertainty"]["mean"]["artifact"]["members"][f"{row['entity']}:h{k:02d}"]
+            for k in range(1, row["admitted_horizon"] + 1)
+        ]
+        for row in ForecastPublisher.path_rows(release, t, _path_ticks(ppub["path"], t), LOW_FLOOR)
     )
     with pytest.raises(ValueError, match="no path block"):
         ForecastPublisher.path_envelopes(ppub["default"]["releases"][0])
@@ -2938,7 +3020,7 @@ def test_path_row_refuses_what_the_screen_forbids(ppub):
     tail = (tick["sigma"], tick["beta"])
     # The decider may shorten the screened plan (the session close), never extend it.
     assert ForecastPublisher.path_row(*head, tick["yhat_path"], *tail, LOW_FLOOR, plan_horizon=1)["plan_horizon"] == 1
-    for plan in (0, 4, True, 2.0):
+    for plan in (-1, 0, 4, True, 2.0):
         with pytest.raises(ValueError, match="plan_horizon"):
             ForecastPublisher.path_row(*head, tick["yhat_path"], *tail, LOW_FLOOR, plan_horizon=plan)
     for floor in (0.0, 1.0, float("nan"), True, "0.5", None):
@@ -2961,11 +3043,15 @@ from intraday_equities.simulation import JointMinuteMioDecider, MinuteDevelopmen
 
 #: The joint kind's ``mio`` block: the fixture's lead-group params without the
 #: knobs the joint kind refuses by name.
-JOINT_MIO = {name: value for name, value in MIO.items() if name not in JOINT_REFUSED_PARAMS}
-#: The shipped fill policy on the share book: ``forced_exit_at`` alone differs.
-SHARES_POLICY = FillPolicy({**FILL_POLICY.to_obj(), "forced_exit_at": "session_close"})
 #: The path fixture's admitted names (ANET is modeled, never admitted).
 JOINT_NAMES = ("LLY", "LRCX", "NOW")
+JOINT_MIO = {
+    **{name: value for name, value in MIO.items() if name not in JOINT_REFUSED_PARAMS},
+    "mean_uncertainty_budget": 1.0,
+    "mean_deviation_multipliers": {name: 1.0 for name in JOINT_NAMES},
+}
+#: The shipped fill policy on the share book: ``forced_exit_at`` alone differs.
+SHARES_POLICY = FillPolicy({**FILL_POLICY.to_obj(), "forced_exit_at": "session_close"})
 _MINUTE = 60_000
 
 
@@ -3071,6 +3157,18 @@ def test_decide_node_joint_policy_refuses_releases_without_a_path_block(ppub):
     assert node.validate_inputs({"releases": ppub["path"]["releases"]}) == []
     # The lead-group policy never reads the path block.
     assert MioDeciderNode("decide", {"mio": MIO}).validate_inputs({"releases": flat}) == []
+
+
+def test_decide_node_joint_policy_binds_kappas_exactly_to_admitted_release_names(ppub):
+    releases = ppub["path"]["releases"]
+    missing = {**JOINT_MIO, "mean_deviation_multipliers": {"LLY": 1.0, "LRCX": 1.0}}
+    extra = {**JOINT_MIO, "mean_deviation_multipliers": {
+        **JOINT_MIO["mean_deviation_multipliers"], "ANET": 1.0,
+    }}
+    for mio in (missing, extra):
+        node = MioDeciderNode("decide", {"mio": mio, "policy": "joint"})
+        problems = node.validate_inputs({"releases": releases})
+        assert any("cover exactly" in problem for problem in problems), problems
 
 
 def test_joint_decider_sizes_every_ticking_name_in_one_solve_and_orders_one_side_per_name(ppub, monkeypatch):
@@ -3208,9 +3306,11 @@ def test_joint_decider_sells_a_held_name_whose_screened_plan_is_empty(ppub, monk
     decider = _joint_decider(published, fx)
     orders = decider.decide(t, _jbook(fx, t, positions={"LLY": 4}))
     (call,) = seen
-    assert [row["entity"] for row in call["bundle"]] == ["LRCX", "NOW"]
+    assert [row["entity"] for row in call["bundle"]] == ["LLY", "LRCX", "NOW"]
+    assert next(row for row in call["bundle"] if row["entity"] == "LLY")["plan_horizon"] == 0
     assert call["portfolio"]["positions"] == {"LLY": 4} and call["portfolio"]["carried_wealth"] == 0.0
-    assert call["out"]["evidence"]["mandatory_exits"]["LLY"]["code"] == "no_row"
+    assert call["portfolio"]["gross_limit"] == _jbook(fx, t, positions={"LLY": 4})["gross_limit"]
+    assert call["out"]["evidence"]["mandatory_exits"]["LLY"]["code"] == "empty_plan"
     assert {"symbol": "LLY", "asof_ms": t, "lead": 0, "qty": 4, "side": "sell"} in orders
     assert decider.skipped == [] and decider.refused == []
     # Unheld, the same name is simply not sized.
@@ -3221,11 +3321,8 @@ def test_joint_decider_sells_a_held_name_whose_screened_plan_is_empty(ppub, monk
     assert [row["entity"] for row in seen[0]["bundle"]] == ["LRCX", "NOW"]
 
 
-def test_joint_decider_cannot_sell_a_lone_mandatory_exit_through_an_empty_bundle(ppub):
-    # The joint kind inherits the base kind's guard: an EMPTY bundle may not authorize the
-    # liquidation of a held position. A held plan-0 name at a minute where no other name has a
-    # row therefore refuses the minute by name (it is sold at the first minute another name
-    # carries a row, or by the backstop at the close).
+def test_joint_decider_sells_a_lone_mandatory_exit_from_its_authenticated_zero_plan_row(ppub, monkeypatch):
+    seen = _spy_joint(monkeypatch)
     published, fx = json.loads(json.dumps(ppub["path"])), ppub["fx"]
     release = published["releases"][0]
     release["path"]["cell_coverage"]["LLY:h01"] = 0.0
@@ -3233,10 +3330,13 @@ def test_joint_decider_cannot_sell_a_lone_mandatory_exit_through_an_empty_bundle
     _drop_ticks(published, "LRCX", [t])
     _drop_ticks(published, "NOW", [t])
     decider = _joint_decider(published, fx)
-    assert decider.decide(t, _jbook(fx, t, positions={"LLY": 4})) == []
-    (refusal,) = decider.refused
-    assert refusal["reason"] == "mio_refused"
-    assert "an empty bundle cannot authorize liquidation" in refusal["detail"]
+    orders = decider.decide(t, _jbook(fx, t, positions={"LLY": 4}))
+    assert orders == [{"symbol": "LLY", "asof_ms": t, "lead": 0, "qty": 4, "side": "sell"}]
+    assert [row["entity"] for row in seen[0]["bundle"]] == ["LLY"]
+    assert seen[0]["bundle"][0]["plan_horizon"] == 0
+    assert seen[0]["portfolio"]["gross_limit"] > seen[0]["portfolio"]["cash"]
+    assert seen[0]["out"]["cash_after"] > seen[0]["portfolio"]["cash"]
+    assert decider.refused == []
 
 
 def test_joint_decider_at_t_reads_no_tick_value_after_t(ppub):
@@ -3367,6 +3467,27 @@ def test_joint_decider_is_stateless_the_same_state_gives_the_same_orders(ppub):
     assert [{k: v for k, v in row.items() if k != "seconds"} for row in first.solves[-1:]] == strip
 
 
+def test_joint_decider_reuses_one_node_and_rebinds_each_minutes_bundle_digest(ppub, monkeypatch):
+    published, fx = ppub["path"], ppub["fx"]
+    nodes, pinned, actual = [], [], []
+    real = JointEquityKellyMIO.run
+
+    def spy(self, ctx, inputs):
+        nodes.append(self)  # retain the object so identity cannot be recycled
+        pinned.append(self.params["bundle_artifact_sha256"])
+        actual.append(ForecastBundle.digest(inputs["bundle"]))
+        return real(self, ctx, inputs)
+
+    monkeypatch.setattr(JointEquityKellyMIO, "run", spy)
+    decider = _joint_decider(published, fx)
+    for minute in (60, 61):
+        t = _mid(published, minute)
+        decider.decide(t, _jbook(fx, t))
+    assert len(nodes) == 2 and nodes[0] is nodes[1]
+    assert pinned == actual
+    assert pinned[0] != pinned[1]
+
+
 def test_joint_decider_builds_no_node_on_a_minute_with_nothing_to_size(ppub, monkeypatch):
     seen = _spy_joint(monkeypatch)
     published, fx = ppub["path"], ppub["fx"]
@@ -3386,6 +3507,8 @@ def test_joint_decider_without_kept_solves_holds_no_rows_but_counts_them(ppub):
         t = _mid(published, minute)
         decider.decide(t, _jbook(fx, t))
     assert decider.solves == [] and decider.n_solves == 3 and decider.solve_seconds > 0.0
+    assert decider.robust_protection["count"] == 3
+    assert 0.0 <= decider.robust_protection["min"] <= decider.robust_protection["max"]
 
 
 def test_joint_decider_refuses_what_it_cannot_run_by_name(ppub):
@@ -3454,7 +3577,14 @@ def jsim(ppub, tmp_path_factory):
     path, digest = _shares_fill_policy(str(tmp_path_factory.mktemp("jsim")))
     end = published["releases"][0]["segment_end_ms"]
     bars = [b for b in _minute_bars(published, fx, days=(0, 1), head=12, tail=8) if b["asof_ms"] < end]
-    params = _sim_params(first=2, last=2, fill_policy=path, fill_policy_sha256=digest)
+    fold = published["releases"][0]["fold"]
+    params = _sim_params(
+        first=fold,
+        last=fold,
+        evidence_end=_local_day(end - 1),
+        fill_policy=path,
+        fill_policy_sha256=digest,
+    )
     mio = _joint_mio(published, fx)
     inputs = {"bars": list(bars), "releases": published["releases"], "ticks": published["ticks"], "mio": mio}
     out = MinuteDevelopmentSimulation("simulate", params).run(fx["ctx"], inputs)
@@ -3468,10 +3598,12 @@ def jsim(ppub, tmp_path_factory):
 def test_joint_simulation_trades_both_sides_and_is_flat_at_every_session_close(jsim):
     out = jsim["out"]
     fills = out["fills"]
-    assert fills and {f["lead"] for f in fills} == {0} and {f["fold"] for f in fills} == {2}
+    fold = jsim["published"]["releases"][0]["fold"]
+    assert fills and {f["lead"] for f in fills} == {0} and {f["fold"] for f in fills} == {fold}
     decision = [f for f in fills if f["origin"] == "decision"]
     backstop = [f for f in fills if f["origin"] == "backstop"]
-    assert {f["kind"] for f in decision} == {"entry"} and {f["side"] for f in decision} == {"buy", "sell"}
+    assert {f["kind"] for f in decision} == {"entry", "exit"}
+    assert {f["side"] for f in decision} == {"buy", "sell"}
     assert backstop and {(f["kind"], f["side"], f["reason"]) for f in backstop} == {("exit", "sell", "session_close")}
     # Flat by every session close: each name's shares net to zero over each local date ...
     net = Counter()
@@ -3506,11 +3638,18 @@ def test_joint_simulation_report_counts_buys_sells_and_backstop_exits(jsim):
     }
     assert summary["fills_by_origin"] == expected and sum(expected.values()) == len(fills)
     assert all(count > 0 for count in expected.values())
-    # entries/exits keep counting kinds; the share counters ride beside them, per day and in total.
-    assert summary["fills_by_kind"] == {"entry": expected["buys"] + expected["sells"], "exit": expected["backstop_exits"]}
+    # Fill kinds are semantic: decision buys enter; every sale exits.
+    assert summary["fills_by_kind"] == {
+        "entry": expected["buys"],
+        "exit": expected["sells"] + expected["backstop_exits"],
+    }
     for key, total in expected.items():
         assert sum(row[key] for row in daily) == total
-    assert all(row["entries"] == row["buys"] + row["sells"] and row["exits"] == row["backstop_exits"] for row in daily)
+    assert all(
+        row["entries"] == row["buys"]
+        and row["exits"] == row["sells"] + row["backstop_exits"]
+        for row in daily
+    )
     # Attribution collapses to the one lead bucket 0 and still sums to the totals.
     assert set(summary["by_lead"]) == {"0"} and {v["lead"] for v in summary["by_symbol"].values()} == {0}
     assert summary["by_lead"]["0"]["realised_pnl"] == pytest.approx(summary["realised_pnl"])
@@ -3532,12 +3671,129 @@ def test_joint_simulation_report_counts_buys_sells_and_backstop_exits(jsim):
         SimulationReport("report", {}).run(jsim["fx"]["ctx"], {**ports, "fills": stray, "releases": jsim["published"]["releases"]})
 
 
+def test_joint_share_rows_map_to_valid_evaluator_events(jsim, tmp_path):
+    """ADR-0188: decision sells stay exits and cash contributions reach ADR-0183."""
+    from dskit.evaluation.events import EventLog
+
+    out = jsim["out"]
+    params = {
+        "title": "joint simulation",
+        "project": "intraday_equities",
+        "tz": "America/New_York",
+        "model": "JointEquityKellyMIO",
+        "units": {"money": "USD"},
+    }
+    node = ShareReplayEvents("events", params)
+    inputs = {name: out[name] for name in ("fills", "skipped", "refused", "cash", "metadata")}
+    events = node.run(jsim["fx"]["ctx"], inputs)["events"]
+    EventLog(events)
+    assert events[0]["diagnostics"]["robust_protection"] == out["metadata"][
+        "robust_protection"
+    ]
+
+    contributions = [float(row["contribution"]) for row in out["cash"]]
+    cashflows = [event["amount"] for event in events if event["kind"] == "cashflow"]
+    assert cashflows == [amount for amount in contributions if amount]
+    event_fills = {event["fill_id"]: event for event in events if event["kind"] == "fill"}
+    assert set(event_fills) == {row["fill_id"] for row in out["fills"]}
+    decisions = {event["decision_id"]: event for event in events if event["kind"] == "decision"}
+    for row in (fill for fill in out["fills"] if fill["origin"] == "decision"):
+        decision = decisions[f"d-{row['fill_id']}"]
+        assert decision["ts_ms"] == row["decision_ms"]
+        assert decision["action"] == ("enter" if row["side"] == "buy" else "exit")
+    assert all(
+        decisions[f"d-{row['fill_id']}"]["reason"] == "session_close"
+        for row in out["fills"] if row["origin"] == "backstop"
+    )
+    from dskit.evaluation.nodes import EvaluationReport
+
+    ctx = NodeContext(name="evaluation", asof="2026-09-28", run_dir=str(tmp_path))
+    rendered = EvaluationReport("evaluation", {"out_dir": "evaluation"}).run(
+        ctx, {"events": events}
+    )
+    assert rendered["metrics"]["census_ok"] is True
+    assert all(os.path.isfile(path) for path in rendered["paths"].values())
+    with open(rendered["paths"]["summary"], encoding="utf-8") as handle:
+        summary = handle.read()
+    assert "diagnostic robust_protection" in summary
+    assert f'"count": {out["metadata"]["robust_protection"]["count"]}' in summary
+
+
+def test_joint_preflight_checks_all_releases_and_projected_peak(monkeypatch):
+    gib = 1024 ** 3
+    params = {
+        "first_fold": 2,
+        "last_fold": 19,
+        "memory_limit_bytes": 18 * gib,
+        "simulation_headroom_bytes": 2 * gib,
+    }
+    releases, ticks, bars = [], [], []
+    for fold in range(2, 20):
+        start = fold * 1_000
+        release_id = f"r{fold}"
+        releases.append({
+            "fold": fold,
+            "release_id": release_id,
+            "segment_start_ms": start,
+            "segment_end_ms": start + 100,
+            "path": {"horizons": {"AAA": 1, "BBB": 2}},
+        })
+        for symbol, horizon in (("AAA", 1), ("BBB", 2)):
+            stamps = [start + 1, start + 2]
+            ticks.append({
+                "release_id": release_id,
+                "symbol": symbol,
+                "ts": stamps,
+                "price": [10.0, 10.1],
+                "sigma": [1.0, 1.0],
+                "beta": [1.0, 1.0],
+                "yhat_by_lead": [[0.01, 0.02] for _ in range(horizon)],
+            })
+            # One-minute tape rows may surround the publisher's lower-frequency
+            # scored decision stamps and must not be mistaken for missing ticks.
+            bars.append({"symbol": symbol, "asof_ms": start})
+            bars.extend({"symbol": symbol, "asof_ms": stamp} for stamp in stamps)
+            bars.append({"symbol": symbol, "asof_ms": start + 3})
+    node = JointSimulationPreflight("preflight", params)
+    monkeypatch.setattr(node, "_peak_rss_bytes", lambda: 5 * gib)
+    passed = node.run(None, {"releases": releases, "ticks": ticks, "bars": bars})["passed"]
+    assert passed == {
+        "release_count": 18,
+        "peak_rss_bytes": 5 * gib,
+        "projected_peak_rss_bytes": 7 * gib,
+        "memory_limit_bytes": 18 * gib,
+    }
+    monkeypatch.setattr(node, "_peak_rss_bytes", lambda: 17 * gib)
+    with pytest.raises(ConfigError, match="projected peak RSS"):
+        node.run(None, {"releases": releases, "ticks": ticks, "bars": bars})
+    with pytest.raises(ConfigError, match="folds"):
+        node.run(None, {"releases": releases[:-1], "ticks": ticks, "bars": bars})
+    monkeypatch.setattr(node, "_peak_rss_bytes", lambda: 5 * gib)
+    with pytest.raises(ConfigError, match="path/tick symbols"):
+        node.run(None, {"releases": releases, "ticks": ticks[:-1], "bars": bars})
+    missing_bar = releases[0]["segment_start_ms"] + 2
+    partial_bars = [
+        bar for bar in bars
+        if not (bar["symbol"] == "AAA" and bar["asof_ms"] == missing_bar)
+    ]
+    with pytest.raises(ConfigError, match="bar/tick timestamps"):
+        node.run(None, {"releases": releases, "ticks": ticks, "bars": partial_bars})
+    empty = [dict(row) for row in ticks]
+    empty[0] = {**empty[0], "ts": []}
+    with pytest.raises(ConfigError, match="non-empty"):
+        node.run(None, {"releases": releases, "ticks": empty, "bars": bars})
+
+
 def test_joint_simulation_keeps_the_metadata_shape(jsim):
     metadata = jsim["out"]["metadata"]
     assert set(metadata) == {
         *DISCLOSURE, "evidence_end", "first_fold", "last_fold", "fill_policy_sha256", "cash_flow_policy_sha256",
         "currency", "timezone", "segments", "bars_outside_segments", "bars_not_admitted", "open_at_evidence_end",
+        "robust_protection",
     }
+    robust = metadata["robust_protection"]
+    assert robust["count"] == len(jsim["out"]["solves"])
+    assert robust["min"] <= robust["mean"] <= robust["max"]
     (segment,) = metadata["segments"]
     assert set(segment) == {
         "fold", "release_id", "segment_start_ms", "segment_end_ms", "opening_cash", "closing_cash",

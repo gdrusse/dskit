@@ -53,6 +53,7 @@ import hashlib
 import json
 import math
 
+from dskit.pipeline.mean_interval import ConfidenceInterval
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stages import is_sha256hex
 
@@ -185,6 +186,7 @@ _PATH_FIELDS = frozenset(
         "pi_hat_path",
         "pi_widened_path",
         "scenarios_path",
+        "mean_interval_path",
     )
 )
 
@@ -283,9 +285,9 @@ def gross_return(yhat, sigma, lead):
     return simple_return
 
 
-def _uncertainty_problems(uncertainty):
+def _uncertainty_problems(uncertainty, path=False):
     """Problems with a bundle's calibration-artifact identities, empty when none."""
-    wanted = sorted(UNCERTAINTY_ARTIFACT_FIELDS)
+    wanted = sorted(UNCERTAINTY_ARTIFACT_FIELDS + (("mean",) if path else ()))
     # set, not sorted: a mapping with a non-string key would raise a bare
     # TypeError out of sorted() instead of refusing by name.
     if not isinstance(uncertainty, dict) or set(uncertainty) != set(wanted):
@@ -422,10 +424,11 @@ def _row_problems(index, row, label_contract):
                 "(label-unit residuals)"
             )
     known_at = row["known_at"]
+    known_at_fields = KNOWN_AT_FIELDS + (("mean_interval",) if _PATH_FIELDS <= set(row) else ())
     if not isinstance(known_at, dict):
         problems.append(
             f"{where} ({entity!r}): known_at must be a mapping of "
-            f"{list(KNOWN_AT_FIELDS)!r}"
+            f"{list(known_at_fields)!r}"
         )
     else:
         for alias in sorted(set(known_at) & set(WITHDRAWN_FIELD_ALIASES)):
@@ -436,7 +439,7 @@ def _row_problems(index, row, label_contract):
                 "point-in-time"
             )
         unknown = sorted(
-            set(known_at) - set(KNOWN_AT_FIELDS) - set(WITHDRAWN_FIELD_ALIASES)
+            set(known_at) - set(known_at_fields) - set(WITHDRAWN_FIELD_ALIASES)
         )
         if unknown:
             problems.append(
@@ -444,7 +447,7 @@ def _row_problems(index, row, label_contract):
                 "the closed vocabulary is the dependency list; an outcome is "
                 "future information and may never enter this bundle"
             )
-        missing_stamps = sorted(set(KNOWN_AT_FIELDS) - set(known_at))
+        missing_stamps = sorted(set(known_at_fields) - set(known_at))
         if missing_stamps:
             problems.append(
                 f"{where} ({entity!r}): known_at is missing {missing_stamps}"
@@ -499,12 +502,39 @@ def _path_problems(where, entity, row):
             f"carries {n_steps} scored heads), got {admitted!r}"
         )
     plan = row["plan_horizon"]
-    if not _step_ok(plan, n_steps):
+    if not (
+        not isinstance(plan, bool)
+        and isinstance(plan, int)
+        and 0 <= plan <= n_steps
+    ):
         problems.append(
-            f"{tag}: plan_horizon must be an integer 1..{n_steps} (the row "
+            f"{tag}: plan_horizon must be an integer 0..{n_steps} (the row "
             f"carries {n_steps} scored heads), got {plan!r}"
         )
     rates = {}
+    intervals = row["mean_interval_path"]
+    if not isinstance(intervals, (list, tuple)) or (
+        admitted_ok and len(intervals) != admitted
+    ):
+        problems.append(
+            f"{tag}: mean_interval_path must be a list of exactly admitted_horizon "
+            f"({admitted!r}) confidence intervals, got {intervals!r}"
+        )
+    else:
+        interval_fields = {
+            "mean", "standard_error", "low", "high", "level", "independent_units", "method"
+        }
+        for step, interval in enumerate(intervals, start=1):
+            if not isinstance(interval, dict) or set(interval) != interval_fields:
+                problems.append(
+                    f"{tag}: mean_interval_path[{step}] must carry exactly "
+                    f"{sorted(interval_fields)!r}, got {interval!r}"
+                )
+                continue
+            try:
+                ConfidenceInterval(**interval)
+            except (TypeError, ValueError) as exc:
+                problems.append(f"{tag}: mean_interval_path[{step}] is invalid: {exc}")
     for field in ("pi_hat_path", "pi_widened_path"):
         values = row[field]
         if not isinstance(values, (list, tuple)) or (
@@ -710,7 +740,6 @@ class ForecastBundle:
                 problems.append("producer.output must be 'bundle'")
         if not is_sha256hex(model_manifest_sha256):
             problems.append("model_manifest_sha256 must be a lowercase SHA-256")
-        problems.extend(_uncertainty_problems(uncertainty))
         if not isinstance(rows, (list, tuple)):
             problems.append(
                 f"rows must be a materialized list of candidate rows, got "
@@ -753,9 +782,11 @@ class ForecastBundle:
                 "a tick carries exit-horizon path rows on every row or on none "
                 "— mixing path rows with flat rows refuses (ADR-0188)"
             )
+        has_paths = path_flags == {True}
+        problems.extend(_uncertainty_problems(uncertainty, path=has_paths))
         if problems:
             raise ValueError("ForecastBundle: " + "; ".join(problems))
-        self.has_paths = path_flags == {True}
+        self.has_paths = has_paths
         self.decision_ts = shared.get("decision_ts")
         self.lead = shared.get("lead")
         self.weights = list(shared["weights"]) if "weights" in shared else None
@@ -804,7 +835,10 @@ class ForecastBundle:
             "known_at": dict(row["known_at"]),
         }
         if _PATH_FIELDS <= set(row):
-            out.update(self._assemble_path(row))
+            path = self._assemble_path(row)
+            out.update(path)
+            out["mu_gross"] = path["mu_gross_path"][0]
+            out["scenarios"] = list(path["scenarios_path"][0])
         return out
 
     def _assemble_path(self, row):
@@ -822,20 +856,25 @@ class ForecastBundle:
         yhat_path = [float(v) for v in row["yhat_path"]]
         pi_hat_path = [float(v) for v in row["pi_hat_path"]]
         pi_widened_path = [float(v) for v in row["pi_widened_path"]]
+        intervals = [ConfidenceInterval(**value) for value in row["mean_interval_path"]]
         mu_gross_path, scenarios_path = [], []
+        deviation_below, deviation_above = [], []
         pi_hat_out, pi_widened_out = [], []
         for k in range(1, len(yhat_path) + 1):
             step = min(k, admitted)
-            if k <= admitted:
-                yhat_k = yhat_path[k - 1]
-                mu_k = gross_return(yhat_k, sigma, k)
-            else:
-                # The same log mean as the last admitted lead, expressed in
-                # this step's label units so that the conversion below
-                # scales the residuals by sqrt(k) and nothing else.
-                yhat_k = yhat_path[admitted - 1] * math.sqrt(admitted / k)
-                mu_k = mu_gross_path[admitted - 1]
+            scale = 1.0 if k <= admitted else math.sqrt(admitted / k)
+            yhat_k = yhat_path[step - 1] * scale
+            interval = intervals[step - 1]
+            mean_k = interval.mean * scale
+            low_k = interval.low * scale
+            high_k = interval.high * scale
+            mu_k = gross_return(yhat_k + mean_k, sigma, k)
+            lower = gross_return(yhat_k + low_k, sigma, k)
+            upper = gross_return(yhat_k + high_k, sigma, k)
+            haircut = 1.0 - pi_hat_path[step - 1]
             mu_gross_path.append(mu_k)
+            deviation_below.append(haircut * (mu_k - lower))
+            deviation_above.append(haircut * (upper - mu_k))
             pi_hat_out.append(pi_hat_path[step - 1])
             pi_widened_out.append(pi_widened_path[step - 1])
             scenarios_path.append(
@@ -852,7 +891,10 @@ class ForecastBundle:
         return {
             "admitted_horizon": admitted,
             "plan_horizon": row["plan_horizon"],
+            "sigma_t": sigma,
             "mu_gross_path": mu_gross_path,
+            "mean_deviation_below_path": deviation_below,
+            "mean_deviation_above_path": deviation_above,
             "pi_hat_path": pi_hat_out,
             "pi_widened_path": pi_widened_out,
             "scenarios_path": scenarios_path,

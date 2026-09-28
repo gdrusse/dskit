@@ -1364,7 +1364,7 @@ class ProvenanceSection(Section):
         code, env = start.get("code", {}), start.get("env", {})
         sources = start.get("sources", {})
         wall = end.get("wall_s") if end else None
-        return [
+        rows = [
             {"field": "schema", "value": start.to_obj()["schema"]},
             {"field": "run_id", "value": start.get("run_id")},
             {"field": "config_hash", "value": start.get("config_hash")},
@@ -1380,6 +1380,12 @@ class ProvenanceSection(Section):
             {"field": "events", "value": ", ".join(
                 f"{k}={n}" for k, n in sorted(context.census.kinds.items()))},
         ]
+        rows.extend({
+            "field": f"diagnostic {name}",
+            "value": json.dumps(value, sort_keys=True),
+            "source": sources.get(name),
+        } for name, value in sorted(start.get("diagnostics", {}).items()))
+        return rows
 
     def html(self, context):
         """Return the facts, data fingerprints, packages and the config."""

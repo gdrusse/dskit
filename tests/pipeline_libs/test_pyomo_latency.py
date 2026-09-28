@@ -159,6 +159,16 @@ class TestLatencySmoke:
             assert math.isfinite(record["solve_seconds"]) and record["solve_seconds"] > 0.0
             assert record["wall_seconds"] >= record["solve_seconds"]
 
+    def test_robust_persistent_sequence_exercises_one_warm_model(self, tmp_path):
+        records, summary = bench.run_persistent_robust_benchmark(
+            3, time_limit=bench.P99_BUDGET_S, run_dir=str(tmp_path)
+        )
+        assert summary["model_builds"] == 1
+        assert summary["warm_starts"] == 2
+        assert summary["meets_budget"] is True
+        assert all(bench.solved(record) for record in records)
+        assert all(record["robust_protection"] > 0.0 for record in records)
+
 
 @pytest.mark.slow
 class TestLatencyFull:

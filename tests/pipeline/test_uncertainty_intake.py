@@ -108,6 +108,7 @@ from dskit.pipeline.mean_interval import (
     ClusterBootstrapInterval,
     ConfidenceInterval,
     MeanEvidence,
+    MeanConfidenceFamily,
     MeanIntervalResult,
     NeweyWestInterval,
     WidenedInterval,
@@ -130,6 +131,7 @@ from dskit.pipeline.uncertainty_intake import (
     UNCERTAINTY_INTAKES,
     AttestedFalseSignalRate,
     AttestedMeanConfidence,
+    AttestedMeanConfidenceFamily,
     AttestedOutcomeBand,
     AttestedUncertainty,
     CoverageEvidence,
@@ -508,6 +510,20 @@ class TestTheDemandHasNoDefaults:
 
 
 class TestTheEstimandIsTheArtifactsType:
+    def test_a_mean_family_has_its_own_registered_intake(self):
+        family = MeanConfidenceFamily({"A:h01": _confidence()})
+        envelope = AttestedMeanConfidenceFamily(
+            family, _attestation(producer=MEAN_PRODUCER)
+        )
+        assert admission_problems(envelope, _demand(), AttestedMeanConfidenceFamily) == []
+        assert artifact_of(envelope) is family
+
+    def test_a_bare_interval_cannot_fill_the_family_slot(self):
+        with pytest.raises(ValueError, match="MeanConfidenceFamily"):
+            AttestedMeanConfidenceFamily(
+                _confidence(), _attestation(producer=MEAN_PRODUCER)
+            )
+
     def test_each_member_accepts_only_its_own_artifact(self):
         assert AttestedMeanConfidence(_confidence(), _attestation())
         assert AttestedOutcomeBand(_band(), _attestation())
@@ -901,8 +917,9 @@ class TestTheWidenedRateCanNeverBecomeABound:
 
 
 class TestTheRegistry:
-    def test_the_three_shipped_members_are_registered(self):
+    def test_the_four_shipped_members_are_registered(self):
         assert uncertainty_intake("mean_confidence") is AttestedMeanConfidence
+        assert uncertainty_intake("mean_confidence_family") is AttestedMeanConfidenceFamily
         assert uncertainty_intake("outcome_band") is AttestedOutcomeBand
         assert uncertainty_intake("false_signal_rate") is AttestedFalseSignalRate
 
@@ -1974,6 +1991,12 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'doc:AttestedMeanConfidence.estimand': 'df0a831234194da8',
         'doc:AttestedMeanConfidence.excluded_types': '48596e210b69d867',
         'doc:AttestedMeanConfidence.registered_producers': 'ec3c3d7d3d3e2745',
+        'doc:AttestedMeanConfidenceFamily': '3317caca5069ee13',
+        'doc:AttestedMeanConfidenceFamily.artifact_producer': 'f37820a5ff313462',
+        'doc:AttestedMeanConfidenceFamily.artifact_type': '7bfc4afacc8cbd29',
+        'doc:AttestedMeanConfidenceFamily.estimand': 'e9219c0772c992d7',
+        'doc:AttestedMeanConfidenceFamily.excluded_types': 'a93a1dfbe9cb7db7',
+        'doc:AttestedMeanConfidenceFamily.registered_producers': 'fd5d9f2e36ab5e2e',
         'doc:AttestedOutcomeBand': '2302287b8b197240',
         'doc:AttestedOutcomeBand.artifact_producer': '53b5c2972d6fa909',
         'doc:AttestedOutcomeBand.artifact_type': '38eb84e828b9d8a1',
@@ -2025,7 +2048,7 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'doc:attestation_of': 'e50d2fe2d1b81166',
         'doc:register_uncertainty_intake': 'c0116dbf01e1479b',
         'doc:uncertainty_intake': '7e6951e8bccce5f2',
-        'module': 'dd17688469567daa',
+        'module': '4b9557d61dc83426',
         'note:CLOSED_FAMILIES#1': '1e2ad777643dbf5d',
         'note:CLOSED_FAMILIES#2': '991d1f583e217540',
         'note:HOOK_SHAPES#1': 'f8f08a6546bed41d',
@@ -2034,7 +2057,7 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'note:_FINAL_METHODS#1': 'fdca5d5ee9a15038',
         'note:_HOOKS#1': '4ac957da937c3172',
         'note:_REAL_INSTANCE_DICT#1': '92be33912621af8d',
-        'strings:<module>': '1c72368c2ef2945f',
+        'strings:<module>': '4a425bcfb0487746',
         'strings:AttestedFalseSignalRate.artifact_producer': 'e15cc3b90425e88e',
         'strings:AttestedFalseSignalRate.artifact_producer.evidence': '140a42631f8500bb',
         'strings:AttestedFalseSignalRate.artifact_producer.value': '7751b49ce90543ac',
@@ -2043,6 +2066,9 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'strings:AttestedMeanConfidence.artifact_producer': 'a6d8b47bf701c2d2',
         'strings:AttestedMeanConfidence.estimand': '04015cdf93290963',
         'strings:AttestedMeanConfidence.registered_producers': 'b9398c9307df8eef',
+        'strings:AttestedMeanConfidenceFamily.artifact_producer': 'a6d8b47bf701c2d2',
+        'strings:AttestedMeanConfidenceFamily.estimand': 'def4cc7105471b1c',
+        'strings:AttestedMeanConfidenceFamily.registered_producers': 'b9398c9307df8eef',
         'strings:AttestedOutcomeBand.artifact_producer': 'e15cc3b90425e88e',
         'strings:AttestedOutcomeBand.artifact_producer.provenance': '9c0fde8bb91cff71',
         'strings:AttestedOutcomeBand.artifact_producer.value': 'd581777666dd2460',
@@ -2063,7 +2089,7 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'strings:UncertaintyAttestation.__post_init__': '27ac0edd974043e0',
         'strings:UncertaintyAttestation.coverage': 'dc937b59892604f5',
         'strings:_REAL_INSTANCE_DICT': '3bf137a69eec50e9',
-        'strings:__all__': '308beaa17eab3146',
+        'strings:__all__': 'eaf9c86274aafe03',
         'strings:_artifact_problems': 'b5158c0d21aa3002',
         'strings:_artifact_problems.wanted': '8169dca4451cdcbb',
         'strings:_ask': '80be032267742d8b',
@@ -2278,6 +2304,7 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert sorted(UNCERTAINTY_INTAKES) == [
             "false_signal_rate",
             "mean_confidence",
+            "mean_confidence_family",
             "outcome_band",
         ]
 
