@@ -2,6 +2,10 @@
 
 ## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
 
+- Merged/pushed to remote main: implementation `f396baca`, complete memo/evidence
+  `4327a9d0`; remote head verified after push. WSL computation succeeded; its
+  credential-helper bridge failed for push, so the existing Windows Git
+  credentials published the same WSL worktree. No experiment ran on Windows.
 - Owner requested architecture/training HPO, distribution-assumption research,
   pooled separate heads, another memo, JSON-only standardized execution, and
   Luna skeptics. Implementation/run source locked at `f396baca6b17e69a3ec44924c05bca220f250807`.
