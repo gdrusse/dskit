@@ -289,6 +289,19 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`libs/predictive_cdf.py` (ADR-0189) supplies offline conditional CDF estimators:
+empirical, monotone boosted CDF, LightGBM quantiles and a Gaussian-mixture MLP.
+`ChronologicalCDFStudy` compares common rows/features with purged training,
+held-out calibration and later annual evaluation. Its JSON configuration names
+all estimators and budgets; it is not a serving or trading artifact contract.
+ADR-0190 extends this same pack with fixed-degree Student mixtures, configurable
+MLP trunks, optional one-hot-routed heads, and pooled train-only preprocessing.
+`CDFHyperparameterStudy` delegates fitting to that study and adds JSON-declared
+search/select/evaluate/report partitions. It freezes development-only choices,
+checks exact paired identities/cells, and requires hash-pinned, atomically
+completed artifacts. Student log-return models support bounded payoff research,
+not finite unbounded price moments. Public Gaussian defaults remain unchanged.
+
 The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the
 cross-run view:
 
@@ -741,6 +754,7 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
+├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190)
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
