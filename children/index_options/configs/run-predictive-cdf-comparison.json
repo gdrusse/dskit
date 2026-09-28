@@ -1,0 +1,34 @@
+{
+  "notes": "ADR-0189 bounded matched-feature distribution comparison; physical terminal returns, not trades. Run from child root: python -m index_options.cdf_study configs/run-predictive-cdf-comparison.json. Immutable output directory refuses overwrite.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {"SPY": "VIX", "QQQ": "VXN", "IWM": "RVX"},
+    "price_source": "optionshist-chain", "iv_source": "cboe-index-wide",
+    "since": "2007-01-01", "max_dte": 45, "lags": 22, "windows": [1, 5, 22, 66],
+    "feature_gap_days": 7, "reference_floor": 0.001, "spot_tolerance": 0.02
+  },
+  "diagnostic": {"strikes_z": [-2, -1, 1, 2], "integration_points": 101},
+  "study": {
+    "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "rv_1", "rv_5", "rv_22", "rv_66", "own_iv", "calendar_dte", "sessions_to_expiry", "log_calendar_dte", "log_sessions_to_expiry", "series_age_calendar", "series_age_sessions", "series_total_tenor_calendar", "series_total_tenor_sessions", "life_fraction_calendar", "life_fraction_sessions", "calendar_days_per_session", "reference_scale"],
+    "group": "symbol", "date": "quote_date", "end": "settlement_date",
+    "horizon": "calendar_dte", "target": "terminal_return", "reference": "reference_scale",
+    "years": [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+    "output": "pipeline_runs/predictive_cdf_20260928",
+    "samples": 401, "tail_intervals": [[-2.5, -0.5], [0.5, 2.5]], "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": ["horizon_empirical", "scaled_empirical"],
+    "bootstrap": {"blocks": [60, 120], "replicates": 400, "seed": 829},
+    "models": {
+      "horizon_empirical": {"class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF", "params": {"horizon_index": 27, "reference_index": 38, "knots": 401}, "calibrate": true},
+      "scaled_empirical": {"class": "dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF", "params": {"alpha": 10, "floor": 0.02, "knots": 401}, "calibrate": false},
+      "monotone_cdf": {"class": "dskit.pipeline.libs.predictive_cdf:MonotoneCDF", "params": {"thresholds": [-4, -3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3, 4], "trees": 120, "leaves": 7, "min_child": 200, "threads": 2, "tail_width": 4}, "calibrate": true},
+      "quantile_lightgbm": {"class": "dskit.pipeline.libs.predictive_cdf:QuantileCDF", "params": {"probabilities": [0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95, 0.975, 0.99, 0.995], "trees": 120, "leaves": 7, "min_child": 100, "threads": 2, "tail_width": 4}, "calibrate": true},
+      "mlp_1": {"class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF", "params": {"components": 1, "hidden": 32, "epochs": 20, "seeds": [11, 29], "device": "cuda"}, "calibrate": true},
+      "mlp_3": {"class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF", "params": {"components": 3, "hidden": 32, "epochs": 20, "seeds": [11, 29], "device": "cuda"}, "calibrate": true}
+    }
+  }
+}

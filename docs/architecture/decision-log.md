@@ -26541,3 +26541,42 @@ After that approval:
 1. Run `python -m dskit.pipeline run configs/run-joint-simulation.json --adapter intraday_equities` from the child root (as the config's own notes say to).
 2. Run `dskit.evaluation`'s backtest evaluator (ADR-0183) on the result, per the owner's stated pickup plan.
 3. Before either step, the owner should see and rule on the four open items surfaced above (the gross-limit tolerance interaction, the empty-plan-held-name gap, the upstream mandatory-exit-mark question, and IWM's modelled-vs-measured spread), and should decide whether Bertsimas-Sim robustness is wanted before or after a first real run.
+
+## ADR-0189 — Bounded conditional-CDF research comparison
+
+2026-09-28. Owner: index_options. Base: 7d690d68. The owner's instruction
+"build these out in a comparison, then write a memo with a recommendation"
+approves implementing and running the four approaches in A0603, including the
+mixture-density MLP. This records that approval; no trading or serving is added.
+
+One generic, offline tier-2 pack `libs/predictive_cdf.py` owns conditional
+curves, fitting and chronological comparison. An index_options adapter assembles
+actual-expiry labels from the existing IndexCloseRows reader and cached listed
+expiry metadata; a JSON document owns all experiment knobs. No package, reader,
+registry, optimizer, or live artifact format is introduced. Existing sample
+distribution/payoff owners remain the independent numerical reference.
+
+Compare exact-horizon empirical, volatility-scaled empirical, monotone direct
+CDF, quantile LightGBM and mixture MLP (one/three components, two seeds).
+The direct-CDF implementation uses one monotone-threshold boosted classifier,
+not independent crossing logits or a claim to implement the literature's spline.
+All learned models share the same feature bundle and causal reference scale.
+Training labels must settle before calibration begins; calibration labels before
+evaluation begins. Annual 2016–2018 development and 2019–2025 research evaluation
+are separate; the latter is previously inspected, not a pristine holdout.
+Report raw and calibrated scores, full/tail CRPS, calibration and bounded payoff
+error, phase counts, dates/expiries and exact-day grids. Fixed epoch/complexity
+budgets precede evaluation; this is a bounded comparison, not exhaustive HPO.
+
+Allowed files: this ADR, the generic pack and its focused tests, thin child
+adapter and tests, comparison JSON, requested memo, existing package layout
+docs, RE-ENTRY and append-only action journal. Generated data stay ignored.
+Invariants: monotone normalized CDF; positive mixture scales; causal preprocessing
+and purge; paired evaluation rows; equal input features; deterministic seeds;
+payoff sign/bounds; sample counts never described as independent observations.
+Tests must distinguish wrong CDF endpoints, future-label admission, quantile
+crossing, in-sample shape fitting and reversed condor-loss signs. Two independent
+final correctness/test-quality reviews gate readiness. Exit: all methods run on
+all three indexes, reproducible artifacts, empirical recommendation and clear
+limits. No claim of American-option execution profitability or model selection
+on untouched future data.
