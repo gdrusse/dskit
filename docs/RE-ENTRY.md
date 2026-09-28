@@ -1,5 +1,45 @@
 # Re-entry
 
+## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
+
+- Owner requested architecture/training HPO, distribution-assumption research,
+  pooled separate heads, another memo, JSON-only standardized execution, and
+  Luna skeptics. Implementation/run source locked at `f396baca6b17e69a3ec44924c05bca220f250807`.
+- Generic Student mixtures, configurable MLP trunks/heads, pooled train-only
+  preprocessing and reusable HPO orchestration live in existing predictive_cdf;
+  the existing child CLI runs one master JSON. No one-off execution script,
+  dependency, broker, live model or optimizer was added.
+- Two fresh independent `gpt-5.6-luna` final lenses closed with zero unresolved
+  Critical/Major. One correctness finding about hardcoded generic cardinality
+  was withdrawn by fresh independent adjudication, not author-downgraded.
+  Actual verdicts/probes: `docs/review-evidence/ADR-0190.md`. 65 focused/purity
+  tests passed; ruff/diff checks clean; no full suite.
+- All 24 neural candidates (4 bundles × 2 families × 3 sharing structures),
+  six controls, selection, four final evaluation partitions and report completed
+  via `configs/run-predictive-cdf-hpo.json`. Each stage <7 min; max host RSS
+  2.90 GiB/process; CUDA fitting. Outputs are completion/hash-pinned and paired.
+- Strict development: 18,616 rows, 133 index/day cells (QQQ/IWM day26 absent);
+  research evaluation: 68,084 rows, 1,746 dates, 3,495 series, all 135 cells.
+  Finalists all raw, one-hidden-layer/16-unit Gaussian MLPs, fixed seed ensemble
+  [11,29]. Pooled models fit once per year; calibration remains index-specific.
+- Primary full-CDF skill vs horizon empirical: separate −1.97%, pooled −1.92%,
+  heads −2.11%. No lift and no positive finalist index-average score. Retain
+  empirical CDF reference. Pooled MLP's +3.05% fixed-condor loss-error skill is
+  secondary research only; 10.24% of outcomes fall below its nominal 5th percentile.
+  Do not infer calibrated strike probabilities, optimal trades or readiness.
+- Standalone memo with every exact-day cell, counts, uncertainty, training rules,
+  runtime and assumptions: `children/index_options/docs/memos/2026-09-28-predictive-cdf-hpo.md`.
+  Research sources: `children/index_options/docs/research/distribution-modeling/2026-09-28-cdf-distribution-assumptions-hpo.md`.
+- Preserve `/home/russell/dskit-cdf-hpo-20260928`: ignored artifacts under the
+  child's `pipeline_runs/predictive_cdf_hpo_20260928` and logs in sibling
+  `cdf_hpo_logs_20260928`. The old feature-research worktree also owns upstream
+  cache artifacts referenced by JSON; do not remove it.
+- Next research, not automatically started: predeclare strike/tenor payoff
+  objectives and a conservative empirical/MLP blend; test downside calibration
+  on genuinely new data. No broader search, execution or trading is authorized
+  by these results. The earlier ADR-0189 recommendation is now supplemented by
+  this explicitly bounded HPO evidence, not retroactively relabeled a fresh test.
+
 ## ADR-0189 predictive price-CDF comparison completed (2026-09-28)
 
 - Owner asked to build the four researched distribution approaches, retain
