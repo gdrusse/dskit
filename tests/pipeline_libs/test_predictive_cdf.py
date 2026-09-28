@@ -7,6 +7,7 @@ import pytest
 from dskit.pipeline.libs.predictive_cdf import (
     CalibratedCurve, ChronologicalCDFStudy, GridCurve, MixtureCurve,
     HorizonEmpiricalCDF, ScaledEmpiricalCDF, MonotoneCDF, QuantileCDF, MixtureMLPCDF,
+    NGBoostCDF, QuantileForestCDF,
 )
 
 
@@ -422,3 +423,238 @@ def test_hpo_pairing_checks_actual_identities_not_counts(tmp_path, defect):
         scores.loc[0, 'year'] = 2019
     with pytest.raises(ValueError):
         study._check_scores(scores, expected, ['reference'])
+
+
+def test_convex_curve_exact_endpoints_inverse_and_flat_state():
+    import dskit.pipeline.libs.predictive_cdf as pack
+    assert hasattr(pack, 'ConvexCurve'), 'convex curve is missing'
+    ConvexCurve = pack.ConvexCurve
+    left = GridCurve([[-2., 0., 2.]], [[0., .7, 1.]])
+    right = MixtureCurve([[1.]], [[1.]], [[.5]])
+    values = np.array([-4., -1., 0., 1., 4.])
+    for weight, expected in [(0., left), (1., right)]:
+        curve = ConvexCurve(left, right, weight)
+        np.testing.assert_allclose(curve.cdf(values), expected.cdf(values), rtol=0, atol=0)
+        np.testing.assert_allclose(curve.quantile([1e-12, .5, 1-1e-12]),
+                                   expected.quantile([1e-12, .5, 1-1e-12]), rtol=0, atol=0)
+    curve = ConvexCurve(left, right, .25)
+    np.testing.assert_allclose(curve.cdf(values), .75*left.cdf(values)+.25*right.cdf(values))
+    p = np.array([.01, .2, .5, .8, .99])
+    np.testing.assert_allclose(curve.cdf(curve.quantile(p)), [p], atol=2e-10)
+    state = curve._arrays()
+    assert state['kind'] == 'convex' and state['weight'] == .25
+    assert state['left_kind'] == 'grid' and state['right_kind'] == 'mixture'
+    for weight in [-.1, 1.1, np.nan, True]:
+        with pytest.raises(ValueError):
+            ConvexCurve(left, right, weight)
+    with pytest.raises(ValueError, match='rows'):
+        ConvexCurve(left, MixtureCurve([[1.], [1.]], [[0.], [1.]], [[1.], [1.]]), .5)
+
+
+def test_quantile_forest_and_ngboost_return_valid_honest_curves():
+    import dskit.pipeline.libs.predictive_cdf as pack
+    assert hasattr(pack, 'QuantileForestCDF') and hasattr(pack, 'NGBoostCDF')
+    QuantileForestCDF, NGBoostCDF = pack.QuantileForestCDF, pack.NGBoostCDF
+    rng = np.random.default_rng(18)
+    x = rng.normal(size=(90, 3))
+    y = x[:, 0]+rng.normal(scale=.4, size=90)
+    forest = QuantileForestCDF(knots=31, trees=12, min_child=4,
+                               max_features=.7, threads=1, seed=9)
+    forest.fit(x[:70], y[:70], x[70:80], y[70:80])
+    fc = forest.curve(x[80:])
+    assert isinstance(fc, GridCurve)
+    assert (np.diff(fc.values, axis=1) >= 0).all()
+    assert (fc.probabilities[:, 0] == 0).all() and (fc.probabilities[:, -1] == 1).all()
+    assert fc.cdf(fc.values[:, :1]-1).max() == 0
+    assert fc.cdf(fc.values[:, -1:]+1).min() == 1
+
+    boosted = NGBoostCDF(trees=12, depth=2, min_child=4, learning_rate=.05,
+                         minibatch_frac=.8, col_sample=1., tol=1e-4, seed=9)
+    boosted.fit(x[:70], y[:70], x[70:80], y[70:80])
+    bc = boosted.curve(x[80:])
+    assert isinstance(bc, MixtureCurve)
+    assert np.isfinite(bc.means).all() and (bc.scales > 0).all()
+    dist = boosted.model.pred_dist(x[80:])
+    np.testing.assert_allclose(bc.means[:, 0], dist.params['loc'])
+    np.testing.assert_allclose(bc.scales[:, 0], dist.params['scale'])
+
+
+def test_conditioned_empirical_and_blend_match_both_controls():
+    import dskit.pipeline.libs.predictive_cdf as pack
+    assert hasattr(pack, 'EmpiricalMLPBlendCDF'), 'blend estimator is missing'
+    EmpiricalMLPBlendCDF = pack.EmpiricalMLPBlendCDF
+    x = np.array([[1., 1., 1, 0], [1., 1., 1, 0],
+                  [1., 1., 0, 1], [1., 1., 0, 1]])
+    y = np.array([-2., 2., 10., 12.])
+    empirical = HorizonEmpiricalCDF(0, 1, 9, condition_indices=[0, 2, 3]).fit(x, y, x, y)
+    assert empirical.curve(x[[0]]).quantile(.5)[0, 0] < 5
+    assert empirical.curve(x[[2]]).quantile(.5)[0, 0] > 5
+
+    settings = {'components': 1, 'hidden': [4], 'epochs': 1, 'batch_size': 8,
+                'seeds': [7], 'device': 'cpu', 'deterministic': True}
+    mlp = MixtureMLPCDF(**settings).fit(x, y, x, y)
+    left = EmpiricalMLPBlendCDF(0., [0, 2, 3], 1, 9, settings).fit(x, y, x, y)
+    right = EmpiricalMLPBlendCDF(1., [0, 2, 3], 1, 9, settings).fit(x, y, x, y)
+    query = np.array([-20., 0., 5., 20.])
+    np.testing.assert_allclose(left.curve(x).cdf(query), empirical.curve(x).cdf(query), rtol=0, atol=0)
+    np.testing.assert_allclose(right.curve(x).cdf(query), mlp.curve(x).cdf(query), rtol=0, atol=0)
+    assert right._equivalence_state() == mlp._equivalence_state()
+    bad = x.copy()
+    bad[0, 2] = np.nan
+    with pytest.raises(ValueError, match='condition'):
+        left._validate_x(bad)
+
+
+def test_grouped_hpo_inventory_freezes_specs_and_dependency_versions(tmp_path):
+    import copy
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    config, _ = _hpo_fixture(tmp_path)
+    e = config['experiment']
+    candidate = copy.deepcopy(e['candidates']['candidate'])
+    candidate['params']['seeds'] = [11, 29]
+    e['candidates'] = {name: copy.deepcopy(candidate) for name in ['forest_a', 'ngboost_a', 'blend_a']}
+    for key in ['axes', 'candidate_labels', 'screen_seed', 'final_seeds']:
+        del e[key]
+    e['max_candidates'] = 3
+    e['candidate_groups'] = {name: [name+'_a'] for name in ['forest', 'ngboost', 'blend']}
+    e['search_partitions'] = copy.deepcopy(e['candidate_groups'])
+    study = pack.CDFHyperparameterStudy(config)
+    assert study.grouped
+    assert study._dependency_versions() == {}
+    assert set(study.experiment['candidate_groups']) == {'forest', 'ngboost', 'blend'}
+    bad = copy.deepcopy(config)
+    bad['experiment']['candidate_groups']['forest'].append('blend_a')
+    with pytest.raises(ValueError, match='group'):
+        pack.CDFHyperparameterStudy(bad)
+    peerless = copy.deepcopy(config)
+    peerless['study']['models']['reference']['equivalence'] = 'endpoint'
+    with pytest.raises(ValueError, match='equivalence'):
+        pack.CDFHyperparameterStudy(peerless)
+
+
+def test_equivalence_ledger_verifies_peers_and_records_singletons(tmp_path, monkeypatch):
+    import copy
+    import json
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    class EqSpy(pack.CDFEstimator):
+        def __init__(self, state):
+            self.state = state
+
+        def fit(self, x, y, cal_x, cal_y):
+            return self
+
+        def curve(self, x):
+            return MixtureCurve(np.ones((len(x), 1)), np.zeros((len(x), 1)), np.ones((len(x), 1)))
+
+        def _equivalence_state(self):
+            return self.state
+
+    monkeypatch.setattr(pack, '_EqSpy', EqSpy, raising=False)
+    config, frame = _hpo_fixture(tmp_path)
+    base = config['study']
+    base['years'] = [2017]
+    spec = {'class': 'dskit.pipeline.libs.predictive_cdf:_EqSpy', 'params': {'state': 'same'},
+            'calibrate': False, 'pooled': True, 'equivalence': 'endpoint'}
+    base['models'] = {'control': spec}
+    base['reference_model'] = 'control'
+    base['comparison_references'] = ['control']
+    base['output'] = str(tmp_path/'singleton')
+    ChronologicalCDFStudy(base).run(frame)
+    evidence = json.loads((tmp_path/'singleton/equivalence.json').read_text())
+    assert evidence['endpoint']['status'] == 'unverified'
+    assert evidence['endpoint']['members'] == ['control']
+
+    paired = copy.deepcopy(base)
+    paired['output'] = str(tmp_path/'paired')
+    paired['models']['blend'] = copy.deepcopy(spec)
+    ChronologicalCDFStudy(paired).run(frame)
+    evidence = json.loads((tmp_path/'paired/equivalence.json').read_text())
+    assert evidence['endpoint']['status'] == 'verified'
+    assert evidence['endpoint']['members'] == ['blend', 'control']
+
+    mismatch = copy.deepcopy(paired)
+    mismatch['output'] = str(tmp_path/'mismatch')
+    mismatch['models']['blend']['params']['state'] = 'changed'
+    with pytest.raises(ValueError, match='equivalence state'):
+        ChronologicalCDFStudy(mismatch).run(frame)
+
+
+def test_optional_dependency_versions_are_identity_inputs(tmp_path, monkeypatch):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, _ = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    study.experiment['candidates'] = {
+        'forest': {'class': 'dskit.pipeline.libs.predictive_cdf:QuantileForestCDF'},
+        'boost': {'class': 'dskit.pipeline.libs.predictive_cdf:NGBoostCDF'},
+    }
+    monkeypatch.setattr('importlib.metadata.version', lambda name: {'ngboost': '0.5.11',
+                                                                   'quantile-forest': '1.4.2'}[name])
+    assert study._dependency_versions() == {'ngboost': '0.5.11', 'quantile-forest': '1.4.2'}
+
+
+@pytest.mark.parametrize('mutation', ['duplicate', 'missing', 'mixed', 'partition'])
+def test_grouped_hpo_refuses_inventory_and_grammar_substitution(tmp_path, mutation):
+    import copy
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, _ = _hpo_fixture(tmp_path)
+    e = config['experiment']
+    candidate = copy.deepcopy(e['candidates']['candidate'])
+    candidate['params']['seeds'] = [11, 29]
+    e['candidates'] = {name: copy.deepcopy(candidate) for name in ['forest_a', 'ngboost_a', 'blend_a']}
+    for key in ['axes', 'candidate_labels', 'screen_seed', 'final_seeds']:
+        del e[key]
+    e['max_candidates'] = 3
+    e['candidate_groups'] = {name: [name+'_a'] for name in ['forest', 'ngboost', 'blend']}
+    e['search_partitions'] = copy.deepcopy(e['candidate_groups'])
+    if mutation == 'duplicate':
+        e['candidate_groups']['forest'].append('blend_a')
+        e['search_partitions'] = copy.deepcopy(e['candidate_groups'])
+    elif mutation == 'missing':
+        e['candidate_groups']['blend'] = []
+        e['search_partitions'] = copy.deepcopy(e['candidate_groups'])
+    elif mutation == 'mixed':
+        e['screen_seed'] = 11
+    else:
+        e['search_partitions']['forest'] = ['ngboost_a']
+    with pytest.raises(ValueError):
+        pack.CDFHyperparameterStudy(config)
+
+
+@pytest.mark.parametrize('factory', [
+    lambda: QuantileForestCDF(knots=2),
+    lambda: QuantileForestCDF(knots=11, max_features=0),
+    lambda: QuantileForestCDF(knots=11, max_samples_leaf=0),
+    lambda: NGBoostCDF(trees=0),
+    lambda: NGBoostCDF(minibatch_frac=1.1),
+])
+def test_new_estimator_invalid_parameters_refuse(factory):
+    with pytest.raises(ValueError):
+        factory()
+
+
+def test_deterministic_cuda_requires_prelaunch_workspace_and_restores_flags(monkeypatch):
+    import torch
+    monkeypatch.delenv('CUBLAS_WORKSPACE_CONFIG', raising=False)
+    model = MixtureMLPCDF(device='cuda', deterministic=True)
+    with pytest.raises(ValueError, match='CUBLAS_WORKSPACE_CONFIG'):
+        with model._deterministic_context():
+            pass
+    cpu = MixtureMLPCDF(device='cpu', deterministic=True)
+    before = torch.are_deterministic_algorithms_enabled()
+    with cpu._deterministic_context():
+        assert torch.are_deterministic_algorithms_enabled()
+    assert torch.are_deterministic_algorithms_enabled() == before
+
+
+def test_stage_dependency_version_change_invalidates_completed_search(tmp_path, monkeypatch):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, frame = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    provenance = {'fixture': 1}
+    monkeypatch.setattr(study, '_dependency_versions', lambda: {'ngboost': '0.5.11'})
+    study.run(frame, stage='search', partition='separate', provenance=provenance)
+    monkeypatch.setattr(study, '_dependency_versions', lambda: {'ngboost': '0.5.12'})
+    with pytest.raises(ValueError, match='identity'):
+        study.run(frame, stage='select', provenance=provenance)

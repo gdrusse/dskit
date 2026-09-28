@@ -1,11 +1,61 @@
 """The CDF adapter shares the contract payoff owner and exact units."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from index_options.cdf_study import CondorCDFDiagnostic
 from index_options.distribution import condor_payoff
-from dskit.pipeline.libs.predictive_cdf import MixtureCurve
+from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
+
+
+def test_predictive_cdf_methods_config_pins_bounded_grouped_inventory():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-methods.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    groups = experiment['candidate_groups']
+    assert groups == experiment['search_partitions']
+    assert list(groups) == ['forest', 'ngboost', 'blend']
+    assert [len(groups[name]) for name in groups] == [3, 3, 3]
+    assert set(experiment) & {'axes', 'candidate_labels', 'screen_seed', 'final_seeds'} == set()
+    assert experiment['output'] == 'pipeline_runs/predictive_cdf_methods_20260928'
+    assert experiment['evaluation_partitions'] == {
+        'development': [2016, 2017, 2018], 'early': [2019, 2020, 2021],
+        'middle': [2022, 2023], 'late': [2024, 2025]}
+    assert sum(len(v) for v in experiment['expected_cells']['development'].values()) == 133
+    assert sum(len(v) for v in experiment['expected_cells']['evaluation'].values()) == 135
+    assert study['features'][27] == 'calendar_dte'
+    assert [study['features'][i] for i in [39, 40, 41]] == ['is_SPY', 'is_QQQ', 'is_IWM']
+    assert study['features'][38] == 'reference_scale'
+    equivalence = 'pooled_normal_a_endpoint'
+    assert study['models']['pooled_normal_a']['equivalence'] == equivalence
+    assert all(experiment['candidates'][name]['equivalence'] == equivalence
+               for name in groups['blend'])
+    assert all(spec['pooled'] is True for spec in experiment['candidates'].values())
+    assert [experiment['candidates'][name]['params']['min_child']
+            for name in groups['forest']] == [20, 50, 100]
+    assert all(experiment['candidates'][name]['params']['max_samples_leaf'] is None
+               for name in groups['forest'])
+    ngboost = [experiment['candidates'][name]['params'] for name in groups['ngboost']]
+    assert [(p['depth'], p['min_child'], p['learning_rate']) for p in ngboost] == [
+        (2, 20, .03), (3, 20, .03), (2, 50, .05)]
+    assert all((p['trees'], p['minibatch_frac'], p['col_sample'], p['tol'], p['seed'])
+               == (100, .8, 1., .0001, 829) for p in ngboost)
+    blends = [experiment['candidates'][name] for name in groups['blend']]
+    assert [spec['params']['mlp_weight'] for spec in blends] == [.1, .25, .5]
+    control_mlp = study['models']['pooled_normal_a']['params']
+    assert all(spec['params']['mlp'] == control_mlp for spec in blends)
+    assert control_mlp == {
+        'components': 1, 'hidden': [16], 'epochs': 20, 'batch_size': 1024,
+        'learning_rate': .003, 'weight_decay': .1, 'min_scale': .1,
+        'activation': 'tanh', 'dropout': 0, 'seeds': [11, 29],
+        'device': 'cuda', 'deterministic': True}
+    assert experiment['resolutions'] == {
+        'screen_samples': 101, 'final_samples': 401, 'tail_points': 201,
+        'integration_points': 101, 'audit_samples': [101, 401, 1601], 'audit_rows': 12}
+    CDFHyperparameterStudy(config)
 
 
 def test_vectorized_payoff_matches_existing_owner_at_every_kink():

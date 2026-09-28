@@ -33,6 +33,12 @@ python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage ev
 python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage report
 ```
 
+ADR-0191 compares QRF, Normal-CRP NGBoost and empirical–MLP blends with the
+same CLI and `configs/run-predictive-cdf-methods.json`. Search partitions are
+`forest`, `ngboost` and `blend`; evaluation partitions remain `development`,
+`early`, `middle` and `late`. Each invocation is externally capped at 1800
+seconds/6 GiB and uses the deterministic environment declared in the config.
+
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a
