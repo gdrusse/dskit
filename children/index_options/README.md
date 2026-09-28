@@ -39,6 +39,16 @@ same CLI and `configs/run-predictive-cdf-methods.json`. Search partitions are
 `early`, `middle` and `late`. Each invocation is externally capped at 1800
 seconds/6 GiB and uses the deterministic environment declared in the config.
 
+The additive ADR-0191 refinement uses
+`configs/run-predictive-cdf-refinement.json`. Its search partitions are
+`weight`, `small`, `regularized` and `mixture`; each selects one development
+finalist before the same four evaluation partitions. The fixed raw 25% blend
+is the incumbent. Both empirical and incumbent controls disable calibration,
+deliberately duplicating raw rows; deterministic selection chooses raw. Compare
+the four group finalists with that incumbent on development before any later
+evaluation.
+Abort a capped stage rather than reducing the declared three-component search.
+
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a
