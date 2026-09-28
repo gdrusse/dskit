@@ -77,6 +77,19 @@ If the incumbent wins, the result is “no incremental challenger.” Other
 finalists remain descriptive, not candidates for changing the primary claim
 after seeing later outcomes.
 
+The pre-evaluation winner is **blend_small_035, raw**: 65% empirical / 35%
+MLP, one Normal component per seed and 8 hidden units. Its development
+equal-cell relative CRPS is 0.9871675354795064, or 1.283246% skill versus
+empirical. Other group winners are mixture .35 (1.258231%), regularized .35
+(1.106624%), and original-network weight .30 (1.024166%); the incumbent has
+1.001381%. These are selection results, not later-period evidence.
+All 13 candidates completed; no new trial was added. This primary and the
+complete contender ranking are committed in ADR-0191 evidence while the
+evaluation directory is still absent. Frozen selected.json SHA-256:
+`8bc93005e21db40623411108b20f985a7c96f73eede4ba544a151ef949e53902`;
+development score source SHA-256:
+`2d01497a96d08dabfb639a17d936a39cfedd8479a9b2bab02350ac532dd4c56d`.
+
 Final scoring uses 401 nodes and the same 2019–2025 observations as previous
 studies. These dates have repeatedly informed research and are not an untouched
 holdout. Annual chronology does not remove this research-selection bias.
@@ -119,9 +132,18 @@ controls. Repeated study history increases the selection risk beyond this grid.
 This is a JSON-only extension of existing capabilities under ADR-0191.
 Sol owns the configuration, additive config tests and layout documentation;
 Luna's design review cleared C0/M0 with a mixture-runtime caution. No
-production source/dependency change or one-off execution script is planned.
+production source/dependency change or one-off execution script was needed.
 The existing ADR-0191 evidence record retains the exact new protocol and
-subsequent test/reviewer outputs. Final reviews and real execution are pending.
+subsequent test/reviewer outputs. Final candidate is
+`88f85a8b601861e2794039775c54ef996bbf3910`; two fresh Luna lenses completed,
+with zero unresolved Critical/Major after fresh independent adjudication.
+The integration lens disputed whether the primary winner needed an API guard;
+the adjudicator confirmed the agreed parent-owned, pre-evaluation evidence
+commit satisfies the protocol. This external step is not machine-enforced by
+the generic CLI. Its test-automation gap remains a Minor, alongside the
+inherited negligible convex-inverse atom rounding issue. No post-lock code
+change followed. Seven child tests and 13 reused grouped-flow/pairing/hash/
+equivalence tests passed; no full suite was run.
 
 ## Reproducibility and handoff
 
