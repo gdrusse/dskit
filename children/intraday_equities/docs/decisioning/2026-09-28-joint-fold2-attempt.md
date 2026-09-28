@@ -2,14 +2,16 @@
 
 ## Disposition
 
-The corrected candidate at `22d3689` completed Fold 2
-(`[2022-09-09, 2022-11-11)`) in run
+Candidate `22d3689` completed Fold 2 (`[2022-09-09, 2022-11-11)`) in run
 `joint-simulation-2026-09-28-4ed41813` and handed its flat portfolio to
-Fold 3. The full folds 2–19 simulation is still running, so the figures below
-are a trade-ledger reconstruction; the official ADR-0183 evaluator remains
-pending until the simulation node publishes its buffered artifacts.
+Fold 3. The run was deliberately stopped during Fold 3 after live monitoring
+exposed an early-close replay clock/feed defect. Fold 2 ends before the
+affected 2022-11-25 boundary and remains valid. The full folds 2–19 simulation
+must restart from clean state on corrected candidate `260d97ed`; the official
+ADR-0183 evaluator remains pending until that simulation publishes its
+buffered artifacts.
 
-This result uses fill-policy digest
+The Fold 2 result uses fill-policy digest
 `0ef3f05dfcd4d0a90511d830b9704779e84a48a253cc2c30993822cea890e5da`,
 which prices the mandatory session-close exit at the close and obtains each
 close from the bounded XNYS calendar.
@@ -53,10 +55,9 @@ the cent-level result.
 - Pipeline-start to Fold 3 handoff: `3:12:35.133`.
 
 The pipeline log is
-`pipeline_runs/joint-simulation-2026-09-28-4ed41813/run.log`. The simulation
-continues under the 18 GiB address-space cap with one fold worker; the joint
-Pyomo/HiGHS model is persistent and uses warm starts when the solve topology
-is unchanged.
+`pipeline_runs/joint-simulation-2026-09-28-4ed41813/run.log`. The run used the
+18 GiB address-space cap and one fold worker; the joint Pyomo/HiGHS model was
+persistent and used warm starts when the solve topology was unchanged.
 
 ## Operational observation
 
@@ -66,6 +67,24 @@ the final minute and some reached the close backstop. All 45 Fold 2 sessions
 were liquid by the close, with no execution refusal or portfolio-limit breach.
 This validates the operational contract, not economic quality: the official
 evaluator's attribution remains the authority after the full run completes.
+
+## Early-close incident and correction
+
+Fold 3 remained valid through 2022-11-25 12:59 America/New_York and was flat
+there at `$11,254.039256` NAV on `$13,000` contributed basis. The raw source
+also contained 75 bars after Black Friday's 13:00 close. The calendar correctly
+refused those ticks, but their unconsumed replay-feed records then lagged the
+Monday cadence: the Monday 09:30 tick consumed the Friday 13:00 feed record.
+That stale clock rejected 63 Monday proposals after tentative private book and
+cash mutation, and a later accepted sale used the phantom position.
+
+Candidate `260d97ed` removes calendar-closed bars from the session-share tape
+and refuses before a subsequent decision whenever a prior proposal lacks an
+execution acknowledgement. Both regressions fail on parent `2fa9645b` and
+pass on the candidate. All 195 replay tests pass, the joint config validates,
+and two fresh Terra skeptic lenses closed at C0/M0. One classification-only
+minor is deferred: a symbol represented solely by a closed raw bar reports
+`unknown_symbol` rather than `calendar_closed`; it still cannot trade.
 
 ## Superseded attempt
 
@@ -78,6 +97,7 @@ the last observed bar.
 
 ## Next action
 
-Let folds 2–19 finish, run the ADR-0183 backtest evaluator on the published
-artifacts, and replace the reconstructed drawdown and attribution with the
-official report while retaining this Fold 2 boundary as an operational audit.
+Restart folds 2–19 from clean state on `260d97ed`, run the ADR-0183 evaluator
+on the published artifacts, and replace the reconstructed drawdown and
+attribution with the official report while retaining this Fold 2 boundary as
+an operational audit.
