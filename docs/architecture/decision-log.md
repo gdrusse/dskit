@@ -27129,7 +27129,7 @@ pre-launch `CUBLAS_WORKSPACE_CONFIG`; absence or an unsupported deterministic
 operation refuses without CPU fallback. The model exposes a private canonical
 state digest covering effective MLP parameters, fitted scaler arrays and every
 network state tensor. Model specs may declare an `equivalence` label. The study
-keeps a run-local `(year, equivalence)` digest ledger after fitting and refuses
+keeps a run-local `(year, training population, equivalence)` digest ledger after fitting and refuses
 unless the pooled-MLP control and every blend's nested MLP have byte-identical
 digests. The blend delegates this digest to its MLP constituent. The complete
 experiment inventory requires at least two members per label and forbids a label
@@ -27194,3 +27194,9 @@ frozen finalist per method over all 135 reused-history cells, exact curve
 evidence, focused RED/GREEN and affected checks, and two fresh Luna final lenses
 with zero unresolved Critical/Major. A clean result supports only a comparative
 memo; it does not promote a model or authorize new data, replay or execution.
+
+Final-review correction: equivalence evidence is fold-scoped, never compared
+across changing annual training sets; non-pooled fits additionally key the group.
+Saved-curve convergence audits recover rows by the already-required unique
+forecast identity, not caller DataFrame index labels. Multi-year/multi-group
+and duplicate/non-contiguous-index tests pin both rules through report audit.

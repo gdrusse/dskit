@@ -1406,7 +1406,10 @@ class ChronologicalCDFStudy:
                             if not hasattr(model, "_equivalence_state"):
                                 raise ValueError("equivalence model does not expose fitted state")
                             state = model._equivalence_state()
-                            record = equivalence.setdefault(label, {"digest": state, "members": []})
+                            population = "pooled" if pooled else str(group)
+                            equivalence_key = (int(year), population, label)
+                            record = equivalence.setdefault(
+                                equivalence_key, {"digest": state, "members": []})
                             if record["digest"] != state:
                                 raise ValueError("equivalence state mismatch")
                             record["members"].append(name)
@@ -1456,10 +1459,11 @@ class ChronologicalCDFStudy:
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
-        evidence = {label: {"digest": record["digest"],
-                            "members": sorted(set(record["members"])),
-                            "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
-                    for label, record in equivalence.items()}
+        evidence = [{"year": year, "population": population, "label": label,
+                     "digest": record["digest"],
+                     "members": sorted(set(record["members"])),
+                     "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
+                    for (year, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return pd.concat(results, ignore_index=True)
 
@@ -1721,7 +1725,9 @@ class CDFHyperparameterStudy:
 
     def _audit(self, paths, frame, diagnostic):
         import numpy as np
+        import pandas as pd
         c, r = self.base, self.experiment["resolutions"]
+        identity_index = pd.MultiIndex.from_frame(frame[c["identity"]].astype(str))
 
         def restore(a, ix, prefix=""):
             kind = str(a[prefix+"kind"])
@@ -1747,7 +1753,13 @@ class CDFHyperparameterStudy:
                         calibrated = object.__new__(CalibratedCurve)
                         calibrated.base, calibrated.map = curve, GridCurve(a["calibration_x"], a["calibration_p"])
                         curve = calibrated
-                    band = frame.loc[a["row_index"][ix]]
+                    identities = np.asarray(a["identities"])[ix]
+                    keys = pd.MultiIndex.from_arrays(
+                        [identities[:, column] for column in range(identities.shape[1])])
+                    positions = identity_index.get_indexer(keys)
+                    if (positions < 0).any():
+                        raise ValueError("saved curve identity absent from audit panel")
+                    band = frame.iloc[positions]
                     y = (band[c["target"]]/band[c["reference"]]).to_numpy()
                     values = []
                     for nodes in r["audit_samples"]:

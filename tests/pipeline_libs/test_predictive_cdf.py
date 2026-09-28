@@ -543,18 +543,19 @@ def test_equivalence_ledger_verifies_peers_and_records_singletons(tmp_path, monk
             self.state = state
 
         def fit(self, x, y, cal_x, cal_y):
+            self.fitted_state = f'{self.state}:{float(np.mean(y))}'
             return self
 
         def curve(self, x):
             return MixtureCurve(np.ones((len(x), 1)), np.zeros((len(x), 1)), np.ones((len(x), 1)))
 
         def _equivalence_state(self):
-            return self.state
+            return self.fitted_state
 
     monkeypatch.setattr(pack, '_EqSpy', EqSpy, raising=False)
     config, frame = _hpo_fixture(tmp_path)
     base = config['study']
-    base['years'] = [2017]
+    base['years'] = [2017, 2018]
     spec = {'class': 'dskit.pipeline.libs.predictive_cdf:_EqSpy', 'params': {'state': 'same'},
             'calibrate': False, 'pooled': True, 'equivalence': 'endpoint'}
     base['models'] = {'control': spec}
@@ -563,16 +564,18 @@ def test_equivalence_ledger_verifies_peers_and_records_singletons(tmp_path, monk
     base['output'] = str(tmp_path/'singleton')
     ChronologicalCDFStudy(base).run(frame)
     evidence = json.loads((tmp_path/'singleton/equivalence.json').read_text())
-    assert evidence['endpoint']['status'] == 'unverified'
-    assert evidence['endpoint']['members'] == ['control']
+    assert [(row['year'], row['status']) for row in evidence] == [(2017, 'unverified'),
+                                                                  (2018, 'unverified')]
+    assert all(row['members'] == ['control'] for row in evidence)
 
     paired = copy.deepcopy(base)
     paired['output'] = str(tmp_path/'paired')
     paired['models']['blend'] = copy.deepcopy(spec)
     ChronologicalCDFStudy(paired).run(frame)
     evidence = json.loads((tmp_path/'paired/equivalence.json').read_text())
-    assert evidence['endpoint']['status'] == 'verified'
-    assert evidence['endpoint']['members'] == ['blend', 'control']
+    assert [(row['year'], row['status']) for row in evidence] == [(2017, 'verified'),
+                                                                  (2018, 'verified')]
+    assert all(row['members'] == ['blend', 'control'] for row in evidence)
 
     mismatch = copy.deepcopy(paired)
     mismatch['output'] = str(tmp_path/'mismatch')
@@ -658,3 +661,66 @@ def test_stage_dependency_version_change_invalidates_completed_search(tmp_path, 
     monkeypatch.setattr(study, '_dependency_versions', lambda: {'ngboost': '0.5.12'})
     with pytest.raises(ValueError, match='identity'):
         study.run(frame, stage='select', provenance=provenance)
+
+
+def test_audit_uses_forecast_identity_not_dataframe_index(tmp_path):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, frame = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    frame = frame.iloc[:2].copy()
+    frame.index = [0, 0]
+    path = tmp_path/'curves'
+    path.mkdir()
+    np.savez_compressed(
+        path/'fixture-curves.npz', kind='mixture', weights=np.ones((2, 1)),
+        means=np.zeros((2, 1)), scales=np.ones((2, 1)), draws=np.zeros((2, 21)),
+        row_index=np.array([0, 0]),
+        identities=frame[config['study']['identity']].astype(str).to_numpy(dtype=str))
+    records = study._audit([path], frame, None)
+    assert records[0]['rows'] == 2
+
+
+def test_grouped_multiyear_flow_verifies_blend_and_audits_convex_curves(tmp_path):
+    import copy
+    import json
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, frame = _hpo_fixture(tmp_path)
+    c, e = config['study'], config['experiment']
+    c['years'], c['development_end'] = [2017, 2018, 2019], 2018
+    settings = {'components': 1, 'hidden': [3], 'epochs': 1, 'batch_size': 16,
+                'seeds': [11], 'device': 'cpu', 'deterministic': True}
+    c['models']['pooled_mlp'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF',
+        'params': settings, 'calibrate': True, 'pooled': True, 'equivalence': 'endpoint'}
+    c['comparison_references'] = ['reference', 'pooled_mlp']
+    empirical = copy.deepcopy(c['models']['reference'])
+    empirical['pooled'] = True
+    scaled = {'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
+              'params': {'alpha': 10, 'floor': .02, 'knots': 21},
+              'calibrate': True, 'pooled': True}
+    blend = {'class': 'dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF',
+             'params': {'mlp_weight': .25, 'condition_indices': [0, 2, 3],
+                        'reference_index': 1, 'knots': 21, 'mlp': settings},
+             'calibrate': True, 'pooled': True, 'equivalence': 'endpoint'}
+    e['development_years'], e['label_cutoff'] = [2017, 2018], '2019-01-01'
+    e['candidates'] = {'forest_a': empirical, 'ngboost_a': scaled, 'blend_a': blend}
+    for key in ['axes', 'candidate_labels', 'screen_seed', 'final_seeds']:
+        del e[key]
+    e['max_candidates'] = 3
+    e['candidate_groups'] = {name: [name+'_a'] for name in ['forest', 'ngboost', 'blend']}
+    e['search_partitions'] = copy.deepcopy(e['candidate_groups'])
+    e['evaluation_partitions'] = {'development': [2017, 2018], 'later': [2019]}
+    study = pack.CDFHyperparameterStudy(config)
+    provenance = {'fixture': 1}
+    for partition in e['search_partitions']:
+        study.run(frame, stage='search', partition=partition, provenance=provenance)
+    selected = study.run(frame, stage='select', provenance=provenance)
+    assert {'forest_a', 'ngboost_a', 'blend_a'}.issubset(selected['models'])
+    for partition in e['evaluation_partitions']:
+        study.run(frame, stage='evaluate', partition=partition, provenance=provenance)
+    study.run(frame, stage='report', provenance=provenance)
+    evidence = json.loads((tmp_path/'hpo/evaluate/later/equivalence.json').read_text())
+    assert len(evidence) == 1
+    assert evidence[0]['year'] == 2019 and evidence[0]['status'] == 'verified'
+    convergence = json.loads((tmp_path/'hpo/report/convergence.json').read_text())
+    assert any('blend_a' in row['file'] for row in convergence)
