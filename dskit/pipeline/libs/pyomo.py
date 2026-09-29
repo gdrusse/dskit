@@ -82,6 +82,20 @@ calls in appsi's order, so the HiGHS model is bit-identical (pinned in
 ``TestCompiledParamUpdate``). It is an optimization only: any node, helper
 or appsi layout it cannot prove identical is left to appsi's own code.
 
+Tangent-window doctrine
+-----------------------
+The utility is a tangent-plane envelope, one row per scenario and knot
+(~4,100 of a joint tick's ~4,400 rows), while a tick moves each scenario's
+wealth through a small part of the knots' wide envelope. :class:`_TangentWindow`
+derives, from data the doorway already holds, a range every scenario's wealth
+provably stays inside, bounds ``W[o]`` to it, and frees the tangent rows that
+cannot be the lowest line there: the same program, about a fifth of the live rows.
+Freed rows stay in the model with an infinite right-hand side, so the shape,
+the cache signature and :class:`_CompiledParamUpdate` are unchanged, and the
+cold build and every cache hit take the window from ONE owner,
+:meth:`ScenarioUtilitySolve._tangent_window`. The exactness argument is on
+:class:`_TangentWindow`; any doubt keeps the full envelope and every row.
+
 Import cost: stdlib + toolkit only. pyomo is imported strictly inside
 run-path methods — this module must import (and its documents must
 plan) on a machine with no pyomo installed.
@@ -1344,6 +1358,319 @@ class _CompiledParamUpdate:
         self._solver.update_config.update_params = True
 
 
+#: What an inert tangent row adds to its right-hand side: infinity, so the
+#: row keeps its place in the matrix and its mutable bound while HiGHS reads it
+#: as free. It works because the row is ``t - slope * W - intercept - relax <=
+#: 0``: Pyomo keeps its upper bound (0) whatever the parameters hold, and appsi
+#: evaluates the moved constant only when it writes the row. A finite stand-in
+#: such as 1e30 would make HiGHS log "treated as +Infinity" once per changed row.
+_INERT_ROW_BOUND = math.inf
+
+#: How far the wealth window is widened past the range it derives, as a
+#: fraction of the envelope's top edge. The range is exact arithmetic on the
+#: rows; this only covers float rounding, so a range can never cut a point
+#: the rounding put a few ulps outside it. It is far below every solver
+#: tolerance (HiGHS's primal feasibility default is 1e-7).
+_WINDOW_SLACK = 1e-9
+
+
+class _TangentWindow:
+    """Per-scenario wealth range, and the tangent rows that can still be the minimum in it.
+
+    The tangent envelope is one row per scenario ``o`` and knot ``j``,
+    ``t[o] <= intercept_j + slope_j * W[o]``, so ``t[o]`` is the LOWEST of
+    the knot lines at ``W[o]``. The knots are laid over a wide envelope
+    ``[w_lo, w_hi]`` while a tick's decisions move ``W[o]`` through a small
+    part of it, so most rows can never be the lowest line. This object holds
+
+    * ``lower``/``upper``: a range ``W[o]`` provably stays inside, and
+    * ``live``: the ``(o, j)`` rows whose line is the lowest somewhere in
+      that range. The rest are made inert (their right-hand side is raised
+      by :data:`_INERT_ROW_BOUND`) and stay in the model, so the persistent
+      model's shape and its compiled update are unchanged.
+
+    Any doubt returns the full envelope with every tangent live: a
+    non-finite number, a price that is not positive, a negative cost,
+    tangents that are not a strictly concave, increasing envelope, or a range
+    that is empty once cut to the envelope. Keeping a row is always safe;
+    dropping one needs the argument in the notes.
+
+    Parameters
+    ----------
+    lower, upper : numpy.ndarray
+        ``(n_scenarios,)`` bounds ``W[o]`` is held to (inside the envelope).
+    live : numpy.ndarray
+        ``(n_scenarios, n_tangents)`` booleans: the rows that stay active.
+    windowed : bool
+        False when this is the full envelope with every tangent live.
+
+    Notes
+    -----
+    Inside ``[lower[o], upper[o]]`` a dropped line lies above another line
+    everywhere, so ``t[o] <= min over kept lines`` is the SAME set of
+    ``(t[o], W[o])`` as ``t[o] <= min over all lines``. Bounding ``W[o]`` to
+    the range then cuts no feasible point, provided the range holds at every
+    feasible point (or, for the protection term below, at some optimal one).
+
+    Write ``p_i, h_i`` for price and held, ``c_i, f_i`` for the buy and sell
+    cost per share, ``N_i = p_i q_i >= 0`` for the target notional and
+    ``g_io`` for the scenario value per dollar of notional (exit cost
+    inside; a multi-tranche name ranges over its tranches, since the split is
+    free). With ``C`` the cash after trades and ``A = C + sum N_i`` the book
+    value::
+
+        W[o] = carried + C + sum g_io N_i - P = carried + A + sum (g_io - 1) N_i - P
+        A    = A_hi - sum c_i b_i - sum f_i s_i,   A_hi = cash + sum p_i h_i   (exact)
+
+    ``A <= A_hi`` for costs ``>= 0``, and ``sum N_i = A - C <= A_hi - reserve``
+    because ``C >= reserve`` always holds. With ``N_i <= max(x_max_i, 0)``,
+    ``sum N_i <= gross_limit`` when given and ``P >= 0``::
+
+        W[o] <= carried + A_hi + sum max(g_io^max - 1, 0) N_i
+        W[o] >= carried + A_lo - sum max(1 - g_io^min, 0) N_i - P
+
+    Each sum is at most the largest coefficient times the total notional, and
+    at most the per-name caps' sum. ``A_lo = A_hi - fees_max``: sells cost at
+    most ``sum f_i h_i``, buys at most the largest ``c / (p + c)`` times the
+    spend, and the spend is capped by the cash and buying-power rows.
+
+    ``P``, the mean-error block's protection, has NO upper bound over the
+    feasible set: its variables are free above. What holds is that a larger
+    ``W`` never hurts (utility, CVaR and the wealth rows all favor it), so an
+    optimal solution can be taken with the LEAST protection its decisions
+    need, at most ``min(sum I_i, budget * max I_i)`` where ``I_i = max
+    deviation_i * N_i``, lifted only as far as the envelope's top edge forces
+    (``max_o upper_o - w_hi``). That needs every domain row to leave ``W``,
+    ``t``, ``eta``, ``z`` and the protection variables alone, which the
+    doorway cannot check: the lower edge moves past the protection only for a
+    subclass that sets :attr:`ScenarioUtilitySolve._WINDOW_PAST_PROTECTION`,
+    and stays at ``w_lo`` otherwise.
+
+    Examples
+    --------
+    Derive one tick's window from its prepared data and read what it kept::
+
+        window = _TangentWindow.derive(prepared, past_protection=False)
+        window.windowed          # -> True
+        window.live.sum(axis=1)  # -> live tangents per scenario
+        window.lower[0], window.upper[0]
+    """
+
+    __slots__ = ("lower", "upper", "live", "windowed")
+
+    def __init__(self, lower, upper, live, windowed):
+        self.lower = lower
+        self.upper = upper
+        self.live = live
+        self.windowed = windowed
+
+    @classmethod
+    def full(cls, data):
+        """Return the whole envelope for every scenario with every tangent live.
+
+        Parameters
+        ----------
+        data : mapping
+            The doorway's prepared data: ``weights``, ``w_lo``, ``w_hi`` and
+            ``n_tangents`` are read.
+
+        Returns
+        -------
+        _TangentWindow
+        """
+        import numpy as np
+
+        n = len(data["weights"])
+        return cls(
+            np.full(n, float(data["w_lo"])),
+            np.full(n, float(data["w_hi"])),
+            np.ones((n, int(data["n_tangents"])), dtype=bool),
+            False,
+        )
+
+    @classmethod
+    def derive(cls, data, past_protection):
+        """Derive the range and the live rows, or the full envelope on any doubt.
+
+        Parameters
+        ----------
+        data : mapping
+            The doorway's prepared data: ``names``, ``rows``, ``r``,
+            ``weights``, ``mean_uncertainty``, ``cash0``, ``buying_power0``,
+            ``sale_credit``, ``cash_reserve``, ``gross_limit``,
+            ``carried_wealth``, ``w_lo``, ``w_hi``, ``n_tangents``,
+            ``tangent_intercept`` and ``tangent_slope``.
+        past_protection : bool
+            Whether the lower edge may move past the mean-error protection
+            (see the notes); False keeps it at ``w_lo`` under that block.
+
+        Returns
+        -------
+        _TangentWindow
+        """
+        import numpy as np
+
+        with np.errstate(all="ignore"):
+            book = cls._book(data)
+            edges = cls._line_edges(data)
+            if book is None or edges is None:
+                return cls.full(data)
+            reach = cls._reach(data, book, past_protection)
+            if reach is None:
+                return cls.full(data)
+            slack = _WINDOW_SLACK * book["w_hi"]
+            lower = np.maximum(reach[0] - slack, book["w_lo"])
+            upper = np.minimum(reach[1] + slack, book["w_hi"])
+            if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))
+                    and bool(np.all(lower < upper))):
+                return cls.full(data)
+            first, last = edges
+            live = (first[None, :] <= upper[:, None]) & (last[None, :] >= lower[:, None])
+            if not bool(live.any(axis=1).all()):
+                return cls.full(data)
+            return cls(lower, upper, live, True)
+
+    @staticmethod
+    def _column(rows, names, key, default=None):
+        """One row field per name, as a float array."""
+        import numpy as np
+
+        return np.array(
+            [float(rows[i][key] if default is None else rows[i].get(key, default)) for i in names],
+            dtype=float,
+        )
+
+    @classmethod
+    def _book(cls, data):
+        """Return the per-name arrays and account scalars the range reads; None if a premise fails."""
+        import numpy as np
+
+        names, rows = data["names"], data["rows"]
+        gross = data["gross_limit"]
+        book = {
+            "price": cls._column(rows, names, "price"),
+            "held": cls._column(rows, names, "held"),
+            "cap": cls._column(rows, names, "x_max"),
+            "buy": cls._column(rows, names, "cost_buy"),
+            "sell": cls._column(rows, names, "cost_sell"),
+            "exit": cls._column(rows, names, "exit_cost_per_share", 0.0),
+            "cash": float(data["cash0"]),
+            "power": float(data["buying_power0"]),
+            "credit": float(data["sale_credit"]),
+            "reserve": float(data["cash_reserve"]),
+            "carried": float(data["carried_wealth"]),
+            "gross": None if gross is None else float(gross),
+            "w_lo": float(data["w_lo"]),
+            "w_hi": float(data["w_hi"]),
+        }
+        finite = all(v is None or bool(np.all(np.isfinite(v))) for v in book.values())
+        signs = bool(
+            np.all(book["price"] > 0.0) and np.all(book["held"] >= 0.0)
+            and np.all(book["buy"] >= 0.0) and np.all(book["sell"] >= 0.0)
+        )
+        return book if finite and signs else None
+
+    @staticmethod
+    def _line_edges(data):
+        """Where each knot line starts and stops being the lowest line; None if not concave.
+
+        The tangents of a strictly concave, increasing function have falling
+        slopes and rising crossings, and line ``j`` is the lowest between its
+        crossings with lines ``j - 1`` and ``j + 1``.
+        """
+        import numpy as np
+
+        n = int(data["n_tangents"])
+        intercept = np.asarray(data["tangent_intercept"], dtype=float)
+        slope = np.asarray(data["tangent_slope"], dtype=float)
+        if n < 2 or intercept.shape != (n,) or slope.shape != (n,):
+            return None
+        fall = slope[:-1] - slope[1:]
+        if not (np.all(np.isfinite(intercept)) and np.all(np.isfinite(slope))
+                and np.all(fall > 0.0) and np.all(slope > 0.0)):
+            return None
+        cross = (intercept[1:] - intercept[:-1]) / fall
+        if not (np.all(np.isfinite(cross)) and bool(np.all(np.diff(cross) >= 0.0))):
+            return None
+        return np.concatenate(([-np.inf], cross)), np.concatenate((cross, [np.inf]))
+
+    @staticmethod
+    def _multipliers(data, book):
+        """Return ``(gain, loss)``, each ``(n_names, n_scenarios)``; None on an unexpected shape.
+
+        ``gain`` is ``max(g_max - 1, 0)`` and ``loss`` is ``max(1 - g_min, 0)``,
+        with ``g`` the scenario value per dollar of notional, exit cost inside.
+        """
+        import numpy as np
+
+        n = len(data["weights"])
+        gain = np.empty((len(data["names"]), n))
+        loss = np.empty_like(gain)
+        for k, name in enumerate(data["names"]):
+            grid = np.atleast_2d(np.asarray(data["r"][name], dtype=float))
+            if grid.ndim != 2 or grid.shape[1] != n:
+                return None
+            per_dollar = 1.0 + grid - book["exit"][k] / book["price"][k]
+            gain[k] = np.maximum(per_dollar.max(axis=0) - 1.0, 0.0)
+            loss[k] = np.maximum(1.0 - per_dollar.min(axis=0), 0.0)
+        return gain, loss
+
+    @staticmethod
+    def _book_value_range(book):
+        """Return ``(A_lo, A_hi, notional)``: the book value's range and the notional it allows."""
+        import numpy as np
+
+        price, held = book["price"], book["held"]
+        a_hi = book["cash"] + float(price @ held)
+        proceeds = float(np.maximum(price - book["sell"], 0.0) @ held)
+        spend = book["cash"] - book["reserve"] + proceeds
+        if book["credit"] >= 0.0:
+            spend = min(spend, book["power"] + book["credit"] * proceeds)
+        buy_share = float(np.max(book["buy"] / (price + book["buy"])))
+        fees = buy_share * max(spend, 0.0) + float(book["sell"] @ held)
+        notional = min(a_hi - book["reserve"], float(np.maximum(book["cap"], 0.0).sum()))
+        if book["gross"] is not None:
+            notional = min(notional, book["gross"])
+        return a_hi - fees, a_hi, max(notional, 0.0)
+
+    @staticmethod
+    def _protection_cap(data, book, notional):
+        """Return an upper bound on the protection a least-protection optimum carries."""
+        import numpy as np
+
+        mean = data["mean_uncertainty"]
+        index = {name: k for k, name in enumerate(data["names"])}
+        caps = np.minimum(np.maximum(book["cap"], 0.0), notional)
+        room = caps[[index[name] for name in mean["names"]]]
+        worst = np.array([max(mean["deviation_below"][name]) for name in mean["names"]])
+        impacts = worst * room
+        return float(min(
+            impacts.sum(), float(worst.max()) * notional, float(mean["budget"]) * float(impacts.max())
+        ))
+
+    @classmethod
+    def _reach(cls, data, book, past_protection):
+        """Return ``(lower, upper)`` per scenario, before the envelope; None on any doubt."""
+        import numpy as np
+
+        multipliers = cls._multipliers(data, book)
+        if multipliers is None:
+            return None
+        gain, loss = multipliers
+        a_lo, a_hi, notional = cls._book_value_range(book)
+        caps = np.minimum(np.maximum(book["cap"], 0.0), notional)[:, None]
+        up = np.minimum(gain.max(axis=0) * notional, (gain * caps).sum(axis=0))
+        down = np.minimum(loss.max(axis=0) * notional, (loss * caps).sum(axis=0))
+        upper = book["carried"] + a_hi + up
+        lower = book["carried"] + a_lo - down
+        if data["mean_uncertainty"] is None:
+            return lower, upper
+        if not past_protection:
+            return np.full_like(lower, -np.inf), upper
+        cap = max(cls._protection_cap(data, book, notional), float(upper.max()) - book["w_hi"], 0.0)
+        return lower - cap, upper
+
+
 class ScenarioUtilitySolve(PyomoSolve):
     """A per-tick fractional-Kelly MILP over joint scenario returns (role ``capital``).
 
@@ -1399,7 +1726,10 @@ class ScenarioUtilitySolve(PyomoSolve):
     touch — "do nothing" is always feasible regardless of a position's
     size relative to the current ``min_ticket``), the tangent-plane utility
     objective (built from :func:`tangent_utility`), the CVaR block, the
-    empty-gate short circuit, and a post-solve EXACT recompute of every
+    empty-gate short circuit, the per-scenario wealth window that frees the
+    tangent rows which cannot bind (:class:`_TangentWindow`; a subclass whose
+    domain rows leave wealth alone may also set ``_WINDOW_PAST_PROTECTION``),
+    and a post-solve EXACT recompute of every
     reported number (never the solver's own variable values) that raises
     on any violation or on a non-``optimal`` termination.
 
@@ -1454,11 +1784,45 @@ class ScenarioUtilitySolve(PyomoSolve):
     #: pays nothing. ``False`` keeps appsi's own path (the tests' reference).
     _PERSISTENT_COMPILED_UPDATE = True
 
+    #: Bound each ``W[o]`` to the range it can reach and make inert the
+    #: tangent rows that cannot be the lowest line inside it
+    #: (:class:`_TangentWindow`): the same program, about a fifth of the
+    #: live rows. ``False`` keeps the full envelope and every row (the
+    #: exactness tests' reference arm).
+    _TANGENT_WINDOW = True
+
+    #: Whether the window's LOWER edge may move past the mean-error block's
+    #: protection. That is an optimality argument, not a feasibility one (see
+    #: :class:`_TangentWindow`), so it holds only when no domain row touches
+    #: ``W``, ``t``, ``eta``, ``z`` or the protection variables. A subclass
+    #: whose ``domain_constraints`` never do sets it ``True``; the default
+    #: keeps the lower edge at ``w_lo`` under a mean-error block.
+    _WINDOW_PAST_PROTECTION = False
+
     def _solver_options(self):
         options = super()._solver_options()
         if self.params.get("solver", DEFAULT_SOLVER) != DEFAULT_SOLVER:
             return options
         return {**self._HIGHS_DETERMINISM, **options}
+
+    def _tangent_window(self, data):
+        """Return the tick's :class:`_TangentWindow`: the ONE owner of range and live rows.
+
+        Both the cold build and every cache hit call this with the same
+        fields, so the two paths cannot disagree about which rows are live.
+
+        Parameters
+        ----------
+        data : mapping
+            The prepared data (see :meth:`_TangentWindow.derive`).
+
+        Returns
+        -------
+        _TangentWindow
+        """
+        if not self._TANGENT_WINDOW:
+            return _TangentWindow.full(data)
+        return _TangentWindow.derive(data, self._WINDOW_PAST_PROTECTION)
 
     def _solve(self, solver, model, *, warmstart=False):
         """Solve; a solve that returns no loadable solution refuses by name.
@@ -2245,6 +2609,26 @@ class ScenarioUtilitySolve(PyomoSolve):
         }
         knots = np.linspace(w_lo, w_hi, n_tangents)
         u, du = tangent_utility(knots, w0_mark, gamma)
+        # The same fields, under the same names, that _prepare_model hands a
+        # cache hit: _tangent_window is the one owner of range and live rows.
+        window = self._tangent_window({
+            "names": names,
+            "rows": rows,
+            "r": r,
+            "weights": weights,
+            "mean_uncertainty": mean_uncertainty,
+            "cash0": cash0,
+            "buying_power0": buying_power0,
+            "sale_credit": sale_credit,
+            "cash_reserve": cash_reserve,
+            "gross_limit": None if gross_limit is None else float(gross_limit),
+            "carried_wealth": carried,
+            "w_lo": w_lo,
+            "w_hi": w_hi,
+            "n_tangents": n_tangents,
+            "tangent_intercept": u - du * knots,
+            "tangent_slope": du,
+        })
 
         model = ConcreteModel(name="scenario-utility-solve")
         all_tranche_ix = [(i, k) for i in names for k in range(tranches[i])]
@@ -2299,6 +2683,14 @@ class ScenarioUtilitySolve(PyomoSolve):
         model.input_tangent_slope = Param(
             range(n_tangents), mutable=True, initialize=lambda m, j: float(du[j])
         )
+        # 0 keeps a tangent row as it is; _INERT_ROW_BOUND makes it free (the
+        # row cannot be the lowest line inside its scenario's wealth window).
+        tangent_ix = [(o, j) for o in omega_ix for j in range(n_tangents)]
+        model.input_tangent_relax = Param(
+            tangent_ix,
+            mutable=True,
+            initialize=lambda m, o, j: 0.0 if window.live[o, j] else _INERT_ROW_BOUND,
+        )
         if gross_limit is not None:
             model.input_gross_limit = Param(mutable=True, initialize=float(gross_limit))
         if mean_uncertainty is not None:
@@ -2330,7 +2722,10 @@ class ScenarioUtilitySolve(PyomoSolve):
         # min_ticket gate must never be the thing that makes "do nothing"
         # infeasible for a name a caller never asked to touch.
         model.d = Var(names, domain=Binary)
-        model.W = Var(omega_ix, bounds=(w_lo, w_hi))
+        model.W = Var(
+            omega_ix,
+            bounds=lambda m, o: (float(window.lower[o]), float(window.upper[o])),
+        )
         model.t = Var(omega_ix, domain=Reals)
         model.eta = Var(domain=Reals)
         model.z = Var(omega_ix, domain=NonNegativeReals)
@@ -2438,11 +2833,12 @@ class ScenarioUtilitySolve(PyomoSolve):
 
         model.wealth = Constraint(omega_ix, rule=_wealth_rule)
 
-        tangent_ix = [(o, j) for o in omega_ix for j in range(n_tangents)]
         model.tangent = Constraint(
             tangent_ix,
             rule=lambda m, o, j: m.t[o]
-            <= m.input_tangent_intercept[j] + m.input_tangent_slope[j] * m.W[o],
+            <= m.input_tangent_intercept[j]
+            + m.input_tangent_relax[o, j]
+            + m.input_tangent_slope[j] * m.W[o],
         )
 
         model.cvar_row = Constraint(
@@ -2489,6 +2885,9 @@ class ScenarioUtilitySolve(PyomoSolve):
             "carried_wealth": carried,
             "mean_uncertainty": mean_uncertainty,
         }
+
+        # Underscore-prefixed bookkeeping like _scn: what the cache hit diffs against.
+        model._window = window
 
         self.domain_constraints(model, inputs, params)
         return model
@@ -2556,8 +2955,7 @@ class ScenarioUtilitySolve(PyomoSolve):
         model.input_w0_mark.set_value(prepared["w0_mark"])
         for outcome, weight in enumerate(prepared["weights"]):
             model.input_scenario_weight[outcome].set_value(float(weight))
-            model.W[outcome].setlb(prepared["w_lo"])
-            model.W[outcome].setub(prepared["w_hi"])
+        self._refresh_window(model, self._tangent_window(prepared))
         for j in range(prepared["n_tangents"]):
             model.input_tangent_intercept[j].set_value(
                 prepared["tangent_intercept"][j]
@@ -2573,6 +2971,31 @@ class ScenarioUtilitySolve(PyomoSolve):
                     model.input_mean_deviation[name, k].set_value(deviation)
         model._scn = self._metadata(prepared)
         self._refresh_domain_constraints(model, inputs, params)
+
+    @staticmethod
+    def _refresh_window(model, window):
+        """Move a cached model to ``window``: every ``W`` bound, and only the rows that flipped.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            A model built by :meth:`build_model`, holding the previous window.
+        window : _TangentWindow
+            This tick's window.
+        """
+        import numpy as np
+
+        for outcome in range(len(window.lower)):
+            model.W[outcome].setlb(float(window.lower[outcome]))
+            model.W[outcome].setub(float(window.upper[outcome]))
+        previous = getattr(model, "_window", None)
+        moved = window.live != previous.live if previous is not None else np.ones_like(window.live)
+        for outcome, knot in np.argwhere(moved):
+            live = bool(window.live[outcome, knot])
+            model.input_tangent_relax[int(outcome), int(knot)].set_value(
+                0.0 if live else _INERT_ROW_BOUND
+            )
+        model._window = window
 
     def extract(self, model, results):
         """Read the solved model and recompute every reported number exactly.

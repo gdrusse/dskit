@@ -1126,6 +1126,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     _payoffs = None
     _evidence = None
 
+    #: The doorway may lower each scenario's wealth window past the mean-error
+    #: protection (see ``ScenarioUtilitySolve._WINDOW_PAST_PROTECTION``): the
+    #: rows this kind and the joint kind add (HFDR, the no-trade band) speak
+    #: only of target notional, tranches, buys, sells and directions, never of
+    #: wealth, CVaR or the protection variables. A domain row that did would
+    #: have to clear this flag.
+    _WINDOW_PAST_PROTECTION = True
+
     @classmethod
     def validate_params(cls, params):
         """Problems with ``params``, empty when none — the doorway's, then this kind's.

@@ -2656,6 +2656,41 @@ class TestJointParams:
             assert not hasattr(model, component), component
         assert hasattr(model, "hfdr")
 
+    def test_the_domain_rows_leave_wealth_free_as_the_windows_lower_edge_assumes(self, tmp_path):
+        # JointEquityKellyMIO sets ScenarioUtilitySolve._WINDOW_PAST_PROTECTION: the
+        # doorway may then lower W's window past the mean-error protection, which is
+        # only sound while no domain row touches wealth, CVaR or the protection.
+        from pyomo.core.expr.visitor import identify_variables
+        from pyomo.environ import Constraint
+
+        built = []
+
+        class Spy(JointEquityKellyMIO):
+            def build_model(self, inputs, params):
+                built.append(super().build_model(inputs, params))
+                return built[-1]
+
+        bundle = [_path_row("AAPL", 100.0, _flat_steps([0.004, 0.005]))]
+        Spy("joint", _joint_params(bundle)).run(_ctx(tmp_path), _joint_inputs(bundle))
+        model = built[0]
+        doorway_rows = {
+            "nonneg_q", "buy_only", "sell_only", "elig_hi", "elig_lo", "cardinality", "cash_floor",
+            "buying_power", "gross_exposure", "tranche_allocation", "robust_counterpart", "wealth",
+            "tangent", "cvar_row", "cvar_cap",
+        }
+        wealth_side = {"W", "t", "eta", "z", "robust_theta", "robust_rho"}
+        domain_rows = [
+            component for component in model.component_objects(Constraint)
+            if component.local_name not in doorway_rows
+        ]
+        assert [component.local_name for component in domain_rows] == ["hfdr"]
+        assert hasattr(model, "robust_theta")  # the block the flag is about is on
+        for component in domain_rows:
+            for row in component.values():
+                touched = {v.parent_component().local_name for v in identify_variables(row.body)}
+                assert touched and not touched & wealth_side, (component.local_name, touched)
+        assert JointEquityKellyMIO._WINDOW_PAST_PROTECTION is True
+
 
 class TestJointPathContract:
     def test_a_flat_row_is_refused_by_name(self):

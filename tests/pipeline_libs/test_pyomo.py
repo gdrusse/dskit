@@ -1485,8 +1485,11 @@ class TestScenarioUtilityPersistentReuse:
         assert built[0].input_scenario_weight[0].value == pytest.approx(0.7)
         assert built[0].input_robust_budget.value == pytest.approx(1.7)
         assert built[0].input_mean_deviation["AAA", 1].value == pytest.approx(0.027)
+        # a mean-error block keeps the lower edge at the envelope; the upper edge is this
+        # minute's reachable range (windows are TestTangentWindowPersistentPath's subject)
         assert built[0].W[0].lb == pytest.approx(4800.0)
-        assert built[0].W[0].ub == pytest.approx(17000.0)
+        assert built[0].W[0].ub == pytest.approx(built[0]._window.upper[0])
+        assert built[0].W[0].ub < 17000.0
         assert built[0].s["AAA"].ub == 3
         assert warm["target"] == cold["target"]
         assert warm["trades"] == cold["trades"]
@@ -2584,3 +2587,584 @@ class TestSolveRecordRowSlacks:
         rows = _binding(node.solve_record)
         assert rows["equality"]["binding"] == 1 and rows["upper_only"]["binding"] == 1
         assert rows["lower_only"]["min_slack"] == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# Tangent windows: only the tangents that can be the minimum inside a rigorous
+# per-scenario wealth range stay live, and W[o] is bounded to that range
+# ---------------------------------------------------------------------------
+
+#: Solver options for the exactness tests ONLY: tight enough that two
+#: different-but-equivalent programs must agree on the optimal objective.
+_TIGHT_OPTIONS = {
+    "mip_abs_gap": 1e-12,
+    "mip_feasibility_tolerance": 1e-9,
+    "primal_feasibility_tolerance": 1e-9,
+    "dual_feasibility_tolerance": 1e-9,
+}
+
+#: 32 seeded random instances (the exactness property's population).
+_WINDOW_SEEDS = tuple(range(20260929, 20260929 + 32))
+
+_WINDOW_S = 24
+_WINDOW_TANGENTS = 32
+
+
+def _window_instance(seed):
+    """A seeded joint decision shaped like the live one, small enough for a unit test.
+
+    Five names with one, two or three exit tranches, about half held, a
+    third with carried wealth, tight cash on every fourth seed, a
+    ``gross_limit`` on two seeds in three and a per-name cap below it on
+    some, margin (buying power above cash, a negative reserve, a partial
+    sale credit) on a few, a budgeted mean-error block on the even seeds, and a wealth
+    envelope drawn by ``EquityKellyMIO``'s rule (half-width = notional cap
+    times the largest scenario return, padded 1.5x). Returns the fixture
+    and the node params (tight solver options included).
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    n, k_max = 5, 3
+    names = [f"N{i}" for i in range(n)]
+    tranches = [int(k) for k in rng.choice((1, 1, 2, 3), size=n)]
+    price = np.round(np.exp(rng.uniform(np.log(20.0), np.log(400.0), n)), 2)
+    held = [int(rng.integers(1, 12)) if rng.random() < 0.5 else 0 for _ in range(n)]
+    tight = seed % 4 == 0
+    cash = round(float(rng.uniform(60.0, 400.0 if tight else 6000.0)), 2)
+    reserve = round(float(rng.uniform(0.0, 0.5)) * cash, 2)
+    if seed % 11 == 0:  # margin: cash may go negative down to the reserve
+        reserve = -round(0.2 * cash, 2)
+    carried = round(float(rng.uniform(200.0, 3000.0)), 2) if seed % 3 == 0 else 0.0
+    marks = float(sum(price[i] * held[i] for i in range(n)))
+    gross = cash + marks
+    per_name_cap = 0.4 if seed % 5 == 0 else 1.0
+    factor = rng.standard_normal((_WINDOW_S, k_max))
+    idio = rng.standard_normal((n, _WINDOW_S, k_max))
+    loading = rng.uniform(0.3, 0.8, n)
+    shocks = loading[:, None, None] * factor[None] + np.sqrt(1.0 - loading**2)[:, None, None] * idio
+    paths = np.cumsum(shocks, axis=2)
+    paths -= paths.mean(axis=1, keepdims=True)
+    root = np.sqrt(np.arange(1, k_max + 1))
+    rows, r = {}, {}
+    for i, name in enumerate(names):
+        k = tranches[i]
+        drift = rng.uniform(-3.0, 15.0) * 1e-4
+        sigma = rng.uniform(8.0, 40.0) * 1e-4
+        matrix = drift * root[:k, None] + sigma * paths[i, :, :k].T
+        r[name] = matrix[0].tolist() if k == 1 else matrix.tolist()
+        buy = float(rng.uniform(0.5, 6.0) * 1e-4 * price[i])
+        sell = buy + float(rng.uniform(1e-4, 3e-4))
+        rows[name] = {
+            "price": float(price[i]),
+            "held": held[i],
+            "x_max": max(per_name_cap * gross, float(price[i]) * held[i]),
+            "cost_buy": buy,
+            "cost_sell": sell,
+            "exit_cost_per_share": sell,
+        }
+    w0 = cash + marks + carried
+    extreme = max(0.05, max(float(np.abs(np.asarray(v)).max()) for v in r.values()))
+    cap = min(sum(row["x_max"] for row in rows.values()), gross)
+    span = max(cap * extreme, 0.05 * w0) * 1.5
+    account = {
+        "cash": cash,
+        "buying_power": cash * (2.0 if seed % 7 == 0 else 1.0),
+        "sale_credit": 0.5 if seed % 5 == 1 else 1.0,
+        "cash_reserve": reserve,
+        "gross_limit": None if seed % 3 == 1 else gross,
+        "wealth_lo": max(0.01 * w0, w0 - span),
+        "wealth_hi": w0 + span,
+    }
+    if carried > 0.0:
+        account["carried_wealth"] = carried
+    weights = rng.dirichlet(np.full(_WINDOW_S, 5.0)) if seed % 2 else np.full(_WINDOW_S, 1.0 / _WINDOW_S)
+    fixture = {
+        "names": names,
+        "rows": rows,
+        "weights": [float(w) for w in weights / weights.sum()],
+        "r": r,
+        "account": account,
+    }
+    if seed % 2 == 0:
+        below = {}
+        for i, name in enumerate(names):
+            if rng.random() < 0.7 or not below and i == n - 1:
+                below[name] = [float(v) for v in rng.uniform(2e-5, 6e-4, tranches[i])]
+        fixture["mean_uncertainty"] = {
+            "budget": float(rng.uniform(0.5, 2.5)),
+            "deviation_below": below,
+            "deviation_above": {name: list(values) for name, values in below.items()},
+        }
+    params = {
+        **SU_PARAMS,
+        "n_tangents": _WINDOW_TANGENTS,
+        "n_scenarios_max": 64,
+        "cvar_alpha": 0.95,
+        "cvar_limit": None if seed % 3 == 0 else round(0.02 * w0, 2),
+        "cardinality": None,
+        "min_ticket": 0.0,
+    }
+    return fixture, params
+
+
+class WindowedSolve(_Capture, RobustTwoNameSolve):
+    """The doorway as a subclass that leaves wealth free of its domain rows opts in."""
+
+    _WINDOW_PAST_PROTECTION = True
+
+
+class FullEnvelopeSolve(WindowedSolve):
+    """The reference arm: the full envelope and every tangent row, as before."""
+
+    _TANGENT_WINDOW = False
+
+
+def _live_tangent_rows(solver, model):
+    """How many tangent rows HiGHS holds with a finite upper bound (the live ones)."""
+    import numpy as np
+
+    upper = np.asarray(solver._solver_model.getLp().row_upper_)
+    rows = solver._pyomo_con_to_solver_con_map
+    return sum(1 for con in model.tangent.values() if np.isfinite(upper[rows[con]]))
+
+
+def _solve_pair(tmp_path, seed, robust=None):
+    """Solve one seeded instance windowed and full, both at the tight tolerances."""
+    fixture, params = _window_instance(seed)
+    if robust is False:
+        fixture.pop("mean_uncertainty", None)
+    params = {**params, "solver_options": dict(_TIGHT_OPTIONS)}
+    windowed = WindowedSolve("windowed", params)
+    full = FullEnvelopeSolve("full", params)
+    windowed.run(_ctx(tmp_path), json.loads(json.dumps(fixture)))
+    full.run(_ctx(tmp_path), json.loads(json.dumps(fixture)))
+    return fixture, windowed, full
+
+
+class TestTangentWindowExactness:
+    """The windowed program is the SAME program: equal optimum, nothing feasible cut.
+
+    W[o] is a linear function of the decisions, so its range over the
+    always-present rows is a polytope's shadow; a tangent that is never the
+    minimum inside that range cannot change ``t[o]``. The tests below hold
+    the full program (``_TANGENT_WINDOW = False``) against the windowed one
+    on 32 seeded instances at tight tolerances, and the range against an
+    independently written LP.
+    """
+
+    @pytest.mark.parametrize("seed", _WINDOW_SEEDS)
+    def test_the_windowed_optimum_equals_the_full_optimum(self, tmp_path, seed):
+        fixture, windowed, full = _solve_pair(tmp_path, seed)
+        w_solver, w_model, _ = windowed.captured
+        _, f_model, _ = full.captured
+        assert w_model.objective() == pytest.approx(f_model.objective(), abs=1e-9, rel=0)
+        # not vacuous: the window cut rows and narrowed W, the full arm cut nothing
+        total = _WINDOW_S * _WINDOW_TANGENTS
+        assert _live_tangent_rows(w_solver, w_model) < 0.5 * total
+        assert _live_tangent_rows(*full.captured[:2]) == total
+        envelope = fixture["account"]["wealth_hi"] - fixture["account"]["wealth_lo"]
+        for o in range(_WINDOW_S):
+            lower, upper = w_model.W[o].lb, w_model.W[o].ub
+            assert upper - lower < 0.5 * envelope
+            assert lower - 1e-6 <= f_model.W[o].value <= upper + 1e-6
+
+    def test_the_default_solve_at_production_tolerances_matches_the_full_program(self, tmp_path):
+        fixture, params = _window_instance(_WINDOW_SEEDS[4])
+        windowed = WindowedSolve("windowed", params).run(_ctx(tmp_path), fixture)
+        full = FullEnvelopeSolve("full", params).run(_ctx(tmp_path), fixture)
+        assert windowed["target"] == full["target"]
+        assert windowed["metrics"]["expected_utility"] == pytest.approx(
+            full["metrics"]["expected_utility"], rel=1e-9
+        )
+
+
+def _relaxed_lp(fixture, o):
+    """An independent statement of the ALWAYS-present rows, W[o] as an expression.
+
+    ``b``/``s`` continuous, ``s <= held``, per-name notional ``<= x_max``,
+    cash above the reserve, buying power, the gross limit, tranche values
+    free per name, and (when the fixture carries a mean-error set) the
+    protection as its own minimizing LP. Nothing here reads the doorway.
+    """
+    import numpy as np
+    from pyomo.environ import ConcreteModel, Constraint, NonNegativeReals, Var
+
+    names, rows, account = fixture["names"], fixture["rows"], fixture["account"]
+    model = ConcreteModel()
+    model.b = Var(names, domain=NonNegativeReals)
+    model.s = Var(names, domain=NonNegativeReals, bounds=lambda m, i: (0.0, rows[i]["held"]))
+    shape = {i: np.asarray(fixture["r"][i], dtype=float) for i in names}
+    many = [i for i in names if shape[i].ndim == 2 and shape[i].shape[0] > 1]
+    model.e = Var([(i, k) for i in many for k in range(shape[i].shape[0])], domain=NonNegativeReals)
+
+    def q(i):
+        return rows[i]["held"] + model.b[i] - model.s[i]
+
+    model.allocation = Constraint(many, rule=lambda m, i: sum(
+        m.e[i, k] for k in range(shape[i].shape[0])) == q(i))
+    model.notional = Constraint(
+        names, rule=lambda m, i: rows[i]["price"] * q(i) <= max(rows[i]["x_max"], 0.0))
+    cash_after = account["cash"] + sum(
+        (rows[i]["price"] - rows[i]["cost_sell"]) * model.s[i]
+        - (rows[i]["price"] + rows[i]["cost_buy"]) * model.b[i] for i in names)
+    model.cash = Constraint(expr=cash_after >= account["cash_reserve"])
+    model.power = Constraint(expr=sum((rows[i]["price"] + rows[i]["cost_buy"]) * model.b[i]
+                                      for i in names)
+                             <= account["buying_power"] + account["sale_credit"] * sum(
+        (rows[i]["price"] - rows[i]["cost_sell"]) * model.s[i] for i in names))
+    if account.get("gross_limit") is not None:
+        model.gross = Constraint(expr=sum(rows[i]["price"] * q(i) for i in names)
+                                 <= account["gross_limit"])
+
+    def value(i, k):
+        row = shape[i][o] if shape[i].ndim == 1 else shape[i][k][o]
+        return rows[i]["price"] * (1.0 + row) - rows[i]["exit_cost_per_share"]
+
+    nominal = cash_after + account.get("carried_wealth", 0.0) + sum(
+        value(i, 0) * q(i) if i not in many
+        else sum(value(i, k) * model.e[i, k] for k in range(shape[i].shape[0]))
+        for i in names)
+    mean = fixture.get("mean_uncertainty")
+    protection = 0.0
+    if mean is not None:
+        model.theta = Var(domain=NonNegativeReals)
+        model.rho = Var(sorted(mean["deviation_below"]), domain=NonNegativeReals)
+
+        def impact(i):
+            dev = mean["deviation_below"][i]
+            if i in many:
+                return rows[i]["price"] * sum(dev[k] * model.e[i, k] for k in range(len(dev)))
+            return rows[i]["price"] * dev[0] * q(i)
+
+        model.counterpart = Constraint(
+            sorted(mean["deviation_below"]), rule=lambda m, i: m.theta + m.rho[i] >= impact(i))
+        budget = min(mean["budget"], float(len(mean["deviation_below"])))
+        protection = budget * model.theta + sum(model.rho[i] for i in model.rho)
+    model.nominal = nominal
+    model.wealth = nominal - protection
+    return model
+
+
+def _extreme_of_relaxed_lp(fixture, o, sense):
+    """The maximum (``sense=-1``) or minimum (``+1``) of W[o] over :func:`_relaxed_lp`."""
+    from pyomo.environ import Objective, SolverFactory, minimize, maximize, value
+
+    model = _relaxed_lp(fixture, o)
+    model.probe = Objective(expr=model.wealth, sense=minimize if sense > 0 else maximize)
+    solver = SolverFactory(DEFAULT_SOLVER)
+    solver.solve(model)
+    return float(value(model.probe))
+
+
+def _protection_of(fixture, model):
+    """The exact minimal protection at a solved relaxed LP's point: min over theta of
+    ``budget * theta + sum(max(0, impact_i - theta))``, theta at 0 or an impact."""
+    from pyomo.environ import value
+
+    mean, rows = fixture["mean_uncertainty"], fixture["rows"]
+    impacts = []
+    for i in sorted(mean["deviation_below"]):
+        dev = mean["deviation_below"][i]
+        if (i, 0) in model.e:
+            shares = [value(model.e[i, k]) for k in range(len(dev))]
+        else:
+            shares = [rows[i]["held"] + value(model.b[i]) - value(model.s[i])]
+        impacts.append(rows[i]["price"] * sum(d * s for d, s in zip(dev, shares)))
+    budget = min(mean["budget"], float(len(impacts)))
+    return min(budget * t + sum(max(0.0, v - t) for v in impacts) for t in [0.0, *impacts])
+
+
+class TestTangentWindowRange:
+    """The per-scenario range is valid against the relaxation it claims to bound."""
+
+    _PROBED = (0, 7, 15, 23)
+
+    @pytest.mark.parametrize("seed", _WINDOW_SEEDS[0:8:2])
+    def test_the_range_contains_the_lp_extremes_when_there_is_no_mean_error_block(
+        self, tmp_path, seed
+    ):
+        fixture, params = _window_instance(seed)
+        fixture.pop("mean_uncertainty", None)
+        node = WindowedSolve("windowed", params)
+        node.run(_ctx(tmp_path), fixture)
+        _, model, _ = node.captured
+        account = fixture["account"]
+        for o in self._PROBED:
+            top = _extreme_of_relaxed_lp(fixture, o, -1)
+            bottom = _extreme_of_relaxed_lp(fixture, o, +1)
+            assert model.W[o].ub >= min(top, account["wealth_hi"]) - 1e-7
+            assert model.W[o].lb <= max(bottom, account["wealth_lo"]) + 1e-7
+            # not vacuous: the range is a small fraction of the envelope
+            assert model.W[o].ub - model.W[o].lb < 0.5 * (account["wealth_hi"] - account["wealth_lo"])
+
+    @pytest.mark.parametrize("seed", _WINDOW_SEEDS[1:8:2])
+    def test_the_range_contains_the_lp_maximum_and_the_vertices_with_a_mean_error_block(
+        self, tmp_path, seed
+    ):
+        import numpy as np
+        from pyomo.environ import Objective, SolverFactory, maximize, value
+
+        fixture, params = _window_instance(seed)
+        assert "mean_uncertainty" in fixture
+        node = WindowedSolve("windowed", params)
+        node.run(_ctx(tmp_path), fixture)
+        _, model, _ = node.captured
+        account = fixture["account"]
+        rng = np.random.default_rng(seed)
+        for o in self._PROBED[:2]:
+            # not vacuous: the range is a small fraction of the envelope
+            assert model.W[o].ub - model.W[o].lb < 0.5 * (account["wealth_hi"] - account["wealth_lo"])
+            assert model.W[o].ub >= min(_extreme_of_relaxed_lp(fixture, o, -1),
+                                        account["wealth_hi"]) - 1e-7
+            # The lower edge is an argument about the protection-minimal point: probe the
+            # vertices of the decision polytope with random objectives and evaluate the
+            # exact wealth there (nominal minus the minimal protection).
+            relaxed = _relaxed_lp(fixture, o)
+            variables = list(relaxed.b.values()) + list(relaxed.s.values()) + list(relaxed.e.values())
+            solver = SolverFactory(DEFAULT_SOLVER)
+            for _ in range(6):
+                direction = rng.normal(size=len(variables))
+                relaxed.probe = Objective(
+                    expr=sum(float(c) * v for c, v in zip(direction, variables)), sense=maximize)
+                solver.solve(relaxed)
+                wealth = value(relaxed.nominal) - _protection_of(fixture, relaxed)
+                relaxed.del_component(relaxed.probe)
+                assert wealth >= account["wealth_lo"]
+                assert model.W[o].lb <= wealth + 1e-7
+                assert wealth <= model.W[o].ub + 1e-7
+
+
+def _prepared_of(node, fixture):
+    """The doorway's own ``prepared`` mapping for ``fixture`` (what a cache hit refreshes from)."""
+    names, rows, account = node.instruments(fixture)
+    node._scn = {"names": list(names), "rows": rows, "account": account}
+    try:
+        return node._prepare_model(fixture, node.params)
+    finally:
+        node._scn = None
+
+
+def _assert_full_envelope(window, prepared):
+    import numpy as np
+
+    assert window.windowed is False
+    assert np.all(window.lower == prepared["w_lo"]) and np.all(window.upper == prepared["w_hi"])
+    assert window.live.shape == (len(prepared["weights"]), prepared["n_tangents"])
+    assert bool(window.live.all())
+
+
+class TestTangentWindowFallbacks:
+    """Any doubt gives the full envelope and every tangent: a cut is never a guess."""
+
+    @staticmethod
+    def _case(seed=_WINDOW_SEEDS[3], robust=False):
+        fixture, params = _window_instance(seed)
+        if not robust:
+            fixture.pop("mean_uncertainty", None)
+        node = WindowedSolve("windowed", params)
+        return node, fixture, _prepared_of(node, fixture)
+
+    def test_a_healthy_instance_is_windowed(self):
+        import numpy as np
+
+        node, _, prepared = self._case()
+        window = node._tangent_window(prepared)
+        assert window.windowed is True
+        assert np.all(window.lower >= prepared["w_lo"]) and np.all(window.upper <= prepared["w_hi"])
+        assert np.all(window.lower < window.upper)
+        assert 0 < int(window.live.sum()) < window.live.size
+        assert bool(window.live.any(axis=1).all())  # every scenario keeps a tangent
+
+    @pytest.mark.parametrize("field", ["price", "cost_buy", "cost_sell", "x_max", "exit_cost_per_share"])
+    def test_a_non_finite_row_number_falls_back(self, field):
+        node, _, prepared = self._case()
+        prepared["rows"] = {name: dict(row) for name, row in prepared["rows"].items()}
+        prepared["rows"][prepared["names"][1]][field] = float("nan")
+        _assert_full_envelope(node._tangent_window(prepared), prepared)
+
+    @pytest.mark.parametrize("field, value", [("cost_buy", -0.01), ("cost_sell", -0.01), ("price", 0.0)])
+    def test_a_negative_cost_or_a_non_positive_price_falls_back(self, field, value):
+        # a rebate can make the book worth MORE than it started: the bound's premise is gone
+        node, _, prepared = self._case()
+        prepared["rows"] = {name: dict(row) for name, row in prepared["rows"].items()}
+        prepared["rows"][prepared["names"][0]][field] = value
+        _assert_full_envelope(node._tangent_window(prepared), prepared)
+
+    def test_a_negative_reserve_or_sale_credit_is_not_a_doubt_the_range_stays_valid(self):
+        # the range never needed cash >= 0: a margin account only widens it
+        node, fixture, prepared = self._case()
+        trial = dict(prepared, cash_reserve=-0.3 * prepared["cash0"], sale_credit=-0.5)
+        window = node._tangent_window(trial)
+        assert window.windowed is True
+        account = dict(fixture["account"], cash_reserve=trial["cash_reserve"],
+                       sale_credit=trial["sale_credit"])
+        margin = dict(fixture, account=account)
+        for o in (0, 11, 23):
+            top = _extreme_of_relaxed_lp(margin, o, -1)
+            bottom = _extreme_of_relaxed_lp(margin, o, +1)
+            assert window.upper[o] >= min(top, prepared["w_hi"]) - 1e-7
+            assert window.lower[o] <= max(bottom, prepared["w_lo"]) + 1e-7
+
+    def test_an_envelope_the_reachable_range_cannot_meet_falls_back(self):
+        # inverted after the intersection: reachable wealth is entirely below wealth_lo
+        node, _, prepared = self._case()
+        prepared["w_lo"], prepared["w_hi"] = 50.0 * prepared["w0_mark"], 60.0 * prepared["w0_mark"]
+        _assert_full_envelope(node._tangent_window(prepared), prepared)
+
+    def test_tangents_that_are_not_strictly_concave_fall_back(self):
+        node, _, prepared = self._case()
+        flat = dict(prepared, tangent_slope=[prepared["tangent_slope"][0]] * prepared["n_tangents"])
+        _assert_full_envelope(node._tangent_window(flat), flat)
+        shuffled = dict(prepared, tangent_slope=list(reversed(prepared["tangent_slope"])))
+        _assert_full_envelope(node._tangent_window(shuffled), shuffled)
+        broken = dict(prepared, tangent_intercept=[float("nan")] * prepared["n_tangents"])
+        _assert_full_envelope(node._tangent_window(broken), broken)
+
+    def test_the_reference_arm_never_windows(self):
+        _, params = _window_instance(_WINDOW_SEEDS[3])
+        fixture, _ = _window_instance(_WINDOW_SEEDS[3])
+        node = FullEnvelopeSolve("full", params)
+        prepared = _prepared_of(node, fixture)
+        _assert_full_envelope(node._tangent_window(prepared), prepared)
+
+    def test_a_subclass_that_has_not_opted_in_keeps_the_envelope_floor_under_a_mean_error_block(self):
+        import numpy as np
+
+        opted_in, fixture, prepared = self._case(seed=_WINDOW_SEEDS[1], robust=True)
+        assert prepared["mean_uncertainty"] is not None
+        default = RobustTwoNameSolve("default", opted_in.params)
+        assert default._WINDOW_PAST_PROTECTION is False
+        floor = default._tangent_window(prepared)
+        assert floor.windowed and np.all(floor.lower == prepared["w_lo"])
+        assert np.all(floor.upper < prepared["w_hi"])  # the upper edge is still cut
+        past = opted_in._tangent_window(prepared)
+        assert np.all(past.lower > prepared["w_lo"]) and np.all(past.lower <= past.upper)
+        assert np.all(past.upper == floor.upper)  # protection only ever lowers wealth
+
+    def test_the_kept_tangents_are_every_line_that_is_the_minimum_somewhere_in_the_window(self):
+        import numpy as np
+
+        for seed in _WINDOW_SEEDS[:6]:
+            node, _, prepared = self._case(seed=seed)
+            window = node._tangent_window(prepared)
+            icpt = np.asarray(prepared["tangent_intercept"])
+            slope = np.asarray(prepared["tangent_slope"])
+            for o in range(window.live.shape[0]):
+                grid = np.linspace(window.lower[o], window.upper[o], 401)
+                argmin = np.argmin(icpt[None, :] + slope[None, :] * grid[:, None], axis=1)
+                assert set(np.unique(argmin)) <= set(np.flatnonzero(window.live[o]))
+
+
+def _dense_matrix(solver):
+    """The constraint matrix HiGHS holds as a dense array, whatever its storage orientation."""
+    import numpy as np
+
+    lp = solver._solver_model.getLp()
+    matrix = lp.a_matrix_
+    dense = np.zeros((lp.num_row_, lp.num_col_))
+    start, index, value = (np.asarray(a) for a in (matrix.start_, matrix.index_, matrix.value_))
+    by_column = "col" in str(matrix.format_).lower()
+    for major in range(len(start) - 1):
+        for at in range(start[major], start[major + 1]):
+            row, col = (index[at], major) if by_column else (major, index[at])
+            dense[row, col] = value[at]
+    return dense
+
+
+class _DenseLpSpy(_LpSpy):
+    """Mixin: also record the LP's dense matrix at each solve (a cold and a hit store it differently)."""
+
+    dense = None
+
+    def _resolve_solver(self):
+        solver = super()._resolve_solver()
+        recorded = solver._solve
+
+        def spy(timer):
+            if self.dense is None:
+                self.dense = []
+            self.dense.append(_dense_matrix(solver))
+            return recorded(timer)
+
+        solver._solve = spy
+        return solver
+
+
+class WindowedReusable(_DenseLpSpy, CompiledReusable):
+    """The persistent opt-in with the compiled update, past-protection windows on."""
+
+    _WINDOW_PAST_PROTECTION = True
+
+    def build_model(self, inputs, params):
+        self.builds = getattr(self, "builds", 0) + 1
+        return super().build_model(inputs, params)
+
+
+def _tangent_rows(node):
+    """HiGHS row indices of the persistent model's tangent rows, in ``(o, j)`` order."""
+    entry = _only_entry(node)
+    rows = entry["solver"]._pyomo_con_to_solver_con_map
+    return [rows[con] for con in entry["model"].tangent.values()]
+
+
+def _live_pattern(node, lp):
+    import numpy as np
+
+    return np.isfinite(lp["row_upper_"][_tangent_rows(node)])
+
+
+class TestTangentWindowPersistentPath:
+    """A cache hit re-windows the SAME model: same shape, same compiled update, same LP as cold."""
+
+    def test_hits_stay_hits_and_the_compiled_update_engages(self, tmp_path):
+        node, outputs, records = _run_minutes(WindowedReusable, tmp_path)
+        assert node.builds == 1 and len(node._persistent_cache) == 1
+        updater = _only_entry(node).get("updater")
+        assert updater is not None and not updater.retired
+        assert updater.n_fallback == 0 and updater.n_compiled > 100
+        assert _only_entry(node)["solver"].update_config.update_params is False
+        assert all(record["termination"] == "optimal" for record in records)
+
+    def test_the_lp_after_every_hit_equals_a_cold_build_bit_for_bit(self, tmp_path):
+        import numpy as np
+
+        minutes = [TestScenarioUtilityPersistentReuse._first(), *_persistent_minutes()]
+        hot, _, _ = _run_minutes(WindowedReusable, tmp_path, minutes=minutes[1:])
+        patterns = [_live_pattern(hot, lp) for lp in hot.lps]
+        # not vacuous: rows are inert, W is narrowed, and the live set moves between hits
+        assert all(0 < pattern.sum() < pattern.size for pattern in patterns)
+        assert any(not np.array_equal(a, b) for a, b in zip(patterns, patterns[1:]))
+        assert len({lp["col_upper_"].tobytes() for lp in hot.lps}) > 1
+        for minute, (fixture, lp) in enumerate(zip(minutes, hot.lps)):
+            cold = WindowedReusable("cold", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+            cold.run(_ctx(tmp_path), fixture)
+            # the matrix is compared as a dense array: HiGHS stores a hit's by column, a cold build's by row
+            matrix = ("a_matrix_.start_", "a_matrix_.index_", "a_matrix_.value_")
+            _assert_same_lp(
+                {k: v for k, v in lp.items() if k not in matrix},
+                {k: v for k, v in cold.lps[0].items() if k not in matrix},
+                minute,
+            )
+            assert np.array_equal(hot.dense[minute], cold.dense[0]), minute
+
+    def test_the_hit_and_appsis_own_update_hold_the_same_lp(self, tmp_path):
+        class StockWindowed(WindowedReusable):
+            _PERSISTENT_COMPILED_UPDATE = False
+
+        fast, fast_out, fast_rec = _run_minutes(WindowedReusable, tmp_path)
+        stock, stock_out, stock_rec = _run_minutes(StockWindowed, tmp_path)
+        assert len(fast.lps) == len(stock.lps) == 7
+        for minute, (a, b) in enumerate(zip(fast.lps, stock.lps)):
+            _assert_same_lp(a, b, minute)
+        assert fast_out == stock_out and fast_rec == stock_rec
+
+    def test_a_hit_solves_to_the_same_optimum_as_the_full_envelope_reference(self, tmp_path):
+        class FullReusable(WindowedReusable):
+            _TANGENT_WINDOW = False
+
+        windowed, w_out, _ = _run_minutes(WindowedReusable, tmp_path)
+        full, f_out, _ = _run_minutes(FullReusable, tmp_path)
+        for a, b in zip(w_out, f_out):
+            assert a["metrics"]["objective"] == pytest.approx(b["metrics"]["objective"], abs=1e-6)
+            assert a["target"] == b["target"]
