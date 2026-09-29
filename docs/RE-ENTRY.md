@@ -1,5 +1,45 @@
 # Re-entry
 
+## Joint-MIO speed-ups landed; full folds 2-19 run is next (2026-09-29)
+
+- **Landed on main** (`cbe6152`, remote containment verified), on top of the
+  merged Codex robust/persistent joint work: `13e340c` SolveRecord slacks off
+  HiGHS arrays; `a3ce8ae` compiled bit-exact replacement for appsi
+  `update_params`; `ce07c6c` exact per-scenario tangent windows (live tangent
+  rows 4096 -> ~818); `d3e67ce` ledger snapshot payload rendered once (same
+  bytes). No config, policy or identity-hash change.
+- **Measured** (synthetic 12-name/S=128 replay, one job at a time): 604 -> 332
+  ms/minute (0.55x); decide 551 -> 291 ms (HiGHS 286 -> 173, SolveRecord 101 ->
+  2, update 93 -> 44); checkpoint at history cap 142 -> 65 ms. Projected Fold 2
+  ~1h40m vs 3h00m (projection; real instances not timed here).
+- **Equivalence:** fixes 1-3 exact (bit/byte-identical). Windows keep the same
+  optimum (32/32 equal within 1e-9 at tight tolerance; robust lower edge holds
+  at optima only, by dominance). Default HiGHS abs gap 1e-6 already made answers
+  tolerance-driven, so same-state minutes differ in ~2% by 1-4 shares (each
+  within ~$0.03 expected utility; no bias, no cascade). A rerun of Fold 2 will
+  not reproduce $10,444.51 to the cent.
+- **Review:** owner-directed Sonnet author + ONE Haiku lens per fix (C0/M0/m0/n0
+  each), not the usual two-lens close; orchestrator re-derived the window
+  bounds by hand. Tests: pyomo/production focused 735 passed/8 skipped; child
+  nodes_capital+replay 584; simulation Joint/Solve 35; ruff clean. 25
+  pre-existing `cryptography` `_cffi_backend` failures in the cloud container
+  only (tests/production ADR-0147/captured-authorization files).
+- **Audit findings NOT acted on (owner: speed only, no policy change):** code
+  implements its math correctly, but (F1, critical) the free tranche split
+  values each name at the best of up to ~10 noisy heads -> buys on noise
+  (P(buy|zero edge) 0.73 at K=10 vs 0 at K=1, ~4.8x turnover); (F2) gamma 2 is
+  near risk-neutral at minute scale, CVaR $500 never binds -> 100% cash in 1-4
+  names; (F3) scenarios are SPY-residuals, no market factor; (F4) robust CI
+  measures an unconditional bias, Gamma=1 spreads into more names; (F5)
+  mip_abs_gap 1e-6 ~ 0.02-0.16% of objective. Fold 2 -$0.098/fill ~ modelled
+  fees $0.096/fill -> likely gross ~0. Owner rulings needed before any change.
+- **Not built:** direct highspy backend (~60-80 ms/min more; needs ADR); lean
+  form (no measured gain); per-tick checkpoint cadence (production semantics).
+- **Next:** in WSL, fresh worktree of main, confirm Fold 2's fee sum vs its
+  -$2,055, then run `configs/run-joint-simulation.json` folds 2-19 via
+  `tools/run_joint_simulation.sh` (tracked, not detached) and report with the
+  in-document evaluator.
+
 ## ADR-0191 downside-aware CDF iteration completed (2026-09-28)
 
 - Reviewed packet and complete results fast-forwarded/pushed to main as
