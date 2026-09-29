@@ -474,6 +474,11 @@ study are not used in this refinement.
 The primary freeze was committed as af23efa06a72aaa60589105226a50d4e1d036ede
 before any evaluation; the final model/variant has not changed. All outputs
 and logs remain ignored locally in the named worktree. Previous methods/HPO
-and feature-research worktrees and their data remain intact. Publication is
-being completed under the owner's existing wrap/merge/push authorization;
-no live model, trade, deployment, additional search or fresh-data validation.
+and feature-research worktrees and their data remain intact. Journal action
+A0608 was recorded through the public CLI; the owner-controlled path ledger
+was not changed. Reviewed packet and complete results merged/pushed to main
+as `27ea30365f4b0bf577271ad0cda36de91e6046a1`, with remote containment verified
+after fetch. Existing Windows Git credentials published the unchanged WSL
+worktree; all computation remained in WSL2. This final handoff-only update
+does not alter reviewed identities. No live model, trade, deployment,
+additional search or fresh-data validation occurred.

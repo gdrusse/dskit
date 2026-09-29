@@ -2,6 +2,10 @@
 
 ## ADR-0191 CDF blend refinement completed (2026-09-28)
 
+- Results and reviewed packet merged/pushed by fast-forward as
+  `27ea30365f4b0bf577271ad0cda36de91e6046a1`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
 - Owner requested further iteration on the successful blend. Sol built one
   standardized JSON, `children/index_options/configs/run-predictive-cdf-refinement.json`;
   no production code/dependency change or one-off execution script. Isolated
@@ -34,7 +38,7 @@
 - Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_refinement_20260928`
   and logs `cdf_refinement_logs_20260928`; preserve prior methods/HPO/feature
   worktrees and private environment. No further experiment is running.
-- Authorized wrap/publication is being completed; next research, NOT started:
+- Authorized wrap/publication completed; next research, NOT started:
   genuinely new-date validation and predeclared downside/cutoff objectives.
 
 ## ADR-0191 additional CDF methods completed (2026-09-28)
