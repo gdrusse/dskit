@@ -1,5 +1,49 @@
 # Re-entry
 
+## ADR-0191 downside-aware CDF iteration completed (2026-09-28)
+
+- Owner requested another iteration. Sol built one standard JSON,
+  `children/index_options/configs/run-predictive-cdf-downside.json`:
+  six symmetric scale-floor/weight settings and three index-head/weight
+  settings. Same 42 features/data/protocol; no production/dependency changes,
+  new acquisition, one-off execution script or trading. Isolated worktree
+  `/home/russell/dskit-cdf-downside-20260928`, base `969fd3e`.
+- Reviewed implementation `d713803a`, immutable protocol candidate
+  `257eb59191a96e1cef314139b2f3f10ce0f28c79`; Luna design and two final
+  lenses C0/M0. Eight child tests and seven reused focused integration tests
+  passed; no full suite. Actual findings retained in ADR-0191 evidence.
+  New Minors: equivalence metadata label rename and incomplete all-field test
+  pins (current dictionaries checked). Prior inverse-atom/external-freeze
+  automation limitations remain. No post-lock code/config edits.
+- All nine candidates, selection, four evaluations and standard final
+  evaluator completed: eight exit-0 stages, no omission/fallback. WSL2 CUDA,
+  at most two concurrent, each under 30 minutes/6 GiB; slowest 5m19.99s,
+  peak process RSS 2.526 GiB. Prior private interpreter reused read-only.
+- Primary frozen BEFORE evaluation in commit
+  `793bcd8998635f36d99b67b4666aae202bdf6559`: incumbent 25% MLP raw,
+  **no qualified challenger**. Floor .75 / weight .35 and index-head .25
+  win their groups on development CRPS but fail the per-index downside guard.
+  Floor SPY misses guard by one observation (526/8905 vs 525); no rule was
+  relaxed. This is a procedural failure, not proof of a meaningful difference.
+- Later floor skill +0.977245% vs empirical, direct +0.164269% vs incumbent,
+  but both paired intervals include zero. Incumbent skill remains +0.818035%.
+  Heads +0.793238% vs empirical, -0.026627% vs incumbent. Floor downside
+  5566/68084 = 8.1752% vs incumbent 5473/68084 = 8.0386%, target 5%.
+  Keep incumbent as research benchmark; floor is a modest descriptive lead,
+  not a qualified upgrade or trading model. No post-evaluation primary switch.
+- 18,616 development/133 cells, 68,084 later/135 cells; report 867,000 rows
+  across five models/two variants. Luna artifact audits passed all file hashes,
+  pairing, purges, fit reuse, and representative raw/calibrated exact CDF/PIT
+  reconstruction. All three final controls numerically reproduce prior run.
+- Standalone recommendation, full exact-day grids/counts, annual splits,
+  cutoff example, uncertainty and reproducibility:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-downside.md`.
+  Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_downside_20260928`
+  and logs `cdf_downside_logs_20260928`, all previous worktrees/environments.
+- No experiment remains running. Publication is pending final evidence/journal
+  commit. Next research, NOT started: genuinely new-date validation and a
+  predeclared downside/cutoff objective with tolerance justified before outcomes.
+
 ## ADR-0191 CDF blend refinement completed (2026-09-28)
 
 - Results and reviewed packet merged/pushed by fast-forward as
