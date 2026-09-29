@@ -77,6 +77,7 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 Rationale files (not generated):
 
+- [2026-09-28-joint-fold2-attempt.md](2026-09-28-joint-fold2-attempt.md)
 - [decision-framework-hpo.md](decision-framework-hpo.md)
 - [decision-hl-scan.md](decision-hl-scan.md)
 - [decision-horizon-criteria.md](decision-horizon-criteria.md)
