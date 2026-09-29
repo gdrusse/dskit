@@ -61,6 +61,7 @@ from tests.production.test_ledger import (
     _rec,
     _rewrite,
     _segment_paths,
+    _snapshot_payloads,
 )
 
 SERIES = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
@@ -293,6 +294,19 @@ def test_a_snapshot_round_trips_and_latest_snapshot_agrees_with_jsonl(both):
         chain.ledger.snapshot({"positions": {}, "at": 7})
     assert sqlite_chain.ledger.latest_snapshot() == jsonl.ledger.latest_snapshot()
     assert sqlite_chain.ledger.latest_snapshot()["body"]["at_seq"] == RECORDS
+
+
+def test_every_kind_of_snapshot_payload_is_the_same_envelope_in_both_stores(both):
+    """`snapshot()` renders its payload once and splices it into the digest, the
+    hash and the line; the store the line lands in must not change which."""
+    jsonl, sqlite_chain = both()
+    for chain in (jsonl, sqlite_chain):
+        chain.ledger.append_many(BATCH)
+        for payload in _snapshot_payloads():
+            chain.ledger.snapshot(payload)
+    assert list(sqlite_chain.ledger.scan()) == list(jsonl.ledger.scan())
+    assert sqlite_chain.ledger.head() == jsonl.ledger.head()
+    assert sqlite_chain.ledger.verify() is None
 
 
 def test_a_ledger_with_no_snapshot_answers_none(open_chain):

@@ -56,7 +56,14 @@ import pytest
 
 from dskit.production import ledger as ledger_module
 from dskit.production import vocab
-from dskit.production.base import ProductionError, Registry, canonical_hash, record_hash
+from dskit.production import base as production_base
+from dskit.production.base import (
+    ProductionError,
+    Registry,
+    canonical_bytes,
+    canonical_hash,
+    record_hash,
+)
 from dskit.production.document import ServeDocument
 from dskit.production.ledger import (
     DEFAULT_LEDGER_KIND,
@@ -1536,6 +1543,296 @@ def test_a_snapshot_record_is_folded_like_any_other(serve, open_ledger):
     led.append(_rec(rid="t-1"))
     led.snapshot({"n": 1})
     assert [r["kind"] for r in state.applied] == ["tick_start", "snapshot"]
+
+
+# ---------------------------------------------------------------------------
+# Snapshots render the payload ONCE and change nothing a reader can see
+# ---------------------------------------------------------------------------
+#
+# A snapshot carries the whole folded state (~1 MB at the decision-history
+# cap) every tick. `snapshot()` renders that payload to canonical JSON once
+# and splices the bytes into the digest, the chain hash and the line; the
+# tests below pin that the bytes, hashes, refusals and dedup are exactly what
+# the general path (`_prepare` + `_commit` over the plain payload) produces.
+
+MONEY = vocab.MONEY_FIELDS[0]
+#: A string no payload is entitled to avoid: the first splice marker the
+#: renderer tries (index 0 of attempt 0), so a value equal to it forces a retry.
+MARK_0 = f"{production_base._MARK}0-0"
+MARK_1 = f"{production_base._MARK}1-0"
+
+
+class WalkEveryTimeLedger(JsonlLedger):
+    """The reference: `snapshot()` over the GENERAL path, the plain payload
+    walked into every digest, hash and line (what it did before it
+    rendered once). `_prepare` and `_commit` are the same methods every
+    ordinary record uses, called without a rendering."""
+
+    def snapshot(self, payload):
+        with self._transition_lock:
+            at_seq = self._seq
+            record = {
+                "kind": "snapshot",
+                "id": f"snapshot-{at_seq}",
+                "body": {
+                    "at_seq": at_seq,
+                    "state_digest": canonical_hash(payload),
+                    "state": payload,
+                },
+            }
+            caller, digest = self._prepare(record, "snapshot")
+            return self._commit(caller, digest)
+
+
+def _leg(i):
+    return {
+        "tick_id": f"tick-{i:05d}",
+        "symbol": "AAPL" if i % 2 else "JPM",
+        "asof_ms": 1_662_681_600_000 + 60_000 * i,
+        "qty": Decimal(i * 7 - 3),
+        "price": Decimal(f"{100 + i % 17}.{i % 10}0"),
+        "confidence": (i % 97) / 97,
+        "expected_value": -1.5e-7 * i,
+        "flags": [True, False, None],
+        "tags": ("é", "日本", "😀", 'a"b\\c\n\t\u2028', "\u0000\u001f\u007f"),
+        "nested": {"z": 1, "a": [1, 2.5, {"y": Decimal("1.50"), "b": (1, 2)}],
+                   "M": "m", "10": 1, "9": 2, "": 0},
+    }
+
+
+def _snapshot_payloads():
+    """Small and large payloads with everything canonical JSON must render:
+    nested dicts/lists/tuples, unicode, Decimal, ints, floats, bools, None,
+    keys that need sorting, empty containers, strings that look like
+    splice markers, and non-dict roots."""
+    return [
+        {},
+        {"positions": {"AAA": Decimal("3.0")}, "breaker": "active"},
+        [1, 2, {"a": None}, (3, 4)],
+        "just a string",
+        {"zeta": 1, "alpha": {"b": 2, "a": 1}, "Ω": "é", "e\u0301": [], "d": {}, "big": 10**30,
+         "neg0": -0.0, "tiny": 1e-300, "huge": 1e22, "t": True, "f": False, "n": None},
+        {MARK_0: MARK_0, "a": [MARK_0, MARK_1], 'x","%s' % MARK_0: 'a","%s"' % MARK_1},
+        {"decision_history": [_leg(i) for i in range(3000)], "monitor_state": {}},
+    ]
+
+
+def _script(led):
+    """One scripted life: appends interleaved with a snapshot of each payload."""
+    seqs = [led.append(_rec(rid="t-0", tick_id="t-0"))]
+    for n, payload in enumerate(_snapshot_payloads(), start=1):
+        seqs.append(led.snapshot(payload))
+        seqs.append(led.append(_rec(rid=f"t-{n}", tick_id=f"t-{n}", note="é")))
+    seqs.extend(led.append_many([_rec(rid="m-1"), _rec(rid="m-2", n=Decimal("1.50"))]))
+    return seqs, led.head()
+
+
+def _segment_bytes(serve):
+    return [open(path, "rb").read() for path in _segment_paths(serve)]
+
+
+def test_snapshot_lines_hashes_and_seqs_are_the_general_paths_exactly(
+    tmp_path, open_ledger
+):
+    """GOLDEN: the same script over the render-once ledger and over the
+    reference gives byte-identical segment files, identical returned seqs and
+    head, and an identical fold."""
+    fast_root = ServeRoot(str(tmp_path / "fast"), SERIES)
+    slow_root = ServeRoot(str(tmp_path / "slow"), SERIES)
+    fast_state, slow_state = RecordingState(), RecordingState()
+    fast = open_ledger(fast_root, state=fast_state)
+    slow = WalkEveryTimeLedger(
+        slow_root, PROCESS, RELEASE, clock=FakeClock(), state=slow_state
+    )
+    try:
+        assert _script(fast) == _script(slow)
+    finally:
+        slow.close()
+    assert _segment_bytes(fast_root) == _segment_bytes(slow_root)
+    assert fast_state.applied == slow_state.applied
+    assert fast.verify() is None
+
+
+def test_every_snapshot_line_is_canonical_and_recomputes_from_public_functions(
+    serve, open_ledger
+):
+    """Independent of the reference: every line re-renders to itself, its
+    hash is the §6 link, its payload_digest is the digest of the caller's
+    three fields and its state_digest the digest of the state."""
+    led = open_ledger(serve)
+    _script(led)
+    prev = GENESIS_PREV
+    for raw in _raw_lines(serve):
+        env = json.loads(raw)
+        assert canonical_bytes(env).decode("ascii") == raw
+        assert env["prev_hash"] == prev
+        assert record_hash(prev, env) == env["hash"]
+        caller = {key: env[key] for key in ("kind", "id", "body")}
+        assert canonical_hash(caller) == env["payload_digest"]
+        if env["kind"] == "snapshot":
+            assert canonical_hash(env["body"]["state"]) == env["body"]["state_digest"]
+        prev = env["hash"]
+    assert led.verify() is None
+
+
+def test_a_snapshot_survives_reopen_and_replay(serve, open_ledger):
+    led = open_ledger(serve)
+    _script(led)
+    head = led.head()
+    led.close()
+    reopened = open_ledger(serve)
+    assert reopened.head() == head
+    assert reopened.verify() is None
+    expected = json.loads(canonical_bytes(_snapshot_payloads()[-1]))
+    assert reopened.latest_snapshot()["body"]["state"] == expected
+    assert [e["seq"] for e in reopened.scan(kind="snapshot")] == [2, 4, 6, 8, 10, 12, 14]
+
+
+@pytest.mark.parametrize(
+    "process_id, release_hash",
+    [(MARK_0, RELEASE), (MARK_0, MARK_1), (f"x{MARK_0}", 'a","' + MARK_0)],
+    ids=["first-marker", "two-markers", "near-misses"],
+)
+def test_ledger_fields_that_look_like_splice_markers_still_render(
+    tmp_path, process_id, release_hash
+):
+    """The enclosing fields are rendered with a marker where the payload goes;
+    a process id or release equal to that marker must not be mistaken for it."""
+    fast_root = ServeRoot(str(tmp_path / "fast"), SERIES)
+    slow_root = ServeRoot(str(tmp_path / "slow"), SERIES)
+    fast = JsonlLedger(fast_root, process_id, release_hash, clock=FakeClock())
+    slow = WalkEveryTimeLedger(slow_root, process_id, release_hash, clock=FakeClock())
+    try:
+        for led in (fast, slow):
+            led.append(_rec(rid="t-1"))
+            led.snapshot({"k": [1, 2, 3], MARK_0: MARK_0})
+    finally:
+        fast.close()
+        slow.close()
+    assert _segment_bytes(fast_root) == _segment_bytes(slow_root)
+
+
+def _refusal(ledger_class, tmp_path, name, payload):
+    root = ServeRoot(str(tmp_path / name), SERIES)
+    led = ledger_class(root, PROCESS, RELEASE, clock=FakeClock())
+    try:
+        with pytest.raises(ProductionError) as exc:
+            led.snapshot(payload)
+        assert led.head() == (0, GENESIS_PREV)
+        assert _segment_paths(root) == []
+        assert led.snapshot({"ok": 1}) == 1
+        return exc.value
+    finally:
+        led.close()
+
+
+REFUSED = {
+    "nan": {"a": {"b": [1, float("nan")]}},
+    "inf": {"a": float("-inf")},
+    "non-str-key": {"a": {1: "x"}},
+    "set": {"a": [{1, 2}]},
+    "datetime": {"a": datetime(2026, 9, 5, tzinfo=timezone.utc)},
+    "bytes": {"a": b"x"},
+    "decimal-nan": {"a": Decimal("NaN")},
+    "money-float": {"book": {MONEY: 1.5}},
+    "money-float-in-list": {MONEY: [1.0, {"x": 2.0}], "ratio": 0.5},
+    "two-money-floats": {"a": {MONEY: 1.5}, "b": [{MONEY: 2.5}]},
+    "canonical-error-before-money": {MONEY: 1.5, "bad": float("nan")},
+    "money-float-in-a-tuple": {"a": ({MONEY: 1.5},)},
+}
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED))
+def test_a_refused_snapshot_says_what_the_general_path_says_and_writes_nothing(
+    tmp_path, name
+):
+    slow = _refusal(WalkEveryTimeLedger, tmp_path, "slow", REFUSED[name])
+    fast = _refusal(JsonlLedger, tmp_path, "fast", REFUSED[name])
+    assert type(fast) is type(slow)
+    assert fast.problems == slow.problems
+    assert str(fast) == str(slow)
+
+
+def test_the_money_refusal_names_the_path_from_the_snapshot_body(tmp_path):
+    fast = _refusal(JsonlLedger, tmp_path, "fast", {"book": {MONEY: 1.5}})
+    assert fast.problems == [
+        f"snapshot.body.state.book.{MONEY}: money never touches float, got 1.5"
+    ]
+
+
+def test_a_snapshot_dedups_against_the_same_record_appended_plainly(
+    serve, open_ledger
+):
+    """The render-once digest IS the general digest: the record `snapshot()`
+    would write, appended through `append`, is what a later `snapshot()`
+    at that head finds already standing -- same payload returns the prior
+    seq and writes nothing; a different payload refuses."""
+    led = open_ledger(serve)
+    payload = {"positions": {"AAA": Decimal("3.0")}, "ratio": 0.25, "legs": [_leg(1)]}
+    plain = {
+        "kind": "snapshot",
+        "id": "snapshot-1",
+        "body": {
+            "at_seq": 1,
+            "state_digest": canonical_hash(payload),
+            "state": payload,
+        },
+    }
+    assert led.append(plain) == 1
+    lines_before = _raw_lines(serve)
+    assert led.snapshot(payload) == 1
+    assert _raw_lines(serve) == lines_before
+    assert led.head()[0] == 1
+    with pytest.raises(ProductionError) as exc:
+        led.snapshot({"positions": {}})
+    assert "snapshot-1" in str(exc.value) and "different payload" in str(exc.value)
+    assert _raw_lines(serve) == lines_before
+
+
+class _CountingDict(dict):
+    """A dict that counts how many times a walker iterates it."""
+
+    walks = 0
+
+    def items(self):
+        self.walks += 1
+        return super().items()
+
+
+def test_the_payload_is_walked_at_most_twice_per_snapshot(serve, open_ledger):
+    """The cost pin: one walk renders and validates the payload, one runs the
+    money rule. Digest, chain hash and line take the rendered bytes -- they
+    never walk the tree again (it was five walks)."""
+    led = open_ledger(serve)
+    payload = _CountingDict(_snapshot_payloads()[-1])
+    led.snapshot(payload)
+    assert 1 <= payload.walks <= 2
+
+
+def test_ordinary_appends_are_not_rendered_through_the_splice_path(
+    serve, open_ledger, monkeypatch
+):
+    """Small records keep the plain path: no marker walk, no splice."""
+    led = open_ledger(serve)
+    monkeypatch.setattr(
+        production_base.Rendered,
+        "render",
+        staticmethod(lambda obj: pytest.fail("an ordinary record was spliced")),
+    )
+    led.append(_rec(rid="t-1"))
+    led.append_many([_rec(rid="t-2"), _rec(rid="t-3")])
+    assert led.reserve_once(_rec(rid="t-4")) == (True, 4)
+    assert led.verify() is None
+
+
+def test_a_rendered_value_in_a_caller_record_is_refused(serve, open_ledger):
+    """`Rendered` is honoured only where the ledger itself stands one in; a
+    caller cannot hand one to `append` to skip the money walk."""
+    led = open_ledger(serve)
+    smuggled = production_base.Rendered({MONEY: 1.5})
+    with pytest.raises(ProductionError):
+        led.append(_rec(rid="t-1", state=smuggled))
+    assert _raw_lines(serve) == []
 
 
 # ---------------------------------------------------------------------------

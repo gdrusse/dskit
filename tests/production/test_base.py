@@ -22,7 +22,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
+from dskit.production import base as production_base
 from dskit.production.base import (
     ProductionError,
     Registry,
@@ -240,6 +243,217 @@ def test_canonical_hash_does_not_strip_notes():
     change what a CONFIG is. A record is not a config: two records that
     differ in any field — `notes` included — are different records."""
     assert canonical_hash({"a": 1, "notes": "why"}) != canonical_hash({"a": 1})
+
+
+# ---------------------------------------------------------------------------
+# Rendered — a value rendered once, spliced whole into enclosing renderings
+# ---------------------------------------------------------------------------
+#
+# Canonical JSON is compositional (sorted keys, fixed separators, no
+# indentation), so a value's rendering is an exact substring of every
+# enclosing rendering. `Rendered` is that substring, kept; `Rendered.render`
+# is `canonical_bytes` for a small shell that stands one in. These tests
+# restate the recipe with `json.dumps` (`_canonical` above) and compare.
+
+
+def _marks():
+    """The first two markers the splice tries: values equal to them collide."""
+    return [f"{production_base._MARK}{attempt}-0" for attempt in (0, 1)]
+
+
+def _with_plain(shell, replacements):
+    """`shell` with each Rendered leaf swapped for the value it was made from."""
+    if isinstance(shell, production_base.Rendered):
+        return replacements[id(shell)]
+    if isinstance(shell, dict):
+        return {k: _with_plain(v, replacements) for k, v in shell.items()}
+    if isinstance(shell, (list, tuple)):
+        return [_with_plain(v, replacements) for v in shell]
+    return shell
+
+
+VALUES = [
+    {},
+    [],
+    "",
+    0,
+    None,
+    True,
+    {"b": 1, "a": [Decimal("1.50"), (1, 2.5), None], "é": "日本😀", "": {}},
+    [1, [2, [3, {"z": "\u0000\u001f\"\\"}]]],
+    {"big": 10**30, "neg0": -0.0, "tiny": 1e-300, "huge": 1e22, "t": True},
+    "just a string",
+]
+
+
+@pytest.mark.parametrize("value", VALUES, ids=range(len(VALUES)))
+def test_a_rendered_value_splices_into_the_bytes_the_plain_value_would_give(value):
+    part = production_base.Rendered(value)
+    shell = {"z": [1, part, {"k": part}], "a": "before", "m": (part,)}
+    expected = _canonical(_with_plain(shell, {id(part): value}))
+    assert production_base.Rendered.render(shell) == expected
+
+
+@pytest.mark.parametrize("value", VALUES, ids=range(len(VALUES)))
+def test_a_bare_rendered_value_renders_as_its_own_canonical_bytes(value):
+    assert production_base.Rendered.render(production_base.Rendered(value)) == _canonical(
+        value
+    )
+
+
+def test_two_different_rendered_values_keep_their_own_places():
+    first, second = production_base.Rendered({"a": 1}), production_base.Rendered([2, 3])
+    shell = {"y": second, "x": first, "w": [second, first]}
+    expected = b'{"w":[[2,3],{"a":1}],"x":{"a":1},"y":[2,3]}'
+    assert production_base.Rendered.render(shell) == expected
+
+
+def test_a_shell_holding_no_rendered_value_renders_exactly_as_canonical_bytes():
+    shell = {"b": [1, Decimal("2.50")], "a": ("x",)}
+    assert production_base.Rendered.render(shell) == canonical_bytes(shell)
+
+
+def test_a_rendered_value_is_a_snapshot_of_the_value_when_it_was_made():
+    value = {"a": [1]}
+    part = production_base.Rendered(value)
+    value["a"].append(2)
+    assert production_base.Rendered.render({"v": part}) == b'{"v":{"a":[1]}}'
+
+
+def test_rendered_refuses_exactly_what_canonical_bytes_refuses():
+    for bad in ({"a": [float("nan")]}, {"a": {1: 2}}, {"a": {1, 2}}, {"a": b"x"}):
+        with pytest.raises(ProductionError) as plain:
+            canonical_bytes(bad)
+        with pytest.raises(ProductionError) as rendered:
+            production_base.Rendered(bad)
+        assert rendered.value.problems == plain.value.problems
+
+
+def test_rendered_refuses_a_value_that_already_holds_a_rendered_one():
+    with pytest.raises(ProductionError):
+        production_base.Rendered({"a": production_base.Rendered(1)})
+
+
+def test_a_shell_refuses_what_canonical_bytes_would_refuse_at_the_same_path():
+    part = production_base.Rendered({"ok": 1})
+    for bad, path in (
+        ({"x": part, "n": float("inf")}, "$.n"),
+        ({"x": [part, {1, 2}]}, "$.x[1]"),
+        ({"x": part, 1: "k"}, "$"),
+    ):
+        with pytest.raises(ProductionError) as exc:
+            production_base.Rendered.render(bad)
+        assert exc.value.problems[0].startswith(path)
+
+
+def test_only_the_rendered_seam_accepts_a_rendered_value():
+    """`Rendered` is honoured where a caller asks for it by name and nowhere
+    else: the plain recipes still refuse it, so no validator that walks a
+    plain tree can be walked around by one."""
+    shell = {"a": production_base.Rendered({MONEY_FIELDS[0]: 1.5})}
+    for refuse in (
+        lambda: canonical_bytes(shell),
+        lambda: canonical_hash(shell),
+        lambda: record_hash(GENESIS, shell),
+    ):
+        with pytest.raises(ProductionError):
+            refuse()
+
+
+def test_canonical_hash_and_record_hash_take_the_render_strategy_they_are_given():
+    value = {"b": [Decimal("1.50"), 2], "a": "é"}
+    part = production_base.Rendered(value)
+    render = production_base.Rendered.render
+    assert canonical_hash({"k": part}, render=render) == canonical_hash({"k": value})
+    envelope = {"kind": "tick", "id": "x", "body": {"state": value}, "seq": 1}
+    stood = {"kind": "tick", "id": "x", "body": {"state": part}, "seq": 1}
+    assert record_hash(GENESIS, stood, render=render) == record_hash(GENESIS, envelope)
+    assert record_hash(GENESIS, dict(stood, hash="c" * 64), render=render) == record_hash(
+        GENESIS, envelope
+    )
+
+
+def test_the_default_render_strategy_is_canonical_bytes_itself():
+    """Nothing changes for a caller that names no strategy."""
+    obj = {"b": [1, Decimal("2.50")], "a": {"é": None}}
+    assert canonical_hash(obj) == canonical_hash(obj, render=canonical_bytes)
+    assert record_hash(GENESIS, obj) == record_hash(GENESIS, obj, render=canonical_bytes)
+
+
+@pytest.mark.parametrize(
+    "spelled",
+    [
+        lambda m: {"a": m[0]},
+        lambda m: {"a": m[0], "b": m[1]},
+        lambda m: {m[0]: 1, "a": [m[1]]},
+        lambda m: {"a": 'x","' + m[0], "b": '"' + m[1] + '"'},
+        lambda m: {"a": "x" + m[0], "b": m[0] + "x", "c": [m[0], m[0]]},
+    ],
+    ids=["value", "two-values", "key-and-list", "escaped-quotes", "near-misses"],
+)
+def test_data_that_spells_a_marker_never_takes_the_place_of_a_rendered_value(
+    spelled, monkeypatch
+):
+    """The shell is rendered with a marker where the value goes and the marker
+    is replaced. Data equal to (or containing, once escaped) that marker would
+    be replaced instead: the renderer must notice and choose another."""
+    part = production_base.Rendered({"inner": _marks()[0]})
+    calls = []
+    real = production_base.canonical_bytes
+
+    def counting(obj):
+        calls.append(obj)
+        return real(obj)
+
+    monkeypatch.setattr(production_base, "canonical_bytes", counting)
+    data = spelled(_marks())
+    shell = dict(data, zzz=part) if isinstance(data, dict) else [data, part]
+    plain = dict(data, zzz={"inner": _marks()[0]})
+    assert production_base.Rendered.render(shell) == _canonical(plain)
+    assert len(calls) >= 2  # the first marker collided; a later one was used
+
+
+def test_a_rendered_value_may_itself_spell_every_marker():
+    """What is INSIDE a Rendered is never scanned: only the shell is."""
+    inner = {m: [m, '"' + m + '"'] for m in _marks()}
+    part = production_base.Rendered(inner)
+    assert production_base.Rendered.render({"k": part}) == _canonical({"k": inner})
+
+
+def test_rendered_repr_does_not_print_the_payload():
+    text = repr(production_base.Rendered({"k": "x" * 5000}))
+    assert len(text) < 80 and "xxx" not in text
+
+
+json_values = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text()
+    | st.decimals(allow_nan=False, allow_infinity=False),
+    lambda children: st.lists(children, max_size=4)
+    | st.tuples(children, children)
+    | st.dictionaries(st.text(max_size=4), children, max_size=4),
+    max_leaves=12,
+)
+
+
+@settings(max_examples=60, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    value=json_values,
+    other=json_values,
+    text=st.text(),
+    spelled=st.sampled_from([None, 0, 1]),
+)
+def test_splicing_any_value_matches_rendering_it_in_place(
+    value, other, text, spelled
+):
+    text = text if spelled is None else _marks()[spelled]
+    part = production_base.Rendered(value)
+    shell = {"s": text, "v": part, "l": [other, part], "k" + text: 1}
+    plain = _with_plain(shell, {id(part): value})
+    assert production_base.Rendered.render(shell) == _canonical(plain)
 
 
 # ---------------------------------------------------------------------------

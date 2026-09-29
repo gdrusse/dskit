@@ -22,7 +22,10 @@ way. Four rules the module enforces for the whole package:
    :func:`canonical_hash` and :func:`record_hash` (the §6 chain link) are
    built on it and nowhere else. Unlike the assets recipe it does NOT strip
    ``notes``: a record is not a config, and two records that differ in any
-   field are different records.
+   field are different records. :class:`Rendered` is the one way to render
+   a large value ONCE and splice its bytes into every enclosing rendering,
+   digest and hash (a snapshot's whole-state payload); the plain recipes
+   never accept it.
 4. **Money never touches float.** :func:`reject_money_floats` is the one
    walk of that rule — ``records.py`` validating an opaque venue payload
    and ``ledger.py`` validating a record body call the SAME function, so
@@ -42,6 +45,7 @@ import json
 import math
 import re
 import time
+from itertools import count
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -62,6 +66,7 @@ __all__ = [
     "GENESIS_HASH",
     "ProductionError",
     "Registry",
+    "Rendered",
     "canonical_bytes",
     "canonical_hash",
     "check_credentials",
@@ -339,7 +344,7 @@ def canonical_bytes(obj):
     ).encode("ascii")
 
 
-def canonical_hash(obj):
+def canonical_hash(obj, render=None):
     """Return the hex sha256 of :func:`canonical_bytes` of ``obj``.
 
     Every ``*_digest`` in the package is this function over a record's
@@ -349,6 +354,11 @@ def canonical_hash(obj):
     ----------
     obj : dict or list or tuple or scalar
         As for :func:`canonical_bytes`.
+    render : callable or None
+        The strategy that turns ``obj`` into canonical bytes; ``None``
+        (the default) is :func:`canonical_bytes`. :meth:`Rendered.render`
+        is the one other, for an ``obj`` that stands a :class:`Rendered`
+        value in.
 
     Returns
     -------
@@ -360,7 +370,139 @@ def canonical_hash(obj):
     ProductionError
         As for :func:`canonical_bytes`.
     """
-    return hashlib.sha256(canonical_bytes(obj)).hexdigest()
+    if render is None:
+        render = canonical_bytes
+    return hashlib.sha256(render(obj)).hexdigest()
+
+
+#: What :meth:`Rendered.render` puts where a rendered value goes: ASCII
+#: letters, digits and hyphens only, so JSON spells it as itself between
+#: quotes -- no escape can make it differ from what is searched for.
+_MARK = "dskit-rendered-"
+
+
+class Rendered:
+    """A value's canonical JSON, rendered once, to splice whole into enclosing renderings.
+
+    Canonical JSON is compositional -- sorted keys, fixed separators, no
+    indentation -- so the bytes of a value are an exact substring of the
+    bytes of anything that holds it. A value that is large and hashed
+    several times (a snapshot's whole-state payload is digested alone,
+    inside the caller's record, inside the envelope's chain link and
+    inside the line) is rendered here once; :meth:`render` then renders
+    only the small enclosing shell and drops these bytes in. The result is
+    byte-for-byte what :func:`canonical_bytes` gives the plain nesting.
+
+    The value is refused, at construction, exactly as :func:`canonical_bytes`
+    refuses it -- a ``Rendered`` is proof its value is canonically
+    serializable. It is a snapshot: later mutation of the source does not
+    reach it. ``Rendered`` is honoured by :meth:`render` and by nothing
+    else: :func:`canonical_bytes` and the plain digests refuse one, and a
+    walker of plain values (:func:`reject_money_floats`) cannot see inside
+    one, so run every such rule on the plain value BEFORE standing it in.
+
+    Parameters
+    ----------
+    value : dict or list or tuple or scalar
+        As for :func:`canonical_bytes`. It may not itself hold a
+        ``Rendered``.
+
+    Raises
+    ------
+    ProductionError
+        As for :func:`canonical_bytes`, naming the path from ``$``.
+
+    Examples
+    --------
+    Render a payload once and hash it inside a record without walking it
+    again::
+
+        state = Rendered({"b": 1, "a": [Decimal("1.50")]})
+        shell = {"kind": "snapshot", "body": {"state": state}}
+        Rendered.render(shell)
+        # -> b'{"body":{"state":{"a":["1.50"],"b":1}},"kind":"snapshot"}'
+        canonical_hash(shell, render=Rendered.render)  # 64 hex characters
+    """
+
+    __slots__ = ("_bytes",)
+
+    def __init__(self, value):
+        self._bytes = canonical_bytes(value)
+
+    def __repr__(self):
+        """Render the size, never the payload."""
+        return f"Rendered(<{len(self._bytes)} bytes>)"
+
+    @staticmethod
+    def render(obj):
+        """Return the canonical bytes of ``obj``, each ``Rendered`` in it spliced in whole.
+
+        The shell is rendered with a marker string where each ``Rendered``
+        stands; the marker's one quoted occurrence is replaced by the
+        value's bytes. If ANY other string in the shell spells a marker
+        (so a replacement could land in the wrong place), the shell is
+        rendered again under a different marker -- whatever the data, the
+        bytes are those of the plain nesting. The rendered values are
+        never scanned. Only the shell is walked, so keep it small.
+
+        Parameters
+        ----------
+        obj : dict or list or tuple or scalar
+            As for :func:`canonical_bytes`, and it may hold ``Rendered``
+            values anywhere a plain value could stand.
+
+        Returns
+        -------
+        bytes
+            ASCII bytes of the canonical JSON.
+
+        Raises
+        ------
+        ProductionError
+            As for :func:`canonical_bytes`; a path names the position in
+            the shell.
+        """
+        for attempt in count():
+            prefix = f"{_MARK}{attempt}-"
+            stood = []
+            shell = canonical_bytes(Rendered._stand_in(obj, prefix, stood))
+            if not stood:
+                return shell
+            spliced = Rendered._splice(shell, prefix, stood)
+            if spliced is not None:
+                return spliced
+
+    @staticmethod
+    def _stand_in(value, prefix, stood):
+        """Copy ``value`` with each Rendered leaf as a numbered marker string, recorded in ``stood``."""
+        if isinstance(value, Rendered):
+            stood.append(value)
+            return f"{prefix}{len(stood) - 1}"
+        if isinstance(value, dict):
+            return {
+                key: Rendered._stand_in(item, prefix, stood)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [Rendered._stand_in(item, prefix, stood) for item in value]
+        return value
+
+    @staticmethod
+    def _splice(shell, prefix, stood):
+        """Replace each marker in ``shell`` by its bytes, or ``None`` when data also spells one."""
+        quoted = [f'"{prefix}{index}"'.encode("ascii") for index in range(len(stood))]
+        if any(shell.count(mark) != 1 for mark in quoted):
+            return None
+        places = sorted(
+            ((shell.index(mark), mark, part) for mark, part in zip(quoted, stood)),
+            key=lambda place: place[0],
+        )
+        pieces, cursor = [], 0
+        for at, mark, part in places:
+            pieces.extend((shell[cursor:at], part._bytes))
+            cursor = at + len(mark)
+        pieces.append(shell[cursor:])
+        return b"".join(pieces)
 
 
 def check_digest(problems, name, value):
@@ -485,7 +627,7 @@ def pin_members(what, members, vocabulary, *, exact=False):
     return members
 
 
-def record_hash(prev_hash, envelope):
+def record_hash(prev_hash, envelope, render=None):
     """Return the §6 chain link ``sha256(prev_hash + canonical(envelope − hash))``.
 
     Any ``hash`` key already on ``envelope`` is excluded, so a record read
@@ -499,6 +641,10 @@ def record_hash(prev_hash, envelope):
     envelope : dict
         The full envelope (body plus the ledger-assigned fields), with or
         without its ``hash``.
+    render : callable or None
+        The strategy that turns the envelope without its ``hash`` into
+        canonical bytes; ``None`` (the default) is :func:`canonical_bytes`.
+        See :func:`canonical_hash`.
 
     Returns
     -------
@@ -517,8 +663,10 @@ def record_hash(prev_hash, envelope):
     _check_dict(problems, "envelope", envelope)
     if problems:
         raise ProductionError(problems)
+    if render is None:
+        render = canonical_bytes
     body = {key: value for key, value in envelope.items() if key != "hash"}
-    return hashlib.sha256(prev_hash.encode("ascii") + canonical_bytes(body)).hexdigest()
+    return hashlib.sha256(prev_hash.encode("ascii") + render(body)).hexdigest()
 
 
 # ---------------------------------------------------------------------------

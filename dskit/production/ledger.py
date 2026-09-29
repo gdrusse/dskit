@@ -70,6 +70,7 @@ from dskit.production.base import (
     GENESIS_HASH,
     ProductionError,
     Registry,
+    Rendered,
     _check_dict,
     _check_str,
     _check_unknown,
@@ -1085,6 +1086,11 @@ class ChainLedger(Ledger):
 
     def _prepare(self, record, where):
         """Validate a caller record; return it as a plain dict with its digest."""
+        caller = self._validate(record, where)
+        return caller, canonical_hash(caller)
+
+    def _validate(self, record, where):
+        """Refuse a malformed caller record, or a float under a money name; return it as a plain dict."""
         problems = []
         _check_dict(problems, where, record)
         if problems:
@@ -1102,11 +1108,13 @@ class ChainLedger(Ledger):
             reject_money_floats(problems, body, f"{where}.body")
         if problems:
             raise ProductionError(problems)
-        caller = {"kind": record_kind, "id": record["id"], "body": body}
-        return caller, canonical_hash(caller)
+        return {"kind": record_kind, "id": record["id"], "body": body}
 
-    def _commit(self, record, digest):
+    def _commit(self, record, digest, view=None):
         """Deduplicate, assign the envelope, land one record, fold; return the seq."""
+        # ``view`` is ``record`` with a Rendered standing where its payload is
+        # (a snapshot), or None (every ordinary record): the chain link and the
+        # line are cut from it; the store and the fold get the plain envelope.
         self._open_check()
         prior = self._index.get(record["id"])
         if prior is not None:
@@ -1122,8 +1130,7 @@ class ChainLedger(Ledger):
         if isinstance(at_ms, bool) or not isinstance(at_ms, int):
             raise ProductionError([f"clock.now_ms() must return an int, got {at_ms!r}"])
         seq = self._seq + 1
-        envelope = dict(record)
-        envelope.update(
+        stamps = dict(
             payload_digest=digest,
             seq=seq,
             series_id=self._root.series_id,
@@ -1133,8 +1140,14 @@ class ChainLedger(Ledger):
             schema_version=SCHEMA_VERSION,
             prev_hash=self._head,
         )
-        envelope["hash"] = record_hash(self._head, envelope)
-        line = canonical_bytes(envelope)
+        envelope = dict(record)
+        envelope.update(stamps)
+        if view is None:
+            stamped, render = envelope, canonical_bytes
+        else:
+            stamped, render = {**view, **stamps}, Rendered.render
+        envelope["hash"] = stamped["hash"] = record_hash(self._head, stamped, render=render)
+        line = render(stamped)
         # A store hook that raises before landing anything (e.g. a short
         # write -- JsonlLedger's own _store already truncates back to the
         # last known-good size) leaves the in-memory head/index exactly as
@@ -1217,20 +1230,32 @@ class ChainLedger(Ledger):
                 raise
 
     def snapshot(self, payload):
-        """Append a ``snapshot`` of ``payload`` at the head (see :meth:`Ledger.snapshot`)."""
+        """Append a ``snapshot`` of ``payload`` at the head (see :meth:`Ledger.snapshot`).
+
+        The payload is the whole folded state and is written every tick, so
+        it is rendered to canonical JSON ONCE (:class:`Rendered`, which
+        refuses whatever :func:`canonical_bytes` refuses, before anything
+        else runs) and those bytes go into the state digest, the caller
+        digest, the chain link and the line. The money rule walks the plain
+        payload once, as it does every record. What lands is byte-for-byte
+        what :meth:`_prepare` and :meth:`_commit` give the plain record.
+        """
         with self._transition_lock:
             at_seq = self._seq
+            state = Rendered(payload)
             record = {
                 "kind": _SNAPSHOT_KIND,
                 "id": f"snapshot-{at_seq}",
                 "body": {
                     "at_seq": at_seq,
-                    "state_digest": canonical_hash(payload),
+                    "state_digest": canonical_hash(state, render=Rendered.render),
                     "state": payload,
                 },
             }
-            caller, digest = self._prepare(record, "snapshot")
-            return self._commit(caller, digest)
+            caller = self._validate(record, "snapshot")
+            view = {**caller, "body": {**caller["body"], "state": state}}
+            digest = canonical_hash(view, render=Rendered.render)
+            return self._commit(caller, digest, view)
 
     def reserve_once(self, record):
         """Atomically reserve one caller ``id``; ``True`` only on first grant.
