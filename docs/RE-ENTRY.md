@@ -1,5 +1,42 @@
 # Re-entry
 
+## ADR-0191 CDF blend refinement completed (2026-09-28)
+
+- Owner requested further iteration on the successful blend. Sol built one
+  standardized JSON, `children/index_options/configs/run-predictive-cdf-refinement.json`;
+  no production code/dependency change or one-off execution script. Isolated
+  worktree `/home/russell/dskit-cdf-refinement-20260928`, base `abf360ca`.
+- Reviewed candidate `88f85a8b601861e2794039775c54ef996bbf3910`; two fresh
+  Luna lenses, C0/M0 after independent adjudication of the parent-owned
+  pre-evaluation freeze. Actual findings/evidence in ADR-0191 record. Seven
+  child and 13 reused integration tests pass; no full suite. Deferred Minors:
+  external freeze automation/test gap, inherited negligible inverse atom error.
+- All 13 candidates, selection, four evaluation partitions and final evaluator
+  completed, ten stages exit0. Same 42 features, data, purges, seeds and metrics.
+  WSL2/CUDA fitting; at most two concurrent capped stages. Slowest 9:39.82,
+  peak process RSS 2.644 GiB. Private prior-task interpreter reused read-only.
+- Primary frozen BEFORE any evaluation in commit
+  `af23efa06a72aaa60589105226a50d4e1d036ede`: raw small [8] network, 35% MLP /
+  65% empirical. Group finalists: original weight .30, small .35, wd.3 .35,
+  three-component .35. No post-evaluation primary substitution.
+- Primary later skill +0.964721% empirical versus old +0.818035%; direct gain
+  +0.150304% versus incumbent. Its 60/120-date paired intervals cross zero.
+  Beats incumbent in100/135 cells; downside misses worsen from8.039% to8.326%.
+  Keep old25% blend as research benchmark; smaller35% is a modest alternative,
+  not a clear upgrade or trading model. Descriptive mixture +1.028690% versus
+  empirical hurts IWM; it does not replace the frozen primary.
+- 18,616 development forecasts/133 cells; 68,084 evaluation/135 cells,
+  1,746 dates/3,495 series. All model/variant rows total1,213,800. Luna artifact
+  audit passed hashes, exact pairing, purges, fit reuse and representative
+  exact-CDF/PIT reconstruction. Full grid, annual counts, cutoff example and
+  standalone recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-refinement.md`.
+- Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_refinement_20260928`
+  and logs `cdf_refinement_logs_20260928`; preserve prior methods/HPO/feature
+  worktrees and private environment. No further experiment is running.
+- Authorized wrap/publication is being completed; next research, NOT started:
+  genuinely new-date validation and predeclared downside/cutoff objectives.
+
 ## ADR-0191 additional CDF methods completed (2026-09-28)
 
 - Merged/pushed to remote main: reviewed source `1302738e`, complete results
