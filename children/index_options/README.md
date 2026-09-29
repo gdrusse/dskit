@@ -57,6 +57,15 @@ not a z-scored residual. An external recorded protocol freezes the primary from
 the two winners and raw incumbent before evaluation; the CLI evaluates those
 winners and all three controls.
 
+ADR-0192 uses `configs/run-predictive-cdf-option-surface.json` to test causal
+entry-snapshot surface features, a proper left-tail CDF score and a
+calibration-only adaptive empirical–MLP gate. Search partitions are `surface`,
+`tail`, `adaptive`, `surface_tail`, `surface_adaptive` and `combined`; they keep
+the three isolated mechanisms distinct from their combinations. Exact actual
+DTE is calibration cell-weighting metadata only and is excluded from every
+predictor. Run each partition through the same CLI and external resource caps,
+then `select`, the four declared evaluation partitions, and `report`.
+
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a

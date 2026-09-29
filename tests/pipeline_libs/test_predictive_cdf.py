@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from dskit.pipeline.libs.predictive_cdf import (
-    CalibratedCurve, ChronologicalCDFStudy, GridCurve, MixtureCurve,
+    AdaptiveEmpiricalMLPBlendCDF, CalibratedCurve, ChronologicalCDFStudy,
+    ConvexCurve, GridCurve, MixtureCurve,
     HorizonEmpiricalCDF, ScaledEmpiricalCDF, MonotoneCDF, QuantileCDF, MixtureMLPCDF,
     NGBoostCDF, QuantileForestCDF,
 )
@@ -37,6 +38,178 @@ def test_saved_curve_arrays_preserve_calibration_and_exact_parameters(tmp_path):
         expected = np.interp(restored.cdf([-3, 0, 2]), a['calibration_x'][0], a['calibration_p'][0])
         np.testing.assert_allclose(curve.cdf([-3, 0, 2]), expected, rtol=0, atol=0)
     np.testing.assert_allclose(GridCurve([[0, 1]], [0, 1])._arrays()['values'], [[0, 1]])
+
+
+def test_convex_curve_accepts_bounded_row_weights_and_persists_them():
+    left = GridCurve([[0, 1], [0, 1]], [0, 1])
+    right = GridCurve([[1, 2], [1, 2]], [0, 1])
+    curve = ConvexCurve(left, right, [0., 1.])
+    np.testing.assert_allclose(curve.cdf([[.5], [1.5]]), [[.5], [.5]])
+    np.testing.assert_allclose(curve.quantile([.25, .75]), [[.25, .75], [1.25, 1.75]])
+    np.testing.assert_array_equal(curve._arrays()['weight'], [[0.], [1.]])
+    with pytest.raises(ValueError, match='weight'):
+        ConvexCurve(left, right, [0., 1., .5])
+    with pytest.raises(ValueError, match='weight'):
+        ConvexCurve(left, right, [0., 1.1])
+
+
+def test_left_cdf_score_matches_independent_scipy_and_has_finite_gradient():
+    import torch
+    from scipy.special import ndtr
+
+    model = MixtureMLPCDF(
+        components=2, hidden=3, epochs=1, seeds=[3], device='cpu',
+        left_cdf_weight=.5, left_cdf_bounds=[-2., 0.], left_cdf_points=5)
+    logw = torch.tensor(np.log([[.25, .75], [.6, .4]]), dtype=torch.float64,
+                        requires_grad=True)
+    mu = torch.tensor([[-.5, .7], [-1., .2]], dtype=torch.float64, requires_grad=True)
+    sigma = torch.tensor([[.8, 1.2], [.5, 2.]], dtype=torch.float64, requires_grad=True)
+    y = torch.tensor([[-1.25], [.4]], dtype=torch.float64)
+    actual = model._left_cdf_score(y, logw, mu, sigma)
+    grid = np.linspace(-2., 0., 5)
+    predicted = np.exp(logw.detach().numpy())[:, :, None] * ndtr(
+        (grid[None, None, :]-mu.detach().numpy()[:, :, None])
+        / sigma.detach().numpy()[:, :, None])
+    expected = np.mean((predicted.sum(1)-(y.detach().numpy() <= grid))**2)
+    assert actual.item() == pytest.approx(expected, abs=1e-12)
+    actual.backward()
+    assert all(torch.isfinite(value.grad).all() for value in (logw, mu, sigma))
+
+
+@pytest.mark.parametrize('settings', [
+    {'left_cdf_weight': -1}, {'left_cdf_weight': np.inf},
+    {'left_cdf_bounds': [0, -1]}, {'left_cdf_bounds': [-2, np.inf]},
+    {'left_cdf_bounds': [-1, 1]},
+    {'left_cdf_points': 1}, {'left_cdf_points': True},
+])
+def test_invalid_left_cdf_training_parameters_refuse(settings):
+    with pytest.raises(ValueError, match='left'):
+        MixtureMLPCDF(device='cpu', **settings)
+
+
+def test_zero_left_cdf_weight_preserves_legacy_training_path():
+    rng = np.random.default_rng(12)
+    x, y = rng.normal(size=(32, 3)), rng.normal(size=32)
+    common = dict(components=1, hidden=[4], epochs=2, batch_size=16,
+                  seeds=[7], device='cpu', deterministic=True)
+    legacy = MixtureMLPCDF(**common).fit(x, y, x[:8], y[:8])
+    explicit = MixtureMLPCDF(
+        **common, left_cdf_weight=0, left_cdf_bounds=[-3, 0], left_cdf_points=9,
+    ).fit(x, y, x[:8], y[:8])
+    np.testing.assert_allclose(
+        legacy.curve(x[:5]).quantile([.1, .5, .9]),
+        explicit.curve(x[:5]).quantile([.1, .5, .9]), rtol=0, atol=0)
+    assert legacy._equivalence_state() == explicit._equivalence_state()
+
+
+def test_mlp_feature_selection_preserves_raw_head_routing_and_fitted_identity():
+    rng = np.random.default_rng(26)
+    x = np.column_stack([rng.normal(size=32), rng.normal(size=32),
+                         np.tile([[1., 0.], [0., 1.]], (16, 1)),
+                         rng.normal(size=32)])
+    y = rng.normal(size=32)
+    common = dict(components=1, hidden=[4], epochs=1, seeds=[3],
+                  device='cpu', deterministic=True, head_features=[2, 3])
+    model = MixtureMLPCDF(**common, feature_indices=[0, 2, 3]).fit(
+        x, y, x[:8], y[:8])
+    changed = x[:4].copy()
+    changed[:, [1, 4]] = 1000.
+    np.testing.assert_array_equal(model.curve(x[:4]).cdf([0., 1.]),
+                                  model.curve(changed).cdf([0., 1.]))
+    assert model._heads(x[:4]).tolist() == [0, 1, 0, 1]
+    other = MixtureMLPCDF(**common, feature_indices=[0, 1, 2, 3]).fit(
+        x, y, x[:8], y[:8])
+    assert model._equivalence_state() != other._equivalence_state()
+    with pytest.raises(ValueError, match='feature indices'):
+        MixtureMLPCDF(**common, feature_indices=[0, 0])
+
+
+def test_adaptive_blend_uses_calibration_labels_and_bounds_row_weights():
+    rng = np.random.default_rng(4)
+    conditions = np.array([[5, 1, 0], [5, 0, 1], [10, 1, 0], [10, 0, 1]])
+    x = np.column_stack([
+        np.tile(conditions, (12, 1)), np.ones(48), rng.normal(size=48),
+        np.tile(conditions[:, 0], 12)])
+    y = .15*x[:, 4]+rng.normal(scale=.6, size=48)
+    cal_x = np.column_stack([
+        np.tile(conditions, (4, 1)), np.ones(16), np.linspace(-2, 2, 16),
+        np.tile(conditions[:, 0], 4)])
+    common = dict(
+        lower_weight=0., upper_weight=.35, condition_indices=[0, 1, 2],
+        cell_indices=[5, 1, 2],
+        reference_index=3, knots=21, gate_indices=[0, 1, 2, 3, 4],
+        grid_bounds=[-3, 3], grid_points=31, l2=.01, max_iter=100, tolerance=1e-9,
+        mlp={'components': 1, 'hidden': [4], 'epochs': 2, 'batch_size': 16,
+             'seeds': [3], 'device': 'cpu', 'deterministic': True,
+             'feature_indices': [0, 1, 2, 3, 4]})
+    low = AdaptiveEmpiricalMLPBlendCDF(**common).fit(
+        x, y, cal_x, np.full(len(cal_x), -2.))
+    high = AdaptiveEmpiricalMLPBlendCDF(**common).fit(
+        x, y, cal_x, np.full(len(cal_x), 2.))
+    low_weights = np.asarray(low.curve(cal_x).weight).ravel()
+    high_weights = np.asarray(high.curve(cal_x).weight).ravel()
+    assert (low_weights >= 0).all() and (low_weights <= .35).all()
+    assert (high_weights >= 0).all() and (high_weights <= .35).all()
+    assert not np.allclose(low_weights, high_weights)
+    assert low._equivalence_state() == high._equivalence_state()
+
+
+def test_adaptive_reporting_cells_use_actual_metadata_only_for_calibration_weights():
+    rng = np.random.default_rng(19)
+    conditions = np.tile([[5., 1., 0.], [5., 0., 1.],
+                          [10., 1., 0.], [10., 0., 1.]], (8, 1))
+    x = np.column_stack([conditions, np.ones(len(conditions)),
+                         rng.normal(size=len(conditions)), conditions[:, 0]])
+    y = rng.normal(size=len(x))
+    cal_x = np.array([[5., 1., 0., 1., -1., 5.],
+                      [5., 1., 0., 1., 0., 5.],
+                      [5., 1., 0., 1., 1., 7.],
+                      [5., 1., 0., 1., 2., 9.]])
+    model = AdaptiveEmpiricalMLPBlendCDF(
+        lower_weight=0., upper_weight=.35, condition_indices=[0, 1, 2],
+        cell_indices=[5, 1, 2], reference_index=3, knots=21,
+        gate_indices=[0, 1, 2, 3, 4], grid_bounds=[-3., 3.],
+        grid_points=31, l2=.01, max_iter=100, tolerance=1e-9,
+        mlp={'components': 1, 'hidden': [4], 'epochs': 1, 'seeds': [3],
+             'device': 'cpu', 'deterministic': True,
+             'feature_indices': [0, 1, 2, 3, 4]})
+    model.fit(x, y, cal_x, np.array([-1., 0., 1., 2.]))
+    np.testing.assert_allclose(model.calibration_row_weights,
+                               [1/6, 1/6, 1/3, 1/3])
+    changed = cal_x.copy()
+    changed[:, 5] = [15., 16., 17., 18.]
+    np.testing.assert_array_equal(model.curve(cal_x).cdf([0., 1.]),
+                                  model.curve(changed).cdf([0., 1.]))
+    changed[0, 5] = np.nan
+    with pytest.raises(ValueError, match='cell metadata'):
+        model._validate_x(changed)
+
+
+def test_adaptive_blend_constructor_default_denies_invalid_gate_contract():
+    common = dict(
+        lower_weight=0, upper_weight=.35, condition_indices=[0, 1, 2],
+        cell_indices=[5, 1, 2],
+        reference_index=3, knots=21, gate_indices=[0, 4],
+        grid_bounds=[-3, 3], grid_points=31, l2=.01, max_iter=10,
+        tolerance=1e-6, mlp={'device': 'cpu', 'feature_indices': [0, 1, 2, 3, 4]})
+    for change in (
+        {'upper_weight': 1.1}, {'lower_weight': .4}, {'gate_indices': [0, 0]},
+        {'grid_bounds': [3, -3]}, {'grid_points': 1}, {'l2': -1},
+        {'max_iter': 0}, {'tolerance': 0}, {'cell_indices': [5, 5]},
+        {'gate_indices': [0, 5]},
+        {'mlp': {'device': 'cpu', 'feature_indices': [0, 1, 2, 3, 4, 5]}},
+    ):
+        with pytest.raises(ValueError):
+            AdaptiveEmpiricalMLPBlendCDF(**{**common, **change})
+
+
+def test_study_refuses_second_calibration_map_for_adaptive_blend(tmp_path):
+    config, _ = _hpo_fixture(tmp_path)
+    config['study']['models']['adaptive'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:AdaptiveEmpiricalMLPBlendCDF',
+        'params': {}, 'calibrate': True, 'pooled': True}
+    with pytest.raises(ValueError, match='consumes calibration'):
+        ChronologicalCDFStudy(config['study'])
 
 
 def test_split_purges_both_boundaries_and_never_reuses_rows():
@@ -711,6 +884,32 @@ def test_audit_uses_forecast_identity_not_dataframe_index(tmp_path):
         identities=frame[config['study']['identity']].astype(str).to_numpy(dtype=str))
     records = study._audit([path], frame, None)
     assert records[0]['rows'] == 2
+
+
+def test_audit_restores_sampled_convex_row_weights_exactly(tmp_path, monkeypatch):
+    import dskit.pipeline.libs.predictive_cdf as pack
+    config, frame = _hpo_fixture(tmp_path)
+    study = pack.CDFHyperparameterStudy(config)
+    frame = frame.iloc[:3].copy()
+    left = GridCurve(np.tile([[-1., 1.]], (3, 1)), [0., 1.])
+    right = GridCurve(np.tile([[0., 2.]], (3, 1)), [0., 1.])
+    curve = ConvexCurve(left, right, [0., .5, 1.])
+    path = tmp_path/'curves'
+    path.mkdir()
+    np.savez_compressed(path/'rows-curves.npz', **curve._arrays(),
+                        row_index=np.arange(3), draws=np.zeros((3, 21)),
+                        identities=frame[config['study']['identity']].astype(str).to_numpy(dtype=str))
+    restored = []
+    original = pack.ConvexCurve
+
+    class CapturedConvexCurve(original):
+        def __init__(self, left, right, weight):
+            restored.append(np.asarray(weight).copy())
+            super().__init__(left, right, weight)
+
+    monkeypatch.setattr(pack, 'ConvexCurve', CapturedConvexCurve)
+    assert study._audit([path], frame, None)[0]['rows'] == 2
+    np.testing.assert_array_equal(restored[0], [[0.], [1.]])
 
 
 def test_grouped_multiyear_flow_verifies_blend_and_audits_convex_curves(tmp_path):

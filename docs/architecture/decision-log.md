@@ -27207,3 +27207,149 @@ unfiltered panel's entry and outcome fields as present, real, canonical
 helper enforces the same contract. Validation precedes cutoff, group and fold
 filters, so missing or malformed metadata cannot silently remove identities or
 enter lexical date bands; caller DataFrame index labels remain irrelevant.
+
+## ADR-0192 — Option-surface, adaptive-blend and left-tail CDF refinement
+
+2026-09-29. Status: owner-approved; RED authorized. Owner: index_options. Base:
+`cbe61528`. The owner approved implementation and testing
+of the three remaining bounded refinement ideas: option-chain surface features,
+a causal adaptive empirical–MLP blend, and tail-focused neural training. This is
+offline reused-history research. It does not authorize trading, deployment,
+promotion, fresh data acquisition, or treating option-implied probabilities as
+physical probabilities.
+
+### Decision and causal data contract
+
+Reuse the already pinned exact-expiry surface artifact and its lifecycle record;
+do not add a reader, acquisition path, package, dependency, notebook, or one-off
+execution script. Every option input must be the entry-date snapshot already
+joined one-to-one to `(symbol, quote_date, nominal_expiry)`, and the existing
+surface/lifecycle hashes remain protocol identity. Risk-neutral option features
+are predictors only. The fitted return CDF remains a historical/physical
+forecast learned and assessed on realized outcomes.
+
+Add a compact, scale-stable surface block beside the unchanged 42-feature
+control: log ATM IV; log put-25 versus call-25 skew; log 25-delta curvature
+relative to ATM; `log1p` relative spread, contract count, open interest and quote
+depth; log put/call open-interest ratio; and explicit availability indicators
+for the 25-delta pair and put/call open interest. Inputs that must be positive
+for logarithms refuse nonpositive finite values; counts and spreads refuse
+negative values. Genuine absence remains NaN until the existing training-only
+median imputer. Chain volume and put/call volume are excluded because the pinned
+archive records no usable volume. Raw redundant mean IV and unstable raw ratios
+are not added. A config chooses either the original 42 columns or the declared
+surface-augmented list; there is no implicit feature discovery.
+
+### Proper left-tail training
+
+Extend `MixtureMLPCDF` generically with optional `left_cdf_weight`,
+`left_cdf_bounds`, and `left_cdf_points`. Defaults preserve the current negative
+log-likelihood objective and fitted behavior. A positive weight adds the mean
+squared CDF error on a fixed negative standardized-return grid to NLL. This is a
+bounded quadrature approximation to a left-tail CRPS/Brier integral and must be
+reported as such, not as exact infinite-tail CRPS. Both terms are proper scores;
+NLL retains whole-distribution pressure while the added term emphasizes the
+region relevant to downside strikes. The Torch Gaussian-mixture CDF is fully
+differentiable on the requested device. Bounds must be finite and strictly
+increasing, points at least two, weight finite/nonnegative, and no CPU fallback
+is permitted. Weight zero must follow the legacy code path exactly.
+
+### Calibration-only adaptive blend
+
+Add generic `AdaptiveEmpiricalMLPBlendCDF`. It fits the empirical and MLP
+endpoints on the same pooled, purged training rows, freezes them, then learns a
+row-specific blend weight only from the strictly purged preceding calibration
+year. The gate is
+`lower + (upper-lower) * sigmoid(intercept + standardized_gate_features @ beta)`.
+Its predeclared gate inputs are calendar DTE, reference scale, VIX, surface
+level/skew/curvature/liquidity features and index one-hot columns. Missing gate
+values use calibration-safe transforms derived from training only. Unseen,
+all-zero or multi-hot index identities refuse.
+
+The gate minimizes equal-condition-cell-weighted bounded CDF Brier/CRPS over a
+fixed `[-6, 6]` standardized-return grid with 241 points, plus declared L2 slope
+regularization. Condition cells are index by exact actual-days horizon. Actual
+DTE is supplied only as calibration-row weighting metadata and is explicitly
+excluded from the empirical condition, gate inputs and MLP inputs; index
+one-hots remain valid shared identities. The optimizer, bounds, tolerance and
+iteration ceiling are JSON parameters and part of protocol identity. Endpoint curves remain immutable. Extend `ConvexCurve`
+to accept either its backward-compatible scalar weight or validated row-wise
+weights; CDF, quantile, NPZ persistence and audit must reconstruct the latter
+exactly.
+
+An estimator that consumes calibration outcomes declares that capability.
+`ChronologicalCDFStudy` refuses `calibrate: true` for it, preventing a second
+calibration map from reusing the same outcomes. Perturbing validation/evaluation
+labels cannot change fitted gates; perturbing eligible calibration labels must.
+Pooled annual fit caching remains keyed by the complete specification and year,
+and sibling symbols reuse exactly the same fitted endpoints and gate.
+
+### Predeclared comparison and stopping rule
+
+Use one standardized JSON and the existing `python -m index_options.cdf_study`
+stage/partition interface. Controls are the horizon empirical CDF, the unchanged
+42-feature/NLL/fixed-25% incumbent, and pure pooled MLP. Thirteen candidates test
+each mechanism alone and combinations without outcome-driven search:
+
+- surface/NLL/fixed blends at 25% and 35%;
+- base/tail fixed-25% at weights 0.25 and 1.0;
+- surface/tail fixed-25% at weights 0.25 and 1.0;
+- base adaptive/NLL with a 35% upper bound;
+- surface adaptive/NLL with 35% and 50% upper bounds; and
+- surface adaptive/tail at weights 0.25 and 1.0 crossed with 35% and 50%
+  upper bounds.
+
+Candidates form six explicit mechanism groups—surface, base-tail,
+base-adaptive, surface-plus-tail, surface-plus-adaptive and all-three—with one
+development winner per group by equal-index/horizon-cell raw CRPS over
+2016–2018. This preserves isolated base-only contrasts as well as combinations.
+Ties use the existing deterministic ordering. Before any later-period scores
+are read, the six identities and variants are frozen externally with their
+selection hash. The already inspected 2019–2025 period compares those six
+finalists and three controls on paired identities; it is reused research
+history, not a fresh holdout. The incumbent is retained unless a finalist has
+strictly lower equal-cell CRPS and, for every index, its absolute deviation of
+the below-5% PIT rate from 5% is no worse than the incumbent within `1e-12`.
+No extra architecture, feature, loss, weight, cap or seed is added after results.
+
+Each partition has a hard 30-minute wall-clock and 6-GiB peak-memory target,
+uses at most two CPU threads, and runs at most two partitions concurrently. A
+single timed partition must first demonstrate margin. Any timeout, OOM, missing
+candidate, partial inventory or CUDA failure is reported and refuses completion;
+the search is never silently narrowed.
+
+### Contract and focused tests
+
+| Invariant / input family | Expected result | Forbidden effect / focused proof |
+|---|---|---|
+| entry-snapshot surface join and hashes | one causal surface row per forecast; pinned lifecycle/source identity | no future chain row, duplicate join, acquisition or unpinned artifact |
+| surface transforms, missingness, extremes | declared finite transforms; valid absence reaches train-only imputer | no volume feature, infinite log, median-derived availability or silent negative input |
+| original 42-feature config | byte-identical feature inventory and legacy estimator defaults | no implicit surface opt-in or result drift from default parameters |
+| tail weight zero | legacy fit/prediction path and deterministic digest unchanged | no extra numerical branch, seed or device drift |
+| positive tail score | Torch mixture CDF agrees with independent SciPy values; finite gradients | no detached loss, malformed grid, NaN scale or false exact-CRPS claim |
+| gate chronology | training fits endpoints; only preceding purged calibration fits gate | no development/evaluation label read or same-label recalibration |
+| gate identities and cell weights | exact one-hot route; equal declared cell contribution | no pooled-row dominance hidden as equal-cell training |
+| scalar/row-wise convex curves | bounds, CDF, quantile and NPZ audit reconstruct exactly | no scalar regression, row permutation or dropped gate state |
+| pooled cache/equivalence | one complete-spec fit per year and honest endpoint digest | no cache collision, sibling refit or seed-only equality claim |
+| JSON inventory/groups | exactly 13 candidates, six disjoint groups and three controls | no omitted/cross-group candidate, changed shared field or post-result HPO |
+| freeze/evaluation/guard | selection hash precedes later scores; exact paired identities | no fresh-holdout claim, guard bypass, unpaired row or partial report |
+| interruption/resources | completion-last plus config/panel/dependency/file hashes | no partial-as-complete, silent CPU fallback or budget overrun |
+
+### Authorized file manifest and exit
+
+After owner approval, edits are limited to the existing generic predictive-CDF
+pack and focused test, existing child adapter and focused test, one new JSON at
+`children/index_options/configs/run-predictive-cdf-option-surface.json`, existing
+package/child README and layout instructions, this ADR, one review-evidence file
+`docs/review-evidence/ADR-0192.md`, one standalone result memo at
+`children/index_options/docs/memos/2026-09-29-predictive-cdf-option-surface.md`,
+RE-ENTRY and the append-only action journal/generated README. Generated run
+artifacts remain ignored. No public production surface, execution authority or
+dependency changes are authorized.
+
+Exit requires focused RED/GREEN tests, affected purity/config checks, complete
+bounded development/evaluation artifacts, exact saved-curve evidence, explicit
+sample counts and training/calibration/evaluation boundaries, and two fresh
+independent final lenses with zero unresolved Critical/Major findings. The memo
+must recommend retain/replace based on the predeclared guard and state that the
+2019–2025 comparison is already inspected research evidence, not trading proof.

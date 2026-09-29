@@ -7,10 +7,106 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from index_options.cdf_study import CondorCDFDiagnostic
+from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel
 from index_options.distribution import condor_payoff
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
+
+
+def test_option_surface_features_are_scale_stable_and_preserve_missingness():
+    rows = pd.DataFrame({
+        'chain_atm_iv': [.2, .3], 'chain_put25_iv': [.3, np.nan],
+        'chain_call25_iv': [.15, .2], 'chain_rel_spread': [.01, np.nan],
+        'chain_put_call_oi': [2., np.nan], 'chain_contracts': [99., 0.],
+        'chain_open_interest': [999., np.nan], 'chain_quote_depth': [4., 0.],
+    })
+    out = ExactExpiryCDFPanel.add_surface_features(rows.copy())
+    assert out.chain_log_atm_iv.tolist() == pytest.approx(np.log([.2, .3]))
+    assert out.chain_log_skew25.iloc[0] == pytest.approx(np.log(.3)-np.log(.15))
+    assert out.chain_log_curvature25.iloc[0] == pytest.approx(
+        .5*(np.log(.3)+np.log(.15))-np.log(.2))
+    assert np.isnan(out.chain_log_skew25.iloc[1])
+    assert np.isnan(out.chain_log_curvature25.iloc[1])
+    np.testing.assert_array_equal(out.chain_has_25d_pair, [1, 0])
+    np.testing.assert_array_equal(out.chain_has_put_call_oi, [1, 0])
+    assert out.chain_log_rel_spread.iloc[0] == pytest.approx(np.log1p(.01))
+    assert np.isnan(out.chain_log_rel_spread.iloc[1])
+    assert out.chain_log_put_call_oi.iloc[0] == pytest.approx(np.log(2))
+    assert out.chain_log_contracts.iloc[0] == pytest.approx(np.log1p(99))
+    assert out.chain_log_contracts.iloc[1] == 0
+    assert np.isnan(out.chain_log_open_interest.iloc[1])
+
+
+@pytest.mark.parametrize('column,value', [
+    ('chain_atm_iv', 0), ('chain_put25_iv', -0.1), ('chain_call25_iv', 0),
+    ('chain_put_call_oi', 0), ('chain_rel_spread', -0.1),
+    ('chain_contracts', -1), ('chain_open_interest', -1), ('chain_quote_depth', -1),
+])
+def test_option_surface_features_refuse_invalid_finite_values(column, value):
+    row = pd.DataFrame({
+        'chain_atm_iv': [.2], 'chain_put25_iv': [.3], 'chain_call25_iv': [.15],
+        'chain_rel_spread': [.01], 'chain_put_call_oi': [2.],
+        'chain_contracts': [99.], 'chain_open_interest': [999.],
+        'chain_quote_depth': [4.],
+    })
+    row.loc[0, column] = value
+    with pytest.raises(ValueError, match=column):
+        ExactExpiryCDFPanel.add_surface_features(row)
+
+
+def test_predictive_cdf_option_surface_config_pins_full_factorial_contract():
+    root = Path(__file__).parents[1]/'configs'
+    config = json.loads((root/'run-predictive-cdf-option-surface.json').read_text())
+    prior = json.loads((root/'run-predictive-cdf-downside.json').read_text())
+    study, experiment = config['study'], config['experiment']
+    groups = experiment['candidate_groups']
+    assert config['data']['surface_features'] is True
+    assert study['features'][:42] == prior['study']['features']
+    assert study['features'][42:52] == [
+        'chain_log_atm_iv', 'chain_log_skew25', 'chain_log_curvature25',
+        'chain_log_rel_spread', 'chain_log_put_call_oi', 'chain_log_contracts',
+        'chain_log_open_interest', 'chain_log_quote_depth',
+        'chain_has_25d_pair', 'chain_has_put_call_oi']
+    assert study['features'][52] == 'actual_calendar_dte'
+    assert study['output'] == 'pipeline_runs/predictive_cdf_option_surface_20260929/base'
+    assert experiment['output'] == 'pipeline_runs/predictive_cdf_option_surface_20260929'
+    assert experiment['max_candidates'] == 13
+    assert groups == experiment['search_partitions']
+    assert {name: len(values) for name, values in groups.items()} == {
+        'surface': 2, 'tail': 2, 'adaptive': 1, 'surface_tail': 2,
+        'surface_adaptive': 2, 'combined': 4}
+    assert set().union(*map(set, groups.values())) == set(experiment['candidates'])
+    assert sum(map(len, groups.values())) == 13
+
+    base = list(range(42))
+    surface = list(range(52))
+    assert study['models']['pooled_normal_a']['params']['feature_indices'] == base
+    assert study['models']['incumbent_blend_025']['params']['mlp']['feature_indices'] == base
+    candidates = experiment['candidates']
+    assert all(spec['pooled'] is True and spec['calibrate'] is False
+               for spec in candidates.values())
+    assert [candidates[name]['params']['mlp_weight'] for name in groups['surface']] == [.25, .35]
+    assert all(candidates[name]['params']['mlp']['feature_indices'] == surface
+               for name in groups['surface'])
+    assert [candidates[name]['params']['mlp']['left_cdf_weight']
+            for name in groups['tail']+groups['surface_tail']] == [.25, 1., .25, 1.]
+    assert [candidates[name]['params']['upper_weight']
+            for name in groups['adaptive']+groups['surface_adaptive']] == [.35, .35, .5]
+    assert [candidates[name]['params']['upper_weight']
+            for name in groups['combined']] == [.35, .5, .35, .5]
+    assert all(candidates[name]['params']['grid_bounds'] == [-6, 6]
+               and candidates[name]['params']['grid_points'] == 241
+               for name in groups['adaptive']+groups['surface_adaptive']+groups['combined'])
+    assert all(candidates[name]['class'].endswith(':AdaptiveEmpiricalMLPBlendCDF')
+               for name in groups['adaptive']+groups['surface_adaptive']+groups['combined'])
+    assert all(candidates[name]['params']['cell_indices'] == [52, 39, 40, 41]
+               and 52 not in candidates[name]['params']['gate_indices']
+               and 52 not in candidates[name]['params']['mlp']['feature_indices']
+               for name in groups['adaptive']+groups['surface_adaptive']+groups['combined'])
+    assert experiment['development_years'] == [2016, 2017, 2018]
+    assert experiment['label_cutoff'] == '2019-01-01'
+    CDFHyperparameterStudy(config)
 
 
 def test_predictive_cdf_downside_config_pins_bounded_grouped_inventory():

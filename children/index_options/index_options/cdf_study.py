@@ -36,6 +36,56 @@ class ExactExpiryCDFPanel:
     def __init__(self, config):
         self.config = config
 
+    @staticmethod
+    def add_surface_features(frame):
+        """Add declared option-surface transforms without filling absent quotes.
+
+        Risk-neutral surface values are causal entry-snapshot predictors only;
+        they are not interpreted as physical return probabilities.
+        """
+        import numpy as np
+
+        required = {
+            "chain_atm_iv", "chain_put25_iv", "chain_call25_iv",
+            "chain_rel_spread", "chain_put_call_oi", "chain_contracts",
+            "chain_open_interest", "chain_quote_depth",
+        }
+        missing = required-set(frame)
+        if missing:
+            raise ValueError(f"missing option-surface columns: {sorted(missing)}")
+        positive = ("chain_atm_iv", "chain_put25_iv", "chain_call25_iv",
+                    "chain_put_call_oi")
+        nonnegative = ("chain_rel_spread", "chain_contracts",
+                       "chain_open_interest", "chain_quote_depth")
+        for name in positive:
+            values = frame[name]
+            invalid = values.notna() & ((values <= 0) | ~np.isfinite(values))
+            if invalid.any():
+                raise ValueError(f"{name} must be positive or missing")
+        for name in nonnegative:
+            values = frame[name]
+            invalid = values.notna() & ((values < 0) | ~np.isfinite(values))
+            if invalid.any():
+                raise ValueError(f"{name} must be nonnegative or missing")
+
+        pair = frame.chain_put25_iv.notna() & frame.chain_call25_iv.notna()
+        put_call = frame.chain_put_call_oi.notna()
+        frame["chain_log_atm_iv"] = np.log(frame.chain_atm_iv)
+        frame["chain_log_skew25"] = np.where(
+            pair, np.log(frame.chain_put25_iv)-np.log(frame.chain_call25_iv), np.nan)
+        frame["chain_log_curvature25"] = np.where(
+            pair & frame.chain_atm_iv.notna(),
+            .5*(np.log(frame.chain_put25_iv)+np.log(frame.chain_call25_iv))
+            - np.log(frame.chain_atm_iv), np.nan)
+        frame["chain_log_rel_spread"] = np.log1p(frame.chain_rel_spread)
+        frame["chain_log_put_call_oi"] = np.log(frame.chain_put_call_oi)
+        frame["chain_log_contracts"] = np.log1p(frame.chain_contracts)
+        frame["chain_log_open_interest"] = np.log1p(frame.chain_open_interest)
+        frame["chain_log_quote_depth"] = np.log1p(frame.chain_quote_depth)
+        frame["chain_has_25d_pair"] = pair.astype(int)
+        frame["chain_has_put_call_oi"] = put_call.astype(int)
+        return frame
+
     def read(self):
         """Construct raw-price terminal log returns and backward-only inputs.
 
@@ -59,6 +109,8 @@ class ExactExpiryCDFPanel:
         lifecycle = pd.read_parquet(c["lifecycle"])
         keys = ["symbol", "quote_date", "expiry"]
         meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
+        if c.get("surface_features", False):
+            meta = self.add_surface_features(meta)
         calendar = xc.get_calendar("XNYS", start="1998-01-01", end="2026-12-31")
         sessions = calendar.sessions.tz_localize(None)
         # Fixed planned convention: regular holidays, never future ad-hoc closures.

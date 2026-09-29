@@ -17,7 +17,8 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve", "CDFEs
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
            "QuantileCDF", "MixtureMLPCDF", "StudentMixtureCurve",
            "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
-           "EmpiricalMLPBlendCDF", "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
+           "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF",
+           "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
 
 
 def _validate_temporal_frame(frame, date_field, end_field):
@@ -334,8 +335,9 @@ class ConvexCurve(_Curve):
     ----------
     left, right : curve
         Component distributions with the same forecast-row count.
-    weight : float
-        Right-component weight in the closed interval zero to one.
+    weight : float or array-like
+        Right-component weight in the closed interval zero to one, either
+        shared by all rows or one value per forecast row.
 
     Examples
     --------
@@ -346,14 +348,26 @@ class ConvexCurve(_Curve):
     """
 
     def __init__(self, left, right, weight):
-        import math
-        if (isinstance(weight, bool) or not isinstance(left, _Curve)
-                or not isinstance(right, _Curve) or not math.isfinite(weight)
-                or not 0 <= weight <= 1):
+        import numpy as np
+        if not isinstance(left, _Curve) or not isinstance(right, _Curve):
             raise ValueError("invalid convex curve or weight")
         if left.cdf([0]).shape[0] != right.cdf([0]).shape[0]:
             raise ValueError("convex components must have matching rows")
-        self.left, self.right, self.weight = left, right, float(weight)
+        rows = left.cdf([0]).shape[0]
+        if isinstance(weight, (bool, np.bool_)):
+            raise ValueError("invalid convex curve weight")
+        raw = np.asarray(weight)
+        if raw.dtype.kind not in "fiu" or raw.ndim > 2:
+            raise ValueError("invalid convex curve weight")
+        if raw.ndim == 0:
+            value = float(raw)
+        elif raw.shape in ((rows,), (rows, 1)):
+            value = np.asarray(raw, dtype=float).reshape(rows, 1)
+        else:
+            raise ValueError("invalid convex curve row weight shape")
+        if not np.isfinite(value).all() or np.any(np.asarray(value) < 0) or np.any(np.asarray(value) > 1):
+            raise ValueError("invalid convex curve weight")
+        self.left, self.right, self.weight = left, right, value
 
     @staticmethod
     def _prefixed(prefix, values):
@@ -374,9 +388,9 @@ class ConvexCurve(_Curve):
         p = np.atleast_1d(probabilities).astype(float)
         if not np.isfinite(p).all() or (p <= 0).any() or (p >= 1).any():
             raise ValueError("quantile probabilities must be strictly inside (0,1)")
-        if self.weight == 0:
+        if isinstance(self.weight, float) and self.weight == 0:
             return self.left.quantile(p)
-        if self.weight == 1:
+        if isinstance(self.weight, float) and self.weight == 1:
             return self.right.quantile(p)
         rows = self.cdf([0]).shape[0]
         p = np.broadcast_to(p, (rows, p.shape[-1]))
@@ -844,7 +858,8 @@ class MixtureMLPCDF(CDFEstimator):
     def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
                  seeds=(11, 29), device="cuda", learning_rate=.001,
                  weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
-                 head_features=None, deterministic=False):
+                 head_features=None, deterministic=False, left_cdf_weight=0.,
+                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
@@ -858,12 +873,28 @@ class MixtureMLPCDF(CDFEstimator):
         if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
                 or any(type(v) is not int or v < 0 for v in head_features)):
             raise ValueError("invalid head feature positions")
+        if (isinstance(left_cdf_weight, bool) or not math.isfinite(left_cdf_weight)
+                or left_cdf_weight < 0 or not isinstance(left_cdf_bounds, (list, tuple))
+                or len(left_cdf_bounds) != 2
+                or any(isinstance(v, bool) or not math.isfinite(v) for v in left_cdf_bounds)
+                or left_cdf_bounds[0] >= left_cdf_bounds[1] or left_cdf_bounds[1] > 0
+                or type(left_cdf_points) is not int or left_cdf_points < 2):
+            raise ValueError("invalid left CDF training parameters")
+        if (feature_indices is not None and
+                (not isinstance(feature_indices, (list, tuple)) or not feature_indices
+                 or any(type(v) is not int or v < 0 for v in feature_indices)
+                 or len(set(feature_indices)) != len(feature_indices))):
+            raise ValueError("invalid feature indices")
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
         self.activation, self.dropout = activation, dropout
         self.head_features = tuple(head_features or ())
         self.deterministic = deterministic
+        self.left_cdf_weight = float(left_cdf_weight)
+        self.left_cdf_bounds = tuple(float(v) for v in left_cdf_bounds)
+        self.left_cdf_points = left_cdf_points
+        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
 
     def _deterministic_context(self):
         from contextlib import contextmanager
@@ -908,6 +939,14 @@ class MixtureMLPCDF(CDFEstimator):
         self._validate_x(x)
         return np.asarray(x)[:, self.head_features].argmax(1) if self.head_features else np.zeros(len(x), dtype=int)
 
+    def _features(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or (self.feature_indices is not None
+                            and max(self.feature_indices) >= x.shape[1]):
+            raise ValueError("feature indices outside input")
+        return x if self.feature_indices is None else x[:, self.feature_indices]
+
     def _build_module(self, features):
         import torch
         activation = {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
@@ -928,6 +967,17 @@ class MixtureMLPCDF(CDFEstimator):
     def _logp(self, y, mu, sigma):
         import math
         return -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
+
+    def _left_cdf_score(self, y, logw, mu, sigma):
+        """Finite-grid CDF Brier score for a standardized left-tail interval."""
+        import math
+        import torch
+        grid = torch.linspace(*self.left_cdf_bounds, self.left_cdf_points,
+                              dtype=mu.dtype, device=mu.device)
+        z = (grid[None, None, :] - mu[:, :, None]) / (sigma[:, :, None] * math.sqrt(2.))
+        cdf = (logw.exp()[:, :, None] * (.5 * (1. + torch.erf(z)))).sum(1)
+        observed = (y <= grid[None, :]).to(cdf.dtype)
+        return (cdf - observed).square().mean()
 
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
@@ -960,16 +1010,18 @@ class MixtureMLPCDF(CDFEstimator):
         from sklearn.preprocessing import StandardScaler
 
         self._validate_x(cal_x)
+        self._features(cal_x)
         heads = self._heads(x)
+        features = self._features(x)
         self.seen_heads = set(heads)
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
-        self.scaler = StandardScaler().fit(x)
-        xx = torch.tensor(self.scaler.transform(x), dtype=torch.float32, device=self.device)
+        self.scaler = StandardScaler().fit(features)
+        xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
         yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
         self.models, self.losses = [], []
         for seed in self.seeds:
             torch.manual_seed(seed)
-            model = self._build_module(x.shape[1])
+            model = self._build_module(features.shape[1])
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
@@ -981,6 +1033,9 @@ class MixtureMLPCDF(CDFEstimator):
                     logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
                     logp = self._logp(yy[ix], mu, sigma)
                     loss = -torch.logsumexp(logw+logp, dim=1).mean()
+                    if self.left_cdf_weight:
+                        loss = loss + self.left_cdf_weight * self._left_cdf_score(
+                            yy[ix], logw, mu, sigma)
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite mixture likelihood")
                     optimizer.zero_grad()
@@ -1006,6 +1061,12 @@ class MixtureMLPCDF(CDFEstimator):
                     "activation": self.activation, "dropout": self.dropout,
                     "head_features": self.head_features,
                     "deterministic": self.deterministic}
+        if self.feature_indices is not None:
+            settings["feature_indices"] = self.feature_indices
+        if self.left_cdf_weight:
+            settings.update(left_cdf_weight=self.left_cdf_weight,
+                            left_cdf_bounds=self.left_cdf_bounds,
+                            left_cdf_points=self.left_cdf_points)
         digest.update(json.dumps(settings, sort_keys=True).encode())
         for name in ("mean_", "scale_", "var_"):
             value = np.asarray(getattr(self.scaler, name), dtype="<f8")
@@ -1036,7 +1097,7 @@ class MixtureMLPCDF(CDFEstimator):
         if not set(heads).issubset(self.seen_heads):
             raise ValueError("unseen head requested")
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
-        xx = torch.tensor(self.scaler.transform(x), dtype=torch.float32, device=self.device)
+        xx = torch.tensor(self.scaler.transform(self._features(x)), dtype=torch.float32, device=self.device)
         weights, means, scales = [], [], []
         with torch.no_grad():
             for model in self.models:
@@ -1135,6 +1196,139 @@ class EmpiricalMLPBlendCDF(CDFEstimator):
         return self.mlp._equivalence_state()
 
 
+class AdaptiveEmpiricalMLPBlendCDF(EmpiricalMLPBlendCDF):
+    """Calibration-only logistic gate between frozen empirical and MLP CDFs.
+
+    The bounded-grid objective gives each declared reporting cell equal weight.
+    Gate imputation and scaling are learned from training features only.
+    """
+
+    consumes_calibration_labels = True
+
+    def __init__(self, lower_weight, upper_weight, condition_indices, cell_indices,
+                 reference_index, knots, gate_indices, grid_bounds, grid_points,
+                 l2, max_iter, tolerance, mlp):
+        import math
+        if (isinstance(lower_weight, bool) or isinstance(upper_weight, bool)
+                or not math.isfinite(lower_weight) or not math.isfinite(upper_weight)
+                or not 0 <= lower_weight < upper_weight <= 1
+                or not isinstance(cell_indices, (list, tuple)) or not cell_indices
+                or any(type(v) is not int or v < 0 for v in cell_indices)
+                or len(set(cell_indices)) != len(cell_indices)
+                or not isinstance(gate_indices, (list, tuple)) or not gate_indices
+                or any(type(v) is not int or v < 0 for v in gate_indices)
+                or len(set(gate_indices)) != len(gate_indices)
+                or not isinstance(grid_bounds, (list, tuple)) or len(grid_bounds) != 2
+                or any(isinstance(v, bool) or not math.isfinite(v) for v in grid_bounds)
+                or grid_bounds[0] >= grid_bounds[1]
+                or type(grid_points) is not int or grid_points < 2
+                or isinstance(l2, bool) or not math.isfinite(l2) or l2 < 0
+                or type(max_iter) is not int or max_iter <= 0
+                or isinstance(tolerance, bool) or not math.isfinite(tolerance)
+                or tolerance <= 0):
+            raise ValueError("invalid adaptive blend gate parameters")
+        super().__init__(lower_weight, condition_indices, reference_index, knots, mlp)
+        self.cell_indices = tuple(cell_indices)
+        self.lower_weight, self.upper_weight = float(lower_weight), float(upper_weight)
+        self.gate_indices = tuple(gate_indices)
+        self.grid_bounds = tuple(float(v) for v in grid_bounds)
+        self.grid_points = grid_points
+        self.l2, self.max_iter, self.tolerance = float(l2), max_iter, float(tolerance)
+        metadata = set(self.cell_indices) - set(self.condition_indices[1:])
+        if (not metadata or metadata & (set(self.condition_indices) | {self.reference_index}
+                                      | set(self.gate_indices))
+                or self.mlp.feature_indices is None
+                or metadata & set(self.mlp.feature_indices)):
+            raise ValueError("cell metadata must be excluded from model and gate inputs")
+
+    def _validate_x(self, x):
+        import numpy as np
+        super()._validate_x(x)
+        x = np.asarray(x)
+        if max((*self.gate_indices, *self.cell_indices)) >= x.shape[1]:
+            raise ValueError("gate or cell indices outside input")
+        if not np.isfinite(x[:, self.cell_indices]).all():
+            raise ValueError("reporting cell metadata must be finite")
+        if len(self.condition_indices) > 1:
+            ids = x[:, self.condition_indices[1:]]
+            if (not np.isfinite(ids).all() or not np.isin(ids, [0, 1]).all()
+                    or not (ids.sum(1) == 1).all()):
+                raise ValueError("index identities must be finite one-hot")
+
+    def _gate_features(self, x):
+        import numpy as np
+        x = np.asarray(x, dtype=float)[:, self.gate_indices]
+        if np.isinf(x).any():
+            raise ValueError("infinite gate feature")
+        filled = np.where(np.isnan(x), self.gate_fill, x)
+        return (filled - self.gate_mean) / self.gate_scale
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit frozen endpoints on training and the logistic gate on calibration."""
+        import numpy as np
+        from scipy.optimize import minimize
+        from scipy.special import expit
+
+        self._validate_x(x)
+        self._validate_x(cal_x)
+        cal_y = np.asarray(cal_y, dtype=float)
+        if cal_y.shape != (len(cal_x),) or not np.isfinite(cal_y).all() or not len(cal_y):
+            raise ValueError("invalid calibration labels")
+        super().fit(x, y, cal_x, cal_y)
+        raw = np.asarray(x, dtype=float)[:, self.gate_indices]
+        if np.isinf(raw).any():
+            raise ValueError("infinite gate feature")
+        self.gate_fill = np.array([np.median(v[np.isfinite(v)]) if np.isfinite(v).any()
+                                   else 0. for v in raw.T])
+        training = np.where(np.isnan(raw), self.gate_fill, raw)
+        self.gate_mean = training.mean(0)
+        self.gate_scale = training.std(0)
+        self.gate_scale[self.gate_scale == 0] = 1.
+        features = self._gate_features(cal_x)
+        nodes = np.linspace(*self.grid_bounds, self.grid_points)
+        empirical = self.empirical.curve(cal_x).cdf(nodes)
+        difference = self.mlp.curve(cal_x).cdf(nodes) - empirical
+        target = (cal_y[:, None] <= nodes[None, :]).astype(float)
+        _, cell = np.unique(np.asarray(cal_x)[:, self.cell_indices],
+                            axis=0, return_inverse=True)
+        counts = np.bincount(cell)
+        row_weight = 1. / (len(counts) * counts[cell])
+        self.calibration_row_weights = row_weight.copy()
+        span = self.upper_weight - self.lower_weight
+
+        def objective(parameters):
+            sigmoid = expit(parameters[0] + features @ parameters[1:])
+            weight = self.lower_weight + span * sigmoid
+            residual = empirical + weight[:, None] * difference - target
+            loss = np.dot(row_weight, np.mean(residual**2, axis=1))
+            loss += self.l2 * np.dot(parameters[1:], parameters[1:])
+            row_gradient = (2 * row_weight * np.mean(residual * difference, axis=1)
+                            * span * sigmoid * (1 - sigmoid))
+            gradient = np.r_[row_gradient.sum(), features.T @ row_gradient
+                             + 2 * self.l2 * parameters[1:]]
+            return loss, gradient
+
+        result = minimize(objective, np.zeros(features.shape[1] + 1), jac=True,
+                          method="L-BFGS-B", options={"maxiter": self.max_iter,
+                                                        "ftol": self.tolerance})
+        if (not result.success or not np.isfinite(result.x).all()
+                or not np.isfinite(result.fun)):
+            raise ValueError(f"adaptive blend gate failed: {result.message}")
+        self.gate_parameters = result.x
+        self.gate_result = {"success": bool(result.success), "iterations": int(result.nit),
+                            "objective": float(result.fun)}
+        return self
+
+    def curve(self, x):
+        """Return row-wise bounded convex forecasts from the fitted gate."""
+        from scipy.special import expit
+        self._validate_x(x)
+        features = self._gate_features(x)
+        weight = self.lower_weight + (self.upper_weight - self.lower_weight) * expit(
+            self.gate_parameters[0] + features @ self.gate_parameters[1:])
+        return ConvexCurve(self.empirical.curve(x), self.mlp.curve(x), weight)
+
+
 class ChronologicalCDFStudy:
     """JSON-driven paired research, with purged training/calibration/year splits.
 
@@ -1169,6 +1363,11 @@ class ChronologicalCDFStudy:
                     or ("equivalence" in spec and (not isinstance(spec["equivalence"], str)
                                                    or not spec["equivalence"]))):
                 raise ValueError("invalid model specification keys or pooled flag")
+            if spec["calibrate"]:
+                module, cls = spec["class"].split(":")
+                estimator = getattr(importlib.import_module(module), cls)
+                if getattr(estimator, "consumes_calibration_labels", False):
+                    raise ValueError("estimator consumes calibration labels; second map refused")
         self.config = config
 
     def to_obj(self):
@@ -1757,9 +1956,11 @@ class CDFHyperparameterStudy:
         def restore(a, ix, prefix=""):
             kind = str(a[prefix+"kind"])
             if kind == "convex":
+                weight = a[prefix+"weight"]
+                weight = float(weight) if weight.ndim == 0 else weight[ix]
                 return ConvexCurve(restore(a, ix, prefix+"left_"),
                                    restore(a, ix, prefix+"right_"),
-                                   float(a[prefix+"weight"]))
+                                   weight)
             if kind == "grid":
                 return GridCurve(a[prefix+"values"][ix], a[prefix+"probabilities"][ix])
             args = [a[prefix+k][ix] for k in ("weights", "means", "scales")]
