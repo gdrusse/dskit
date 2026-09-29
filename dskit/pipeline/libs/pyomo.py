@@ -58,6 +58,17 @@ row per constraint component. It is read AFTER the solve, off the model
 and the results, so no subclass writes a line for it; ``None`` means
 this instance has not solved (or took a no-solve short circuit).
 
+Row slacks are the one expensive part: walking every constraint body
+through pyomo's evaluator costs ~25 us a row, about a fifth of a
+joint-MIO decision. Under the ``appsi_highs`` interface HiGHS already
+holds each row's activity and bounds (appsi moves a body's constant into
+the bounds), so :meth:`PyomoSolve._highs_row_slacks` reads the slack
+straight off those arrays and hands it to ``SolveRecord.from_solve`` as
+``row_slacks``. It is an optimization only: it answers ``None`` for any
+other solver, interface version or solve state, and a row it did not
+answer is evaluated by pyomo exactly as before, so the record is the same
+either way (pinned in ``TestSolveRecordRowSlacks``).
+
 Import cost: stdlib + toolkit only. pyomo is imported strictly inside
 run-path methods — this module must import (and its documents must
 plan) on a machine with no pyomo installed.
@@ -277,7 +288,8 @@ class SolveRecord:
         return tuple(f.name for f in fields(cls))
 
     @classmethod
-    def from_solve(cls, model, results, solver, seconds, tolerance=BINDING_TOLERANCE):
+    def from_solve(cls, model, results, solver, seconds, tolerance=BINDING_TOLERANCE,
+                   row_slacks=None):
         """Read a finished solve off its model and results.
 
         Parameters
@@ -292,6 +304,12 @@ class SolveRecord:
             Wall time of the solve.
         tolerance : float
             The binding tolerance on a row's slack.
+        row_slacks : mapping or None
+            Optional ``{constraint row: slack}`` the caller already read
+            (``PyomoSolve._highs_row_slacks``). A row in it is taken as
+            given, ``None`` meaning "no finite slack"; a row absent from it
+            is evaluated through pyomo. ``None`` (the default) evaluates
+            every row through pyomo, byte for byte as before.
 
         Returns
         -------
@@ -305,7 +323,7 @@ class SolveRecord:
                else abs(objective - bound) / max(abs(objective), _GAP_FLOOR))
         duals = cls._duals(model)
         binding = tuple(
-            cls._component_row(component, duals, tolerance)
+            cls._component_row(component, duals, tolerance, row_slacks)
             for component in model.component_objects(Constraint, active=True,
                                                      descend_into=True)
         )
@@ -356,14 +374,17 @@ class SolveRecord:
         return dict(suffix.items())
 
     @classmethod
-    def _component_row(cls, component, duals, tolerance):
-        """One constraint component's binding row."""
+    def _component_row(cls, component, duals, tolerance, row_slacks=None):
+        """One constraint component's binding row; a row in ``row_slacks`` is not re-evaluated."""
         slacks, row_duals, rows = [], [], 0
         for data in component.values():
             if not data.active:
                 continue
             rows += 1
-            slack = cls._row_slack(data)
+            if row_slacks is not None and data in row_slacks:
+                slack = row_slacks[data]
+            else:
+                slack = cls._row_slack(data)
             if slack is not None:
                 slacks.append(slack)
             if duals is not None and _finite(duals.get(data)) is not None:
@@ -521,7 +542,7 @@ class PyomoSolve(Node):
         started = time.perf_counter()
         results = self._solve(solver, model)
         seconds = time.perf_counter() - started
-        self.solve_record = SolveRecord.from_solve(model, results, name, seconds)
+        self.solve_record = self._build_solve_record(solver, model, results, name, seconds)
         extracted = self.extract(model, results)
         if not isinstance(extracted, dict):
             raise TypeError(
@@ -529,6 +550,60 @@ class PyomoSolve(Node):
                 f"outputs as a dict, got {type(extracted).__name__}"
             )
         return extracted
+
+    @staticmethod
+    def _build_solve_record(solver, model, results, name, seconds):
+        """The SolveRecord of a finished solve, its row slacks read off HiGHS when it can answer."""
+        return SolveRecord.from_solve(
+            model, results, name, seconds,
+            row_slacks=PyomoSolve._highs_row_slacks(solver, model),
+        )
+
+    @staticmethod
+    def _highs_row_arrays(solver, model):
+        """Return ``(activity, lower, upper, rows)`` off an appsi HiGHS solve of ``model``, or None."""
+        try:
+            from pyomo.contrib.appsi.solvers.highs import Highs
+        except ImportError:
+            return None
+        # `_model` guards against a solver that last solved some OTHER model.
+        if not isinstance(solver, Highs) or getattr(solver, "_model", None) is not model:
+            return None
+        try:
+            import numpy as np
+
+            highs, rows = solver._solver_model, solver._pyomo_con_to_solver_con_map
+            solution = highs.getSolution()
+            if not solution.value_valid:
+                return None
+            lp = highs.getLp()
+            activity, lower, upper = (
+                np.asarray(a, dtype=float)
+                for a in (solution.row_value, lp.row_lower_, lp.row_upper_)
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None  # another pyomo/highspy layout: keep the exact pyomo evaluation
+        if not (activity.ndim == 1 and activity.shape == lower.shape == upper.shape
+                and activity.shape[0] == len(rows)):
+            return None  # the arrays and appsi's row map disagree: trust neither
+        return activity, lower, upper, rows
+
+    @staticmethod
+    def _highs_row_slacks(solver, model):
+        """Return ``{constraint row: slack}`` read off an appsi HiGHS solve, or None to use pyomo."""
+        arrays = PyomoSolve._highs_row_arrays(solver, model)
+        if arrays is None:
+            return None
+        import numpy as np
+
+        activity, lower, upper, rows = arrays
+        # A side with no finite bound gives +inf, like pyomo's has_lb()/has_ub() == False.
+        with np.errstate(invalid="ignore"):
+            slack = np.minimum(
+                np.where(np.isfinite(lower), activity - lower, np.inf),
+                np.where(np.isfinite(upper), upper - activity, np.inf),
+            ).tolist()
+        return {row: (slack[i] if math.isfinite(slack[i]) else None) for row, i in rows.items()}
 
     def _solve(self, solver, model):
         """Run ``solver`` on ``model`` and return its results.
@@ -1179,7 +1254,7 @@ class ScenarioUtilitySolve(PyomoSolve):
         started = time.perf_counter()
         results = self._solve(solver, model, warmstart=warmstart)
         seconds = time.perf_counter() - started
-        self.solve_record = SolveRecord.from_solve(model, results, name, seconds)
+        self.solve_record = self._build_solve_record(solver, model, results, name, seconds)
         extracted = self.extract(model, results)
         if not isinstance(extracted, dict):
             raise TypeError(

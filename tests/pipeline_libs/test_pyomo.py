@@ -1801,3 +1801,304 @@ class TestScenarioUtilityTimeLimit:
         results = SimpleNamespace(solver=SimpleNamespace(termination_condition="maxTimeLimit"))
         with pytest.raises(RuntimeError, match=r"^size: .*'maxTimeLimit', not 'optimal'"):
             _su_node().extract(None, results)
+
+
+# ---------------------------------------------------------------------------
+# SolveRecord row slacks read off HiGHS's own arrays — the SAME record, faster
+# ---------------------------------------------------------------------------
+
+
+class SlackToyLP(PyomoSolve):
+    """An LP with one component per bound shape and an imported ``dual`` Suffix.
+
+    Lower-only, upper-only, equality and ranged rows, a literal constant in
+    a body, and a MUTABLE-Param constant in a body on each side — the
+    shapes appsi moves into row bounds — so the HiGHS-array slack is held to
+    the Pyomo evaluation on every one. Optimum: x1 = 2.5, x2 = 1.5.
+    """
+
+    role = "transform"
+    outputs = ("x",)
+
+    def build_model(self, inputs, params):
+        from pyomo.environ import (
+            ConcreteModel,
+            Constraint,
+            NonNegativeReals,
+            Objective,
+            Param,
+            Suffix,
+            Var,
+            maximize,
+        )
+
+        model = ConcreteModel()
+        model.x = Var([1, 2], domain=NonNegativeReals)
+        model.p = Param(initialize=2.0, mutable=True)
+        model.value = Objective(expr=3 * model.x[1] + 2 * model.x[2], sense=maximize)
+        model.lower_only = Constraint(expr=model.x[1] >= 0.5)
+        model.upper_only = Constraint(expr=model.x[1] + model.x[2] <= 4)
+        model.equality = Constraint(expr=model.x[1] - model.x[2] == 1)
+        model.ranged = Constraint(expr=(0.0, model.x[2], 10.0))
+        model.literal_constant = Constraint(expr=2 * model.x[1] + model.x[2] + 5 <= 20)
+        model.mutable_lower = Constraint(expr=model.x[2] + model.p >= 0.25)
+        model.mutable_upper = Constraint(expr=model.x[2] + model.p <= 9)
+        model.per_index = Constraint([1, 2], rule=lambda m, i: m.x[i] <= 3 + m.p)
+        model.dual = Suffix(direction=Suffix.IMPORT)
+        return model
+
+    def _solver_options(self):
+        # HiGHS sizes a PROCESS-GLOBAL thread scheduler at the first solve that
+        # uses one and refuses a later solve pinning another count (the
+        # determinism pins say threads=1), so every solve in this suite pins 1.
+        return {"threads": 1, **super()._solver_options()}
+
+    def extract(self, model, results):
+        return {"x": {i: float(model.x[i].value) for i in (1, 2)}}
+
+
+class _Capture:
+    """Mixin: keep the ``(solver, model, results)`` of the last solve, so one
+    finished solve can be recorded BOTH ways."""
+
+    captured = None
+
+    def _solve(self, solver, model, **kwargs):
+        results = super()._solve(solver, model, **kwargs)
+        self.captured = (solver, model, results)
+        return results
+
+
+class CapturedToy(_Capture, SlackToyLP):
+    pass
+
+
+class CapturedSelect(_Capture, BudgetedSelect):
+    pass
+
+
+class CapturedTwoName(_Capture, TwoNameSolve):
+    pass
+
+
+class CapturedReusable(_Capture, ReusableRobustTwoNameSolve):
+    pass
+
+
+def _toy_run(tmp_path):
+    node = CapturedToy("lp", {})
+    node.run(_ctx(tmp_path), {})
+    return node
+
+
+def _select_run(tmp_path):
+    node = CapturedSelect("select", PARAMS)
+    node.run(_ctx(tmp_path), _inputs())
+    return node
+
+
+def _two_name_run(tmp_path):
+    node = CapturedTwoName("size", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+    node.run(_ctx(tmp_path), _su_fixture(names=["AAA", "BBB"]))
+    return node
+
+
+def _persistent_runs(tmp_path):
+    """Yield the node after its cold solve and again after its warm re-solve."""
+    node = CapturedReusable("reuse", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+    node.run(_ctx(tmp_path), TestScenarioUtilityPersistentReuse._first())
+    yield node
+    node.run(_ctx(tmp_path), TestScenarioUtilityPersistentReuse._second())
+    yield node
+
+
+def _every_solved_node(tmp_path):
+    yield _toy_run(tmp_path)
+    yield _select_run(tmp_path)
+    yield _two_name_run(tmp_path)
+    yield from _persistent_runs(tmp_path)
+
+
+def _active_rows(model):
+    from pyomo.environ import Constraint
+
+    return list(model.component_data_objects(Constraint, active=True, descend_into=True))
+
+
+def _assert_same_record(fast, slow):
+    """Every field equal; every component row equal, ``min_slack`` within 1e-9."""
+    assert fast.to_obj().keys() == slow.to_obj().keys() == set(SolveRecord.field_names())
+    for name in SolveRecord.field_names():
+        if name != "binding":
+            assert getattr(fast, name) == getattr(slow, name), name
+    assert len(fast.binding) == len(slow.binding) > 0
+    for a, b in zip(fast.binding, slow.binding):
+        assert a.keys() == b.keys(), a["name"]
+        for key in a:
+            if key == "min_slack" and a[key] is not None and b[key] is not None:
+                assert a[key] == pytest.approx(b[key], abs=1e-9), a["name"]
+            else:
+                assert a[key] == b[key], (a["name"], key)
+
+
+def _both_records(node):
+    """The record from the HiGHS arrays and the record from Pyomo, one solve."""
+    solver, model, results = node.captured
+    slacks = PyomoSolve._highs_row_slacks(solver, model)
+    assert slacks is not None
+    name = node.params.get("solver", DEFAULT_SOLVER)
+    slow = SolveRecord.from_solve(model, results, name, 0.25)
+    fast = SolveRecord.from_solve(model, results, name, 0.25, row_slacks=slacks)
+    return model, slacks, fast, slow
+
+
+class TestSolveRecordRowSlacks:
+    """Row slacks read off the appsi HiGHS arrays (activity and row bounds)
+    instead of walking every constraint body through Pyomo's evaluator.
+
+    The fast path is an OPTIMIZATION: the record it builds must equal the
+    Pyomo record on every real solve; every other solver, and every row the
+    arrays did not answer, keeps the exact Pyomo evaluation.
+    """
+
+    def test_the_highs_array_record_equals_the_pyomo_record(self, tmp_path):
+        seen = 0
+        for node in _every_solved_node(tmp_path):
+            model, slacks, fast, slow = _both_records(node)
+            _assert_same_record(fast, slow)
+            active = _active_rows(model)
+            assert len(active) == slow.constraints and set(active) <= set(slacks)
+            seen += 1
+        assert seen == 5
+
+    def test_every_bound_shape_and_the_duals_are_covered(self, tmp_path):
+        model, slacks, fast, slow = _both_records(_toy_run(tmp_path))
+        rows = _binding(fast)
+        assert set(rows) == {
+            "lower_only", "upper_only", "equality", "ranged", "literal_constant",
+            "mutable_lower", "mutable_upper", "per_index",
+        }
+        # x = (2.5, 1.5): the sum row and the equality bind; a lower-only row
+        # (2.5 - 0.5), a ranged row (1.5 to its lower bound) and a row with a
+        # constant in its body (20 - 11.5) keep their own slack.
+        assert rows["upper_only"]["binding"] == 1 and rows["equality"]["binding"] == 1
+        assert rows["lower_only"]["min_slack"] == pytest.approx(2.0)
+        assert rows["ranged"]["min_slack"] == pytest.approx(1.5)
+        assert rows["literal_constant"]["min_slack"] == pytest.approx(8.5)
+        assert rows["mutable_lower"]["min_slack"] == pytest.approx(3.25)
+        assert rows["mutable_upper"]["min_slack"] == pytest.approx(5.5)
+        assert rows["per_index"]["rows"] == 2 and rows["per_index"]["min_slack"] == pytest.approx(2.5)
+        # The dual path is untouched: present, and equal row for row (_assert_same_record).
+        assert any("dual" in row for row in fast.binding)
+        _assert_same_record(fast, slow)
+
+    def test_the_run_never_evaluates_a_row_through_pyomo_under_appsi_highs(
+        self, tmp_path, monkeypatch
+    ):
+        def refuse(data):
+            raise AssertionError(f"pyomo evaluated {data.name} though HiGHS answered it")
+
+        monkeypatch.setattr(SolveRecord, "_row_slack", staticmethod(refuse))
+        seen = 0
+        for node in _every_solved_node(tmp_path):
+            record = node.solve_record
+            assert record is not None and record.termination == "optimal"
+            assert record.constraints > 0
+            assert any(row["min_slack"] is not None for row in record.binding)
+            seen += 1
+        assert seen == 5
+
+    def test_no_row_slacks_is_the_pyomo_record(self, tmp_path):
+        solver, model, results = _toy_run(tmp_path).captured
+        default = SolveRecord.from_solve(model, results, DEFAULT_SOLVER, 0.25)
+        assert SolveRecord.from_solve(
+            model, results, DEFAULT_SOLVER, 0.25, row_slacks=None
+        ) == default
+        assert SolveRecord.from_solve(
+            model, results, DEFAULT_SOLVER, 0.25, row_slacks={}
+        ) == default
+
+    def test_a_row_missing_from_the_mapping_falls_back_to_pyomo_per_row(
+        self, tmp_path, monkeypatch
+    ):
+        node = _toy_run(tmp_path)
+        model, slacks, _, slow = _both_records(node)
+        results = node.captured[2]
+        partial = {row: slack for row, slack in slacks.items()
+                   if row is not model.upper_only and row is not model.per_index[2]}
+        asked, real = [], SolveRecord._row_slack
+
+        def spy(data):
+            asked.append(data)
+            return real(data)
+
+        monkeypatch.setattr(SolveRecord, "_row_slack", staticmethod(spy))
+        record = SolveRecord.from_solve(model, results, DEFAULT_SOLVER, 0.25, row_slacks=partial)
+        assert sorted(row.name for row in asked) == ["per_index[2]", "upper_only"]
+        _assert_same_record(record, slow)
+
+    def test_a_mapped_row_is_used_as_given_and_none_means_no_slack(self, tmp_path, monkeypatch):
+        solver, model, results = _toy_run(tmp_path).captured
+        monkeypatch.setattr(SolveRecord, "_row_slack", staticmethod(lambda data: 1 / 0))
+        every = {row: 5.0 for row in _active_rows(model)}
+        every[model.upper_only] = 7.5  # differs from the truth (0.0): the mapping must win
+        every[model.equality] = None  # no finite slack: recorded as none, never re-evaluated
+        record = SolveRecord.from_solve(model, results, DEFAULT_SOLVER, 0.25, row_slacks=every)
+        rows = _binding(record)
+        assert rows["upper_only"]["min_slack"] == 7.5 and rows["upper_only"]["binding"] == 0
+        assert rows["equality"]["rows"] == 1 and rows["equality"]["min_slack"] is None
+        assert rows["equality"]["binding"] == 0
+        assert rows["lower_only"]["min_slack"] == 5.0
+
+    @pytest.mark.parametrize(
+        "solver",
+        [
+            None,
+            SimpleNamespace(),
+            # every private attribute the reader wants, on something that is NOT appsi HiGHS
+            SimpleNamespace(_solver_model=object(), _pyomo_con_to_solver_con_map={}, _model=None),
+        ],
+        ids=["none", "bare-object", "lookalike"],
+    )
+    def test_a_solver_that_is_not_appsi_highs_reads_nothing(self, tmp_path, solver):
+        _, model, _ = _toy_run(tmp_path).captured
+        assert PyomoSolve._highs_row_slacks(solver, model) is None
+
+    def test_an_appsi_solver_missing_a_private_attribute_reads_nothing(self, tmp_path):
+        for attribute in ("_solver_model", "_pyomo_con_to_solver_con_map"):
+            solver, model, _ = _toy_run(tmp_path).captured
+            assert PyomoSolve._highs_row_slacks(solver, model) is not None
+            delattr(solver, attribute)
+            assert PyomoSolve._highs_row_slacks(solver, model) is None
+
+    def test_a_row_map_that_disagrees_with_the_arrays_reads_nothing(self, tmp_path):
+        solver, model, _ = _toy_run(tmp_path).captured
+        solver._pyomo_con_to_solver_con_map[object()] = 10_000  # a row HiGHS never held
+        assert PyomoSolve._highs_row_slacks(solver, model) is None
+
+    def test_a_solver_that_solved_another_model_reads_nothing(self, tmp_path):
+        solver, _, _ = _toy_run(tmp_path).captured
+        _, other, _ = _select_run(tmp_path).captured
+        assert PyomoSolve._highs_row_slacks(solver, other) is None
+
+    def test_a_solve_with_no_solution_reads_nothing(self):
+        from pyomo.environ import ConcreteModel, Constraint, Objective, SolverFactory, Var
+
+        model = ConcreteModel()
+        model.x = Var(bounds=(0.0, 5.0))
+        model.value = Objective(expr=model.x)
+        model.impossible = Constraint(expr=model.x >= 10.0)
+        solver = SolverFactory(DEFAULT_SOLVER)
+        solver.options["threads"] = 1  # see SlackToyLP._solver_options
+        with pytest.raises(RuntimeError):
+            solver.solve(model)
+        assert PyomoSolve._highs_row_slacks(solver, model) is None
+
+    def test_another_highs_interface_keeps_the_pyomo_evaluation(self, tmp_path):
+        node = CapturedToy("lp", {"solver": "highs"})
+        node.run(_ctx(tmp_path), {})
+        solver, model, _ = node.captured
+        assert PyomoSolve._highs_row_slacks(solver, model) is None
+        rows = _binding(node.solve_record)
+        assert rows["equality"]["binding"] == 1 and rows["upper_only"]["binding"] == 1
+        assert rows["lower_only"]["min_slack"] == pytest.approx(2.0)
