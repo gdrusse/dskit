@@ -54,10 +54,12 @@ Use README.md for installation, the temporary demo and focused tests.
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
+                           # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison)
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
                            # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json

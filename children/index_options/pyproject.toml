@@ -9,5 +9,8 @@ description = "Synthetic cash-settled index-option diagnostics using dskit."
 requires-python = ">=3.11"
 dependencies = ["dskit"]
 
+[project.optional-dependencies]
+cdf = ["numpy", "pandas", "pyarrow", "scipy", "scikit-learn", "lightgbm", "torch", "exchange-calendars"]
+
 [tool.setuptools.packages.find]
 include = ["index_options*"]
