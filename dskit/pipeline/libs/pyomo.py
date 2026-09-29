@@ -69,6 +69,19 @@ other solver, interface version or solve state, and a row it did not
 answer is evaluated by pyomo exactly as before, so the record is the same
 either way (pinned in ``TestSolveRecordRowSlacks``).
 
+Persistent-model update doctrine
+--------------------------------
+:class:`ScenarioUtilitySolve` can keep one appsi HiGHS model per algebraic
+shape and only refresh mutable ``Param`` values each tick. appsi then
+re-evaluates every mutable coefficient and bound through pyomo's expression
+visitor (~4.5 us each, ~22k per 12-name joint tick, about all of the
+~100 ms its ``update_params`` costs; the highspy calls are ~20 ms).
+:class:`_CompiledParamUpdate` compiles each of those expressions ONCE into a
+closure that does the same float arithmetic and replays the same highspy
+calls in appsi's order, so the HiGHS model is bit-identical (pinned in
+``TestCompiledParamUpdate``). It is an optimization only: any node, helper
+or appsi layout it cannot prove identical is left to appsi's own code.
+
 Import cost: stdlib + toolkit only. pyomo is imported strictly inside
 run-path methods — this module must import (and its documents must
 plan) on a machine with no pyomo installed.
@@ -76,13 +89,16 @@ plan) on a machine with no pyomo installed.
 
 from __future__ import annotations
 
+import gc
 import math
 import re
+import struct
 import time
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
+from itertools import chain
 
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param
 from dskit.pipeline.records import number_ok
@@ -882,6 +898,452 @@ class BudgetedSelect(PyomoSolve):
         }
 
 
+def _same_number(a, b):
+    """True when ``a`` and ``b`` are one number: same type, same bits (so 0.0 is not -0.0)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, int):
+        return a == b
+    return struct.pack("<d", a) == struct.pack("<d", b)
+
+
+def _reader(compiled):
+    """A compiled number as a zero-argument callable; a compiled callable as itself."""
+    return compiled if callable(compiled) else (lambda: compiled)
+
+
+class _ExpressionCompiler:
+    """Compile a pyomo NPV expression into a zero-argument callable equal to ``value(expr)``.
+
+    The callable applies the same floating-point operations to the same
+    operands in the same order as pyomo's evaluator, so its result has the
+    same type and bits. Interior nodes call their own ``_apply_operation``;
+    only a product and a negation, whose operator is fixed by their class,
+    skip the list that call takes. Leaves are a native ``float``/``int``, an
+    exact ``ParamData`` (its stored ``_value``) or a ``ScalarParam``
+    (``value``). Any other node or leaf compiles to ``None``. Handling one
+    more node class is one more entry in ``_handlers``.
+
+    Examples
+    --------
+    Compile ``3 * p`` and read it after the mutable ``p`` changes::
+
+        compiler = _ExpressionCompiler()
+        read = compiler.compile(3 * model.p)
+        model.p.set_value(2.5)
+        read()  # -> 7.5
+    """
+
+    def __init__(self):
+        from pyomo.core.base.param import ParamData, ScalarParam
+        from pyomo.core.expr import numeric_expr as nodes
+        from pyomo.core.expr.numvalue import value
+
+        self._value = value
+        self._param = ParamData
+        self._handlers = {
+            float: self._number,
+            int: self._number,
+            ParamData: self._param_leaf,
+            ScalarParam: self._scalar_leaf,
+            nodes.NPV_NegationExpression: self._negation,
+            nodes.NPV_ProductExpression: self._product,
+            nodes.NPV_SumExpression: self._operation,
+            nodes.NPV_DivisionExpression: self._operation,
+            nodes.NPV_PowExpression: self._operation,
+            nodes.NPV_MaxExpression: self._operation,
+            nodes.NPV_MinExpression: self._operation,
+        }
+
+    def compile(self, expr):
+        """Return ``expr`` as a number, a zero-argument callable, or None when unhandled.
+
+        Parameters
+        ----------
+        expr : pyomo expression, number
+            The expression to compile; only its exact class is looked up.
+
+        Returns
+        -------
+        number, callable or None
+        """
+        handler = self._handlers.get(type(expr))
+        return None if handler is None else handler(expr)
+
+    @staticmethod
+    def _number(expr):
+        return expr
+
+    @staticmethod
+    def _param_leaf(expr):
+        return lambda: expr._value
+
+    def _scalar_leaf(self, expr):
+        value = self._value
+        return lambda: value(expr)
+
+    def _children(self, expr):
+        """The compiled arguments of ``expr``, or None when any is unhandled."""
+        kids = [self.compile(arg) for arg in expr.args]
+        return None if any(kid is None for kid in kids) else kids
+
+    def _operation(self, expr):
+        kids = self._children(expr)
+        if kids is None:
+            return None
+        apply = expr._apply_operation
+        reads = [_reader(kid) for kid in kids]
+        return lambda: apply([read() for read in reads])
+
+    def _negation(self, expr):
+        kids = self._children(expr)
+        if kids is None:
+            return None
+        (arg,) = expr.args
+        if type(arg) is self._param:
+            return lambda: -arg._value
+        read = _reader(kids[0])
+        return lambda: -read()
+
+    def _product(self, expr):
+        kids = self._children(expr)
+        if kids is None:
+            return None
+        left, right = expr.args
+        if type(right) is self._param and type(left) in (float, int):
+            return lambda: left * right._value
+        if type(left) is self._param and type(right) in (float, int):
+            return lambda: left._value * right
+        if type(left) is self._param and type(right) is self._param:
+            return lambda: left._value * right._value
+        read_left, read_right = (_reader(kid) for kid in kids)
+        return lambda: read_left() * read_right()
+
+
+class _Step(ABC):
+    """One appsi mutable helper as a precompiled highspy call.
+
+    A concrete step names the appsi helper class it replaces (``helper_name``)
+    and the helper attributes holding the expressions it needs
+    (``expressions``); :meth:`apply` makes that helper's ``update`` call.
+    """
+
+    __slots__ = ()
+    helper_name = None
+    expressions = ()
+
+    @abstractmethod
+    def apply(self):
+        """Make the highspy call the appsi helper's ``update`` would make."""
+
+
+class _FallbackStep(_Step):
+    """A helper that keeps its own ``update`` (a class or expression this module does not compile)."""
+
+    __slots__ = ("helper",)
+
+    def __init__(self, helper):
+        self.helper = helper
+
+    def apply(self):
+        self.helper.update()
+
+
+class _CoefficientStep(_Step):
+    """appsi ``_MutableLinearCoefficient.update``: ``changeCoeff(row, col, value)``."""
+
+    __slots__ = ("change", "con_map", "con", "var_map", "var_id", "value")
+    helper_name = "_MutableLinearCoefficient"
+    expressions = ("expr",)
+
+    def __init__(self, helper, programs):
+        self.change = helper.highs.changeCoeff
+        self.con_map, self.con = helper.con_map, helper.pyomo_con
+        self.var_map, self.var_id = helper.var_map, helper.pyomo_var_id
+        self.value = _reader(programs[0])
+
+    def apply(self):
+        self.change(self.con_map[self.con], self.var_map[self.var_id], self.value())
+
+
+class _RowBoundsStep(_Step):
+    """appsi ``_MutableConstraintBounds.update``: ``changeRowBounds(row, lower, upper)``."""
+
+    __slots__ = ("change", "con_map", "con", "lower", "upper")
+    helper_name = "_MutableConstraintBounds"
+    expressions = ("lower_expr", "upper_expr")
+
+    def __init__(self, helper, programs):
+        self.change = helper.highs.changeRowBounds
+        self.con_map, self.con = helper.con_map, helper.con
+        self.lower, self.upper = programs
+
+    def apply(self):
+        lower, upper = self.lower, self.upper
+        self.change(
+            self.con_map[self.con],
+            lower() if callable(lower) else lower,
+            upper() if callable(upper) else upper,
+        )
+
+
+class _ColumnBoundsStep(_Step):
+    """appsi ``_MutableVarBounds.update``: ``changeColBounds(col, lower, upper)``."""
+
+    __slots__ = ("change", "var_map", "var_id", "lower", "upper")
+    helper_name = "_MutableVarBounds"
+    expressions = ("lower_expr", "upper_expr")
+
+    def __init__(self, helper, programs):
+        self.change = helper.highs.changeColBounds
+        self.var_map, self.var_id = helper.var_map, helper.pyomo_var_id
+        self.lower, self.upper = programs
+
+    def apply(self):
+        lower, upper = self.lower, self.upper
+        self.change(
+            self.var_map[self.var_id],
+            lower() if callable(lower) else lower,
+            upper() if callable(upper) else upper,
+        )
+
+
+class _CostStep(_Step):
+    """appsi ``_MutableObjectiveCoefficient.update``: ``changeColCost(col, value)``."""
+
+    __slots__ = ("change", "var_map", "var_id", "value")
+    helper_name = "_MutableObjectiveCoefficient"
+    expressions = ("expr",)
+
+    def __init__(self, helper, programs):
+        self.change = helper.highs.changeColCost
+        self.var_map, self.var_id = helper.var_map, helper.pyomo_var_id
+        self.value = _reader(programs[0])
+
+    def apply(self):
+        self.change(self.var_map[self.var_id], self.value())
+
+
+class _OffsetStep(_Step):
+    """appsi ``_MutableObjectiveOffset.update``: ``changeObjectiveOffset(value)``."""
+
+    __slots__ = ("change", "value")
+    helper_name = "_MutableObjectiveOffset"
+    expressions = ("expr",)
+
+    def __init__(self, helper, programs):
+        self.change = helper.highs.changeObjectiveOffset
+        self.value = _reader(programs[0])
+
+    def apply(self):
+        self.change(self.value())
+
+
+class _CompiledParamUpdate:
+    """A compiled replacement for appsi ``Highs.update_params`` on one persistent solver.
+
+    :meth:`attach` reads the solver's mutable-helper registry once, compiles
+    every helper into a step (see :class:`_ExpressionCompiler`), verifies that
+    each compiled value equals pyomo's own ``value(expr)`` bit for bit on the
+    current parameters, and switches appsi's ``update_params`` off.
+    :meth:`apply` then replays appsi's loop: the same bookkeeping
+    (``_sol = None``, the last solution loader invalidated), then the same
+    highspy calls in the same order, row and column indices looked up at call
+    time as appsi does. It must run after the parameters are refreshed and
+    before ``solver.solve``; appsi's structure scans stay on.
+
+    A helper of another class, one bound to another HiGHS object, or with a
+    node that does not compile or verify keeps its own ``update`` (counted in
+    :attr:`n_fallback`). A solver whose registry is not the known layout is
+    never attached (appsi keeps its own path). If the registry's helpers are
+    no longer the ones compiled (appsi rebuilt a constraint), :meth:`apply`
+    retires the updater and appsi's own ``update_params`` is switched back on.
+
+    Parameters
+    ----------
+    solver : appsi Highs
+        The persistent solver, its model already loaded.
+    steps : list
+        One step per helper, in appsi's call order.
+    snapshot : tuple
+        The registries' helpers at compile time, checked on every apply.
+
+    Examples
+    --------
+    Attach to a solver whose model was solved once, refresh, then apply::
+
+        updater = _CompiledParamUpdate.attach(solver)
+        model.input_price["AAA"].set_value(101.5)
+        updater.apply()  # -> True; solver.solve(model) now skips update_params
+    """
+
+    #: The compiler, built on first use so this module imports without pyomo.
+    _compiler = None
+
+    #: appsi's helper classes by name; ``helper_name`` on each step.
+    _STEPS = {
+        step.helper_name: step
+        for step in (_CoefficientStep, _RowBoundsStep, _ColumnBoundsStep, _CostStep, _OffsetStep)
+    }
+
+    #: The module those helper classes live in (a same-named class elsewhere is not one).
+    _HELPER_MODULE = "pyomo.contrib.appsi.solvers.highs"
+
+    def __init__(self, solver, steps, snapshot):
+        self._solver = solver
+        self._steps = steps
+        self._snapshot = snapshot
+        self._highs = solver._solver_model
+        self._retired = False
+        self.n_fallback = sum(1 for step in steps if type(step) is _FallbackStep)
+        self.n_compiled = len(steps) - self.n_fallback
+
+    @property
+    def retired(self):
+        """Whether appsi's own ``update_params`` has been given back its job."""
+        return self._retired
+
+    @classmethod
+    def program(cls, expr):
+        """Return ``expr`` compiled: a number, a zero-argument callable, or None when unhandled.
+
+        Parameters
+        ----------
+        expr : pyomo expression, number
+            A helper's expression.
+
+        Returns
+        -------
+        number, callable or None
+        """
+        if cls._compiler is None:
+            cls._compiler = _ExpressionCompiler()
+        return cls._compiler.compile(expr)
+
+    @staticmethod
+    def _registries(solver):
+        """Return ``(constraint helpers, variable-bound helpers, objective helpers)`` as lists, or None."""
+        try:
+            registry, bounds = solver._mutable_helpers, solver._mutable_bounds
+            objective = solver._objective_helpers
+            if type(registry) is not dict or type(bounds) is not dict or type(objective) is not list:
+                return None
+            return (
+                list(chain.from_iterable(registry.values())),
+                [helper for _, helper in bounds.values()],
+                list(objective),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    @classmethod
+    def attach(cls, solver):
+        """Compile ``solver``'s mutable helpers and switch its ``update_params`` off.
+
+        Parameters
+        ----------
+        solver : appsi Highs
+            A persistent solver whose model has been loaded.
+
+        Returns
+        -------
+        _CompiledParamUpdate or None
+            None when the solver is not the known appsi layout; appsi's
+            ``update_params`` is then untouched.
+        """
+        snapshot = cls._registries(solver)
+        try:
+            config = solver.update_config
+            known = (
+                snapshot is not None
+                and solver._solver_model is not None
+                and config.update_params is True
+                and hasattr(solver, "_sol")
+                and hasattr(solver, "_last_results_object")
+            )
+        except AttributeError:
+            return None
+        if not known:
+            return None
+        highs = solver._solver_model
+        # ~100k closures are built and kept alive here; the cyclic collector
+        # would re-walk the whole pyomo model for each young generation.
+        collecting = gc.isenabled()
+        gc.disable()
+        try:
+            steps = [cls._step(helper, highs) for helper in chain.from_iterable(snapshot)]
+        finally:
+            if collecting:
+                gc.enable()
+        updater = cls(solver, steps, snapshot)
+        config.update_params = False
+        return updater
+
+    @classmethod
+    def _step(cls, helper, highs):
+        """The step for one helper: compiled when every expression verifies, else its own ``update``."""
+        step = cls._STEPS.get(type(helper).__name__)
+        if step is None or type(helper).__module__ != cls._HELPER_MODULE:
+            return _FallbackStep(helper)
+        try:
+            if helper.highs is not highs:
+                return _FallbackStep(helper)
+            programs = [cls._verified(getattr(helper, name)) for name in step.expressions]
+            if any(program is None for program in programs):
+                return _FallbackStep(helper)
+            return step(helper, programs)
+        except Exception:  # whatever a helper does, appsi's own update stays the answer
+            return _FallbackStep(helper)
+
+    @classmethod
+    def _verified(cls, expr):
+        """``program(expr)`` when it equals pyomo's ``value(expr)`` now, bit for bit; else None."""
+        from pyomo.core.expr.numvalue import value
+
+        program = cls.program(expr)
+        if program is None:
+            return None
+        got = program() if callable(program) else program
+        return program if _same_number(got, value(expr)) else None
+
+    def apply(self):
+        """Replace appsi's ``update_params`` for one tick.
+
+        Returns
+        -------
+        bool
+            True when the compiled calls ran. False when the updater is
+            retired (appsi's ``update_params`` is on and runs itself).
+        """
+        if self._retired:
+            return False
+        if not self._current():
+            self.retire()
+            return False
+        solver = self._solver
+        solver._sol = None
+        last = solver._last_results_object
+        if last is not None:
+            last.solution_loader.invalidate()
+        for step in self._steps:
+            step.apply()
+        return True
+
+    def _current(self):
+        """Whether the solver still holds exactly the helpers this updater compiled."""
+        solver = self._solver
+        try:
+            return solver._solver_model is self._highs and self._registries(solver) == self._snapshot
+        except AttributeError:
+            return False
+
+    def retire(self):
+        """Give appsi's own ``update_params`` its job back, for good."""
+        self._retired = True
+        self._steps = ()
+        self._solver.update_config.update_params = True
+
+
 class ScenarioUtilitySolve(PyomoSolve):
     """A per-tick fractional-Kelly MILP over joint scenario returns (role ``capital``).
 
@@ -984,6 +1446,13 @@ class ScenarioUtilitySolve(PyomoSolve):
     #: alternation without retaining an unbounded family of solver models.
     _PERSISTENT_MODEL_REUSE = False
     _PERSISTENT_CACHE_SIZE = 4
+
+    #: On a cached hit, replace appsi's ``update_params`` (the pyomo
+    #: evaluator over every mutable coefficient and bound) with
+    #: :class:`_CompiledParamUpdate`: bit-identical HiGHS model, a fraction
+    #: of the time. Compiled on a shape's FIRST hit, so a shape seen once
+    #: pays nothing. ``False`` keeps appsi's own path (the tests' reference).
+    _PERSISTENT_COMPILED_UPDATE = True
 
     def _solver_options(self):
         options = super()._solver_options()
@@ -1220,6 +1689,7 @@ class ScenarioUtilitySolve(PyomoSolve):
         self.solve_record = None
         try:
             self._refresh_model(entry["model"], inputs, params, prepared)
+            self._apply_compiled_update(entry)
             return self._solve_and_extract(
                 entry["solver"], entry["model"], warmstart=True
             )
@@ -1229,6 +1699,22 @@ class ScenarioUtilitySolve(PyomoSolve):
             # refusal until the same current inputs fail on a new cold model.
             cache.pop(signature, None)
             return self._cold_persistent_attempt(inputs, params, prepared, signature, cache)
+
+    def _apply_compiled_update(self, entry):
+        """Run the entry's compiled parameter update, compiling it on the entry's first hit.
+
+        Parameters
+        ----------
+        entry : dict
+            A persistent cache entry (``model``, ``solver``; ``updater`` once
+            compiled, None when the solver's layout is not the known one).
+        """
+        if not self._PERSISTENT_COMPILED_UPDATE:
+            return
+        if "updater" not in entry:
+            entry["updater"] = _CompiledParamUpdate.attach(entry["solver"])
+        if entry["updater"] is not None:
+            entry["updater"].apply()
 
     def _cold_persistent_attempt(self, inputs, params, prepared, signature, cache):
         """Build and solve once; cache only a fully extracted optimal result."""

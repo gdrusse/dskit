@@ -170,6 +170,53 @@ class TestLatencySmoke:
         assert all(record["robust_protection"] > 0.0 for record in records)
 
 
+    def test_the_compiled_update_leaves_the_joint_instance_bit_identical_to_appsis(self, tmp_path):
+        """12 names, 128 scenarios, tranche counts 2-10, HFDR and robust rows: the LP HiGHS holds
+        after each hit's update (before it optimizes) and every decision equal appsi's own."""
+        sequence = bench.make_persistent_robust_sequence(3)
+        params = {**sequence[0]["params"], "solver_options": {"time_limit": bench.P99_BUDGET_S}}
+
+        def lp_bytes(solver):
+            lp = solver._solver_model.getLp()
+            arrays = [getattr(lp.a_matrix_, name) for name in ("start_", "index_", "value_")]
+            arrays += [getattr(lp, name) for name in (
+                "col_cost_", "col_lower_", "col_upper_", "row_lower_", "row_upper_")]
+            return [np.asarray(a).tobytes() for a in arrays] + [np.float64(lp.offset_).tobytes()]
+
+        def arm(compiled):
+            class Arm(bench.RobustPersistentLatencySolve):
+                _PERSISTENT_COMPILED_UPDATE = compiled
+                lps = None
+
+                def _resolve_solver(self):
+                    solver = super()._resolve_solver()
+                    self.lps = []
+                    optimize = solver._solve  # appsi's private step after update()
+
+                    def spy(timer):
+                        self.lps.append(lp_bytes(solver))
+                        return optimize(timer)
+
+                    solver._solve = spy
+                    return solver
+
+            node = Arm("arm", params)
+            records = [bench._solve_on_node(node, instance, tmp_path) for instance in sequence]
+            for record in records:  # timings differ run to run; everything else must not
+                del record["wall_seconds"], record["solve_seconds"]
+            return node, records
+
+        fast, fast_records = arm(True)
+        stock, stock_records = arm(False)
+        (entry,) = fast._persistent_cache.values()
+        assert entry["updater"].n_compiled > 10_000 and entry["updater"].n_fallback == 0
+        assert not entry["updater"].retired
+        assert fast.lps == stock.lps and len(fast.lps) == 3
+        assert len({tuple(lp) for lp in fast.lps}) == 3  # each minute moved the model
+        assert fast_records == stock_records
+        assert all(bench.solved(record) for record in fast_records)
+
+
 @pytest.mark.slow
 class TestLatencyFull:
     def test_one_hundred_instances_meet_the_latency_budget(self, tmp_path):

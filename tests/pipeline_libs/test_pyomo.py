@@ -1885,6 +1885,488 @@ class CapturedReusable(_Capture, ReusableRobustTwoNameSolve):
     pass
 
 
+# ---------------------------------------------------------------------------
+# The compiled parameter update: appsi's update_params minus pyomo's evaluator
+# ---------------------------------------------------------------------------
+
+
+def _lp_arrays(solver):
+    """Every array of the LP HiGHS holds (matrix, costs, both bound pairs, offset), copied."""
+    import numpy as np
+
+    lp = solver._solver_model.getLp()
+    arrays = {
+        f"a_matrix_.{name}": np.asarray(getattr(lp.a_matrix_, name))
+        for name in ("start_", "index_", "value_")
+    }
+    for name in ("col_cost_", "col_lower_", "col_upper_", "row_lower_", "row_upper_"):
+        arrays[name] = np.asarray(getattr(lp, name))
+    arrays["offset_"] = np.asarray([lp.offset_])
+    return {name: array.copy() for name, array in arrays.items()}
+
+
+def _assert_same_lp(a, b, where):
+    """Bit equality: ``array_equal`` AND identical bytes (so -0.0 vs 0.0 and NaN cannot pass)."""
+    import numpy as np
+
+    assert a.keys() == b.keys()
+    for name in a:
+        assert np.array_equal(a[name], b[name]), (where, name)
+        assert a[name].dtype == b[name].dtype and a[name].tobytes() == b[name].tobytes(), (where, name)
+
+
+class _LpSpy:
+    """Mixin: record the LP HiGHS holds after appsi's update and before it optimizes."""
+
+    lps = None
+
+    def _resolve_solver(self):
+        solver = super()._resolve_solver()
+        if self.lps is None:
+            self.lps = []
+        optimize = solver._solve  # appsi's private step that follows update()
+
+        def spy(timer):
+            self.lps.append(_lp_arrays(solver))
+            return optimize(timer)
+
+        solver._solve = spy
+        return solver
+
+
+class CompiledReusable(_LpSpy, _Capture, ReusableRobustTwoNameSolve):
+    """The persistent opt-in with the compiled update on (the default)."""
+
+
+class StockReusable(CompiledReusable):
+    """The reference arm: appsi's own ``update_params``."""
+
+    _PERSISTENT_COMPILED_UPDATE = False
+
+
+class SqrtRowReusable(CompiledReusable):
+    """A domain row whose coefficient holds a node the compiler does not handle."""
+
+    def domain_constraints(self, model, inputs, params):
+        from pyomo.environ import Constraint, Param, sqrt
+
+        model.input_cap = Param(mutable=True, initialize=float(inputs.get("cap", 4.0)))
+        model.capped = Constraint(expr=sqrt(model.input_cap) * model.x["AAA"] <= 1.0e9)
+
+    def _persistent_domain_signature(self, inputs, prepared, params):
+        del inputs, prepared, params
+        return ("sqrt_row",)
+
+    def _refresh_domain_constraints(self, model, inputs, params):
+        del params
+        model.input_cap.set_value(float(inputs.get("cap", 4.0)))
+
+
+class SqrtRowStock(SqrtRowReusable):
+    _PERSISTENT_COMPILED_UPDATE = False
+
+
+class SwappedRowReusable(CompiledReusable):
+    """A domain row that a persistent hit REPLACES: appsi finds it inside its own update."""
+
+    refreshes = 0
+
+    def domain_constraints(self, model, inputs, params):
+        from pyomo.environ import Constraint, Param
+
+        model.input_cap = Param(mutable=True, initialize=4.0)
+        model.capped = Constraint(expr=model.input_cap * model.x["AAA"] <= 1.0e9)
+
+    def _persistent_domain_signature(self, inputs, prepared, params):
+        del inputs, prepared, params
+        return ("swapped_row",)
+
+    def _refresh_domain_constraints(self, model, inputs, params):
+        del inputs, params
+        self.refreshes += 1
+        model.input_cap.set_value(4.0 + self.refreshes)
+        if self.refreshes == 2:
+            model.capped.set_value(2.0 * model.input_cap * model.x["AAA"] <= 1.0e9)
+
+
+class SwappedRowStock(SwappedRowReusable):
+    _PERSISTENT_COMPILED_UPDATE = False
+
+
+def _persistent_minutes(n=6):
+    """Seeded same-shape minutes: prices, holdings (some zero), returns, carried wealth,
+    the robust block and a zero deviation all move; AAA has two tranches, BBB one."""
+    import numpy as np
+
+    rng = np.random.default_rng(20260929)
+    base = TestScenarioUtilityPersistentReuse._second()
+    held = [(3, 2), (0, 4), (5, 0), (0, 0), (2, 3), (4, 1)]
+    carried = [350.0, 0.0, 125.0, 900.0, 0.0, 60.0]
+    minutes = []
+    for k in range(n):
+        fixture = json.loads(json.dumps(base))
+        for name, prices in (("AAA", (90.0, 115.0)), ("BBB", (40.0, 60.0))):
+            fixture["rows"][name].update(
+                price=float(rng.uniform(*prices)),
+                held=held[k % len(held)][0 if name == "AAA" else 1],
+                cost_buy=float(rng.uniform(0.02, 0.09)),
+                cost_sell=float(rng.uniform(0.02, 0.09)),
+                exit_cost_per_share=float(rng.uniform(0.01, 0.05)),
+            )
+        w = float(rng.uniform(0.3, 0.7))
+        fixture["weights"] = [w, 1.0 - w]
+        fixture["r"] = {
+            "AAA": rng.normal(0.02, 0.02, (2, 2)).tolist(),
+            "BBB": rng.normal(0.015, 0.02, 2).tolist(),
+        }
+        cash = float(rng.uniform(8000.0, 10000.0))
+        fixture["account"].update(
+            cash=cash, buying_power=cash, carried_wealth=carried[k % len(carried)],
+            cash_reserve=float(rng.uniform(0.0, 200.0)),
+        )
+
+        def deviation():
+            return float(rng.uniform(0.0, 0.03))
+
+        fixture["mean_uncertainty"] = {
+            "budget": float(rng.uniform(0.5, 2.0)),
+            "deviation_below": {"AAA": [deviation(), deviation()], "BBB": [deviation()]},
+            "deviation_above": {"AAA": [deviation(), deviation()], "BBB": [deviation()]},
+        }
+        if k == 3:
+            fixture["mean_uncertainty"]["deviation_below"]["AAA"][0] = 0.0
+        if k == 2:  # a falling AAA that is held: the book sells
+            fixture["r"]["AAA"] = [[-0.04, -0.03], [-0.05, -0.04]]
+        fixture["cap"] = float(rng.uniform(2.0, 9.0))
+        minutes.append(fixture)
+    return minutes
+
+
+def _run_minutes(cls, tmp_path, minutes=None, node=None):
+    """One cold solve then one cache hit per minute; returns ``(node, outputs, records)``.
+
+    A ``node`` the caller already ran cold skips the cold solve here.
+    """
+    fixtures = list(minutes or _persistent_minutes())
+    if node is None:
+        node = cls("arm", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+        fixtures.insert(0, TestScenarioUtilityPersistentReuse._first())
+    outputs, records = [], []
+    for fixture in fixtures:
+        outputs.append(node.run(_ctx(tmp_path), fixture))
+        records.append(node.solve_record.to_obj())
+        records[-1].pop("seconds")
+    return node, outputs, records
+
+
+def _only_entry(node):
+    (entry,) = node._persistent_cache.values()
+    return entry
+
+
+class TestCompiledParamUpdate:
+    """The persistent path's per-minute ``update_params`` is compiled once and replayed.
+
+    appsi evaluates ~22k mutable expressions per minute through pyomo's
+    visitor (~4.5 us each, ~100 ms of a joint solve's ~100 ms update). The
+    compiled update makes the SAME highspy calls in the SAME order with
+    values from the SAME arithmetic, so the HiGHS model is bit-identical;
+    anything it cannot prove identical it hands back to appsi.
+    """
+
+    @pytest.mark.parametrize(
+        "cls_fast, cls_stock",
+        [(CompiledReusable, StockReusable), (SqrtRowReusable, SqrtRowStock)],
+        ids=["base_rows", "an_unhandled_node_in_a_domain_row"],
+    )
+    def test_the_highs_model_is_bit_identical_to_appsis_own_update_every_minute(
+        self, tmp_path, cls_fast, cls_stock
+    ):
+        fast, fast_out, fast_rec = _run_minutes(cls_fast, tmp_path)
+        stock, stock_out, stock_rec = _run_minutes(cls_stock, tmp_path)
+        updater = _only_entry(fast).get("updater")
+        assert updater is not None, "the compiled update never engaged"
+        assert updater.n_compiled > 100 and not updater.retired
+        assert _only_entry(fast)["solver"].update_config.update_params is False
+        assert _only_entry(stock).get("updater") is None
+        assert _only_entry(stock)["solver"].update_config.update_params is True
+        assert len(fast.lps) == len(stock.lps) == 7
+        for minute, (a, b) in enumerate(zip(fast.lps, stock.lps)):
+            _assert_same_lp(a, b, minute)
+        # not vacuous: every minute moved the matrix values, bounds and costs
+        for name in ("a_matrix_.value_", "row_upper_", "col_upper_", "col_cost_"):
+            assert len({lp[name].tobytes() for lp in fast.lps}) == len(fast.lps), name
+        assert fast_out == stock_out
+        assert fast_rec == stock_rec
+        assert all(rec["termination"] == "optimal" for rec in fast_rec)
+        assert any(o["trades"]["AAA"]["sell"] > 0 for o in fast_out)  # sells and buys both occur
+
+    def test_every_appsi_helper_kind_matches_appsi_on_a_plain_model(self):
+        import numpy as np
+        from pyomo.environ import (
+            ConcreteModel, Constraint, Objective, Param, SolverFactory, Var, maximize,
+        )
+
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        def build():
+            m = ConcreteModel()
+            m.lo = Param(mutable=True, initialize=0.5)
+            m.hi = Param(mutable=True, initialize=4.0)
+            m.a = Param([0, 1], mutable=True, initialize=1.0)
+            m.off = Param(mutable=True, initialize=1.0)
+            m.rhs = Param(mutable=True, initialize=6.0)
+            m.x = Var([0, 1], bounds=lambda m, i: (m.lo, m.hi))
+            m.row = Constraint(expr=m.a[0] * m.x[0] + m.a[1] * m.x[1] <= m.rhs)
+            m.flip = Constraint(expr=m.x[0] - 2 * m.a[0] * m.x[1] >= -m.rhs)
+            m.obj = Objective(expr=m.a[1] * m.x[0] - m.x[1] + m.off, sense=maximize)
+            return m
+
+        fast_model, stock_model = build(), build()
+        fast, stock = SolverFactory("appsi_highs"), SolverFactory("appsi_highs")
+        fast.set_instance(fast_model)
+        stock.set_instance(stock_model)
+        updater = _CompiledParamUpdate.attach(fast)
+        helpers = [h for group in _CompiledParamUpdate._registries(fast) for h in group]
+        assert {type(h).__name__ for h in helpers} == {
+            "_MutableLinearCoefficient", "_MutableConstraintBounds", "_MutableVarBounds",
+            "_MutableObjectiveCoefficient", "_MutableObjectiveOffset",
+        }
+        assert updater.n_compiled == len(helpers) and updater.n_fallback == 0
+        rng = np.random.default_rng(3)
+        for step in range(6):
+            draw = {
+                "lo": float(rng.uniform(0.0, 1.0)), "hi": float(rng.uniform(2.0, 5.0)),
+                "off": float(rng.normal()), "rhs": float(rng.uniform(1.0, 9.0)),
+                "a": [0.0 if step == 3 else float(rng.normal()), float(rng.normal())],
+            }
+            for m in (fast_model, stock_model):
+                m.lo.set_value(draw["lo"])
+                m.hi.set_value(draw["hi"])
+                m.off.set_value(draw["off"])
+                m.rhs.set_value(draw["rhs"])
+                for i, value in enumerate(draw["a"]):
+                    m.a[i].set_value(value)
+            assert updater.apply() is True
+            fast.update()
+            stock.update()
+            _assert_same_lp(_lp_arrays(fast), _lp_arrays(stock), step)
+
+    def test_an_unhandled_node_falls_back_per_helper_and_the_rest_stay_compiled(self, tmp_path):
+        node, _, _ = _run_minutes(SqrtRowReusable, tmp_path)
+        updater = _only_entry(node)["updater"]
+        assert 1 <= updater.n_fallback < updater.n_compiled
+        clean, _, _ = _run_minutes(CompiledReusable, tmp_path)
+        assert _only_entry(clean)["updater"].n_fallback == 0
+
+    def test_a_compiled_value_that_differs_from_pyomos_is_never_trusted(self, tmp_path, monkeypatch):
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        monkeypatch.setattr(
+            _CompiledParamUpdate, "program", staticmethod(lambda expr: (lambda: 1.0))
+        )
+        wrong, wrong_out, _ = _run_minutes(CompiledReusable, tmp_path)
+        stock, stock_out, _ = _run_minutes(StockReusable, tmp_path)
+        updater = _only_entry(wrong)["updater"]
+        assert updater.n_fallback > 0.9 * (updater.n_fallback + updater.n_compiled)
+        for minute, (a, b) in enumerate(zip(wrong.lps, stock.lps)):
+            _assert_same_lp(a, b, minute)
+        assert wrong_out == stock_out
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "_mutable_helpers", "_mutable_bounds", "_objective_helpers", "_solver_model", "_sol",
+            "_last_results_object", "update_config",
+        ],
+    )
+    def test_an_unknown_appsi_layout_keeps_appsis_own_update(self, missing):
+        import types
+
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        def stub():
+            return types.SimpleNamespace(
+                _mutable_helpers={}, _mutable_bounds={}, _objective_helpers=[],
+                _solver_model=object(), _sol=object(), _last_results_object=None,
+                update_config=types.SimpleNamespace(update_params=True),
+            )
+
+        whole = stub()
+        assert _CompiledParamUpdate.attach(whole) is not None  # the stub is a valid layout
+        assert whole.update_config.update_params is False
+        broken = stub()
+        delattr(broken, missing)
+        assert _CompiledParamUpdate.attach(broken) is None
+        if missing != "update_config":
+            assert broken.update_config.update_params is True  # nothing was switched off
+
+    @pytest.mark.parametrize(
+        "attribute, wrong",
+        [
+            ("_mutable_helpers", []), ("_mutable_bounds", []), ("_objective_helpers", {}),
+        ],
+    )
+    def test_a_registry_of_another_shape_keeps_appsis_own_update(self, attribute, wrong):
+        import types
+
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        solver = types.SimpleNamespace(
+            _mutable_helpers={}, _mutable_bounds={}, _objective_helpers=[],
+            _solver_model=object(), _sol=None, _last_results_object=None,
+            update_config=types.SimpleNamespace(update_params=True),
+        )
+        setattr(solver, attribute, wrong)
+        assert _CompiledParamUpdate.attach(solver) is None
+        assert solver.update_config.update_params is True
+
+    def test_a_real_solver_with_another_registry_layout_runs_appsis_own_update(self, tmp_path):
+        class OtherDict(dict):
+            pass
+
+        node = CompiledReusable("arm", {**SU_PARAMS, "cardinality": None, "min_ticket": 0.0})
+        node.run(_ctx(tmp_path), TestScenarioUtilityPersistentReuse._first())
+        solver = _only_entry(node)["solver"]
+        solver._mutable_helpers = OtherDict(solver._mutable_helpers)
+        _, out, rec = _run_minutes(CompiledReusable, tmp_path, node=node)
+        assert _only_entry(node)["updater"] is None
+        assert solver.update_config.update_params is True
+        stock, stock_out, stock_rec = _run_minutes(StockReusable, tmp_path)
+        assert out == stock_out[1:] and rec == stock_rec[1:]  # the hit minutes; [0] is the cold solve
+        for minute, (a, b) in enumerate(zip(node.lps, stock.lps)):
+            _assert_same_lp(a, b, minute)
+
+    def test_a_registry_that_moved_since_compile_retires_to_appsis_own_update(self, tmp_path):
+        fast, fast_out, fast_rec = _run_minutes(SwappedRowReusable, tmp_path)
+        stock, stock_out, stock_rec = _run_minutes(SwappedRowStock, tmp_path)
+        updater = _only_entry(fast)["updater"]
+        assert updater.retired
+        assert _only_entry(fast)["solver"].update_config.update_params is True
+        assert fast.refreshes == stock.refreshes == 6
+        for minute, (a, b) in enumerate(zip(fast.lps, stock.lps)):
+            _assert_same_lp(a, b, minute)
+        assert fast_out == stock_out and fast_rec == stock_rec
+
+    def test_the_previous_solution_is_invalid_after_a_compiled_update(self, tmp_path):
+        node, _, _ = _run_minutes(CompiledReusable, tmp_path)
+        solver, model, _ = node.captured
+        loader = solver._last_results_object.solution_loader  # appsi's own record of the last solve
+        assert PyomoSolve._highs_row_slacks(solver, model) is not None  # valid right after a solve
+        assert solver._sol is not None
+        loader.get_primals()
+        assert _only_entry(node)["updater"].apply() is True
+        assert solver._sol is None
+        assert PyomoSolve._highs_row_slacks(solver, model) is None  # no stale arrays
+        with pytest.raises(RuntimeError, match="no longer valid"):
+            loader.get_primals()
+
+    def test_appsis_own_update_params_invalidates_the_same_way(self, tmp_path):
+        node, _, _ = _run_minutes(StockReusable, tmp_path)
+        solver, model, _ = node.captured
+        loader = solver._last_results_object.solution_loader
+        solver.update_params()
+        assert solver._sol is None and PyomoSolve._highs_row_slacks(solver, model) is None
+        with pytest.raises(RuntimeError, match="no longer valid"):
+            loader.get_primals()
+
+
+def _program_expressions():
+    """``(label, builder)`` for each shape the doorway's mutable rows produce, plus the rest of the family."""
+    from pyomo.core.expr.numeric_expr import NPV_MaxExpression, NPV_MinExpression
+
+    return {
+        "bare_param": lambda m: m.p[0],
+        "bare_scalar_param": lambda m: m.s,
+        "negated_param": lambda m: -m.p[0],
+        "int_times_param": lambda m: 3 * m.p[0],
+        "param_times_float": lambda m: m.p[0] * 0.1,
+        "param_times_param": lambda m: m.p[0] * m.p[1],
+        "int_param_times_int": lambda m: m.i * 7,
+        "int_param_times_int_param": lambda m: m.i * m.i,
+        "sum_of_params": lambda m: m.p[0] + m.p[1],
+        "difference": lambda m: m.p[0] - m.p[1],
+        "scaled_difference": lambda m: 3 * (m.p[0] - m.s),
+        "negated_sum": lambda m: -(m.p[0] + m.p[1]),
+        "nary_sum": lambda m: m.p[0] + m.p[1] + m.p[2] + m.s,
+        "negated_scaled_sum": lambda m: -(2 * m.s + 3 * m.p[2]),
+        "deep_sum_of_products": lambda m: m.s - ((m.p[0] * m.p[1] + m.p[1] * m.p[2]) + m.p[2] * m.p[0]),
+        "division": lambda m: m.p[0] / m.p[1],
+        "power": lambda m: m.p[0] ** 2,
+        "max": lambda m: NPV_MaxExpression((m.p[0], 0.5)),
+        "min": lambda m: NPV_MinExpression((m.p[0], m.p[1])),
+        "constant_float": lambda m: 0.25,
+        "constant_int": lambda m: 7,
+    }
+
+
+class TestExpressionProgram:
+    """``_CompiledParamUpdate.program`` reproduces ``value(expr)`` bit for bit, type included."""
+
+    @staticmethod
+    def _model(rng):
+        from pyomo.environ import ConcreteModel, Param
+
+        m = ConcreteModel()
+        m.p = Param([0, 1, 2], mutable=True, initialize=1.0)
+        m.s = Param(mutable=True, initialize=1.0)
+        m.i = Param(mutable=True, initialize=1)
+        return m
+
+    @staticmethod
+    def _draw(rng):
+        pool = [0.0, -0.0, 1e-310, 1e300, -1e-300, 0.1, 0.7, 3.0, -2.5, 1.0 / 3.0]
+        if rng.random() < 0.4:
+            return pool[int(rng.integers(len(pool)))]
+        return float(rng.normal()) * 10.0 ** int(rng.integers(-6, 7))
+
+    @pytest.mark.parametrize("label", sorted(_program_expressions()))
+    def test_every_supported_shape_matches_pyomos_evaluator(self, label):
+        import numpy as np
+        import struct
+
+        from pyomo.environ import value
+
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        rng = np.random.default_rng(11)
+        m = self._model(rng)
+        expr = _program_expressions()[label](m)
+        program = _CompiledParamUpdate.program(expr)
+        assert program is not None, label
+        for _ in range(60):
+            for p in m.p.values():
+                p.set_value(self._draw(rng))
+            m.s.set_value(self._draw(rng))
+            m.i.set_value(int(rng.integers(-50, 50)))
+            try:
+                want = value(expr)
+            except (ArithmeticError, ValueError) as exc:  # e.g. 1/0, 1e300**2: the program raises too
+                with pytest.raises(type(exc)):
+                    program()
+                continue
+            got = program() if callable(program) else program
+            assert type(got) is type(want), (label, got, want)
+            assert struct.pack("<d", float(got)) == struct.pack("<d", float(want)), (label, got, want)
+
+    @pytest.mark.parametrize("label", ["sqrt_of_param", "abs_of_param", "a_variable", "a_string"])
+    def test_an_unhandled_node_or_leaf_compiles_to_none(self, label):
+        from pyomo.environ import ConcreteModel, Param, Var, sqrt
+
+        from dskit.pipeline.libs.pyomo import _CompiledParamUpdate
+
+        m = ConcreteModel()
+        m.p = Param(mutable=True, initialize=2.0)
+        m.v = Var(initialize=1.0)
+        expr = {
+            "sqrt_of_param": lambda: sqrt(m.p) * 3,
+            "abs_of_param": lambda: abs(-m.p),
+            "a_variable": lambda: m.v,
+            "a_string": lambda: "x",
+        }[label]()
+        assert _CompiledParamUpdate.program(expr) is None
+
+
 def _toy_run(tmp_path):
     node = CapturedToy("lp", {})
     node.run(_ctx(tmp_path), {})
