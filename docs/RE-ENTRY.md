@@ -1,5 +1,139 @@
 # Re-entry
 
+## ADR-0191 downside-aware CDF iteration completed (2026-09-28)
+
+- Reviewed packet and complete results fast-forwarded/pushed to main as
+  `d09382c97d5f4931821efa596dd8e2f847c8ceb3`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
+- Owner requested another iteration. Sol built one standard JSON,
+  `children/index_options/configs/run-predictive-cdf-downside.json`:
+  six symmetric scale-floor/weight settings and three index-head/weight
+  settings. Same 42 features/data/protocol; no production/dependency changes,
+  new acquisition, one-off execution script or trading. Isolated worktree
+  `/home/russell/dskit-cdf-downside-20260928`, base `969fd3e`.
+- Reviewed implementation `d713803a`, immutable protocol candidate
+  `257eb59191a96e1cef314139b2f3f10ce0f28c79`; Luna design and two final
+  lenses C0/M0. Eight child tests and seven reused focused integration tests
+  passed; no full suite. Actual findings retained in ADR-0191 evidence.
+  New Minors: equivalence metadata label rename and incomplete all-field test
+  pins (current dictionaries checked). Prior inverse-atom/external-freeze
+  automation limitations remain. No post-lock code/config edits.
+- All nine candidates, selection, four evaluations and standard final
+  evaluator completed: eight exit-0 stages, no omission/fallback. WSL2 CUDA,
+  at most two concurrent, each under 30 minutes/6 GiB; slowest 5m19.99s,
+  peak process RSS 2.526 GiB. Prior private interpreter reused read-only.
+- Primary frozen BEFORE evaluation in commit
+  `793bcd8998635f36d99b67b4666aae202bdf6559`: incumbent 25% MLP raw,
+  **no qualified challenger**. Floor .75 / weight .35 and index-head .25
+  win their groups on development CRPS but fail the per-index downside guard.
+  Floor SPY misses guard by one observation (526/8905 vs 525); no rule was
+  relaxed. This is a procedural failure, not proof of a meaningful difference.
+- Later floor skill +0.977245% vs empirical, direct +0.164269% vs incumbent,
+  but both paired intervals include zero. Incumbent skill remains +0.818035%.
+  Heads +0.793238% vs empirical, -0.026627% vs incumbent. Floor downside
+  5566/68084 = 8.1752% vs incumbent 5473/68084 = 8.0386%, target 5%.
+  Keep incumbent as research benchmark; floor is a modest descriptive lead,
+  not a qualified upgrade or trading model. No post-evaluation primary switch.
+- 18,616 development/133 cells, 68,084 later/135 cells; report 867,000 rows
+  across five models/two variants. Luna artifact audits passed all file hashes,
+  pairing, purges, fit reuse, and representative raw/calibrated exact CDF/PIT
+  reconstruction. All three final controls numerically reproduce prior run.
+- Standalone recommendation, full exact-day grids/counts, annual splits,
+  cutoff example, uncertainty and reproducibility:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-downside.md`.
+  Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_downside_20260928`
+  and logs `cdf_downside_logs_20260928`, all previous worktrees/environments.
+- No experiment remains running. Journal A0609 and publication are complete.
+  Next research, NOT started: genuinely new-date validation and a
+  predeclared downside/cutoff objective with tolerance justified before outcomes.
+
+## ADR-0191 CDF blend refinement completed (2026-09-28)
+
+- Results and reviewed packet merged/pushed by fast-forward as
+  `27ea30365f4b0bf577271ad0cda36de91e6046a1`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
+- Owner requested further iteration on the successful blend. Sol built one
+  standardized JSON, `children/index_options/configs/run-predictive-cdf-refinement.json`;
+  no production code/dependency change or one-off execution script. Isolated
+  worktree `/home/russell/dskit-cdf-refinement-20260928`, base `abf360ca`.
+- Reviewed candidate `88f85a8b601861e2794039775c54ef996bbf3910`; two fresh
+  Luna lenses, C0/M0 after independent adjudication of the parent-owned
+  pre-evaluation freeze. Actual findings/evidence in ADR-0191 record. Seven
+  child and 13 reused integration tests pass; no full suite. Deferred Minors:
+  external freeze automation/test gap, inherited negligible inverse atom error.
+- All 13 candidates, selection, four evaluation partitions and final evaluator
+  completed, ten stages exit0. Same 42 features, data, purges, seeds and metrics.
+  WSL2/CUDA fitting; at most two concurrent capped stages. Slowest 9:39.82,
+  peak process RSS 2.644 GiB. Private prior-task interpreter reused read-only.
+- Primary frozen BEFORE any evaluation in commit
+  `af23efa06a72aaa60589105226a50d4e1d036ede`: raw small [8] network, 35% MLP /
+  65% empirical. Group finalists: original weight .30, small .35, wd.3 .35,
+  three-component .35. No post-evaluation primary substitution.
+- Primary later skill +0.964721% empirical versus old +0.818035%; direct gain
+  +0.150304% versus incumbent. Its 60/120-date paired intervals cross zero.
+  Beats incumbent in100/135 cells; downside misses worsen from8.039% to8.326%.
+  Keep old25% blend as research benchmark; smaller35% is a modest alternative,
+  not a clear upgrade or trading model. Descriptive mixture +1.028690% versus
+  empirical hurts IWM; it does not replace the frozen primary.
+- 18,616 development forecasts/133 cells; 68,084 evaluation/135 cells,
+  1,746 dates/3,495 series. All model/variant rows total1,213,800. Luna artifact
+  audit passed hashes, exact pairing, purges, fit reuse and representative
+  exact-CDF/PIT reconstruction. Full grid, annual counts, cutoff example and
+  standalone recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-refinement.md`.
+- Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_refinement_20260928`
+  and logs `cdf_refinement_logs_20260928`; preserve prior methods/HPO/feature
+  worktrees and private environment. No further experiment is running.
+- Authorized wrap/publication completed; next research, NOT started:
+  genuinely new-date validation and predeclared downside/cutoff objectives.
+
+## ADR-0191 additional CDF methods completed (2026-09-28)
+
+- Merged/pushed to remote main: reviewed source `1302738e`, complete results
+  and evidence `df3cec80bd6ec373de724d04116b632db9d31d6e`; remote containment
+  verified after fetch. WSL's credential bridge failed for push, so existing
+  Windows Git credentials published the same worktree. All computation stayed
+  in WSL2. The following handoff-only update does not alter reviewed identities.
+- Owner requested all three proposed methods, Sol build and Luna review.
+  Source locked at `1302738e3a38d9ae635ae5b3b2ae2a25028ee122` from base
+  `9d1814eb`: QRF (not Fourier-MMD DRF), Normal-CRPS NGBoost, and exact
+  empirical/MLP probability blends in the existing generic CDF pack.
+- One standardized JSON: `children/index_options/configs/run-predictive-cdf-methods.json`.
+  All nine development candidates, selection, four frozen evaluation
+  partitions and final evaluator completed. No one-off execution script,
+  failed/dropped stage, silent fallback, live model or trading.
+- Two fresh Luna final lenses: C0/M0; 93 focused/purity + 28 child integration
+  tests. Additional Luna artifact audits verified hashes, paired identities,
+  purges, unchanged selected specs and representative exact curve/PIT recovery.
+  Actual retained evidence: `docs/review-evidence/ADR-0191.md`. Deferred Minor:
+  convex inverse can fall about 1e-19 below an atom; no post-lock nit changes.
+- Finalists: raw QRF leaf100, NGBoost depth2/leaf20/rate.03, 25% MLP blend,
+  plus empirical and pooled-MLP controls. Blend/control fit-state equivalence
+  verified in all ten years; shared neural settings/seeds remain unchanged.
+- Primary full-CDF equal-cell skill: QRF -3.639%, NGBoost -1.029%, blend
+  +0.818%, MLP -1.917%. Blend index means: SPY +0.966%, QQQ +1.227%,
+  IWM +0.261%; positive in 123/135 cells. 30–45-day blend skill +0.481%
+  overall, IWM -0.040%. Carry blend as research challenger, retain empirical.
+- Blend nominal 95% paired block intervals above zero, but these are
+  unadjusted, dependent, reused-history comparisons. Its downside exceedance
+  is 8.039% instead of 5%. No fresh-data or profitable-trading claim.
+- 18,616 development forecasts/133 cells; 68,084 evaluation forecasts,
+  1,746 dates/3,495 series/all135 cells. Full grid, annual train/cal/validation
+  counts, cutoff example, uncertainty and recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-methods.md`.
+- All execution in WSL2; neural fits use CUDA, tree libraries CPU. Every
+  stage under 30 min/6 GiB; slowest 5:10.85, peak process RSS 3.250 GiB.
+  Separate private .venv; no shared-environment mutation; no full test suite.
+- Preserve `/home/russell/dskit-cdf-methods-20260928` for ignored outputs
+  `children/index_options/pipeline_runs/predictive_cdf_methods_20260928`
+  and sibling logs `cdf_methods_logs_20260928`, plus private dependencies.
+  Also preserve the older feature-research and HPO worktrees/artifacts.
+- Next research, not started: genuinely new-data validation and predeclared
+  downside/strike objectives. The current bounded implementation/review/run
+  gate is complete and published; no further experiment is running.
+
 ## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
 
 - Merged/pushed to remote main: implementation `f396baca`, complete memo/evidence

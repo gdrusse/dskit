@@ -27037,3 +27037,173 @@ points, train-only pooled imputation, exact inventory, frozen artifacts and
 partial/hash/identity substitution refusal, final seed/variant locking, counts,
 and bounded Student numerical convergence. These are design acceptance tests,
 not a claim they already pass.
+
+## ADR-0191 — Conditional-forest, NGBoost and conservative CDF blending
+
+2026-09-28. Status: owner-approved bounded extension; Luna Phase 0 cleared
+after two material corrections. Owner: index_options. Base:
+`9d1814eb`. The owner requested three further methods through standardized JSON
+and the existing CDF CLI: a conditional/distributional forest, NGBoost, and a
+conservative empirical–MLP blend. This is offline reused-history research, not a
+trading, serving, promotion or fresh-holdout authorization.
+
+Extend only `libs/predictive_cdf.py` and its existing study seam. The forest is
+`QuantileForestCDF`, wrapping quantile-forest 1.4.2's
+`RandomForestQuantileRegressor`. It is a Meinshausen-style quantile-regression
+forest with ordinary squared-error/mean splits and leaf-weighted outcomes. It
+is **not** the Fourier-MMD split Distributional Random Forest (DRF), and reports
+must not call it DRF. Its public curve is the declared finite-support quantile
+grid used for scoring: ordered predicted knots, probabilities exactly zero and
+one at the outer knots, and no invented tail beyond those predicted training
+extremes. This is an auditable discretization of the fitted QRF, not a claim to
+retain the library's full weighted empirical forest or identify unseen tails.
+
+`NGBoostCDF` wraps NGBoost 0.5.11 with Normal distribution and CRPScore. Its
+JSON-exposed base-tree depth/leaf size, estimators, learning rate, minibatch,
+column sample, tolerance and seed are bounded and default-deny. Predicted
+location/positive scale become the existing one-component `MixtureCurve`; no
+density family is selected from evaluation. `ConvexCurve` combines two curves
+as `(1-w) F_left + w F_right`, has a bracketed numerical inverse, and flattens
+both component states plus `w` into existing NPZ evidence. The fitted
+`EmpiricalMLPBlendCDF` uses a pooled normal-a MLP, while its pooled empirical
+constituent conditions jointly on exact horizon and the validated one-hot index
+columns. Therefore weight zero is exactly the per-index horizon-empirical
+control and weight one is exactly the pooled-MLP control on the same fit rows;
+no cross-index empirical outcomes leak into either endpoint. Calibration, if
+selected, wraps the already blended raw curve.
+
+Both dependencies are optional extras and imported only inside methods. The
+isolated project environment has Python 3.12.3, quantile-forest 1.4.2, NGBoost
+0.5.11 and scikit-learn 1.9.0 with `pip check` clean; the shared environment is
+not mutated. Run evidence records both new versions. A missing optional
+dependency refuses at fit, never silently substitutes another algorithm.
+For every stage, the study resolves versions of the optional libraries named by
+configured candidates and includes the sorted `{distribution: version}` map in
+the canonical stage identity as well as `versions.json`. Selection, evaluation
+and reporting recompute that map and therefore refuse artifacts produced by a
+different or missing dependency version. Merely recording a version without
+binding it to identity is insufficient.
+
+The bounded development inventory is nine candidates:
+
+- QRF: 100 trees, `max_features=0.5`, two threads, seed 829, 401 knots,
+  `min_samples_leaf` 20, 50 or 100, and `max_samples_leaf=null` so every leaf
+  sample is retained rather than the library's one-sample storage default;
+- Normal CRP-NGBoost: 100 estimators, minibatch 0.8, column sample 1, seed 829,
+  base-tree `(depth, min_leaf, learning_rate)` of `(2,20,.03)`, `(3,20,.03)` or
+  `(2,50,.05)`;
+- empirical–MLP: empirical condition columns `[27,39,40,41]`, reference column
+  38, plus pooled normal-a (`components=1`, hidden 16, tanh, 20 epochs, seeds
+  `[11,29]`, deterministic true), with MLP weight 0.10, 0.25 or 0.50. The
+  separately named pooled MLP control uses that identical nested parameter
+  object in development and evaluation; there is no screen/final seed
+  substitution in this grouped study.
+
+One winner and its raw/calibrated variant freeze **per method**, not per old
+sharing structure and not one winner overall. `CDFHyperparameterStudy` accepts
+an optional explicit `candidate_groups` mapping whose keys exactly equal search
+partitions and whose values exactly partition the candidate inventory. Grouped
+mode freezes candidate specs unchanged; it does not apply ADR-0190's neural
+screen-to-final seed rewrite. It omits the legacy-only `axes`, `candidate_labels`,
+`screen_seed` and `final_seeds` keys. When `candidate_groups` is absent,
+ADR-0190's exact required keys, Cartesian validation, neural seed rewrite and
+head checks remain compatible. Mixed grouped/legacy grammar refuses. This is
+the smallest generic extension: fitting still delegates solely to
+`ChronologicalCDFStudy`; no second fit loop or script lands.
+
+The grouped JSON shape is fixed: `search_partitions` and `candidate_groups`
+both map `forest`, `ngboost` and `blend` to the same three names; every candidate
+is an ordinary `{class, params, calibrate, pooled}` study model with
+`pooled: true`. `forest_*` params are exactly `knots`, `trees`, `min_child`,
+`max_features`, `max_samples_leaf`, `threads`, `seed`; `ngboost_*` params are exactly `trees`,
+`depth`, `min_child`, `learning_rate`, `minibatch_frac`, `col_sample`, `tol`,
+`seed`; `blend_*` params are exactly `mlp_weight`, `condition_indices`,
+`reference_index`, `knots`, and one nested `mlp` object using the existing MLP
+constructor keys. Unknown or missing nested keys refuse.
+
+Exact MLP endpoint equivalence is enforced, not inferred from nominal seeds.
+`MixtureMLPCDF` gains an opt-in `deterministic` constructor knob, default false
+to preserve legacy behavior. True requires deterministic Torch algorithms,
+deterministic cuDNN, disabled cuDNN benchmarking and, on CUDA, a valid
+pre-launch `CUBLAS_WORKSPACE_CONFIG`; absence or an unsupported deterministic
+operation refuses without CPU fallback. The model exposes a private canonical
+state digest covering effective MLP parameters, fitted scaler arrays and every
+network state tensor. Model specs may declare an `equivalence` label. The study
+keeps a run-local `(year, training population, equivalence)` digest ledger after fitting and refuses
+unless the pooled-MLP control and every blend's nested MLP have byte-identical
+digests. The blend delegates this digest to its MLP constituent. The complete
+experiment inventory requires at least two members per label and forbids a label
+crossing pooled/separate populations. A partition may contain only the repeated
+control: its ledger records the actual singleton member and `unverified`, rather
+than refusing or claiming equivalence. Any partition containing two or more
+members compares every member and records `verified`; the blend search partition
+and combined evaluation must verify the control against all present blends.
+Focused tests cover singleton recording, independent same-seed equality, and
+changed seed/data/scaler or missing CUDA determinism refusal. This adds no
+persistent fitted-model cache and does not share mutable estimator objects.
+The shipped comparison is stricter than the optional generic seam: its pooled
+MLP control and all three blend candidates MUST declare the same nonempty
+`equivalence` label in JSON; config validation pins that exact membership.
+
+All candidates and the horizon-empirical and frozen pooled-normal-a controls use
+the same 42 features, pooled row weighting, folds, imputer, scale, identities and
+score resolutions as ADR-0190. Development is 18,616 rows/133 observed cells in
+2016–2018 with labels strictly before 2019. Frozen evaluation is the already
+inspected 68,084 rows/all 135 cells in 2019–2025. The archive ends 2025-12-15;
+there is no untouched 2026 dataset and no result may imply otherwise. Raw versus
+calibrated choices freeze from development. Full/tail/raw CRPS, strike Brier,
+bounded-condor error, calibration, paired blocks and numerical convergence stay
+unchanged. Each stage retains an external 30-minute cap and 6-GiB target;
+threads are at most two. Timed focused probes must demonstrate margin before the
+full stage; an incomplete stage is reported rather than narrowed post hoc.
+
+### Contract and test matrix
+
+| Invariant / input family | Expected result | Forbidden effect / focused proof |
+|---|---|---|
+| QRF class, params, missing dependency | exact wrapper/version; invalid knots, budgets or threads refuse | no DRF/MMD claim or fallback; constructor and missing-import RED |
+| QRF knots, ties, extremes | monotone valid `[0,1]` grid; declared interpolation and finite support | no crossing, NaN or extrapolated tail; tie/extreme/round-trip cases |
+| NGBoost Normal+CRPScore | finite loc and positive scale reproduce `pred_dist` CDF | no LogScore/default-family drift; fixed synthetic fit/CDF comparison |
+| blend weights 0, 1 and interior | endpoints exactly equal per-index empirical and pooled-MLP controls; interior CDF is exact convex sum | no pooled empirical contamination, density averaging, post-cal blend or mutation |
+| blend special columns and imputation | horizon/reference/one-hot condition columns validate finite before imputation; actual panel contains no missing values there | no median-created group/horizon identity; malformed generic input refuses |
+| curve NPZ save/load/audit | QRF grid and both prefixed blend components reconstruct identically | no object pickle, dropped weight/map or audit kind substitution |
+| optional versions | protocol records NGBoost and quantile-forest when configured | no import-time heavy dependency or missing version omission |
+| dependency identity across stages | sorted configured runtime versions are identity-bound and recomputed | no search/evaluate version mixing, missing-version reuse or evidence-only pin |
+| legacy ADR-0190 JSON | old Cartesian validation, selection and hashes remain compatible | no forced migration or weakened head/seed/one-hot checks |
+| explicit method groups | groups exactly partition candidates; one winner per forest/NGBoost/blend | missing, duplicate, cross-group or extra candidate refuses |
+| grouped freeze / legacy seed rewrite | grouped specs and matching control/blend seeds remain unchanged; legacy candidates alone retain ADR-0190 rewrite | no control mismatch, grouped seed mutation or class/group substitution |
+| deterministic MLP equivalence | opt-in deterministic prerequisites hold; control and nested blend MLP state/scaler digests and predictions match | no seed-only assumption, silent nondeterminism, CPU fallback or cross-population label |
+| common panel/preprocessing | identical 42 columns/rows; imputer/model fit only purged training | no future label, calibration fit or raw one-hot imputation leakage |
+| pooled cache/folds | one fit per pooled spec/year; index-specific calibration remains | no repeated-fit counts or cache collision across full specs |
+| selection/evaluation | labels `<2019`; variants/overrides frozen; 68,084 rows/135 cells | no later-score read, dropped cell, fresh-holdout claim or unpaired row |
+| numerical/payoff metrics | existing 101/401/1601 audit converges; bounded payoff sign/bounds hold | no metric change or numerical-node-as-observation claim |
+| interruption/tampering | completion-last and config/panel/dependency/file hashes refuse alteration | no partial-as-complete, substitution or overwrite |
+
+### Authorized file manifest and exit
+
+No new package or execution script. After accepted Phase 0, changes are limited
+to the existing predictive-CDF pack and focused test, `pyproject.toml` optional
+extras/lock metadata, existing child CDF adapter tests, one standardized
+comparison JSON, existing package/child READMEs and layout instructions, this
+ADR, the existing review-evidence record, requested result memo, RE-ENTRY and
+append-only action journal. Generated artifacts stay ignored. The config reuses
+`python -m index_options.cdf_study ... --stage/--partition`.
+
+Exit requires all nine development candidates within bounded budgets, one
+frozen finalist per method over all 135 reused-history cells, exact curve
+evidence, focused RED/GREEN and affected checks, and two fresh Luna final lenses
+with zero unresolved Critical/Major. A clean result supports only a comparative
+memo; it does not promote a model or authorize new data, replay or execution.
+
+Final-review correction: equivalence evidence is fold-scoped, never compared
+across changing annual training sets; non-pooled fits additionally key the group.
+Saved-curve convergence audits recover rows by the already-required unique
+forecast identity, not caller DataFrame index labels. Multi-year/multi-group
+and duplicate/non-contiguous-index tests pin both rules through report audit.
+
+Second final-review correction: every public study run validates the complete
+unfiltered panel's entry and outcome fields as present, real, canonical
+`YYYY-MM-DD` calendar dates with outcome strictly after entry. The public split
+helper enforces the same contract. Validation precedes cutoff, group and fold
+filters, so missing or malformed metadata cannot silently remove identities or
+enter lexical date bands; caller DataFrame index labels remain irrelevant.

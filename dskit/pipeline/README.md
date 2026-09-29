@@ -289,8 +289,9 @@ legacy stage-list grammar (below).
 
 ## What ships
 
-`libs/predictive_cdf.py` (ADR-0189) supplies offline conditional CDF estimators:
-empirical, monotone boosted CDF, LightGBM quantiles and a Gaussian-mixture MLP.
+`libs/predictive_cdf.py` (ADR-0189/0191) supplies offline conditional CDF
+estimators: empirical, monotone boosted CDF, LightGBM quantiles, a
+Gaussian-mixture MLP, quantile forest, Normal-CRP NGBoost and convex curves.
 `ChronologicalCDFStudy` compares common rows/features with purged training,
 held-out calibration and later annual evaluation. Its JSON configuration names
 all estimators and budgets; it is not a serving or trading artifact contract.
@@ -754,7 +755,7 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
-├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190)
+├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191)
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,

@@ -33,6 +33,30 @@ python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage ev
 python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage report
 ```
 
+ADR-0191 compares QRF, Normal-CRP NGBoost and empirical–MLP blends with the
+same CLI and `configs/run-predictive-cdf-methods.json`. Search partitions are
+`forest`, `ngboost` and `blend`; evaluation partitions remain `development`,
+`early`, `middle` and `late`. Each invocation is externally capped at 1800
+seconds/6 GiB and uses the deterministic environment declared in the config.
+
+The additive ADR-0191 refinement uses
+`configs/run-predictive-cdf-refinement.json`. Its search partitions are
+`weight`, `small`, `regularized` and `mixture`; each selects one development
+finalist before the same four evaluation partitions. The fixed raw 25% blend
+is the incumbent. Both empirical and incumbent controls disable calibration,
+deliberately duplicating raw rows; deterministic selection chooses raw. Compare
+the four group finalists with that incumbent on development before any later
+evaluation.
+Abort a capped stage rather than reducing the declared three-component search.
+
+The downside iteration uses configs/run-predictive-cdf-downside.json. Its
+floor group tests symmetric softplus scale floors and its heads group tests
+index-specific output heads; each yields one development finalist. The modeled
+quantity remains dimensionless terminal log return divided by reference scale,
+not a z-scored residual. An external recorded protocol freezes the primary from
+the two winners and raw incumbent before evaluation; the CLI evaluates those
+winners and all three controls.
+
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a

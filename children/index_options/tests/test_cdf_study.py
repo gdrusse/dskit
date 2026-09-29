@@ -1,11 +1,247 @@
 """The CDF adapter shares the contract payoff owner and exact units."""
 
+import copy
+import hashlib
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from index_options.cdf_study import CondorCDFDiagnostic
 from index_options.distribution import condor_payoff
-from dskit.pipeline.libs.predictive_cdf import MixtureCurve
+from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
+
+
+def test_predictive_cdf_downside_config_pins_bounded_grouped_inventory():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-downside.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    groups = experiment['candidate_groups']
+    assert groups == experiment['search_partitions']
+    assert list(groups) == ['floor', 'heads']
+    assert [len(groups[name]) for name in groups] == [6, 3]
+    assert experiment['max_candidates'] == 9
+    assert experiment['output'] == 'pipeline_runs/predictive_cdf_downside_20260928'
+    assert study['output'] == 'pipeline_runs/predictive_cdf_downside_20260928/base'
+    assert study['comparison_references'] == ['horizon_empirical', 'incumbent_blend_025']
+    assert list(study['models']) == [
+        'horizon_empirical', 'pooled_normal_a', 'incumbent_blend_025']
+    assert [study['models'][name]['calibrate'] for name in study['models']] == [False, True, False]
+    assert len(study['features']) == 42
+    assert [study['features'][i] for i in [39, 40, 41]] == ['is_SPY', 'is_QQQ', 'is_IWM']
+    assert study['features'][38] == 'reference_scale'
+    assert (study['target'], study['reference'], study['calibration_knots']) == (
+        'terminal_return', 'reference_scale', 21)
+    assert experiment['development_years'] == [2016, 2017, 2018]
+    assert experiment['label_cutoff'] == '2019-01-01'
+    assert experiment['evaluation_partitions'] == {
+        'development': [2016, 2017, 2018], 'early': [2019, 2020, 2021],
+        'middle': [2022, 2023], 'late': [2024, 2025]}
+    assert sum(len(v) for v in experiment['expected_cells']['development'].values()) == 133
+    assert sum(len(v) for v in experiment['expected_cells']['evaluation'].values()) == 135
+
+    candidates = experiment['candidates']
+    floor = [candidates[name] for name in groups['floor']]
+    heads = [candidates[name] for name in groups['heads']]
+    assert all(spec['class'].endswith(':EmpiricalMLPBlendCDF') for spec in candidates.values())
+    assert [(spec['params']['mlp']['min_scale'], spec['params']['mlp_weight'])
+            for spec in floor] == [
+                (.5, .25), (.5, .35), (.75, .25), (.75, .35), (1., .25), (1., .35)]
+    assert [spec['equivalence'] for spec in floor] == [
+        'floor_min050', 'floor_min050', 'floor_min075', 'floor_min075',
+        'floor_min100', 'floor_min100']
+    assert [spec['params']['mlp_weight'] for spec in heads] == [.15, .25, .35]
+    assert all(spec['params']['mlp']['min_scale'] == .1 for spec in heads)
+    assert all(spec['params']['mlp']['head_features'] == [39, 40, 41] for spec in heads)
+    assert all(spec['equivalence'] == 'heads_triple' for spec in heads)
+    assert all(spec['pooled'] is True and spec['calibrate'] is True
+               for spec in candidates.values())
+    assert all('head_features' not in spec['params']['mlp'] for spec in floor)
+    endpoint = study['models']['pooled_normal_a']['params']
+    assert endpoint == {
+        'components': 1, 'hidden': [16], 'epochs': 20, 'batch_size': 1024,
+        'learning_rate': .003, 'weight_decay': .1, 'min_scale': .1,
+        'activation': 'tanh', 'dropout': 0, 'seeds': [11, 29],
+        'device': 'cuda', 'deterministic': True}
+    assert study['models']['pooled_normal_a']['equivalence'] == 'base_pure_inc'
+    incumbent = study['models']['incumbent_blend_025']
+    assert incumbent['params']['mlp_weight'] == .25
+    assert incumbent['params']['mlp'] == endpoint
+    assert incumbent['equivalence'] == 'base_pure_inc'
+    assert all(spec['params']['condition_indices'] == [27, 39, 40, 41]
+               and spec['params']['reference_index'] == 38
+               and spec['params']['knots'] == 401 for spec in candidates.values())
+    assert experiment['resolutions'] == {
+        'screen_samples': 101, 'final_samples': 401, 'tail_points': 201,
+        'integration_points': 101, 'audit_samples': [101, 401, 1601], 'audit_rows': 12}
+    CDFHyperparameterStudy(config)
+
+    prior = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-refinement.json'
+    assert hashlib.sha256(prior.read_bytes()).hexdigest() == (
+        '7375d6f996478cafd021d32af534d39c9c6bb5b0ab3e352fe33b778c3518a786')
+    previous = json.loads(prior.read_text())
+    assert config['data'] == previous['data']
+    assert config['diagnostic'] == previous['diagnostic']
+    unchanged_study = set(previous['study'])-{'output', 'models'}
+    assert {key: study[key] for key in unchanged_study} == {
+        key: previous['study'][key] for key in unchanged_study}
+    unchanged_experiment = set(previous['experiment'])-{
+        'notes', 'output', 'max_candidates', 'candidates',
+        'search_partitions', 'candidate_groups'}
+    assert {key: experiment[key] for key in unchanged_experiment} == {
+        key: previous['experiment'][key] for key in unchanged_experiment}
+    assert study['models']['horizon_empirical'] == previous['study']['models']['horizon_empirical']
+    for name in ('pooled_normal_a', 'incumbent_blend_025'):
+        assert {key: value for key, value in study['models'][name].items() if key != 'equivalence'} == {
+            key: value for key, value in previous['study']['models'][name].items()
+            if key != 'equivalence'}
+
+
+def test_predictive_cdf_refinement_config_pins_bounded_grouped_inventory():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-refinement.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    groups = experiment['candidate_groups']
+    assert groups == experiment['search_partitions']
+    assert list(groups) == ['weight', 'small', 'regularized', 'mixture']
+    assert [len(groups[name]) for name in groups] == [4, 3, 3, 3]
+    assert experiment['max_candidates'] == 13
+    assert experiment['output'] == 'pipeline_runs/predictive_cdf_refinement_20260928'
+    assert study['output'] == 'pipeline_runs/predictive_cdf_refinement_20260928/base'
+    assert study['comparison_references'] == ['horizon_empirical', 'incumbent_blend_025']
+    assert list(study['models']) == [
+        'horizon_empirical', 'pooled_normal_a', 'incumbent_blend_025']
+    assert study['models']['horizon_empirical']['calibrate'] is False
+    assert study['models']['incumbent_blend_025']['calibrate'] is False
+    assert study['features'][27] == 'calendar_dte'
+    assert [study['features'][i] for i in [39, 40, 41]] == ['is_SPY', 'is_QQQ', 'is_IWM']
+    assert study['features'][38] == 'reference_scale'
+    assert experiment['development_years'] == [2016, 2017, 2018]
+    assert experiment['label_cutoff'] == '2019-01-01'
+    assert experiment['evaluation_partitions'] == {
+        'development': [2016, 2017, 2018], 'early': [2019, 2020, 2021],
+        'middle': [2022, 2023], 'late': [2024, 2025]}
+    assert sum(len(v) for v in experiment['expected_cells']['development'].values()) == 133
+    assert sum(len(v) for v in experiment['expected_cells']['evaluation'].values()) == 135
+
+    candidates = experiment['candidates']
+    assert [candidates[name]['params']['mlp_weight'] for name in groups['weight']] == [
+        .15, .2, .3, .35]
+    for group in ('small', 'regularized', 'mixture'):
+        assert [candidates[name]['params']['mlp_weight'] for name in groups[group]] == [
+            .15, .25, .35]
+    endpoint = study['models']['pooled_normal_a']['params']
+    assert endpoint == {
+        'components': 1, 'hidden': [16], 'epochs': 20, 'batch_size': 1024,
+        'learning_rate': .003, 'weight_decay': .1, 'min_scale': .1,
+        'activation': 'tanh', 'dropout': 0, 'seeds': [11, 29],
+        'device': 'cuda', 'deterministic': True}
+    expected_neural = {
+        'weight': endpoint,
+        'small': {**endpoint, 'hidden': [8]},
+        'regularized': {**endpoint, 'weight_decay': .3},
+        'mixture': {**endpoint, 'components': 3},
+    }
+    labels = {
+        'weight': 'pooled_normal_a_endpoint',
+        'small': 'small_normal_endpoint',
+        'regularized': 'regularized_normal_endpoint',
+        'mixture': 'three_normal_mixture_endpoint',
+    }
+    for group, names in groups.items():
+        assert all(candidates[name]['params']['mlp'] == expected_neural[group] for name in names)
+        assert all(candidates[name]['equivalence'] == labels[group] for name in names)
+        assert all(candidates[name]['pooled'] is True for name in names)
+        assert all(candidates[name]['calibrate'] is True for name in names)
+    assert study['models']['pooled_normal_a']['equivalence'] == labels['weight']
+    incumbent = study['models']['incumbent_blend_025']
+    assert incumbent['params']['mlp_weight'] == .25
+    assert incumbent['params']['mlp'] == endpoint
+    assert incumbent['equivalence'] == labels['weight']
+    assert incumbent['pooled'] is True
+    assert all(candidates[name]['params']['condition_indices'] == [27, 39, 40, 41]
+               and candidates[name]['params']['reference_index'] == 38
+               and candidates[name]['params']['knots'] == 401
+               for names in groups.values() for name in names)
+    assert experiment['resolutions'] == {
+        'screen_samples': 101, 'final_samples': 401, 'tail_points': 201,
+        'integration_points': 101, 'audit_samples': [101, 401, 1601], 'audit_rows': 12}
+    CDFHyperparameterStudy(config)
+
+    bad_group = copy.deepcopy(config)
+    bad_group['experiment']['candidate_groups']['small'][0] = groups['weight'][0]
+    with np.testing.assert_raises_regex(ValueError, 'candidate groups'):
+        CDFHyperparameterStudy(bad_group)
+    bad_label = copy.deepcopy(config)
+    bad_label['experiment']['candidates'][groups['small'][0]]['equivalence'] = 'singleton'
+    with np.testing.assert_raises_regex(ValueError, 'equivalence group'):
+        CDFHyperparameterStudy(bad_label)
+
+    prior = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-methods.json'
+    assert hashlib.sha256(prior.read_bytes()).hexdigest() == (
+        'da174820172b462df1d309a94c851e08059cda64074dc654d573144566624f98')
+    previous = json.loads(prior.read_text())
+    assert config['data'] == previous['data']
+    assert config['diagnostic'] == previous['diagnostic']
+    unchanged_study = set(previous['study'])-{'output', 'comparison_references', 'models'}
+    assert {key: study[key] for key in unchanged_study} == {
+        key: previous['study'][key] for key in unchanged_study}
+    unchanged_experiment = set(previous['experiment'])-{
+        'notes', 'output', 'max_candidates', 'candidates',
+        'search_partitions', 'candidate_groups'}
+    assert {key: experiment[key] for key in unchanged_experiment} == {
+        key: previous['experiment'][key] for key in unchanged_experiment}
+    old_empirical = previous['study']['models']['horizon_empirical']
+    assert study['models']['horizon_empirical']['class'] == old_empirical['class']
+    assert study['models']['horizon_empirical']['params'] == old_empirical['params']
+
+
+def test_predictive_cdf_methods_config_pins_bounded_grouped_inventory():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-methods.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    groups = experiment['candidate_groups']
+    assert groups == experiment['search_partitions']
+    assert list(groups) == ['forest', 'ngboost', 'blend']
+    assert [len(groups[name]) for name in groups] == [3, 3, 3]
+    assert set(experiment) & {'axes', 'candidate_labels', 'screen_seed', 'final_seeds'} == set()
+    assert experiment['output'] == 'pipeline_runs/predictive_cdf_methods_20260928'
+    assert experiment['evaluation_partitions'] == {
+        'development': [2016, 2017, 2018], 'early': [2019, 2020, 2021],
+        'middle': [2022, 2023], 'late': [2024, 2025]}
+    assert sum(len(v) for v in experiment['expected_cells']['development'].values()) == 133
+    assert sum(len(v) for v in experiment['expected_cells']['evaluation'].values()) == 135
+    assert study['features'][27] == 'calendar_dte'
+    assert [study['features'][i] for i in [39, 40, 41]] == ['is_SPY', 'is_QQQ', 'is_IWM']
+    assert study['features'][38] == 'reference_scale'
+    equivalence = 'pooled_normal_a_endpoint'
+    assert study['models']['pooled_normal_a']['equivalence'] == equivalence
+    assert all(experiment['candidates'][name]['equivalence'] == equivalence
+               for name in groups['blend'])
+    assert all(spec['pooled'] is True for spec in experiment['candidates'].values())
+    assert [experiment['candidates'][name]['params']['min_child']
+            for name in groups['forest']] == [20, 50, 100]
+    assert all(experiment['candidates'][name]['params']['max_samples_leaf'] is None
+               for name in groups['forest'])
+    ngboost = [experiment['candidates'][name]['params'] for name in groups['ngboost']]
+    assert [(p['depth'], p['min_child'], p['learning_rate']) for p in ngboost] == [
+        (2, 20, .03), (3, 20, .03), (2, 50, .05)]
+    assert all((p['trees'], p['minibatch_frac'], p['col_sample'], p['tol'], p['seed'])
+               == (100, .8, 1., .0001, 829) for p in ngboost)
+    blends = [experiment['candidates'][name] for name in groups['blend']]
+    assert [spec['params']['mlp_weight'] for spec in blends] == [.1, .25, .5]
+    control_mlp = study['models']['pooled_normal_a']['params']
+    assert all(spec['params']['mlp'] == control_mlp for spec in blends)
+    assert control_mlp == {
+        'components': 1, 'hidden': [16], 'epochs': 20, 'batch_size': 1024,
+        'learning_rate': .003, 'weight_decay': .1, 'min_scale': .1,
+        'activation': 'tanh', 'dropout': 0, 'seeds': [11, 29],
+        'device': 'cuda', 'deterministic': True}
+    assert experiment['resolutions'] == {
+        'screen_samples': 101, 'final_samples': 401, 'tail_points': 201,
+        'integration_points': 101, 'audit_samples': [101, 401, 1601], 'audit_rows': 12}
+    CDFHyperparameterStudy(config)
 
 
 def test_vectorized_payoff_matches_existing_owner_at_every_kink():

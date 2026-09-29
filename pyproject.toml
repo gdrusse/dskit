@@ -35,6 +35,10 @@ rl = ["gymnasium>=1.3,<1.4", "stable-baselines3>=2.9,<2.10"]
 # above (which carries torch): the path runs THROUGH SklearnFit, so the
 # extra carries that doorway's scikit-learn/joblib runtime too.
 lightgbm = ["lightgbm>=4.0", "scikit-learn>=1.3", "joblib>=1.3"]
+# Predictive-CDF research wrappers (ADR-0191). Both imports remain method-local,
+# so install only the estimator used by a document.
+ngboost = ["ngboost>=0.5.11,<0.6"]
+quantile-forest = ["quantile-forest>=1.4.2,<1.5"]
 # The tracking SINK pack (dskit/pipeline/libs/mlflow.py) — it registers into
 # SINK_KINDS, not the node registry, and defaults to a local sqlite store, so
 # installing this extra needs no server anywhere.
@@ -88,6 +92,8 @@ all = [
     "gymnasium>=1.3,<1.4",
     "stable-baselines3>=2.9,<2.10",
     "lightgbm>=4.0",
+    "ngboost>=0.5.11,<0.6",
+    "quantile-forest>=1.4.2,<1.5",
     "mlflow>=2.9",
     "pyarrow>=15",
     "alpaca-py>=0.44",

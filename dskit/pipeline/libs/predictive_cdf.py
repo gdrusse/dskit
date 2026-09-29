@@ -13,10 +13,28 @@ import json
 from pathlib import Path
 import time
 
-__all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "CDFEstimator",
+__all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve", "CDFEstimator",
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
            "QuantileCDF", "MixtureMLPCDF", "StudentMixtureCurve",
-           "StudentMixtureMLPCDF", "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
+           "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
+           "EmpiricalMLPBlendCDF", "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
+
+
+def _validate_temporal_frame(frame, date_field, end_field):
+    """Refuse incomplete or noncanonical temporal metadata before filtering."""
+    import pandas as pd
+
+    parsed = []
+    for field in (date_field, end_field):
+        values = frame[field]
+        strings = values.map(lambda value: isinstance(value, str))
+        dates = pd.to_datetime(values.where(strings), format="%Y-%m-%d", errors="coerce")
+        canonical = dates.dt.strftime("%Y-%m-%d").eq(values)
+        if values.isna().any() or not (strings & dates.notna() & canonical).all():
+            raise ValueError(f"invalid canonical ISO date metadata: {field}")
+        parsed.append(dates)
+    if not (parsed[1] > parsed[0]).all():
+        raise ValueError("outcome date must be strictly after forecast date")
 
 
 class _Curve(ABC):
@@ -309,6 +327,69 @@ class CalibratedCurve(_Curve):
         return self.base.quantile(np.clip(p, 1e-9, 1-1e-9))
 
 
+class ConvexCurve(_Curve):
+    """Convex combination of two row-compatible cumulative distributions.
+
+    Parameters
+    ----------
+    left, right : curve
+        Component distributions with the same forecast-row count.
+    weight : float
+        Right-component weight in the closed interval zero to one.
+
+    Examples
+    --------
+    Average two finite grids::
+
+        curve = ConvexCurve(GridCurve([[0, 1]], [0, 1]),
+                            GridCurve([[1, 2]], [0, 1]), .5)
+    """
+
+    def __init__(self, left, right, weight):
+        import math
+        if (isinstance(weight, bool) or not isinstance(left, _Curve)
+                or not isinstance(right, _Curve) or not math.isfinite(weight)
+                or not 0 <= weight <= 1):
+            raise ValueError("invalid convex curve or weight")
+        if left.cdf([0]).shape[0] != right.cdf([0]).shape[0]:
+            raise ValueError("convex components must have matching rows")
+        self.left, self.right, self.weight = left, right, float(weight)
+
+    @staticmethod
+    def _prefixed(prefix, values):
+        return {prefix+key: value for key, value in values.items()}
+
+    def _arrays(self):
+        return {"kind": "convex", "weight": self.weight,
+                **self._prefixed("left_", self.left._arrays()),
+                **self._prefixed("right_", self.right._arrays())}
+
+    def cdf(self, values):
+        """Return the exact convex sum of both component CDFs."""
+        return (1-self.weight)*self.left.cdf(values)+self.weight*self.right.cdf(values)
+
+    def quantile(self, probabilities):
+        """Invert the convex CDF by deterministic bisection."""
+        import numpy as np
+        p = np.atleast_1d(probabilities).astype(float)
+        if not np.isfinite(p).all() or (p <= 0).any() or (p >= 1).any():
+            raise ValueError("quantile probabilities must be strictly inside (0,1)")
+        if self.weight == 0:
+            return self.left.quantile(p)
+        if self.weight == 1:
+            return self.right.quantile(p)
+        rows = self.cdf([0]).shape[0]
+        p = np.broadcast_to(p, (rows, p.shape[-1]))
+        bounds = [curve.quantile(p) for curve in (self.left, self.right)]
+        lo, hi = np.minimum(*bounds), np.maximum(*bounds)
+        for _ in range(60):
+            mid = (lo+hi)/2
+            mask = self.cdf(mid) < p
+            lo = np.where(mask, mid, lo)
+            hi = np.where(mask, hi, mid)
+        return (lo+hi)/2
+
+
 class CDFEstimator(ABC):
     """Array estimator seam; calibration is always supplied separately.
 
@@ -353,8 +434,21 @@ class HorizonEmpiricalCDF(CDFEstimator):
         model = HorizonEmpiricalCDF(0, 1, 401)
     """
 
-    def __init__(self, horizon_index, reference_index, knots):
+    def __init__(self, horizon_index, reference_index, knots, condition_indices=None):
         self.horizon_index, self.reference_index, self.knots = horizon_index, reference_index, knots
+        self.condition_indices = tuple(condition_indices or [horizon_index])
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        positions = (*self.condition_indices, self.reference_index)
+        if (x.ndim != 2 or not positions or min(positions) < 0
+                or max(positions) >= x.shape[1]
+                or not np.isfinite(x[:, positions]).all()):
+            raise ValueError("condition and reference features must be finite")
+
+    def _keys(self, x):
+        return [tuple(row) for row in x[:, self.condition_indices]]
 
     def fit(self, x, y, cal_x, cal_y):
         """Learn exact-horizon raw-outcome empirical quantiles.
@@ -373,8 +467,9 @@ class HorizonEmpiricalCDF(CDFEstimator):
 
         self.p = np.linspace(0, 1, self.knots)
         raw = y * x[:, self.reference_index]
-        self.shapes = {h: np.quantile(raw[x[:, self.horizon_index] == h], self.p)
-                       for h in np.unique(x[:, self.horizon_index])}
+        keys = self._keys(x)
+        self.shapes = {key: np.quantile(raw[np.array([value == key for value in keys])], self.p)
+                       for key in dict.fromkeys(keys)}
         return self
 
     def curve(self, x):
@@ -392,7 +487,7 @@ class HorizonEmpiricalCDF(CDFEstimator):
         """
         import numpy as np
 
-        values = np.array([self.shapes[h] for h in x[:, self.horizon_index]])
+        values = np.array([self.shapes[key] for key in self._keys(x)])
         return GridCurve(values / x[:, self.reference_index, None], self.p)
 
 
@@ -609,6 +704,118 @@ class QuantileCDF(MonotoneCDF):
         return GridCurve(q, [0., *self.probabilities, 1.])
 
 
+class QuantileForestCDF(CDFEstimator):
+    """Finite-grid conditional CDF from a mean-split quantile forest.
+
+    Parameters
+    ----------
+    knots, trees, min_child, threads, seed : int
+        Discretization and bounded forest controls.
+    max_features : float
+        Feature fraction per split.
+    max_samples_leaf : int or None
+        Optional retained samples per leaf; None retains the full leaf sample.
+
+    Examples
+    --------
+    A small CPU forest::
+
+        model = QuantileForestCDF(101, trees=100, min_child=20, threads=2)
+    """
+
+    def __init__(self, knots, trees=100, min_child=20, max_features=.5,
+                 max_samples_leaf=None, threads=2, seed=829):
+        import math
+        values = (knots, trees, min_child, threads, seed)
+        if (any(type(value) is not int for value in values) or knots < 3
+                or min(trees, min_child, threads) < 1 or seed < 0
+                or isinstance(max_features, bool) or not math.isfinite(max_features)
+                or not 0 < max_features <= 1
+                or (max_samples_leaf is not None
+                    and (type(max_samples_leaf) is not int or max_samples_leaf < 1))):
+            raise ValueError("invalid quantile-forest parameters")
+        self.knots, self.trees, self.min_child = knots, trees, min_child
+        self.max_features, self.threads, self.seed = max_features, threads, seed
+        self.max_samples_leaf = max_samples_leaf
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit one quantile-regression forest on training rows only."""
+        from quantile_forest import RandomForestQuantileRegressor
+        self.model = RandomForestQuantileRegressor(
+            n_estimators=self.trees, min_samples_leaf=self.min_child,
+            max_samples_leaf=self.max_samples_leaf,
+            max_features=self.max_features, n_jobs=self.threads,
+            random_state=self.seed)
+        self.model.fit(x, y)
+        return self
+
+    def curve(self, x):
+        """Return the declared finite-support forest discretization."""
+        import numpy as np
+        p = np.linspace(0, 1, self.knots)
+        values = np.asarray(self.model.predict(x, quantiles=p.tolist()), dtype=float)
+        if values.ndim == 1:
+            values = values[:, None]
+        values = np.maximum.accumulate(values, axis=1)
+        return GridCurve(values, p)
+
+
+class NGBoostCDF(CDFEstimator):
+    """Normal NGBoost distribution trained with the CRP score.
+
+    Parameters
+    ----------
+    trees, depth, min_child, seed : int
+        Bounded boosting and base-tree controls.
+    learning_rate, minibatch_frac, col_sample, tol : float
+        NGBoost optimization controls.
+
+    Examples
+    --------
+    A compact normal booster::
+
+        model = NGBoostCDF(trees=100, depth=2, min_child=20)
+    """
+
+    def __init__(self, trees=100, depth=2, min_child=20, learning_rate=.03,
+                 minibatch_frac=.8, col_sample=1., tol=1e-4, seed=829):
+        import math
+        ints = (trees, depth, min_child, seed)
+        floats = (learning_rate, minibatch_frac, col_sample, tol)
+        if (any(type(value) is not int for value in ints) or min(ints[:3]) < 1 or seed < 0
+                or any(isinstance(value, bool) or not math.isfinite(value) for value in floats)
+                or learning_rate <= 0 or tol < 0
+                or not 0 < minibatch_frac <= 1 or not 0 < col_sample <= 1):
+            raise ValueError("invalid NGBoost parameters")
+        self.trees, self.depth, self.min_child = trees, depth, min_child
+        self.learning_rate, self.minibatch_frac = learning_rate, minibatch_frac
+        self.col_sample, self.tol, self.seed = col_sample, tol, seed
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit Normal NGBoost with CRPScore on training rows only."""
+        from ngboost import NGBRegressor
+        from ngboost.distns import Normal
+        from ngboost.scores import CRPScore
+        from sklearn.tree import DecisionTreeRegressor
+        base = DecisionTreeRegressor(max_depth=self.depth,
+                                     min_samples_leaf=self.min_child,
+                                     random_state=self.seed)
+        self.model = NGBRegressor(
+            Dist=Normal, Score=CRPScore, Base=base, natural_gradient=True,
+            n_estimators=self.trees, learning_rate=self.learning_rate,
+            minibatch_frac=self.minibatch_frac, col_sample=self.col_sample,
+            verbose=False, tol=self.tol, random_state=self.seed)
+        self.model.fit(x, y)
+        return self
+
+    def curve(self, x):
+        """Return the fitted analytic normal distribution per row."""
+        import numpy as np
+        params = self.model.pred_dist(x).params
+        loc, scale = np.asarray(params["loc"]), np.asarray(params["scale"])
+        return MixtureCurve(np.ones((len(loc), 1)), loc[:, None], scale[:, None])
+
+
 class MixtureMLPCDF(CDFEstimator):
     """Small Gaussian mixture MLP ensemble trained with log likelihood.
 
@@ -637,7 +844,7 @@ class MixtureMLPCDF(CDFEstimator):
     def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
                  seeds=(11, 29), device="cuda", learning_rate=.001,
                  weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
-                 head_features=None):
+                 head_features=None, deterministic=False):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
@@ -645,7 +852,8 @@ class MixtureMLPCDF(CDFEstimator):
                 or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
                 or min(learning_rate, min_scale) <= 0 or weight_decay < 0
                 or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
-                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
+                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)
+                or type(deterministic) is not bool):
             raise ValueError("invalid mixture training parameters")
         if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
                 or any(type(v) is not int or v < 0 for v in head_features)):
@@ -655,6 +863,34 @@ class MixtureMLPCDF(CDFEstimator):
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
         self.activation, self.dropout = activation, dropout
         self.head_features = tuple(head_features or ())
+        self.deterministic = deterministic
+
+    def _deterministic_context(self):
+        from contextlib import contextmanager
+        import os
+        import torch
+
+        @contextmanager
+        def configured():
+            if not self.deterministic:
+                yield
+                return
+            if (self.device.startswith("cuda")
+                    and os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in (":4096:8", ":16:8")):
+                raise ValueError("deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG before launch")
+            old_algorithms = torch.are_deterministic_algorithms_enabled()
+            old_cudnn = getattr(torch.backends.cudnn, "deterministic", False)
+            old_benchmark = getattr(torch.backends.cudnn, "benchmark", False)
+            torch.use_deterministic_algorithms(True)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            try:
+                yield
+            finally:
+                torch.use_deterministic_algorithms(old_algorithms)
+                torch.backends.cudnn.deterministic = old_cudnn
+                torch.backends.cudnn.benchmark = old_benchmark
+        return configured()
 
     def _validate_x(self, x):
         import numpy as np
@@ -716,6 +952,10 @@ class MixtureMLPCDF(CDFEstimator):
         self
             Fitted ensemble, retaining networks for exact CDF queries.
         """
+        with self._deterministic_context():
+            return self._fit(x, y, cal_x, cal_y)
+
+    def _fit(self, x, y, cal_x, cal_y):
         import torch
         from sklearn.preprocessing import StandardScaler
 
@@ -753,6 +993,28 @@ class MixtureMLPCDF(CDFEstimator):
             self.models.append(model)
             self.losses.append(losses)
         return self
+
+    def _equivalence_state(self):
+        """Digest effective preprocessing and every fitted network tensor."""
+        import numpy as np
+        digest = hashlib.sha256()
+        settings = {"components": self.components, "hidden": self.hidden,
+                    "epochs": self.epochs, "batch_size": self.batch_size,
+                    "seeds": list(self.seeds), "device": self.device,
+                    "learning_rate": self.learning_rate,
+                    "weight_decay": self.weight_decay, "min_scale": self.min_scale,
+                    "activation": self.activation, "dropout": self.dropout,
+                    "head_features": self.head_features,
+                    "deterministic": self.deterministic}
+        digest.update(json.dumps(settings, sort_keys=True).encode())
+        for name in ("mean_", "scale_", "var_"):
+            value = np.asarray(getattr(self.scaler, name), dtype="<f8")
+            digest.update(name.encode()+value.tobytes())
+        for model in self.models:
+            for name, value in sorted(model.state_dict().items()):
+                array = value.detach().cpu().contiguous().numpy()
+                digest.update(name.encode()+str(array.dtype).encode()+array.tobytes())
+        return digest.hexdigest()
 
     def curve(self, x):
         """Produce an analytic mixture CDF, averaging all declared seeds.
@@ -815,6 +1077,64 @@ class StudentMixtureMLPCDF(MixtureMLPCDF):
         return StudentMixtureCurve(weights, means, scales, self.degrees)
 
 
+class EmpiricalMLPBlendCDF(CDFEstimator):
+    """Conservative convex blend of conditioned empirical and mixture MLP CDFs.
+
+    Parameters
+    ----------
+    mlp_weight : float
+        MLP weight in the closed unit interval.
+    condition_indices : list of int
+        Exact-horizon and group-identity columns for the empirical constituent.
+    reference_index, knots : int
+        Standardization column and empirical quantile resolution.
+    mlp : dict
+        Exact constructor parameters for MixtureMLPCDF.
+
+    Examples
+    --------
+    Prefer the empirical constituent::
+
+        model = EmpiricalMLPBlendCDF(.25, [0, 2, 3], 1, 401,
+                                     {"device": "cpu"})
+    """
+
+    def __init__(self, mlp_weight, condition_indices, reference_index, knots, mlp):
+        import math
+        if (isinstance(mlp_weight, bool) or not math.isfinite(mlp_weight)
+                or not 0 <= mlp_weight <= 1 or not isinstance(mlp, dict)):
+            raise ValueError("invalid empirical-MLP blend parameters")
+        if (not isinstance(condition_indices, (list, tuple)) or not condition_indices
+                or any(type(value) is not int or value < 0 for value in condition_indices)
+                or len(set(condition_indices)) != len(condition_indices)):
+            raise ValueError("invalid empirical condition indices")
+        self.mlp_weight = float(mlp_weight)
+        self.condition_indices = tuple(condition_indices)
+        self.reference_index, self.knots = reference_index, knots
+        self.mlp_settings = dict(mlp)
+        self.empirical = HorizonEmpiricalCDF(condition_indices[0], reference_index, knots,
+                                              condition_indices=condition_indices)
+        self.mlp = MixtureMLPCDF(**self.mlp_settings)
+
+    def _validate_x(self, x):
+        self.empirical._validate_x(x)
+        self.mlp._validate_x(x)
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit both constituents on the same training rows."""
+        self.empirical.fit(x, y, cal_x, cal_y)
+        self.mlp.fit(x, y, cal_x, cal_y)
+        return self
+
+    def curve(self, x):
+        """Return the exact configured convex CDF."""
+        return ConvexCurve(self.empirical.curve(x), self.mlp.curve(x), self.mlp_weight)
+
+    def _equivalence_state(self):
+        """Delegate endpoint identity to the fitted MLP constituent."""
+        return self.mlp._equivalence_state()
+
+
 class ChronologicalCDFStudy:
     """JSON-driven paired research, with purged training/calibration/year splits.
 
@@ -843,9 +1163,11 @@ class ChronologicalCDFStudy:
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
         for spec in config["models"].values():
-            if (set(spec)-{"class", "params", "calibrate", "pooled", "notes"}
+            if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
-                    or type(spec.get("pooled", False)) is not bool):
+                    or type(spec.get("pooled", False)) is not bool
+                    or ("equivalence" in spec and (not isinstance(spec["equivalence"], str)
+                                                   or not spec["equivalence"]))):
                 raise ValueError("invalid model specification keys or pooled flag")
         self.config = config
 
@@ -973,6 +1295,12 @@ class ChronologicalCDFStudy:
         tuple of DataFrame
             Training, calibration, evaluation rows.
         """
+        _validate_temporal_frame(frame, date_field, end_field)
+        return ChronologicalCDFStudy._split_validated(frame, year, date_field, end_field)
+
+    @staticmethod
+    def _split_validated(frame, year, date_field, end_field):
+        """Split a frame whose temporal columns were already validated."""
         c, v, stop = f"{year-1}-01-01", f"{year}-01-01", f"{year+1}-01-01"
         date, end = frame[date_field], frame[end_field]
         return (frame[(date < c) & (end < c)],
@@ -1041,13 +1369,20 @@ class ChronologicalCDFStudy:
         from sklearn.impute import SimpleImputer
 
         c = self.config
+        _validate_temporal_frame(frame, c["date"], c["end"])
         output = Path(c["output"])
         output.mkdir(parents=True, exist_ok=False)
         from dskit.pipeline.base import config_hash
         (output/"protocol.json").write_text(json.dumps({**c, "config_sha256": config_hash(self, exclude=())}, indent=2))
         frame.to_parquet(output/"input_panel.parquet", index=False)
         from importlib.metadata import version
-        versions = {name: version(name) for name in ("numpy", "pandas", "scipy", "scikit-learn", "torch", "lightgbm")}
+        distributions = ["numpy", "pandas", "scipy", "scikit-learn", "torch", "lightgbm"]
+        classes = {spec["class"].rsplit(":", 1)[-1] for spec in c["models"].values()}
+        if "QuantileForestCDF" in classes:
+            distributions.append("quantile-forest")
+        if "NGBoostCDF" in classes:
+            distributions.append("ngboost")
+        versions = {name: version(name) for name in distributions}
         import torch
         versions["cuda"] = torch.version.cuda
         versions["deterministic_algorithms"] = torch.are_deterministic_algorithms_enabled()
@@ -1060,9 +1395,10 @@ class ChronologicalCDFStudy:
         if frame[c["identity"]].isna().any().any() or frame.duplicated(c["identity"]).any():
             raise ValueError("missing or duplicate forecast identity")
         results, counts, pooled_cache = [], [], {}
+        equivalence = {}
         for group, group_frame in frame.groupby(c["group"]):
             for year in c["years"]:
-                fit, cal, val = self.split(group_frame, year, c["date"], c["end"])
+                fit, cal, val = self._split_validated(group_frame, year, c["date"], c["end"])
                 if min(len(fit), len(cal), len(val)) < 1:
                     raise ValueError(f"empty band: {group} {year}")
                 count = {"group": group, "year": year}
@@ -1079,7 +1415,8 @@ class ChronologicalCDFStudy:
                     pooled = spec.get("pooled", False)
                     new_fit = not (pooled and key in pooled_cache)
                     if new_fit:
-                        model_fit, model_cal, _ = self.split(frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
+                        model_fit, model_cal, _ = self._split_validated(
+                            frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
                         for band in (model_fit, model_cal, val):
@@ -1089,6 +1426,18 @@ class ChronologicalCDFStudy:
                         model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
                                   imputer.transform(model_cal[c["features"]]),
                                   (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
+                        label = spec.get("equivalence")
+                        if label:
+                            if not hasattr(model, "_equivalence_state"):
+                                raise ValueError("equivalence model does not expose fitted state")
+                            state = model._equivalence_state()
+                            population = "pooled" if pooled else str(group)
+                            equivalence_key = (int(year), population, label)
+                            record = equivalence.setdefault(
+                                equivalence_key, {"digest": state, "members": []})
+                            if record["digest"] != state:
+                                raise ValueError("equivalence state mismatch")
+                            record["members"].append(name)
                         fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
                                      "groups": model_fit.groupby(c["group"]).size().to_dict(),
                                      "latest_label": model_fit[c["end"]].max()}
@@ -1135,6 +1484,12 @@ class ChronologicalCDFStudy:
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
+        evidence = [{"year": year, "population": population, "label": label,
+                     "digest": record["digest"],
+                     "members": sorted(set(record["members"])),
+                     "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
+                    for (year, population, label), record in sorted(equivalence.items())]
+        (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return pd.concat(results, ignore_index=True)
 
 
@@ -1159,6 +1514,9 @@ class CDFHyperparameterStudy:
     _KEYS = {"output", "development_years", "label_cutoff", "final_seeds", "screen_seed",
              "max_candidates", "candidates", "candidate_labels", "axes", "task_features",
              "resolutions", "expected_cells", "search_partitions", "evaluation_partitions"}
+    _COMMON_KEYS = {"output", "development_years", "label_cutoff", "max_candidates",
+                    "candidates", "task_features", "resolutions", "expected_cells",
+                    "search_partitions", "evaluation_partitions"}
 
     def __init__(self, config):
         import copy
@@ -1171,45 +1529,68 @@ class CDFHyperparameterStudy:
         self.base, self.experiment = self.config["study"], self.config["experiment"]
         c, e = self.base, self.experiment
         ChronologicalCDFStudy(c)
-        if set(e)-self._KEYS-{"notes"} or self._KEYS-set(e):
+        self.grouped = "candidate_groups" in e
+        required = self._COMMON_KEYS | ({"candidate_groups"} if self.grouped else
+                                        {"final_seeds", "screen_seed", "candidate_labels", "axes"})
+        if set(e)-required-{"notes"} or required-set(e):
             raise ValueError("unknown or missing experiment keys")
         self.inventory = CandidateInventory({"candidate": list(e["candidates"])}, max_candidates=e["max_candidates"])
-        axes = e["axes"]
-        if set(axes) != {"sharing", "family", "bundle"}:
-            raise ValueError("candidate axes must declare sharing, family, bundle")
-        expected = set(itertools.product(axes["sharing"], axes["family"], axes["bundle"]))
-        labels = e["candidate_labels"]
-        if set(labels) != set(e["candidates"]) or any(set(v) != set(axes) for v in labels.values()):
-            raise ValueError("candidate label identity mismatch")
-        actual = [(v["sharing"], v["family"], v["bundle"]) for v in labels.values()]
-        if set(actual) != expected or len(actual) != len(expected):
-            raise ValueError("candidate inventory is not the declared Cartesian product")
         parts = e["search_partitions"]
-        if set(parts) != set(axes["sharing"]):
-            raise ValueError("search partitions must match sharing groups")
-        for sharing, names in parts.items():
-            if len(names) != len(set(names)) or set(names) != {n for n, v in labels.items() if v["sharing"] == sharing}:
-                raise ValueError("search partition candidate mismatch")
+        if self.grouped:
+            groups = e["candidate_groups"]
+            flat = [name for names in groups.values() for name in names]
+            if (set(parts) != set(groups) or parts != groups
+                    or any(not isinstance(names, list) or not names for names in groups.values())
+                    or len(flat) != len(set(flat)) or set(flat) != set(e["candidates"])):
+                raise ValueError("candidate groups must exactly partition inventory")
+        else:
+            axes = e["axes"]
+            if set(axes) != {"sharing", "family", "bundle"}:
+                raise ValueError("candidate axes must declare sharing, family, bundle")
+            expected = set(itertools.product(axes["sharing"], axes["family"], axes["bundle"]))
+            labels = e["candidate_labels"]
+            if set(labels) != set(e["candidates"]) or any(set(v) != set(axes) for v in labels.values()):
+                raise ValueError("candidate label identity mismatch")
+            actual = [(v["sharing"], v["family"], v["bundle"]) for v in labels.values()]
+            if set(actual) != expected or len(actual) != len(expected):
+                raise ValueError("candidate inventory is not the declared Cartesian product")
+            if set(parts) != set(axes["sharing"]):
+                raise ValueError("search partitions must match sharing groups")
+            for sharing, names in parts.items():
+                if len(names) != len(set(names)) or set(names) != {n for n, v in labels.items() if v["sharing"] == sharing}:
+                    raise ValueError("search partition candidate mismatch")
         if set(c["models"]) & set(e["candidates"]):
             raise ValueError("control and candidate names overlap")
-        if (not e["final_seeds"] or len(set(e["final_seeds"])) != len(e["final_seeds"])
-                or any(type(s) is not int for s in [e["screen_seed"], *e["final_seeds"]])):
+        if (not self.grouped and (not e["final_seeds"] or len(set(e["final_seeds"])) != len(e["final_seeds"])
+                or any(type(s) is not int for s in [e["screen_seed"], *e["final_seeds"]]))):
             raise ValueError("invalid frozen seeds")
         mapping = e["task_features"]
         if not mapping or len(set(mapping.values())) != len(mapping) or not set(mapping.values()).issubset(c["features"]):
             raise ValueError("invalid task feature mapping")
         head_positions = [c["features"].index(v) for v in mapping.values()]
         for name, spec in e["candidates"].items():
-            label, p = labels[name], spec["params"]
-            cls = {"normal": "MixtureMLPCDF", "student": "StudentMixtureMLPCDF"}.get(label["family"])
-            if (cls is None or spec["class"] != f"dskit.pipeline.libs.predictive_cdf:{cls}"
-                    or label["sharing"] not in ("separate", "pooled", "heads")
-                    or spec.get("pooled", False) != (label["sharing"] != "separate")
-                    or p.get("head_features", []) != (head_positions if label["sharing"] == "heads" else [])
-                    or p.get("seeds") != [e["screen_seed"]]):
-                raise ValueError("candidate labels, class, heads or seed disagree")
+            if not self.grouped:
+                label, p = labels[name], spec["params"]
+                cls = {"normal": "MixtureMLPCDF", "student": "StudentMixtureMLPCDF"}.get(label["family"])
+                if (cls is None or spec["class"] != f"dskit.pipeline.libs.predictive_cdf:{cls}"
+                        or label["sharing"] not in ("separate", "pooled", "heads")
+                        or spec.get("pooled", False) != (label["sharing"] != "separate")
+                        or p.get("head_features", []) != (head_positions if label["sharing"] == "heads" else [])
+                        or p.get("seeds") != [e["screen_seed"]]):
+                    raise ValueError("candidate labels, class, heads or seed disagree")
+            cls = spec["class"].rsplit(":", 1)[-1]
             ChronologicalCDFStudy({**c, "models": {name: spec}})
-            globals()[cls](**p)  # Constructor-only validation; no fitting or device allocation.
+            module, class_name = spec["class"].split(":")
+            getattr(importlib.import_module(module), class_name)(**spec["params"])
+        if self.grouped:
+            inventory_specs = {**c["models"], **e["candidates"]}
+            labels = {}
+            for name, spec in inventory_specs.items():
+                if spec.get("equivalence"):
+                    labels.setdefault(spec["equivalence"], []).append((name, spec.get("pooled", False)))
+            if any(len(members) < 2 or len({pooled for _, pooled in members}) != 1
+                   for members in labels.values()):
+                raise ValueError("equivalence group needs pooled-compatible peers")
         r = e["resolutions"]
         if (set(r) != {"screen_samples", "final_samples", "tail_points", "integration_points", "audit_samples", "audit_rows"}
                 or any(type(r[k]) is not int or r[k] < 1 for k in r if k != "audit_samples")
@@ -1232,6 +1613,18 @@ class CDFHyperparameterStudy:
     def to_obj(self):
         """Return the full JSON experiment for the canonical identity owner."""
         return self.config
+
+    def _dependency_versions(self):
+        """Return versions of optional libraries selected by configured classes."""
+        from importlib.metadata import version
+        classes = {spec["class"].rsplit(":", 1)[-1]
+                   for spec in [*self.base["models"].values(), *self.experiment["candidates"].values()]}
+        names = []
+        if "QuantileForestCDF" in classes:
+            names.append("quantile-forest")
+        if "NGBoostCDF" in classes:
+            names.append("ngboost")
+        return {name: version(name) for name in sorted(names)}
 
     @staticmethod
     def _digest(value):
@@ -1329,7 +1722,8 @@ class CDFHyperparameterStudy:
             name, variant = min(((n, v) for n in names for v in ("raw", "calibrated")), key=lambda nv: rank[nv])
             screen_specs[name] = copy.deepcopy(e["candidates"][name])
             selected[name] = copy.deepcopy(screen_specs[name])
-            selected[name]["params"]["seeds"] = list(e["final_seeds"])
+            if not self.grouped:
+                selected[name]["params"]["seeds"] = list(e["final_seeds"])
             variants[name] = variant
             all_scores.append(scores[scores.model.isin(names)])
         rank = self._rank(controls)
@@ -1356,24 +1750,41 @@ class CDFHyperparameterStudy:
 
     def _audit(self, paths, frame, diagnostic):
         import numpy as np
+        import pandas as pd
         c, r = self.base, self.experiment["resolutions"]
+        identity_index = pd.MultiIndex.from_frame(frame[c["identity"]].astype(str))
+
+        def restore(a, ix, prefix=""):
+            kind = str(a[prefix+"kind"])
+            if kind == "convex":
+                return ConvexCurve(restore(a, ix, prefix+"left_"),
+                                   restore(a, ix, prefix+"right_"),
+                                   float(a[prefix+"weight"]))
+            if kind == "grid":
+                return GridCurve(a[prefix+"values"][ix], a[prefix+"probabilities"][ix])
+            args = [a[prefix+k][ix] for k in ("weights", "means", "scales")]
+            if kind == "student_mixture":
+                return StudentMixtureCurve(*args, degrees=float(a[prefix+"degrees"]))
+            return MixtureCurve(*args)
+
         records = []
         for path in paths:
             for file in sorted(path.glob("*-curves.npz")):
                 with np.load(file, allow_pickle=False) as a:
                     n = len(a["row_index"])
                     ix = np.linspace(0, n-1, min(n, r["audit_rows"]), dtype=int)
-                    kind = str(a["kind"])
-                    if kind == "grid":
-                        curve = GridCurve(a["values"][ix], a["probabilities"][ix])
-                    else:
-                        args = [a[k][ix] for k in ("weights", "means", "scales")]
-                        curve = StudentMixtureCurve(*args, degrees=float(a["degrees"])) if kind == "student_mixture" else MixtureCurve(*args)
+                    curve = restore(a, ix)
                     if "calibration_x" in a:
                         calibrated = object.__new__(CalibratedCurve)
                         calibrated.base, calibrated.map = curve, GridCurve(a["calibration_x"], a["calibration_p"])
                         curve = calibrated
-                    band = frame.loc[a["row_index"][ix]]
+                    identities = np.asarray(a["identities"])[ix]
+                    keys = pd.MultiIndex.from_arrays(
+                        [identities[:, column] for column in range(identities.shape[1])])
+                    positions = identity_index.get_indexer(keys)
+                    if (positions < 0).any():
+                        raise ValueError("saved curve identity absent from audit panel")
+                    band = frame.iloc[positions]
                     y = (band[c["target"]]/band[c["reference"]]).to_numpy()
                     values = []
                     for nodes in r["audit_samples"]:
@@ -1409,6 +1820,7 @@ class CDFHyperparameterStudy:
         c, e = self.base, self.experiment
         if stage not in ("search", "select", "evaluate", "report") or not provenance:
             raise ValueError("invalid stage or missing provenance")
+        _validate_temporal_frame(frame, c["date"], c["end"])
         if frame.duplicated(c["identity"]).any() or frame[c["identity"]].isna().any().any():
             raise ValueError("missing or duplicate panel identities")
         mapping = e["task_features"]
@@ -1424,7 +1836,8 @@ class CDFHyperparameterStudy:
         identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
                     "provenance": self._digest(provenance), "inventory": self.inventory.digest,
                     "implementation": self._file_hash(__file__),
-                    "resolutions": e["resolutions"]}
+                    "resolutions": e["resolutions"],
+                    "dependencies": self._dependency_versions()}
         if stage == "select":
             if partition is not None:
                 raise ValueError("select does not accept partition")
