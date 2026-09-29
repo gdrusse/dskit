@@ -49,6 +49,14 @@ the four group finalists with that incumbent on development before any later
 evaluation.
 Abort a capped stage rather than reducing the declared three-component search.
 
+The downside iteration uses configs/run-predictive-cdf-downside.json. Its
+floor group tests symmetric softplus scale floors and its heads group tests
+index-specific output heads; each yields one development finalist. The modeled
+quantity remains dimensionless terminal log return divided by reference scale,
+not a z-scored residual. An external recorded protocol freezes the primary from
+the two winners and raw incumbent before evaluation; the CLI evaluates those
+winners and all three controls.
+
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a

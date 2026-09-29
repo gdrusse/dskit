@@ -62,6 +62,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison),
                            # run-predictive-cdf-methods.json (ADR-0191 three-method comparison)
                            # run-predictive-cdf-refinement.json (ADR-0191 blend refinement)
+                           # run-predictive-cdf-downside.json (ADR-0191 downside calibration)
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
                            # source-cboe-index/-chain.json, run-real-distribution/-har/-lightgbm.json

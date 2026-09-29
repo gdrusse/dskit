@@ -1,0 +1,914 @@
+{
+  "notes": "ADR-0191 bounded downside-calibration iteration. Standardized CLI only. Every stage requires external 1800-second and 6-GiB limits, at most two concurrent processes, CUBLAS_WORKSPACE_CONFIG=:4096:8, OMP_NUM_THREADS=1 and OPENBLAS_NUM_THREADS=1. The modeled target is dimensionless terminal log return divided by reference_scale, not a z-scored residual. Reused 2019-2025 is evaluation, not an untouched holdout.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {
+      "SPY": "VIX",
+      "QQQ": "VXN",
+      "IWM": "RVX"
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_SPY",
+      "is_QQQ",
+      "is_IWM"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "years": [
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "output": "pipeline_runs/predictive_cdf_downside_20260928/base",
+    "samples": 401,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical",
+      "incumbent_blend_025"
+    ],
+    "bootstrap": {
+      "blocks": [
+        60,
+        120
+      ],
+      "replicates": 400,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "pooled_normal_a": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "params": {
+          "components": 1,
+          "hidden": [
+            16
+          ],
+          "epochs": 20,
+          "batch_size": 1024,
+          "learning_rate": 0.003,
+          "weight_decay": 0.1,
+          "min_scale": 0.1,
+          "activation": "tanh",
+          "dropout": 0,
+          "seeds": [
+            11,
+            29
+          ],
+          "device": "cuda",
+          "deterministic": true
+        },
+        "calibrate": true,
+        "pooled": true,
+        "equivalence": "base_pure_inc"
+      },
+      "incumbent_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.1,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "calibrate": false,
+        "pooled": true,
+        "equivalence": "base_pure_inc"
+      }
+    }
+  },
+  "experiment": {
+    "notes": "Nine predeclared pooled candidates; one finalist per floor and heads group freezes from development only. The scale floor is symmetric softplus plus min_scale. Equivalence labels assert neural fit-state equality only, not whole-curve equality. After group selection and before evaluation, an external recorded protocol compares the two group winners with the raw incumbent. A candidate is eligible only when its equal-cell development CRPS is strictly below the incumbent and, for every index on paired rows, abs(count(PIT < 0.05)/N - 0.05) is no greater than the incumbent (tolerance 1e-12). Choose the eligible candidate with lowest development relative CRPS; ties prefer incumbent then lexical name; otherwise retain incumbent. This external primary freeze is not a machine guard. The existing CLI still evaluates both winners plus all three controls. Empirical and incumbent controls disable calibration; pooled MLP and candidates enable it.",
+    "output": "pipeline_runs/predictive_cdf_downside_20260928",
+    "development_years": [
+      2016,
+      2017,
+      2018
+    ],
+    "label_cutoff": "2019-01-01",
+    "max_candidates": 9,
+    "candidates": {
+      "floor_050_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.5,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min050"
+      },
+      "floor_050_blend_035": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.35,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.5,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min050"
+      },
+      "floor_075_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.75,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min075"
+      },
+      "floor_075_blend_035": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.35,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.75,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min075"
+      },
+      "floor_100_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 1.0,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min100"
+      },
+      "floor_100_blend_035": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.35,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 1.0,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true
+          }
+        },
+        "equivalence": "floor_min100"
+      },
+      "heads_blend_015": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.15,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.1,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true,
+            "head_features": [
+              39,
+              40,
+              41
+            ]
+          }
+        },
+        "equivalence": "heads_triple"
+      },
+      "heads_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.1,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true,
+            "head_features": [
+              39,
+              40,
+              41
+            ]
+          }
+        },
+        "equivalence": "heads_triple"
+      },
+      "heads_blend_035": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "pooled": true,
+        "calibrate": true,
+        "params": {
+          "mlp_weight": 0.35,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 20,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.1,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11,
+              29
+            ],
+            "device": "cuda",
+            "deterministic": true,
+            "head_features": [
+              39,
+              40,
+              41
+            ]
+          }
+        },
+        "equivalence": "heads_triple"
+      }
+    },
+    "search_partitions": {
+      "floor": [
+        "floor_050_blend_025",
+        "floor_050_blend_035",
+        "floor_075_blend_025",
+        "floor_075_blend_035",
+        "floor_100_blend_025",
+        "floor_100_blend_035"
+      ],
+      "heads": [
+        "heads_blend_015",
+        "heads_blend_025",
+        "heads_blend_035"
+      ]
+    },
+    "candidate_groups": {
+      "floor": [
+        "floor_050_blend_025",
+        "floor_050_blend_035",
+        "floor_075_blend_025",
+        "floor_075_blend_035",
+        "floor_100_blend_025",
+        "floor_100_blend_035"
+      ],
+      "heads": [
+        "heads_blend_015",
+        "heads_blend_025",
+        "heads_blend_035"
+      ]
+    },
+    "evaluation_partitions": {
+      "development": [
+        2016,
+        2017,
+        2018
+      ],
+      "early": [
+        2019,
+        2020,
+        2021
+      ],
+      "middle": [
+        2022,
+        2023
+      ],
+      "late": [
+        2024,
+        2025
+      ]
+    },
+    "task_features": {
+      "SPY": "is_SPY",
+      "QQQ": "is_QQQ",
+      "IWM": "is_IWM"
+    },
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 401,
+      "tail_points": 201,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        401,
+        1601
+      ],
+      "audit_rows": 12
+    },
+    "expected_cells": {
+      "development": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      },
+      "evaluation": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      }
+    }
+  }
+}
