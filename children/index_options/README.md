@@ -69,8 +69,9 @@ then `select`, the four declared evaluation partitions, and `report`.
 Use `timeout 1800` around each execution partition to enforce the research cap.
 An interrupted directory is incomplete and cannot be selected; preserve it and
 use a new declared output root for a fresh full experiment. Do not manufacture a
-completion marker or silently omit a candidate. Search includes 24 neural
-candidates plus repeated controls. Choices use exactly 133 pre-2019 cells
+completion marker or silently omit a candidate. The pooled-head HPO search has
+24 neural candidates; the ADR-0192 search has 13 candidates in six groups,
+both plus repeated controls. Choices use exactly 133 pre-2019 cells
 (QQQ/IWM day 26 absent); combined later evaluation requires all 135. Controls
 must agree across partitions. Features, task mappings, years, resolutions and
 all hyperparameters live in JSON, not custom execution scripts. Cached input

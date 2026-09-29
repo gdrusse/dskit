@@ -27307,7 +27307,8 @@ Ties use the existing deterministic ordering. Before any later-period scores
 are read, the six identities and variants are frozen externally with their
 selection hash. The already inspected 2019–2025 period compares those six
 finalists and three controls on paired identities; it is reused research
-history, not a fresh holdout. The incumbent is retained unless a finalist has
+history, not a fresh holdout. Using development rows only, the incumbent is
+retained unless a finalist has
 strictly lower equal-cell CRPS and, for every index, its absolute deviation of
 the below-5% PIT rate from 5% is no worse than the incumbent within `1e-12`.
 No extra architecture, feature, loss, weight, cap or seed is added after results.
