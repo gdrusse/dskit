@@ -605,5 +605,9 @@ Journal action A0609 records the completed run via the public journal CLI;
 the generated Actions view keeps its latest ten rows while the full ledger
 remains append-only. Owner-controlled Path to Production was not changed.
 
-Publication is pending the final documentation/journal commit. Preserve all prior
-worktrees, private environments and ignored outputs. No experiment remains running.
+Reviewed configuration/tests and complete results were fast-forwarded/pushed
+to main as d09382c97d5f4931821efa596dd8e2f847c8ceb3; remote containment was
+verified after fetch. Windows Git supplied publication credentials only; all
+computation stayed in WSL2. This final handoff changes no reviewed numerical
+identity. Preserve all prior worktrees, private environments and ignored
+outputs. No experiment remains running; no new research or trading is started.

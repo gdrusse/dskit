@@ -2,6 +2,10 @@
 
 ## ADR-0191 downside-aware CDF iteration completed (2026-09-28)
 
+- Reviewed packet and complete results fast-forwarded/pushed to main as
+  `d09382c97d5f4931821efa596dd8e2f847c8ceb3`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
 - Owner requested another iteration. Sol built one standard JSON,
   `children/index_options/configs/run-predictive-cdf-downside.json`:
   six symmetric scale-floor/weight settings and three index-head/weight
@@ -40,8 +44,8 @@
   `children/index_options/docs/memos/2026-09-28-predictive-cdf-downside.md`.
   Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_downside_20260928`
   and logs `cdf_downside_logs_20260928`, all previous worktrees/environments.
-- No experiment remains running. Publication is pending final evidence/journal
-  commit. Next research, NOT started: genuinely new-date validation and a
+- No experiment remains running. Journal A0609 and publication are complete.
+  Next research, NOT started: genuinely new-date validation and a
   predeclared downside/cutoff objective with tolerance justified before outcomes.
 
 ## ADR-0191 CDF blend refinement completed (2026-09-28)
