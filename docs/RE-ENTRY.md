@@ -1,5 +1,24 @@
 # Re-entry
 
+## index_options: ADR-0193 landed (wing split, put spread, delta benchmark) (2026-09-30)
+
+- Step 1 of memo A0612. Candidate `73ab724` (Claude Sonnet 5.5, TDD), two
+  fresh Sonnet skeptics in parallel: correctness C0/M0/m4/n6, tests C0/M0/m4/n4.
+  Evidence: `docs/review-evidence/ADR-0193.md`. Child suite 755 passed, 23 failed
+  (the same pre-existing `test_configs.py` pins as base).
+- Built: `option_pricing.black76_delta`; leg-set owners `structure_credit` /
+  `structure_payoff` / `PUT_SPREAD_LEGS`; American charge split; per-side P&L
+  on every condor cell; `PutSpreadQuoteBacktest`; delta-matched stock benchmark
+  (`<book>_residual_*`, `_pnl_t`); 14 `configs/grid/<cell>-put-spread.json`.
+- Minor backlog (t float-noise edge, stale file pins for the 14 new files,
+  three test pins, dividend docs) rides the ADR-0194 candidate.
+- ADR-0194 (entry-gate study) and ADR-0195 (payoff selection) are
+  owner-approved; build in that order.
+- **Owner's WSL run (not done here):** `python -m dskit.pipeline walkforward
+  configs/grid/spy-30-45-put-spread.json --asof <today>` (and the condor cell)
+  from `children/index_options` with `./ob` linked; compare `*_put_*` vs
+  `*_call_*` and `*_residual_t`.
+
 ## index_options: strategy alternatives beyond the condor researched (2026-09-30)
 
 - Research only (no code, no runs): A0611

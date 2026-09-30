@@ -27430,3 +27430,141 @@ tests/integration); zero unresolved Critical/Major before merge.
 **Owner questions.** (a) Put-spread strikes 0.16 / 0.65 or 0.20 / 0.75?
 (b) All 14 SPY/QQQ cells, or 30-45 only? (c) Also fix the pre-existing stale
 child manifest and zoo-approval pins (23 failing tests on main), or leave?
+
+## ADR-0194 — Term-structure and VRP-sign entry-gate study (annotate-only)
+
+2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0193
+merges** (answers: annotate-only; thresholds ratio ≥ 1, pct ≥ 0.8, VRP ≤ 0;
+14 put-spread + 14 new condor gate documents). Owner:
+Russell. Base: ADR-0193's merge. Branch: `claude/index-options-strategies`.
+Step 2 of the strategy-alternatives memo (A0612): would standing aside when
+the VIX curve inverts, or when the volatility premium is non-positive, have
+removed losing condor / put-spread entries? Offline code and synthetic tests
+only; real runs stay on the owner's WSL store.
+
+**Context.** Evidence (A0611): Johnson 2017 (bottom SLOPE quintile flips the
+variance premium), Cheng 2019 (short only when the premium is positive),
+Simon & Campasano 2014. HAR ≈ VIX in this child, so a model VRP is the VIX
+level; the usable information is the curve's slope and the premium's SIGN.
+Sweep (`expanding_percentile`, `VolRegimeSignals`, `gate_fields`, `vix_term_ratio`, "term structure", VIX3M in code): none exists; `gated_document` is a test helper in tests/production, hence `gate_study_document`. Reused: `stats.newey_west_mean`,
+`IndexCloseRows`, the `cboe-index-wide` source (VIX3M from 2007-12), model
+rows that pass their inputs through (`{**row, ...}`), ADR-0193's backtests
+and grid generator. `derive` has no expression language, so the ratios need
+a node.
+
+**Decision proposed.**
+
+1. **dskit core** — `stats.expanding_percentile(values, min_history)`: for
+   each position, the mid-rank of the value among STRICTLY EARLIER finite
+   values (`(below + 0.5·equal) / n_prior`); `None` for a missing value or
+   fewer than `min_history` earlier values. Stdlib, `bisect`-based. Tests:
+   hand cases, ties, `None`s, no look-ahead (appending a later value never
+   changes an earlier output).
+2. **Child node `VolRegimeSignals`** (nodes.py). Inputs `rows` (forecast rows)
+   and `term` (the second vol index's `IndexCloseRows` records). Per
+   instrument in `asof_ms` order, row t reads row t−`lag_sessions`'s
+   `implied_field` and `realized_field` and the term close on THAT row's
+   date — so the 16:15 VIX close never informs a 16:00 entry. Adds:
+   `vix_term_ratio` = implied / term; `vix_term_ratio_pct` =
+   `expanding_percentile` of the lagged ratio series; `vrp` =
+   (implied/100)² − `periods_per_year`·realized² (realized is per-session,
+   RealizedVolFeatures' convention, pinned by test); booleans
+   `gate_term_inverted` (ratio ≥ `inverted_at`), `gate_term_high_pct`
+   (pct ≥ `high_ratio_pct`), `gate_vrp_nonpositive` (vrp ≤ 0) and
+   `gate_any` (True if any True; None if none True and any None). A missing
+   input gives `None`, never False. Knobs (default-deny):
+   `implied_field` "iv_index", `realized_field` "rv_22", `periods_per_year`
+   252, `inverted_at` 1.0, `high_ratio_pct` 0.8, `min_history` 252,
+   `lag_sessions` 1. Forbidden for serving.
+3. **Backtest annotation** — `_CondorBacktestBase` optional `gate_fields`
+   (distinct row field names; emitted only when present, so no existing
+   hash moves). Each ledger entry records `gates: {field: bool|None}`; a
+   non-bool, non-None value refuses. Per book and gate: `_closed_n`,
+   `_closed_mean_pnl_usd`, `_closed_t`, `_open_n`, `_open_mean_pnl_usd`,
+   `_open_t`, `_unknown_n` (t via `newey_west_mean`, lags 0; 0.0 when
+   undefined). **No entry is skipped**: the cadence is unchanged and the
+   gate is judged on the trades it would have removed. Skip-and-re-enter is
+   a non-goal until this shows value.
+4. **Documents** — `grid.gate_study_document(doc)` adds `vix3m`
+   (`IndexCloseRows`, `cboe-index-wide`, `VIX3M`) and `signals`, rewires
+   `backtest.forecasts` to `$signals.rows` and sets `gate_fields`
+   (the four gates). Applied to the 14 put-spread documents (never run, so
+   no run is orphaned) and to 14 new `configs/grid/<cell>-gate.json` condor
+   documents. Existing condor documents stay byte-identical.
+
+**Files.** Modify `dskit/pipeline/stats.py`, `tests/pipeline/test_stats*.py`;
+child `index_options/{nodes,grid}.py`, `tests/{test_quote_backtest,
+test_configs}.py` (+ a signals test module if nodes tests are split),
+README/CLAUDE/AGENTS. New: 14 `*-gate.json`, `docs/review-evidence/ADR-0194.md`.
+
+**Non-goals.** PCA SLOPE (ratio proxy only), VVIX/SKEW, per-underlying
+VXN, skip-and-re-enter gating, sizing (step 4), real runs.
+
+**Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
+Critical/Major before merge.
+
+## ADR-0195 — Forecast-scored payoff selection on archived quotes
+
+2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0194
+merges** (answers: no RND pack; objective E[P&L] / max loss; all 14 cells ×
+2 rungs = 28 documents). Owner:
+Russell. Base: ADR-0194's merge. Branch: `claude/index-options-strategies`.
+Step 3 of the strategy-alternatives memo (A0612): let the forecast choose
+WHICH defined-risk structure to trade (put spread, call spread or condor, and
+its strikes), not only whether to trade a fixed condor. Offline code and
+synthetic tests only; real runs stay on the owner's WSL store.
+
+**Context.** Evidence (A0611): Faias & Santa-Clara 2017 (held-to-expiry
+option portfolios chosen under a physical distribution at bid/ask, OOS Sharpe
+0.82 to 2013); E_P[g] − E_Q[g] = ∫ g′(F_Q − F_P) makes verticals CDF bets
+(what this child forecasts best) and flies density bets (excluded); the
+humped P/Q ratio says the gains are in width, asymmetry and size. ADR-0193
+gave the leg-set owners (`structure_credit`, `structure_payoff`,
+`PUT_SPREAD_LEGS`) and per-side hooks. No risk-neutral density is needed:
+the executable bid/ask is the price, and the premium-vs-forecast split comes
+from running the same selector on the empirical rung.
+
+**Decision proposed.**
+
+1. **Per-trade leg set.** The quote backtests pass `legs` through `_book`,
+   `_gate`, `_settle`, `_side_pnl`, `_benchmark` (default `self.LEGS`, so
+   condor and put-spread results are unchanged — pinned). `_american_charge`
+   becomes one generic rule: charge put carry at the short put and call
+   dividends at the short call of whichever sides `legs` holds; the two
+   subclass overrides disappear. `contracts.CALL_SPREAD_LEGS =
+   CONDOR_LEGS[2:]` and `contracts.STRUCTURES` (`put_spread`, `call_spread`,
+   `condor` → leg tuples), single owners.
+2. **`PayoffSelectQuoteBacktest(CondorQuoteBacktest)`.** Extra knobs
+   (default-deny): `candidate_structures` (non-empty subset of `STRUCTURES`),
+   `candidate_short_q` (distinct values in (0, 0.5)), `candidate_wing_z`
+   (distinct values > 0). At each entry every candidate is snapped with the
+   existing `_snap_put` / `_snap_call` at the model's horizon scale, priced
+   at bid/ask with fees, refused by the existing gates, then scored:
+   `score = E_P[pnl] / max_loss`, E_P over the forecast samples,
+   `max_loss = multiplier × widest vertical − credit`. The highest score
+   wins; ties break by declared order. Books: `model` enters the winner when
+   E_P[pnl] > `min_edge_usd`; `always` enters the winner every time (the
+   edge gate's value); `implied` stays the VIX-implied condor at `short_q`
+   (the unchanged benchmark). Each model/always cell records `selected`
+   (`structure`, `short_q`, `wing_z`, `score`, `n_candidates_scored`);
+   metrics add `<book>_n_<structure>`. ADR-0193's side split, delta
+   benchmark and ADR-0194's `gate_fields` apply unchanged.
+3. **Documents.** `grid.select_document(base, cell)` derives from the cell
+   document, swapping only the backtest node: structures all three,
+   `short_q` {0.10, 0.16, 0.20, 0.25, 0.30}, `wing_z` {0.35, 0.65, 1.0}
+   (45 candidates, pre-registered as `SELECT_*` constants in grid.py). Files
+   `configs/grid/<cell>-select.json` (har-vix rung) and
+   `<cell>-empirical-select.json` (empirical rung: the premium-only
+   control; forecast value = the difference).
+
+**Files.** Modify child `index_options/{contracts,nodes,grid}.py`,
+`tests/{test_contracts,test_quote_backtest,test_configs}.py`,
+README/CLAUDE/AGENTS. New: the select documents,
+`docs/review-evidence/ADR-0195.md`.
+
+**Non-goals.** Risk-neutral density extraction (not needed; later if
+attribution wants it), CRRA sizing (step 4), asymmetric condors, butterflies,
+multiple structures per entry, IWM, real runs.
+
+**Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
+Critical/Major before merge.
