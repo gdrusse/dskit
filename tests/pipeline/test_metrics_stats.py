@@ -913,3 +913,89 @@ def test_expanding_percentile_is_public():
     from dskit.pipeline import stats
 
     assert "expanding_percentile" in stats.__all__
+
+
+# --- ADR-0195 (ADR-0194 review B-M3/B-M4): one owner of the "no variance" rule ------------------
+#
+# A series whose spread is at most a named RELATIVE tolerance of its largest magnitude is constant
+# to float noise (equal credits summed in a different order), so its t is undefined (None) in both
+# t-tests, never a 1e16 rounding artifact.
+
+#: Three equal per-share credits accumulated in different orders differ in the last bit only.
+NOISY = [1.7000000000000004, 1.7000000000000004, 1.7]
+
+
+def _series_with_spread(spread_over_tolerance, magnitude=1.0):
+    """Two values whose spread is ``spread_over_tolerance`` x the named tolerance x ``magnitude``."""
+    from dskit.pipeline import stats
+
+    return [magnitude, magnitude - spread_over_tolerance * stats.NO_VARIANCE_RTOL * magnitude]
+
+
+@pytest.mark.parametrize("t_test", ["newey_west_mean", "across_fold_t"])
+def test_a_series_constant_to_float_noise_has_no_variance_in_both_t_tests(t_test):
+    from dskit.pipeline import stats
+
+    test = getattr(stats, t_test)
+    assert max(NOISY) - min(NOISY) > 0.0        # the reproducer really is not exactly constant
+    out = test(NOISY)
+    assert out["t"] is None and out["se"] == 0.0 and out["p_value"] == 0.0   # positive mean
+    assert out["mean"] == pytest.approx(1.7)
+
+
+@pytest.mark.parametrize("t_test", ["newey_west_mean", "across_fold_t"])
+def test_a_negative_constant_series_has_no_variance_and_takes_the_other_p_value(t_test):
+    from dskit.pipeline import stats
+
+    test = getattr(stats, t_test)
+    out = test([-v for v in NOISY])              # the magnitude, not the signed maximum, scales it
+    assert out["t"] is None and out["p_value"] == 1.0
+    assert test([-1.7, -1.7, -1.7])["t"] is None and test([0.0, 0.0])["t"] is None
+
+
+def _t_by_hand(values, ddof):
+    """mean / (sd / sqrt(n)) written out: sd on divisor ``n - ddof`` (0 = Newey-West lags 0)."""
+    n = len(values)
+    mean = sum(values) / n
+    return mean / (math.sqrt(sum((v - mean) ** 2 for v in values) / (n - ddof)) / math.sqrt(n))
+
+
+@pytest.mark.parametrize("t_test, ddof", [("newey_west_mean", 0), ("across_fold_t", 1)])
+def test_a_genuinely_varying_small_or_offset_series_keeps_its_t(t_test, ddof):
+    import random
+
+    from dskit.pipeline import stats
+
+    test = getattr(stats, t_test)
+    out = test([100.0, 100.01])                  # spread 1e-4 of the magnitude: real variance
+    assert out["t"] == pytest.approx(_t_by_hand([100.0, 100.01], ddof), rel=1e-9)
+    assert out["t"] > 1e4
+    rng = random.Random(195)
+    draws = [rng.gauss(1000.0, 0.5) for _ in range(20)]     # sd 0.5 around 1000: 5e-4 relative
+    out = test(draws)
+    assert out["t"] == pytest.approx(_t_by_hand(draws, ddof), rel=1e-9)
+    assert out["se"] > 0.0 and out["t"] > 100.0
+    tiny = [1e-9, 2e-9, 3e-9]                    # small in absolute terms, not in relative ones
+    assert test(tiny)["t"] == pytest.approx(_t_by_hand(tiny, ddof), rel=1e-9)
+    assert test([1e9 * v for v in tiny])["t"] == pytest.approx(test(tiny)["t"])
+
+
+@pytest.mark.parametrize("t_test", ["newey_west_mean", "across_fold_t"])
+def test_the_tolerance_is_relative_and_named_once(t_test):
+    from dskit.pipeline import stats
+
+    test = getattr(stats, t_test)
+    assert "NO_VARIANCE_RTOL" in stats.__all__
+    assert 1e-13 < stats.NO_VARIANCE_RTOL < 1e-9    # far above one ulp, far below any real spread
+    for magnitude in (1e-6, 1.0, 1e9):               # scale-free: the same verdict at every scale
+        assert test(_series_with_spread(0.5, magnitude))["t"] is None    # inside the tolerance
+        assert test(_series_with_spread(2.0, magnitude))["t"] is not None  # outside it
+        assert test([-v for v in _series_with_spread(0.5, magnitude)])["t"] is None
+        assert test([-v for v in _series_with_spread(2.0, magnitude)])["t"] is not None
+
+
+def test_the_lag_path_and_the_dm_wrapper_inherit_the_noise_rule():
+    from dskit.pipeline import stats
+
+    assert stats.newey_west_mean(NOISY, lags=1)["t"] is None
+    assert stats.diebold_mariano_test(NOISY)["t"] is None

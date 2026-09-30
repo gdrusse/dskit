@@ -467,3 +467,84 @@ def test_the_inputs_must_be_lists_and_run_refuses_ambiguous_ones():
     # the same asof_ms on DIFFERENT instruments is no repeat
     both = rows + [{**r, "instrument": "QQQ"} for r in rows]
     assert len(node.run(None, {"rows": both, "term": _term()})["rows"]) == 10
+
+
+# -- ADR-0195: the ADR-0194 review backlog on VolRegimeSignals ---------------------------------
+
+
+def test_the_defaults_are_the_owners_pre_registered_numbers_typed_out_independently():
+    # B-M2: the generator reads DEFAULTS, so a test that reads them too asserts nothing. These
+    # literals are the owner's ADR-0194 answers (ratio >= 1.0, percentile >= 0.8, previous
+    # session, 252-session history, 252 periods a year); a mutated default fails here, not
+    # only as "the shipped file differs from its generator".
+    assert VolRegimeSignals.DEFAULTS == {
+        "implied_field": "iv_index", "realized_field": "rv_22", "periods_per_year": 252,
+        "inverted_at": 1.0, "high_ratio_pct": 0.8, "min_history": 252, "lag_sessions": 1}
+
+
+def _one_pair(previous_iv, term_close, iv=20.0):
+    """Two rows a day apart: the second reads the first's iv and that date's VIX3M close."""
+    rows = [{"instrument": "SPY", "asof_ms": k, "date": DAYS[k], "iv_index": v, "rv_22": 0.01}
+            for k, v in enumerate((previous_iv, iv))]
+    return rows, [{"date": DAYS[0], "close": term_close}, {"date": DAYS[1], "close": 20.0}]
+
+
+@pytest.mark.parametrize("params", [{}, dict(VolRegimeSignals.DEFAULTS)],
+                         ids=["no-params", "every-knob-written-out"])
+def test_a_ratio_of_exactly_one_is_inverted_at_the_defaults_and_a_hair_under_is_not(params):
+    node = VolRegimeSignals("signals", params)
+    for previous_iv, want in ((20.0, True), (19.999999, False), (20.000001, True)):
+        rows, term = _one_pair(previous_iv, 20.0)
+        got = node.run(None, {"rows": rows, "term": term})["rows"][1]
+        assert got["gate_term_inverted"] is want, previous_iv
+    rows, term = _one_pair(20.0, 20.0)
+    assert node.run(None, {"rows": rows, "term": term})["rows"][1]["vix_term_ratio"] == 1.0
+
+
+def _percentile_pair(n_below, n_above):
+    """Rows whose LAST row's ratio sits above ``n_below`` earlier ratios and under ``n_above``.
+
+    The ratio is iv / 20.0 read one session back: below-rows 10.00 + 0.01 j, the row under test
+    reads iv 15.0 (ratio 0.75), above-rows 20.00 + 0.01 j. With 260 earlier ratios (>= the 252
+    of the default history) the mid-rank is n_below / 260 exactly, with no ties.
+    """
+    ivs = ([10.0 + 0.01 * j for j in range(n_below)] + [20.0 + 0.01 * j for j in range(n_above)]
+           + [15.0, 20.0])          # ... the ratio row's iv, then the last row's own (unread)
+    days = [(date(2000, 1, 1) + timedelta(days=k)).isoformat() for k in range(len(ivs))]
+    rows = [{"instrument": "SPY", "asof_ms": k, "date": d, "iv_index": iv, "rv_22": 0.01}
+            for k, (d, iv) in enumerate(zip(days, ivs))]
+    return rows, [{"date": d, "close": 20.0} for d in days]
+
+
+@pytest.mark.parametrize("params", [{}, dict(VolRegimeSignals.DEFAULTS)],
+                         ids=["no-params", "every-knob-written-out"])
+def test_a_percentile_of_exactly_point_eight_is_high_at_the_defaults_and_a_hair_under_is_not(params):
+    node = VolRegimeSignals("signals", params)
+    for n_below, want in ((208, True), (207, False), (209, True)):
+        rows, term = _percentile_pair(n_below, 260 - n_below)
+        assert len(rows) == 262
+        last = node.run(None, {"rows": rows, "term": term})["rows"][-1]
+        assert last["vix_term_ratio_pct"] == pytest.approx(n_below / 260, abs=1e-15), n_below
+        assert last["gate_term_high_pct"] is want, n_below
+        assert last["gate_term_inverted"] is False       # its own ratio is 0.75
+
+
+def test_one_earlier_ratio_short_of_the_default_history_scores_no_percentile():
+    rows, term = _percentile_pair(100, 151)               # 251 earlier ratios: one short of 252
+    last = VolRegimeSignals("signals", {}).run(None, {"rows": rows, "term": term})["rows"][-1]
+    assert last["vix_term_ratio_pct"] is None and last["gate_term_high_pct"] is None
+
+
+def test_numpy_scalar_inputs_give_plain_bool_gates_which_the_backtest_accepts():
+    # A-N2: `np.float64 >= 1.0` is np.bool_, which the backtest's gate guard (bool or None)
+    # refuses; the node owns turning its verdicts into plain bools
+    np = pytest.importorskip("numpy")
+    rows = [{"instrument": "SPY", "asof_ms": k, "date": DAYS[k], "iv_index": np.float64(20.0),
+             "rv_22": np.float64(0.01)} for k in range(2)]
+    term = [{"date": d, "close": np.float64(25.0)} for d in DAYS[:2]]
+    out = VolRegimeSignals("signals", {"min_history": 1}).run(
+        None, {"rows": rows, "term": term})["rows"][1]
+    for name in GATES:
+        assert type(out[name]) is bool or out[name] is None, (name, type(out[name]))
+    assert out["gate_term_inverted"] is False and out["gate_vrp_nonpositive"] is False
+    assert out["gate_any"] is None      # the percentile is unknown with one earlier ratio

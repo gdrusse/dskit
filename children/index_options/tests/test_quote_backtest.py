@@ -7,8 +7,13 @@ credits and P&L are restated by hand in the assertions.
 """
 
 import copy
+import hashlib
+import itertools
+import json
 import math
+import random
 from datetime import date, timedelta
+from pathlib import Path
 from statistics import NormalDist
 from types import SimpleNamespace
 
@@ -17,7 +22,12 @@ import pytest
 from dskit.pipeline.base import ConfigError
 
 from index_options.contracts import american_short_charge
-from index_options.nodes import CondorBacktest, CondorQuoteBacktest, PutSpreadQuoteBacktest
+from index_options.nodes import (
+    CondorBacktest,
+    CondorQuoteBacktest,
+    PayoffSelectQuoteBacktest,
+    PutSpreadQuoteBacktest,
+)
 
 #: Draws whose 10%/90% quantiles are exactly -1 and +1.
 DRAWS = [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
@@ -1211,6 +1221,23 @@ def test_an_empty_book_reports_zero_for_every_side_and_benchmark_statistic():
             assert metrics[f"{book}_{stat}"] == 0.0, stat
 
 
+@pytest.mark.parametrize("runner, sides", [(_run, ("put", "call")),
+                                           (_run_put_spread, ("put",))])
+def test_a_zero_trade_book_keeps_the_float_side_totals_and_the_int_book_total(runner, sides):
+    # ADR-0195 (ADR-0194 review B-M1): ADR-0193 reported a side total as float 0.0 with no
+    # trade; ADR-0194's shared helper made it int 0. Restored for the SIDES; the book-level total
+    # keeps the int it has always been. Compared by type, since 0 == 0.0 hides the JSON change.
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, _ = runner([_row(ENTRY)], chain, FLAT)
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0
+        for side in sides:
+            assert type(metrics[f"{book}_{side}_total_pnl_usd"]) is float, (book, side)
+            assert type(metrics[f"{book}_{side}_mean_pnl_usd"]) is float
+        assert type(metrics[f"{book}_total_pnl_usd"]) is int and metrics[f"{book}_total_pnl_usd"] == 0
+        assert type(metrics[f"{book}_mean_pnl_usd"]) is float
+
+
 # -- the delta-matched benchmark ----------------------------------------------------------
 
 
@@ -1361,12 +1388,38 @@ def test_a_series_constant_to_float_noise_has_a_zero_t_not_a_rounding_artifact(c
     noisy = [1.7000000000000004, 1.7000000000000004, 1.7]
     assert max(noisy) - min(noisy) > 0.0      # the reproducer really is not exactly constant
     assert cls._t(noisy) == 0.0
+    assert cls._t([-v for v in noisy]) == 0.0  # a losing book's noise, ADR-0195 B-M3
     assert cls._t([1.7, 1.7, 1.7]) == 0.0     # the exactly constant case stays zero
     assert cls._t([0.0, 0.0]) == 0.0
     # a spread far above float noise is real variance: one part in 1e6 of the magnitude
     real = [1.7 * (1 + 1e-6), 1.7, 1.7 * (1 - 1e-6)]
     assert cls._t(real) == pytest.approx(_t(real))
     assert abs(cls._t(real)) > 1.0
+    assert cls._t([100.0, 100.01]) == pytest.approx(_t([100.0, 100.01]))   # small, not noise
+
+
+def test_the_child_t_only_delegates_to_the_one_owner_of_the_no_variance_rule():
+    # ADR-0195 (B-M3/B-M4): dskit.pipeline.stats owns the float-noise rule, so the child holds
+    # no tolerance of its own; _t turns the owner's "no variance" (None) into the child's 0.0
+    from dskit.pipeline.stats import newey_west_mean
+
+    assert not hasattr(CondorQuoteBacktest, "CONSTANT_SERIES_RTOL")
+    assert not hasattr(PutSpreadQuoteBacktest, "CONSTANT_SERIES_RTOL")
+    for series in ([1.7000000000000004, 1.7000000000000004, 1.7], [-2.5, -2.5], [0.0, 0.0, 0.0],
+                   [10.0, 12.0, 11.0, 30.0], [100.0, 100.01], [1e-9, 2e-9, 3e-9]):
+        owner = newey_west_mean(list(series), lags=0)["t"]
+        assert CondorQuoteBacktest._t(series) == (0.0 if owner is None else owner)
+    assert CondorQuoteBacktest._t([5.0]) == 0.0 and CondorQuoteBacktest._t([]) == 0.0
+
+
+def test_the_readme_names_the_owners_tolerance_and_states_no_second_literal():
+    # ADR-0195 (B-M3): a number written in prose that no test ties to the constant drifts; the
+    # README names the constant and the rule, and never spells the value
+    from dskit.pipeline.stats import NO_VARIANCE_RTOL
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    assert "NO_VARIANCE_RTOL" in readme and "CONSTANT_SERIES_RTOL" not in readme
+    assert f"{NO_VARIANCE_RTOL:g}" not in readme and repr(NO_VARIANCE_RTOL) not in readme
 
 
 def test_only_the_trades_with_a_delta_enter_the_residual_t():
@@ -1799,3 +1852,826 @@ def test_the_proxy_backtest_annotates_its_entries_the_same_way():
         {k: v for k, v in r.items() if k != "g"} for r in rows]})
     assert [{k: v for k, v in e.items() if k != "gates"} for e in ledger] == \
         plain["report"].value["ledger"]
+
+
+# -- ADR-0195: one per-trade leg set changes nothing for the condor and the put spread ---------
+#
+# The refactor passes each trade's legs through _book / _gate / _settle / _side_pnl / _benchmark
+# and folds the two _american_charge implementations into one rule; the condor and the put spread
+# must come out exactly as ADR-0194 shipped them. The hand-derived tests above stay; these pin
+# what the PRE-refactor code computed.
+
+#: Frozen from the ADR-0194 code (da00b83) by running these very scenarios BEFORE the refactor:
+#: per scenario/structure, a digest of the whole metrics dict and of the whole ledger (floats
+#: rounded to 6 places, key order included) and, for the hand-readable ones, each cell's
+#: (date, book, strikes, credit, charge, pnl, side split, delta, equity pnl, reason). One digest
+#: (below_min_edge/put_spread, whose model book has no trade) is frozen with the float 0.0 side
+#: totals of ADR-0193 that this ADR's B-M1 restores; every other value is da00b83's own.
+FROZEN = {
+    "three_trades/condor": {
+        "metrics": "d12c7837836ec3074f6209a70cc0a5cc827edbb3359bc2a4e8f3b6e3a36ddeaf",
+        "ledger": "0e95724a4b518ea04420533302e236fc6bb59e405744ee130360ef4679cf2d26",
+        "cells": [
+            ('2024-03-01', 'model', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, -142.6, {'put': -211.3, 'call': 68.7}, 0.014325789521853316, -28.651579043706633, None),
+            ('2024-03-01', 'always', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, -142.6, {'put': -211.3, 'call': 68.7}, 0.014325789521853316, -28.651579043706633, None),
+            ('2024-03-01', 'implied', [95.0, 96.0, 104.0, 106.0], 67.39999999999998, 0.0, -32.60000000000002, {'put': -81.30000000000003, 'call': 48.7}, -0.024738009771270664, 49.47601954254132, None),
+            ('2024-03-11', 'model', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, 7.400000000000006, {'put': -61.30000000000001, 'call': 68.7}, 0.014325789521853316, -9.311763189204655, None),
+            ('2024-03-11', 'always', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, 7.400000000000006, {'put': -61.30000000000001, 'call': 68.7}, 0.014325789521853316, -9.311763189204655, None),
+            ('2024-03-11', 'implied', [95.0, 96.0, 104.0, 106.0], 67.39999999999998, 0.0, -32.60000000000002, {'put': -81.30000000000003, 'call': 48.7}, -0.024738009771270664, 16.07970635132593, None),
+            ('2024-03-19', 'model', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, 157.4, {'put': 88.69999999999999, 'call': 68.7}, 0.014325789521853316, -4.297736856555995, None),
+            ('2024-03-19', 'always', [92.0, 95.0, 106.0, 108.0], 157.4, 0.0, 157.4, {'put': 88.69999999999999, 'call': 68.7}, 0.014325789521853316, -4.297736856555995, None),
+            ('2024-03-19', 'implied', [95.0, 96.0, 104.0, 106.0], 67.39999999999998, 0.0, 67.39999999999998, {'put': 18.69999999999997, 'call': 48.7}, -0.024738009771270664, 7.421402931381198, None),
+        ],
+    },
+    "three_trades/put_spread": {
+        "metrics": "b3ff8182049bd0057de9d7030b0e9a31bdc44631300b56bdd3da5d1c13c8e5ba",
+        "ledger": "ad3dd9e9bfba2d38c52933c236479444d032fa14b44a50e00c47e78327d5b4d2",
+        "cells": [
+            ('2024-03-01', 'model', [92.0, 95.0], 88.69999999999999, 0.0, -211.3, {'put': -211.3}, 0.02978928060361996, -59.57856120723992, None),
+            ('2024-03-01', 'always', [92.0, 95.0], 88.69999999999999, 0.0, -211.3, {'put': -211.3}, 0.02978928060361996, -59.57856120723992, None),
+            ('2024-03-01', 'implied', [95.0, 96.0], 18.69999999999997, 0.0, -81.30000000000003, {'put': -81.30000000000003}, 0.037376320008478625, -74.75264001695726, None),
+            ('2024-03-11', 'model', [92.0, 95.0], 88.69999999999999, 0.0, -61.30000000000001, {'put': -61.30000000000001}, 0.02978928060361996, -19.363032392352974, None),
+            ('2024-03-11', 'always', [92.0, 95.0], 88.69999999999999, 0.0, -61.30000000000001, {'put': -61.30000000000001}, 0.02978928060361996, -19.363032392352974, None),
+            ('2024-03-11', 'implied', [95.0, 96.0], 18.69999999999997, 0.0, -81.30000000000003, {'put': -81.30000000000003}, 0.037376320008478625, -24.294608005511108, None),
+            ('2024-03-19', 'model', [92.0, 95.0], 88.69999999999999, 0.0, 88.69999999999999, {'put': 88.69999999999999}, 0.02978928060361996, -8.936784181085988, None),
+            ('2024-03-19', 'always', [92.0, 95.0], 88.69999999999999, 0.0, 88.69999999999999, {'put': 88.69999999999999}, 0.02978928060361996, -8.936784181085988, None),
+            ('2024-03-19', 'implied', [95.0, 96.0], 18.69999999999997, 0.0, 18.69999999999997, {'put': 18.69999999999997}, 0.037376320008478625, -11.212896002543587, None),
+        ],
+    },
+    "dividend_and_carry/condor": {
+        "metrics": "a650e4a5fa6ba45003587471116b080832941f9a4db9944c50792823b15c0135",
+        "ledger": "a9d7b60457233d8dfde56b403f7cc41ee39c6c8985ee14abb59937bd6126e196",
+        "cells": [
+            ('2024-03-01', 'model', [92.0, 95.0, 106.0, 108.0], 157.4, 101.43161470798914, 55.968385292010865, {'put': 87.26838529201085, 'call': -31.299999999999997}, 0.014325789521853316, -2.865157904370663, None),
+            ('2024-03-01', 'always', [92.0, 95.0, 106.0, 108.0], 157.4, 101.43161470798914, 55.968385292010865, {'put': 87.26838529201085, 'call': -31.299999999999997}, 0.014325789521853316, -2.865157904370663, None),
+            ('2024-03-01', 'implied', [95.0, 96.0, 104.0, 106.0], 67.39999999999998, 101.44668433649429, -34.04668433649431, {'put': 17.253315663505685, 'call': -51.3}, -0.024738009771270664, 4.947601954254132, None),
+        ],
+    },
+    "dividend_and_carry/put_spread": {
+        "metrics": "e7a7655046ad7eed5debada72a923edfa89c611e8780536500abc63700ca4b60",
+        "ledger": "3490762556d7a67b3a36f6d435636c9cfbf79bfbd92f18bf0f82eb65dd386fa6",
+        "cells": [
+            ('2024-03-01', 'model', [92.0, 95.0], 88.69999999999999, 1.4316147079891373, 87.26838529201085, {'put': 87.26838529201085}, 0.02978928060361996, -5.957856120723992, None),
+            ('2024-03-01', 'always', [92.0, 95.0], 88.69999999999999, 1.4316147079891373, 87.26838529201085, {'put': 87.26838529201085}, 0.02978928060361996, -5.957856120723992, None),
+            ('2024-03-01', 'implied', [95.0, 96.0], 18.69999999999997, 1.446684336494286, 17.253315663505685, {'put': 17.253315663505685}, 0.037376320008478625, -7.4752640016957255, None),
+        ],
+    },
+    "gated_six/condor": {
+        "metrics": "123861ea57f7793e72f4fec7d7fc00077871b059710decb508c6f28c7b210325",
+        "ledger": "5fe6b92e2c95e1fd94efaae7b48a00c6759466b2d259bfd3f60caaac4d6bfef0",
+    },
+    "gated_six/put_spread": {
+        "metrics": "880d132ecfff6503a4570d98e338a28df2994e76ffccb75bc09732dc3fde2457",
+        "ledger": "a14da74f93ace071faa27e32ca922748f0902f47767224027a8f73772e145800",
+    },
+    "below_min_edge/condor": {
+        "metrics": "82eab36b990142ffcb4887ff41437e9416306e591730d005ea410a8bd790fb33",
+        "ledger": "0a00ea25404cfa4d31a6fba88278199799870d695051f11874705d68a124bdcf",
+    },
+    "below_min_edge/put_spread": {
+        "metrics": "ced51aa1d21ba86256b90f13566b0f4dcc7f2be6cf06a97a9dc3bde9dabbe48d",
+        "ledger": "51254cc95250b6b5bf3685f8601a0584688d7c73bd71040c507eff99f28b2b66",
+        "cells": [
+            ('2024-03-01', 'model', [92.0, 95.0], 88.69999999999999, None, None, None, None, None, 'below_min_edge'),
+            ('2024-03-01', 'always', [92.0, 95.0], 88.69999999999999, 0.0, 88.69999999999999, {'put': 88.69999999999999}, 0.02978928060361996, -8.936784181085988, None),
+            ('2024-03-01', 'implied', [95.0, 96.0], 18.69999999999997, 0.0, 18.69999999999997, {'put': 18.69999999999997}, 0.037376320008478625, -11.212896002543587, None),
+        ],
+    },
+}
+
+
+def _frozen_scenarios():
+    """The scenarios FROZEN was computed from: name -> (forecasts, chain, closes, extra knobs)."""
+    scenarios = {}
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    scenarios["three_trades"] = (rows, chain, series, {})
+    closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                     ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    scenarios["dividend_and_carry"] = ([_row(ENTRY)], _chain(ENTRY, EXPIRY),
+                                       _series(closes, [("2024-03-07", 1.0)]), {})
+    days, chain, series = _trades(GATE_LEVELS)
+    scenarios["gated_six"] = (_gated_rows(days, g_a=GATE_A, g_b=GATE_B), chain, series,
+                              {"gate_fields": ["g_a", "g_b"]})
+    scenarios["below_min_edge"] = ([_row(ENTRY, samples=list(LOSING_DRAWS))],
+                                   _chain(ENTRY, EXPIRY), FLAT, {"min_edge_usd": 86.0})
+    return scenarios
+
+
+def _rounded(value):
+    """Floats to 6 places, recursively: a digest that survives a last-bit libm difference."""
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, dict):
+        return {k: _rounded(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_rounded(v) for v in value]
+    return value
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(_rounded(value), separators=(",", ":")).encode()).hexdigest()
+
+
+def _same(got, want):
+    """Structural equality with floats to 1e-12 and everything else exact."""
+    if isinstance(want, float):
+        return isinstance(got, float) and math.isclose(got, want, rel_tol=1e-12, abs_tol=1e-12)
+    if isinstance(want, dict):
+        return isinstance(got, dict) and list(got) == list(want) and all(
+            _same(got[k], want[k]) for k in want)
+    if isinstance(want, (list, tuple)):
+        return len(got) == len(want) and all(_same(g, w) for g, w in zip(got, want))
+    return got == want
+
+
+@pytest.mark.parametrize("key", list(FROZEN))
+def test_the_condor_and_the_put_spread_are_exactly_what_adr_0194_shipped(key):
+    scenario, structure = key.split("/")
+    rows, chain, series, over = _frozen_scenarios()[scenario]
+    runner = _run if structure == "condor" else _run_put_spread
+    metrics, report = runner(rows, chain, series, **over)
+    frozen = FROZEN[key]
+    assert _digest(metrics) == frozen["metrics"]
+    assert _digest(report["ledger"]) == frozen["ledger"]
+    if "cells" in frozen:
+        cells = [(e["date"], book, c["strikes"], c["credit_usd"], c["american_charge_usd"],
+                  c["pnl_usd"], c["side_pnl_usd"], c["delta"], c["equity_pnl_usd"], c["reason"])
+                 for e in report["ledger"] for book, c in e["books"].items()]
+        assert len(cells) == len(frozen["cells"])
+        for got, want in zip(cells, frozen["cells"]):
+            assert _same(got, want), (got, want)
+    assert report["kind"].startswith("archived_quote_") and "select" not in report["kind"]
+    assert all("selected" not in cell for e in report["ledger"] for cell in e["books"].values())
+
+
+# -- ADR-0195: forecast-scored payoff selection --------------------------------------------------
+#
+# At each entry PayoffSelectQuoteBacktest snaps EVERY candidate (structure, short_q, wing_z) the
+# forecast could trade, prices it at bid/ask, drops what the existing gates refuse and ranks the
+# rest by score = E_P[pnl] / max_loss (E_P over the forecast draws at the horizon scale; max_loss =
+# multiplier x the widest vertical less the credit). The worked chain, short_q 0.1, wing_z 0.5,
+# draws whose Q(0.1) = -1 and Q(0.9) = +1 and a 5-session horizon (scale 0.05) give the strikes
+# [92, 95] (put spread), [106, 108] (call spread) and [92, 95, 106, 108] (condor), so by hand:
+#
+#   structure     credit (USD)                          max loss (USD)
+#   put spread    (2.0 - 1.1) x 100 - 2 x 0.65 = 88.7   3 x 100 - 88.7          = 211.3
+#   call spread   (1.5 - 0.8) x 100 - 2 x 0.65 = 68.7   2 x 100 - 68.7          = 131.3
+#   condor        88.7 + 68.7               = 157.4     max(3, 2) x 100 - 157.4 = 142.6
+#
+# With every draw settling between the shorts E_P = credit, and the condor wins (157.4 / 142.6):
+# it borrows the other wing's credit for free, since only its wider wing can lose. Two variants
+# make a SINGLE wing the better bet, by making the other wing thin AND the forecast's tail heavy
+# on that thin wing (the 3.7 is a 0.05 per-share credit: 0.05 x 100 - 1.3):
+#
+#   THIN_CALL, RIGHT_HEAVY   E_call = 3.7 - 3 x 2.0 = -2.3    E_condor = 92.4 - 6 = 86.4
+#   THIN_PUT,  LEFT_HEAVY    E_put  = 3.7 - 3 x 3.0 = -5.3    E_condor = 72.4 - 9 = 63.4
+
+CALL_SPREAD = CONDOR[2:]
+#: The three structures' legs, restated here (never read from contracts) and their sides.
+STRUCTURE_LEGS = {"put_spread": PUT_SPREAD, "call_spread": CALL_SPREAD, "condor": CONDOR}
+STRUCTURE_SIDES = {"put_spread": ("put",), "call_spread": ("call",), "condor": ("put", "call")}
+SELECT_KNOBS = {"candidate_structures": ["put_spread", "call_spread", "condor"],
+                "candidate_short_q": [0.1], "candidate_wing_z": [0.5]}
+#: Both keep Q(0.1) = -1 and Q(0.9) = +1 (so the strikes stay put) but put 3 % of the draws
+#: beyond one wing: z = +3 settles at 100 e^{0.15} = 116.2 (through the call wing, -2.0 a share)
+#: and z = -3 at 86.1 (through the put wing, -3.0 a share).
+RIGHT_HEAVY = [-1.0] * 10 + [0.0] * 79 + [1.0] * 8 + [3.0] * 3
+LEFT_HEAVY = [-3.0] * 3 + [-1.0] * 7 + [0.0] * 79 + [1.0] * 11
+THIN_CALL = {"call106": {"bid": 0.85}}      # call spread credit 0.85 - 0.8 = 0.05 a share
+THIN_PUT = {"put95": {"bid": 1.15}}         # put spread credit 1.15 - 1.1 = 0.05 a share
+
+#: (label, quote overrides, draws, {structure: (credit, E_P, max loss)}, winner), all by hand.
+SELECT_CASES = [
+    ("condor", {}, DRAWS,
+     {"put_spread": (88.7, 88.7, 211.3), "call_spread": (68.7, 68.7, 131.3),
+      "condor": (157.4, 157.4, 142.6)}, "condor"),
+    ("put_spread", THIN_CALL, RIGHT_HEAVY,
+     {"put_spread": (88.7, 88.7, 211.3), "call_spread": (3.7, 3.7 - 6.0, 196.3),
+      "condor": (92.4, 92.4 - 6.0, 207.6)}, "put_spread"),
+    ("call_spread", THIN_PUT, LEFT_HEAVY,
+     {"put_spread": (3.7, 3.7 - 9.0, 296.3), "call_spread": (68.7, 68.7, 131.3),
+      "condor": (72.4, 72.4 - 9.0, 227.6)}, "call_spread"),
+]
+SELECT_STRIKES = {"put_spread": [92.0, 95.0], "call_spread": [106.0, 108.0],
+                  "condor": [92.0, 95.0, 106.0, 108.0]}
+
+
+def _assert_the_selected_split(ledger):
+    """ADR-0193 + ADR-0195 on EVERY select run: an entered cell's sides are exactly its own
+    structure's, in leg order, and sum to its P&L; the implied book is the condor and has no
+    ``selected``; a cell that did not enter has no split and no benchmark."""
+    for entry in ledger:
+        for book, cell in entry["books"].items():
+            assert "selected" in cell, (entry["date"], book)
+            assert (cell["selected"] is None) == (book == "implied" or cell["strikes"] is None)
+            if cell["entered"]:
+                structure = "condor" if cell["selected"] is None else cell["selected"]["structure"]
+                assert tuple(cell["side_pnl_usd"]) == STRUCTURE_SIDES[structure]
+                assert len(cell["strikes"]) == len(STRUCTURE_LEGS[structure])
+                assert abs(sum(cell["side_pnl_usd"].values()) - cell["pnl_usd"]) <= 1e-9
+            else:
+                assert cell["side_pnl_usd"] is None
+                assert cell["delta"] is None and cell["equity_pnl_usd"] is None
+
+
+def _run_select(forecasts, chain, underlying, **over):
+    node = PayoffSelectQuoteBacktest("bt", {**PARAMS, **SELECT_KNOBS, **over})
+    out = node.run(CTX, {"forecasts": forecasts, "chain": chain, "underlying": underlying})
+    _assert_the_selected_split(out["report"].value["ledger"])
+    return out["metrics"], out["report"].value
+
+
+def _quoted(quotes, day=ENTRY, expiry=EXPIRY, **chain_kwargs):
+    """The worked chain with ``_set`` overrides applied."""
+    return _set(_chain(day, expiry, **chain_kwargs), **quotes)
+
+
+def _select_row(day=ENTRY, samples=DRAWS, **extra):
+    return _row(day, samples=list(samples), **extra)
+
+
+@pytest.mark.parametrize("label, quotes, draws, table, winner", SELECT_CASES,
+                         ids=[c[0] for c in SELECT_CASES])
+def test_each_structure_wins_in_turn_by_its_hand_computed_score(label, quotes, draws, table, winner):
+    scores = {name: expected / max_loss for name, (_c, expected, max_loss) in table.items()}
+    assert max(scores, key=scores.get) == winner == label     # the table itself picks the winner
+    chain = _quoted(quotes)
+    # every candidate ALONE reports its own hand-computed credit, E_P and score ...
+    for name, (credit, expected, max_loss) in table.items():
+        _, report = _run_select([_select_row(samples=draws)], chain, FLAT,
+                                candidate_structures=[name])
+        entry = report["ledger"][0]
+        cell = entry["books"]["model"]
+        assert cell["strikes"] == SELECT_STRIKES[name]
+        assert cell["credit_usd"] == pytest.approx(credit)
+        assert entry["model_expected_pnl_usd"] == pytest.approx(expected)
+        assert cell["selected"] == {"structure": name, "short_q": 0.1, "wing_z": 0.5,
+                                    "score": pytest.approx(scores[name]),
+                                    "n_candidates_scored": 1}
+        assert cell["entered"] is (expected > 0.0)          # the model book needs E_P > 0
+        assert report["ledger"][0]["books"]["always"]["entered"] is True
+    # ... and given all three the best score enters, in both the model and the always book
+    metrics, report = _run_select([_select_row(samples=draws)], chain, FLAT)
+    (entry,) = report["ledger"]
+    for book in ("model", "always"):
+        cell = entry["books"][book]
+        assert cell["strikes"] == SELECT_STRIKES[winner] and cell["entered"] is True
+        assert cell["selected"] == {"structure": winner, "short_q": 0.1, "wing_z": 0.5,
+                                    "score": pytest.approx(scores[winner]),
+                                    "n_candidates_scored": 3}
+        assert cell["credit_usd"] == pytest.approx(table[winner][0])
+        assert cell["pnl_usd"] == pytest.approx(table[winner][0])    # settled at 97: all worthless
+        assert list(cell["side_pnl_usd"]) == list(STRUCTURE_SIDES[winner])
+        assert metrics[f"{book}_n_trades"] == 1
+        assert metrics[f"{book}_n_{winner}"] == 1
+        assert sum(metrics[f"{book}_n_{name}"] for name in STRUCTURE_LEGS) == 1
+    assert entry["model_expected_pnl_usd"] == pytest.approx(table[winner][1])
+    assert entry["books"]["implied"]["selected"] is None            # the benchmark is unchanged
+    assert entry["books"]["implied"]["strikes"] == IMPLIED_STRIKES
+    assert metrics["implied_n_condor"] == 1
+    assert metrics["implied_n_put_spread"] == metrics["implied_n_call_spread"] == 0
+
+
+def test_the_same_chain_under_two_forecasts_selects_different_structures():
+    # the forecast, not the market, decides: THIN_CALL prices are identical, only the tail differs.
+    # Under DRAWS: put 88.7 / 211.3 = 0.4198, call 3.7 / 196.3 = 0.0188, condor 92.4 / 207.6 =
+    # 0.4451 -> the condor. Under RIGHT_HEAVY the 3 % beyond the call wing costs the call side 6.0:
+    # call -2.3 / 196.3, condor 86.4 / 207.6 = 0.4162 -> the put spread (0.4198).
+    chain = _quoted(THIN_CALL)
+    _, symmetric = _run_select([_select_row(samples=DRAWS)], chain, FLAT)
+    _, skewed = _run_select([_select_row(samples=RIGHT_HEAVY)], chain, FLAT)
+    a, b = symmetric["ledger"][0]["books"]["model"], skewed["ledger"][0]["books"]["model"]
+    assert (a["selected"]["structure"], b["selected"]["structure"]) == ("condor", "put_spread")
+    assert a["selected"]["score"] == pytest.approx(92.4 / 207.6)
+    assert b["selected"]["score"] == pytest.approx(88.7 / 211.3)
+    assert a["strikes"] == SELECT_STRIKES["condor"] and b["strikes"] == SELECT_STRIKES["put_spread"]
+
+
+def test_a_tie_goes_to_the_earlier_declared_candidate():
+    # q 0.10 and 0.12 both read Q = -1 from ten draws (the lower quantile takes index
+    # ceil(10 q) - 1, i.e. 0 and 1, and the two lowest draws are both -1), so the two put spreads
+    # are the SAME [92, 95] at the same quotes: an exact tie, and the earlier declared value is
+    # the one recorded
+    chain = _chain(ENTRY, EXPIRY)
+    for order in ([0.12, 0.10], [0.10, 0.12]):
+        _, report = _run_select([_select_row()], chain, FLAT, candidate_structures=["put_spread"],
+                                candidate_short_q=order)
+        cell = report["ledger"][0]["books"]["model"]
+        assert cell["strikes"] == [92.0, 95.0]
+        assert cell["selected"]["short_q"] == order[0]
+        assert cell["selected"]["n_candidates_scored"] == 2
+    # ... likewise the wing: 0.5 and 0.5001 snap to the same long put
+    for order in ([0.5001, 0.5], [0.5, 0.5001]):
+        _, report = _run_select([_select_row()], chain, FLAT, candidate_structures=["put_spread"],
+                                candidate_wing_z=order)
+        assert report["ledger"][0]["books"]["model"]["selected"]["wing_z"] == order[0]
+
+
+def test_a_tie_between_structures_goes_to_the_structure_declared_first():
+    # a put spread [92, 95] and a call spread [106, 109] (108 unquotable, so the long call snaps
+    # out to 109): both width 3, both credit (2.0 - 1.0) = 1.0 a share in exact binary numbers,
+    # both E_P = credit: the scores are EXACTLY equal
+    chain = _quoted({"put95": {"bid": 2.0, "ask": 2.1}, "put92": {"bid": 0.9, "ask": 1.0},
+                     "call106": {"bid": 2.0, "ask": 2.1}, "call109": {"bid": 0.9, "ask": 1.0},
+                     "call108": {"bid_size": 0, "ask_size": 0}})
+    for order in (["put_spread", "call_spread"], ["call_spread", "put_spread"]):
+        _, report = _run_select([_select_row()], chain, FLAT, candidate_structures=order)
+        cell = report["ledger"][0]["books"]["model"]
+        assert cell["selected"]["structure"] == order[0]
+        assert cell["strikes"] == ([92.0, 95.0] if order[0] == "put_spread" else [106.0, 109.0])
+        assert cell["credit_usd"] == pytest.approx(98.7) and cell["selected"]["n_candidates_scored"] == 2
+        assert cell["selected"]["score"] == pytest.approx(98.7 / (300 - 98.7))
+
+
+def _smooth_market(day=ENTRY, expiry=EXPIRY, strikes=range(80, 121)):
+    """A chain whose every vertical pays: mid 3.0 - 0.08 |K - 100| on both rights, +-0.05 wide.
+
+    A short leg nearer the money than its long by g points earns 0.08 g - 0.1 a share, so any
+    vertical two or more points wide has a positive credit, far under its width.
+    """
+    chain = _chain(day, expiry, strikes=strikes)
+    for q in chain:
+        mid = 3.0 - 0.08 * abs(q["strike"] - 100.0)
+        q["bid"], q["ask"] = round(mid - 0.05, 4), round(mid + 0.05, 4)
+    return chain
+
+
+#: A hundred draws at the mid-quantiles of the standard normal: Q(0.1) = -1.28, Q(0.2) = -0.84 ...
+NORMAL_DRAWS = [NormalDist().inv_cdf((i + 0.5) / 100) for i in range(100)]
+
+
+def test_n_candidates_scored_counts_every_declared_candidate_that_survives_the_gates():
+    # q {0.1, 0.2} x wing {0.5, 1.0} x three structures = 12 candidates on a market where every
+    # vertical pays, so all twelve are scored; the quantiles differ so their strikes do too
+    chain = _smooth_market()
+    _, report = _run_select([_select_row(samples=NORMAL_DRAWS)], chain, FLAT,
+                            candidate_short_q=[0.1, 0.2], candidate_wing_z=[0.5, 1.0])
+    assert report["ledger"][0]["books"]["model"]["selected"]["n_candidates_scored"] == 12
+    # narrowing the declaration narrows the count: 3 structures x 1 x 1
+    _, report = _run_select([_select_row(samples=NORMAL_DRAWS)], chain, FLAT)
+    assert report["ledger"][0]["books"]["model"]["selected"]["n_candidates_scored"] == 3
+
+
+def test_a_tie_between_short_q_and_wing_z_combinations_follows_the_nesting_q_then_wing():
+    # the chain lists no put below 91, so a long put targeted below 91 has no strike: with
+    # NORMAL_DRAWS Q(0.10) = -1.311 and Q(0.11) = -1.254 (shorts at 93), wing 0.6 puts the long
+    # put of q 0.10 at 100 e^{0.05 (-1.311 - 0.6)} = 90.89, unlistable, while the other three
+    # candidates all snap to [91, 93]: an exact three-way tie whose FIRST member depends on
+    # which list is outer. Declared q [0.10, 0.11] and wing [0.6, 0.5]: q outer picks
+    # (0.10, 0.5); a wing-outer order would pick (0.11, 0.6)
+    chain = _smooth_market(strikes=range(91, 113))
+    _, report = _run_select([_select_row(samples=NORMAL_DRAWS)], chain, FLAT,
+                            candidate_structures=["put_spread"], candidate_short_q=[0.10, 0.11],
+                            candidate_wing_z=[0.6, 0.5])
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["strikes"] == [91.0, 93.0]
+    assert (cell["selected"]["short_q"], cell["selected"]["wing_z"]) == (0.10, 0.5)
+    assert cell["selected"]["n_candidates_scored"] == 3       # the tied three, each counted
+
+
+def test_a_tie_between_structures_follows_the_nesting_structure_outermost():
+    # a constant forecast settles every draw at the forward, so E_P = credit. Wing 0.5 gives the
+    # put spread [97, 100] (put97's ask 2.5 makes its credit negative: refused) and the call spread
+    # [100, 105] (103 and 104 unquotable, so the long call snaps out to 105); wing 1.0 gives the
+    # put spread [95, 100] and the call spread [100, 106] (refused the same way). The scored pair,
+    # put [95, 100] at wing 1.0 and call [100, 105] at wing 0.5, have width 5 and credit 1.0: an
+    # exact tie. Declared wing [0.5, 1.0]: structure outermost picks the put; a wing-outer order
+    # would meet the call at wing 0.5 first
+    chain = _quoted({
+        "put100": {"bid": 2.0, "ask": 2.1}, "put95": {"bid": 0.9, "ask": 1.0},
+        "put97": {"bid": 2.4, "ask": 2.5},
+        "call100": {"bid": 2.0, "ask": 2.1}, "call105": {"bid": 0.9, "ask": 1.0},
+        "call106": {"bid": 2.4, "ask": 2.5},
+        "call103": {"bid_size": 0, "ask_size": 0}, "call104": {"bid_size": 0, "ask_size": 0}})
+    _, report = _run_select([_select_row(samples=[0.0] * 10)], chain, FLAT,
+                            candidate_structures=["put_spread", "call_spread"],
+                            candidate_wing_z=[0.5, 1.0])
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["n_candidates_scored"] == 2
+    assert (cell["selected"]["structure"], cell["selected"]["wing_z"]) == ("put_spread", 1.0)
+    assert cell["strikes"] == [95.0, 100.0]
+    _, report = _run_select([_select_row(samples=[0.0] * 10)], chain, FLAT,
+                            candidate_structures=["call_spread", "put_spread"],
+                            candidate_wing_z=[0.5, 1.0])
+    cell = report["ledger"][0]["books"]["model"]
+    assert (cell["selected"]["structure"], cell["selected"]["wing_z"]) == ("call_spread", 0.5)
+    assert cell["strikes"] == [100.0, 105.0]
+    assert cell["selected"]["score"] == pytest.approx(98.7 / (500.0 - 98.7))
+
+
+@pytest.mark.parametrize("fee", [41.0, 44.0])
+def test_a_candidate_the_credit_gate_refuses_is_never_scored(fee):
+    # fees of 41 a leg: the put spread keeps 90 - 82 = 8, the call spread 70 - 82 and the condor
+    # 160 - 164 are not positive (44: 2, -18, -16), so only the put spread is scored
+    _, report = _run_select([_select_row()], _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=fee)
+    cell = report["ledger"][0]["books"]["model"]
+    credit = 90.0 - 2 * fee
+    assert cell["selected"]["structure"] == "put_spread"
+    assert cell["selected"]["n_candidates_scored"] == 1
+    assert cell["credit_usd"] == pytest.approx(credit)
+    assert cell["selected"]["score"] == pytest.approx(credit / (300.0 - credit))
+
+
+def test_a_credit_at_or_above_the_narrowest_width_is_never_scored():
+    # put95 bid 4.5: the put spread's 4.5 - 1.1 = 3.4 reaches its width 3 and the condor's
+    # 3.4 + 0.7 = 4.1 reaches its narrower call width 2: both refused; the call spread stands
+    chain = _quoted({"put95": {"bid": 4.5, "ask": 4.6}})
+    _, report = _run_select([_select_row()], chain, FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["structure"] == "call_spread"
+    assert cell["selected"]["n_candidates_scored"] == 1
+    assert cell["selected"]["score"] == pytest.approx(68.7 / 131.3)
+    # a credit just under the width (3.4 -> 2.9 a share against 3) is scored
+    _, report = _run_select([_select_row()], _quoted({"put95": {"bid": 4.0, "ask": 4.1}}), FLAT,
+                            candidate_structures=["put_spread"])
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["n_candidates_scored"] == 1
+    assert cell["credit_usd"] == pytest.approx(290.0 - 1.3)
+
+
+def test_a_target_outside_the_band_is_never_scored_and_the_others_still_are():
+    # wing 3.2 puts the long put at z = -1 - 3.2 (and the long call at +1 + 3.2): 0.05 x 4.2 =
+    # 0.21 > the 0.2 band, so every wing-3.2 candidate is refused (all three structures reach out
+    # a wing); the wing-0.5 candidates are the case-A ones
+    _, report = _run_select([_select_row()], _chain(ENTRY, EXPIRY), FLAT,
+                            candidate_wing_z=[3.2, 0.5])
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["structure"] == "condor" and cell["selected"]["wing_z"] == 0.5
+    assert cell["selected"]["n_candidates_scored"] == 3
+
+
+def test_a_side_with_no_quotable_strike_removes_only_the_structures_that_use_it():
+    metrics, report = _run_select([_select_row()], _call_side_unquotable(), FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["structure"] == "put_spread" and cell["strikes"] == [92.0, 95.0]
+    assert cell["selected"]["n_candidates_scored"] == 1          # call spread and condor refused
+    assert cell["selected"]["score"] == pytest.approx(88.7 / 211.3)
+    assert metrics["model_n_put_spread"] == 1 and metrics["model_n_condor"] == 0
+
+
+def test_a_constant_forecast_leaves_the_structures_whose_strikes_do_not_degenerate():
+    # both shorts land at 100: the condor's strikes are not increasing (degenerate) and the call
+    # spread's 100 / 103 earns 0.5 - 0.6 < 0 (a nonpositive credit); the put spread [97, 100] is
+    # scored (2.0 - 1.1 = 0.9 -> 88.7)
+    chain = _quoted({"put100": {"bid": 2.0, "ask": 2.2}, "put97": {"bid": 1.0, "ask": 1.1}})
+    _, report = _run_select([_select_row(samples=[0.0] * 10)], chain, FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["strikes"] == [97.0, 100.0] and cell["selected"]["structure"] == "put_spread"
+    assert cell["selected"]["n_candidates_scored"] == 1
+    assert cell["credit_usd"] == pytest.approx(88.7)
+
+
+@pytest.mark.parametrize("over", [
+    {"samples": [-3.0] * 2 + [0.0] * 6 + [3.0] * 2},   # Q = -3 / +3: 86.1 / 116.2, off the 88-112 grid
+    {"fee_per_leg": 200.0},                            # every credit is eaten by fees
+])
+def test_no_scorable_candidate_is_a_book_reason_for_model_and_always_and_implied_still_trades(over):
+    samples = over.pop("samples", DRAWS)
+    metrics, report = _run_select([_select_row(samples=samples)], _chain(ENTRY, EXPIRY), FLAT,
+                                  **over)
+    (entry,) = report["ledger"]
+    for book in ("model", "always"):
+        cell = entry["books"][book]
+        assert (cell["strikes"], cell["reason"], cell["entered"]) == (None, "no_scorable_candidate",
+                                                                      False)
+        assert cell["selected"] is None and cell["credit_usd"] is None
+        assert metrics[f"{book}_n_trades"] == 0
+        assert metrics[f"{book}_n_skipped_no_scorable_candidate"] == 1
+        for name in STRUCTURE_LEGS:
+            assert metrics[f"{book}_n_{name}"] == 0
+    assert entry["model_expected_pnl_usd"] is None
+    assert metrics["implied_n_skipped_no_scorable_candidate"] == 0
+    if "fee_per_leg" not in over:                     # the implied book pays the same fees
+        assert entry["books"]["implied"]["entered"] is True
+        assert metrics["implied_n_trades"] == 1 and metrics["implied_n_condor"] == 1
+    assert "no_scorable_candidate" in PayoffSelectQuoteBacktest.BOOK_REASONS
+
+
+def test_the_model_book_needs_the_winners_expected_pnl_above_min_edge_but_always_enters_it():
+    chain = _quoted(THIN_CALL)
+    for edge, model_enters in ((88.0, True), (89.0, False)):     # the put spread's E_P is 88.7
+        metrics, report = _run_select([_select_row(samples=RIGHT_HEAVY)], chain, FLAT,
+                                      min_edge_usd=edge)
+        entry = report["ledger"][0]
+        assert entry["model_expected_pnl_usd"] == pytest.approx(88.7)
+        assert entry["books"]["model"]["entered"] is model_enters
+        assert entry["books"]["model"]["strikes"] == [92.0, 95.0]     # the winner, entered or not
+        assert entry["books"]["model"]["selected"]["structure"] == "put_spread"
+        assert entry["books"]["always"]["entered"] is True             # regardless of edge
+        assert metrics["always_n_put_spread"] == 1
+        assert metrics["model_n_put_spread"] == int(model_enters)
+        assert metrics["model_n_skipped_below_min_edge"] == int(not model_enters)
+        assert entry["books"]["model"]["reason"] == (None if model_enters else "below_min_edge")
+
+
+def test_the_score_prices_the_draws_at_the_horizon_scale_not_the_reference_scale():
+    # the existing hand check (label_horizon 4, 5 sessions, s' = 0.05 sqrt(5/4)): the condor
+    # [90, 93, 106, 109] earns 77.4 and E_P = 77.4 - 5 (93 - 100 e^{-1.4 s'}) = 74.761 (the -1.4
+    # draws settle through the short put); its widths are 3 and 3 so the max loss is 300 - 77.4
+    _, report = _run_select([_select_row(samples=M1_DRAWS)], _chain(ENTRY, EXPIRY), FLAT,
+                            label_horizon=4, candidate_structures=["condor"])
+    entry = report["ledger"][0]
+    cell = entry["books"]["model"]
+    assert cell["strikes"] == [90.0, 93.0, 106.0, 109.0] and cell["credit_usd"] == pytest.approx(77.4)
+    assert entry["model_expected_pnl_usd"] == pytest.approx(74.761, abs=1e-3)
+    assert cell["selected"]["score"] == pytest.approx(74.761 / 222.6, abs=1e-5)
+
+
+def _mixed_winners(gates=None):
+    """Three entries a fortnight apart whose winners differ: condor, call spread, put spread."""
+    rows, chain, series = _three_trades(80.0, 110.0, 97.0)
+    rows[1]["samples"], rows[2]["samples"] = list(LEFT_HEAVY), list(RIGHT_HEAVY)
+    for q in chain:
+        if q["date"] == "2024-03-11" and q["right"] == "put" and q["strike"] == 95.0:
+            q["bid"] = 1.15                                    # THIN_PUT on the second entry
+        if q["date"] == "2024-03-19" and q["right"] == "call" and q["strike"] == 106.0:
+            q["bid"] = 0.85                                    # THIN_CALL on the third
+    if gates is not None:
+        for row, gate in zip(rows, gates):
+            row["g"] = gate
+    return rows, chain, series
+
+
+def test_the_selected_structures_sides_sum_to_each_trade_and_the_side_metrics_cover_their_cells():
+    metrics, report = _run_select(*_mixed_winners())
+    ledger = report["ledger"]
+    model = [e["books"]["model"] for e in ledger]
+    assert [c["selected"]["structure"] for c in model] == ["condor", "call_spread", "put_spread"]
+    # settled at 80 through both put wings, 110 through the call spread's wing, 97 inside:
+    # condor 157.4 - 300 = -142.6 (put -211.3, call +68.7); call spread 68.7 - 200 = -131.3;
+    # put spread 88.7
+    assert [c["pnl_usd"] for c in model] == pytest.approx([-142.6, -131.3, 88.7])
+    assert [c["side_pnl_usd"] for c in model] == [
+        pytest.approx({"put": -211.3, "call": 68.7}), pytest.approx({"call": -131.3}),
+        pytest.approx({"put": 88.7})]
+    for book in ("model", "always"):
+        assert metrics[f"{book}_n_trades"] == 3
+        assert (metrics[f"{book}_n_condor"], metrics[f"{book}_n_call_spread"],
+                metrics[f"{book}_n_put_spread"]) == (1, 1, 1)
+        assert metrics[f"{book}_total_pnl_usd"] == pytest.approx(-185.2)
+        # a side is summarized over the traded cells that CONTAIN it: put = condor + put spread
+        # (-211.3, 88.7), call = condor + call spread (68.7, -131.3)
+        assert metrics[f"{book}_put_total_pnl_usd"] == pytest.approx(-122.6)
+        assert metrics[f"{book}_put_mean_pnl_usd"] == pytest.approx(-61.3)
+        assert metrics[f"{book}_put_hit_rate"] == pytest.approx(0.5)
+        assert metrics[f"{book}_call_total_pnl_usd"] == pytest.approx(-62.6)
+        assert metrics[f"{book}_call_mean_pnl_usd"] == pytest.approx(-31.3)
+        assert metrics[f"{book}_call_hit_rate"] == pytest.approx(0.5)
+        # the sides still add up to the book here, because every trade's sides sum to its P&L
+        assert metrics[f"{book}_put_total_pnl_usd"] + metrics[f"{book}_call_total_pnl_usd"] == \
+            pytest.approx(metrics[f"{book}_total_pnl_usd"])
+    # the implied book is the condor every time (put -81.3 / -81.3 / +18.7 ... by hand: 80 -> -32.6,
+    # 110 -> -132.6, 97 -> 67.4)
+    assert [e["books"]["implied"]["pnl_usd"] for e in ledger] == pytest.approx(
+        [-32.6, -132.6, 67.4])
+    assert metrics["implied_n_condor"] == 3 and metrics["implied_n_put_spread"] == 0
+
+
+def test_a_side_only_a_selected_structure_lacks_is_summarized_over_the_cells_that_have_it():
+    # only call spreads traded: the put side has NO cell, so its statistics are the empty ones
+    # (float zeros) instead of a KeyError on a cell with no put wing
+    metrics, _ = _run_select([_select_row(samples=LEFT_HEAVY)], _quoted(THIN_PUT), FLAT)
+    assert metrics["model_n_call_spread"] == 1 and metrics["model_n_trades"] == 1
+    assert metrics["model_put_total_pnl_usd"] == 0.0 and metrics["model_put_hit_rate"] == 0.0
+    assert type(metrics["model_put_total_pnl_usd"]) is float
+    assert metrics["model_call_total_pnl_usd"] == pytest.approx(68.7)
+
+
+def test_the_american_charge_follows_the_selected_structures_short_legs():
+    # 03-07 ex-date 1.0 (pre-ex close 107 above the 106 short call) and a 94 close below the 95
+    # short put: a condor pays both, a call spread only the 100 dividend, a put spread one day
+    # of carry on its short put
+    dividends = [("2024-03-07", 1.0)]
+    closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                     ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    series = _series(closes, dividends)
+    expected = {"condor": (100.0 + _carry(95.0, 1), 157.4), "call_spread": (100.0, 68.7),
+                "put_spread": (_carry(95.0, 1), 88.7)}
+    for (_, quotes, draws, _table, winner) in SELECT_CASES:
+        _, report = _run_select([_select_row(samples=draws)], _quoted(quotes), series)
+        cell = report["ledger"][0]["books"]["model"]
+        charge, credit = expected[winner]
+        assert cell["selected"]["structure"] == winner
+        assert cell["american_charge_usd"] == pytest.approx(charge)
+        assert cell["pnl_usd"] == pytest.approx(credit - charge)
+        sides = cell["side_pnl_usd"]
+        if winner == "call_spread":
+            assert sides == pytest.approx({"call": 68.7 - 100.0})
+        if winner == "put_spread":
+            assert sides == pytest.approx({"put": 88.7 - _carry(95.0, 1)})
+
+
+def test_the_delta_benchmark_is_the_selected_call_spreads_own_delta():
+    call_spread_delta = _structure_delta(CALL_SPREAD, (106.0, 108.0))
+    assert call_spread_delta < 0          # a short call under a long call is short the stock
+    metrics, report = _run_select([_select_row(samples=LEFT_HEAVY)], _quoted(THIN_PUT), FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["selected"]["structure"] == "call_spread"
+    assert cell["delta"] == pytest.approx(call_spread_delta)
+    assert cell["equity_pnl_usd"] == pytest.approx(call_spread_delta * 100 * -3.0)  # 100 -> 97
+    assert metrics["model_delta_equity_total_usd"] == pytest.approx(call_spread_delta * -300.0)
+    # the dividends paid after entry belong to the stock leg: 1.0 on 03-07 adds a dollar a share
+    closes = [(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    _, report = _run_select([_select_row(samples=LEFT_HEAVY)], _quoted(THIN_PUT),
+                            _series(closes, [("2024-03-07", 1.0)]))
+    assert report["ledger"][0]["books"]["model"]["equity_pnl_usd"] == pytest.approx(
+        call_spread_delta * 100 * (97.0 - 100.0 + 1.0))
+    # a selected leg with no iv leaves no benchmark and is counted; an unselected leg's iv is nobody's
+    lacking = _quoted({**THIN_PUT, "call108": {"iv": None}})
+    metrics, report = _run_select([_select_row(samples=LEFT_HEAVY)], lacking, FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["delta"] is None and cell["equity_pnl_usd"] is None
+    assert metrics["model_n_no_delta"] == 1 and cell["entered"] is True
+    metrics, _ = _run_select([_select_row(samples=LEFT_HEAVY)],
+                             _quoted({**THIN_PUT, "put92": {"iv": None}}), FLAT)
+    assert metrics["model_n_no_delta"] == 0     # the put legs are not the winner's
+
+
+def test_the_gate_annotation_splits_the_selected_structures_pnl():
+    rows, chain, series = _mixed_winners(gates=[True, False, None])
+    metrics, report = _run_select(rows, chain, series, gate_fields=["g"])
+    assert [e["gates"] for e in report["ledger"]] == [{"g": True}, {"g": False}, {"g": None}]
+    # the model book's P&L by gate: closed = the condor's -142.6, open = the call spread's -131.3
+    assert (metrics["model_g_closed_n"], metrics["model_g_open_n"],
+            metrics["model_g_unknown_n"]) == (1, 1, 1)
+    assert metrics["model_g_closed_mean_pnl_usd"] == pytest.approx(-142.6)
+    assert metrics["model_g_open_mean_pnl_usd"] == pytest.approx(-131.3)
+    assert metrics["model_g_closed_t"] == 0.0 and metrics["model_g_open_t"] == 0.0   # one trade each
+    plain, _ = _run_select(*_mixed_winners())
+    assert {k: v for k, v in metrics.items() if "_g_" not in k} == plain   # annotation only
+
+
+def test_a_one_candidate_select_is_the_condor_backtest_and_a_put_spread_select_the_put_spread():
+    # on chains where the credit gate refuses nothing (a refused candidate is "no_scorable_
+    # candidate" here, not the plain node's "nonpositive_credit": see the gate tests)
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    _, condor = _run(rows, chain, series)
+    _, select = _run_select(rows, chain, series, candidate_structures=["condor"])
+    for a, b in zip(condor["ledger"], select["ledger"]):
+        for book in ("model", "always", "implied"):
+            cell = {k: v for k, v in b["books"][book].items() if k != "selected"}
+            assert cell == a["books"][book], book
+        assert {k: v for k, v in b.items() if k != "books"} == {
+            k: v for k, v in a.items() if k != "books"}
+    # ... and at the put spread's own strikes the model and always books are the PutSpread's
+    _, spread = _run_put_spread(rows, chain, series, short_q=0.16, wing_z=0.65)
+    _, select = _run_select(rows, chain, series, candidate_structures=["put_spread"],
+                            candidate_short_q=[0.16], candidate_wing_z=[0.65])
+    for a, b in zip(spread["ledger"], select["ledger"]):
+        for book in ("model", "always"):
+            assert {k: v for k, v in b["books"][book].items() if k != "selected"} == \
+                a["books"][book], book
+
+
+def test_the_implied_book_is_the_unchanged_vix_implied_condor_at_short_q_and_wing_z():
+    rows, chain, series = _mixed_winners()
+    c_metrics, condor = _run(rows, chain, series, short_q=0.2, wing_z=1.0)
+    s_metrics, select = _run_select(rows, chain, series, short_q=0.2, wing_z=1.0)
+    for a, b in zip(condor["ledger"], select["ledger"]):
+        assert {k: v for k, v in b["books"]["implied"].items() if k != "selected"} == \
+            a["books"]["implied"]
+    shared = [k for k in c_metrics if k.startswith("implied_")]
+    assert shared and all(s_metrics[k] == c_metrics[k] for k in shared)
+
+
+def test_the_report_names_the_selector_and_is_never_decision_eligible():
+    cls = PayoffSelectQuoteBacktest
+    assert issubclass(cls, CondorQuoteBacktest) and cls.role == "score"
+    assert cls.serving_effect(PARAMS, {}) == "forbidden"
+    assert cls.LEGS == CONDOR and cls.SIDES == ("put", "call")     # the implied book's structure
+    _, report = _run_select([_select_row()], _chain(ENTRY, EXPIRY), FLAT)
+    assert report["kind"] == "archived_quote_payoff_select_backtest"
+    assert report["units"] == "USD per selected structure, one contract per leg"
+    assert report["pricing"] == "archived_eod_quotes" and report["decision_eligible"] is False
+    assert report["params"]["candidate_structures"] == SELECT_KNOBS["candidate_structures"]
+    assert report["params"]["candidate_short_q"] == [0.1]
+    assert report["params"]["short_q"] == 0.1 and report["params"]["wing_z"] == 0.5
+
+
+def test_every_structure_count_metric_exists_for_every_book_even_with_no_trade():
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, _ = _run_select([_select_row()], chain, FLAT)
+    for book in PayoffSelectQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0
+        for name in STRUCTURE_LEGS:
+            assert metrics[f"{book}_n_{name}"] == 0, (book, name)
+        assert type(metrics[f"{book}_put_total_pnl_usd"]) is float
+    assert metrics["model_n_skipped_no_scorable_candidate"] == 1
+
+
+def _random_market(seed):
+    """A chain of random (but ordered, positive) quotes and a random forecast, for the oracle.
+
+    Even seeds draw a continuous forecast; odd seeds a coarse one (five values), whose quantiles
+    collapse onto a few levels so that MANY candidates snap to the same strikes and tie exactly.
+    """
+    rng = random.Random(seed)
+    chain = _chain(ENTRY, EXPIRY, strikes=range(80, 121))
+    for q in chain:
+        mid = rng.uniform(0.15, 6.0)
+        q["bid"], q["ask"] = round(mid * 0.94, 2) + 0.01, round(mid * 1.06, 2) + 0.02
+    if seed % 2:
+        samples = [rng.choice([-2.0, -1.0, 0.0, 1.0, 2.0]) for _ in range(40)]
+    else:
+        samples = [rng.gauss(0.0, 1.0) * rng.choice([0.7, 1.0, 1.4]) for _ in range(120)]
+    return [_select_row(samples=samples)], chain
+
+
+@pytest.mark.parametrize("seed", range(24))
+def test_the_selection_is_the_best_single_candidate_and_the_first_of_equals(seed):
+    # the oracle: run every candidate ALONE (each alone-run is the hand-checked scoring above) and
+    # take the highest score, the earliest in declaration order on a tie
+    grid = (["put_spread", "call_spread", "condor"], [0.10, 0.16, 0.20, 0.25, 0.30],
+            [0.35, 0.65, 1.0])
+    rows, chain = _random_market(seed)
+    alone = []
+    for structure, q, wing in itertools.product(*grid):
+        _, report = _run_select(rows, chain, FLAT, candidate_structures=[structure],
+                                candidate_short_q=[q], candidate_wing_z=[wing])
+        selected = report["ledger"][0]["books"]["always"]["selected"]
+        if selected is not None:
+            alone.append((selected["score"], structure, q, wing))
+    _, report = _run_select(rows, chain, FLAT, candidate_structures=grid[0],
+                            candidate_short_q=grid[1], candidate_wing_z=grid[2])
+    entry = report["ledger"][0]
+    selected = entry["books"]["always"]["selected"]
+    assert entry["books"]["model"]["selected"] == selected
+    assert selected["n_candidates_scored"] == len(alone)
+    if not alone:
+        assert selected is None
+        return
+    best = max(score for score, *_ in alone)
+    first = next(candidate for candidate in alone if candidate[0] == best)
+    assert (selected["score"], selected["structure"], selected["short_q"],
+            selected["wing_z"]) == first
+    # the recorded score is E_P / max loss of the traded cell, recomputed from the ledger alone
+    cell = entry["books"]["always"]
+    k = cell["strikes"]
+    widest = max(k[1] - k[0], k[3] - k[2]) if selected["structure"] == "condor" else k[1] - k[0]
+    assert selected["score"] == pytest.approx(
+        entry["model_expected_pnl_usd"] / (100 * widest - cell["credit_usd"]))
+    assert 100 * widest - cell["credit_usd"] > 0          # a candidate's max loss is positive
+
+
+_SELECT_PARAM_REFUSALS = [
+    ({"candidate_structures": []}, "candidate_structures"),
+    ({"candidate_structures": ["condor", "condor"]}, "candidate_structures"),
+    ({"candidate_structures": ["butterfly"]}, "candidate_structures"),
+    ({"candidate_structures": ["condor", 3]}, "candidate_structures"),
+    ({"candidate_structures": [["condor"]]}, "candidate_structures"),
+    ({"candidate_structures": "condor"}, "candidate_structures"),
+    ({"candidate_structures": ("condor",)}, "candidate_structures"),
+    ({"candidate_structures": None}, "candidate_structures"),
+    ({"candidate_short_q": []}, "candidate_short_q"),
+    ({"candidate_short_q": [0.1, 0.1]}, "candidate_short_q"),
+    ({"candidate_short_q": [0.0]}, "candidate_short_q"),
+    ({"candidate_short_q": [0.5]}, "candidate_short_q"),
+    ({"candidate_short_q": [0.1, -0.1]}, "candidate_short_q"),
+    ({"candidate_short_q": [0.1, "0.2"]}, "candidate_short_q"),
+    ({"candidate_short_q": [True]}, "candidate_short_q"),
+    ({"candidate_short_q": [float("nan")]}, "candidate_short_q"),
+    ({"candidate_short_q": 0.1}, "candidate_short_q"),
+    ({"candidate_wing_z": []}, "candidate_wing_z"),
+    ({"candidate_wing_z": [0.5, 0.5]}, "candidate_wing_z"),
+    ({"candidate_wing_z": [0.0]}, "candidate_wing_z"),
+    ({"candidate_wing_z": [-1.0]}, "candidate_wing_z"),
+    ({"candidate_wing_z": ["1"]}, "candidate_wing_z"),
+    ({"candidate_wing_z": [float("inf")]}, "candidate_wing_z"),
+    ({"candidate_wing_z": 0.5}, "candidate_wing_z"),
+    ({"wing_points": 25}, "wing_points"),                 # default-deny: an unknown knob is named
+    ({"short_q": 0.5}, "short_q"), ({"wing_z": 0}, "wing_z"), ({"multiplier": 0}, "multiplier"),
+    ({"carry_rate": -0.01}, "carry_rate"), ({"split": "nope"}, "split"),
+]
+
+
+@pytest.mark.parametrize("change, name", _SELECT_PARAM_REFUSALS)
+def test_the_selector_refuses_a_bad_knob_and_names_it(change, name):
+    cls = PayoffSelectQuoteBacktest
+    problems = cls.validate_params({**PARAMS, **SELECT_KNOBS, **change})
+    assert problems and any(name in p for p in problems), problems
+    if name in SELECT_KNOBS:      # a candidate knob is a KNOWN knob with a bad value, not a typo
+        assert not any("unknown param" in p for p in problems), problems
+    with pytest.raises(ConfigError, match=name):
+        cls("bt", {**PARAMS, **SELECT_KNOBS, **change})
+
+
+def test_the_selector_needs_every_condor_knob_and_every_candidate_knob():
+    cls = PayoffSelectQuoteBacktest
+    full = {**PARAMS, **SELECT_KNOBS}
+    assert cls.validate_params(dict(full)) == []
+    assert set(SELECT_KNOBS) <= set(cls._REQUIRED) and set(PARAMS) <= set(cls._REQUIRED)
+    assert set(SELECT_KNOBS) <= set(cls._PARAMS) and set(CondorQuoteBacktest._PARAMS) <= set(
+        cls._PARAMS)
+    for missing in full:
+        with pytest.raises(ConfigError, match=missing):
+            cls("bt", {k: v for k, v in full.items() if k != missing})
+    # the condor takes no candidate knob: the two contracts stay apart
+    with pytest.raises(ConfigError, match="candidate_structures"):
+        CondorQuoteBacktest("bt", full)
+    # short_q and wing_z still define the implied book, so both stay required and validated
+    assert any("short_q" in p for p in cls.validate_params({**full, "short_q": 0.7}))
+    for structures in (["put_spread"], ["call_spread"], ["condor"],
+                       ["condor", "put_spread", "call_spread"]):
+        assert cls.validate_params({**full, "candidate_structures": structures}) == []
+    assert cls.validate_params({**full, "gate_fields": ["g"], "min_edge_usd": 1.0,
+                                "cvar_alpha": 0.9}) == []

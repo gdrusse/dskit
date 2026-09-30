@@ -32,7 +32,16 @@ Use README.md for installation, the temporary demo and focused tests.
   traded P&L by them without skipping an entry; grid.gate_study_document puts
   both in the 14 put-spread documents and the 14 <cell>-gate.json (VIX3M is
   the ADR-0182 cboe-index-wide source; no real run here). A gate name has one
-  owner, VolRegimeSignals.GATE_FIELDS.
+  owner, VolRegimeSignals.GATE_FIELDS. The shipped signals nodes write every
+  knob out (the hash covers the thresholds); the float-noise "no variance" rule
+  is dskit.pipeline.stats.NO_VARIANCE_RTOL's, never restated here. ADR-0195 adds
+  PayoffSelectQuoteBacktest (CondorQuoteBacktest choosing put spread, call
+  spread or condor per entry by E_P[pnl] / max_loss over candidate knobs; the
+  implied book stays the condor) on per-trade leg sets: contracts.STRUCTURES and
+  CALL_SPREAD_LEGS own the structures, ONE _american_charge rule serves every
+  leg set, and grid.select_document makes the 28 <cell>-select.json and
+  <cell>-empirical-select.json (the empirical rung is the premium-only
+  control; the forecast's value is the difference). Never decision-eligible.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
 - Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
@@ -90,6 +99,8 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # + <symbol>-<bucket>-put-spread.json for the 14 SPY/QQQ cells (ADR-0193)
                            # + <symbol>-<bucket>-gate.json for the 14 SPY/QQQ cells; both carry
                            # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
+                           # + <symbol>-<bucket>-select.json and -empirical-select.json for the
+                           # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

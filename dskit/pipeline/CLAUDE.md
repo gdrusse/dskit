@@ -171,7 +171,10 @@ on it without breaking its rulings.
   `(y, ŷ)` series vs a mean; Newey–West `lags` is overlap in **steps**.
   Not a `stat_test` `method`. A panel is the caller's to collapse or
   test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
-  when the independence unit is a cluster.
+  when the independence unit is a cluster. `newey_west_mean` and
+  `across_fold_t` share ONE no-variance rule (`stats.NO_VARIANCE_RTOL`,
+  relative to the largest magnitude): a float-noise-constant series has
+  `t` None, never ~1e16. Do not restate that tolerance in a caller.
 - **Mean intervals under dependence** — `mean_interval.py`. The doorway
   is `MeanIntervalEstimator`; `interval` is a TEMPLATE method a member
   never overrides — `__init_subclass__` refuses the class at definition
@@ -752,6 +755,9 @@ dskit/pipeline/
 │                      P&L series summaries lower_tail_mean + max_drawdown;
 │                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio;
 │                      expanding_percentile (look-ahead-free mid-rank, ADR-0194)
+│                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
+│                      for a spread within that fraction of the largest magnitude
+│                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped

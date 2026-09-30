@@ -283,8 +283,13 @@ def _write_fold(root, cutoff, series, gaps=True):
     return run_dir
 
 
-def _write_walk(root, n_folds=20, gaps=True, edge=0.02):
-    """A walk-forward summary over ``n_folds`` folds of two series."""
+def _write_walk(root, n_folds=20, gaps=True, edge=0.02, edge_step=0.0):
+    """A walk-forward summary over ``n_folds`` folds of two series.
+
+    Every fold's edge is ``edge`` unless ``edge_step`` spreads them evenly about it (fold ``i``
+    gets ``edge + edge_step * (i - (n_folds - 1) / 2)``): identical edges leave the per-fold
+    R^2 constant to float noise, which the across-fold t rightly reports as no variance.
+    """
     rng = random.Random(99)
     summary = os.path.join(root, "walk")
     os.makedirs(summary, exist_ok=True)
@@ -293,7 +298,8 @@ def _write_walk(root, n_folds=20, gaps=True, edge=0.02):
         series = {}
         for name in ("AAA", "BBB"):
             mean = 1.0 + rng.gauss(0.0, 0.05)
-            series[name] = (mean * (1.0 - edge), mean, 40, 1.2, 0.11)
+            fold_edge = edge + edge_step * (i - (n_folds - 1) / 2)
+            series[name] = (mean * (1.0 - fold_edge), mean, 40, 1.2, 0.11)
         run_dir = _write_fold(root, f"2024-{i + 1:02d}-01", series, gaps=gaps)
         folds.append({"cutoff": f"2024-{i + 1:02d}-01", "run_dir": run_dir,
                       "state": "ran", "score": 0.0})
@@ -318,7 +324,8 @@ class TestScoreWalk:
             assert row["cw_reject_frac"] == 0.0
 
     def test_a_walk_without_gaps_answers_only_the_across_fold_half(self, tmp_path):
-        summary = _write_walk(str(tmp_path), gaps=False)
+        # edges spread about 0.02 so the folds' R^2 genuinely differ (see _write_walk)
+        summary = _write_walk(str(tmp_path), gaps=False, edge_step=0.001)
         scored = score_walk(summary)
         assert scored["exact"] is False
         assert "not recoverable" in scored["notes"][0].lower()
@@ -326,7 +333,7 @@ class TestScoreWalk:
             assert row["t_pool"] is None
             assert row["passes"] is None
             assert row["t_fold"] is not None
-            assert row["r2oos"] == pytest.approx(0.02, abs=1e-9)
+            assert row["r2oos"] == pytest.approx(0.02, abs=1e-3)
 
     def test_a_losing_walk_fails_on_both_halves(self, tmp_path):
         summary = _write_walk(str(tmp_path), edge=-0.02)

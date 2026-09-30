@@ -27,6 +27,13 @@ puts the VIX3M closes and :class:`~index_options.nodes.VolRegimeSignals` in
 front of a document's backtest, which then records what standing aside on each
 gate would have removed. It is applied to every put-spread document and, as a
 new ``<cell>-gate.json``, to every backtest cell's condor document.
+
+ADR-0195 adds the forecast-scored payoff selector: :func:`select_document` swaps
+a cell document's backtest for :class:`~index_options.nodes.PayoffSelectQuoteBacktest`
+over the pre-registered :data:`SELECT_STRUCTURES` x :data:`SELECT_SHORT_Q` x
+:data:`SELECT_WING_Z` candidates and applies the gate study, for every backtest
+cell on the har-vix rung (``<cell>-select.json``) and on the empirical rung, the
+premium-only control (``<cell>-empirical-select.json``).
 """
 
 import copy
@@ -48,6 +55,11 @@ __all__ = [
     "PUT_SPREAD_SHORT_Q",
     "PUT_SPREAD_WING_Z",
     "RUNGS",
+    "SELECT_SHORT_Q",
+    "SELECT_STRUCTURES",
+    "SELECT_WING_Z",
+    "TERM_SOURCE",
+    "TERM_SYMBOL",
     "UNDERLYINGS",
     "ZOO_RUNGS",
     "Bucket",
@@ -59,6 +71,7 @@ __all__ = [
     "grid_files",
     "hpo_document",
     "put_spread_document",
+    "select_document",
     "write_grid",
     "zoo_document",
 ]
@@ -81,6 +94,14 @@ PUT_SPREAD_SHORT_Q = 0.16
 #: The put credit spread's long-put wing in standardized units (ADR-0193 owner
 #: answer): about a 5-delta long put, against the condor cells' 0.5.
 PUT_SPREAD_WING_Z = 0.65
+#: The structures the payoff selector chooses among, in tie-break order (ADR-0195 owner
+#: answers, pre-registered): the put spread, the call spread and the condor.
+SELECT_STRUCTURES = ("put_spread", "call_spread", "condor")
+#: The short-leg quantiles the payoff selector tries (ADR-0195, pre-registered): about 10 to
+#: 30 delta at the two tails.
+SELECT_SHORT_Q = (0.10, 0.16, 0.20, 0.25, 0.30)
+#: The wings the payoff selector tries, in standardized units (ADR-0195, pre-registered).
+SELECT_WING_Z = (0.35, 0.65, 1.0)
 #: The onboarding root the cell documents read, relative to the working directory.
 ROOT = "./ob"
 #: The archive source: closes with ex-dividend amounts, and the end-of-day chains.
@@ -221,6 +242,9 @@ RUNGS = {
 GRID_RUNG = "har-vix"
 #: The rungs a cell's zoo compares, in the real zoo's order.
 ZOO_RUNGS = ("empirical", "vix", "har-vix", "lightgbm-vix")
+#: The rungs that ship a select document (ADR-0195): the cell's frontier rung and the empirical
+#: rung, whose forecast is the unconditional distribution, so it is the premium-only control.
+_SELECT_RUNGS = (GRID_RUNG, "empirical")
 #: Rung id -> the ``hpo-grid`` space over that rung's OWN knobs (ADR-0044: a
 #: fitted transform's member knobs are searchable; its ``fit_split`` is not).
 HPO_SPACES = {
@@ -231,6 +255,10 @@ HPO_SPACES = {
         "model.lgbm_params.min_child_samples": [20, 50],
     },
 }
+#: The archived-quote backtest nodes the generators swap between, by dotted class path.
+_CONDOR_BACKTEST = "index_options.nodes:CondorQuoteBacktest"
+_PUT_SPREAD_BACKTEST = "index_options.nodes:PutSpreadQuoteBacktest"
+_SELECT_BACKTEST = "index_options.nodes:PayoffSelectQuoteBacktest"
 _ORDER = ("vix", "vix_by_date", "market", "rv", "labels", "fwd", "model", "score", "condor")
 #: The proxy backtest knobs the quote backtest takes over unchanged.
 _SHARED_BACKTEST_KNOBS = ("split", "short_q", "wing_z", "multiplier", "fee_per_leg",
@@ -250,6 +278,11 @@ def _put_spread_file(cell):
 def _gate_file(cell):
     """Return the file name of one cell's condor gate-study document."""
     return f"{cell.name}-gate.json"
+
+
+def _select_file(cell, rung):
+    """Return the file name of one cell's payoff-selection document on ``rung``."""
+    return f"{cell.name}-select.json" if rung == GRID_RUNG else f"{cell.name}-{rung}-select.json"
 
 
 def _load(path):
@@ -341,7 +374,7 @@ def grid_document(base, cell, rung=GRID_RUNG):
                       "backtest and pinned equal by test."),
         }
         ordered["backtest"] = {
-            "uses": "index_options.nodes:CondorQuoteBacktest",
+            "uses": _CONDOR_BACKTEST,
             "inputs": {"forecasts": "$model.rows", "chain": "$chain.records",
                        "underlying": "$underlying.records"},
             "params": {
@@ -425,7 +458,7 @@ def put_spread_document(base, cell):
         f"(VIX). Run: python -m dskit.pipeline walkforward "
         f"configs/grid/{_put_spread_file(cell)} --asof <today>. Never decision-eligible.")
     node = doc["pipeline"]["backtest"]
-    node["uses"] = "index_options.nodes:PutSpreadQuoteBacktest"
+    node["uses"] = _PUT_SPREAD_BACKTEST
     node["params"]["short_q"] = PUT_SPREAD_SHORT_Q
     node["params"]["wing_z"] = PUT_SPREAD_WING_Z
     node["notes"] = (
@@ -447,15 +480,20 @@ def put_spread_document(base, cell):
     return doc
 
 
-def gate_study_document(doc):
+def gate_study_document(doc, name_suffix="-gate"):
     """Return a backtest document with the ADR-0194 entry-gate study on top.
 
     Parameters
     ----------
     doc : dict
-        A cell document carrying a backtest: :func:`grid_document` for a
-        cell with a dividend source, or :func:`put_spread_document`. It is
-        copied, never changed.
+        A cell document carrying a backtest that reads ``$model.rows`` and
+        declares no ``gate_fields``: :func:`grid_document` for a cell with a
+        dividend source, :func:`put_spread_document` or :func:`select_document`'s
+        source. It is copied, never changed.
+    name_suffix : str
+        Appended to the document's name: ``"-gate"`` for a document whose file
+        is the study alone, ``""`` where the caller's own file name already
+        names the document (the put-spread and select documents).
 
     Returns
     -------
@@ -463,18 +501,23 @@ def gate_study_document(doc):
         The document with two nodes right after ``model`` — ``vix3m``
         (:class:`~index_options.observations.IndexCloseRows` over
         :data:`TERM_SYMBOL` from :data:`TERM_SOURCE`) and ``signals``
-        (:class:`~index_options.nodes.VolRegimeSignals` at its default
-        knobs, over ``$model.rows`` and ``$vix3m.records``) — the backtest's
-        ``forecasts`` re-wired to ``$signals.rows`` and its ``gate_fields``
-        set to :attr:`~index_options.nodes.VolRegimeSignals.GATE_FIELDS`,
-        and the document's name and notes and the backtest's notes re-worded.
-        Nothing else differs, so the study measures the same trades.
+        (:class:`~index_options.nodes.VolRegimeSignals` with EVERY knob written
+        out at the node's defaults, so the identity hash covers the
+        thresholds, over ``$model.rows`` and ``$vix3m.records``) — the
+        backtest's ``forecasts`` re-wired to ``$signals.rows`` and its
+        ``gate_fields`` set to
+        :attr:`~index_options.nodes.VolRegimeSignals.GATE_FIELDS`, the study's
+        sentence APPENDED to the document's notes (its own description stays)
+        and to the backtest's notes. Nothing else differs, so the study
+        measures the same trades.
 
     Raises
     ------
     ValueError
         When the document has no ``model`` or ``backtest`` node (an
-        underlying without a dividend source), or already carries the study.
+        underlying without a dividend source), already carries the study,
+        declares ``gate_fields``, or its backtest does not read ``$model.rows``
+        (the study would then re-point it at rows it never traded).
     """
     pipe = doc["pipeline"]
     for key in ("model", "backtest"):
@@ -484,12 +527,19 @@ def gate_study_document(doc):
                              "carries no backtest)")
     if {"vix3m", "signals"} & set(pipe):
         raise ValueError(f"{doc['name']}: the document already carries the gate study")
+    if "gate_fields" in pipe["backtest"]["params"]:
+        raise ValueError(f"{doc['name']}: the backtest already declares gate_fields")
+    if pipe["backtest"]["inputs"].get("forecasts") != "$model.rows":
+        raise ValueError(f"{doc['name']}: the study re-points the backtest's forecasts at the "
+                         "annotated model rows, so it must read '$model.rows' to begin with, "
+                         f"not {pipe['backtest']['inputs'].get('forecasts')!r}")
     out = copy.deepcopy(doc)
     defaults = VolRegimeSignals.DEFAULTS
-    out["name"] = f"{doc['name']}-gate"
-    out["notes"] = (
-        f"ADR-0194 entry-gate study of {doc['name']}, annotate-only: the same forecasts, chain "
-        "and trades, plus two nodes. vix3m reads the Cboe VIX3M closes and signals "
+    out["name"] = f"{doc['name']}{name_suffix}"
+    out["notes"] = doc["notes"] + (
+        " ADR-0194 entry-gate study, annotate-only, added by index_options.grid."
+        "gate_study_document to the document described above: the same forecasts, chain and "
+        "trades, plus two nodes. vix3m reads the Cboe VIX3M closes and signals "
         "(index_options.nodes.VolRegimeSignals) gives every forecast row the PREVIOUS "
         "session's VIX / VIX3M ratio and its expanding percentile, the previous session's "
         "variance premium ((VIX/100)^2 less annualized realized variance) and four boolean "
@@ -499,12 +549,11 @@ def gate_study_document(doc):
         "those rows and, per book and gate, reports the traded P&L where the gate was closed "
         "(it would have stood aside), open, or unknown: no entry is skipped, so the metrics "
         "say what standing aside would have removed, not what a gated strategy earns. The "
-        "lag is one session, so the 16:15 ET VIX close never informs a 16:00 ET entry. "
-        "Generated by index_options.grid.gate_study_document, so edit the base rung or the "
-        "grid table and rewrite with write_grid, never this file. Needs a pulled ./ob "
-        f"holding what the base document needs plus {TERM_SOURCE} ({TERM_SYMBOL}; register "
-        "and backfill configs/source-cboe-index-wide.json). Run: python -m dskit.pipeline "
-        "walkforward <this file> --asof <today>. Never decision-eligible.")
+        "lag is one session, so the 16:15 ET VIX close never informs a 16:00 ET entry. Needs "
+        f"the store to hold what the description above needs plus {TERM_SOURCE} "
+        f"({TERM_SYMBOL}; register and backfill configs/source-cboe-index-wide.json). Run "
+        "THIS document, not the one it was derived from: python -m dskit.pipeline "
+        "walkforward <this file> --asof <today>.")
     ordered = {}
     for key, node in out["pipeline"].items():
         ordered[key] = node
@@ -520,12 +569,14 @@ def gate_study_document(doc):
             ordered["signals"] = {
                 "uses": "index_options.nodes:VolRegimeSignals",
                 "inputs": {"rows": "$model.rows", "term": "$vix3m.records"},
+                "params": dict(defaults),
                 "notes": ("Adds the term ratio, its percentile, the variance premium and "
                           "the four gates to every model row, each read from the PREVIOUS "
-                          "session (lag_sessions 1). The knobs are the node's defaults "
-                          "(implied iv_index, realized rv_22, 252 periods a year, the "
-                          "thresholds above); write one here only to change it, which moves "
-                          "this document's hash."),
+                          "session (lag_sessions 1). Every knob is written out (implied "
+                          "iv_index, realized rv_22, 252 periods a year, the two "
+                          "pre-registered thresholds, the 252-session percentile history) "
+                          "so this document's identity hash covers them: change one here "
+                          "and the hash, hence the run directory, moves."),
             }
     out["pipeline"] = ordered
     backtest = ordered["backtest"]
@@ -538,6 +589,83 @@ def gate_study_document(doc):
         "would have stood aside), the same three _open_ (false) and _unknown_n (null) over "
         "its traded cells. Annotation only: the trades are unchanged.")
     return out
+
+
+def select_document(doc):
+    """Return a cell document whose backtest selects its structure from the forecast (ADR-0195).
+
+    Parameters
+    ----------
+    doc : dict
+        A cell document whose backtest is the condor's
+        :class:`~index_options.nodes.CondorQuoteBacktest`: :func:`grid_document`
+        for a cell with a dividend source, on any rung. It is copied, never
+        changed.
+
+    Returns
+    -------
+    dict
+        The document with only its backtest node swapped for
+        :class:`~index_options.nodes.PayoffSelectQuoteBacktest`, which gains the
+        three candidate knobs :data:`SELECT_STRUCTURES`, :data:`SELECT_SHORT_Q`
+        and :data:`SELECT_WING_Z` (its ``short_q`` and ``wing_z`` stay the
+        condor's: they define the implied benchmark book), then
+        :func:`gate_study_document`'s study with no name suffix (the name is the
+        source's plus ``-select``), so a later sizing step can sit beside
+        ``signals``. The document's notes extend the source's; the backtest
+        node's notes are re-worded, as :func:`put_spread_document` does, because
+        the condor's no longer describe what its model and always books trade.
+
+    Raises
+    ------
+    ValueError
+        When the document has no backtest (an underlying without a dividend
+        source), its backtest is not the condor's, or the study cannot apply
+        (see :func:`gate_study_document`).
+    """
+    backtest = doc["pipeline"].get("backtest")
+    if backtest is None or backtest["uses"] != _CONDOR_BACKTEST:
+        raise ValueError(f"{doc['name']}: a payoff selector replaces the condor archived-quote "
+                         f"backtest ({_CONDOR_BACKTEST}), and this document's backtest is "
+                         f"{None if backtest is None else backtest['uses']!r}")
+    out = copy.deepcopy(doc)
+    out["name"] = f"{doc['name']}-select"
+    out["notes"] = doc["notes"] + (
+        " ADR-0195 payoff-selection study, generated by index_options.grid.select_document "
+        "from the document described above: the same forecasts, chain, settlement, American "
+        "charge and entry gates, but the backtest node is PayoffSelectQuoteBacktest. At each "
+        f"entry it snaps every candidate ({len(SELECT_STRUCTURES)} structures "
+        f"{list(SELECT_STRUCTURES)} x short_q {list(SELECT_SHORT_Q)} x wing_z "
+        f"{list(SELECT_WING_Z)}: {len(SELECT_STRUCTURES) * len(SELECT_SHORT_Q) * len(SELECT_WING_Z)} "
+        "candidates, pre-registered as grid.SELECT_*), prices it at bid/ask, drops what the "
+        "credit gates refuse and enters the one with the highest E[P&L] / max loss, the "
+        "expectation over THIS document's forecast draws at the horizon scale. The model book "
+        "enters it when that expectation clears min_edge_usd, the always book regardless, and "
+        "the implied book stays the VIX-implied condor at short_q / wing_z. The same document "
+        "on the empirical rung is the premium-only control (its forecast is the unconditional "
+        "distribution, so it selects on the quotes' premium alone): what the forecast adds is "
+        "the DIFFERENCE between the two runs' model books, never either run's level.")
+    node = out["pipeline"]["backtest"]
+    node["uses"] = _SELECT_BACKTEST
+    node["params"].update(candidate_structures=list(SELECT_STRUCTURES),
+                          candidate_short_q=list(SELECT_SHORT_Q),
+                          candidate_wing_z=list(SELECT_WING_Z))
+    node["notes"] = (
+        "ADR-0195 archived-quote payoff-selection backtest over val. The condor backtest's walk, "
+        "expiry, settlement, strike snapping, credit gates, American charge, wing split and "
+        "delta benchmark, but the model and always books trade the structure the forecast "
+        "scores best rather than a fixed condor: every candidate (structure x candidate_short_q "
+        "x candidate_wing_z, structures outermost and then short_q then wing_z; the order breaks "
+        "exact ties) is snapped at the horizon scale, priced at bid/ask with fees and dropped if "
+        "a credit gate refuses it, then scored as E[P&L] / max loss, the expectation over the "
+        "forecast draws and the max loss the widest vertical in USD less the credit. Each model "
+        "and always cell records the chosen structure, quantile, wing, score and how many "
+        "candidates were scored; the metrics add <book>_n_<structure> and summarize each side "
+        "over the traded cells that hold it. short_q and wing_z remain the implied condor's. "
+        "Fills are the end-of-day touch at zero latency, so absolute P&L is indicative and the "
+        "model / always / implied comparison on identical quotes, and the empirical rung's "
+        "difference, is the signal. Never decision-eligible.")
+    return gate_study_document(out, name_suffix="")
 
 
 def hpo_document(cell_document, rung):
@@ -661,7 +789,9 @@ def cell_files(configs_dir, cell):
         ``grid/<file>`` -> document, for the rungs in :data:`ZOO_RUNGS`, the
         zoo, one HPO document per key of :data:`HPO_SPACES` and, for a cell
         with a backtest, its put-credit-spread document and its condor gate
-        document, both carrying :func:`gate_study_document`'s study.
+        document, both carrying :func:`gate_study_document`'s study, and its
+        two :func:`select_document` documents (the frontier and the empirical
+        rung).
     """
     configs_dir = Path(configs_dir)
     out = {}
@@ -674,10 +804,13 @@ def cell_files(configs_dir, cell):
         out[f"grid/{cell.name}-hpo-{rung}.json"] = hpo_document(
             out[f"grid/{_cell_file(cell, rung)}"], rung)
     if cell.underlying.backtest:
-        out[f"grid/{_put_spread_file(cell)}"] = gate_study_document(put_spread_document(
-            _load(configs_dir / RUNGS[GRID_RUNG]), cell))
+        out[f"grid/{_put_spread_file(cell)}"] = gate_study_document(
+            put_spread_document(_load(configs_dir / RUNGS[GRID_RUNG]), cell), name_suffix="")
         out[f"grid/{_gate_file(cell)}"] = gate_study_document(
             out[f"grid/{_cell_file(cell, GRID_RUNG)}"])
+        for rung in _SELECT_RUNGS:
+            out[f"grid/{_select_file(cell, rung)}"] = select_document(
+                out[f"grid/{_cell_file(cell, rung)}"])
     return out
 
 
@@ -692,8 +825,8 @@ def grid_files(configs_dir):
     Returns
     -------
     dict
-        ``grid/<file>`` -> document, the put-credit-spread and condor gate
-        documents of the backtest cells included.
+        ``grid/<file>`` -> document, the put-credit-spread, condor gate and
+        payoff-selection documents of the backtest cells included.
     """
     configs_dir = Path(configs_dir)
     base = _load(configs_dir / RUNGS[GRID_RUNG])

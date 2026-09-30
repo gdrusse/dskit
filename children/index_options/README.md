@@ -198,8 +198,9 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   Two things to know when reading the numbers. Every `*_t` is the `lags=0`
   Newey-West t, mean / (sd / sqrt(n)) with the standard deviation on divisor
   n, so it overstates a sample-sd (n - 1) t by sqrt(n / (n - 1)) (1.22 at n =
-  3, 1.02 at n = 30); a series constant to float noise (spread at most 1e-12 of
-  its magnitude) reads 0.0 rather than a rounding artifact. And the delta
+  3, 1.02 at n = 30); a series with no variance in the stats owner's sense (spread
+  at most `dskit.pipeline.stats.NO_VARIANCE_RTOL` of its largest magnitude, i.e.
+  constant to float noise) reads 0.0 rather than a rounding artifact. And the delta
   benchmark reads `dividend_amount` (the cash paid on ex-dates in the window),
   so even the put spread refuses an underlying series without it; only its
   American charge (put carry) is dividend-free.
@@ -219,7 +220,8 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   never false. **Every value is read from the PREVIOUS session's row**
   (`lag_sessions` 1) and that day's VIX3M close: the 16:15 ET VIX close of day
   t cannot inform a 16:00 ET entry on day t. All knobs are optional and
-  default-deny; the node is forbidden for serving. All three backtests
+  default-deny (the shipped documents write every one out, so a document's
+  identity hash covers the thresholds); the node is forbidden for serving. All three backtests
   (`CondorBacktest`, `CondorQuoteBacktest`, `PutSpreadQuoteBacktest`) take an optional `gate_fields` (distinct row-field names,
   bool or null): each ledger entry then records `gates` from its ENTRY row (a
   non-bool value, or a declared field the row lacks, refuses) and every book
@@ -230,9 +232,38 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   the metrics say what standing aside would have removed, not what a gated
   strategy earns. The 14 put-spread documents now carry the study (they had
   never been run) and each SPY/QQQ cell ships `configs/grid/<cell>-gate.json`,
-  its condor document with the study. It needs VIX3M in the store
+  its condor document with the study; the study appends its description to the
+  source document's notes and the put-spread documents keep their own names. It needs VIX3M in the store
   (`source-cboe-index-wide.json`, history from 2007-12):
   `python -m dskit.pipeline walkforward configs/grid/spy-30-45-gate.json --asof <today>`.
+- Payoff selector (ADR-0195, offline, never decision-eligible):
+  `PayoffSelectQuoteBacktest` is `CondorQuoteBacktest` where the forecast also
+  picks the structure. At each entry every candidate (`candidate_structures`
+  from `put_spread` / `call_spread` / `condor`, their order breaking ties, x
+  `candidate_short_q` in (0, 0.5) x `candidate_wing_z` > 0) is snapped at the
+  horizon scale, priced at bid/ask less fees, dropped if a credit gate refuses
+  it (band, quotability, geometry, `nonpositive_credit`,
+  `credit_not_below_width`) and scored `E_P[pnl] / max_loss`: `E_P` over the
+  forecast draws, `max_loss` the widest vertical in USD less the credit. The
+  best score wins, an exact tie going to the earlier declared candidate;
+  `model` enters it when `E_P` > `min_edge_usd`, `always` regardless, and
+  `implied` stays the VIX-implied condor at `short_q` / `wing_z` (both stay
+  required); with no scorable candidate the first two skip as
+  `no_scorable_candidate`. Each model/always cell records `selected`
+  (`structure`, `short_q`, `wing_z`, `score`, `n_candidates_scored`); metrics
+  add `<book>_n_<structure>` and the side metrics cover the traded cells that
+  hold that side; the report kind is `archived_quote_payoff_select_backtest`.
+  The 14 SPY/QQQ cells ship `configs/grid/<cell>-select.json` (har-vix) and
+  `<cell>-empirical-select.json`, both with the ADR-0194 study and the
+  pre-registered 45 candidates (`grid.SELECT_*`: the three structures x
+  short_q {0.10, 0.16, 0.20, 0.25, 0.30} x wing_z {0.35, 0.65, 1.0}). **Reading
+  them:** the empirical rung's forecast is the unconditional distribution, so
+  its selector sees only the quotes' premium, while the har-vix selector sees
+  the premium and the forecast. The forecast's value is the DIFFERENCE between
+  the two runs' model books (one chain, one candidate set, the same rules), never
+  either run's level; `always` is the same comparison without the edge gate.
+  Run: `python -m dskit.pipeline walkforward configs/grid/spy-30-45-select.json --asof <today>`
+  and the `-empirical-select` twin.
 
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
@@ -391,6 +422,8 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # + <symbol>-<bucket>-put-spread.json for the 14 SPY/QQQ cells (ADR-0193)
                            # + <symbol>-<bucket>-gate.json for the 14 SPY/QQQ cells; both carry
                            # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
+                           # + <symbol>-<bucket>-select.json and -empirical-select.json for the
+                           # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

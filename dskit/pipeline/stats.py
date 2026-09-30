@@ -72,6 +72,7 @@ __all__ = [
     "CORRECTIONS",
     "EULER_MASCHERONI",
     "METHODS",
+    "NO_VARIANCE_RTOL",
     "across_fold_t",
     "benjamini_hochberg",
     "bonferroni",
@@ -110,6 +111,13 @@ __all__ = [
 #: config-swappable or extensible (corrections are policies; the
 #: statistic is the ruler).
 METHODS = ("plain", "studentized")
+
+#: A series whose spread (``max - min``) is at most this fraction of its largest magnitude
+#: has NO VARIANCE to :func:`newey_west_mean` and :func:`across_fold_t`: it is constant to
+#: float noise (equal amounts accumulated in a different order differ in the last bit), and
+#: ``mean / (sd / sqrt(n))`` over that noise is a ~1e16 artifact, not a t. The rule is
+#: relative, so it is scale-free; it sits far above one ulp and far below any real spread.
+NO_VARIANCE_RTOL = 1e-12
 
 
 def _check_cluster_scores(cluster_scores):
@@ -430,6 +438,11 @@ def _norm_sf(z):
     return 0.5 * math.erfc(z / math.sqrt(2.0))
 
 
+def _has_no_variance(series):
+    """Whether a non-empty finite series is constant to float noise (:data:`NO_VARIANCE_RTOL`)."""
+    return max(series) - min(series) <= NO_VARIANCE_RTOL * max(abs(v) for v in series)
+
+
 def newey_west_mean(values, lags=0):
     """One-sided HAC t-test that ``E[values] <= 0``.
 
@@ -449,8 +462,9 @@ def newey_west_mean(values, lags=0):
     -------
     dict
         ``{"n", "mean", "se", "t", "p_value", "lags"}``. ``t`` is
-        ``None`` when the series has no variance (sign of the mean
-        decides ``p_value``: ``0.0`` if positive, else ``1.0``).
+        ``None`` when the series has no variance, meaning its spread is at
+        most :data:`NO_VARIANCE_RTOL` of its largest magnitude (sign of the
+        mean decides ``p_value``: ``0.0`` if positive, else ``1.0``).
 
     Raises
     ------
@@ -479,7 +493,7 @@ def newey_west_mean(values, lags=0):
         raise ValueError(f"newey_west_mean needs at least 2 observations, got {n}")
     lags = _check_lags(lags, n)
     mean = sum(series) / n
-    if len(set(series)) == 1:
+    if _has_no_variance(series):
         return {
             "n": n,
             "mean": mean,
@@ -990,8 +1004,9 @@ def across_fold_t(values):
     Returns
     -------
     dict
-        ``n``, ``mean``, ``se``, ``t`` (``None`` when every fold agrees
-        exactly), ``p_value``, ``df``.
+        ``n``, ``mean``, ``se``, ``t`` (``None`` when the folds have no
+        variance: their spread is at most :data:`NO_VARIANCE_RTOL` of their
+        largest magnitude), ``p_value``, ``df``.
 
     Raises
     ------
@@ -1020,7 +1035,7 @@ def across_fold_t(values):
         raise ValueError(f"across_fold_t needs at least 2 folds, got {n}")
     mean = sum(series) / n
     var = sum((v - mean) ** 2 for v in series) / (n - 1)
-    if var <= 0.0:
+    if _has_no_variance(series) or var <= 0.0:
         return {
             "n": n,
             "mean": mean,

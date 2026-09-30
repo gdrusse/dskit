@@ -13,7 +13,8 @@ same problems instead.
 ADR-0193 generalizes them from the condor to a leg set. :func:`structure_credit`
 owns the bid/ask credit rule for any leg tuple and :func:`condor_credit` is
 its call on :data:`CONDOR_LEGS`; :data:`PUT_SPREAD_LEGS` is the condor's put
-wing. The American charge splits into :func:`american_put_carry` (needs no
+wing, :data:`CALL_SPREAD_LEGS` its call wing (ADR-0195) and :data:`STRUCTURES`
+names the three. The American charge splits into :func:`american_put_carry` (needs no
 dividend data) and :func:`american_call_dividend`, which
 :func:`american_short_charge` composes; :func:`dividends_paid` is the
 dividend rule a hedge benchmark shares with the call charge.
@@ -33,8 +34,10 @@ from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
+    "CALL_SPREAD_LEGS",
     "CONDOR_LEGS",
     "PUT_SPREAD_LEGS",
+    "STRUCTURES",
     "CashIndexContract",
     "DefinedRiskCondor",
     "american_call_dividend",
@@ -54,6 +57,13 @@ CONDOR_LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
 #: The condor's put wing, a long put under a short put (ADR-0193): a prefix of
 #: :data:`CONDOR_LEGS`, so the two structures share one leg order.
 PUT_SPREAD_LEGS = CONDOR_LEGS[:2]
+#: The condor's call wing, a short call under a long call (ADR-0195): the last two legs of
+#: :data:`CONDOR_LEGS`.
+CALL_SPREAD_LEGS = CONDOR_LEGS[2:]
+#: The defined-risk structures a payoff selector chooses among, by name (ADR-0195): the one
+#: owner of the names and of their leg tuples, read-only. Its order is the default tie-break.
+STRUCTURES = MappingProxyType({"put_spread": PUT_SPREAD_LEGS, "call_spread": CALL_SPREAD_LEGS,
+                               "condor": CONDOR_LEGS})
 _LEG_SIGNS = tuple(sign for _right, sign in CONDOR_LEGS)
 #: The side a quote is judged for: both sizes, a sale (bid) or a purchase (ask).
 _SIDES = (None, "sell", "buy")

@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from bisect import bisect_right
 from collections import Counter
 from datetime import date, timedelta
+from itertools import product
 from statistics import NormalDist
 from typing import NamedTuple
 
@@ -29,6 +30,7 @@ from dskit.pipeline.stats import (
 from .contracts import (
     CONDOR_LEGS,
     PUT_SPREAD_LEGS,
+    STRUCTURES,
     CashIndexContract,
     DefinedRiskCondor,
     _IndexQuote,
@@ -38,8 +40,8 @@ from .contracts import (
     _instant,
     _integer,
     _text,
+    american_call_dividend,
     american_put_carry,
-    american_short_charge,
     dividends_paid,
     quote_problems,
     structure_credit,
@@ -47,7 +49,8 @@ from .contracts import (
 from .distribution import CondorGeometry, condor_payoff, structure_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
-           "CondorQuoteBacktest", "PutSpreadQuoteBacktest", "VolRegimeSignals"]
+           "CondorQuoteBacktest", "PayoffSelectQuoteBacktest", "PutSpreadQuoteBacktest",
+           "VolRegimeSignals"]
 
 
 class CondorPayoffDiagnostic(Node):
@@ -411,9 +414,6 @@ class _CondorBacktestBase(Node, ABC):
     #: Optional knobs every member accepts, no default: absent means the feature is off.
     SHARED_OPTIONAL = ("gate_fields",)
     FORWARD_FIELD = "close"
-    #: A P&L series whose spread is at most this fraction of its magnitude is constant to
-    #: float noise (equal credits summed in a different order), so its t is undefined, not huge.
-    CONSTANT_SERIES_RTOL = 1e-12
 
     @staticmethod
     def _mean(values):
@@ -421,21 +421,24 @@ class _CondorBacktestBase(Node, ABC):
         return sum(values) / len(values) if values else 0.0
 
     @classmethod
-    def _pnl_stats(cls, prefix, pnls):
-        """Return ``<prefix>_total_pnl_usd`` / ``_mean_pnl_usd`` / ``_hit_rate`` over ``pnls`` (a hit is ``p > 0``)."""
-        return {f"{prefix}_total_pnl_usd": sum(pnls),
+    def _pnl_stats(cls, prefix, pnls, start=0):
+        """Return ``<prefix>_total_pnl_usd`` / ``_mean_pnl_usd`` / ``_hit_rate`` over ``pnls`` (a hit is ``p > 0``); ``start`` is the total's empty value."""
+        return {f"{prefix}_total_pnl_usd": sum(pnls, start),
                 f"{prefix}_mean_pnl_usd": cls._mean(pnls),
                 f"{prefix}_hit_rate": cls._mean([p > 0 for p in pnls])}
 
-    @classmethod
-    def _t(cls, values):
-        """Return the ``lags=0`` Newey-West t of the mean; 0.0 for under two values or float-noise variance."""
+    @staticmethod
+    def _t(values):
+        """Return the ``lags=0`` Newey-West t of the mean; 0.0 for under two values or where the stats owner finds no variance."""
         if len(values) < 2:
-            return 0.0
-        if max(values) - min(values) <= cls.CONSTANT_SERIES_RTOL * max(abs(v) for v in values):
             return 0.0
         t = newey_west_mean(list(values), lags=0)["t"]
         return 0.0 if t is None else t
+
+    @staticmethod
+    def _short_q_ok(value):
+        """Say whether ``value`` is a usable short-leg quantile: a number in (0, 0.5)."""
+        return number_ok(value) and 0 < value < 0.5
 
     @classmethod
     def _shared_problems(cls, problems, params):
@@ -443,7 +446,7 @@ class _CondorBacktestBase(Node, ABC):
         if params.get("split") not in SPLIT_NAMES:
             problems.append(f"split must name one of {list(SPLIT_NAMES)}")
         q = params.get("short_q")
-        if not number_ok(q) or not 0 < q < 0.5:
+        if not cls._short_q_ok(q):
             problems.append(f"short_q must be in (0, 0.5), got {q!r}")
         check_int_param(problems, "multiplier", params.get("multiplier"), ge=1)
         fee = params.get("fee_per_leg")
@@ -925,10 +928,14 @@ class CondorQuoteBacktest(_CondorBacktestBase):
        positive and ``credit_not_below_width`` when the per-share credit
        reaches the narrowest vertical width. The model book must also clear
        ``min_edge_usd`` in expectation under the draws, scaled by ``s'``.
-    7. **P&L.** ``credit_usd + multiplier x structure_payoff(S_T) -``
-       :func:`~index_options.contracts.american_short_charge` at
-       ``carry_rate``; a session in the window with no ``dividend_amount``
-       refuses.
+    7. **P&L.** ``credit_usd + multiplier x structure_payoff(S_T) -`` the
+       American charge: ONE rule over whatever legs a trade holds (ADR-0195),
+       :func:`~index_options.contracts.american_put_carry` at ``carry_rate`` on
+       the short put and :func:`~index_options.contracts.american_call_dividend`
+       on the short call, each only where the structure has that short leg (for
+       the condor their sum is ``american_short_charge``); a session in the
+       window with no ``dividend_amount`` refuses wherever the short call is
+       held.
     8. **Wing split (ADR-0193).** An entered cell also carries
        ``side_pnl_usd``, one entry per side in :attr:`SIDES` (``"put"``,
        ``"call"``): that side's own bid/ask credit, its legs' fees, its
@@ -951,8 +958,9 @@ class CondorQuoteBacktest(_CondorBacktestBase):
        ``lags=0`` Newey-West t of :func:`~dskit.pipeline.stats.newey_west_mean`,
        ``mean / (sd / sqrt(n))`` with ``sd`` on divisor ``n`` (so it exceeds a
        sample-sd t by ``sqrt(n / (n - 1))``), valid because positions never
-       overlap; ``0.0`` with fewer than two trades or no variance, a spread of
-       at most :attr:`CONSTANT_SERIES_RTOL` of the magnitude counting as none)
+       overlap; ``0.0`` with fewer than two trades or no variance, which
+       is :data:`~dskit.pipeline.stats.NO_VARIANCE_RTOL`'s rule: a spread of
+       at most that fraction of the largest magnitude counts as none)
        and ``_n_no_delta``. Black-76 on the spot at rate 0 ignores
        dividends and early exercise: a disclosed hedge-ratio approximation,
        not a price.
@@ -996,6 +1004,8 @@ class CondorQuoteBacktest(_CondorBacktestBase):
     LEGS = CONDOR_LEGS
     #: The wings of that structure — its distinct rights, derived from :attr:`LEGS`.
     SIDES = _sides_of(LEGS)
+    #: The books that trade the forecast's own strikes, in :attr:`BOOKS` order; the rest is implied.
+    FORECAST_BOOKS = ("model", "always")
     #: The report's ``kind`` and ``units``: what this node's output calls itself.
     REPORT_KIND = "archived_quote_condor_backtest"
     UNITS = "USD per condor, one contract per leg"
@@ -1163,23 +1173,23 @@ class CondorQuoteBacktest(_CondorBacktestBase):
             return None
         return min(candidates)[2]
 
-    def _put_exponents(self, z_put):
-        """Return the standardized targets of the long and short put."""
-        return (z_put - self.params["wing_z"], z_put)
+    def _put_exponents(self, z_put, wing):
+        """Return the standardized targets of the long and short put; the long sits ``wing`` further out."""
+        return (z_put - wing, z_put)
 
-    def _call_exponents(self, z_call):
-        """Return the standardized targets of the short and long call."""
-        return (z_call, z_call + self.params["wing_z"])
+    def _call_exponents(self, z_call, wing):
+        """Return the standardized targets of the short and long call; the long sits ``wing`` further out."""
+        return (z_call, z_call + wing)
 
     def _outside_band(self, scale, exponents):
         """Say whether any standardized target lies beyond the log-moneyness band."""
         band = self.params["max_abs_log_moneyness"]
         return any(abs(scale * z) > band for z in exponents)
 
-    def _snap_put(self, listed, forward, scale, z_put):
+    def _snap_put(self, listed, forward, scale, z_put, wing):
         """Snap the put wing outward onto quotable strikes: ``(long, short)`` or ``None``."""
         long_target, short_target = (forward * math.exp(scale * z)
-                                     for z in self._put_exponents(z_put))
+                                     for z in self._put_exponents(z_put, wing))
         puts = listed["put"]
         short = max((k for k, r in puts.items() if k <= short_target
                      and self._quotable(r, "sell")), default=None)
@@ -1189,10 +1199,10 @@ class CondorQuoteBacktest(_CondorBacktestBase):
                     and self._quotable(r, "buy")), default=None)
         return None if long is None else (long, short)
 
-    def _snap_call(self, listed, forward, scale, z_call):
+    def _snap_call(self, listed, forward, scale, z_call, wing):
         """Snap the call wing outward onto quotable strikes: ``(short, long)`` or ``None``."""
         short_target, long_target = (forward * math.exp(scale * z)
-                                     for z in self._call_exponents(z_call))
+                                     for z in self._call_exponents(z_call, wing))
         calls = listed["call"]
         short = min((k for k, r in calls.items() if k >= short_target
                      and self._quotable(r, "sell")), default=None)
@@ -1209,93 +1219,151 @@ class CondorQuoteBacktest(_CondorBacktestBase):
             return None, "degenerate_strikes"
         return strikes, None
 
-    def _snap(self, listed, forward, scale, z_put, z_call):
-        """Snap both wings: ``(strikes, None)`` or ``(None, reason)``; band, quotability, geometry."""
-        if self._outside_band(scale, self._put_exponents(z_put) + self._call_exponents(z_call)):
+    def _snap_legs(self, listed, forward, scale, legs, z_put, z_call, wing):
+        """Snap the wings ``legs`` holds: ``(strikes, None)`` or ``(None, reason)``; band, quotability, geometry."""
+        wings = {"put": (z_put, self._put_exponents, self._snap_put),
+                 "call": (z_call, self._call_exponents, self._snap_call)}
+        held = [wings[side] for side in _sides_of(legs)]
+        if self._outside_band(scale, [t for z, exponents, _snap in held
+                                      for t in exponents(z, wing)]):
             return None, "target_outside_band"
-        put = self._snap_put(listed, forward, scale, z_put)
-        call = self._snap_call(listed, forward, scale, z_call)
-        if put is None or call is None:
+        picked = [snap(listed, forward, scale, z, wing) for z, _exponents, snap in held]
+        if any(strikes is None for strikes in picked):
             return None, "no_quotable_strike"
-        return self._geometry(put + call)
+        return self._geometry(tuple(k for strikes in picked for k in strikes))
 
-    def _book(self, book, strikes, reason, scale, facts):
-        """Price, gate and settle one book's cell."""
-        cell = {"strikes": None if strikes is None else list(strikes), "credit_usd": None,
+    def _snap(self, listed, forward, scale, z_put, z_call):
+        """Snap this structure's wings at ``wing_z``: ``(strikes, None)`` or ``(None, reason)``."""
+        return self._snap_legs(listed, forward, scale, self.LEGS, z_put, z_call,
+                               self.params["wing_z"])
+
+    @staticmethod
+    def _leg_quotes(facts, legs, strikes):
+        """Return ``(rows, quotes)``: each leg's chain row and its ``(bid, ask)``."""
+        rows = [facts.listed[right][k] for (right, _sign), k in zip(legs, strikes)]
+        return rows, [(r["bid"], r["ask"]) for r in rows]
+
+    @staticmethod
+    def _blank_cell(strikes, reason):
+        """Return one book's cell before pricing: unentered, with ``reason`` and no numbers."""
+        return {"strikes": None if strikes is None else list(strikes), "credit_usd": None,
                 "american_charge_usd": None, "pnl_usd": None, "entered": False,
                 "reason": reason, "expected_pnl_usd": None, "side_pnl_usd": None,
                 "delta": None, "equity_pnl_usd": None}
+
+    def _priced(self, legs, strikes, quotes):
+        """Return ``(credit_usd, widths, reason)``: the credit net of fees, and why a book must skip it (or ``None``)."""
+        per_share, widths = structure_credit(legs, strikes, quotes)
+        credit = per_share * self.params["multiplier"] - len(legs) * self.params["fee_per_leg"]
+        if credit <= 0:
+            return credit, widths, "nonpositive_credit"
+        if per_share >= min(widths):
+            return credit, widths, "credit_not_below_width"
+        return credit, widths, None
+
+    def _expected(self, credit, legs, strikes, scale, facts):
+        """Return ``credit + multiplier x`` the mean payoff over the forecast draws, each priced at ``scale``."""
+        samples = facts.dist.samples
+        return credit + self.params["multiplier"] * sum(
+            structure_payoff(legs, facts.forward * math.exp(scale * z), strikes)
+            for z in samples) / len(samples)
+
+    def _book(self, book, strikes, reason, scale, facts, legs=None):
+        """Price, gate and settle one book's cell of ``legs`` (this node's :attr:`LEGS` by default)."""
+        legs = self.LEGS if legs is None else legs
+        cell = self._blank_cell(strikes, reason)
         if strikes is None:
             return cell
-        rows = [facts.listed[right][k] for (right, _sign), k in zip(self.LEGS, strikes)]
-        quotes = [(r["bid"], r["ask"]) for r in rows]
-        self._gate(cell, book, strikes, quotes, scale, facts)
+        rows, quotes = self._leg_quotes(facts, legs, strikes)
+        self._gate(cell, book, legs, strikes, quotes, scale, facts)
         if cell["reason"] is None:
-            self._settle(cell, strikes, quotes, rows, facts)
+            self._settle(cell, legs, strikes, quotes, rows, facts)
         return cell
 
-    def _gate(self, cell, book, strikes, quotes, scale, facts):
+    def _gate(self, cell, book, legs, strikes, quotes, scale, facts):
         """Price the credit and set the cell's ``reason`` when its book must skip it."""
-        multiplier, fee = self.params["multiplier"], self.params["fee_per_leg"]
-        per_share, widths = structure_credit(self.LEGS, strikes, quotes)
-        credit = per_share * multiplier - len(self.LEGS) * fee
+        credit, _widths, reason = self._priced(legs, strikes, quotes)
         cell["credit_usd"] = credit
-        if credit <= 0:
-            cell["reason"] = "nonpositive_credit"
-        elif per_share >= min(widths):
-            cell["reason"] = "credit_not_below_width"
+        if reason is not None:
+            cell["reason"] = reason
         elif book == "model":
-            samples = facts.dist.samples
-            expected = credit + multiplier * sum(
-                structure_payoff(self.LEGS, facts.forward * math.exp(scale * z), strikes)
-                for z in samples) / len(samples)
+            expected = self._expected(credit, legs, strikes, scale, facts)
             cell["expected_pnl_usd"] = expected
             if not expected > self._knob("min_edge_usd"):
                 cell["reason"] = "below_min_edge"
 
-    def _settle(self, cell, strikes, quotes, rows, facts):
+    def _settle(self, cell, legs, strikes, quotes, rows, facts):
         """Enter the cell: its charge, P&L, per-side P&L and delta benchmark."""
         multiplier = self.params["multiplier"]
-        total, by_side = self._american_charge(facts.instrument, strikes, facts.day,
+        total, by_side = self._american_charge(facts.instrument, legs, strikes, facts.day,
                                                facts.settle_date)
         cell["american_charge_usd"] = total
         cell["entered"] = True
         cell["pnl_usd"] = (cell["credit_usd"]
-                           + multiplier * structure_payoff(self.LEGS, facts.settlement, strikes)
+                           + multiplier * structure_payoff(legs, facts.settlement, strikes)
                            - total)
         cell["side_pnl_usd"] = {
-            side: self._side_pnl(side, strikes, quotes, facts.settlement, by_side[side])
-            for side in self.SIDES}
-        cell["delta"], cell["equity_pnl_usd"] = self._benchmark(rows, strikes, facts)
+            side: self._side_pnl(side, legs, strikes, quotes, facts.settlement,
+                                 by_side.get(side, 0.0))
+            for side in _sides_of(legs)}
+        cell["delta"], cell["equity_pnl_usd"] = self._benchmark(rows, legs, strikes, facts)
 
-    def _american_charge(self, instrument, strikes, day, settle_date):
-        """Return the early-exercise charge as ``(total_usd, {side: usd})`` over both short legs."""
-        charge = american_short_charge(
-            self._closes[instrument], strikes[1], strikes[2], day, settle_date,
-            self.params["carry_rate"], self.params["multiplier"])
-        return charge["total_usd"], {"put": charge["put_carry_usd"],
-                                     "call": charge["call_dividend_usd"]}
+    @staticmethod
+    def _short_strike(legs, strikes, right):
+        """Return the strike of the short ``right`` leg in ``legs``, or ``None`` when it has none."""
+        return next((k for (r, sign), k in zip(legs, strikes) if (r, sign) == (right, -1)), None)
 
-    def _side_pnl(self, side, strikes, quotes, settlement, charge):
+    def _american_charge(self, instrument, legs, strikes, day, settle_date):
+        """Return the early-exercise charge as ``(total_usd, {side: usd})``: put carry at the short put, call dividends at the short call, each only where ``legs`` holds it."""
+        closes, multiplier = self._closes[instrument], self.params["multiplier"]
+        charges = {}
+        put = self._short_strike(legs, strikes, "put")
+        if put is not None:
+            charges["put"] = american_put_carry(closes, put, day, settle_date,
+                                                self.params["carry_rate"], multiplier)
+        call = self._short_strike(legs, strikes, "call")
+        if call is not None:
+            charges["call"] = american_call_dividend(closes, call, day, settle_date, multiplier)
+        return sum(charges.values()), charges
+
+    def _side_pnl(self, side, legs, strikes, quotes, settlement, charge):
         """One wing's P&L: its own credit, fees, settlement payoff and American charge."""
-        picks = [i for i, (right, _sign) in enumerate(self.LEGS) if right == side]
-        legs, wing = tuple(self.LEGS[i] for i in picks), [strikes[i] for i in picks]
-        per_share, _widths = structure_credit(legs, wing, [quotes[i] for i in picks])
+        picks = [i for i, (right, _sign) in enumerate(legs) if right == side]
+        wing_legs, wing = tuple(legs[i] for i in picks), [strikes[i] for i in picks]
+        per_share, _widths = structure_credit(wing_legs, wing, [quotes[i] for i in picks])
         multiplier, fee = self.params["multiplier"], self.params["fee_per_leg"]
-        return (per_share * multiplier - len(legs) * fee
-                + multiplier * structure_payoff(legs, settlement, wing) - charge)
+        return (per_share * multiplier - len(wing_legs) * fee
+                + multiplier * structure_payoff(wing_legs, settlement, wing) - charge)
 
-    def _benchmark(self, rows, strikes, facts):
+    def _benchmark(self, rows, legs, strikes, facts):
         """Return the delta-matched stock ``(delta, equity_pnl_usd)``; ``(None, None)`` lacking an iv."""
         ivs = [row["iv"] for row in rows]
         if not all(price_ok(iv) for iv in ivs):
             return None, None
         years = facts.dte / 365
         delta = sum(sign * black76_delta(right, facts.forward, k, iv, years)
-                    for (right, sign), k, iv in zip(self.LEGS, strikes, ivs))
+                    for (right, sign), k, iv in zip(legs, strikes, ivs))
         paid = dividends_paid(self._closes[facts.instrument], facts.day, facts.settle_date)
         return delta, delta * self.params["multiplier"] * (
             facts.settlement - facts.forward + paid)
+
+    def _forecast_books(self, facts, scale):
+        """Return the model and always cells: the forecast's own strikes at the horizon ``scale``."""
+        q = self.params["short_q"]
+        strikes, reason = self._snap(facts.listed, facts.forward, scale,
+                                     facts.dist.quantile(q), facts.dist.quantile(1 - q))
+        return {book: self._book(book, strikes, reason, scale, facts)
+                for book in self.FORECAST_BOOKS}
+
+    def _implied_book(self, facts, atm_iv):
+        """Return the implied cell: the proxy's formula at the chain's own ATM vol, ``no_atm_iv`` without one."""
+        if atm_iv is None:
+            return self._book("implied", None, "no_atm_iv", None, facts)
+        scale = atm_iv * math.sqrt(facts.dte / 365)
+        z = NormalDist().inv_cdf(self.params["short_q"])
+        strikes, reason = self._snap(facts.listed, facts.forward, scale,
+                                     z - scale / 2, -z - scale / 2)
+        return self._book("implied", strikes, reason, scale, facts)
 
     def _entry(self, row, dist, outcome_z):
         """Price and settle one entry from that date's chain, or say why it cannot enter."""
@@ -1319,23 +1387,10 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         sessions = self._sessions(day, settle_date)
         horizon_scale = scale * math.sqrt(sessions / self.params["label_horizon"])
         listed = self._listed(expiry_rows)
-        q = self.params["short_q"]
-        model = self._snap(listed, forward, horizon_scale, dist.quantile(q), dist.quantile(1 - q))
         atm_iv = self._atm_iv(listed, forward)
-        if atm_iv is None:
-            implied, implied_scale = (None, "no_atm_iv"), None
-        else:
-            implied_scale = atm_iv * math.sqrt(dte / 365)
-            z = NormalDist().inv_cdf(q)
-            implied = self._snap(listed, forward, implied_scale, z - implied_scale / 2,
-                                 -z - implied_scale / 2)
-        candidates = {"model": (model, horizon_scale), "always": (model, horizon_scale),
-                      "implied": (implied, implied_scale)}
         facts = _EntryFacts(instrument, day, settle_date, dte, forward, settlement, listed, dist)
-        books = {}
-        for book in self.BOOKS:
-            (strikes, reason), book_scale = candidates[book]
-            books[book] = self._book(book, strikes, reason, book_scale, facts)
+        books = {**self._forecast_books(facts, horizon_scale),
+                 "implied": self._implied_book(facts, atm_iv)}
         expected = books["model"].pop("expected_pnl_usd")
         for book in ("always", "implied"):
             books[book].pop("expected_pnl_usd")
@@ -1352,10 +1407,12 @@ class CondorQuoteBacktest(_CondorBacktestBase):
                 **self._side_metrics(traded), **self._benchmark_metrics(traded)}
 
     def _side_metrics(self, traded):
-        """Return each side's total, mean and hit rate over the trades; zeros when there are none."""
+        """Return each side's total, mean and hit rate over the traded cells that hold it; float zeros when none does."""
         metrics = {}
         for side in self.SIDES:
-            metrics.update(self._pnl_stats(side, [c["side_pnl_usd"][side] for c in traded]))
+            metrics.update(self._pnl_stats(
+                side, [c["side_pnl_usd"][side] for c in traded if side in c["side_pnl_usd"]],
+                start=0.0))
         return metrics
 
     def _benchmark_metrics(self, traded):
@@ -1386,8 +1443,9 @@ class PutSpreadQuoteBacktest(CondorQuoteBacktest):
     ADR-0193. The condor backtest's put wing alone: a long put under a short
     put (:data:`~index_options.contracts.PUT_SPREAD_LEGS`), traded wherever
     that wing is quotable. The walk, expiry, settlement, three books, knobs
-    and metrics are :class:`CondorQuoteBacktest`'s, unchanged; the structure
-    differs in four hooks:
+    and metrics are :class:`CondorQuoteBacktest`'s, unchanged; its
+    :attr:`LEGS` are the put wing's and everything else follows from them
+    (ADR-0195 made each of these a rule over the trade's legs):
 
     * **Snap.** Only the put wing is snapped: the band is checked on the two
       put targets, quotability on the two put legs, and the implied book's
@@ -1395,9 +1453,9 @@ class PutSpreadQuoteBacktest(CondorQuoteBacktest):
       structure enters where the condor's call side cannot.
     * **Fees and width.** ``len(LEGS) = 2`` legs of ``fee_per_leg``, and
       ``credit_not_below_width`` against the put width.
-    * **Charge.** :func:`~index_options.contracts.american_put_carry` alone:
-      no call dividend, no dividend data for the charge. (The delta benchmark
-      still reads ``dividend_amount``; a session without one refuses.)
+    * **Charge.** The short put's carry alone: no call dividend, no dividend
+      data for the charge. (The delta benchmark still reads
+      ``dividend_amount``; a session without one refuses.)
     * **Report.** ``kind`` is ``archived_quote_put_spread_backtest``.
 
     ``side_pnl_usd`` has the one side ``"put"`` (its P&L is the cell's) and
@@ -1432,21 +1490,200 @@ class PutSpreadQuoteBacktest(CondorQuoteBacktest):
     REPORT_KIND = "archived_quote_put_spread_backtest"
     UNITS = "USD per put spread, one contract per leg"
 
-    def _snap(self, listed, forward, scale, z_put, z_call):
-        """Snap the put wing alone: ``(strikes, None)`` or ``(None, reason)``; ``z_call`` unused."""
-        if self._outside_band(scale, self._put_exponents(z_put)):
-            return None, "target_outside_band"
-        put = self._snap_put(listed, forward, scale, z_put)
-        if put is None:
-            return None, "no_quotable_strike"
-        return self._geometry(put)
 
-    def _american_charge(self, instrument, strikes, day, settle_date):
-        """Return the short put's carry as ``(total_usd, {"put": usd})``; there is no call side."""
-        carry = american_put_carry(
-            self._closes[instrument], strikes[1], day, settle_date,
-            self.params["carry_rate"], self.params["multiplier"])
-        return carry, {"put": carry}
+class _Candidate(NamedTuple):
+    """One scorable candidate: what the selector ranks and what the winner's books enter."""
+
+    structure: str
+    short_q: float
+    wing_z: float
+    legs: tuple
+    strikes: tuple
+    score: float
+
+
+class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
+    """Non-overlapping trades of the structure the forecast scores best, from archived quotes.
+
+    ADR-0195. :class:`CondorQuoteBacktest` where the forecast also chooses
+    WHICH defined-risk structure to trade and how far out, not only whether
+    to trade a fixed condor. The walk, expiry, settlement, gates, American
+    charge, wing split, delta benchmark and ADR-0194 ``gate_fields`` are the
+    condor's; only the model and always books change.
+
+    At an entry date every declared candidate ``(structure, short_q,
+    wing_z)`` is, in declaration order (``candidate_structures`` outermost,
+    then ``candidate_short_q``, then ``candidate_wing_z``):
+
+    1. **Snapped** at the model's horizon scale ``s'`` (the condor's rule):
+       only that structure's wings, at ``Q(short_q)`` / ``Q(1 - short_q)``
+       and its own ``wing_z``, outward onto quotable strikes. A band,
+       quotability or geometry refusal (:meth:`_snap_legs`) drops it.
+    2. **Priced** at bid/ask with ``len(legs) x fee_per_leg``. A credit that
+       is not positive (``nonpositive_credit``) or that reaches the narrowest
+       vertical (``credit_not_below_width``) drops it: the condor's own gate.
+    3. **Scored**: ``score = E_P[pnl] / max_loss``. ``E_P[pnl]`` is the credit
+       plus ``multiplier`` times the mean, over the forecast draws ``z``, of the
+       structure's payoff at ``forward x exp(s' z)``; ``max_loss`` is
+       ``multiplier x`` the widest vertical less the credit, positive because
+       the gate keeps the credit under the narrowest one.
+
+    The highest score wins and an exact tie goes to the earlier declared
+    candidate. The **model** book enters the winner when its ``E_P[pnl]``
+    exceeds ``min_edge_usd`` (else ``below_min_edge``); the **always** book
+    enters it whatever its edge; **implied** stays the VIX-implied condor at
+    ``short_q`` / ``wing_z`` (which therefore stay required), the unchanged
+    benchmark. With no scorable candidate both forecast books skip the entry
+    as ``no_scorable_candidate``. Every model and always cell records
+    ``selected`` (``structure``, ``short_q``, ``wing_z``, ``score`` and
+    ``n_candidates_scored``, the count of scorable candidates); the implied
+    cell, and a cell with no winner, records ``None``.
+
+    Metrics add ``<book>_n_<structure>`` for each of
+    :data:`~index_options.contracts.STRUCTURES` (traded cells by structure; the
+    implied book counts as the condor). The side metrics
+    ``<book>_<side>_total_pnl_usd`` / ``_mean_pnl_usd`` / ``_hit_rate`` cover
+    the traded cells that CONTAIN that side (a call spread has no put side), which
+    for a fixed condor or put spread is every traded cell. The empirical rung's
+    forecast makes the same selector a premium-only control: what the
+    forecast adds is the difference between the two runs, never the level.
+    Role ``score``, forbidden for serving, never decision-eligible: fills are
+    the end-of-day touch at zero latency.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        :class:`CondorQuoteBacktest`'s, plus required ``candidate_structures``
+        (non-empty distinct names from
+        :data:`~index_options.contracts.STRUCTURES`; their order breaks ties),
+        ``candidate_short_q`` (non-empty distinct numbers in (0, 0.5)) and
+        ``candidate_wing_z`` (non-empty distinct numbers > 0).
+
+    Examples
+    --------
+    SPY's 30-45 day cell choosing among the three structures::
+
+        node = PayoffSelectQuoteBacktest("backtest", {
+            "split": "val", "short_q": 0.1, "wing_z": 0.5, "multiplier": 100,
+            "fee_per_leg": 0.65, "dte_min": 30, "dte_max": 45,
+            "max_abs_log_moneyness": 0.2, "label_horizon": 22, "carry_rate": 0.055,
+            "candidate_structures": ["put_spread", "call_spread", "condor"],
+            "candidate_short_q": [0.10, 0.16, 0.25], "candidate_wing_z": [0.35, 0.65, 1.0],
+        })
+        out = node.run(ctx, {"forecasts": rows, "chain": quotes, "underlying": closes})
+        out["metrics"]["model_n_call_spread"]
+    """
+
+    BOOK_REASONS = CondorQuoteBacktest.BOOK_REASONS + ("no_scorable_candidate",)
+    REPORT_KIND = "archived_quote_payoff_select_backtest"
+    UNITS = "USD per selected structure, one contract per leg"
+    #: The structure the implied book always trades: the one the inherited :attr:`LEGS` is.
+    IMPLIED_STRUCTURE = next(name for name, legs in STRUCTURES.items()
+                             if legs == CondorQuoteBacktest.LEGS)
+    _CANDIDATE_KNOBS = ("candidate_structures", "candidate_short_q", "candidate_wing_z")
+    _REQUIRED = CondorQuoteBacktest._REQUIRED + _CANDIDATE_KNOBS
+    _PARAMS = tuple(sorted(_REQUIRED + tuple(CondorQuoteBacktest.DEFAULTS)
+                           + _CondorBacktestBase.SHARED_OPTIONAL))
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the declaration; every problem is reported.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = super().validate_params(params)
+        cls._list_problems(problems, params, "candidate_structures",
+                           lambda name: isinstance(name, str) and name in STRUCTURES,
+                           f"names from {list(STRUCTURES)}")
+        cls._list_problems(problems, params, "candidate_short_q", cls._short_q_ok,
+                           "numbers in (0, 0.5)")
+        cls._list_problems(problems, params, "candidate_wing_z", price_ok, "positive numbers")
+        return problems
+
+    @staticmethod
+    def _list_problems(problems, params, name, accepts, what):
+        """Check a declared ``params[name]`` is a non-empty list of distinct values ``accepts`` takes."""
+        if name not in params:
+            return
+        values = params[name]
+        if (not isinstance(values, list) or not values
+                or not all(accepts(v) for v in values) or len(set(values)) != len(values)):
+            problems.append(f"{name} must be a non-empty list of distinct {what}, got {values!r}")
+
+    def _candidates(self):
+        """Yield every declared ``(structure, short_q, wing_z)`` in tie-break order."""
+        return product(self.params["candidate_structures"], self.params["candidate_short_q"],
+                       self.params["candidate_wing_z"])
+
+    def _score(self, legs, strikes, scale, facts):
+        """Return the score of one snapped structure, or ``None`` where the credit gate refuses it."""
+        _rows, quotes = self._leg_quotes(facts, legs, strikes)
+        credit, widths, reason = self._priced(legs, strikes, quotes)
+        if reason is not None:
+            return None
+        max_loss = self.params["multiplier"] * max(widths) - credit
+        return self._expected(credit, legs, strikes, scale, facts) / max_loss
+
+    def _candidate(self, structure, short_q, wing_z, facts, scale):
+        """Snap and score one candidate: a :class:`_Candidate`, or ``None`` where a snap or the credit gate refuses it."""
+        legs = STRUCTURES[structure]
+        strikes, reason = self._snap_legs(facts.listed, facts.forward, scale, legs,
+                                          facts.dist.quantile(short_q),
+                                          facts.dist.quantile(1 - short_q), wing_z)
+        if reason is not None:
+            return None
+        score = self._score(legs, strikes, scale, facts)
+        return None if score is None else _Candidate(structure, short_q, wing_z, legs, strikes,
+                                                     score)
+
+    def _select(self, facts, scale):
+        """Return ``(winner, n_scored)``: the best-scoring candidate (the earlier declared on a tie) and how many were scorable."""
+        winner, n_scored = None, 0
+        for structure, short_q, wing_z in self._candidates():
+            candidate = self._candidate(structure, short_q, wing_z, facts, scale)
+            if candidate is None:
+                continue
+            n_scored += 1
+            if winner is None or candidate.score > winner.score:
+                winner = candidate
+        return winner, n_scored
+
+    @staticmethod
+    def _blank_cell(strikes, reason):
+        """Return the condor's blank cell plus ``selected``, ``None`` until a winner is recorded."""
+        return {**CondorQuoteBacktest._blank_cell(strikes, reason), "selected": None}
+
+    def _forecast_books(self, facts, scale):
+        """Return the model and always cells: the winning candidate at the horizon ``scale``, or ``no_scorable_candidate``."""
+        winner, n_scored = self._select(facts, scale)
+        books = {}
+        for book in self.FORECAST_BOOKS:
+            if winner is None:
+                books[book] = self._book(book, None, "no_scorable_candidate", scale, facts)
+                continue
+            cell = self._book(book, winner.strikes, None, scale, facts, winner.legs)
+            cell["selected"] = {"structure": winner.structure, "short_q": winner.short_q,
+                                "wing_z": winner.wing_z, "score": winner.score,
+                                "n_candidates_scored": n_scored}
+            books[book] = cell
+        return books
+
+    def _book_extras(self, traded):
+        """Return the condor's extras plus ``n_<structure>``: the traded cells by structure, implied counting as the condor."""
+        counts = Counter(self.IMPLIED_STRUCTURE if cell["selected"] is None
+                         else cell["selected"]["structure"] for cell in traded)
+        return {**super()._book_extras(traded),
+                **{f"n_{name}": counts[name] for name in STRUCTURES}}
 
 
 class VolRegimeSignals(Node):
@@ -1633,9 +1870,9 @@ class VolRegimeSignals(Node):
 
     def _signals(self, ratio, pct, vrp):
         """Return one row's added fields: the three measures and the four gates."""
-        verdicts = (None if ratio is None else ratio >= self._knob("inverted_at"),
-                    None if pct is None else pct >= self._knob("high_ratio_pct"),
-                    None if vrp is None else vrp <= 0)
+        verdicts = (None if ratio is None else bool(ratio >= self._knob("inverted_at")),
+                    None if pct is None else bool(pct >= self._knob("high_ratio_pct")),
+                    None if vrp is None else bool(vrp <= 0))
         return {"vix_term_ratio": ratio, "vix_term_ratio_pct": pct, "vrp": vrp,
                 **dict(zip(self.GATE_FIELDS, (*verdicts, self._any(verdicts))))}
 

@@ -723,3 +723,28 @@ def test_the_composite_return_contract_is_unchanged():
     assert charged["call_dividend_usd"] == contracts.american_call_dividend(
         rows, 102.0, "2024-03-01", "2024-03-08", 100) == 150.0
     assert charged["total_usd"] == pytest.approx(150.0 + charged["put_carry_usd"])
+
+
+# -- ADR-0195: the call spread and the structure table -----------------------------------------
+
+
+def test_the_call_spread_legs_and_the_structure_table_are_single_exported_owners():
+    assert contracts.CALL_SPREAD_LEGS == (("call", -1), ("call", 1)) == CONDOR_LEGS[2:]
+    # the table the payoff selector chooses among, in the order a tie is broken by default
+    assert dict(contracts.STRUCTURES) == {"put_spread": contracts.PUT_SPREAD_LEGS,
+                                          "call_spread": contracts.CALL_SPREAD_LEGS,
+                                          "condor": CONDOR_LEGS}
+    assert list(contracts.STRUCTURES) == ["put_spread", "call_spread", "condor"]
+    assert {"CALL_SPREAD_LEGS", "STRUCTURES"} <= set(contracts.__all__)
+    with pytest.raises(TypeError):        # a shared table nobody may edit in place
+        contracts.STRUCTURES["butterfly"] = CONDOR_LEGS
+    # every structure's legs are a run of the condor's, so they share one leg order and sign rule
+    for legs in contracts.STRUCTURES.values():
+        assert all(leg in CONDOR_LEGS for leg in legs)
+
+
+def test_structure_credit_of_a_call_spread_is_its_own_credit_and_one_width():
+    # short call at the bid (1.5), long call at the ask (0.8): the condor's call side
+    credit, widths = contracts.structure_credit(
+        contracts.CALL_SPREAD_LEGS, (106.0, 108.0), ((1.5, 1.6), (0.7, 0.8)))
+    assert credit == pytest.approx(0.7) and widths == (2.0,)

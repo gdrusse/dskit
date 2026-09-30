@@ -406,7 +406,11 @@ the toolkit's statistics are not swappable by config.
 Forecast-vs-mean **no-information** (ADR-0057) is a function in `stats.py`,
 not a third `stat_test` method: `no_information_test(y, yhat, mu=, lags=)`
 then `max_informative_horizon` over increasing `h`. One series; `lags` is
-overlap in observation steps.
+overlap in observation steps. `newey_west_mean` and `across_fold_t` (every
+t-test here that is not a bootstrap) share ONE no-variance rule: a series
+whose spread is at most `stats.NO_VARIANCE_RTOL` times its largest magnitude
+is constant to float noise, so its `t` is `None` (never a ~1e16 artifact) and
+the sign of the mean sets `p_value`.
 
 `event-grid` requires integer `period_ms > 0` and
 `0 <= offset_ms < period_ms`; it preserves order and keeps rows satisfying
@@ -771,6 +775,9 @@ dskit/pipeline/
 │                      summaries lower_tail_mean (empirical CVaR) + max_drawdown;
 │                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio;
 │                      expanding_percentile (look-ahead-free mid-rank, ADR-0194)
+│                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
+│                      for a spread within that fraction of the largest magnitude
+│                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
