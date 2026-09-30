@@ -27354,3 +27354,79 @@ sample counts and training/calibration/evaluation boundaries, and two fresh
 independent final lenses with zero unresolved Critical/Major findings. The memo
 must recommend retain/replace based on the predeclared guard and state that the
 2019–2025 comparison is already inspected research evidence, not trading proof.
+
+## ADR-0193 — Condor wing split, put-credit-spread book and delta-matched benchmark
+
+2026-09-30. **Status: owner-approved 2026-09-30; RED authorized** (answers:
+(a) 0.16 / 0.65; (b) all 14 SPY/QQQ cells; (c) leave the pre-existing stale
+tests). Owner:
+Russell. Base: `7f610e4`. Branch: `claude/index-options-strategies`.
+Step 1 of the strategy-alternatives memo (A0612): does the put side carry the
+condor's premium, and does a put-only credit spread beat delta-matched stock?
+Offline code and synthetic tests only; the real 2008-2025 runs stay on the
+owner's WSL store and are not authorized by this ADR.
+
+**Context.** Sweep (`PutSpreadQuoteBacktest`, `structure_credit`,
+`structure_payoff`, `PUT_SPREAD_LEGS`, `black76_delta`, "put spread",
+"delta-matched", "wing split"): no code anywhere. Reused seams:
+`CondorQuoteBacktest` (ADR-0187) and its base's walk/metrics;
+`american_short_charge`, which already returns `put_carry_usd` and
+`call_dividend_usd` separately; `black76` in `dskit/pipeline/option_pricing.py`;
+`grid.py`, which generates every cell document.
+
+**Decision proposed.**
+
+1. **dskit core** — `option_pricing.black76_delta(right, forward, strike, vol,
+   years, rate=0)`: forward delta `DF·N(d1)` (call), `-DF·N(-d1)` (put); same
+   refusals as `black76`. Test: agrees with a central difference of `black76`.
+2. **Leg-set owners (child)** — `contracts.structure_credit(legs, strikes,
+   quotes)` and `distribution.structure_payoff(legs, level, strikes)` take a
+   leg tuple; `condor_credit` / `condor_payoff` become thin callers with
+   unchanged results (pinned). `PUT_SPREAD_LEGS = CONDOR_LEGS[:2]`.
+   `american_short_charge` splits into `american_put_carry` and
+   `american_call_dividend` (one job each); the composite keeps its return
+   contract. A put-only structure needs no dividend data.
+3. **Wing split** — every entered `CondorQuoteBacktest` cell adds
+   `side_pnl_usd = {"put": …, "call": …}`: each side's bid/ask credit, its
+   two fees, its settlement payoff and its own American charge. The sides sum
+   to `pnl_usd` exactly (tested on every fixture entry). Metrics add
+   `<book>_<side>_total_pnl_usd`, `_mean_pnl_usd`, `_hit_rate`. No gate, strike
+   or document changes, so no identity hash moves.
+4. **`PutSpreadQuoteBacktest(CondorQuoteBacktest)`** — class attribute
+   `LEGS`; `_snap` becomes `_snap_put` + `_snap_call` composed by the condor,
+   the subclass using the put side only; the American charge becomes a hook
+   (`_american_charge`). Same three books, knobs, walk and settlement; the
+   implied book's short put is the condor's. It enters where only the put side
+   is quotable. Report kind `archived_quote_put_spread_backtest`, never
+   decision-eligible, forbidden for serving.
+5. **Delta-matched benchmark** (both backtests) — at entry, structure delta
+   `Δ = Σ sign·black76_delta(leg iv, F = entry close, DTE/365)`; benchmark
+   P&L `Δ·multiplier·(S_settle − S_entry + dividends in (entry, settle])`.
+   Metrics `<book>_delta_equity_total_usd`, `<book>_residual_mean_pnl_usd`
+   (P&L − benchmark), `<book>_residual_t` and `<book>_pnl_t` (non-overlapping
+   trades, plain t), `<book>_n_no_delta` (a leg without a usable iv). Black-76
+   on spot with rate 0 ignores dividends and early exercise: a disclosed
+   hedge-ratio approximation, not a price.
+6. **Documents** — `grid.put_spread_document(base, cell)` derives each
+   dividend-carrying cell's (SPY, QQQ: 14) document, swapping only the
+   backtest node and `short_q` = `PUT_SPREAD_SHORT_Q` (0.16, ≈16Δ) and
+   `wing_z` = `PUT_SPREAD_WING_Z` (0.65, ≈5Δ long leg). Files
+   `configs/grid/<cell>-put-spread.json`, pinned to the generator by test.
+   Existing documents are byte-identical.
+
+**Files.** Modify: `dskit/pipeline/option_pricing.py`,
+`tests/pipeline/test_option_pricing.py`; child `index_options/{contracts,
+distribution,nodes,grid}.py`, `tests/{test_contracts,test_distribution,
+test_quote_backtest,test_configs}.py`, `README.md`, `CLAUDE.md`/`AGENTS.md`.
+New: 14 `configs/grid/*-put-spread.json`, `docs/review-evidence/ADR-0193.md`.
+
+**Non-goals.** IWM (no chain reader wired; possible later since a put spread
+needs no dividends), the VIX-proxy `CondorBacktest`, gating/timing (step 2),
+real-data runs, any change to existing cell documents or their hashes.
+
+**Process.** TDD; Sonnet author; two fresh Sonnet skeptics (correctness,
+tests/integration); zero unresolved Critical/Major before merge.
+
+**Owner questions.** (a) Put-spread strikes 0.16 / 0.65 or 0.20 / 0.75?
+(b) All 14 SPY/QQQ cells, or 30-45 only? (c) Also fix the pre-existing stale
+child manifest and zoo-approval pins (23 failing tests on main), or leave?
