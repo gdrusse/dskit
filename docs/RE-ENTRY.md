@@ -1,5 +1,21 @@
 # Re-entry
 
+## index_options: ADR-0196 landed (sizing study, allocation CLI) (2026-09-30)
+
+- Step 4 of memo A0612. Candidate `5ec47ef` (Claude Sonnet 5.5, TDD) with the
+  ADR-0195 backlog; two fresh Sonnet skeptics: correctness C0/M0/m2/n5, tests
+  C0/M0/m6/n9. Evidence `docs/review-evidence/ADR-0196.md`. Child suite 1426
+  passed / 23 failed (same pre-existing pins); tests/pipeline 5282 passed.
+- Built: `stats.expanding_quantile`; `_LaggedRowSignals` seam (VolRegimeSignals
+  refactored, byte-identical); `VolSizingWeights` (1/VIX², 1/rv², VIX ∝, each
+  over its expanding median, clipped [0.25, 4]); optional `size_fields`
+  sized-P&L metrics (trades unchanged); sizing node in the 56 gate /
+  put-spread / select documents; `python -m index_options.ledger_studies
+  allocate <walk>...` (read-only).
+- Known before use (fixed in the ADR-0197 candidate): the allocate table
+  mixes date windows (union of dates) and accepts partial walks — do not
+  read its SPY-vs-QQQ rows until that lands.
+
 ## index_options: ADR-0195 landed (forecast-scored payoff selector) (2026-09-30)
 
 - Step 3 of memo A0612. Candidate `9b3b1c4` (Claude Sonnet 5.5, TDD) with the

@@ -27643,6 +27643,12 @@ across buckets (different cadences), IWM, real runs.
 **Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
 Critical/Major before merge.
 
+**Clarification (2026-09-30, orchestrator; review evidence ADR-0196).** The
+sizing study (item 4) covers every document carrying the ADR-0194 gate
+study: the 14 gate, the 14 put-spread and the 28 select / empirical-select
+documents (none ever run). Item 5's comparison is over SHARED entry dates;
+the union rule shipped in `5ec47ef` is corrected in the ADR-0197 candidate.
+
 ## ADR-0197 — Debit (positive-convexity) structures and the hedge-sleeve test
 
 2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0196
