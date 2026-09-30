@@ -10,8 +10,151 @@ import pandas as pd
 import pytest
 
 from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel, RawChainFeatureBuilder
+from index_options import cdf_study
 from index_options.distribution import condor_payoff
-from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
+from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
+
+
+def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execution():
+    strikes = [85., 90., 95., 105., 110., 115.]
+    rows = pd.DataFrame({
+        "symbol": ["SPY"] * 6, "date": ["2020-01-02"] * 6,
+        "expiration": ["2020-02-21"] * 6, "strike": strikes,
+        "type": ["put"] * 3 + ["call"] * 3,
+        "bid": [1., 2., 3., 3., 2., 1.],
+        "ask": [1.2, 2.2, 3.2, 3.2, 2.2, 1.2],
+        "bid_size": [3] * 6, "ask_size": [3] * 6,
+    })
+    rule = cdf_study.EligibleCondorChain(
+        max_abs_log_moneyness=.2, min_wing_width=5., max_wing_width=10.,
+        max_candidates=100, fee_per_leg=0., multiplier=100)
+    first = rule.candidates(rows, spot=100.)
+    second = rule.candidates(rows.sample(frac=1, random_state=9), spot=100.)
+    assert first == second
+    assert (90., 95., 105., 110.) in [tuple(x["strikes"]) for x in first]
+    assert all(x["net_credit"] > 0 for x in first)
+    assert all(x["strikes"][0] < x["strikes"][1] < x["strikes"][2]
+               < x["strikes"][3] for x in first)
+    rows.loc[rows.strike.eq(95.), "bid_size"] = 0
+    assert all(x["strikes"][1] != 95. for x in rule.candidates(rows, spot=100.))
+    with pytest.raises(ValueError, match="timestamp"):
+        rule.candidates(rows, spot=100., executable=True)
+
+
+def test_decision_region_audit_uses_all_wings_and_checks_grid_error():
+    grid = np.linspace(80., 120., 401)
+    forecast = (grid-80.)/40.
+    candidate = {"id": "one", "strikes": (90., 95., 105., 110.),
+                 "net_credit": 4.}
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1).evaluate(
+        grid, forecast, terminal=100., spot=100., candidates=[candidate], radius=0.)
+    assert result["nominal"]["id"] == "one"
+    assert result["robust"]["id"] == "one"
+    assert result["weighted_crps"] > 0
+    assert result["strike_brier"] == pytest.approx(np.mean([.25**2, .375**2,
+                                                             .375**2, .25**2]))
+    assert result["candidates"][0]["expected_loss"] == pytest.approx(3.125)
+    assert result["candidates"][0]["put_expected_loss"] == pytest.approx(1.5625)
+    assert result["candidates"][0]["call_expected_loss"] == pytest.approx(1.5625)
+    assert result["candidates"][0]["realized_loss"] == 0
+    stressed = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1).evaluate(
+        grid, forecast, terminal=100., spot=100., candidates=[candidate], radius=.1)
+    assert stressed["robust"]["id"] is None
+    with pytest.raises(ValueError, match="mesh"):
+        cdf_study.CondorDecisionAudit(mesh_tolerance=.001, floor=.1).evaluate(
+            grid[::40], forecast[::40], terminal=100., spot=100.,
+            candidates=[candidate], radius=0.)
+
+
+def test_nominal_decision_uses_direct_cdf_when_grid_ranking_differs():
+    grid = np.arange(9., 18.)
+    cdf = [0., 0., .1, .7, .75, .9, .95, 1., 1.]
+    candidates = [
+        {"id": "A", "strikes": (10., 11., 13., 14.), "net_credit": .5},
+        {"id": "B", "strikes": (11., 12., 14., 15.), "net_credit": .5},
+    ]
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.5, floor=.1).evaluate(
+        grid, cdf, terminal=12.5, spot=12.5, candidates=candidates, radius=0.)
+    assert result["nominal"]["id"] == "A"
+    assert result["robust"]["id"] == "A"
+
+
+def test_atom_aware_nominal_decision_uses_frozen_gridcurve():
+    grid = np.arange(9., 17.5, .5)
+    curve = GridCurve(np.log(np.array([[9., 10., 11., 11., 16., 17.]])/13.),
+                      [[0., 0., 0., .5, 1., 1.]])
+    cdf = curve.cdf(np.log(grid/13.))[0]
+    candidate = {"id": "atom", "strikes": (10., 12., 14., 15.),
+                 "net_credit": .75}
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.5, floor=.1).evaluate(
+        grid, cdf, terminal=13., spot=13., candidates=[candidate], radius=0.,
+        curve=curve, reference_scale=1.)
+    assert result["nominal"]["id"] == "atom"
+
+
+def test_american_charge_is_separate_and_missing_charge_withholds_regret():
+    grid = np.linspace(80., 120., 401)
+    candidate = {"id": "one", "strikes": (90., 95., 105., 110.),
+                 "net_credit": 4.}
+    audit = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1)
+    uncharged = audit.evaluate(grid, (grid-80.)/40., terminal=100., spot=100.,
+                               candidates=[candidate], radius=0.)
+    assert uncharged["nominal"]["regret"] is None
+    charged = audit.evaluate(grid, (grid-80.)/40., terminal=100., spot=100.,
+                             candidates=[candidate], radius=0.,
+                             american_charges={"one": 1.25})
+    assert charged["candidates"][0]["american_charge"] == pytest.approx(1.25)
+    assert charged["nominal"]["realized_pnl"] == pytest.approx(2.75)
+
+
+def test_decision_region_source_refuses_unbound_marker_and_wrong_settlement(tmp_path):
+    root = tmp_path/"frozen"
+    partition = root/"evaluate"/"late"
+    partition.mkdir(parents=True)
+    (partition/"complete.json").write_text("{}")
+    settings = {
+        "forecast_root": str(root), "partition": "late",
+        "models": {"base": "raw"}, "symbols": ["SPY"],
+        "archive_root": str(tmp_path), "output": str(tmp_path/"out"),
+        "max_rows_per_symbol": 1,
+        "underlying": {"root": str(tmp_path), "source": "fixture",
+                       "since_ms": 0, "carry_rate": .055},
+        "strata": {"tenor_days": [7, 21], "iv": [20, 30],
+                   "wing_log_moneyness": [.02, .05]},
+        "chain_rule": {"max_abs_log_moneyness": .1,
+                       "min_wing_width": 5., "max_wing_width": 5.,
+                       "max_candidates": 10, "fee_per_leg": 0., "multiplier": 100},
+        "audit": {"price_step": .5, "support_margin_fraction": .02,
+                  "mesh_tolerance": .5, "floor": .1, "radius": 0.},
+        "limits": {"max_seconds": 1800, "max_address_space_mib": 6144,
+                   "max_chain_rows": 100000, "max_grid_nodes": 4001},
+    }
+    with pytest.raises(ValueError, match="decision-region JSON"):
+        cdf_study.DecisionRegionStudy({**settings, "symbols": ["SPY", "SPY"]})
+    with pytest.raises(ValueError, match="decision-region limits"):
+        cdf_study.DecisionRegionStudy({**settings, "limits": {
+            **settings["limits"], "max_seconds": 1801}})
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy({**settings, "models": {"base": "calibrated"}})
+    with pytest.raises(ValueError, match="completion"):
+        cdf_study.DecisionRegionStudy(settings).prepare()
+    frame = pd.DataFrame({
+        "quote_date": ["2025-01-02"], "expiry": ["2025-01-10"],
+        "settlement_date": ["2025-01-09"], "actual_calendar_dte": [7],
+        "spot": [100.], "terminal_price": [101.], "reference_scale": [.02],
+    })
+    with pytest.raises(ValueError, match="settlement"):
+        cdf_study.DecisionRegionStudy.validate_panel_temporal(frame)
+
+
+def test_decision_region_rejects_unsupported_archived_curve_family(tmp_path):
+    source = tmp_path/"convex.npz"
+    np.savez_compressed(source, kind="convex")
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy._check_curve_archive(source)
+    np.savez_compressed(source, kind="grid", calibration_x=np.array([[0., 1.]]))
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy._check_curve_archive(source)
 
 
 def test_option_surface_features_are_scale_stable_and_preserve_missingness():
