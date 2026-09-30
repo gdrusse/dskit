@@ -1,5 +1,75 @@
 # Re-entry
 
+## ADR-0195 guard-aware CDF selection completed (2026-09-30)
+
+- Added a generic JSON-declared development selection guard. It filters every
+  candidate/variant by per-index tail deviations before applying the unchanged
+  CRPS rank, persists every comparison, and refuses an empty feasible set.
+- New immutable run reused the exact ADR-0194 panel/provenance hashes in a fresh
+  root. Broad failed two guards; fine-tail failed SPY lower; very-conservative
+  passed all six and was frozen before later evaluation.
+- Selected blend improves development equal-cell CRPS 1.122%. On reused
+  2019–2025 history it improves 0.816% versus incumbent; 60/120-date intervals
+  exclude zero and every index improves CRPS plus both tail deviations.
+- Promote `tail_blend_very_conservative` as the governed **offline research
+  incumbent**, not a trading model. Memo:
+  `children/index_options/docs/memos/2026-09-30-guard-aware-cdf-selection.md`.
+  Review: `docs/review-evidence/ADR-0195.md`. Journal A0613. 126 affected tests pass. Luna
+  design/selection and final artifact reviews C0/M0/m0/n0.
+
+## ADR-0194 tail-constrained quantile blend completed (2026-09-30)
+
+- Implemented `TailConstrainedQuantileBlendCDF` and one JSON-only staged study
+  in `/home/russell/dskit-cdf-option-surface`. Per-index left/center/right
+  option weights are chosen on the preceding calibration year under incumbent
+  deterministic right-CDF PIT-tail guards; actual DTE is cell metadata only.
+- Frozen development winner: `tail_blend_fine_tails`. Full 68,084-row paired
+  history shows +1.307% equal-cell CRPS versus incumbent, with positive 60/120
+  date intervals, and better full-history lower/upper tail deviations for all
+  three indexes. It still fails the preregistered development guard: SPY lower
+  deviation 0.00828 versus incumbent 0.00738. Retain the incumbent; no trading.
+- The unselected very-conservative grid passed all six development tail checks
+  with ~1.12% CRPS lift, but it was not substituted after inspection. A future
+  run should predeclare a guard-aware top-level selector.
+- All stages completed under 30 minutes/6 GiB (prepare 15:58/1.63 GiB; maximum
+  observed RSS 3.82 GiB). Affected suite: 124 passed. Luna implementation
+  review C0/M0/m1/n0; deterministic PIT for atoms is the documented minor.
+- Memo: `children/index_options/docs/memos/2026-09-30-tail-constrained-quantile-blend.md`.
+  Review: `docs/review-evidence/ADR-0194.md`. Generated canonical artifacts are
+  ignored under `pipeline_runs/predictive_cdf_tail_blend_20260930`. Journal A0612. Work is not
+  committed or pushed; the owner did not request publication in this turn.
+
+## ADR-0193 risk-neutral CDF comparison completed (2026-09-29)
+
+- Owner-approved ADR-0193 is implemented in the isolated WSL2 worktree
+  `/home/russell/dskit-cdf-option-surface`, based on main
+  `0d44dd457867139fc75191b6ed0a218230360e69`. One standard JSON drives raw
+  preparation, seven search groups, selection, four evaluations and reporting;
+  there are no one-off execution scripts and no trading/deployment authority.
+- The pinned 53,407,120-row archive produced 109,850 chain identities and a
+  109,355-row modeling panel. The raw cache binds implementation, 51 annual
+  content hashes, and canonical spot metadata. Daily FRED inputs become usable
+  only after one complete intervening XNYS session; age/staleness are measured
+  from observation date. The source schema cannot identify adjusted
+  deliverables, so the memo explicitly limits the run to archive-standard rows.
+- Fifteen candidates across seven groups completed. Frozen before later
+  evaluation, option-implied transport was best on reused 2019–2025 history:
+  +2.750552% equal-cell CRPS versus empirical and +1.853372% versus incumbent;
+  both 120-date intervals exclude zero. It failed the development PIT-tail
+  guard for IWM and SPY, so retain the existing 25% empirical/MLP blend as the
+  governed research incumbent. No live option-selection claim follows.
+- Final packet: 68,084 paired later forecasts/model, 1,746 entry dates, 3,495
+  expiry series; 13 canonical manifests and 542 file hashes verified; 136
+  focused tests passed. Preparation took 16m10s/1.74 GiB; slowest evaluation
+  6m57s, peak 5.35 GiB. Stage resource values are console-observed and not
+  retained as canonical stage telemetry (the one final Minor caveat).
+- Fresh final reviews: Luna C0/M0/m0/n0; integration C0/M0/m1/n0. Evidence:
+  `docs/review-evidence/ADR-0193.md`. Standalone recommendation and full grids:
+  `children/index_options/docs/memos/2026-09-29-risk-neutral-cdf-architecture-comparison.md`.
+  Action journal A0611. Work is complete but not committed or pushed; owner did
+  not request publication in this turn. Preserve ignored canonical outputs and
+  all visibly suffixed superseded runs.
+
 ## Joint-MIO speed-ups landed; full folds 2-19 run is next (2026-09-29)
 
 - **Landed on main** (`cbe6152`, remote containment verified), on top of the
