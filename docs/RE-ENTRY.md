@@ -1,5 +1,24 @@
 # Re-entry
 
+## index_options: strategy alternatives beyond the condor researched (2026-09-30)
+
+- Research only (no code, no runs): A0611
+  `children/index_options/docs/research/strategy-alternatives/2026-09-30-survey.md`
+  (full evidence) and A0612 `.../2026-09-30-synthesis.md` (memo), both via
+  `dskit.journal research`.
+- **Core finding:** unconditional S&P option premium ~0 since ~2010
+  (Dew-Becker & Giglio 2025; CNDR 0.9%/yr 2007-2026, recomputed from Cboe) —
+  matches our condor's t = 1.32. Lift must come from side (put spread), timing
+  (VIX-curve inversion / VRP-sign gate), size, and CDF-scored payoff choice
+  (Faias & Santa-Clara style). Long convexity loses standalone; 0DTE fails net.
+- **Next:** step 1 of the memo — split existing condor P&L by wing, then a
+  put-credit-spread book; then the term-structure gate. RND extraction and a
+  generic payoff scorer need an ADR before code.
+- Checks: `tests/journal` 33 passed. Child `tests/test_configs.py` has 23
+  failures identical on unchanged base (stale exact manifest, grid status pin)
+  — pre-existing, not touched. No skeptic lenses run (docs-only slice); key
+  claims spot-checked against primary sources.
+
 ## Joint-MIO speed-ups landed; full folds 2-19 run is next (2026-09-29)
 
 - **Landed on main** (`cbe6152`, remote containment verified), on top of the
