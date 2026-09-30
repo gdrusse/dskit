@@ -1448,7 +1448,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         call = self._short_strike(legs, strikes, "call")
         if call is not None:
             charges["call"] = american_call_dividend(closes, call, day, settle_date, multiplier)
-        return sum(charges.values()), charges
+        return sum(charges.values(), 0.0), charges
 
     def _side_pnl(self, side, legs, strikes, quotes, settlement, charge):
         """One wing's P&L: its own credit, fees, settlement payoff and American charge."""
@@ -1639,14 +1639,31 @@ class DebitStructureQuoteBacktest(CondorQuoteBacktest):
     ``<book>_mean_credit_usd`` reports the mean of those negative numbers. A book refuses an entry
     as ``nonpositive_debit`` when the debit, the structure's maximum loss
     (:func:`~index_options.contracts.structure_max_loss`), is not positive, and, for a spread, as
-    ``debit_not_below_width`` when the per-share debit reaches the width (it could then only lose).
-    These replace the condor's two credit gates in :attr:`BOOK_REASONS`; the other reasons keep
+    ``debit_not_below_width`` when the debit in USD, FEES INCLUDED, reaches ``multiplier x`` the
+    narrowest width: the structure then cannot finish positive (at best it breaks even). These
+    replace the condor's two credit gates in :attr:`BOOK_REASONS`; the other reasons keep
     their meanings. The **model** book enters when ``E_P[pnl]`` (over the forecast draws, at the
     horizon scale, as for the condor) exceeds ``min_edge_usd``; **always** enters every time the
     debit gate passes; **implied** places the same strikes by the VIX-lognormal quantile at the
     chain's ATM iv (``z_p - s / 2``, the condor's drift) and needs an ATM iv (``no_atm_iv``).
-    Report ``kind`` and ``units`` name the structure. Role ``score``, forbidden for serving,
-    never decision-eligible: fills are the end-of-day touch at zero latency.
+    Role ``score``, forbidden for serving, never decision-eligible: fills are the end-of-day
+    touch at zero latency.
+
+    **The American charge is a conservative bound, and here it runs against the structure.** A
+    short leg is charged what the condor's is (ADR-0187: a put's carry from the first close below
+    its strike, a call's dividend from the first ex-date with a pre-ex close above it), and that
+    rule IGNORES the long leg by design. For a debit vertical the long leg protects the short
+    one (exercising it nets the width), so assignment can only help the holder: the charge is a
+    pure penalty, up to the short strike ``x (exp(carry_rate x tau) - 1) x multiplier`` for a put
+    (``tau`` the years to settlement), the dividends for a call. It biases a debit vertical's P&L,
+    and so the hedge study's verdict, AGAINST the sleeve; it is kept because a bound that ignores
+    a leg is the ADR-0187 rule and this node does not second-guess it. A straddle holds no short
+    leg and is charged ``0.0``.
+
+    **A member declares what it is.** Beside :meth:`_target_strikes` a member supplies
+    :attr:`LEGS`, :attr:`SIDES`, :attr:`REPORT_KIND` and :attr:`UNITS`, all abstract: a member that
+    leaves them out would inherit the condor's, print a condor-labelled report the ledger studies
+    would read with the condor's four legs, and fail late, so it refuses at construction instead.
 
     Parameters
     ----------
@@ -1660,11 +1677,14 @@ class DebitStructureQuoteBacktest(CondorQuoteBacktest):
 
     Examples
     --------
-    A member that puts a long straddle at the strike nearest the forward::
+    A member that puts a long straddle at the strike nearest the forward, declaring its own
+    legs, wings and report names::
 
         class NearestStrike(DebitStructureQuoteBacktest):
             LEGS = LONG_STRADDLE_LEGS
             SIDES = ("put", "call")
+            REPORT_KIND = "archived_quote_nearest_straddle_backtest"
+            UNITS = "USD per nearest-strike straddle, one contract per leg"
 
             def _target_strikes(self, listed, forward, scale, quantile):
                 strike = min(listed["put"].keys() & listed["call"].keys(),
@@ -1681,6 +1701,26 @@ class DebitStructureQuoteBacktest(CondorQuoteBacktest):
                       if knob not in ("short_q", "wing_z"))
     _PARAMS = tuple(sorted(_REQUIRED + tuple(CondorQuoteBacktest.DEFAULTS)
                            + _CondorBacktestBase.SHARED_OPTIONAL))
+
+    @property
+    @abstractmethod
+    def LEGS(self):
+        """The structure traded, ``(right, signed quantity)`` per leg in strike order: a member's own leg set, never the condor's."""
+
+    @property
+    @abstractmethod
+    def SIDES(self):
+        """The wings of that structure, its distinct rights in leg order (``_sides_of`` of :attr:`LEGS`)."""
+
+    @property
+    @abstractmethod
+    def REPORT_KIND(self):
+        """The report's ``kind``: what this member's output calls itself, never the condor's."""
+
+    @property
+    @abstractmethod
+    def UNITS(self):
+        """The report's ``units``, e.g. ``"USD per long straddle, one contract per leg"``."""
 
     @classmethod
     def _quantile_problems(cls, problems, params):
@@ -1712,10 +1752,11 @@ class DebitStructureQuoteBacktest(CondorQuoteBacktest):
 
     def _priced(self, legs, strikes, quotes):
         """Return ``(credit_usd, widths, reason)``: the signed cash at entry (a debit is negative), and why a book must skip the debit (or ``None``)."""
-        credit, per_share, widths = self._net_credit(legs, strikes, quotes)
-        if not structure_max_loss(legs, strikes, credit, self.params["multiplier"]) > 0:
+        multiplier = self.params["multiplier"]
+        credit, _per_share, widths = self._net_credit(legs, strikes, quotes)
+        if not structure_max_loss(legs, strikes, credit, multiplier) > 0:
             return credit, widths, "nonpositive_debit"
-        if widths and -per_share >= min(widths):
+        if widths and -credit >= multiplier * min(widths):      # the debit, fees in, cannot finish positive
             return credit, widths, "debit_not_below_width"
         return credit, widths, None
 
@@ -1779,13 +1820,13 @@ class LongStraddleQuoteBacktest(DebitStructureQuoteBacktest):
     def _target_strikes(self, listed, forward, scale, quantile):
         """Return the strike nearest ``forward`` (the lower on a tie) where both legs can be bought, inside the band; else ``no_quotable_strike``."""
         band = self.params["max_abs_log_moneyness"]
-        both = [k for k in listed["put"].keys() & listed["call"].keys()
+        both = [k for k in sorted(listed["put"].keys() & listed["call"].keys())
                 if k > 0 and abs(math.log(k / forward)) <= band
                 and self._quotable(listed["put"][k], "buy")
                 and self._quotable(listed["call"][k], "buy")]
         if not both:
             return None, "no_quotable_strike"
-        strike = min(both, key=lambda k: (abs(k - forward), k))
+        strike = min(both, key=lambda k: abs(k - forward))     # ascending: min keeps the lower of a tie
         return (strike, strike), None
 
 
@@ -1793,7 +1834,9 @@ class _LongVerticalQuoteBacktest(DebitStructureQuoteBacktest):
     """The strike rule the two long verticals share: a bought leg at a forecast quantile, a sold leg ``wing_z`` beyond it.
 
     A member supplies :attr:`LEGS` (two legs of one right, the long one nearer the money), its
-    report names and its default ``long_q`` (:attr:`DEFAULT_LONG_Q`). The bought leg targets
+    :attr:`SIDES`, report names (:attr:`REPORT_KIND`, :attr:`UNITS`) and its default ``long_q``
+    (:attr:`DEFAULT_LONG_Q`, which it also writes into its ``DEFAULTS`` and ``_PARAMS``); all are
+    abstract, so this class itself refuses construction. The bought leg targets
     ``forward x exp(s' Q(long_q))`` and the sold leg ``wing_z`` standardized units further from
     the money (up for calls, down for puts). Each target snaps OUTWARD, away from the money (up
     for calls, down for puts, the condor's direction), onto the nearest strike that is
@@ -1805,6 +1848,11 @@ class _LongVerticalQuoteBacktest(DebitStructureQuoteBacktest):
     """
 
     _REQUIRED = DebitStructureQuoteBacktest._REQUIRED + ("wing_z",)
+
+    @property
+    @abstractmethod
+    def DEFAULT_LONG_Q(self):
+        """The forecast quantile the long leg sits at when a document does not say: a member's own, written once (:attr:`DEFAULTS` reads it)."""
 
     @classmethod
     def _quantile_problems(cls, problems, params):
@@ -1854,9 +1902,10 @@ class LongCallSpreadQuoteBacktest(_LongVerticalQuoteBacktest):
     (default 0.5, about at the money) and the short call ``wing_z`` standardized units above,
     each snapped UP (outward) onto a strike quotable for its side, the short one strictly above
     the long (see :class:`_LongVerticalQuoteBacktest`). The call wing alone holds the short call,
-    so only the call dividend is charged, and ``side_pnl_usd`` has the one side ``"call"``. The
-    delta benchmark is positive. See :class:`DebitStructureQuoteBacktest` for the debit, the
-    books and the metrics.
+    so only the call dividend is charged (the ADR-0187 bound, which ignores the long call: a
+    penalty here, see :class:`DebitStructureQuoteBacktest`), and ``side_pnl_usd`` has the one
+    side ``"call"``. The delta benchmark is positive. See :class:`DebitStructureQuoteBacktest`
+    for the debit, the books and the metrics.
 
     Parameters
     ----------
@@ -1900,8 +1949,9 @@ class LongPutSpreadQuoteBacktest(_LongVerticalQuoteBacktest):
     0.35, below the median) and the short put ``wing_z`` standardized units below, each snapped
     DOWN (outward) onto a strike quotable for its side, the short one strictly below the long
     (see :class:`_LongVerticalQuoteBacktest`). Strikes are listed low to high, short put
-    first. Only the short put's carry is charged, and ``side_pnl_usd`` has the one side
-    ``"put"``. The delta benchmark is negative. See :class:`DebitStructureQuoteBacktest` for
+    first. Only the short put's carry is charged (the ADR-0187 bound, which ignores the long put:
+    a penalty here, see :class:`DebitStructureQuoteBacktest`), and ``side_pnl_usd`` has the one
+    side ``"put"``. The delta benchmark is negative. See :class:`DebitStructureQuoteBacktest` for
     the debit, the books and the metrics.
 
     Parameters

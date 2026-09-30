@@ -12,7 +12,9 @@ sessions), horizon scale s' = 0.05 (``reference_scale`` 0.05 x sqrt(5 / label_ho
 at 97 (``FLAT``). Quotes are (bid, ask); every strike not named is (0.5, 0.6) with size 10.
 """
 
+import inspect
 import math
+import textwrap
 from statistics import NormalDist
 
 import pytest
@@ -319,6 +321,25 @@ def test_the_long_call_snaps_up_to_a_buyable_strike_and_the_short_call_up_to_a_s
     assert entry["books"]["model"]["strikes"] == [106.0, 108.0]
 
 
+def test_the_long_leg_of_each_spread_is_judged_on_the_buy_side_alone():
+    # call spread, long leg at 106: a provider 0 x 0 is no market, never a free fill, so it moves
+    # up to 107 (the short call still finds 108); a bid SIZE of 0 with a positive ask and an ask
+    # size is buyable, so 106 stays
+    chain = _unquotable(_chain(ENTRY, EXPIRY), "call", 106.0, bid=0.0, ask=0.0)
+    _, _, entry = _worked("call_spread", CALL_DRAWS, chain)
+    assert entry["books"]["model"]["strikes"] == [107.0, 108.0]
+    chain = _unquotable(_chain(ENTRY, EXPIRY), "call", 106.0, bid_size=0)
+    _, _, entry = _worked("call_spread", CALL_DRAWS, chain)
+    assert entry["books"]["model"]["strikes"] == [106.0, 108.0]
+    # put spread, long leg at 95: the same, moving DOWN to 94 (listed low to high with the short 92)
+    chain = _unquotable(_put_spread_chain(), "put", 95.0, bid=0.0, ask=0.0)
+    _, _, entry = _worked("put_spread", PUT_DRAWS, chain)
+    assert entry["books"]["model"]["strikes"] == [92.0, 94.0]
+    chain = _unquotable(_put_spread_chain(), "put", 95.0, bid_size=0)
+    _, _, entry = _worked("put_spread", PUT_DRAWS, chain)
+    assert entry["books"]["model"]["strikes"] == [92.0, 95.0]
+
+
 def test_the_short_call_sits_strictly_above_a_long_call_that_snapped_past_its_target():
     # 106 and 107 cannot be bought, so the long call lands on 108: past the short's own target of
     # 107.79. The short must still lie ABOVE it, so it takes the next sellable strike, 109
@@ -451,6 +472,58 @@ def test_a_spread_whose_debit_reaches_its_width_can_only_lose_and_is_refused(mem
     assert entry["books"]["always"]["entered"] is True
 
 
+def _spread_quotes(member, long_ask, short_bid):
+    """``(draws, rows, width)``: the worked chain of a spread with its bought leg's ask and its sold leg's bid set."""
+    draws, chain, strikes, *_ = WORKED[member]
+    rows = chain()
+    right = "call" if member == "call_spread" else "put"
+    long_strike = strikes[0] if member == "call_spread" else strikes[1]
+    short_strike = strikes[1] if member == "call_spread" else strikes[0]
+    _unquotable(rows, right, long_strike, bid=long_ask / 2, ask=long_ask)
+    _unquotable(rows, right, short_strike, bid=short_bid, ask=short_bid + 0.25)
+    return draws, rows, strikes[1] - strikes[0]
+
+
+@pytest.mark.parametrize("member, long_ask", [("call_spread", 2.4), ("put_spread", 3.4)])
+def test_a_spread_whose_debit_with_fees_reaches_its_width_is_refused_though_the_quotes_alone_are_not(
+    member, long_ask
+):
+    # ADR-0197 A-M3, the reviewer's case: the call spread 106 / 108 (width 2), bought at 2.4 and sold
+    # at 0.405, is 1.995 a share: under the width. With two 0.65 fees it costs 199.5 + 1.3 = 200.8,
+    # above the 200 it can pay at best, so it can only lose. The put spread (width 3) is the same
+    # at 3.4 and 0.405: 299.5 + 1.3 = 300.8 against 300
+    draws, rows, width = _spread_quotes(member, long_ask, 0.405)
+    assert long_ask - 0.405 < width                                      # the quotes alone pass
+    metrics, _, entry = _worked(member, draws, rows)
+    for book in ("model", "always"):
+        assert entry["books"][book]["reason"] == "debit_not_below_width", book
+        assert entry["books"][book]["credit_usd"] == pytest.approx(-(width * 100 + 0.8)), book
+        assert entry["books"][book]["entered"] is False
+        assert metrics[f"{book}_n_skipped_debit_not_below_width"] == 1
+    # with the fees out it is a spread that can win: 199.5 < 200 (a cent a share below the width)
+    _, _, free = _worked(member, draws, rows, fee_per_leg=0.0, min_edge_usd=-1.0e6)
+    assert free["books"]["always"]["entered"] is True
+    assert free["books"]["always"]["credit_usd"] == pytest.approx(-(width * 100 - 0.5))
+
+
+@pytest.mark.parametrize("member", SPREADS)
+def test_the_width_boundary_is_the_debit_with_both_fees_exactly_equal_to_the_width(member):
+    # one share and dyadic quotes, so the boundary is exact: two 0.25 fees are 0.5 a share. Bought at
+    # width + 0.5 and sold at 1.0 the quotes say width - 0.5, the fees make it exactly the width: it
+    # could at best break even, and is refused. An eighth of a point less debit is width - 0.125 and enters
+    over = {"multiplier": 1, "fee_per_leg": 0.25}
+    _, _, width = _spread_quotes(member, 3.0, 1.0)
+    draws, rows, _ = _spread_quotes(member, width + 0.5, 1.0)
+    _, _, entry = _worked(member, draws, rows, **over)
+    for book in ("model", "always"):
+        assert entry["books"][book]["reason"] == "debit_not_below_width", book
+        assert entry["books"][book]["credit_usd"] == -width, book
+    draws, rows, _ = _spread_quotes(member, width + 0.5, 1.125)
+    _, _, entry = _worked(member, draws, rows, min_edge_usd=-1.0e6, **over)
+    assert entry["books"]["always"]["entered"] is True
+    assert entry["books"]["always"]["credit_usd"] == -(width - 0.125)
+
+
 def test_the_straddle_has_no_width_and_so_no_width_refusal():
     # a debit of any size is a straddle's; only a non-positive one could be refused, and two
     # positive asks make that impossible
@@ -524,6 +597,46 @@ def test_the_straddle_needs_both_the_put_and_the_call_buyable_at_its_strike():
     rows = _unquotable(_unquotable(_chain(ENTRY, EXPIRY), "put", 100.0, bid=0.0), "call", 100.0,
                        bid=0.0)
     assert _straddle_strike(rows)["strikes"] == [100.0, 100.0]
+
+
+def test_the_straddle_tie_goes_to_the_lower_strike_whatever_order_the_strikes_arrive_in():
+    # forward 127.5 is exactly 0.5 from 127 and from 128, and ten strikes (123 to 132) are listed: the
+    # lower one, whether the rows arrive low to high, high to low or shuffled. (A set of these floats
+    # iterates 128 before 127: a tie left to the set's order would take 128.)
+    rows = _chain(ENTRY, EXPIRY, close=127.5, strikes=range(123, 133))
+    shuffled = sorted(rows, key=lambda q: (q["strike"] * 7919) % 13)
+    for order in (rows, rows[::-1], shuffled):
+        cell = _straddle_strike(order, close=127.5)
+        assert cell["strikes"] == [127.0, 127.0]
+
+
+def test_a_straddle_strike_exactly_on_the_band_edge_is_inside_it():
+    # the band is ln(K / forward) <= max_abs_log_moneyness, inclusive: with 100's put out of the
+    # market the strike 110 sits exactly ln(110 / 100) out, and is taken at that band, not at one ulp less
+    edge = math.log(110.0 / 100.0)
+    rows = _unquotable(_chain(ENTRY, EXPIRY, strikes=[90, 100, 110]), "put", 100.0, ask_size=0)
+    assert _straddle_strike(rows, max_abs_log_moneyness=edge)["strikes"] == [110.0, 110.0]
+    just_inside = math.nextafter(edge, 0.0)
+    assert _straddle_strike(rows, max_abs_log_moneyness=just_inside)["reason"] == "no_quotable_strike"
+
+
+def test_a_listed_strike_of_zero_is_no_candidate_and_no_crash():
+    # log(0 / forward) is undefined: a zero strike is skipped before it is measured
+    rows = _chain(ENTRY, EXPIRY) + [dict(q, strike=0.0) for q in _chain(ENTRY, EXPIRY, strikes=[100])]
+    assert _straddle_strike(rows)["strikes"] == [100.0, 100.0]
+    only_zero = [dict(q, strike=0.0) for q in _chain(ENTRY, EXPIRY, strikes=[100])]
+    assert _straddle_strike(only_zero)["reason"] == "no_quotable_strike"
+
+
+def test_a_straddle_leg_with_no_market_at_all_is_not_bought_but_a_bid_size_of_zero_is_no_bar():
+    # the BUY side, for the put and for the call alike: a provider 0 x 0 is no market, never a free
+    # fill, so 100 is passed over for 99 (the lower of the two nearest). A quote with a positive ask
+    # and an ask size is buyable whatever the bid size, so 100 stays
+    for right in ("put", "call"):
+        rows = _unquotable(_chain(ENTRY, EXPIRY), right, 100.0, bid=0.0, ask=0.0)
+        assert _straddle_strike(rows)["strikes"] == [99.0, 99.0], right
+        rows = _unquotable(_chain(ENTRY, EXPIRY), right, 100.0, bid_size=0)
+        assert _straddle_strike(rows)["strikes"] == [100.0, 100.0], right
 
 
 def test_the_straddle_strike_must_lie_within_the_band_or_there_is_no_quotable_strike():
@@ -672,6 +785,15 @@ def test_the_straddle_holds_no_short_leg_and_is_charged_nothing_whatever_the_pat
         assert entry["books"][book]["american_charge_usd"] == 0.0
 
 
+def test_a_straddles_charge_and_its_metric_are_float_zero_like_every_other_members():
+    # sum() of nothing is int 0; the cell and the book's total are floats for every member
+    metrics, _, entry = _worked("straddle", WIDE_DRAWS, _straddle_chain())
+    for book in ("model", "always", "implied"):
+        assert type(entry["books"][book]["american_charge_usd"]) is float, book
+        assert type(metrics[f"{book}_american_charge_usd"]) is float, book
+        assert metrics[f"{book}_american_charge_usd"] == 0.0
+
+
 @pytest.mark.parametrize("member", WORKED)
 def test_every_member_refuses_a_session_without_a_dividend_amount_in_its_window(member):
     # the charge alone needs dividend data only for a short call, but the delta benchmark reads
@@ -797,25 +919,88 @@ def test_annotating_never_changes_the_trades(member):
 # -- the class family and its knobs ----------------------------------------------------------------------------
 
 
-def test_the_debit_backtest_is_abstract_over_one_hook_and_a_member_that_supplies_it_builds():
-    assert DebitStructureQuoteBacktest.__abstractmethods__ == frozenset({"_target_strikes"})
+#: What a debit member declares about itself, beside the one strike hook (ADR-0197 B-M6).
+MEMBER_DECLARATIONS = {"LEGS", "SIDES", "REPORT_KIND", "UNITS"}
+
+
+def test_the_debit_backtest_is_abstract_over_what_a_member_is_and_a_member_that_declares_it_builds():
+    # the strike hook AND the four class facts that name the structure: an incomplete member refuses
+    # at construction, it does not build a condor-labelled report (its REPORT_KIND and UNITS would
+    # be the condor's, and the ledger studies would read its two strikes with the condor's four legs)
+    assert DebitStructureQuoteBacktest.__abstractmethods__ == MEMBER_DECLARATIONS | {"_target_strikes"}
     with pytest.raises(TypeError, match="_target_strikes"):
         DebitStructureQuoteBacktest("bt", SPREAD_BASE)
 
-    class Incomplete(DebitStructureQuoteBacktest):
+    class NoKinds(DebitStructureQuoteBacktest):
         LEGS = contracts.LONG_STRADDLE_LEGS
+        SIDES = ("put", "call")
 
-    with pytest.raises(TypeError, match="_target_strikes"):
-        Incomplete("bt", STRADDLE_BASE)
-
-    class Complete(Incomplete):
         def _target_strikes(self, listed, forward, scale, quantile):
             return None, "no_quotable_strike"
 
-    assert Complete("bt", STRADDLE_BASE).key == "bt"
+    assert NoKinds.__abstractmethods__ == {"REPORT_KIND", "UNITS"}
+    with pytest.raises(TypeError, match="REPORT_KIND"):
+        NoKinds("bt", STRADDLE_BASE)
+
+    class OnlyTheLegs(DebitStructureQuoteBacktest):
+        LEGS = contracts.LONG_STRADDLE_LEGS
+
+    with pytest.raises(TypeError, match="_target_strikes"):
+        OnlyTheLegs("bt", STRADDLE_BASE)
+
+    class Complete(NoKinds):
+        REPORT_KIND = "archived_quote_test_straddle_backtest"
+        UNITS = "USD per test straddle"
+
+    node = Complete("bt", STRADDLE_BASE)
+    assert node.key == "bt" and not Complete.__abstractmethods__
+    assert Complete.REPORT_KIND != CondorQuoteBacktest.REPORT_KIND
+    assert Complete.UNITS != CondorQuoteBacktest.UNITS
     for member, (cls, *_rest) in MEMBERS.items():
         assert issubclass(cls, DebitStructureQuoteBacktest) and not cls.__abstractmethods__
         assert issubclass(DebitStructureQuoteBacktest, CondorQuoteBacktest), member
+        # each shipped member declares them ITSELF, never through the condor
+        assert MEMBER_DECLARATIONS <= set(vars(cls)), member
+
+
+def test_the_shared_vertical_rule_is_abstract_it_is_no_member_and_refuses_construction_cleanly():
+    # a bare _LongVerticalQuoteBacktest used to construct and then fail with a KeyError 'long_q'
+    # (nothing supplied its default); it names what it lacks, at construction, in a TypeError
+    vertical = nodes._LongVerticalQuoteBacktest
+    assert vertical.__abstractmethods__ == MEMBER_DECLARATIONS | {"DEFAULT_LONG_Q"}
+    with pytest.raises(TypeError, match="DEFAULT_LONG_Q"):
+        vertical("bt", SPREAD_BASE)
+
+    class NoDefault(vertical):
+        LEGS = contracts.LONG_CALL_SPREAD_LEGS
+        SIDES = ("call",)
+        REPORT_KIND = "archived_quote_test_call_spread_backtest"
+        UNITS = "USD per test call spread"
+
+    assert NoDefault.__abstractmethods__ == {"DEFAULT_LONG_Q"}
+    with pytest.raises(TypeError, match="DEFAULT_LONG_Q"):
+        NoDefault("bt", SPREAD_BASE)
+    for member in SPREADS:
+        assert not MEMBERS[member][0].__abstractmethods__
+
+
+def _docstring_example(cls):
+    """The code block of a class docstring's Examples section: what follows its ``::``, dedented."""
+    _, _, after = inspect.cleandoc(cls.__doc__).partition("Examples\n--------\n")
+    _, _, code = after.partition("::\n")
+    return textwrap.dedent(code)
+
+
+def test_the_documented_extension_builds_and_declares_its_own_report_kind_and_units():
+    # the class docstring's example, run as written: a member the abstract base accepts, whose report
+    # is named for the straddle it is and not for the condor it inherits from
+    namespace = dict(vars(nodes))
+    exec(_docstring_example(DebitStructureQuoteBacktest), namespace)
+    member, node = namespace["NearestStrike"], namespace["node"]
+    assert isinstance(node, DebitStructureQuoteBacktest) and not member.__abstractmethods__
+    assert node.REPORT_KIND != CondorQuoteBacktest.REPORT_KIND
+    assert node.UNITS != CondorQuoteBacktest.UNITS and "condor" not in node.UNITS
+    assert MEMBER_DECLARATIONS <= set(vars(member))
 
 
 @pytest.mark.parametrize("member", MEMBERS)

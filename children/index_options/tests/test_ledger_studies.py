@@ -580,6 +580,94 @@ def test_a_sleeve_that_adds_nothing_ties_the_smaller_core_and_does_not_earn_its_
     assert "does not earn its place" in got.verdict and "does not exceed" in got.verdict
 
 
+#: Twelve condor P&Ls (the reviewer's reproducer of ADR-0197 A-M1): negative on average, a tail of two.
+PROPORTIONAL_CORE = [-117.43, 123.86, -82.21, -147.48, -251.9, -98.6, 126.41, -396.86, 31.01, 51.27,
+                     87.4, 7.28]
+
+
+@pytest.mark.parametrize("factor", [0.3, 2.5, 0.5, -0.1])
+def test_a_sleeve_proportional_to_the_core_ties_the_smaller_core_whatever_the_float_noise(
+    tmp_path, capsys, factor
+):
+    # sleeve = factor x core on every date adds nothing: core+sleeve = (1 + factor) x core, its CVaR5
+    # is (1 + factor) times the core's, so k = 1 + factor and k x core IS core+sleeve. The two means
+    # are equal to the cent and differ only by float noise (1.4e-14 USD at 0.3 and 2.8e-14 at 2.5,
+    # where the raw comparison read "earns its place"): at the printed cent it is a tie
+    days = [f"2024-05-{d:02d}" for d in range(1, 13)]
+    core = _walk(tmp_path, "core", [_report(CONDOR, [
+        _entry(d, 80.0, _cell(SYMMETRIC_CONDOR, 100.0, p)) for d, p in zip(days, PROPORTIONAL_CORE)])])
+    sleeve = _walk(tmp_path, "sleeve", [_report(LONG_STRADDLE, [
+        _straddle(d, factor * p) for d, p in zip(days, PROPORTIONAL_CORE)])])
+    code, lines, _ = _run(capsys, "hedge", core, sleeve)
+    assert code == 0
+    got = _hedge(lines)
+    assert got.joined == 12 and got.k == pytest.approx(1 + factor, abs=5e-5)
+    assert got.table["core+sleeve"][1] == got.table["k*core"][1]        # the printed means agree
+    assert "does not earn its place" in got.verdict and "does not exceed" in got.verdict
+
+
+def test_the_verdict_compares_the_means_at_the_printed_cent(tmp_path, capsys):
+    # core [-100, +100] has CVaR5 -100 (one value in the tail). A sleeve [0, +s] leaves the tail alone,
+    # so k = 1 and k x core = core, mean 0.00: core+sleeve's mean is s / 2. A 0.2-cent edge (s =
+    # 0.004) prints 0.00 against 0.00 and is no edge; a 2-cent one (s = 0.04) prints 0.02 against 0.00
+    core = _walk(tmp_path, "core", [_report(CONDOR, [
+        _entry(A, 80.0, _cell(SYMMETRIC_CONDOR, 100.0, -100.0)),
+        _entry(B, 80.0, _cell(SYMMETRIC_CONDOR, 100.0, 100.0))])])
+    for label, top, earns, printed in (("sub-cent", 0.004, False, "0.00"),
+                                       ("cent", 0.04, True, "0.02")):
+        sleeve = _walk(tmp_path, f"sleeve-{label}", [_report(LONG_STRADDLE, [
+            _straddle(A, 0.0), _straddle(B, top)])])
+        code, lines, _ = _run(capsys, "hedge", core, sleeve)
+        got = _hedge(lines)
+        assert code == 0 and got.k == 1.0, label
+        assert got.table["core+sleeve"][1] == float(printed), label
+        assert ("earns its place" in got.verdict and "does not" not in got.verdict) is earns, label
+        assert f"core+sleeve mean {printed} " in got.verdict, label
+        assert "k*core mean 0.00" in got.verdict, label
+
+
+K_ABOVE_ONE = "note: k > 1: the matched core is LARGER than one contract"
+
+
+def _notes(got):
+    """The note lines among the facts."""
+    return [line for line in got.facts if line.startswith("note: ")]
+
+
+@pytest.mark.parametrize("factor", [0.1, 0.3])
+def test_a_k_above_one_says_the_matched_core_is_larger_than_one_contract(tmp_path, capsys, factor):
+    # a sleeve that makes the tail WORSE (here it is the core's own P&L, scaled up) needs a core of
+    # k > 1 contracts to match: the comparison is against a LARGER core, not the "smaller" one the
+    # study is named for, and the line right after k says so
+    days = [f"2024-05-{d:02d}" for d in range(1, 13)]
+    core = _walk(tmp_path, "core", [_report(CONDOR, [
+        _entry(d, 80.0, _cell(SYMMETRIC_CONDOR, 100.0, p)) for d, p in zip(days, PROPORTIONAL_CORE)])])
+    sleeve = _walk(tmp_path, "sleeve", [_report(LONG_STRADDLE, [
+        _straddle(d, factor * p) for d, p in zip(days, PROPORTIONAL_CORE)])])
+    _, lines, _ = _run(capsys, "hedge", core, sleeve)
+    got = _hedge(lines)
+    assert got.k == pytest.approx(1 + factor, abs=5e-5)
+    [note] = _notes(got)
+    assert note.startswith(K_ABOVE_ONE)
+    assert got.facts.index(note) == next(i for i, ln in enumerate(got.facts)
+                                         if ln.startswith("k: ")) + 1
+
+
+def test_a_k_of_one_or_less_has_no_note_a_sleeve_that_hedges_needs_a_smaller_core(
+    hedge_walks, tmp_path, capsys
+):
+    for sleeve in ("sleeve", "cheap"):                                # k = 3/7 and 1/7
+        _, lines, _ = _run(capsys, "hedge", hedge_walks["core"], hedge_walks[sleeve])
+        got = _hedge(lines)
+        assert got.k < 1 and _notes(got) == []
+    core = _walk(tmp_path, "core", [_report(CONDOR, CORE_ENTRIES[:2])])      # k = 1.0 exactly
+    sleeve = _walk(tmp_path, "sleeve", [_report(LONG_STRADDLE, [_straddle(A, 0.0),
+                                                                _straddle(B, 0.0)])])
+    _, lines, _ = _run(capsys, "hedge", core, sleeve)
+    got = _hedge(lines)
+    assert got.k == 1.0 and _notes(got) == []
+
+
 def test_k_times_the_core_has_the_combined_books_tail_by_construction(hedge_walks, capsys):
     # k = CVaR5(core+sleeve) / CVaR5(core): scaling the core by it gives the core+sleeve tail, so the
     # two printed CVaR5 cells agree and the comparison is at ONE tail risk
@@ -691,6 +779,21 @@ def test_a_sleeve_that_leaves_no_tail_loss_at_all_cannot_be_matched_by_scaling_t
                                                                 _straddle(B, 400.0)])])
     message = _refused(capsys, "hedge", core, sleeve)
     assert "core+sleeve" in message and "tail" in message
+
+
+def test_a_sleeve_that_leaves_a_combined_tail_of_exactly_zero_is_refused_not_scaled_to_zero(
+    tmp_path, capsys
+):
+    # core [100, -350], sleeve [0, +350]: core+sleeve [100, 0], CVaR5 exactly 0.0. "Not negative" is
+    # the refusal, so zero refuses like a positive tail: k would be 0 and k x core nothing at all
+    core = _walk(tmp_path, "core", [_report(CONDOR, [
+        _entry(A, 80.0, _cell(SYMMETRIC_CONDOR, 100.0, 100.0)),
+        _entry(B, 120.0, _cell(LOPSIDED_CONDOR, 150.0, -350.0))])])
+    sleeve = _walk(tmp_path, "sleeve", [_report(LONG_STRADDLE, [_straddle(A, 0.0),
+                                                                _straddle(B, 350.0)])])
+    message = _refused(capsys, "hedge", core, sleeve)
+    assert message.startswith("error: core+sleeve has no tail loss"), message
+    assert "CVaR5 is 0.00" in message
 
 
 def test_walks_with_no_shared_entry_date_are_not_a_hedge(tmp_path, capsys):

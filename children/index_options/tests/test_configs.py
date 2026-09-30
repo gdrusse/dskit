@@ -1407,6 +1407,150 @@ def test_the_debit_generators_refuse_a_document_they_cannot_derive_from_and_leav
         grid.long_straddle_document(grid.grid_document(base, iwm))
 
 
+#: The two clauses of the gate study's notes that say what a TRUE gate means for the structure traded,
+#: typed out here for the long straddle (ADR-0197 A-M4) and for the credit structures.
+STRADDLE_READS = {
+    "document": ("the gate was closed (gate true: for this long-volatility structure that is where "
+                 "the hypothesis TRADES, the reverse of the condor's reading), open (gate false: "
+                 "where it would have stood aside), or unknown"),
+    "closed": "_closed_t (gate true: where the long-volatility hypothesis TRADES)",
+    "open": "the same three _open_ (gate false: where it would have stood aside)",
+}
+CONDOR_READS = {
+    "document": "the gate was closed (it would have stood aside), open, or unknown",
+    "closed": "_closed_t (gate true: it would have stood aside)",
+    "open": "the same three _open_ (false)",
+}
+
+
+def test_a_straddle_documents_gate_notes_say_its_hypothesis_trades_where_the_gate_is_true(
+    child_root
+):
+    # ADR-0197 A-M4: the condor's notes say a closed gate (TRUE) "would have stood aside". For a long
+    # straddle the hypothesis (Johnson 2017) TAKES the trade where the curve is inverted, the ratio is
+    # in its top tail or the premium is non-positive: a reader following the condor's wording would
+    # draw the opposite inference from the same split
+    straddles = [f for f, kind in DEBIT_FILES.items() if kind == "straddle"]
+    assert len(straddles) == 6
+    for file in straddles:
+        doc = _grid(child_root, file)
+        notes, node_notes = doc["notes"], doc["pipeline"]["backtest"]["notes"]
+        assert STRADDLE_READS["document"] in notes, file
+        assert STRADDLE_READS["closed"] in node_notes and STRADDLE_READS["open"] in node_notes, file
+        for text in (notes, node_notes):                     # never the condor's clause about it
+            assert "closed (it would have stood aside)" not in text, file
+            assert "(gate true: it would have stood aside)" not in text, file
+            assert "what standing aside would have removed" not in text, file
+        assert "what trading only where the gate is true would have kept" in notes, file
+
+
+@pytest.mark.parametrize("name", ["{}-gate.json", "{}-put-spread.json", "{}-select.json",
+                                  "{}-empirical-select.json"])
+def test_the_credit_structures_keep_the_condors_reading_of_a_true_gate_word_for_word(child_root,
+                                                                                     name):
+    # the six straddle documents are the only ones whose wording changes: the files of the
+    # structures that stand aside where the gate is true are what they were
+    for cell in BACKTEST_CELLS:
+        doc = _grid(child_root, name.format(cell.name))
+        notes, node_notes = doc["notes"], doc["pipeline"]["backtest"]["notes"]
+        assert CONDOR_READS["document"] in notes, cell.name
+        assert CONDOR_READS["closed"] in node_notes and CONDOR_READS["open"] in node_notes
+        assert "TRADES" not in notes and "TRADES" not in node_notes, cell.name
+
+
+def test_the_gate_study_reading_is_a_parameter_the_straddle_generator_passes(child_root):
+    # the default reading is the condor's; the straddle's differs from it in those two notes and
+    # nowhere else (not a pipeline node, not a param, not the name)
+    source = _spy_condor(child_root)
+    stood_aside = grid.gate_study_document(source)
+    trades = grid.gate_study_document(source, reading=grid.TRADES_WHERE_TRUE)
+    assert stood_aside == grid.gate_study_document(source, reading=grid.STAND_ASIDE)
+    assert trades != stood_aside
+    assert trades["name"] == stood_aside["name"] and trades["pipeline"].keys() == \
+        stood_aside["pipeline"].keys()
+    for key, node in trades["pipeline"].items():
+        other = stood_aside["pipeline"][key]
+        assert {k: v for k, v in node.items() if k != "notes"} == \
+            {k: v for k, v in other.items() if k != "notes"}, key
+    assert CONDOR_READS["document"] in stood_aside["notes"]
+    assert STRADDLE_READS["document"] in trades["notes"]
+    assert STRADDLE_READS["closed"] in trades["pipeline"]["backtest"]["notes"]
+    assert {"STAND_ASIDE", "TRADES_WHERE_TRUE", "GateReading"} <= set(grid.__all__)
+
+
+#: The sizing-study clauses about what a weight does, typed out here (never read from the generator):
+#: the credit structures SELL volatility, the long straddle BUYS it.
+SELLER_SIZING = {
+    "inv_implied": "median VIX^2 over today's, sell less after high implied variance",
+    "implied": "VIX over its median, the opposite bet: sell more after high VIX",
+    "literature": ("The literature conflicts (cutting exposure after high volatility helps equity "
+                   "factors, and mostly not in real time; higher VIX has paid put writers), hence "
+                   "two directions."),
+}
+BUYER_SIZING = {
+    "inv_implied": ("median VIX^2 over today's, buy more contracts after low implied variance, "
+                    "when volatility is cheap, and fewer after high"),
+    "implied": "VIX over its median, the opposite bet: buy more after high VIX",
+    "literature": ("The literature on volatility-managed sizing concerns equity factors and sellers "
+                   "of volatility, not buyers, so neither direction is presumed: hence two "
+                   "directions, read for a buyer."),
+}
+
+
+def test_a_straddle_documents_sizing_notes_say_what_a_weight_means_for_a_buyer(child_root):
+    # ADR-0197: the sizing sentence was written for a seller ("sell less after high implied variance",
+    # "higher VIX has paid put writers"). A long straddle BUYS: the same weights shift how many
+    # contracts it buys, and the notes say so in the buyer's terms
+    straddles = [f for f, kind in DEBIT_FILES.items() if kind == "straddle"]
+    assert len(straddles) == 6
+    for file in straddles:
+        notes = _grid(child_root, file)["notes"]
+        for clause in BUYER_SIZING.values():
+            assert clause in notes, (file, clause)
+        for seller in SELLER_SIZING.values():
+            assert seller not in notes, (file, seller)
+        for phrase in ("sell less", "sell more", "put writers"):
+            assert phrase not in notes, (file, phrase)
+
+
+@pytest.mark.parametrize("name", ["{}-gate.json", "{}-put-spread.json", "{}-select.json",
+                                  "{}-empirical-select.json"])
+def test_the_credit_structures_keep_the_sellers_sizing_wording_word_for_word(child_root, name):
+    for cell in BACKTEST_CELLS:
+        notes = _grid(child_root, name.format(cell.name))["notes"]
+        for clause in SELLER_SIZING.values():
+            assert clause in notes, (cell.name, clause)
+        assert "buy more" not in notes, cell.name
+
+
+def test_the_sizing_study_reading_is_a_parameter_the_straddle_generator_passes(child_root):
+    source = grid.gate_study_document(_spy_condor(child_root))
+    sold = grid.sizing_study_document(source)
+    bought = grid.sizing_study_document(source, reading=grid.BUYS_VOLATILITY)
+    assert sold == grid.sizing_study_document(source, reading=grid.SELLS_VOLATILITY)
+    assert bought != sold and bought["name"] == sold["name"]
+    assert bought["pipeline"].keys() == sold["pipeline"].keys()
+    for key, node in bought["pipeline"].items():
+        other = sold["pipeline"][key]
+        assert {k: v for k, v in node.items() if k != "notes"} == \
+            {k: v for k, v in other.items() if k != "notes"}, key
+    for clause in SELLER_SIZING.values():
+        assert clause in sold["notes"] and clause not in bought["notes"]
+    for clause in BUYER_SIZING.values():
+        assert clause in bought["notes"] and clause not in sold["notes"]
+    assert {"SizingReading", "SELLS_VOLATILITY", "BUYS_VOLATILITY"} <= set(grid.__all__)
+
+
+@pytest.mark.parametrize("file, kind", list(DEBIT_FILES.items()), ids=list(DEBIT_FILES))
+def test_a_debit_documents_width_rule_counts_the_fees(child_root, file, kind):
+    # ADR-0197 A-M3: debit_not_below_width is the debit in USD, fees included, against multiplier x the
+    # width; "the debit per share reaches the width" (the pre-fee rule) is gone from every document
+    notes = _grid(child_root, file)["pipeline"]["backtest"]["notes"]
+    assert ("as debit_not_below_width when the debit, fees included, reaches multiplier x the width "
+            "(it cannot finish positive)") in notes, file
+    assert "debit per share reaches the width" not in notes, file
+
+
 def test_the_cli_validates_and_plans_one_document_of_each_debit_kind(child_root):
     import subprocess
     import sys

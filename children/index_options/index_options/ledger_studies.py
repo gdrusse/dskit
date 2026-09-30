@@ -44,9 +44,12 @@ spread), the same instrument and bucket. The two ledgers are joined on entry dat
 lacks is counted and printed, never joined. On the joined dates ``core+sleeve`` is the sum of the
 two P&Ls, and ``k = CVaR5(core+sleeve) / CVaR5(core)`` is the scale at which a SMALLER core has
 the combined book's tail: ``k*core`` has the same CVaR5 by construction. The sleeve earns its
-place only if the mean of ``core+sleeve`` exceeds that of ``k*core``: the verdict line says which.
-The study refuses, for want of a tail to match, a core whose CVaR5 is not negative and a combined
-book whose CVaR5 is not (k would not be a positive scale).
+place only if the mean of ``core+sleeve`` exceeds that of ``k*core``, both at the printed cent
+(two means that print alike are a tie: a sleeve proportional to the core adds nothing, and its
+float noise must not read as an edge): the verdict line says which. A ``k`` above 1 means the
+sleeve made the tail worse, so the matched core is LARGER than one contract: a ``note:`` line under
+``k`` says so. The study refuses, for want of a tail to match, a core whose CVaR5 is not negative and
+a combined book whose CVaR5 is not (k would not be a positive scale).
 
 The table has one row per series: ``n``, the mean P&L, its Newey-West ``t`` (lags 0: the
 backtests' own, so a float-noise-constant series reads 0.0), the lower-tail mean at the
@@ -89,6 +92,11 @@ CVAR_ALPHA = CondorQuoteBacktest.DEFAULTS["cvar_alpha"]
 _TAIL_PERCENT = round(100 * (1 - CVAR_ALPHA))
 #: The printed table's columns; the tail column is named for the share of the tail.
 COLUMNS = ("series", "n", "mean_pnl_usd", "t", f"cvar{_TAIL_PERCENT}_usd", "max_drawdown_usd")
+#: The decimals every printed money figure carries (the cent): the verdict compares at them.
+_MONEY_DECIMALS = 2
+#: The note printed under ``k`` when the matched core is larger than one contract.
+_K_ABOVE_ONE = ("note: k > 1: the matched core is LARGER than one contract (the sleeve worsened "
+                "the tail), so core+sleeve is compared with MORE than the core itself")
 #: The state a finished walk, and each of its folds, records in ``walkforward.json``.
 _RAN = "ran"
 #: Report kind -> the legs of its one structure; the selector's kind has none (its cells say).
@@ -417,9 +425,10 @@ class LedgerStudy(ABC):
     def _row(label, pnls):
         """Return one series' printed cells: its count and the four statistics of its P&L."""
         # the backtests' own mean and t (0.0 below two values or with no variance), tail and path
-        return [label, str(len(pnls)), f"{mean_or_zero(pnls):.2f}", f"{t_or_zero(pnls):.3f}",
-                f"{lower_tail_mean(pnls, CVAR_ALPHA) if pnls else 0.0:.2f}",
-                f"{max_drawdown(pnls):.2f}"]
+        cents = _MONEY_DECIMALS
+        return [label, str(len(pnls)), f"{mean_or_zero(pnls):.{cents}f}", f"{t_or_zero(pnls):.3f}",
+                f"{lower_tail_mean(pnls, CVAR_ALPHA) if pnls else 0.0:.{cents}f}",
+                f"{max_drawdown(pnls):.{cents}f}"]
 
     @staticmethod
     def _grid(rows):
@@ -554,7 +563,8 @@ class HedgeStudy(LedgerStudy):
 
     See the module docstring for the rule. The core walk and the sleeve walk are one
     instrument and one bucket; ``--book`` picks the model's (default) or the always book's
-    traded cells of both.
+    traded cells of both. The verdict compares the two means at the printed cent, and a ``k``
+    above 1 is flagged: the matched core is then larger than one contract.
 
     Examples
     --------
@@ -616,14 +626,20 @@ class HedgeStudy(LedgerStudy):
         return f"only in {label} ({len(days)}): {', '.join(days) if days else 'none'}"
 
     @staticmethod
+    def _k_note(k):
+        """Return the lines that follow ``k``: the note when the matched core is larger than one contract, else none."""
+        return [_K_ABOVE_ONE] if k > 1 else []
+
+    @staticmethod
     def _verdict(combined, scaled):
-        """Return the verdict line: the sleeve earns its place only if core+sleeve's mean exceeds k*core's."""
-        together, smaller = mean_or_zero(combined), mean_or_zero(scaled)
+        """Return the verdict line: the sleeve earns its place only if core+sleeve's mean exceeds k*core's, both at the printed cent (a tie is float noise, never an edge)."""
+        together = round(mean_or_zero(combined), _MONEY_DECIMALS)
+        smaller = round(mean_or_zero(scaled), _MONEY_DECIMALS)
+        shown = f"core+sleeve mean {together:.{_MONEY_DECIMALS}f}"
+        against = f"k*core mean {smaller:.{_MONEY_DECIMALS}f}"
         if together > smaller:
-            return (f"verdict: core+sleeve mean {together:.2f} exceeds k*core mean "
-                    f"{smaller:.2f}: the sleeve earns its place")
-        return (f"verdict: core+sleeve mean {together:.2f} does not exceed k*core mean "
-                f"{smaller:.2f}: the sleeve does not earn its place")
+            return f"verdict: {shown} exceeds {against}: the sleeve earns its place"
+        return f"verdict: {shown} does not exceed {against}: the sleeve does not earn its place"
 
     def report(self, args):
         """Return the joined-date facts, the four-row table and the verdict line.
@@ -662,7 +678,8 @@ class HedgeStudy(LedgerStudy):
             f"joined: {len(joined)} entry dates on which both walks entered the {args.book} book",
             self._only("core", sorted(core_cells.keys() - sleeve_cells.keys())),
             self._only("sleeve", sorted(sleeve_cells.keys() - core_cells.keys())),
-            f"k: {k:.4f} = CVaR{_TAIL_PERCENT}(core+sleeve) / CVaR{_TAIL_PERCENT}(core)"])
+            f"k: {k:.4f} = CVaR{_TAIL_PERCENT}(core+sleeve) / CVaR{_TAIL_PERCENT}(core)",
+            *self._k_note(k)])
         table = self.series_table([("core+sleeve", combined), ("k*core", scaled),
                                    ("core", core_pnl), ("sleeve", sleeve_pnl)])
         return "\n\n".join([facts, table, self._verdict(combined, scaled)])

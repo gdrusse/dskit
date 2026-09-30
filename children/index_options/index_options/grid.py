@@ -66,6 +66,7 @@ from .nodes import VolRegimeSignals, VolSizingWeights
 
 __all__ = [
     "BUCKETS",
+    "BUYS_VOLATILITY",
     "CARRY_RATE",
     "CELLS",
     "GRID_RUNG",
@@ -82,12 +83,17 @@ __all__ = [
     "SELECT_SHORT_Q",
     "SELECT_STRUCTURES",
     "SELECT_WING_Z",
+    "SELLS_VOLATILITY",
+    "STAND_ASIDE",
     "TERM_SOURCE",
     "TERM_SYMBOL",
+    "TRADES_WHERE_TRUE",
     "UNDERLYINGS",
     "ZOO_RUNGS",
     "Bucket",
     "Cell",
+    "GateReading",
+    "SizingReading",
     "Underlying",
     "cell_files",
     "gate_study_document",
@@ -567,7 +573,62 @@ def put_spread_document(base, cell):
     return doc
 
 
-def gate_study_document(doc, name_suffix="-gate"):
+class GateReading(NamedTuple):
+    """How a gate-study document's notes read a TRUE gate: what the ``closed`` and ``open`` splits mean for the structure traded.
+
+    The metrics are named for the gate (``_closed_`` is gate true, ``_open_`` gate false) whatever
+    the structure, but what a true gate MEANS is the structure's: a credit structure stands aside
+    where it is true (:data:`STAND_ASIDE`), a long-volatility structure trades there
+    (:data:`TRADES_WHERE_TRUE`). A document whose notes read it the other structure's way would
+    lead its reader to the opposite inference from the same split.
+
+    Parameters
+    ----------
+    document : str
+        The clause of the document's notes that follows ``reports the traded P&L where``: what
+        closed, open and unknown are and what the metrics do and do not say.
+    closed : str
+        What follows ``_closed_t`` in the backtest's notes: the parenthesis on the closed split.
+    open : str
+        What follows ``the same three _open_`` in the backtest's notes: the parenthesis on the open split.
+
+    Examples
+    --------
+    A reading for a structure that trades where the gate is true, as :data:`TRADES_WHERE_TRUE` is::
+
+        reading = GateReading(
+            document="the gate was closed (gate true: it trades), open (it stands aside), or "
+                     "unknown: no entry is skipped.",
+            closed="(gate true: it trades)", open="(gate false: it stands aside)")
+        document = gate_study_document(doc, reading=reading)
+    """
+
+    document: str
+    closed: str
+    open: str
+
+
+#: The credit structures' reading (the condor, the put spread, the selector): a true gate is where
+#: the strategy would have stood aside.
+STAND_ASIDE = GateReading(
+    document=("the gate was closed (it would have stood aside), open, or unknown: no entry is "
+              "skipped, so the metrics say what standing aside would have removed, not what a "
+              "gated strategy earns."),
+    closed="(gate true: it would have stood aside)",
+    open="(false)")
+#: The long-volatility structures' reading (the long straddle): the hypothesis TRADES where the gate
+#: is true (an inverted curve, a top-tail ratio, a non-positive premium).
+TRADES_WHERE_TRUE = GateReading(
+    document=("the gate was closed (gate true: for this long-volatility structure that is where the "
+              "hypothesis TRADES, the reverse of the condor's reading), open (gate false: where it "
+              "would have stood aside), or unknown: no entry is skipped, so the metrics say what "
+              "trading only where the gate is true would have kept, not what a gated strategy "
+              "earns."),
+    closed="(gate true: where the long-volatility hypothesis TRADES)",
+    open="(gate false: where it would have stood aside)")
+
+
+def gate_study_document(doc, name_suffix="-gate", reading=STAND_ASIDE):
     """Return a backtest document with the ADR-0194 entry-gate study on top.
 
     Parameters
@@ -581,6 +642,11 @@ def gate_study_document(doc, name_suffix="-gate"):
         Appended to the document's name: ``"-gate"`` for a document whose file
         is the study alone, ``""`` where the caller's own file name already
         names the document (the put-spread and select documents).
+    reading : GateReading
+        What a true gate means for the structure the backtest trades, for the
+        two sentences of notes about the ``closed`` and ``open`` splits:
+        :data:`STAND_ASIDE` (the default: the credit structures) or
+        :data:`TRADES_WHERE_TRUE` (the long straddle). Only those notes differ.
 
     Returns
     -------
@@ -635,9 +701,8 @@ def gate_study_document(doc, name_suffix="-gate"):
         f"gates: the curve inverted (ratio >= {defaults['inverted_at']}), the ratio in its own "
         f"top tail (percentile >= {defaults['high_ratio_pct']}), a non-positive premium, and "
         "any of them; an input that is missing gives null, never false. The backtest reads "
-        "those rows and, per book and gate, reports the traded P&L where the gate was closed "
-        "(it would have stood aside), open, or unknown: no entry is skipped, so the metrics "
-        "say what standing aside would have removed, not what a gated strategy earns. The "
+        "those rows and, per book and gate, reports the traded P&L where "
+        f"{reading.document} The "
         "lag is one session, so the 16:15 ET VIX close never informs a 16:00 ET entry. Needs "
         f"the store to hold what the description above needs plus {TERM_SOURCE} "
         f"({TERM_SYMBOL}; register and backfill configs/source-cboe-index-wide.json).")
@@ -672,13 +737,64 @@ def gate_study_document(doc, name_suffix="-gate"):
     backtest["notes"] += (
         " ADR-0194: the forecast rows come from signals, and gate_fields names its four "
         "gates. Each ledger entry records the gates read from its entry row and every book "
-        "reports <book>_<gate>_closed_n / _closed_mean_pnl_usd / _closed_t (gate true: it "
-        "would have stood aside), the same three _open_ (false) and _unknown_n (null) over "
+        "reports <book>_<gate>_closed_n / _closed_mean_pnl_usd / _closed_t "
+        f"{reading.closed}, the same three _open_ {reading.open} and _unknown_n (null) over "
         "its traded cells. Annotation only: the trades are unchanged.")
     return out
 
 
-def sizing_study_document(doc):
+class SizingReading(NamedTuple):
+    """How a sizing-study document's notes read what a weight does for the structure traded.
+
+    The three weights are the same numbers for every structure
+    (:class:`~index_options.nodes.VolSizingWeights`), but what a larger weight MEANS is the
+    structure's: a credit structure sells volatility (:data:`SELLS_VOLATILITY`), a long
+    straddle buys it (:data:`BUYS_VOLATILITY`), and notes written for the seller would tell a
+    buyer's reader the opposite of what the weights do for it.
+
+    Parameters
+    ----------
+    inv_implied : str
+        The parenthesis on ``size_inv_implied_var``: what its weight does after high implied variance.
+    implied : str
+        The parenthesis on ``size_implied``: what its weight does after high VIX.
+    literature : str
+        The closing sentence: what the literature says and why two directions are tested.
+
+    Examples
+    --------
+    A reading for a structure that buys volatility, as :data:`BUYS_VOLATILITY` is::
+
+        reading = SizingReading(
+            inv_implied="median VIX^2 over today's, buy more when volatility is cheap",
+            implied="VIX over its median, the opposite bet: buy more when it is dear",
+            literature="Neither direction is presumed, hence two directions.")
+        document = sizing_study_document(gated, reading=reading)
+    """
+
+    inv_implied: str
+    implied: str
+    literature: str
+
+
+#: The credit structures' reading (the condor, the put spread, the selector): they SELL volatility.
+SELLS_VOLATILITY = SizingReading(
+    inv_implied="median VIX^2 over today's, sell less after high implied variance",
+    implied="VIX over its median, the opposite bet: sell more after high VIX",
+    literature=("The literature conflicts (cutting exposure after high volatility helps equity "
+                "factors, and mostly not in real time; higher VIX has paid put writers), hence "
+                "two directions."))
+#: The long straddle's reading: it BUYS volatility, so a weight is how many contracts it buys.
+BUYS_VOLATILITY = SizingReading(
+    inv_implied=("median VIX^2 over today's, buy more contracts after low implied variance, "
+                 "when volatility is cheap, and fewer after high"),
+    implied="VIX over its median, the opposite bet: buy more after high VIX",
+    literature=("The literature on volatility-managed sizing concerns equity factors and sellers "
+                "of volatility, not buyers, so neither direction is presumed: hence two "
+                "directions, read for a buyer."))
+
+
+def sizing_study_document(doc, reading=SELLS_VOLATILITY):
     """Return a gate-study document with the ADR-0196 volatility-scaled sizing study on top.
 
     Parameters
@@ -688,6 +804,11 @@ def sizing_study_document(doc):
         output, directly or through :func:`select_document`): a ``signals`` node
         and a backtest reading ``$signals.rows`` that declares no
         ``size_fields``. It is copied, never changed.
+    reading : SizingReading
+        What a weight does for the structure the backtest trades, for the clauses of the
+        notes about ``size_inv_implied_var``, ``size_implied`` and the literature:
+        :data:`SELLS_VOLATILITY` (the default: the credit structures) or
+        :data:`BUYS_VOLATILITY` (the long straddle). Only those notes differ.
 
     Returns
     -------
@@ -731,17 +852,15 @@ def sizing_study_document(doc):
         "sizing_study_document to the document described above: the same forecasts, chain and "
         "trades, plus one node. sizing (index_options.nodes.VolSizingWeights) gives every "
         "forecast row three weights from the PREVIOUS session's VIX and realized vol against "
-        "the expanding median of the sessions before it: size_inv_implied_var (median VIX^2 "
-        "over today's, sell less after high implied variance), size_inv_realized_var (the same "
-        "on realized variance) and size_implied (VIX over its median, the opposite bet: sell "
-        f"more after high VIX), each clipped to [{defaults['min_weight']}, "
+        "the expanding median of the sessions before it: "
+        f"size_inv_implied_var ({reading.inv_implied}), size_inv_realized_var (the same "
+        f"on realized variance) and size_implied ({reading.implied}), each clipped to "
+        f"[{defaults['min_weight']}, "
         f"{defaults['max_weight']}] and null before {defaults['min_history']} earlier sessions "
         "or on a missing input. The backtest reads those rows and, per book and weight, reports "
         "the traded P&L as if each trade had been taken at that many contracts (total, per unit "
         "of weight, t, CVaR, drawdown): no entry is skipped and no trade changes, so the "
-        "metrics say what sizing would have done, not what a sized strategy earns. The "
-        "literature conflicts (cutting exposure after high volatility helps equity factors, "
-        "and mostly not in real time; higher VIX has paid put writers), hence two directions.")
+        f"metrics say what sizing would have done, not what a sized strategy earns. {reading.literature}")
     ordered = {}
     for key, node in out["pipeline"].items():
         ordered[key] = node
@@ -894,7 +1013,8 @@ _DEBIT_NODE_COMMON = (
     "each sold leg at the bid, plus two legs of fees; the cell's credit_usd is negative and "
     "<book>_mean_credit_usd is the mean of those negative numbers. A book refuses it as "
     "nonpositive_debit when the maximum loss is not positive and, for a spread, as "
-    "debit_not_below_width when the debit per share reaches the width. The model book enters "
+    "debit_not_below_width when the debit, fees included, reaches multiplier x the width "
+    "(it cannot finish positive). The model book enters "
     "when E[P&L] under the forecast draws clears min_edge_usd, the always book every time, the "
     "implied book at the VIX-lognormal quantile and the chain's ATM iv. Fills are the "
     "end-of-day touch at zero latency, so absolute P&L is indicative. Never decision-eligible.")
@@ -1159,7 +1279,8 @@ def cell_files(configs_dir, cell):
         top and ending its notes with the one run sentence for its own file.
         ADR-0197 adds, for a backtest cell in :data:`LONG_STRADDLE_BUCKETS`, its
         :func:`long_straddle_document` with the gate and sizing studies on top like those
-        four, and for one in :data:`LONG_SPREAD_BUCKETS` its plain
+        four (its notes read them for a buyer: :data:`TRADES_WHERE_TRUE`,
+        :data:`BUYS_VOLATILITY`), and for one in :data:`LONG_SPREAD_BUCKETS` its plain
         :func:`long_call_spread_document` and :func:`long_put_spread_document`, each
         ending its notes with its own run sentence.
     """
@@ -1182,11 +1303,16 @@ def cell_files(configs_dir, cell):
             **{_select_file(cell, rung): select_document(out[f"grid/{_cell_file(cell, rung)}"])
                for rung in _SELECT_RUNGS}}
         cell_document = out[f"grid/{_cell_file(cell, GRID_RUNG)}"]
+        buyers = {}
         if cell.bucket.label in LONG_STRADDLE_BUCKETS:
-            studied[_long_straddle_file(cell)] = gate_study_document(
-                long_straddle_document(cell_document), name_suffix="")
+            file = _long_straddle_file(cell)
+            studied[file] = gate_study_document(
+                long_straddle_document(cell_document), name_suffix="",
+                reading=TRADES_WHERE_TRUE)
+            buyers[file] = BUYS_VOLATILITY
         for file, document in studied.items():
-            out[f"grid/{file}"] = _finished(sizing_study_document(document), file)
+            out[f"grid/{file}"] = _finished(
+                sizing_study_document(document, reading=buyers.get(file, SELLS_VOLATILITY)), file)
         if cell.bucket.label in LONG_SPREAD_BUCKETS:
             out[f"grid/{_long_call_spread_file(cell)}"] = _finished(
                 long_call_spread_document(cell_document), _long_call_spread_file(cell))

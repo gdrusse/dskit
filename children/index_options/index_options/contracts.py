@@ -264,6 +264,8 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier):
     """
     if not legs:
         raise ValueError("a structure needs at least one leg")
+    if len(strikes) != len(legs):
+        raise ValueError(f"strikes must give one per leg: {len(legs)} legs, got {strikes!r}")
     _integer(multiplier, "multiplier", 1)
     if not _amount(credit_usd):
         raise ValueError(f"credit_usd must be a finite number, got {credit_usd!r}")
@@ -942,7 +944,7 @@ class DefinedRiskCondor:
         """
         with localcontext() as context:
             self._precision(context)
-            credit, widths = self._credit()
+            credit, _widths = self._credit()
             multiplier = self.contracts[0].data["multiplier"]
             scale = self.count * multiplier
             level = _decimal(self.settlement.data["value"], "value")
@@ -967,7 +969,9 @@ class DefinedRiskCondor:
             entry = scale * credit
             terminal = sum(Decimal(leg["settlement_cashflow_usd"]) for leg in legs)
             gross = entry + terminal
-            loss = scale * (max(widths) - credit)
+            loss = structure_max_loss(
+                CONDOR_LEGS, [_decimal(c.data["strike"], "strike") for c in self.contracts],
+                entry, scale)
             return {
                 "kind": "synthetic_ex_post_diagnostic", "decision_eligible": False,
                 "corpus_id": self.contracts[0].data["corpus_id"], "currency": "USD",

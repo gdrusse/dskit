@@ -310,21 +310,32 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   first and last entry date); and, labelled NOT comparable with the first, the
   same rows over the UNION of the dates (a series may then cover dates another
   lacks, as SPY's 2008-2010 against QQQ's start). It refuses, with one `error:`
-  line and exit 1, a walk whose summary or any fold is not `ran`, unless every
-  fold declares the same `dte_min` / `dte_max`, every report is an archived-quote
-  backtest and every cell can be scored; it writes nothing.
+  line and exit 1, a walk whose summary or any fold is not `ran`, a walk whose
+  folds do not all declare the same `dte_min` / `dte_max`, a report that is not
+  an archived-quote backtest and any cell that cannot be scored; it writes
+  nothing.
 - Debit structures (ADR-0197, offline, never decision-eligible): the
   positive-convexity side the credit structures sell.
-  `DebitStructureQuoteBacktest` (abstract over one hook, `_target_strikes`)
+  `DebitStructureQuoteBacktest` (abstract over `_target_strikes` and the member's
+  own `LEGS`, `SIDES`, `REPORT_KIND` and `UNITS`: a member that leaves one out
+  refuses at construction, it never prints a condor-labelled report)
   subclasses `CondorQuoteBacktest`, so the walk, settlement, side split, delta
   benchmark, gates and sizing are the condor's, and prices the DEBIT: long legs at
   the ask, short legs at the bid, plus fees. `credit_usd` stays the signed cash at
   entry (NEGATIVE for a debit, so `<book>_mean_credit_usd` is negative) and P&L
   is the condor's formula. A book refuses `nonpositive_debit` (the maximum loss,
   `contracts.structure_max_loss`, is not positive) and, for a spread,
-  `debit_not_below_width` (the per-share debit reaches the width); `model` enters
+  `debit_not_below_width` (the debit in USD, FEES INCLUDED, reaches `multiplier`
+  x the width: it cannot finish positive); `model` enters
   when `E_P[pnl]` > `min_edge_usd`, `always` every time, `implied` by the
-  VIX-lognormal quantile at the chain's ATM iv. Members (each with its own
+  VIX-lognormal quantile at the chain's ATM iv. **The American charge** on a debit
+  vertical's short leg is the inherited ADR-0187 conservative bound, which
+  ignores the protecting long leg (assignment can only help the holder of a
+  debit vertical): it is a pure penalty there, up to the short strike x
+  (exp(`carry_rate` x the time to settlement) - 1) x `multiplier` for a put (the
+  dividends for a call), so it biases every debit vertical's P&L, and the hedge
+  verdict, AGAINST the sleeve. A straddle holds no short leg and pays `0.0`.
+  Members (each with its own
   default-deny knobs; none takes `short_q`): `LongStraddleQuoteBacktest` (the one
   strike nearest the close, within `max_abs_log_moneyness`, where the put AND the
   call can be bought, the lower on a tie; no quantile knob, so all three books
@@ -339,8 +350,13 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   none) and the delta benchmark is ~0 (straddle), positive (call spread) and
   negative (put spread). Run `python -m dskit.pipeline walkforward
   configs/grid/spy-2-3-long-straddle.json --asof <today>` (the straddle on buckets
-  1, 2-3 and 5, with the ADR-0194 gate and ADR-0196 sizing studies: it pays when
-  the VIX curve is inverted) and `configs/grid/spy-30-45-long-call-spread.json` /
+  1, 2-3 and 5, with the ADR-0194 gate and ADR-0196 sizing studies: the
+  hypothesis under test, Johnson 2017, is that it pays when the VIX curve is
+  inverted, at short horizons; it is not a finding here. Its notes read a TRUE
+  gate as where that hypothesis TRADES, so `_closed_` is the split it would have
+  taken and `_open_` the split it would have stood aside from, the reverse of the
+  credit structures'; its sizing notes say what a weight means for a buyer, not
+  a seller) and `configs/grid/spy-30-45-long-call-spread.json` /
   `-long-put-spread.json` (`long_q` 0.5 / 0.35, `wing_z` 0.65; plain); QQQ twins.
 - Hedge-sleeve study (ADR-0197, read-only, never decision-eligible): does a
   bought-convexity SLEEVE earn its place beside a CORE book at the same tail
@@ -352,7 +368,10 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   the combined book's tail. **Reading it:** the table lists `core+sleeve`,
   `k*core` (the same CVaR5 by construction), `core` and `sleeve` over the joined
   dates (n, mean, t, CVaR5, drawdown); the verdict line says the sleeve earns its
-  place only if core+sleeve's mean exceeds k*core's. A core with no tail loss, or
+  place only if core+sleeve's mean exceeds k*core's, both at the printed cent (a
+  sleeve proportional to the core ties, however its float noise falls). A `k`
+  above 1 means the sleeve made the tail worse and the matched core is LARGER
+  than one contract: a `note:` line says so. A core with no tail loss, or
   a combined book with none (k would not be a positive scale), refuses with one
   `error:` line.
 

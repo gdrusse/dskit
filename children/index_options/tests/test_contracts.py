@@ -69,6 +69,42 @@ def test_unequal_wings_use_wider_worst_loss(rows, level, net):
     assert report["max_loss_after_fees_usd"] == "748"
 
 
+def test_the_reported_max_loss_is_the_one_owners_not_a_restated_rule(rows, monkeypatch):
+    # ADR-0196 B-F2 made structure_max_loss the ONE maximum-loss rule; the exact-Decimal cashflow
+    # report must CALL it (a stub's answer comes through) on the condor's legs, the strikes in leg
+    # order, the entry cash in USD and the whole position's shares, never restate the widest wing
+    calls = []
+
+    def stub(legs, strikes, credit_usd, multiplier):
+        calls.append((tuple(legs), tuple(strikes), credit_usd, multiplier))
+        return Decimal("12345")
+
+    monkeypatch.setattr("index_options.contracts.structure_max_loss", stub)
+    report = position(rows, count=2, fees_usd="8").evaluate()
+    assert report["max_loss_before_fees_usd"] == "12345"
+    assert report["max_loss_after_fees_usd"] == "12353"
+    assert calls == [(contracts.CONDOR_LEGS,
+                      tuple(Decimal(c["strike"]) for c in rows["contracts"]),
+                      Decimal(report["entry_cashflow_usd"]), 2 * rows["contracts"][0]["multiplier"])]
+    assert isinstance(calls[0][2], Decimal)
+
+
+@pytest.mark.parametrize("call_strike, count", [("525", 1), ("525", 3), ("527.25", 2), ("530.5", 1)])
+def test_the_reported_max_loss_is_exactly_the_widest_wing_less_the_credit_in_decimals(
+    rows, call_strike, count
+):
+    # the exact arithmetic survives the move to the owner: scale x (widest width - credit), to the
+    # last digit, on an unequal wing and on a strike that is not whole
+    rows["contracts"][3]["strike"] = call_strike
+    report = position(rows, count=count, fees_usd="8").evaluate()
+    strikes = [Decimal(c["strike"]) for c in rows["contracts"]]
+    widest = max(strikes[1] - strikes[0], strikes[3] - strikes[2])
+    scale = count * rows["contracts"][0]["multiplier"]
+    want = scale * (widest - Decimal(report["entry_credit_points"]))
+    assert Decimal(report["max_loss_before_fees_usd"]) == want
+    assert Decimal(report["max_loss_after_fees_usd"]) == want + 8
+
+
 @pytest.mark.parametrize("field, value", [
     ("multiplier", 0), ("multiplier", -1), ("multiplier", True), ("multiplier", 100.0),
     ("exercise_style", "american"), ("settlement_type", "physical"),
@@ -878,6 +914,19 @@ def test_structure_max_loss_finds_the_worst_kink_not_just_the_ends():
     assert contracts.structure_max_loss(short_fly, (90.0, 100.0, 110.0), 200.0, 100) == 800.0
 
 
+def test_structure_max_loss_finds_a_worst_point_at_the_lowest_strike():
+    # a put backspread (short one 100 put, long two 90 puts) pays 2 x 90 - 100 = +80 a share at zero,
+    # 0 from 100 up, and LESS at 90 than anywhere else: -(100 - 90) = -10 a share, the lowest strike
+    # and neither end. 1000 at 100 shares (credit 0); the kink set must hold EVERY strike
+    backspread = (("put", 2), ("put", -1))
+    assert contracts.structure_max_loss(backspread, (90.0, 100.0), 0.0, 100) == 1000.0
+    # the credit shifts every point equally
+    assert contracts.structure_max_loss(backspread, (90.0, 100.0), 250.0, 100) == 750.0
+    # the call backspread (short one 100 call, long two 110 calls) is worst at its HIGHEST strike
+    call_backspread = (("call", -1), ("call", 2))
+    assert contracts.structure_max_loss(call_backspread, (100.0, 110.0), 0.0, 100) == 1000.0
+
+
 @pytest.mark.parametrize("args", [
     ((), (), 1.0, 100),                                                # no legs at all
     (LONG_STRADDLE, (100.0,), -1.0, 100),                              # strikes do not match legs
@@ -888,6 +937,11 @@ def test_structure_max_loss_finds_the_worst_kink_not_just_the_ends():
     (LONG_STRADDLE, (100.0, 100.0), "1", 100),
     (LONG_STRADDLE, (0.0, 100.0), -1.0, 100),                          # a strike must be positive
     (LONG_STRADDLE, (100.0, -5.0), -1.0, 100),
+    # the length check comes BEFORE the infinite-loss early return: a naked short call is unbounded
+    # only when its strikes match its legs, and a mismatch is an error either way
+    ((("call", -1),), (), 50.0, 100),
+    ((("call", -1),), (100.0, 105.0), 1.0, 100),
+    ((("call", -1), ("call", -1)), (100.0,), 1.0, 100),
 ])
 def test_structure_max_loss_refuses_what_it_cannot_value(args):
     with pytest.raises(ValueError):
