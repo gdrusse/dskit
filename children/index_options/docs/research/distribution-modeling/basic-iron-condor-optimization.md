@@ -122,3 +122,29 @@ by enumerating an allowed capital budget, or by a separately validated
 fractional/mixed-integer formulation. Tail calibration of $F_t$, executable
 prices, dividends, assignment, fees, and prospective shadow validation remain
 deployment gates.
+
+## Boundary of the basic model
+
+This is the core selection problem only when the system must choose one
+one-lot iron condor for one expiry and hold it through settlement. A deployable
+decision model must additionally represent:
+
+- **No trade:** selecting no position must be feasible when every condor has
+  nonpositive risk-adjusted value.
+- **Distribution uncertainty:** expected values should be stress-tested across
+  plausible CDFs or parameter uncertainty, especially in both tails.
+- **Execution:** bid/ask prices are only executable proxies; fills, slippage,
+  commissions, quote size, and legging risk can change the realized credit.
+- **Capital and risk:** margin, maximum loss, return on capital, probability of
+  loss, expected shortfall/CVaR, and concentration limits may change the
+  optimizer's preferred strikes.
+- **Contract mechanics:** ETF dividends, American early exercise and assignment,
+  adjusted deliverables, expiration exercise rules, and the exact settlement
+  price must match the modeled payoff.
+- **Position management:** early exits, rolling, stop losses, or profit targets
+  make results path-dependent and require a price-path model rather than only
+  the terminal CDF.
+
+These additions do not change the four-leg expiry-payoff identity; they change
+whether the position should be opened, its true economics, and the constraints
+under which the four contracts are selected.
