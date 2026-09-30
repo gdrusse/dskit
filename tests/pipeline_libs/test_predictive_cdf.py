@@ -144,6 +144,63 @@ def test_option_implied_transport_scales_empirical_tail_probability_mass():
     assert np.all(np.diff(curve.quantile(np.linspace(0, 1, 201))[0]) >= 0)
 
 
+def test_option_transport_partially_pools_index_horizon_maps_and_falls_back_global():
+    base = np.array([-2., -1., 0., 1., 2., 1., 5., 1., 0.])
+    x = np.column_stack([np.tile(base, (40, 1)), np.r_[np.zeros(20), np.ones(20)]])
+    x[20:, 6:9] = [5., 0., 1.]
+    y = np.r_[np.linspace(-1.8, -.2, 20), np.linspace(.2, 1.8, 20)]
+    common = dict(
+        proxy_indices=[0, 1, 2, 3, 4], probabilities=[.05, .25, .5, .75, .95],
+        eligible_index=5, condition_indices=[6, 7, 8], reference_index=6,
+        knots=21, tail_width=3., transport_knots=9,
+        transport_condition_indices=[9])
+    separate = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=0).fit(x, y, x[:8], y[:8])
+    pooled = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=1000).fit(x, y, x[:8], y[:8])
+    global_model = OptionImpliedTransportCDF(
+        **{k: v for k, v in common.items() if k != 'transport_condition_indices'}
+    ).fit(x, y, x[:8], y[:8])
+    assert len(separate.group_transports) == 2
+    keys = sorted(separate.group_transports)
+    assert not np.allclose(separate.group_transports[keys[0]],
+                           separate.group_transports[keys[1]])
+    for key in keys:
+        assert np.linalg.norm(pooled.group_transports[key]-pooled.transport_x) < np.linalg.norm(
+            separate.group_transports[key]-separate.transport_x)
+    unseen = x[:1].copy()
+    unseen[:, 9] = 2
+    query = [.05, .5, .95]
+    np.testing.assert_allclose(separate.curve(unseen).quantile(query),
+                               global_model.curve(unseen).quantile(query), rtol=0, atol=0)
+    mixed = separate.curve(x[[0, 20]]).quantile(query)
+    singles = np.vstack([separate.curve(x[[row]]).quantile(query) for row in (0, 20)])
+    np.testing.assert_allclose(mixed, singles, rtol=0, atol=0)
+    center_only = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=0, transport_local_bounds=[.05, .95]
+    ).fit(x, y, x[:8], y[:8])
+    central = center_only.curve(x[:1]).quantile(query)
+    global_curve = global_model.curve(x[:1]).quantile(query)
+    np.testing.assert_allclose(central[:, [0, 2]], global_curve[:, [0, 2]], rtol=0, atol=1e-12)
+    assert not np.allclose(central[:, 1], global_curve[:, 1])
+    assert (np.diff(center_only.curve(x[:1]).quantile(np.linspace(0, 1, 101))) >= 0).all()
+
+
+def test_option_transport_conditioning_contract_refuses_invalid_settings():
+    common = dict(
+        proxy_indices=[0, 1], probabilities=[.25, .75], eligible_index=2,
+        condition_indices=[3], reference_index=4, knots=21)
+    with pytest.raises(ValueError, match='transport'):
+        OptionImpliedTransportCDF(**common, transport_prior_strength=10)
+    with pytest.raises(ValueError, match='transport'):
+        OptionImpliedTransportCDF(
+            **common, transport_condition_indices=[3, 3], transport_prior_strength=10)
+    for bounds in ([.95, .05], [0, .95], [.05, 1], [.05], [False, .95]):
+        with pytest.raises(ValueError, match='transport'):
+            OptionImpliedTransportCDF(
+                **common, transport_condition_indices=[3], transport_local_bounds=bounds)
+
+
 def test_pca_augmentation_fits_components_on_training_rows_only():
     rng = np.random.default_rng(82)
     x = rng.normal(size=(40, 4)); y = x[:, 0]+rng.normal(size=40)

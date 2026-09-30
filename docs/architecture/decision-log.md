@@ -27678,3 +27678,89 @@ history it improved equal-cell CRPS 0.816%, with positive 60/120-date paired
 intervals and better per-index tail deviations. Promote it only as the offline
 research incumbent; no trading or deployment authority follows. See
 `children/index_options/docs/memos/2026-09-30-guard-aware-cdf-selection.md`.
+
+## ADR-0196 — Partially pooled index/horizon physical transport
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0195. Base worktree:
+`/home/russell/dskit-cdf-option-surface`.
+
+### Scope and estimand
+
+The research objective remains an accurate physical CDF of terminal index
+return at each exact option expiry. Entry spot converts that return CDF into a
+terminal index-price CDF, enabling strike probabilities and expected option
+payoffs. Strategy optimization, execution and trading remain out of scope.
+
+### Decision
+
+Extend the generic option-implied transport with optional training-only
+conditioning by declared index identity and requested calendar horizon. Fit a
+global PIT transport plus one transport per observed condition. Shrink each
+conditional PIT-quantile map toward the global map by
+`n_group / (n_group + prior_strength)`, then monotonically rearrange it.
+Unseen conditions use the global map. Actual realized DTE remains excluded;
+only entry-known requested horizon and one-hot index may condition transport.
+
+Compare three JSON-declared prior strengths (50, 200, 1000) inside the
+unchanged very-conservative tail blend. Controls are the ADR-0195 research
+incumbent, the prior global option transport and the empirical/MLP incumbent.
+Reuse the immutable prepared panel and provenance in a fresh output root.
+
+### Protocol and stopping rule
+
+Search 2016–2018 only. Use the ADR-0195 guard-aware selector: raw prior
+research incumbent reference, below/above 5% metrics, target 0.05 and tolerance
+`1e-12`, followed by equal-cell CRPS rank among feasible candidates. Freeze
+before development/early/middle/late evaluation. Promote only with strict
+development CRPS improvement and every guard passing; later history is
+descriptive and cannot reverse the development decision.
+
+### Exit
+
+Require focused tests for pooled/global identity, group separation, shrinkage,
+unseen fallback and deterministic curves; complete bounded standard stages;
+memo, journal and RE-ENTRY; and Luna reviews with zero unresolved
+Critical/Major findings. No one-off execution script or new acquisition.
+
+### Sequential Phase B amendment (2026-09-30)
+
+Phase A completed its declared search, but the selector refused all three
+index-plus-horizon maps before any later-period evaluation. The best rejected
+candidate (`prior50`) improved development equal-cell CRPS by only 0.104%,
+while worsening the SPY lower-tail and IWM upper-tail deviations relative to
+the frozen research incumbent. This is a negative result; no Phase A candidate
+is promoted and later partitions remain unopened.
+
+Before inspecting any Phase B result, preregister a fresh JSON/run root that
+ablates the conditioning granularity: index-only maps and requested-horizon-only
+maps, each with prior strengths 50, 200 and 1000. All other model, data,
+development years, guard, rank and stopping rules remain unchanged. Phase B is
+sequential exploratory research and cannot retroactively validate Phase A.
+
+### Sequential Phase C amendment (2026-09-30)
+
+Phase B also ended at the declared selector: no index-only or horizon-only map
+passed all six tail guards, so no later partition was opened. Before inspecting
+its candidate scores, preregister a structural response to the repeated failure:
+conditional transport may alter only probabilities strictly between 0.05 and
+0.95; the global transport remains fixed at and beyond those boundaries.
+Monotonicity is enforced inside the fixed global boundary values.
+
+Compare three conditioning granularities (index plus requested horizon,
+index-only, and requested-horizon-only), all with prior strength 50, in a fresh
+JSON/run root. Strength 50 is fixed from Phase A's preregistered CRPS ordering,
+not selected from Phase B. Data, outer conservative blend, development period,
+guard, rank and stopping rules remain unchanged. Promote only if strict
+development CRPS improvement survives every original tail guard.
+
+### Outcome (2026-09-30)
+
+Completed. Phases A and B produced no guard-feasible candidate and therefore
+opened no later partition. Phase C froze the center-only joint index/horizon
+candidate: +0.101% development equal-cell CRPS with all six tail rates exactly
+matching the ADR-0195 reference. On reused 2019–2025 history, its direct gain
+is only +0.0146%; both paired intervals cross zero, QQQ/IWM do not improve, and
+condor-loss MSE is marginally worse. Carry it as the protocol-qualified offline
+research incumbent, but treat it as practically tied and not trading-ready.
+See `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.

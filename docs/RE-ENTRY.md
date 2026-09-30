@@ -1,5 +1,23 @@
 # Re-entry
 
+## ADR-0196 center-only conditioned transport completed (2026-09-30)
+
+- Objective remains a physical terminal-return/price CDF at each exact option
+  expiry for later strike/payoff evaluation; no trading or contract optimizer.
+- Joint index/requested-horizon maps (Phase A) and separate index/horizon maps
+  (Phase B) all failed the six-tail development guard and stopped before later
+  evaluation. Phase C preserved global 5%/95% mappings and adjusted only the
+  center; Luna reviews C0/M0/m0/n0 and 187 affected tests pass.
+- Frozen Phase C winner improves development equal-cell CRPS 0.101% with all
+  six tail rates identical to ADR-0195. On reused 2019–2025 history, direct
+  skill is only +0.0146%; 60/120-date intervals cross zero, QQQ/IWM do not
+  improve, and condor-loss MSE is marginally worse.
+- Carry as the protocol-qualified offline research incumbent but treat it as
+  effectively tied, not trading-ready. Memo:
+  `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.
+  Review: `docs/review-evidence/ADR-0196.md`. Journal A0614. Generated outputs
+  remain ignored.
+
 ## ADR-0195 guard-aware CDF selection completed (2026-09-30)
 
 - Added a generic JSON-declared development selection guard. It filters every

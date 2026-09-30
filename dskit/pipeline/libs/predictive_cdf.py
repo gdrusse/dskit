@@ -802,23 +802,44 @@ class OptionImpliedTransportCDF(CDFEstimator):
 
     def __init__(self, proxy_indices, probabilities, eligible_index,
                  condition_indices, reference_index, knots=401, tail_width=4.,
-                 transport_knots=21):
+                 transport_knots=21, transport_condition_indices=None,
+                 transport_prior_strength=0., transport_local_bounds=None):
         import math
         indices = [*proxy_indices, eligible_index, *condition_indices, reference_index]
+        transport_indices = ([] if transport_condition_indices is None
+                             else list(transport_condition_indices))
+        local_bounds = ([] if transport_local_bounds is None
+                        else list(transport_local_bounds))
         if (len(proxy_indices) != len(probabilities) or len(probabilities) < 2
-                or any(type(v) is not int or v < 0 for v in indices)
+                or any(type(v) is not int or v < 0 for v in [*indices, *transport_indices])
                 or len(set(proxy_indices)) != len(proxy_indices)
+                or (transport_condition_indices is not None
+                    and (not transport_indices
+                         or len(set(transport_indices)) != len(transport_indices)))
                 or probabilities[0] <= 0 or probabilities[-1] >= 1
                 or any(a >= b for a, b in zip(probabilities, probabilities[1:]))
                 or type(knots) is not int or knots < 5
                 or type(transport_knots) is not int
                 or (transport_knots != 0 and transport_knots < 3)
-                or not math.isfinite(tail_width) or tail_width <= 0):
+                or not math.isfinite(tail_width) or tail_width <= 0
+                or isinstance(transport_prior_strength, bool)
+                or not math.isfinite(transport_prior_strength)
+                or transport_prior_strength < 0
+                or (not transport_indices and transport_prior_strength != 0)
+                or (transport_local_bounds is not None
+                    and (not transport_indices or len(local_bounds) != 2
+                         or any(isinstance(v, bool) or not math.isfinite(v)
+                                for v in local_bounds)
+                         or not 0 < local_bounds[0] < local_bounds[1] < 1))):
             raise ValueError("invalid option-implied transport parameters")
         self.proxy_indices = tuple(proxy_indices)
         self.probabilities = tuple(float(p) for p in probabilities)
         self.eligible_index = eligible_index
         self.tail_width, self.transport_knots = float(tail_width), transport_knots
+        self.transport_condition_indices = tuple(transport_indices)
+        self.transport_prior_strength = float(transport_prior_strength)
+        self.transport_local_bounds = (None if not local_bounds
+                                       else tuple(float(v) for v in local_bounds))
         self.output_knots = knots
         if not condition_indices:
             raise ValueError("option-implied fallback needs conditioning fields")
@@ -828,7 +849,9 @@ class OptionImpliedTransportCDF(CDFEstimator):
     def _validate_x(self, x):
         import numpy as np
         x = np.asarray(x)
-        if x.ndim != 2 or max((*self.proxy_indices, self.eligible_index)) >= x.shape[1]:
+        checked = (*self.proxy_indices, self.eligible_index,
+                   *self.transport_condition_indices)
+        if x.ndim != 2 or max(checked) >= x.shape[1]:
             raise ValueError("proxy indices outside input")
         active = x[:, self.eligible_index]
         if not np.isin(active, [0, 1]).all():
@@ -837,6 +860,9 @@ class OptionImpliedTransportCDF(CDFEstimator):
         if (not np.isfinite(q[active == 1]).all()
                 or (np.diff(q[active == 1], axis=1) < 0).any()):
             raise ValueError("active proxy quantiles must be finite and ordered")
+        if (self.transport_condition_indices
+                and not np.isfinite(x[:, self.transport_condition_indices]).all()):
+            raise ValueError("transport conditions must be finite")
         self.fallback._validate_x(x)
 
     def _proxy(self, x):
@@ -861,6 +887,16 @@ class OptionImpliedTransportCDF(CDFEstimator):
             self.transport_p = p
         else:
             self.transport_x = self.transport_p = np.array([0., 1.])
+        self.group_transports = {}
+        if self.transport_condition_indices:
+            conditions = np.asarray(x)[active][:, self.transport_condition_indices]
+            for condition in np.unique(conditions, axis=0):
+                mask = (conditions == condition).all(axis=1)
+                local = np.quantile(pit[mask], self.transport_p)
+                local = np.r_[0., np.clip(local[1:-1], 1e-9, 1-1e-9), 1.]
+                weight = mask.sum()/(mask.sum()+self.transport_prior_strength)
+                shrunk = weight*local + (1-weight)*self.transport_x
+                self.group_transports[tuple(condition.tolist())] = np.maximum.accumulate(shrunk)
         return self
 
     def curve(self, x):
@@ -872,7 +908,23 @@ class OptionImpliedTransportCDF(CDFEstimator):
         fallback = self.fallback.curve(x).quantile(p)
         values = fallback.copy()
         if active.any():
-            mapped = np.interp(p, self.transport_p, self.transport_x)
+            global_mapped = np.interp(p, self.transport_p, self.transport_x)
+            mapped = np.tile(global_mapped, (active.sum(), 1))
+            if self.transport_condition_indices:
+                conditions = x[active][:, self.transport_condition_indices]
+                for row, condition in enumerate(conditions):
+                    transport = self.group_transports.get(tuple(condition.tolist()))
+                    if transport is not None:
+                        local = np.interp(p, self.transport_p, transport)
+                        if self.transport_local_bounds is not None:
+                            lo, hi = self.transport_local_bounds
+                            middle = (p > lo) & (p < hi)
+                            lower = np.interp(lo, self.transport_p, self.transport_x)
+                            upper = np.interp(hi, self.transport_p, self.transport_x)
+                            local[~middle] = global_mapped[~middle]
+                            local[middle] = np.clip(local[middle], lower, upper)
+                            local = np.maximum.accumulate(local)
+                        mapped[row] = local
             mapped = np.clip(mapped, 0., 1.)
             proxy = self._proxy(x[active])
             lo, hi = self.probabilities[0], self.probabilities[-1]
@@ -881,7 +933,7 @@ class OptionImpliedTransportCDF(CDFEstimator):
             right_anchor = proxy.quantile([hi])[:, 0]
             empirical_at_left = empirical.cdf(left_anchor[:, None])[:, 0]
             empirical_at_right = empirical.cdf(right_anchor[:, None])[:, 0]
-            raw_probability = mapped[None, :].repeat(active.sum(), axis=0)
+            raw_probability = mapped.copy()
             left = raw_probability < lo
             right = raw_probability > hi
             if left.any():
@@ -893,7 +945,8 @@ class OptionImpliedTransportCDF(CDFEstimator):
             raw_probability = np.clip(raw_probability, 0., 1.)
             spliced = empirical.quantile(raw_probability)
             middle = (mapped >= lo) & (mapped <= hi)
-            spliced[:, middle] = proxy.quantile(mapped[middle])
+            proxy_values = proxy.quantile(mapped)
+            spliced[middle] = proxy_values[middle]
             values[active] = np.maximum.accumulate(spliced, axis=1)
         return _ActiveGridCurve(values, p, active)
 
