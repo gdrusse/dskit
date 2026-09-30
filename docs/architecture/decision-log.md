@@ -27764,3 +27764,91 @@ is only +0.0146%; both paired intervals cross zero, QQQ/IWM do not improve, and
 condor-loss MSE is marginally worse. Carry it as the protocol-qualified offline
 research incumbent, but treat it as practically tied and not trading-ready.
 See `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.
+## ADR-0197 — Dynamic tail calibration of exact-expiry physical CDFs
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0196. Base:
+`9248d9e77c706c4bb341160cc8bbb31b8549da02` in the isolated WSL2 worktree
+`/home/russell/dskit-cdf-tail-calibration`.
+
+### Objective and limits
+
+Improve the calibration of the physical terminal-return CDF at each exact
+listed-option expiry, especially its 1%, 2.5%, 5%, 95%, 97.5% and 99% tails,
+without sacrificing the center-distribution CRPS improvement. Entry spot can
+convert the result to a terminal-price CDF for later strike/payoff evaluation.
+This remains offline reused-history research: no contract selection, execution,
+sizing, deployment, trading, or fresh-holdout claim is authorized.
+
+### Methods
+
+Add three generic estimator families behind the existing JSON-driven CDF seam.
+
+1. **Dynamic causal PIT recalibration.** Wrap one label-free endpoint. Begin a
+   validation year with the preceding calibration band, then forecast entry
+   dates in order. Before each date, admit only earlier forecasts whose outcome
+   availability date is strictly earlier than that entry date. Fit a monotone
+   PIT map with exponentially decayed entry-date weights and declared maximum
+   lookback. Same-date rows are forecast as a batch before any same-date label
+   can enter. Sparse maps shrink to the preceding-band global map. The wrapper
+   is the sole calibration-label consumer.
+2. **Beta-transformed CDF pool.** Form a CDF-space convex pool of the frozen
+   empirical/MLP and option-transport endpoints, then apply a beta CDF. Select
+   only from finite JSON-declared `(weight, alpha, beta)` grids on the preceding
+   calibration band. Minimize a declared proper composite of ordinary CRPS and
+   lower/upper quantile-weighted scores, with equal index/actual-DTE-cell row
+   weights. Nested label-consuming endpoints and a second calibrator refuse.
+3. **Semiparametric GPD tails.** Preserve a declared endpoint's center between
+   train-only splice probabilities and replace both outer quantile functions
+   with generalized-Pareto excess curves. Thresholds and exceedances use fit
+   labels only; left/right scale and shape are partially pooled by index with a
+   declared prior strength. Shape is bounded to keep finite means; continuity
+   and monotonicity at both joins are mandatory. Calibration labels are not
+   used by this estimator.
+
+All temporal context passes separately from predictors. Outcome dates schedule
+when historical labels become observable and can never enter endpoint features.
+Perturbing a future or same-date label must leave earlier forecasts bitwise
+unchanged. Actual calendar DTE remains reporting/calibration-cell metadata and
+is excluded from endpoint predictors.
+
+### Metrics, experiment and stopping rule
+
+Extend the row-level score packet with integrated lower and upper quantile
+scores over declared probability bands and hit indicators at 1%, 2.5%, 5%,
+10%, 90%, 95%, 97.5% and 99%. Ordinary CRPS, existing fixed-threshold tail
+CRPS, strike Brier, bounded-condor loss, PIT and counts remain. Scores are
+proper forecast-evaluation quantities; raw hit rates are diagnostics, not an
+optimization objective by themselves.
+
+One standard JSON reuses the immutable ADR-0196 prepared panel and provenance
+in a fresh output root. It compares at most twelve bounded candidates: dynamic
+PIT half-life/lookback choices, beta-pool grids and GPD threshold/pooling
+choices. Controls are the horizon empirical forecast, ADR-0193 option
+transport, ADR-0195 guard-aware incumbent and ADR-0196 center-only incumbent.
+Search and selection use 2016–2018 only. One candidate per family and one
+primary are frozen before opening 2019–2025 partitions.
+
+Primary promotion requires strict development equal-cell CRPS improvement
+versus ADR-0196, no worse equal-cell lower and upper quantile-weighted scores,
+and for every index no worse absolute 5%/95% hit-rate deviation within
+`1e-12`. If no candidate passes, retain ADR-0196. Later history is descriptive
+and cannot reverse the decision. Report paired 60/120-entry-date block
+intervals, exact-DTE grids, yearly and index counts, all declared hit levels,
+and tail-severity scores.
+
+Every stage remains below 30 minutes and 6 GiB process RSS, with at most two
+CPU threads and one GPU job. There are no one-off execution scripts, new data
+acquisitions, silent fallbacks or overwritten artifacts.
+
+### Tests and exit
+
+Focused tests must prove delayed-label admission, same-date batching, future
+label invariance, recency weighting, sparse/global fallback, beta-pool endpoint
+identities and monotonicity, finite-grid determinism, GPD center identity,
+continuous joins, index pooling and finite tails, proper-score reconstruction,
+and JSON/config refusal. Exit requires all bounded stages or explicit retained
+failures, completion/hash evidence, a standalone memo, review evidence,
+RE-ENTRY and append-only journal updates, and zero unresolved Critical/Major
+review findings. Generated artifacts remain ignored; do not push or merge.
+
