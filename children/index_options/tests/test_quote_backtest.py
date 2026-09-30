@@ -21,6 +21,7 @@ import pytest
 
 from dskit.pipeline.base import ConfigError
 
+from index_options import nodes
 from index_options.contracts import american_short_charge
 from index_options.nodes import (
     CondorBacktest,
@@ -1381,26 +1382,25 @@ def test_a_t_statistic_is_zero_with_fewer_than_two_trades_or_no_variance():
         MODEL_CREDIT - MODEL_DELTA * 100 * -3.0)
 
 
-@pytest.mark.parametrize("cls", [CondorQuoteBacktest, PutSpreadQuoteBacktest])
-def test_a_series_constant_to_float_noise_has_a_zero_t_not_a_rounding_artifact(cls):
+def test_a_series_constant_to_float_noise_has_a_zero_t_not_a_rounding_artifact():
     # ADR-0193 review A-F1: three equal 1.7 credits summed in different orders differ in the
     # last bit, and mean / (sd / sqrt(n)) over that noise is ~1e16 — a sentinel, not a t.
     noisy = [1.7000000000000004, 1.7000000000000004, 1.7]
     assert max(noisy) - min(noisy) > 0.0      # the reproducer really is not exactly constant
-    assert cls._t(noisy) == 0.0
-    assert cls._t([-v for v in noisy]) == 0.0  # a losing book's noise, ADR-0195 B-M3
-    assert cls._t([1.7, 1.7, 1.7]) == 0.0     # the exactly constant case stays zero
-    assert cls._t([0.0, 0.0]) == 0.0
+    assert nodes.t_or_zero(noisy) == 0.0
+    assert nodes.t_or_zero([-v for v in noisy]) == 0.0  # a losing book's noise, ADR-0195 B-M3
+    assert nodes.t_or_zero([1.7, 1.7, 1.7]) == 0.0     # the exactly constant case stays zero
+    assert nodes.t_or_zero([0.0, 0.0]) == 0.0
     # a spread far above float noise is real variance: one part in 1e6 of the magnitude
     real = [1.7 * (1 + 1e-6), 1.7, 1.7 * (1 - 1e-6)]
-    assert cls._t(real) == pytest.approx(_t(real))
-    assert abs(cls._t(real)) > 1.0
-    assert cls._t([100.0, 100.01]) == pytest.approx(_t([100.0, 100.01]))   # small, not noise
+    assert nodes.t_or_zero(real) == pytest.approx(_t(real))
+    assert abs(nodes.t_or_zero(real)) > 1.0
+    assert nodes.t_or_zero([100.0, 100.01]) == pytest.approx(_t([100.0, 100.01]))   # small, not noise
 
 
 def test_the_child_t_only_delegates_to_the_one_owner_of_the_no_variance_rule():
     # ADR-0195 (B-M3/B-M4): dskit.pipeline.stats owns the float-noise rule, so the child holds
-    # no tolerance of its own; _t turns the owner's "no variance" (None) into the child's 0.0
+    # no tolerance of its own; t_or_zero turns the owner's "no variance" (None) into the child's 0.0
     from dskit.pipeline.stats import newey_west_mean
 
     assert not hasattr(CondorQuoteBacktest, "CONSTANT_SERIES_RTOL")
@@ -1408,8 +1408,26 @@ def test_the_child_t_only_delegates_to_the_one_owner_of_the_no_variance_rule():
     for series in ([1.7000000000000004, 1.7000000000000004, 1.7], [-2.5, -2.5], [0.0, 0.0, 0.0],
                    [10.0, 12.0, 11.0, 30.0], [100.0, 100.01], [1e-9, 2e-9, 3e-9]):
         owner = newey_west_mean(list(series), lags=0)["t"]
-        assert CondorQuoteBacktest._t(series) == (0.0 if owner is None else owner)
-    assert CondorQuoteBacktest._t([5.0]) == 0.0 and CondorQuoteBacktest._t([]) == 0.0
+        assert nodes.t_or_zero(series) == (0.0 if owner is None else owner)
+    assert nodes.t_or_zero([5.0]) == 0.0 and nodes.t_or_zero([]) == 0.0
+
+
+def test_the_mean_is_zero_when_undefined_and_the_two_rules_have_one_public_owner():
+    # ADR-0196 review B-F1: the "mean, and lags-0 t, each 0.0 when undefined" rule is used by the
+    # backtests' metrics AND by the ledger studies' tables, so it is ONE public pair of module
+    # functions in nodes.py, never a protected method another module reaches into
+    from index_options import ledger_studies
+
+    assert nodes.mean_or_zero([]) == 0.0 and nodes.mean_or_zero([2.0, 4.0]) == 3.0
+    assert nodes.mean_or_zero([True, False, True, True]) == 0.75           # a hit rate is this mean
+    assert {"mean_or_zero", "t_or_zero"} <= set(nodes.__all__)
+    assert ledger_studies.mean_or_zero is nodes.mean_or_zero
+    assert ledger_studies.t_or_zero is nodes.t_or_zero
+    for cls in (nodes._CondorBacktestBase, CondorQuoteBacktest, PutSpreadQuoteBacktest,
+                PayoffSelectQuoteBacktest):
+        assert not hasattr(cls, "_t") and not hasattr(cls, "_mean"), cls.__name__
+    source = Path(ledger_studies.__file__).read_text(encoding="utf-8")
+    assert "._t(" not in source and "._mean(" not in source
 
 
 def test_the_readme_names_the_owners_tolerance_and_states_no_second_literal():
@@ -2797,6 +2815,30 @@ def test_the_hand_computed_sized_condor_model_book():
     assert report["params"]["size_fields"] == ["w"]
 
 
+@pytest.mark.parametrize("alpha, tail", [(0.6, 3), (0.7, 2), (0.83, 2), (0.84, 1)])
+def test_the_sized_cvar_takes_the_declared_tail_over_more_than_one_trade(alpha, tail):
+    # ADR-0196 review B-F4: every other sized test runs at the default 0.95, where the tail of
+    # fewer than twenty values is ONE trade. Six weighted trades at weights 1 / 2 / 1 / 0.5 / 4 / 1 on
+    # P&L -142.6 / 157.4 / 7.4 / 157.4 / -42.6 / 157.4 are
+    #   [-142.6, 314.8, 7.4, 78.7, -170.4, 157.4], worst first: -170.4, -142.6, 7.4, 78.7, 157.4, 314.8.
+    # The tail holds ceil(round((1 - alpha) x 6, 9)): 3 at 0.6 (2.4), 2 at 0.7 (1.8) and 0.83 (1.02),
+    # 1 at 0.84 (0.96). So the sized CVaR is the mean of the worst 3 / 2 / 2 / 1 of those, and the
+    # UNSIZED cvar of the same book, at the same alpha, takes its own tail of the raw P&L.
+    weights = [1.0, 2.0, 1.0, 0.5, 4.0, 1.0]
+    days, chain, series = _trades(GATE_LEVELS)
+    metrics, _ = _run(_gated_rows(days, w=weights), chain, series, size_fields=["w"],
+                      cvar_alpha=alpha)
+    worst_sized = [-170.4, -142.6, 7.4, 78.7, 157.4, 314.8]
+    assert metrics["model_w_cvar_usd"] == pytest.approx(sum(worst_sized[:tail]) / tail)
+    assert sum(worst_sized[:3]) / 3 == pytest.approx(-101.86666666666667)       # the 0.6 value by hand
+    worst_raw = [-142.6, -42.6, 7.4, 157.4, 157.4, 157.4]
+    assert metrics["model_cvar_usd"] == pytest.approx(sum(worst_raw[:tail]) / tail)
+    _assert_the_sized_book(metrics, "model", "w", _sized(CONDOR_MODEL_PNL, weights, alpha=alpha))
+    # and the default tail really is different (one trade, the worst): the knob is what moved it
+    default, _ = _run(_gated_rows(days, w=weights), chain, series, size_fields=["w"])
+    assert default["model_w_cvar_usd"] == pytest.approx(-170.4)
+
+
 @pytest.mark.parametrize("cls, sides, pnl_of", [
     (CondorQuoteBacktest, ("put", "call"), {"model": CONDOR_MODEL_PNL,
                                             "always": CONDOR_MODEL_PNL,
@@ -3028,3 +3070,73 @@ def test_signals_then_sizing_then_the_backtest_carry_both_annotations_to_each_en
     weighted = _sized(CONDOR_MODEL_PNL, got)
     _assert_the_sized_book(metrics, "model", "size_implied", weighted)
     assert metrics["model_size_implied_n"] == 4 and metrics["model_size_implied_unknown_n"] == 2
+
+
+# -- ADR-0197: the selector's outputs do not move when the max-loss rule gets its one owner -------
+#
+# PayoffSelectQuoteBacktest._score divided by ``multiplier x max(widths) - credit`` until ADR-0197
+# made that contracts.structure_max_loss (the payoff's own worst point). The two must agree to the
+# bit on every candidate, so the digests below were FROZEN from the ADR-0196 base (520a7d0) by
+# running these very scenarios BEFORE the change (floats rounded to 6 places, as FROZEN above).
+
+FROZEN_SELECT = {
+    "mixed_winners": {
+        "metrics": "cd6d4e70b98d3e5287b0c152c25df72dc594acfa828a0fefaadc08e2f990433e",
+        "ledger": "62cb7f0600d5b30537bd138bfa45420653bd5565b0efdd2f0be762701b016519"},
+    "random_market_0": {
+        "metrics": "8d68a0f9ac3bdc556f4cbb5bacd5d5960294230193d28d44c2551ad6707cdc3e",
+        "ledger": "1935073309fda4fd0f3bb4f375185b79aa76d115dd1b4520fe9af84bc7742f9c"},
+    "random_market_1": {
+        "metrics": "bb4dd29aba23055a8b0cf0114bfe00e63711d8da35bd700564ccaf3ccc9e77bf",
+        "ledger": "03f9e54478f9a93db986e05c3d8174ae9897667eee6b98cc2e14b2dfa8835cc3"},
+    "random_market_2": {
+        "metrics": "767dad6354ed86c1d3dae4c1833cf82fe9fd97efe7e124dc842fbca68fb58d98",
+        "ledger": "617643eab531ef3f8163a80f0b42bdbd2a9da0c80c489f4597ce50e55e166668"},
+    "random_market_3": {
+        "metrics": "2e871990e0cbc4af9b63d76b6e52275326a325bb0f848f0466b62cfc2fcb0a41",
+        "ledger": "bd5d871b355058a1178e5e9809b991e9b78c24a7d9a8170525a232141aa71d21"},
+    "random_market_4": {
+        "metrics": "3bcb7b59a73fbeea79e79f46f69bc690d55645118e6bdedfec7804192f1cdbcd",
+        "ledger": "5354de63d8f9e104d978cde391ac3d04048156caa6af5eb656016e8e4a1892fa"},
+    "random_market_5": {
+        "metrics": "493c5f33b2512b13b686dcf19d68cd5ac43af1e774ad6d8d9820c5672ff4de9d",
+        "ledger": "e7ca6155c31e2c129092d3e9d7edf8ae801ed953b04499245e7a4c005298dbf7"},
+    "smooth_market_full_grid": {
+        "metrics": "cf7be1f24a72f82ce4e81e9adc7d967e952151b20b45fcfad29ded48dd9fb38b",
+        "ledger": "ce27bf976a98b9cc9b30790670b1a1c7942287f6c79652419a765be6d98490d0"},
+    "winner_call_spread": {
+        "metrics": "a92573689f7b93752ef1fe14a5833f119e2c419216e14a17571b0fbfdd5be526",
+        "ledger": "531def53a64293cee24dce8307c09de48ca6a147c1c5ca61f4e1315796d6dd19"},
+    "winner_condor": {
+        "metrics": "1a6ad0dc217d9ea4742859c0d05b96020339a0542476a985bde97cda0890e159",
+        "ledger": "b16eaeb40dbfe244fb2954c60a3966a20a246ae40bfd174c68e4e404da60425e"},
+    "winner_put_spread": {
+        "metrics": "1465c72537a7b8ebc023008fe6abaa378418ad8872ebb8269ca9e90e5c14c871",
+        "ledger": "133cfce5fa930cc50c3e554a24294ecf8faad817f095a5d8a53ff3e4989ab12f"},
+}
+
+
+def _frozen_select_scenarios():
+    """name -> (forecasts, chain, closes, extra knobs): the three winners, a mix, random markets."""
+    full = {"candidate_structures": ["put_spread", "call_spread", "condor"],
+            "candidate_short_q": [0.10, 0.16, 0.20, 0.25, 0.30],
+            "candidate_wing_z": [0.35, 0.65, 1.0]}
+    scenarios = {}
+    for label, quotes, draws, _table, _winner in SELECT_CASES:
+        scenarios[f"winner_{label}"] = ([_select_row(samples=draws)], _quoted(quotes), FLAT, {})
+    rows, chain, series = _mixed_winners()
+    scenarios["mixed_winners"] = (rows, chain, series, {})
+    scenarios["smooth_market_full_grid"] = ([_select_row(samples=NORMAL_DRAWS)], _smooth_market(),
+                                            FLAT, full)
+    for seed in range(6):
+        rows, chain = _random_market(seed)
+        scenarios[f"random_market_{seed}"] = (rows, chain, FLAT, full)
+    return scenarios
+
+
+@pytest.mark.parametrize("key", sorted(_frozen_select_scenarios()))
+def test_the_selectors_metrics_and_ledger_are_what_adr_0196_shipped(key):
+    rows, chain, series, over = _frozen_select_scenarios()[key]
+    metrics, report = _run_select(rows, chain, series, **over)
+    assert _digest(metrics) == FROZEN_SELECT[key]["metrics"]
+    assert _digest(report["ledger"]) == FROZEN_SELECT[key]["ledger"]

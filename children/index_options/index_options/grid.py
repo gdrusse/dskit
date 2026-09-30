@@ -40,8 +40,16 @@ gate study: :func:`sizing_study_document` puts :class:`~index_options.nodes.VolS
 after ``signals`` and has the backtest report each book as if every trade had been taken at
 each weight, on all 56 documents that carry the gate study.
 
+ADR-0197 adds the debit (positive-convexity) structures, each derived from a backtest cell's
+condor document by swapping only its backtest node: :func:`long_straddle_document` (on the
+:data:`LONG_STRADDLE_BUCKETS`, with the gate and sizing studies on top, as every document that
+carries the gate study has) and :func:`long_call_spread_document` /
+:func:`long_put_spread_document` (on the :data:`LONG_SPREAD_BUCKETS`, plain), at the
+pre-registered :data:`LONG_CALL_SPREAD_LONG_Q`, :data:`LONG_PUT_SPREAD_LONG_Q` and
+:data:`LONG_SPREAD_WING_Z`: 10 files for SPY and QQQ.
+
 A document is generated in one of two ways. A cell document (:func:`grid_document`) states how
-to run itself. A DERIVED document (put-spread, gate, select, sized) keeps its source's
+to run itself. A DERIVED document (put-spread, gate, select, sized, debit) keeps its source's
 description but not the source's run sentence (:func:`_described`), and :func:`cell_files`,
 which alone names the files, finishes each with the one run sentence for its own file
 (:func:`_finished`), so a reader never meets an instruction to run a different file.
@@ -63,6 +71,11 @@ __all__ = [
     "GRID_RUNG",
     "HPO_SPACES",
     "LABEL_REACH_DAYS",
+    "LONG_CALL_SPREAD_LONG_Q",
+    "LONG_PUT_SPREAD_LONG_Q",
+    "LONG_SPREAD_BUCKETS",
+    "LONG_SPREAD_WING_Z",
+    "LONG_STRADDLE_BUCKETS",
     "PUT_SPREAD_SHORT_Q",
     "PUT_SPREAD_WING_Z",
     "RUNGS",
@@ -81,6 +94,9 @@ __all__ = [
     "grid_document",
     "grid_files",
     "hpo_document",
+    "long_call_spread_document",
+    "long_put_spread_document",
+    "long_straddle_document",
     "put_spread_document",
     "select_document",
     "sizing_study_document",
@@ -114,6 +130,23 @@ SELECT_STRUCTURES = ("put_spread", "call_spread", "condor")
 SELECT_SHORT_Q = (0.10, 0.16, 0.20, 0.25, 0.30)
 #: The wings the payoff selector tries, in standardized units (ADR-0195, pre-registered).
 SELECT_WING_Z = (0.35, 0.65, 1.0)
+#: The buckets that ship a long-straddle document (ADR-0197, pre-registered): the three shortest,
+#: where the evidence (Johnson 2017) is that a long straddle pays, and only when the VIX curve is
+#: inverted, which the gate study on the same document measures.
+LONG_STRADDLE_BUCKETS = ("1", "2-3", "5")
+#: The buckets that ship the two long-spread documents (ADR-0197, pre-registered): the 30-45 day
+#: cell, where a spread's floored loss and capped gain have room to work.
+LONG_SPREAD_BUCKETS = ("30-45",)
+#: The forecast quantile the long call spread's bought call sits at (ADR-0197, pre-registered):
+#: the median, about at the money.
+LONG_CALL_SPREAD_LONG_Q = 0.5
+#: The forecast quantile the long put spread's bought put sits at (ADR-0197, pre-registered):
+#: below the median, a modestly out-of-the-money hedge.
+LONG_PUT_SPREAD_LONG_Q = 0.35
+#: The sold leg's distance beyond the bought leg in standardized units, for both long spreads
+#: (ADR-0197, pre-registered): the put-credit-spread wing's 0.65, written once more here so the
+#: two studies stay independent of each other.
+LONG_SPREAD_WING_Z = 0.65
 #: The onboarding root the cell documents read, relative to the working directory.
 ROOT = "./ob"
 #: The archive source: closes with ex-dividend amounts, and the end-of-day chains.
@@ -271,6 +304,9 @@ HPO_SPACES = {
 _CONDOR_BACKTEST = "index_options.nodes:CondorQuoteBacktest"
 _PUT_SPREAD_BACKTEST = "index_options.nodes:PutSpreadQuoteBacktest"
 _SELECT_BACKTEST = "index_options.nodes:PayoffSelectQuoteBacktest"
+_LONG_STRADDLE_BACKTEST = "index_options.nodes:LongStraddleQuoteBacktest"
+_LONG_CALL_SPREAD_BACKTEST = "index_options.nodes:LongCallSpreadQuoteBacktest"
+_LONG_PUT_SPREAD_BACKTEST = "index_options.nodes:LongPutSpreadQuoteBacktest"
 _ORDER = ("vix", "vix_by_date", "market", "rv", "labels", "fwd", "model", "score", "condor")
 #: The proxy backtest knobs the quote backtest takes over unchanged.
 _SHARED_BACKTEST_KNOBS = ("split", "short_q", "wing_z", "multiplier", "fee_per_leg",
@@ -321,6 +357,21 @@ def _gate_file(cell):
 def _select_file(cell, rung):
     """Return the file name of one cell's payoff-selection document on ``rung``."""
     return f"{cell.name}-select.json" if rung == GRID_RUNG else f"{cell.name}-{rung}-select.json"
+
+
+def _long_straddle_file(cell):
+    """Return the file name of one cell's long-straddle document."""
+    return f"{cell.name}-long-straddle.json"
+
+
+def _long_call_spread_file(cell):
+    """Return the file name of one cell's long-call-spread document."""
+    return f"{cell.name}-long-call-spread.json"
+
+
+def _long_put_spread_file(cell):
+    """Return the file name of one cell's long-put-spread document."""
+    return f"{cell.name}-long-put-spread.json"
 
 
 def _load(path):
@@ -799,6 +850,188 @@ def select_document(doc):
     return gate_study_document(out, name_suffix="")
 
 
+def _debit_params(params, knobs):
+    """Return the condor backtest's ``params`` with ``short_q`` and ``wing_z`` replaced in place by ``knobs``' ``long_q`` and ``wing_z``, or dropped where ``knobs`` has none."""
+    out = {}
+    for knob, value in params.items():
+        if knob == "short_q":
+            if "long_q" in knobs:
+                out["long_q"] = knobs["long_q"]
+        elif knob == "wing_z":
+            if "wing_z" in knobs:
+                out["wing_z"] = knobs["wing_z"]
+        else:
+            out[knob] = value
+    return out
+
+
+def _debit_document(doc, suffix, uses, knobs, description, node_notes):
+    """Return ``doc`` with only its condor backtest swapped for a debit structure (ADR-0197)."""
+    backtest = doc["pipeline"].get("backtest")
+    if backtest is None or backtest["uses"] != _CONDOR_BACKTEST:
+        raise ValueError(f"{doc['name']}: a debit structure replaces the condor archived-quote "
+                         f"backtest ({_CONDOR_BACKTEST}), and this document's backtest is "
+                         f"{None if backtest is None else backtest['uses']!r}")
+    out = copy.deepcopy(doc)
+    out["name"] = f"{doc['name']}{suffix}"
+    out["notes"] = _described(doc["notes"]) + description
+    node = out["pipeline"]["backtest"]
+    node["uses"] = uses
+    node["params"] = _debit_params(node["params"], knobs)
+    node["notes"] = node_notes
+    return out
+
+
+#: The sentences every debit document ends its description with: where it comes from.
+_DEBIT_GENERATED = (
+    " Generated by index_options.grid.{function} from the document described above, with only "
+    "the backtest node swapped, so change the grid table or the base rung and rewrite with "
+    "write_grid, never this file. Never decision-eligible.")
+#: What every debit backtest node's notes say about the debit and the books.
+_DEBIT_NODE_COMMON = (
+    "The walk, expiry, settlement, American charge (short legs only), wing split, delta benchmark "
+    "and annotations are the condor backtest's. The entry is a DEBIT: each bought leg at the ask, "
+    "each sold leg at the bid, plus two legs of fees; the cell's credit_usd is negative and "
+    "<book>_mean_credit_usd is the mean of those negative numbers. A book refuses it as "
+    "nonpositive_debit when the maximum loss is not positive and, for a spread, as "
+    "debit_not_below_width when the debit per share reaches the width. The model book enters "
+    "when E[P&L] under the forecast draws clears min_edge_usd, the always book every time, the "
+    "implied book at the VIX-lognormal quantile and the chain's ATM iv. Fills are the "
+    "end-of-day touch at zero latency, so absolute P&L is indicative. Never decision-eligible.")
+
+
+def long_straddle_document(doc):
+    """Return a cell document whose backtest buys an at-the-money straddle (ADR-0197).
+
+    Parameters
+    ----------
+    doc : dict
+        A cell document whose backtest is the condor's
+        :class:`~index_options.nodes.CondorQuoteBacktest`: :func:`grid_document` for a
+        cell with a dividend source. It is copied, never changed.
+
+    Returns
+    -------
+    dict
+        The document with only its backtest node swapped for
+        :class:`~index_options.nodes.LongStraddleQuoteBacktest`, which takes no ``short_q`` or
+        ``wing_z`` (both are dropped, every other knob is the cell's), and the name extended
+        by ``-long-straddle``. The description is the source's plus the study's sentences. The
+        ADR-0194 gate study and the ADR-0196 sizing study are NOT applied here:
+        :func:`cell_files` composes them, as it does for every document that carries the gate
+        study.
+
+    Raises
+    ------
+    ValueError
+        When the document has no backtest (an underlying without a dividend source) or its
+        backtest is not the condor's.
+    """
+    return _debit_document(
+        doc, "-long-straddle", _LONG_STRADDLE_BACKTEST, {},
+        " ADR-0197 long-straddle study: the same forecasts, chain, settlement and entry dates, but "
+        "the backtest node is LongStraddleQuoteBacktest, which BUYS one put and one call at the "
+        "strike nearest the entry close where both can be bought (the lower strike on a tie) and "
+        "holds to settlement. Bought convexity has a negative standalone expectation in the "
+        "literature (Israelov 2019; Harvey et al. 2019), except at short horizons when the VIX "
+        "curve is inverted (Johnson 2017): the gate study below measures exactly that "
+        "(gate_term_inverted, the closed and open splits) and the sizing study weighs it. "
+        "The hedge study (python -m index_options.ledger_studies hedge) asks whether it beats a "
+        "smaller condor at the same CVaR5."
+        + _DEBIT_GENERATED.format(function="long_straddle_document"),
+        "ADR-0197 archived-quote long-straddle backtest over val: one put and one call BOUGHT at "
+        "the same strike, the listed strike nearest the entry close (within max_abs_log_moneyness) "
+        "where both have a positive ask and an ask size, the lower on a tie; no quantile knob, so "
+        "the model, always and implied books trade the same strike and differ only in whether "
+        "they enter. " + _DEBIT_NODE_COMMON)
+
+
+def long_call_spread_document(doc):
+    """Return a cell document whose backtest buys a call spread (ADR-0197).
+
+    Parameters
+    ----------
+    doc : dict
+        A cell document whose backtest is the condor's
+        :class:`~index_options.nodes.CondorQuoteBacktest`: :func:`grid_document` for a
+        cell with a dividend source. It is copied, never changed.
+
+    Returns
+    -------
+    dict
+        The document with only its backtest node swapped for
+        :class:`~index_options.nodes.LongCallSpreadQuoteBacktest` at ``long_q``
+        :data:`LONG_CALL_SPREAD_LONG_Q` and ``wing_z`` :data:`LONG_SPREAD_WING_Z` (its ``short_q``
+        is dropped, every other knob is the cell's), and the name extended by
+        ``-long-call-spread``.
+
+    Raises
+    ------
+    ValueError
+        When the document has no backtest or its backtest is not the condor's.
+    """
+    return _debit_document(
+        doc, "-long-call-spread", _LONG_CALL_SPREAD_BACKTEST,
+        {"long_q": LONG_CALL_SPREAD_LONG_Q, "wing_z": LONG_SPREAD_WING_Z},
+        f" ADR-0197 long-call-spread study: the same forecasts, chain and settlement, but the "
+        f"backtest node is LongCallSpreadQuoteBacktest, which buys a call at the forecast's "
+        f"{LONG_CALL_SPREAD_LONG_Q} quantile (about at the money) and sells a call "
+        f"{LONG_SPREAD_WING_Z} standardized units above it, for a loss floored at the debit and "
+        "a gain capped at the width. The hypothesis is that calls, the least overpriced options, "
+        "carry the equity premium with the loss floored: the delta benchmark residual and the "
+        "call-side metrics say whether it beat the stock."
+        + _DEBIT_GENERATED.format(function="long_call_spread_document"),
+        f"ADR-0197 archived-quote long-call-spread backtest over val: the bought call at the "
+        f"forecast's long_q quantile ({LONG_CALL_SPREAD_LONG_Q}) rescaled by sqrt(sessions / "
+        f"label_horizon), the sold call wing_z ({LONG_SPREAD_WING_Z}) standardized units above, "
+        "each snapped UP onto a listed strike quotable for its side (the bought leg needs an ask "
+        "and an ask size, the sold leg a bid and a bid size and lies strictly above the bought "
+        "leg). " + _DEBIT_NODE_COMMON)
+
+
+def long_put_spread_document(doc):
+    """Return a cell document whose backtest buys a put spread (ADR-0197).
+
+    Parameters
+    ----------
+    doc : dict
+        A cell document whose backtest is the condor's
+        :class:`~index_options.nodes.CondorQuoteBacktest`: :func:`grid_document` for a
+        cell with a dividend source. It is copied, never changed.
+
+    Returns
+    -------
+    dict
+        The document with only its backtest node swapped for
+        :class:`~index_options.nodes.LongPutSpreadQuoteBacktest` at ``long_q``
+        :data:`LONG_PUT_SPREAD_LONG_Q` and ``wing_z`` :data:`LONG_SPREAD_WING_Z` (its ``short_q``
+        is dropped, every other knob is the cell's), and the name extended by
+        ``-long-put-spread``.
+
+    Raises
+    ------
+    ValueError
+        When the document has no backtest or its backtest is not the condor's.
+    """
+    return _debit_document(
+        doc, "-long-put-spread", _LONG_PUT_SPREAD_BACKTEST,
+        {"long_q": LONG_PUT_SPREAD_LONG_Q, "wing_z": LONG_SPREAD_WING_Z},
+        f" ADR-0197 long-put-spread study: the same forecasts, chain and settlement, but the "
+        f"backtest node is LongPutSpreadQuoteBacktest, which buys a put at the forecast's "
+        f"{LONG_PUT_SPREAD_LONG_Q} quantile and sells a put {LONG_SPREAD_WING_Z} standardized "
+        "units below it, for a loss floored at the debit and a gain capped at the width. Bought "
+        "protection has a negative standalone expectation (Israelov 2019; AQR 2020), so this is "
+        "the HEDGE-SLEEVE candidate: the hedge study (python -m index_options.ledger_studies "
+        "hedge) asks whether it beats a smaller condor at the same CVaR5."
+        + _DEBIT_GENERATED.format(function="long_put_spread_document"),
+        f"ADR-0197 archived-quote long-put-spread backtest over val: the bought put at the "
+        f"forecast's long_q quantile ({LONG_PUT_SPREAD_LONG_Q}) rescaled by sqrt(sessions / "
+        f"label_horizon), the sold put wing_z ({LONG_SPREAD_WING_Z}) standardized units below, "
+        "each snapped DOWN onto a listed strike quotable for its side (the bought leg needs an "
+        "ask and an ask size, the sold leg a bid and a bid size and lies strictly below the "
+        "bought leg); strikes are listed low to high, the sold put first. " + _DEBIT_NODE_COMMON)
+
+
 def hpo_document(cell_document, rung):
     """Return the per-fold re-tune document of one rung on one cell (ADR-0043).
 
@@ -924,6 +1157,11 @@ def cell_files(configs_dir, cell):
         two :func:`select_document` documents (the frontier and the empirical
         rung): each of the four with :func:`sizing_study_document`'s study on
         top and ending its notes with the one run sentence for its own file.
+        ADR-0197 adds, for a backtest cell in :data:`LONG_STRADDLE_BUCKETS`, its
+        :func:`long_straddle_document` with the gate and sizing studies on top like those
+        four, and for one in :data:`LONG_SPREAD_BUCKETS` its plain
+        :func:`long_call_spread_document` and :func:`long_put_spread_document`, each
+        ending its notes with its own run sentence.
     """
     configs_dir = Path(configs_dir)
     out = {}
@@ -943,8 +1181,17 @@ def cell_files(configs_dir, cell):
             _gate_file(cell): gate_study_document(out[f"grid/{_cell_file(cell, GRID_RUNG)}"]),
             **{_select_file(cell, rung): select_document(out[f"grid/{_cell_file(cell, rung)}"])
                for rung in _SELECT_RUNGS}}
+        cell_document = out[f"grid/{_cell_file(cell, GRID_RUNG)}"]
+        if cell.bucket.label in LONG_STRADDLE_BUCKETS:
+            studied[_long_straddle_file(cell)] = gate_study_document(
+                long_straddle_document(cell_document), name_suffix="")
         for file, document in studied.items():
             out[f"grid/{file}"] = _finished(sizing_study_document(document), file)
+        if cell.bucket.label in LONG_SPREAD_BUCKETS:
+            out[f"grid/{_long_call_spread_file(cell)}"] = _finished(
+                long_call_spread_document(cell_document), _long_call_spread_file(cell))
+            out[f"grid/{_long_put_spread_file(cell)}"] = _finished(
+                long_put_spread_document(cell_document), _long_put_spread_file(cell))
     return out
 
 

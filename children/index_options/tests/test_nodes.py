@@ -787,6 +787,20 @@ def test_weights_clip_at_both_ends():
     assert all(_weights(r) == (None, None, None) for r in flat[:2])
 
 
+def test_a_weight_is_always_a_float_even_when_the_bounds_are_integers():
+    # ADR-0196 review A-N1 / B-N3: min(max_weight, max(min_weight, ratio)) returns the BOUND itself
+    # when it binds, so integer bounds gave integer weights (the docstring says a plain float)
+    out = _sizing(_signal_rows(SZ_IV, SZ_RV), min_weight=1, max_weight=2)
+    weights = [w for row in out for w in _weights(row) if w is not None]
+    assert len(weights) == 12 and all(type(w) is float for w in weights)
+    # rows 2 and 4 sit on the lower bound (1), row 5's realized-variance weight on the upper (2)
+    assert _weights(out[2]) == (1.0, 1.0, 1.5) and _weights(out[4])[:2] == (1.0, 1.0)
+    assert _weights(out[5])[1] == 2.0
+    flat = _sizing(_signal_rows(SZ_IV, SZ_RV), min_weight=1, max_weight=1)
+    assert [_weights(r) for r in flat[2:]] == [(1.0, 1.0, 1.0)] * 4
+    assert all(type(w) is float for r in flat[2:] for w in _weights(r))
+
+
 def test_a_lag_of_two_is_the_same_weights_one_row_later():
     lag1 = _sizing(_signal_rows(SZ_IV, SZ_RV))
     lag2 = _sizing(_signal_rows(SZ_IV, SZ_RV), lag_sessions=2)

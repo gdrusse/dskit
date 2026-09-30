@@ -18,6 +18,13 @@ names the three. The American charge splits into :func:`american_put_carry` (nee
 dividend data) and :func:`american_call_dividend`, which
 :func:`american_short_charge` composes; :func:`dividends_paid` is the
 dividend rule a hedge benchmark shares with the call charge.
+
+ADR-0197 adds the debit structures' leg sets (:data:`LONG_STRADDLE_LEGS`,
+:data:`LONG_CALL_SPREAD_LEGS`, :data:`LONG_PUT_SPREAD_LEGS`: what the credit
+structures sell, bought) and the two payoff-side owners they need:
+:func:`structure_payoff`, the leg-sum moved here beside :func:`leg_intrinsic` and
+:func:`structure_credit` (``index_options.distribution`` re-exports it), and
+:func:`structure_max_loss`, the one rule for the most a structure can lose.
 """
 
 import math
@@ -36,6 +43,9 @@ from dskit.pipeline.records import number_ok, price_ok
 __all__ = [
     "CALL_SPREAD_LEGS",
     "CONDOR_LEGS",
+    "LONG_CALL_SPREAD_LEGS",
+    "LONG_PUT_SPREAD_LEGS",
+    "LONG_STRADDLE_LEGS",
     "PUT_SPREAD_LEGS",
     "STRUCTURES",
     "CashIndexContract",
@@ -48,6 +58,8 @@ __all__ = [
     "leg_intrinsic",
     "quote_problems",
     "structure_credit",
+    "structure_max_loss",
+    "structure_payoff",
 ]
 
 #: The one owner of an iron condor's leg order and signed quantity: long
@@ -64,6 +76,15 @@ CALL_SPREAD_LEGS = CONDOR_LEGS[2:]
 #: owner of the names and of their leg tuples, read-only. Its order is the default tie-break.
 STRUCTURES = MappingProxyType({"put_spread": PUT_SPREAD_LEGS, "call_spread": CALL_SPREAD_LEGS,
                                "condor": CONDOR_LEGS})
+#: A long straddle, a long put and a long call at ONE strike (ADR-0197): both legs carry the same
+#: strike, so a strike list for it is ``(K, K)``. It has no vertical pair, hence no width.
+LONG_STRADDLE_LEGS = (("put", 1), ("call", 1))
+#: A long call spread, a long call under a short call (ADR-0197), strikes low to high like
+#: :data:`CONDOR_LEGS`: the bought call is the LOWER strike.
+LONG_CALL_SPREAD_LEGS = (("call", 1), ("call", -1))
+#: A long put spread, a short put under a long put (ADR-0197), strikes low to high like
+#: :data:`CONDOR_LEGS`: the bought put is the HIGHER strike.
+LONG_PUT_SPREAD_LEGS = (("put", -1), ("put", 1))
 _LEG_SIGNS = tuple(sign for _right, sign in CONDOR_LEGS)
 #: The side a quote is judged for: both sizes, a sale (bid) or a purchase (ask).
 _SIDES = (None, "sell", "buy")
@@ -154,6 +175,104 @@ def leg_intrinsic(right, strike, level):
     """
     gap = strike - level if right == "put" else level - strike
     return max(type(gap)(0), gap)
+
+
+def structure_payoff(legs, level, strikes):
+    """Return a leg set's settlement payoff per unit, credit excluded.
+
+    The one owner of the leg-sum (ADR-0193, generalized from the condor):
+    each leg contributes ``sign x`` its intrinsic value at ``level``. It lives
+    here, beside :func:`leg_intrinsic` and :func:`structure_credit`, so that
+    :func:`structure_max_loss` can call it (ADR-0197);
+    ``index_options.distribution`` re-exports it.
+
+    Parameters
+    ----------
+    legs : sequence of (str, int)
+        ``(right, signed quantity)`` per leg, e.g. :data:`CONDOR_LEGS`.
+    level : float
+        Settlement level.
+    strikes : sequence of float
+        One strike per leg, in leg order.
+
+    Returns
+    -------
+    float
+        The signed sum: ``0`` when every leg expires worthless, negative
+        when the short legs finish in the money.
+
+    Raises
+    ------
+    ValueError
+        When ``strikes`` do not match ``legs`` in number.
+
+    Examples
+    --------
+    A put credit spread settling between its strikes::
+
+        structure_payoff(PUT_SPREAD_LEGS, 93.0, (90.0, 95.0))
+        # -> -2.0
+    """
+    return sum(sign * leg_intrinsic(right, k, level)
+               for (right, sign), k in zip(legs, strikes, strict=True))
+
+
+def structure_max_loss(legs, strikes, credit_usd, multiplier):
+    """Return the most a leg set can lose at settlement, in USD, credit included.
+
+    The one owner of the maximum-loss rule (ADR-0197). The settlement P&L is
+    ``credit_usd + multiplier x`` :func:`structure_payoff`, piecewise linear in
+    the settlement level with its kinks at ``0`` and at every strike, so its
+    minimum over levels ``>= 0`` lies on one of those points unless it keeps
+    falling above the top strike, which it does exactly when the calls' signed
+    quantities sum negative (a naked short call, a short strangle, a ratio):
+    then the loss is unbounded. For the credit structures it equals
+    ``multiplier x`` the widest vertical less the credit, and for a long
+    structure it is the debit.
+
+    Parameters
+    ----------
+    legs : sequence of (str, int)
+        ``(right, signed quantity)`` per leg, at least one.
+    strikes : sequence of Decimal or float
+        One positive strike per leg, in leg order.
+    credit_usd : Decimal or float
+        The cash received at entry in USD, net of fees; negative for a debit.
+    multiplier : int
+        Shares per contract, >= 1.
+
+    Returns
+    -------
+    Decimal, float or float("inf")
+        ``-min`` of the settlement P&L, in the strikes' type; negative when
+        the structure cannot lose (a free lunch), ``math.inf`` when the
+        loss is unbounded.
+
+    Raises
+    ------
+    ValueError
+        When there are no legs, ``strikes`` do not match them, a strike is not
+        a positive number, ``credit_usd`` is not finite or ``multiplier`` is not
+        an int >= 1.
+
+    Examples
+    --------
+    An iron condor with a 5-point put wing and a 10-point call wing, credit 150::
+
+        structure_max_loss(CONDOR_LEGS, (90.0, 95.0, 105.0, 115.0), 150.0, 100)
+        # -> 850.0
+    """
+    if not legs:
+        raise ValueError("a structure needs at least one leg")
+    _integer(multiplier, "multiplier", 1)
+    if not _amount(credit_usd):
+        raise ValueError(f"credit_usd must be a finite number, got {credit_usd!r}")
+    if not all(_amount(k) and k > 0 for k in strikes):
+        raise ValueError(f"strikes must be positive finite numbers, got {strikes!r}")
+    if sum(sign for right, sign in legs if right == "call") < 0:
+        return math.inf
+    return -min(credit_usd + multiplier * structure_payoff(legs, level, strikes)
+                for level in (0, *strikes))
 
 
 def _amount(value):

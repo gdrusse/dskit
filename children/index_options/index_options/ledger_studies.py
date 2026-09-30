@@ -1,42 +1,57 @@
-"""Read-only studies over the ledgers of finished walk-forward runs (ADR-0196).
+"""Read-only studies over the ledgers of finished walk-forward runs (ADR-0196, ADR-0197).
 
 A study reads what a walk-forward already recorded and writes nothing, like
 ``python -m dskit.pipeline skill``. Each walk summary directory lists its fold run
 directories (:func:`~dskit.pipeline.runs.walk_fold_dirs`); a fold's backtest node
 record (``<run dir>/nodes/NN-backtest.json``) names its ``report`` as a JSON artifact
 (:func:`~dskit.pipeline.driver.resolve_json_artifact` checks its size and digest), and
-the report's ledger holds one entry per entry date. One command ships::
+the report's ledger holds one entry per entry date. Two commands ship::
 
     python -m index_options.ledger_studies allocate <walk dir> <walk dir> [...] [--book model]
+    python -m index_options.ledger_studies hedge <core walk dir> <sleeve walk dir> [--book model]
 
-**allocate** asks where to sell, SPY or QQQ, on the dates both could trade. Give it one
-walk summary directory per underlying (two or more, each a different instrument).
+Both take the chosen book's ENTERED cells of each walk (``--book``: ``model``, the default,
+or ``always``; the ``implied`` book trades other strikes than the model's expectation was
+computed for), with their date, ``pnl_usd``, ``credit_usd`` (negative for a debit structure),
+``strikes``, the structure's legs and the entry's ``model_expected_pnl_usd``. The structure's
+legs are the report's own: the fixed structure's (:attr:`CondorQuoteBacktest.LEGS` and its
+subclasses') or, for the payoff selector, the cell's ``selected.structure`` looked up in
+:data:`~index_options.contracts.STRUCTURES`. Nothing here restates a structure or a loss rule:
+the most a structure can lose is :func:`~index_options.contracts.structure_max_loss`'s.
 
-1. Per walk it gathers the chosen book's ENTERED cells (``--book``: ``model``, the
-   default, or ``always``; the ``implied`` book trades other strikes than the model's
-   expectation was computed for), with their date, ``pnl_usd``, ``credit_usd``,
-   ``strikes``, the structure's legs and the entry's ``model_expected_pnl_usd``.
-2. The structure's legs are the report's own: the condor's or the put spread's for a
-   fixed-structure report, and for the payoff selector the cell's ``selected.structure``
-   looked up in :data:`~index_options.contracts.STRUCTURES`. Nothing here restates a
-   structure or a width: the widths are :func:`~index_options.contracts.structure_credit`'s.
-3. The ex-ante score of a cell is ``model_expected_pnl_usd / max_loss`` with
-   ``max_loss = multiplier x the widest vertical - credit_usd``: the expectation the model
-   had BEFORE the outcome, per unit of the money the structure can lose.
-4. On each date in the UNION of the walks' entry dates, the ``allocate`` series takes, among
-   the underlyings that entered that date, the cell with the highest score (an exact tie
-   goes to the earlier command-line argument) and its ``pnl_usd``. The ``equal`` series
-   takes the mean ``pnl_usd`` of those that entered. Each underlying ``alone`` is its own
-   entered cells. All series run in date order.
+Every study refuses, with one ``error: ...`` line and exit code 1, a walk that is not fully
+finished (its summary or any fold whose ``state`` is not ``ran``: a short walk would pass as a
+long one), a report that is not an archived-quote backtest, a bucket that differs
+(``dte_min`` / ``dte_max``: other buckets have other cadences) and any ledger cell it cannot
+use. A malformed command line exits 2. Everything printed is never decision-eligible: the
+backtests' fills are the end-of-day touch.
 
-One table is printed, one row per series: ``n``, the mean P&L, its Newey-West ``t`` (lags
-0: the backtests' own, so a float-noise-constant series reads 0.0), the lower-tail mean at
-the backtests' default tail (``cvar5_usd``) and the maximum drawdown, each from the same
-owner the backtests' metrics use. The study refuses, with one ``error: ...`` line and exit
-code 1, unless every fold of every walk declares the same ``dte_min`` / ``dte_max`` (one
-bucket: other buckets have other cadences), every report is an archived-quote backtest, and
-every ledger cell can be scored; exit code 0 otherwise. A malformed command line exits 2.
-Never decision-eligible: it reads backtests whose fills are the end-of-day touch.
+**allocate** asks where to sell, SPY or QQQ, on the dates both could trade. Give it one walk
+summary directory per underlying (two or more, each a different instrument). The ex-ante score
+of a cell is ``model_expected_pnl_usd / max_loss``: the expectation the model had BEFORE the
+outcome, per unit of the money the structure can lose. Every series is compared over the
+SHARED dates, those on which EVERY walk entered the book: the ``allocate`` series takes, on each,
+the cell with the highest score (an exact tie goes to the earlier command-line argument) and its
+``pnl_usd``, the ``equal`` series the mean ``pnl_usd`` of the walks, and each underlying
+``alone`` is its own cells on those dates. The output is three blocks: ``n_shared`` and that
+table; ``walks``, each one's instrument, entries, first and last entry date and fold count; and,
+labelled as NOT comparable with the first, the same rows over the UNION of the walks' entry dates
+(ADR-0196's original table, in which a series may cover dates another lacks).
+
+**hedge** asks whether a bought-convexity SLEEVE earns its place beside a CORE book, at the same
+tail risk. Give it the core walk (a condor, say) and the sleeve walk (a long straddle or a long
+spread), the same instrument and bucket. The two ledgers are joined on entry date; a date either
+lacks is counted and printed, never joined. On the joined dates ``core+sleeve`` is the sum of the
+two P&Ls, and ``k = CVaR5(core+sleeve) / CVaR5(core)`` is the scale at which a SMALLER core has
+the combined book's tail: ``k*core`` has the same CVaR5 by construction. The sleeve earns its
+place only if the mean of ``core+sleeve`` exceeds that of ``k*core``: the verdict line says which.
+The study refuses, for want of a tail to match, a core whose CVaR5 is not negative and a combined
+book whose CVaR5 is not (k would not be a positive scale).
+
+The table has one row per series: ``n``, the mean P&L, its Newey-West ``t`` (lags 0: the
+backtests' own, so a float-noise-constant series reads 0.0), the lower-tail mean at the
+backtests' default tail (``cvar5_usd``) and the maximum drawdown, each from the same owner the
+backtests' metrics use.
 """
 
 import argparse
@@ -48,23 +63,38 @@ from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.records import number_ok
-from dskit.pipeline.runs import NODES_DIR, walk_fold_dirs
+from dskit.pipeline.runs import NODES_DIR, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
-from .contracts import STRUCTURES, structure_credit
-from .nodes import CondorQuoteBacktest, PayoffSelectQuoteBacktest, PutSpreadQuoteBacktest
+from .contracts import STRUCTURES, structure_max_loss
+from .nodes import (
+    CondorQuoteBacktest,
+    LongCallSpreadQuoteBacktest,
+    LongPutSpreadQuoteBacktest,
+    LongStraddleQuoteBacktest,
+    PayoffSelectQuoteBacktest,
+    PutSpreadQuoteBacktest,
+    mean_or_zero,
+    t_or_zero,
+)
 
-__all__ = ["AllocationStudy", "EnteredCell", "LedgerStudy", "STUDIES", "WalkLedger", "main"]
+__all__ = ["BACKTEST_NODE", "COLUMNS", "CVAR_ALPHA", "STUDIES", "AllocationStudy", "EnteredCell",
+           "HedgeStudy", "LedgerStudy", "WalkLedger", "main"]
 
 #: The key the shipped grid documents give their backtest node.
 BACKTEST_NODE = "backtest"
 #: The tail level of the printed lower-tail mean: the backtests' own default.
 CVAR_ALPHA = CondorQuoteBacktest.DEFAULTS["cvar_alpha"]
+#: The tail as a percentage of the series (5 for alpha 0.95), named in the column and the messages.
+_TAIL_PERCENT = round(100 * (1 - CVAR_ALPHA))
 #: The printed table's columns; the tail column is named for the share of the tail.
-COLUMNS = ("series", "n", "mean_pnl_usd", "t", f"cvar{round(100 * (1 - CVAR_ALPHA))}_usd",
-           "max_drawdown_usd")
+COLUMNS = ("series", "n", "mean_pnl_usd", "t", f"cvar{_TAIL_PERCENT}_usd", "max_drawdown_usd")
+#: The state a finished walk, and each of its folds, records in ``walkforward.json``.
+_RAN = "ran"
 #: Report kind -> the legs of its one structure; the selector's kind has none (its cells say).
-_FIXED_LEGS = {cls.REPORT_KIND: cls.LEGS for cls in (CondorQuoteBacktest, PutSpreadQuoteBacktest)}
+_FIXED_LEGS = {cls.REPORT_KIND: cls.LEGS for cls in (
+    CondorQuoteBacktest, PutSpreadQuoteBacktest, LongStraddleQuoteBacktest,
+    LongCallSpreadQuoteBacktest, LongPutSpreadQuoteBacktest)}
 _QUOTE_KINDS = (*_FIXED_LEGS, PayoffSelectQuoteBacktest.REPORT_KIND)
 
 
@@ -78,7 +108,7 @@ class EnteredCell(NamedTuple):
     pnl_usd : float
         The cell's realized P&L.
     credit_usd : float
-        The credit received, net of fees.
+        The cash received at entry, net of fees; negative for a debit structure.
     strikes : tuple of float
         One strike per leg, in leg order.
     legs : tuple
@@ -107,9 +137,8 @@ class EnteredCell(NamedTuple):
 
     @property
     def max_loss_usd(self):
-        """The most the structure can lose: ``multiplier x`` its widest vertical less the credit."""
-        _credit, widths = structure_credit(self.legs, self.strikes, [(0.0, 0.0)] * len(self.legs))
-        return self.multiplier * max(widths) - self.credit_usd
+        """The most the structure can lose, :func:`~index_options.contracts.structure_max_loss`'s."""
+        return structure_max_loss(self.legs, self.strikes, self.credit_usd, self.multiplier)
 
     @property
     def score(self):
@@ -128,31 +157,53 @@ class WalkLedger:
     Raises
     ------
     ValueError
-        With one line, when the directory is not a walk, lists no ran fold, a fold has no
+        With one line, when the directory is not a walk, its summary or a fold did not finish
+        ``ran`` (or a fold lists no run directory), it lists no fold that ran, a fold has no
         readable backtest record or report artifact, a report is not an archived-quote
-        backtest, its folds disagree on the bucket, or it holds more than one instrument.
+        backtest or lacks its params or ledger, a ledger entry is not an object, its folds
+        disagree on the bucket, or it holds more than one instrument.
 
     Examples
     --------
     The model book's traded cells of one walk::
 
         ledger = WalkLedger(summary_dir)
-        ledger.bucket, ledger.label
-        # -> ((7, 10), "SPY")
+        ledger.bucket, ledger.label, ledger.n_folds
+        # -> ((7, 10), "SPY", 2)
         cells = ledger.cells("model")
     """
 
     def __init__(self, summary_dir):
         self.summary_dir = os.fspath(summary_dir)
         run_dirs = walk_fold_dirs(self.summary_dir)
+        self._require_ran()
         if not run_dirs:
             raise ValueError(f"{self.summary_dir} lists no fold that ran")
         self._reports = [(run_dir, self._checked(run_dir, self._load(run_dir)))
                          for run_dir in run_dirs]
+        #: How many folds the walk ran: all of them, for a walk that was not refused.
+        self.n_folds = len(run_dirs)
         self.bucket = self._one_bucket()
         self.instrument = self._one_instrument()
-        #: What the walk is called in the table: its instrument, else its directory.
+        #: What the walk is called in a table: its instrument, else its directory.
         self.label = self.instrument or os.path.basename(self.summary_dir.rstrip(os.sep))
+
+    def _require_ran(self):
+        """Refuse a walk whose summary, or any fold row, is not a finished ``ran`` one with a run directory."""
+        with open(os.path.join(self.summary_dir, WALKFORWARD_FILE), encoding="utf-8") as handle:
+            record = json.load(handle)
+        if record.get("state") != _RAN:
+            raise ValueError(f"{self.summary_dir}: the walk's state is {record.get('state')!r}, "
+                             f"not {_RAN!r}")
+        for fold in record["folds"]:
+            if not isinstance(fold, dict):
+                raise ValueError(f"{self.summary_dir}: a fold row is not an object: {fold!r}")
+            where = f"{self.summary_dir}: the fold for cutoff {fold.get('cutoff')!r}"
+            if fold.get("state") != _RAN:
+                raise ValueError(f"{where} is {fold.get('state')!r}, not {_RAN!r}: a short "
+                                 "walk would pass as a long one")
+            if not isinstance(fold.get("run_dir"), str):
+                raise ValueError(f"{where} lists no run directory")
 
     @staticmethod
     def _load(run_dir):
@@ -192,6 +243,9 @@ class WalkLedger:
                 or not all(number_ok(params.get(k)) for k in ("dte_min", "dte_max", "multiplier"))):
             raise ValueError(f"{run_dir}: the backtest report lacks dte_min, dte_max, "
                              "multiplier or its ledger")
+        for n, entry in enumerate(report["ledger"], start=1):
+            if not isinstance(entry, dict):
+                raise ValueError(f"{run_dir}: ledger entry {n} is not an object: {entry!r}")
         return report
 
     def _one_bucket(self):
@@ -217,7 +271,7 @@ class WalkLedger:
         names = {str(entry.get("instrument")) for _report, entry in self._entries()}
         if len(names) > 1:
             raise ValueError(f"{self.summary_dir} holds more than one instrument "
-                             f"({sorted(names)}): an allocation takes one walk per underlying")
+                             f"({sorted(names)}): a study takes one walk per underlying")
         return next(iter(names), None)
 
     @staticmethod
@@ -273,7 +327,7 @@ class WalkLedger:
         """
         found = {}
         for report, entry in self._entries():
-            books = entry.get("books") if isinstance(entry, dict) else None
+            books = entry.get("books")
             cell = books.get(book) if isinstance(books, dict) else None
             if not isinstance(entry.get("date"), str) or not isinstance(cell, dict):
                 raise ValueError(f"{self.summary_dir}: a ledger entry has no date or no "
@@ -282,7 +336,7 @@ class WalkLedger:
                 continue
             if entry["date"] in found:
                 raise ValueError(f"{self.summary_dir} repeats entry date {entry['date']}: "
-                                 "one traded cell per date is what an allocation compares")
+                                 "one traded cell per date is what a study compares")
             found[entry["date"]] = self._cell(report, entry, cell)
         return [found[day] for day in sorted(found)]
 
@@ -293,12 +347,13 @@ def _bucket_text(bucket):
 
 
 class LedgerStudy(ABC):
-    """A read-only study over finished walks: its arguments, its series and one printed table.
+    """A read-only study over finished walks: its arguments and its printed report.
 
     A member names its command (:attr:`name`), declares its arguments
-    (:meth:`add_arguments`) and supplies the series to tabulate (:meth:`series`); the base
-    prints every series through the same owners of the mean, ``t``, lower-tail mean and
-    drawdown the backtests report, so studies cannot disagree about a statistic.
+    (:meth:`add_arguments`; :meth:`add_book_argument` is the shared ``--book``) and supplies
+    its whole report (:meth:`report`). It prints each series through :meth:`series_table`,
+    which uses the same owners of the mean, ``t``, lower-tail mean and drawdown the backtests
+    report, so studies cannot disagree about a statistic.
 
     Examples
     --------
@@ -311,78 +366,105 @@ class LedgerStudy(ABC):
             def add_arguments(cls, parser):
                 parser.add_argument("walks", nargs="+")
 
-            def series(self, args):
-                return [(w, [c.pnl_usd for c in WalkLedger(w).cells("model")]) for w in args.walks]
+            def report(self, args):
+                return self.series_table(
+                    [(w, [c.pnl_usd for c in WalkLedger(w).cells("model")]) for w in args.walks])
 
-        print(Alone().table(args))
+        print(Alone().report(args))
     """
 
     #: The command that selects the study.
     name = ""
     #: One line for the command's ``--help``.
     summary = ""
+    #: The books whose cells the model's expectation was computed for.
+    BOOKS = CondorQuoteBacktest.FORECAST_BOOKS
+    DEFAULT_BOOK = "model"
 
     @classmethod
     @abstractmethod
     def add_arguments(cls, parser):
         """Declare the study's command-line arguments on ``parser``."""
 
+    @classmethod
+    def add_book_argument(cls, parser):
+        """Declare ``--book``: :attr:`BOOKS`, :attr:`DEFAULT_BOOK` by default.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            The study's subparser.
+        """
+        parser.add_argument("--book", choices=cls.BOOKS, default=cls.DEFAULT_BOOK,
+                            help=f"the book whose traded cells are read (default: "
+                                 f"{cls.DEFAULT_BOOK})")
+
     @abstractmethod
-    def series(self, args):
-        """Return ``[(label, pnls)]``: each named P&L series, in date order."""
+    def report(self, args):
+        """Return the study's whole printed output as text; refuse an input with ``ValueError``."""
+
+    @staticmethod
+    def _require_one_bucket(ledgers):
+        """Refuse walks whose buckets differ, naming two of them: other buckets have other cadences."""
+        first = ledgers[0]
+        for ledger in ledgers[1:]:
+            if ledger.bucket != first.bucket:
+                raise ValueError(
+                    f"mixed buckets: {_bucket_text(first.bucket)} in {first.summary_dir} but "
+                    f"{_bucket_text(ledger.bucket)} in {ledger.summary_dir}")
 
     @staticmethod
     def _row(label, pnls):
         """Return one series' printed cells: its count and the four statistics of its P&L."""
         # the backtests' own mean and t (0.0 below two values or with no variance), tail and path
-        owner = CondorQuoteBacktest
-        return [label, str(len(pnls)), f"{owner._mean(pnls):.2f}", f"{owner._t(pnls):.3f}",
+        return [label, str(len(pnls)), f"{mean_or_zero(pnls):.2f}", f"{t_or_zero(pnls):.3f}",
                 f"{lower_tail_mean(pnls, CVAR_ALPHA) if pnls else 0.0:.2f}",
                 f"{max_drawdown(pnls):.2f}"]
 
-    def table(self, args):
-        """Return the study's one table: :data:`COLUMNS`, then a row per series.
+    @staticmethod
+    def _grid(rows):
+        """Return ``rows`` of text cells as aligned lines: the first column left-aligned, the rest right-aligned."""
+        widths = [max(len(row[k]) for row in rows) for k in range(len(rows[0]))]
+        return "\n".join("  ".join(cell.ljust(width) if k == 0 else cell.rjust(width)
+                                   for k, (cell, width) in enumerate(zip(row, widths)))
+                         for row in rows)
+
+    @classmethod
+    def series_table(cls, series):
+        """Return one table: :data:`COLUMNS`, then a row per series.
 
         Parameters
         ----------
-        args : argparse.Namespace
-            The parsed arguments :meth:`add_arguments` declared.
+        series : list of tuple
+            ``(label, pnls)``: each named P&L series, in date order.
 
         Returns
         -------
         str
             The table, first column left-aligned and the rest right-aligned.
-
-        Raises
-        ------
-        ValueError
-            When the study refuses its inputs, with one line.
         """
-        rows = [list(COLUMNS)] + [self._row(label, pnls) for label, pnls in self.series(args)]
-        widths = [max(len(row[k]) for row in rows) for k in range(len(COLUMNS))]
-        return "\n".join("  ".join(cell.ljust(width) if k == 0 else cell.rjust(width)
-                                   for k, (cell, width) in enumerate(zip(row, widths)))
-                         for row in rows)
+        return cls._grid([list(COLUMNS)] + [cls._row(label, pnls) for label, pnls in series])
 
 
 class AllocationStudy(LedgerStudy):
     """Sell where the model expects most per unit at risk: SPY or QQQ, date by date.
 
     See the module docstring for the rule. One walk summary directory per underlying, all in
-    one bucket; ``--book`` picks the model's (default) or the always book's traded cells.
+    one bucket; ``--book`` picks the model's (default) or the always book's traded cells. Every
+    series is over the dates on which EVERY walk entered; the union of dates is a separate,
+    labelled block.
 
     Examples
     --------
-    From the command line, SPY first so it wins ties::
+    Build the study and print its report, SPY first so it wins ties::
 
-        python -m index_options.ledger_studies allocate runs/spy-walk runs/qqq-walk --book model
+        study = AllocationStudy()
+        args = argparse.Namespace(walks=["runs/spy-walk", "runs/qqq-walk"], book="model")
+        print(study.report(args))
     """
 
     name = "allocate"
-    summary = "allocate each entry date to the underlying with the higher ex-ante score"
-    #: The books whose cells the model's expectation was computed for.
-    BOOKS = CondorQuoteBacktest.FORECAST_BOOKS
-    DEFAULT_BOOK = "model"
+    summary = "allocate each shared entry date to the underlying with the higher ex-ante score"
 
     @classmethod
     def add_arguments(cls, parser):
@@ -396,21 +478,15 @@ class AllocationStudy(LedgerStudy):
         parser.add_argument("walks", nargs="+", metavar="WALK_DIR",
                             help="a walk-forward summary directory per underlying, in tie-break "
                                  "order (two or more, one bucket)")
-        parser.add_argument("--book", choices=cls.BOOKS, default=cls.DEFAULT_BOOK,
-                            help="the book whose traded cells are compared (default: model)")
+        cls.add_book_argument(parser)
 
-    @staticmethod
-    def _ledgers(directories):
+    @classmethod
+    def _ledgers(cls, directories):
         """Load every walk and refuse a lone walk, mixed buckets or one instrument twice."""
         if len(directories) < 2:
             raise ValueError("allocate needs at least two walk directories, one per underlying")
         ledgers = [WalkLedger(directory) for directory in directories]
-        for ledger in ledgers[1:]:
-            if ledger.bucket != ledgers[0].bucket:
-                raise ValueError(
-                    "mixed buckets: "
-                    f"{_bucket_text(ledgers[0].bucket)} in {ledgers[0].summary_dir} but "
-                    f"{_bucket_text(ledger.bucket)} in {ledger.summary_dir}")
+        cls._require_one_bucket(ledgers)
         seen = set()
         for ledger in (ledger for ledger in ledgers if ledger.instrument is not None):
             if ledger.instrument in seen:
@@ -419,8 +495,29 @@ class AllocationStudy(LedgerStudy):
             seen.add(ledger.instrument)
         return ledgers
 
-    def series(self, args):
-        """Return the allocation, the equal split and each underlying alone.
+    @staticmethod
+    def _series(ledgers, traded, dates):
+        """Return the allocation, the equal split and each walk alone, over ``dates`` (those a walk entered)."""
+        entered = [[walk[day] for walk in traded if day in walk] for day in dates]
+        allocate = [max(cells, key=lambda cell: cell.score).pnl_usd for cells in entered]
+        equal = [sum(cell.pnl_usd for cell in cells) / len(cells) for cells in entered]
+        alone = [(f"alone:{ledger.label}", [walk[day].pnl_usd for day in dates if day in walk])
+                 for ledger, walk in zip(ledgers, traded)]
+        return [("allocate", allocate), ("equal", equal), *alone]
+
+    @classmethod
+    def _walk_block(cls, ledgers, traded):
+        """Return the ``walks`` block: each walk's instrument, folds, entries and first and last entry date."""
+        rows = [["instrument", "folds", "entries", "first_entry", "last_entry", "walk"]]
+        for ledger, walk in zip(ledgers, traded):
+            days = sorted(walk)
+            rows.append([ledger.instrument or "-", str(ledger.n_folds), str(len(days)),
+                         days[0] if days else "-", days[-1] if days else "-",
+                         ledger.summary_dir])
+        return "walks\n" + cls._grid(rows)
+
+    def report(self, args):
+        """Return the three blocks: the shared-dates table, the walks and the union table.
 
         Parameters
         ----------
@@ -429,26 +526,154 @@ class AllocationStudy(LedgerStudy):
 
         Returns
         -------
-        list of tuple
-            ``(label, pnls)`` for ``allocate``, ``equal`` and one ``alone:<label>`` per walk.
+        str
+            ``n_shared`` and ``allocate``, ``equal`` and one ``alone:<label>`` per walk over the
+            shared dates; the ``walks`` table; the same series over the union of dates, labelled
+            as not comparable with the first.
+
+        Raises
+        ------
+        ValueError
+            When a walk is refused (see :class:`WalkLedger`), the walks differ in bucket, hold
+            one instrument twice, or fewer than two are given.
         """
         ledgers = self._ledgers(args.walks)
         traded = [{cell.date: cell for cell in ledger.cells(args.book)} for ledger in ledgers]
-        entered = [[walk[day] for walk in traded if day in walk]
-                   for day in sorted(set().union(*traded))]
-        allocate = [max(cells, key=lambda cell: cell.score).pnl_usd for cells in entered]
-        equal = [sum(cell.pnl_usd for cell in cells) / len(cells) for cells in entered]
-        alone = [(f"alone:{ledger.label}", [cell.pnl_usd for cell in walk.values()])
-                 for ledger, walk in zip(ledgers, traded)]
-        return [("allocate", allocate), ("equal", equal), *alone]
+        shared = sorted(set.intersection(*(set(walk) for walk in traded)))
+        union = sorted(set().union(*traded))
+        return "\n\n".join([
+            f"n_shared: {len(shared)} entry dates on which every walk entered the {args.book} "
+            "book\n" + self.series_table(self._series(ledgers, traded, shared)),
+            self._walk_block(ledgers, traded),
+            "union of dates, NOT comparable with the table above (each series covers every date "
+            "its walks entered)\n" + self.series_table(self._series(ledgers, traded, union))])
 
 
-#: The studies by command; ADR-0197 adds ``hedge`` here.
-STUDIES = {AllocationStudy.name: AllocationStudy}
+class HedgeStudy(LedgerStudy):
+    """Test whether a bought-convexity sleeve beats a smaller core at the same tail risk.
+
+    See the module docstring for the rule. The core walk and the sleeve walk are one
+    instrument and one bucket; ``--book`` picks the model's (default) or the always book's
+    traded cells of both.
+
+    Examples
+    --------
+    Build the study and print its report for a condor core and a long-straddle sleeve::
+
+        study = HedgeStudy()
+        args = argparse.Namespace(core="runs/spy-condor", sleeve="runs/spy-straddle",
+                                  book="model")
+        print(study.report(args))
+    """
+
+    name = "hedge"
+    summary = "does the sleeve beat a smaller core at the same CVaR5? core+sleeve against k*core"
+
+    @classmethod
+    def add_arguments(cls, parser):
+        """Take the core walk, the sleeve walk and the book to read.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            The ``hedge`` subparser.
+        """
+        parser.add_argument("core", metavar="CORE_WALK_DIR",
+                            help="the walk-forward summary directory of the core book")
+        parser.add_argument("sleeve", metavar="SLEEVE_WALK_DIR",
+                            help="the walk-forward summary directory of the sleeve (same "
+                                 "instrument and bucket)")
+        cls.add_book_argument(parser)
+
+    @classmethod
+    def _pair(cls, core_dir, sleeve_dir):
+        """Load the two walks and refuse a pair of different instruments or buckets."""
+        core, sleeve = WalkLedger(core_dir), WalkLedger(sleeve_dir)
+        if None not in (core.instrument, sleeve.instrument) and core.instrument != sleeve.instrument:
+            raise ValueError(f"a hedge is one instrument: the core {core.summary_dir} is "
+                             f"{core.instrument} but the sleeve {sleeve.summary_dir} is "
+                             f"{sleeve.instrument}")
+        cls._require_one_bucket([core, sleeve])
+        return core, sleeve
+
+    @staticmethod
+    def _scale(core, combined):
+        """Return ``k``, the tail of ``combined`` over the tail of ``core``; refuse where either has no tail loss to match."""
+        core_tail = lower_tail_mean(core, CVAR_ALPHA)
+        if not core_tail < 0:
+            raise ValueError(f"the core has no tail loss to match on the joined dates: its "
+                             f"CVaR{_TAIL_PERCENT} is {core_tail:.2f}, not negative")
+        combined_tail = lower_tail_mean(combined, CVAR_ALPHA)
+        if not combined_tail < 0:
+            raise ValueError(f"core+sleeve has no tail loss on the joined dates: its "
+                             f"CVaR{_TAIL_PERCENT} is {combined_tail:.2f}, not negative, so no "
+                             "smaller core matches it (k would not be a positive scale)")
+        return combined_tail / core_tail
+
+    @staticmethod
+    def _only(label, days):
+        """Return the line naming the dates only ``label``'s walk entered."""
+        return f"only in {label} ({len(days)}): {', '.join(days) if days else 'none'}"
+
+    @staticmethod
+    def _verdict(combined, scaled):
+        """Return the verdict line: the sleeve earns its place only if core+sleeve's mean exceeds k*core's."""
+        together, smaller = mean_or_zero(combined), mean_or_zero(scaled)
+        if together > smaller:
+            return (f"verdict: core+sleeve mean {together:.2f} exceeds k*core mean "
+                    f"{smaller:.2f}: the sleeve earns its place")
+        return (f"verdict: core+sleeve mean {together:.2f} does not exceed k*core mean "
+                f"{smaller:.2f}: the sleeve does not earn its place")
+
+    def report(self, args):
+        """Return the joined-date facts, the four-row table and the verdict line.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            ``core`` and ``sleeve`` (directories) and ``book``.
+
+        Returns
+        -------
+        str
+            The facts (joined dates, the dates in only one walk, ``k``), the table of
+            ``core+sleeve``, ``k*core``, ``core`` and ``sleeve`` over the joined dates, and
+            the verdict, in three blocks.
+
+        Raises
+        ------
+        ValueError
+            When a walk is refused (see :class:`WalkLedger`), the walks differ in instrument
+            or bucket, share no entry date, or the core or the combined book has no tail loss.
+        """
+        core, sleeve = self._pair(args.core, args.sleeve)
+        core_cells = {cell.date: cell for cell in core.cells(args.book)}
+        sleeve_cells = {cell.date: cell for cell in sleeve.cells(args.book)}
+        joined = sorted(core_cells.keys() & sleeve_cells.keys())
+        if not joined:
+            raise ValueError(f"the two walks share no entry date on which both entered the "
+                             f"{args.book} book")
+        core_pnl = [core_cells[day].pnl_usd for day in joined]
+        sleeve_pnl = [sleeve_cells[day].pnl_usd for day in joined]
+        combined = [c + s for c, s in zip(core_pnl, sleeve_pnl)]
+        k = self._scale(core_pnl, combined)
+        scaled = [k * pnl for pnl in core_pnl]
+        facts = "\n".join([
+            f"joined: {len(joined)} entry dates on which both walks entered the {args.book} book",
+            self._only("core", sorted(core_cells.keys() - sleeve_cells.keys())),
+            self._only("sleeve", sorted(sleeve_cells.keys() - core_cells.keys())),
+            f"k: {k:.4f} = CVaR{_TAIL_PERCENT}(core+sleeve) / CVaR{_TAIL_PERCENT}(core)"])
+        table = self.series_table([("core+sleeve", combined), ("k*core", scaled),
+                                   ("core", core_pnl), ("sleeve", sleeve_pnl)])
+        return "\n\n".join([facts, table, self._verdict(combined, scaled)])
+
+
+#: The studies by command.
+STUDIES = {study.name: study for study in (AllocationStudy, HedgeStudy)}
 
 
 def main(argv=None):
-    """Run one study: print its table and return 0, or print one error line and return 1.
+    """Run one study: print its report and return 0, or print one error line and return 1.
 
     Parameters
     ----------
@@ -458,7 +683,7 @@ def main(argv=None):
     Returns
     -------
     int
-        ``0`` when the table was printed, ``1`` when an input was refused. A malformed
+        ``0`` when the report was printed, ``1`` when an input was refused. A malformed
         command line exits ``2`` through :mod:`argparse`.
 
     Examples
@@ -476,11 +701,11 @@ def main(argv=None):
                                                 description=study.summary))
     args = parser.parse_args(argv)
     try:
-        table = STUDIES[args.study]().table(args)
+        text = STUDIES[args.study]().report(args)
     except ValueError as exc:
         print(f"error: {exc}")
         return 1
-    print(table)
+    print(text)
     return 0
 
 

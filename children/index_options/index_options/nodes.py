@@ -1,4 +1,4 @@
-"""Thin, non-serving Nodes binding condor diagnostics and the condor and put-spread backtests."""
+"""Thin, non-serving Nodes binding condor diagnostics and the condor, put-spread and debit-structure backtests."""
 
 import math
 from abc import ABC, abstractmethod
@@ -30,6 +30,9 @@ from dskit.pipeline.stats import (
 
 from .contracts import (
     CONDOR_LEGS,
+    LONG_CALL_SPREAD_LEGS,
+    LONG_PUT_SPREAD_LEGS,
+    LONG_STRADDLE_LEGS,
     PUT_SPREAD_LEGS,
     STRUCTURES,
     CashIndexContract,
@@ -46,12 +49,75 @@ from .contracts import (
     dividends_paid,
     quote_problems,
     structure_credit,
+    structure_max_loss,
+    structure_payoff,
 )
-from .distribution import CondorGeometry, condor_payoff, structure_payoff
+from .distribution import CondorGeometry, condor_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
-           "CondorQuoteBacktest", "PayoffSelectQuoteBacktest", "PutSpreadQuoteBacktest",
-           "VolRegimeSignals", "VolSizingWeights"]
+           "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "LongCallSpreadQuoteBacktest",
+           "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
+           "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
+           "t_or_zero"]
+
+
+def mean_or_zero(values):
+    """Return the mean of ``values``, ``0.0`` when there are none.
+
+    The one owner (ADR-0197, from ADR-0196 review B-F1) of the child's "0.0 when
+    undefined" mean: the backtests' metrics and the ledger studies' tables both
+    print it, so a statistic cannot read differently in the two.
+
+    Parameters
+    ----------
+    values : sequence of float
+        Numbers (booleans count as 0 and 1, which makes a hit rate a mean).
+
+    Returns
+    -------
+    float
+        ``sum(values) / len(values)``, ``0.0`` for an empty sequence.
+
+    Examples
+    --------
+    A hit rate over four trades::
+
+        mean_or_zero([True, False, True, True])
+        # -> 0.75
+    """
+    return sum(values) / len(values) if values else 0.0
+
+
+def t_or_zero(values):
+    """Return the ``lags=0`` Newey-West t of the mean, ``0.0`` when it is undefined.
+
+    The one owner (ADR-0197) of the child's "0.0 when undefined" t: fewer than two
+    values, or a series the stats owner finds no variance in
+    (:data:`~dskit.pipeline.stats.NO_VARIANCE_RTOL`'s rule, never restated here).
+    Valid because the positions it summarizes never overlap.
+
+    Parameters
+    ----------
+    values : sequence of float
+        Finite numbers.
+
+    Returns
+    -------
+    float
+        ``mean / (sd / sqrt(n))`` with ``sd`` on divisor ``n`` (the stats
+        owner's), ``0.0`` when undefined.
+
+    Examples
+    --------
+    A constant series has no variance and so no t::
+
+        t_or_zero([1.7, 1.7, 1.7])
+        # -> 0.0
+    """
+    if len(values) < 2:
+        return 0.0
+    t = newey_west_mean(list(values), lags=0)["t"]
+    return 0.0 if t is None else t
 
 
 class CondorPayoffDiagnostic(Node):
@@ -432,24 +498,11 @@ class _CondorBacktestBase(Node, ABC):
     FORWARD_FIELD = "close"
 
     @staticmethod
-    def _mean(values):
-        """Return the mean of ``values``; 0.0 when there are none."""
-        return sum(values) / len(values) if values else 0.0
-
-    @classmethod
-    def _pnl_stats(cls, prefix, pnls, start=0):
+    def _pnl_stats(prefix, pnls, start=0):
         """Return ``<prefix>_total_pnl_usd`` / ``_mean_pnl_usd`` / ``_hit_rate`` over ``pnls`` (a hit is ``p > 0``); ``start`` is the total's empty value."""
         return {f"{prefix}_total_pnl_usd": sum(pnls, start),
-                f"{prefix}_mean_pnl_usd": cls._mean(pnls),
-                f"{prefix}_hit_rate": cls._mean([p > 0 for p in pnls])}
-
-    @staticmethod
-    def _t(values):
-        """Return the ``lags=0`` Newey-West t of the mean; 0.0 for under two values or where the stats owner finds no variance."""
-        if len(values) < 2:
-            return 0.0
-        t = newey_west_mean(list(values), lags=0)["t"]
-        return 0.0 if t is None else t
+                f"{prefix}_mean_pnl_usd": mean_or_zero(pnls),
+                f"{prefix}_hit_rate": mean_or_zero([p > 0 for p in pnls])}
 
     @staticmethod
     def _short_q_ok(value):
@@ -457,13 +510,18 @@ class _CondorBacktestBase(Node, ABC):
         return number_ok(value) and 0 < value < 0.5
 
     @classmethod
-    def _shared_problems(cls, problems, params):
-        """Check the knobs every member declares: split, short_q, multiplier, fees, gate, tail."""
-        if params.get("split") not in SPLIT_NAMES:
-            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
+    def _quantile_problems(cls, problems, params):
+        """Check the quantile knob a member places its strikes with: ``short_q`` here; a member with another overrides it."""
         q = params.get("short_q")
         if not cls._short_q_ok(q):
             problems.append(f"short_q must be in (0, 0.5), got {q!r}")
+
+    @classmethod
+    def _shared_problems(cls, problems, params):
+        """Check the knobs every member declares: split, its quantile, multiplier, fees, gate, tail."""
+        if params.get("split") not in SPLIT_NAMES:
+            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
+        cls._quantile_problems(problems, params)
         check_int_param(problems, "multiplier", params.get("multiplier"), ge=1)
         fee = params.get("fee_per_leg")
         if not number_ok(fee) or fee < 0:
@@ -620,8 +678,8 @@ class _CondorBacktestBase(Node, ABC):
             for state, label in ((True, "closed"), (False, "open")):
                 pnls = by_state[state]
                 metrics.update({f"{book}_{field}_{label}_n": len(pnls),
-                                f"{book}_{field}_{label}_mean_pnl_usd": self._mean(pnls),
-                                f"{book}_{field}_{label}_t": self._t(pnls)})
+                                f"{book}_{field}_{label}_mean_pnl_usd": mean_or_zero(pnls),
+                                f"{book}_{field}_{label}_t": t_or_zero(pnls)})
             metrics[f"{book}_{field}_unknown_n"] = len(by_state[None])
         return metrics
 
@@ -640,10 +698,10 @@ class _CondorBacktestBase(Node, ABC):
             total = sum(sized, 0.0)
             metrics.update({
                 f"{book}_{field}_n": len(sized),
-                f"{book}_{field}_mean_weight": self._mean(weights),
+                f"{book}_{field}_mean_weight": mean_or_zero(weights),
                 f"{book}_{field}_total_pnl_usd": total,
                 f"{book}_{field}_pnl_per_weight": total / sum(weights) if weights else 0.0,
-                f"{book}_{field}_t": self._t(sized),
+                f"{book}_{field}_t": t_or_zero(sized),
                 f"{book}_{field}_cvar_usd": lower_tail_mean(sized, alpha) if sized else 0.0,
                 f"{book}_{field}_max_drawdown_usd": max_drawdown(sized),
                 f"{book}_{field}_unknown_n": n_traded - len(sized)})
@@ -664,7 +722,7 @@ class _CondorBacktestBase(Node, ABC):
                 **self._pnl_stats(book, pnls),
                 f"{book}_cvar_usd": lower_tail_mean(pnls, alpha) if pnls else 0.0,
                 f"{book}_max_drawdown_usd": max_drawdown(pnls),
-                f"{book}_mean_credit_usd": self._mean([c["credit_usd"] for c in traded]),
+                f"{book}_mean_credit_usd": mean_or_zero([c["credit_usd"] for c in traded]),
             })
             metrics.update({f"{book}_{k}": v for k, v in self._book_extras(traded).items()})
             entered = [entry for entry in ledger if entry["books"][book]["entered"]]
@@ -1099,7 +1157,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
             problems.append(f"missing params: {missing}")
         cls._shared_problems(problems, params)
         for knob in ("wing_z", "max_abs_log_moneyness"):
-            if not price_ok(params.get(knob)):
+            if knob in cls._REQUIRED and not price_ok(params.get(knob)):
                 problems.append(f"{knob} must be a positive number, got {params.get(knob)!r}")
         for knob in ("dte_min", "dte_max", "label_horizon"):
             check_int_param(problems, knob, params.get(knob), ge=1)
@@ -1312,10 +1370,15 @@ class CondorQuoteBacktest(_CondorBacktestBase):
                 "reason": reason, "expected_pnl_usd": None, "side_pnl_usd": None,
                 "delta": None, "equity_pnl_usd": None}
 
-    def _priced(self, legs, strikes, quotes):
-        """Return ``(credit_usd, widths, reason)``: the credit net of fees, and why a book must skip it (or ``None``)."""
+    def _net_credit(self, legs, strikes, quotes):
+        """Return ``(credit_usd, per_share, widths)``: the cash at entry net of fees (negative for a debit), the per-share credit and the vertical widths."""
         per_share, widths = structure_credit(legs, strikes, quotes)
         credit = per_share * self.params["multiplier"] - len(legs) * self.params["fee_per_leg"]
+        return credit, per_share, widths
+
+    def _priced(self, legs, strikes, quotes):
+        """Return ``(credit_usd, widths, reason)``: the credit net of fees, and why a book must skip it (or ``None``)."""
+        credit, per_share, widths = self._net_credit(legs, strikes, quotes)
         if credit <= 0:
             return credit, widths, "nonpositive_credit"
         if per_share >= min(widths):
@@ -1482,9 +1545,9 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         residuals = [c["pnl_usd"] - c["equity_pnl_usd"] for c in benchmarked]
         return {
             "delta_equity_total_usd": sum((c["equity_pnl_usd"] for c in benchmarked), 0.0),
-            "residual_mean_pnl_usd": self._mean(residuals),
-            "residual_t": self._t(residuals),
-            "pnl_t": self._t([c["pnl_usd"] for c in traded]),
+            "residual_mean_pnl_usd": mean_or_zero(residuals),
+            "residual_t": t_or_zero(residuals),
+            "pnl_t": t_or_zero([c["pnl_usd"] for c in traded]),
             "n_no_delta": len(traded) - len(benchmarked),
         }
 
@@ -1552,6 +1615,326 @@ class PutSpreadQuoteBacktest(CondorQuoteBacktest):
     UNITS = "USD per put spread, one contract per leg"
 
 
+#: A debit gate's reasons replace the condor's credit gates' (the one family of book reasons).
+_DEBIT_BOOK_REASONS = tuple(
+    {"nonpositive_credit": "nonpositive_debit",
+     "credit_not_below_width": "debit_not_below_width"}.get(reason, reason)
+    for reason in CondorQuoteBacktest.BOOK_REASONS)
+
+
+class DebitStructureQuoteBacktest(CondorQuoteBacktest):
+    """Non-overlapping long (debit) structures on one underlying, priced from archived quotes.
+
+    ADR-0197. The condor backtest where the structure is BOUGHT: a long straddle or a long vertical
+    spread, the positive-convexity side the credit structures sell. The walk, expiry, settlement,
+    American charge, wing split, delta benchmark, ADR-0194 ``gate_fields`` and ADR-0196
+    ``size_fields`` are :class:`CondorQuoteBacktest`'s; a member supplies only where its strikes
+    go (:meth:`_target_strikes`, the one abstract hook) and its legs
+    (:data:`~index_options.contracts.LONG_STRADDLE_LEGS` and the long spreads').
+
+    **Debit.** A long leg buys at the ask and a short leg sells at the bid, plus ``len(LEGS) x
+    fee_per_leg``. The cell's ``credit_usd`` is that cash, the signed entry credit of every
+    archived-quote cell: NEGATIVE for a debit (``credit_usd = -debit``), so ``pnl_usd = credit_usd
+    + multiplier x structure_payoff(S_T) - charge`` is the condor's formula unchanged, and
+    ``<book>_mean_credit_usd`` reports the mean of those negative numbers. A book refuses an entry
+    as ``nonpositive_debit`` when the debit, the structure's maximum loss
+    (:func:`~index_options.contracts.structure_max_loss`), is not positive, and, for a spread, as
+    ``debit_not_below_width`` when the per-share debit reaches the width (it could then only lose).
+    These replace the condor's two credit gates in :attr:`BOOK_REASONS`; the other reasons keep
+    their meanings. The **model** book enters when ``E_P[pnl]`` (over the forecast draws, at the
+    horizon scale, as for the condor) exceeds ``min_edge_usd``; **always** enters every time the
+    debit gate passes; **implied** places the same strikes by the VIX-lognormal quantile at the
+    chain's ATM iv (``z_p - s / 2``, the condor's drift) and needs an ATM iv (``no_atm_iv``).
+    Report ``kind`` and ``units`` name the structure. Role ``score``, forbidden for serving,
+    never decision-eligible: fills are the end-of-day touch at zero latency.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        Required: ``split``, ``multiplier`` (int >= 1), ``fee_per_leg`` (>= 0), ``dte_min`` /
+        ``dte_max`` (ints, 1 <= min <= max), ``max_abs_log_moneyness`` (> 0), ``label_horizon``
+        (int >= 1) and ``carry_rate`` (>= 0). Optional: ``min_edge_usd`` (0), ``cvar_alpha``
+        (0.95), ``gate_fields`` and ``size_fields``. A member adds its own (no ``short_q``).
+
+    Examples
+    --------
+    A member that puts a long straddle at the strike nearest the forward::
+
+        class NearestStrike(DebitStructureQuoteBacktest):
+            LEGS = LONG_STRADDLE_LEGS
+            SIDES = ("put", "call")
+
+            def _target_strikes(self, listed, forward, scale, quantile):
+                strike = min(listed["put"].keys() & listed["call"].keys(),
+                             key=lambda k: abs(k - forward))
+                return (strike, strike), None
+
+        node = NearestStrike("backtest", {
+            "split": "val", "multiplier": 100, "fee_per_leg": 0.65, "dte_min": 5, "dte_max": 10,
+            "max_abs_log_moneyness": 0.2, "label_horizon": 5, "carry_rate": 0.055})
+    """
+
+    BOOK_REASONS = _DEBIT_BOOK_REASONS
+    _REQUIRED = tuple(knob for knob in CondorQuoteBacktest._REQUIRED
+                      if knob not in ("short_q", "wing_z"))
+    _PARAMS = tuple(sorted(_REQUIRED + tuple(CondorQuoteBacktest.DEFAULTS)
+                           + _CondorBacktestBase.SHARED_OPTIONAL))
+
+    @classmethod
+    def _quantile_problems(cls, problems, params):
+        """Check nothing: a member with no quantile knob has none to check."""
+
+    @abstractmethod
+    def _target_strikes(self, listed, forward, scale, quantile):
+        """Place this structure's strikes on one expiry's listed rows.
+
+        Parameters
+        ----------
+        listed : dict
+            ``{right: {strike: chain row}}`` for the entry's expiry.
+        forward : float
+            The entry close.
+        scale : float
+            The horizon scale the targets are standardized by: the model's ``s'`` for the forecast
+            books, the chain's own ``iv sqrt(DTE / 365)`` for the implied book.
+        quantile : callable
+            ``quantile(p)`` is the standardized target at probability ``p``: the forecast's own
+            for the forecast books, the VIX-lognormal's ``z_p - s / 2`` for the implied book.
+
+        Returns
+        -------
+        tuple
+            ``(strikes, None)`` with one strike per leg in :attr:`LEGS` order, or
+            ``(None, reason)`` with a reason in :attr:`BOOK_REASONS`.
+        """
+
+    def _priced(self, legs, strikes, quotes):
+        """Return ``(credit_usd, widths, reason)``: the signed cash at entry (a debit is negative), and why a book must skip the debit (or ``None``)."""
+        credit, per_share, widths = self._net_credit(legs, strikes, quotes)
+        if not structure_max_loss(legs, strikes, credit, self.params["multiplier"]) > 0:
+            return credit, widths, "nonpositive_debit"
+        if widths and -per_share >= min(widths):
+            return credit, widths, "debit_not_below_width"
+        return credit, widths, None
+
+    def _forecast_books(self, facts, scale):
+        """Return the model and always cells: the structure's strikes at the forecast's own quantiles."""
+        strikes, reason = self._target_strikes(facts.listed, facts.forward, scale,
+                                               facts.dist.quantile)
+        return {book: self._book(book, strikes, reason, scale, facts)
+                for book in self.FORECAST_BOOKS}
+
+    def _implied_book(self, facts, atm_iv):
+        """Return the implied cell: the same strike rule at the VIX-lognormal quantiles, ``no_atm_iv`` without an ATM iv."""
+        if atm_iv is None:
+            return self._book("implied", None, "no_atm_iv", None, facts)
+        scale = atm_iv * math.sqrt(facts.dte / 365)
+        strikes, reason = self._target_strikes(
+            facts.listed, facts.forward, scale,
+            lambda p: NormalDist().inv_cdf(p) - scale / 2)
+        return self._book("implied", strikes, reason, scale, facts)
+
+
+class LongStraddleQuoteBacktest(DebitStructureQuoteBacktest):
+    """Non-overlapping long straddles on one underlying, from archived quotes.
+
+    ADR-0197. A long put and a long call at ONE strike
+    (:data:`~index_options.contracts.LONG_STRADDLE_LEGS`): the strike nearest the entry close
+    among those within ``max_abs_log_moneyness`` where BOTH the put and the call can be bought (a
+    positive ask and an ask size; a bid is irrelevant), the LOWER strike on a tie. A strike list
+    is ``(K, K)``. It places its strike without the forecast's quantiles, so it has no quantile
+    knob and all three books trade the same strike; they differ only in whether they enter (the
+    model on ``E_P[pnl] > min_edge_usd``) and in ``no_atm_iv``, which the implied book alone
+    reports. No candidate strike is ``no_quotable_strike``. The straddle holds no short leg, so
+    there is no American charge and no width (``debit_not_below_width`` cannot occur); a debit
+    is refused only as ``nonpositive_debit``. The evidence (Johnson 2017) is that long straddles pay
+    when the VIX curve is inverted at short horizons: the ADR-0194 gate study measures that. See
+    :class:`DebitStructureQuoteBacktest` for the debit, the books and the metrics.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        Exactly :class:`DebitStructureQuoteBacktest`'s; no ``short_q``, ``long_q`` or ``wing_z``.
+
+    Examples
+    --------
+    SPY's 2-3 day cell::
+
+        node = LongStraddleQuoteBacktest("backtest", {
+            "split": "val", "multiplier": 100, "fee_per_leg": 0.65, "dte_min": 2, "dte_max": 3,
+            "max_abs_log_moneyness": 0.07, "label_horizon": 2, "carry_rate": 0.055})
+        out = node.run(ctx, {"forecasts": rows, "chain": quotes, "underlying": closes})
+        out["metrics"]["model_total_pnl_usd"]
+    """
+
+    LEGS = LONG_STRADDLE_LEGS
+    SIDES = _sides_of(LEGS)
+    REPORT_KIND = "archived_quote_long_straddle_backtest"
+    UNITS = "USD per long straddle, one contract per leg"
+
+    def _target_strikes(self, listed, forward, scale, quantile):
+        """Return the strike nearest ``forward`` (the lower on a tie) where both legs can be bought, inside the band; else ``no_quotable_strike``."""
+        band = self.params["max_abs_log_moneyness"]
+        both = [k for k in listed["put"].keys() & listed["call"].keys()
+                if k > 0 and abs(math.log(k / forward)) <= band
+                and self._quotable(listed["put"][k], "buy")
+                and self._quotable(listed["call"][k], "buy")]
+        if not both:
+            return None, "no_quotable_strike"
+        strike = min(both, key=lambda k: (abs(k - forward), k))
+        return (strike, strike), None
+
+
+class _LongVerticalQuoteBacktest(DebitStructureQuoteBacktest):
+    """The strike rule the two long verticals share: a bought leg at a forecast quantile, a sold leg ``wing_z`` beyond it.
+
+    A member supplies :attr:`LEGS` (two legs of one right, the long one nearer the money), its
+    report names and its default ``long_q`` (:attr:`DEFAULT_LONG_Q`). The bought leg targets
+    ``forward x exp(s' Q(long_q))`` and the sold leg ``wing_z`` standardized units further from
+    the money (up for calls, down for puts). Each target snaps OUTWARD, away from the money (up
+    for calls, down for puts, the condor's direction), onto the nearest strike that is
+    quotable for ITS side: the bought leg needs an ask and an ask size, the sold leg a bid and
+    a bid size, and the sold leg must also lie strictly beyond the bought one. A target beyond
+    ``max_abs_log_moneyness`` is ``target_outside_band``, a leg with no such strike
+    ``no_quotable_strike``, a non-increasing or non-positive geometry ``degenerate_strikes``,
+    classified in that order.
+    """
+
+    _REQUIRED = DebitStructureQuoteBacktest._REQUIRED + ("wing_z",)
+
+    @classmethod
+    def _quantile_problems(cls, problems, params):
+        """Check ``long_q``: a probability strictly inside (0, 1); it may be left to its default."""
+        q = params.get("long_q", cls.DEFAULTS["long_q"])
+        if not (number_ok(q) and 0 < q < 1):
+            problems.append(f"long_q must be in (0, 1), got {q!r}")
+
+    def _snap_outward(self, rows, targets, sides, direction):
+        """Snap each target, in order from the money outward, onto the nearest strike at or beyond it that is quotable for its side and strictly beyond the one before; ``None`` when a leg has none."""
+        picked = []
+        for target, side in zip(targets, sides):
+            beyond = [k for k, row in rows.items()
+                      if direction * (k - target) >= 0
+                      and (not picked or direction * (k - picked[-1]) > 0)
+                      and self._quotable(row, side)]
+            if not beyond:
+                return None
+            picked.append(min(beyond, key=lambda k: direction * k))
+        return tuple(picked)
+
+    def _target_strikes(self, listed, forward, scale, quantile):
+        """Return ``(strikes, None)`` low to high, or ``(None, reason)``: band, then quotability, then geometry."""
+        right = self.LEGS[0][0]
+        direction = 1 if right == "call" else -1
+        outward = self.LEGS if direction > 0 else self.LEGS[::-1]
+        sides = ["buy" if sign > 0 else "sell" for _right, sign in outward]
+        z_long = quantile(self._knob("long_q"))
+        z_by_side = {"buy": z_long, "sell": z_long + direction * self.params["wing_z"]}
+        exponents = [z_by_side[side] for side in sides]
+        if self._outside_band(scale, exponents):
+            return None, "target_outside_band"
+        picked = self._snap_outward(listed[right], [forward * math.exp(scale * z)
+                                                    for z in exponents], sides, direction)
+        if picked is None:
+            return None, "no_quotable_strike"
+        return self._geometry(picked if direction > 0 else picked[::-1])
+
+
+class LongCallSpreadQuoteBacktest(_LongVerticalQuoteBacktest):
+    """Non-overlapping long call spreads on one underlying, from archived quotes.
+
+    ADR-0197. A long call under a short call
+    (:data:`~index_options.contracts.LONG_CALL_SPREAD_LEGS`): the bullish, floored-loss
+    structure that carries the equity premium through the option market's least overpriced leg
+    (a hypothesis the backtest tests). The long call sits at the forecast's ``long_q`` quantile
+    (default 0.5, about at the money) and the short call ``wing_z`` standardized units above,
+    each snapped UP (outward) onto a strike quotable for its side, the short one strictly above
+    the long (see :class:`_LongVerticalQuoteBacktest`). The call wing alone holds the short call,
+    so only the call dividend is charged, and ``side_pnl_usd`` has the one side ``"call"``. The
+    delta benchmark is positive. See :class:`DebitStructureQuoteBacktest` for the debit, the
+    books and the metrics.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        :class:`DebitStructureQuoteBacktest`'s, plus required ``wing_z`` (> 0) and optional
+        ``long_q`` (in (0, 1), default :attr:`DEFAULT_LONG_Q`).
+
+    Examples
+    --------
+    SPY's 30-45 day cell, an at-the-money long call and a short call 0.65 units above::
+
+        node = LongCallSpreadQuoteBacktest("backtest", {
+            "split": "val", "long_q": 0.5, "wing_z": 0.65, "multiplier": 100,
+            "fee_per_leg": 0.65, "dte_min": 30, "dte_max": 45,
+            "max_abs_log_moneyness": 0.2, "label_horizon": 22, "carry_rate": 0.055})
+        out = node.run(ctx, {"forecasts": rows, "chain": quotes, "underlying": closes})
+        out["metrics"]["model_call_total_pnl_usd"]
+    """
+
+    #: The forecast quantile the long call sits at when a document does not say.
+    DEFAULT_LONG_Q = 0.5
+    DEFAULTS = {**CondorQuoteBacktest.DEFAULTS, "long_q": DEFAULT_LONG_Q}
+    _PARAMS = tuple(sorted(_LongVerticalQuoteBacktest._REQUIRED + tuple(DEFAULTS)
+                           + _CondorBacktestBase.SHARED_OPTIONAL))
+    LEGS = LONG_CALL_SPREAD_LEGS
+    SIDES = _sides_of(LEGS)
+    REPORT_KIND = "archived_quote_long_call_spread_backtest"
+    UNITS = "USD per long call spread, one contract per leg"
+
+
+class LongPutSpreadQuoteBacktest(_LongVerticalQuoteBacktest):
+    """Non-overlapping long put spreads on one underlying, from archived quotes.
+
+    ADR-0197. A short put under a long put
+    (:data:`~index_options.contracts.LONG_PUT_SPREAD_LEGS`), the bought put the HIGHER strike: the
+    bearish, floored-loss structure a hedge sleeve can be built from (bought protection has a
+    negative standalone expectation, which is why the hedge study asks whether it beats a smaller
+    core at the same tail risk). The long put sits at the forecast's ``long_q`` quantile (default
+    0.35, below the median) and the short put ``wing_z`` standardized units below, each snapped
+    DOWN (outward) onto a strike quotable for its side, the short one strictly below the long
+    (see :class:`_LongVerticalQuoteBacktest`). Strikes are listed low to high, short put
+    first. Only the short put's carry is charged, and ``side_pnl_usd`` has the one side
+    ``"put"``. The delta benchmark is negative. See :class:`DebitStructureQuoteBacktest` for
+    the debit, the books and the metrics.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        :class:`DebitStructureQuoteBacktest`'s, plus required ``wing_z`` (> 0) and optional
+        ``long_q`` (in (0, 1), default :attr:`DEFAULT_LONG_Q`).
+
+    Examples
+    --------
+    SPY's 30-45 day cell, a long put near the 35th percentile and a short put 0.65 units below::
+
+        node = LongPutSpreadQuoteBacktest("backtest", {
+            "split": "val", "long_q": 0.35, "wing_z": 0.65, "multiplier": 100,
+            "fee_per_leg": 0.65, "dte_min": 30, "dte_max": 45,
+            "max_abs_log_moneyness": 0.2, "label_horizon": 22, "carry_rate": 0.055})
+        out = node.run(ctx, {"forecasts": rows, "chain": quotes, "underlying": closes})
+        out["metrics"]["model_put_total_pnl_usd"]
+    """
+
+    #: The forecast quantile the long put sits at when a document does not say.
+    DEFAULT_LONG_Q = 0.35
+    DEFAULTS = {**CondorQuoteBacktest.DEFAULTS, "long_q": DEFAULT_LONG_Q}
+    _PARAMS = tuple(sorted(_LongVerticalQuoteBacktest._REQUIRED + tuple(DEFAULTS)
+                           + _CondorBacktestBase.SHARED_OPTIONAL))
+    LEGS = LONG_PUT_SPREAD_LEGS
+    SIDES = _sides_of(LEGS)
+    REPORT_KIND = "archived_quote_long_put_spread_backtest"
+    UNITS = "USD per long put spread, one contract per leg"
+
+
 class _Candidate(NamedTuple):
     """One scorable candidate: what the selector ranks and what the winner's books enter."""
 
@@ -1586,8 +1969,9 @@ class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
     3. **Scored**: ``score = E_P[pnl] / max_loss``. ``E_P[pnl]`` is the credit
        plus ``multiplier`` times the mean, over the forecast draws ``z``, of the
        structure's payoff at ``forward x exp(s' z)``; ``max_loss`` is
-       ``multiplier x`` the widest vertical less the credit, positive because
-       the gate keeps the credit under the narrowest one.
+       :func:`~index_options.contracts.structure_max_loss` (``multiplier x`` the widest
+       vertical less the credit), positive because the gate keeps the credit under
+       the narrowest one.
 
     The highest score wins and an exact tie goes to the earlier declared
     candidate. The **model** book enters the winner when its ``E_P[pnl]``
@@ -1682,10 +2066,10 @@ class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
     def _score(self, legs, strikes, scale, facts):
         """Return the score of one snapped structure, or ``None`` where the credit gate refuses it."""
         _rows, quotes = self._leg_quotes(facts, legs, strikes)
-        credit, widths, reason = self._priced(legs, strikes, quotes)
+        credit, _widths, reason = self._priced(legs, strikes, quotes)
         if reason is not None:
             return None
-        max_loss = self.params["multiplier"] * max(widths) - credit
+        max_loss = structure_max_loss(legs, strikes, credit, self.params["multiplier"])
         return self._expected(credit, legs, strikes, scale, facts) / max_loss
 
     def _candidate(self, structure, short_q, wing_z, facts, scale):
@@ -2161,7 +2545,7 @@ class VolSizingWeights(_LaggedRowSignals):
         """Clip one ratio to ``[min_weight, max_weight]``; ``None`` (no history, no reading) stays ``None``."""
         if ratio is None:
             return None
-        return min(self._knob("max_weight"), max(self._knob("min_weight"), ratio))
+        return float(min(self._knob("max_weight"), max(self._knob("min_weight"), ratio)))
 
     def _annotate(self, readings):
         """Return each position's three weights against the expanding median of the earlier readings."""

@@ -52,9 +52,25 @@ Use README.md for installation, the temporary demo and focused tests.
   weight name has one owner, VolSizingWeights.SIZE_FIELDS. A derived document
   keeps its source's description but ends with ONE run sentence for its own
   file (grid._finished). index_options.ledger_studies is the read-only CLI
-  over walk ledgers (allocate: per entry date the underlying with the higher
-  ex-ante E_P[pnl] / max_loss, against each alone and an equal split).
-  Never decision-eligible.
+  over walk ledgers (allocate: on each SHARED entry date, one every walk
+  entered, the underlying with the higher ex-ante E_P[pnl] / max_loss, against
+  each alone and an equal split, the union of dates a labelled extra block; a
+  walk whose summary or any fold is not `ran` is refused). ADR-0197 adds the
+  debit structures: LONG_STRADDLE_LEGS / LONG_CALL_SPREAD_LEGS /
+  LONG_PUT_SPREAD_LEGS, contracts.structure_max_loss (the ONE maximum-loss rule
+  the selector, the ledger studies and the debit gate call; structure_payoff now
+  lives in contracts and distribution re-exports it) and
+  DebitStructureQuoteBacktest, a CondorQuoteBacktest abstract over
+  _target_strikes that prices the DEBIT (a debit is a negative credit_usd;
+  nonpositive_debit, debit_not_below_width) with members LongStraddleQuoteBacktest,
+  LongCallSpreadQuoteBacktest and LongPutSpreadQuoteBacktest (long_q replaces
+  short_q). nodes.mean_or_zero / t_or_zero are the ONE public owners of the
+  "0.0 when undefined" mean and t; no other module calls a protected one.
+  grid.long_*_document makes the 10 <cell>-long-{straddle,call-spread,
+  put-spread}.json (the straddle with the gate and sizing studies), and
+  ledger_studies hedge tests a bought-convexity sleeve against a smaller core at
+  the same CVaR5 (k = CVaR5(core+sleeve) / CVaR5(core); the sleeve earns its
+  place only if core+sleeve's mean exceeds k*core's). Never decision-eligible.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
 - Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
@@ -90,7 +106,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only CLI over walk ledgers, ADR-0196: allocate)
+                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison),
@@ -116,6 +132,9 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # + <symbol>-<bucket>-select.json and -empirical-select.json for the
                            # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
                            # (all 56 of these carry the ADR-0196 sizing study: VolSizingWeights)
+                           # + <symbol>-<bucket>-long-straddle.json for SPY/QQQ buckets 1, 2-3, 5
+                           # (gate + sizing studies) and <symbol>-30-45-long-call-spread.json /
+                           # -long-put-spread.json (ADR-0197 debit structures)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
@@ -125,5 +144,5 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, ledger_studies (.py)
+                           # quote_backtest, debit_backtest, ledger_studies (.py)
 ```

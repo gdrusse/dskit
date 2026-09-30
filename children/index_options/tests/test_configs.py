@@ -84,6 +84,13 @@ def test_exact_manifest_and_agent_parity(child_root):
         *(f"configs/grid/{u}-{b}-{kind}.json" for u in ("spy", "qqq")
           for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45")
           for kind in ("put-spread", "gate", "select", "empirical-select")),
+        # ADR-0197: the long straddle on the three shortest buckets and the two long spreads on
+        # 30-45, for SPY and QQQ (10 documents), and the debit backtests' tests
+        *(f"configs/grid/{u}-{b}-long-straddle.json" for u in ("spy", "qqq")
+          for b in ("1", "2-3", "5")),
+        *(f"configs/grid/{u}-30-45-long-{kind}-spread.json" for u in ("spy", "qqq")
+          for kind in ("call", "put")),
+        "tests/test_debit_backtest.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -99,8 +106,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # for owner question 4's expansion to every cell (2026-09-27) = 206,
     # plus ADR-0193's 14 put-spread documents = 220, plus ADR-0194's 14 gate documents = 234,
     # plus ADR-0195's 28 select documents (14 cells x two rungs) = 262,
-    # plus ADR-0196's ledger_studies.py and its test = 264
-    assert len(actual) == 264
+    # plus ADR-0196's ledger_studies.py and its test = 264, plus ADR-0197's 10 documents and
+    # test_debit_backtest.py = 275
+    assert len(actual) == 275
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -187,7 +195,10 @@ def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     expected = {f"grid/{c.name}.json" for c in grid.CELLS} | {
         f"grid/{n}" for c in grid.CELLS for n in _cell_extra_files(c.name)} | {
         f"grid/{c.name}-{kind}.json" for c in grid.CELLS if c.underlying.backtest
-        for kind in ("put-spread", "gate", "select", "empirical-select")}
+        for kind in ("put-spread", "gate", "select", "empirical-select")} | {
+        f"grid/{u}-{b}-long-straddle.json" for u in ("spy", "qqq") for b in ("1", "2-3", "5")} | {
+        f"grid/{u}-30-45-long-{kind}-spread.json" for u in ("spy", "qqq")
+        for kind in ("call", "put")}
     assert set(files) == expected
     for relpath, document in files.items():
         assert (child_root / "configs" / relpath).read_text() == \
@@ -392,14 +403,16 @@ def test_the_put_spread_strikes_are_the_owners_answers_and_exported():
 
 def test_the_grid_adds_exactly_one_put_spread_document_per_backtest_cell(child_root):
     files = grid.grid_files(child_root / "configs")
-    spreads = {f for f in files if f.endswith("-put-spread.json")}
+    # exact names, not a suffix: ADR-0197's "<cell>-long-put-spread.json" also ends in it
+    spreads = {f"grid/{stem}-put-spread.json" for stem in BACKTEST_STEMS} & set(files)
     assert spreads == {f"grid/{stem}-put-spread.json" for stem in BACKTEST_STEMS}
     assert len(spreads) == 14 and not any("iwm" in f for f in spreads)
     # everything else is what shipped before ADR-0193 — a har-vix document per cell and its six
     # extras — plus ADR-0194's gate documents (pinned in their own test below)
     gates = {f for f in files if f.endswith("-gate.json")}
     selects = {f for f in files if f.endswith("-select.json")}     # ADR-0195, pinned below
-    assert set(files) - spreads - gates - selects == {
+    debits = {f for f in files if "-long-" in f}                   # ADR-0197, pinned below
+    assert set(files) - spreads - gates - selects - debits == {
         f"grid/{stem}.json" for stem in ALL_STEMS} | {
         f"grid/{name}" for stem in ALL_STEMS for name in _cell_extra_files(stem)}
     for cell in grid.CELLS:
@@ -410,7 +423,7 @@ def test_the_grid_adds_exactly_one_put_spread_document_per_backtest_cell(child_r
 
 def test_every_shipped_put_spread_file_equals_its_generator(child_root, tmp_path):
     files = {f: d for f, d in grid.grid_files(child_root / "configs").items()
-             if f.endswith("-put-spread.json")}
+             if f.endswith("-put-spread.json") and "-long-" not in f}
     assert len(files) == 14
     for relpath, document in files.items():
         assert (child_root / "configs" / relpath).read_text() == \
@@ -427,7 +440,8 @@ def test_every_generated_document_that_shipped_before_is_unchanged(child_root):
     files = grid.grid_files(child_root / "configs")
     checked = 0
     for relpath, document in files.items():
-        if relpath.endswith(("-put-spread.json", "-gate.json", "-select.json", "-zoo.json")):
+        if relpath.endswith(("-put-spread.json", "-gate.json", "-select.json", "-zoo.json")) \
+                or "-long-" in relpath:
             continue
         assert (child_root / "configs" / relpath).read_text() == \
             json.dumps(document, indent=2) + "\n", relpath
@@ -584,7 +598,7 @@ def test_the_grid_adds_exactly_one_gate_document_per_backtest_cell(child_root):
 
 def test_every_shipped_gate_and_put_spread_file_equals_its_generator(child_root, tmp_path):
     files = {f: d for f, d in grid.grid_files(child_root / "configs").items()
-             if f.endswith(("-gate.json", "-put-spread.json"))}
+             if f.endswith(("-gate.json", "-put-spread.json")) and "-long-" not in f}
     assert len(files) == 28
     for relpath, document in files.items():
         assert (child_root / "configs" / relpath).read_text() == \
@@ -1064,14 +1078,18 @@ def test_sizing_study_document_refuses_a_document_it_cannot_size_and_leaves_its_
     assert declared == before
 
 
-def test_the_grid_composes_the_sizing_study_on_exactly_the_56_documents_that_carry_the_gate_study(
+def test_the_grid_composes_the_sizing_study_on_exactly_the_documents_that_carry_the_gate_study(
     child_root
 ):
+    # the 56 of ADR-0196 (gate, put-spread, select, empirical-select on the 14 cells) and, by the
+    # ADR-0196 clarification that every document carrying the gate study gets sizing, ADR-0197's 6
+    # long-straddle documents: 62
     files = grid.grid_files(child_root / "configs")
     sized = {f for f, doc in files.items() if "sizing" in doc["pipeline"]}
     assert sized == {f"grid/{stem}-{kind}.json" for stem in BACKTEST_STEMS
-                     for kind in ("gate", "put-spread", "select", "empirical-select")}
-    assert len(sized) == 56
+                     for kind in ("gate", "put-spread", "select", "empirical-select")} | {
+        f"grid/{u}-{b}-long-straddle.json" for u in ("spy", "qqq") for b in ("1", "2-3", "5")}
+    assert len(sized) == 56 + 6
     assert {f for f, doc in files.items() if "signals" in doc["pipeline"]} == sized   # no others
     for relpath, doc in files.items():
         assert ("size_fields" in doc["pipeline"].get("backtest", {}).get("params", {})) == (
@@ -1169,3 +1187,239 @@ def test_the_empirical_control_is_described_as_an_unconditional_shape_trailing_v
                   "qqq-1-empirical-select.json"):
         text = re.sub(r"\s+", " ", where[label]).lower()
         assert "unconditional" in text and "trailing" in text and "conditional-forecast" in text, label
+
+
+# -- ADR-0197: the debit documents ---------------------------------------------------------------
+
+#: The pre-registered ADR-0197 choices, typed out here — never read from the grid or the nodes — so
+#: the documents are pinned to the owner's answers, not to whatever the code's constants become.
+STRADDLE_BUCKETS = ("1", "2-3", "5")
+SPREAD_BUCKETS = ("30-45",)
+LONG_CALL_Q, LONG_PUT_Q, LONG_WING = 0.5, 0.35, 0.65
+DEBIT_FILES = {
+    **{f"{u}-{b}-long-straddle.json": "straddle" for u in ("spy", "qqq") for b in STRADDLE_BUCKETS},
+    **{f"{u}-30-45-long-call-spread.json": "call_spread" for u in ("spy", "qqq")},
+    **{f"{u}-30-45-long-put-spread.json": "put_spread" for u in ("spy", "qqq")},
+}
+#: kind -> (the dotted class path, the knobs the document carries beyond the condor's bucket knobs)
+DEBIT_NODES = {
+    "straddle": ("index_options.nodes:LongStraddleQuoteBacktest", {}),
+    "call_spread": ("index_options.nodes:LongCallSpreadQuoteBacktest",
+                    {"long_q": LONG_CALL_Q, "wing_z": LONG_WING}),
+    "put_spread": ("index_options.nodes:LongPutSpreadQuoteBacktest",
+                   {"long_q": LONG_PUT_Q, "wing_z": LONG_WING}),
+}
+#: Every path at which a debit document differs from its condor cell document once the gate and
+#: sizing studies are taken back out (restated here, never read from the generator).
+DEBIT_PATHS = {"/name", "/notes", "/pipeline/backtest/uses", "/pipeline/backtest/notes",
+               "/pipeline/backtest/params/short_q", "/pipeline/backtest/params/wing_z"}
+
+
+def _source_stem(file):
+    """``spy-30-45-long-call-spread.json`` -> ``spy-30-45``."""
+    return file.split("-long-")[0]
+
+
+def test_the_debit_choices_are_the_owners_pre_registered_answers_and_exported():
+    assert grid.LONG_STRADDLE_BUCKETS == STRADDLE_BUCKETS and grid.LONG_SPREAD_BUCKETS == SPREAD_BUCKETS
+    assert grid.LONG_CALL_SPREAD_LONG_Q == LONG_CALL_Q and grid.LONG_PUT_SPREAD_LONG_Q == LONG_PUT_Q
+    assert grid.LONG_SPREAD_WING_Z == LONG_WING
+    assert {"LONG_STRADDLE_BUCKETS", "LONG_SPREAD_BUCKETS", "LONG_CALL_SPREAD_LONG_Q",
+            "LONG_PUT_SPREAD_LONG_Q", "LONG_SPREAD_WING_Z", "long_straddle_document",
+            "long_call_spread_document", "long_put_spread_document"} <= set(grid.__all__)
+    assert 0 < grid.LONG_CALL_SPREAD_LONG_Q < 1 and 0 < grid.LONG_PUT_SPREAD_LONG_Q < 1
+    assert grid.LONG_SPREAD_WING_Z > 0
+    # every listed bucket is a real one, the straddle's the three shortest
+    labels = [b.label for b in grid.BUCKETS]
+    assert set(grid.LONG_STRADDLE_BUCKETS) | set(grid.LONG_SPREAD_BUCKETS) <= set(labels)
+    assert list(grid.LONG_STRADDLE_BUCKETS) == labels[:3]
+
+
+def test_the_grid_choices_agree_with_the_nodes_defaults_today_and_a_change_to_either_is_seen():
+    # the grid writes each knob out (the identity hash covers it), so the node default is not what
+    # the documents run; but two numbers that mean the same thing are pinned to each other
+    from index_options.nodes import LongCallSpreadQuoteBacktest, LongPutSpreadQuoteBacktest
+
+    assert LongCallSpreadQuoteBacktest.DEFAULT_LONG_Q == grid.LONG_CALL_SPREAD_LONG_Q
+    assert LongPutSpreadQuoteBacktest.DEFAULT_LONG_Q == grid.LONG_PUT_SPREAD_LONG_Q
+
+
+def test_the_grid_adds_exactly_ten_debit_documents_on_the_named_cells(child_root):
+    files = grid.grid_files(child_root / "configs")
+    debits = {f for f in files if "-long-" in f}
+    assert debits == {f"grid/{name}" for name in DEBIT_FILES} and len(debits) == 10
+    assert not any("iwm" in f for f in debits)
+    for cell in grid.CELLS:
+        shipped = {f for f in grid.cell_files(child_root / "configs", cell) if "-long-" in f}
+        want = set()
+        if cell.underlying.backtest and cell.bucket.label in STRADDLE_BUCKETS:
+            want.add(f"grid/{cell.name}-long-straddle.json")
+        if cell.underlying.backtest and cell.bucket.label in SPREAD_BUCKETS:
+            want |= {f"grid/{cell.name}-long-call-spread.json",
+                     f"grid/{cell.name}-long-put-spread.json"}
+        assert shipped == want, cell.name
+
+
+def test_every_shipped_debit_file_equals_its_generator(child_root, tmp_path):
+    # the zoo files already differ from their generator on the base, so the broad pin cannot be the
+    # gate for these: this one is, file by file and through write_grid
+    files = {f: d for f, d in grid.grid_files(child_root / "configs").items() if "-long-" in f}
+    assert len(files) == 10
+    for relpath, document in files.items():
+        assert (child_root / "configs" / relpath).read_text() == \
+            json.dumps(document, indent=2) + "\n", relpath
+    written = grid.write_grid(child_root / "configs", tmp_path)
+    for relpath in files:
+        assert relpath in written
+        assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
+
+
+@pytest.mark.parametrize("file, kind", list(DEBIT_FILES.items()), ids=list(DEBIT_FILES))
+def test_a_debit_document_is_its_condor_cell_document_with_only_the_backtest_node_swapped(
+    child_root, file, kind
+):
+    condor = _grid(child_root, f"{_source_stem(file)}.json")
+    shipped = _grid(child_root, file)
+    plain = _without_the_gate_study(shipped) if kind == "straddle" else shipped
+    uses, knobs = DEBIT_NODES[kind]
+    # short_q and wing_z are the condor's and go (wing_z is 0.5 there, 0.65 in a spread); a spread
+    # gains long_q; a straddle has no placement knob at all
+    paths = DEBIT_PATHS | ({"/pipeline/backtest/params/long_q"} if knobs else set())
+    assert _differences(plain, condor) == paths
+    node = shipped["pipeline"]["backtest"]
+    assert node["uses"] == uses
+    # the condor's bucket knobs are the document's, and only short_q / wing_z were replaced: every
+    # other knob (and its place in the object) is the cell's
+    source_params = condor["pipeline"]["backtest"]["params"]
+    kept = {k: v for k, v in source_params.items() if k not in ("short_q", "wing_z")}
+    got = {k: v for k, v in node["params"].items()
+           if k not in ("long_q", "wing_z", "gate_fields", "size_fields")}
+    assert got == kept and list(got) == list(kept)
+    assert {k: node["params"][k] for k in knobs} == knobs
+    assert "short_q" not in node["params"]
+    assert ("wing_z" in node["params"]) == bool(knobs) and ("long_q" in node["params"]) == bool(knobs)
+    assert shipped["walkforward"] == condor["walkforward"]
+    assert shipped["name"] == f"{condor['name']}-long-{file.split('-long-')[1][:-5]}"
+    assert _described(shipped["notes"]).startswith(_described(condor["notes"]))
+    assert "ADR-0197" in shipped["notes"] and "Never decision-eligible" in shipped["notes"]
+    assert shipped["pipeline"]["backtest"]["notes"] != condor["pipeline"]["backtest"]["notes"]
+    assert "DEBIT" in node["notes"] and "ADR-0197" in node["notes"]
+    # the nodes the structure does not touch stay the condor's, byte for byte
+    for key, value in condor["pipeline"].items():
+        if key != "backtest":
+            assert shipped["pipeline"][key] == value, key
+
+
+@pytest.mark.parametrize("file, kind", list(DEBIT_FILES.items()), ids=list(DEBIT_FILES))
+def test_a_debit_document_carries_one_run_instruction_and_it_names_its_own_file(
+    child_root, file, kind
+):
+    notes = _grid(child_root, file)["notes"]
+    assert notes.count("python -m dskit.pipeline walkforward") == 1
+    assert notes.endswith(RUN_SENTENCE.format(file=file))
+    assert re.findall(r"configs/grid/[\w.-]+\.json", notes) == [f"configs/grid/{file}"]
+    assert "Run THIS document" not in notes and "<this file>" not in notes
+
+
+def test_the_straddle_documents_carry_the_gate_and_sizing_studies_and_the_spreads_neither(
+    child_root
+):
+    for file, kind in DEBIT_FILES.items():
+        pipe = _grid(child_root, file)["pipeline"]
+        backtest = pipe["backtest"]
+        if kind == "straddle":
+            assert {"vix3m", "signals", "sizing"} <= set(pipe), file
+            assert backtest["inputs"]["forecasts"] == "$sizing.rows"
+            assert backtest["params"]["gate_fields"] == GATE_NAMES
+            assert backtest["params"]["size_fields"] == SIZE_NAMES
+            assert list(backtest["params"])[-2:] == ["gate_fields", "size_fields"]
+            assert pipe["signals"]["params"] == SIGNALS_KNOBS
+            assert pipe["sizing"]["params"] == SIZING_KNOBS
+        else:
+            assert not {"vix3m", "signals", "sizing"} & set(pipe), file
+            assert backtest["inputs"]["forecasts"] == "$model.rows"
+            assert "gate_fields" not in backtest["params"] and "size_fields" not in backtest["params"]
+
+
+@pytest.mark.parametrize("file, kind", list(DEBIT_FILES.items()), ids=list(DEBIT_FILES))
+def test_a_debit_document_resolves_through_the_planner_to_its_backtest(
+    child_root, monkeypatch, file, kind
+):
+    import index_options.nodes as nodes
+
+    monkeypatch.chdir(child_root)
+    path = child_root / GRID / file
+    planned = plan(load_document(str(path)))
+    cls = getattr(nodes, DEBIT_NODES[kind][0].split(":")[1])
+    assert planned.resolved["backtest"].cls is cls
+    assert planned.role_of("backtest") == "score"
+    assert set(planned.order) == set(json.loads(path.read_text())["pipeline"])
+    params = json.loads(path.read_text())["pipeline"]["backtest"]["params"]
+    assert cls.validate_params(params) == []
+    feeds = "sizing" if kind == "straddle" else "model"
+    assert (feeds, "backtest") in planned.edges and ("chain", "backtest") in planned.edges
+
+
+@pytest.mark.parametrize("file", ["spy-30-45-long-call-spread.json", "spy-30-45-long-put-spread.json",
+                                  "qqq-2-3-long-straddle.json"])
+def test_every_debit_knob_is_in_the_identity_hash(child_root, file):
+    # the knobs are written out, so editing one moves the hash (and the run directory) and a node
+    # default changing can never change what a shipped document computes behind its hash
+    doc = load_document(str(child_root / GRID / file))
+    base = doc.hash
+    raw = _grid(child_root, file)
+    for knob, value in (("multiplier", 10), ("long_q", 0.4), ("wing_z", 0.7)):
+        params = raw["pipeline"]["backtest"]["params"]
+        if knob not in params:
+            continue
+        changed = copy.deepcopy(raw)
+        changed["pipeline"]["backtest"]["params"][knob] = value
+        assert PipelineDocument.from_obj(changed).hash != base, (file, knob)
+    notes_only = copy.deepcopy(raw)
+    notes_only["notes"] += " more"
+    notes_only["pipeline"]["backtest"]["notes"] += " more"
+    assert PipelineDocument.from_obj(notes_only).hash == base       # notes are not identity
+
+
+def test_the_debit_generators_refuse_a_document_they_cannot_derive_from_and_leave_it_alone(
+    child_root
+):
+    base = json.loads((child_root / "configs" / "run-real-har-vix.json").read_text())
+    spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
+    cell = grid.grid_document(base, spy)
+    before = copy.deepcopy(cell)
+    for generate, suffix in ((grid.long_straddle_document, "-long-straddle"),
+                             (grid.long_call_spread_document, "-long-call-spread"),
+                             (grid.long_put_spread_document, "-long-put-spread")):
+        derived = generate(cell)
+        assert cell == before                                        # derived on a copy
+        assert derived["name"] == f"{cell['name']}{suffix}"
+        assert derived["pipeline"]["backtest"]["uses"] != cell["pipeline"]["backtest"]["uses"]
+        assert "walkforward configs/grid" not in derived["notes"]    # the shipper adds the one
+        with pytest.raises(ValueError, match="condor archived-quote backtest"):
+            generate(derived)                                        # already a debit structure
+        no_backtest = {**cell, "pipeline": {k: v for k, v in cell["pipeline"].items()
+                                            if k != "backtest"}}
+        with pytest.raises(ValueError, match="backtest"):
+            generate(no_backtest)
+    iwm = next(c for c in grid.CELLS if c.name == "iwm-30-45")
+    with pytest.raises(ValueError, match="backtest"):
+        grid.long_straddle_document(grid.grid_document(base, iwm))
+
+
+def test_the_cli_validates_and_plans_one_document_of_each_debit_kind(child_root):
+    import subprocess
+    import sys
+
+    for name, cls in (("spy-2-3-long-straddle.json", "index_options.nodes:LongStraddleQuoteBacktest"),
+                      ("qqq-30-45-long-call-spread.json",
+                       "index_options.nodes:LongCallSpreadQuoteBacktest"),
+                      ("spy-30-45-long-put-spread.json",
+                       "index_options.nodes:LongPutSpreadQuoteBacktest")):
+        for verb in ("validate", "plan"):
+            done = subprocess.run(
+                [sys.executable, "-m", "dskit.pipeline", verb, f"configs/grid/{name}"],
+                cwd=child_root, capture_output=True, text=True, timeout=120)
+            assert done.returncode == 0, (name, verb, done.stderr[-500:])
+        planned = json.loads(done.stdout)       # the last one is the plan
+        assert planned["nodes"]["backtest"]["class"] == cls

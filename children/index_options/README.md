@@ -297,16 +297,64 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   fold's backtest record and report (`runs.walk_fold_dirs`,
   `driver.resolve_json_artifact`) and gathers the book's entered cells (`model`
   by default, or `always`). The ex-ante score of a cell is its entry's
-  `model_expected_pnl_usd / max_loss`, `max_loss = multiplier x the widest
-  vertical - credit_usd` (the legs: the report's own, or `selected.structure`
-  for the selector). On each date in the UNION of the entry dates the
-  `allocate` series takes, among the underlyings that entered, the cell with the
-  highest score (a tie goes to the earlier argument); `equal` takes the mean P&L
-  of those that entered; each underlying is also listed `alone:<SYMBOL>`. One table,
-  `series n mean_pnl_usd t cvar5_usd max_drawdown_usd`, from the backtests' own
-  owners of those statistics. It refuses, with one `error:` line and exit 1,
-  unless every fold declares the same `dte_min` / `dte_max`, every report is an
-  archived-quote backtest and every cell can be scored; it writes nothing.
+  `model_expected_pnl_usd / max_loss`, `max_loss` being
+  `contracts.structure_max_loss` (for a condor or a spread `multiplier x the
+  widest vertical - credit_usd`; the legs: the report's own, or
+  `selected.structure` for the selector). **Every series is over the SHARED
+  dates**, those on which EVERY walk entered: `allocate` takes, on each, the cell
+  with the highest score (a tie goes to the earlier argument), `equal` the mean
+  P&L of the walks, and each underlying is also listed `alone:<SYMBOL>` on those
+  dates. Three blocks are printed: `n_shared` and that table
+  (`series n mean_pnl_usd t cvar5_usd max_drawdown_usd`, from the backtests' own
+  owners of those statistics); `walks` (each one's instrument, folds, entries and
+  first and last entry date); and, labelled NOT comparable with the first, the
+  same rows over the UNION of the dates (a series may then cover dates another
+  lacks, as SPY's 2008-2010 against QQQ's start). It refuses, with one `error:`
+  line and exit 1, a walk whose summary or any fold is not `ran`, unless every
+  fold declares the same `dte_min` / `dte_max`, every report is an archived-quote
+  backtest and every cell can be scored; it writes nothing.
+- Debit structures (ADR-0197, offline, never decision-eligible): the
+  positive-convexity side the credit structures sell.
+  `DebitStructureQuoteBacktest` (abstract over one hook, `_target_strikes`)
+  subclasses `CondorQuoteBacktest`, so the walk, settlement, side split, delta
+  benchmark, gates and sizing are the condor's, and prices the DEBIT: long legs at
+  the ask, short legs at the bid, plus fees. `credit_usd` stays the signed cash at
+  entry (NEGATIVE for a debit, so `<book>_mean_credit_usd` is negative) and P&L
+  is the condor's formula. A book refuses `nonpositive_debit` (the maximum loss,
+  `contracts.structure_max_loss`, is not positive) and, for a spread,
+  `debit_not_below_width` (the per-share debit reaches the width); `model` enters
+  when `E_P[pnl]` > `min_edge_usd`, `always` every time, `implied` by the
+  VIX-lognormal quantile at the chain's ATM iv. Members (each with its own
+  default-deny knobs; none takes `short_q`): `LongStraddleQuoteBacktest` (the one
+  strike nearest the close, within `max_abs_log_moneyness`, where the put AND the
+  call can be bought, the lower on a tie; no quantile knob, so all three books
+  trade one strike), `LongCallSpreadQuoteBacktest` (long call at the forecast's
+  `long_q` quantile, default 0.5, short call `wing_z` standardized units above)
+  and `LongPutSpreadQuoteBacktest` (long put at `long_q`, default 0.35, short put
+  `wing_z` below; strikes listed low to high). A spread's legs snap OUTWARD (calls
+  up, puts down) onto the nearest strike quotable for their side (bought: ask and
+  ask size; sold: bid and bid size, strictly beyond the bought one). Report
+  kinds `archived_quote_long_straddle_backtest`, `..._long_call_spread_...`,
+  `..._long_put_spread_...`; the charge is the short legs' only (a straddle has
+  none) and the delta benchmark is ~0 (straddle), positive (call spread) and
+  negative (put spread). Run `python -m dskit.pipeline walkforward
+  configs/grid/spy-2-3-long-straddle.json --asof <today>` (the straddle on buckets
+  1, 2-3 and 5, with the ADR-0194 gate and ADR-0196 sizing studies: it pays when
+  the VIX curve is inverted) and `configs/grid/spy-30-45-long-call-spread.json` /
+  `-long-put-spread.json` (`long_q` 0.5 / 0.35, `wing_z` 0.65; plain); QQQ twins.
+- Hedge-sleeve study (ADR-0197, read-only, never decision-eligible): does a
+  bought-convexity SLEEVE earn its place beside a CORE book at the same tail
+  risk? `python -m index_options.ledger_studies hedge <core walk dir> <sleeve walk
+  dir> [--book model]`; both walks the same instrument and bucket, both fully
+  `ran`. It joins the two ledgers' entered cells on entry date (a date in one walk
+  only is counted and printed, never joined) and forms core+sleeve per date and
+  `k = CVaR5(core+sleeve) / CVaR5(core)`, the scale at which a SMALLER core has
+  the combined book's tail. **Reading it:** the table lists `core+sleeve`,
+  `k*core` (the same CVaR5 by construction), `core` and `sleeve` over the joined
+  dates (n, mean, t, CVaR5, drawdown); the verdict line says the sleeve earns its
+  place only if core+sleeve's mean exceeds k*core's. A core with no tail loss, or
+  a combined book with none (k would not be a positive scale), refuses with one
+  `error:` line.
 
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
@@ -448,7 +496,7 @@ journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196);
+                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -469,6 +517,9 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # + <symbol>-<bucket>-select.json and -empirical-select.json for the
                            # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
                            # (all 56 of these carry the ADR-0196 sizing study: VolSizingWeights)
+                           # + <symbol>-<bucket>-long-straddle.json for SPY/QQQ buckets 1, 2-3, 5
+                           # (gate + sizing studies) and <symbol>-30-45-long-call-spread.json /
+                           # -long-put-spread.json (ADR-0197 debit structures)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
@@ -478,7 +529,7 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest, ledger_studies (.py)
+                           # quote_backtest, debit_backtest, ledger_studies (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or

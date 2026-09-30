@@ -748,3 +748,147 @@ def test_structure_credit_of_a_call_spread_is_its_own_credit_and_one_width():
     credit, widths = contracts.structure_credit(
         contracts.CALL_SPREAD_LEGS, (106.0, 108.0), ((1.5, 1.6), (0.7, 0.8)))
     assert credit == pytest.approx(0.7) and widths == (2.0,)
+
+
+# -- ADR-0197: the debit leg sets and the one owner of a structure's maximum loss --------------
+
+LONG_STRADDLE = (("put", 1), ("call", 1))
+LONG_CALL_SPREAD = (("call", 1), ("call", -1))
+LONG_PUT_SPREAD = (("put", -1), ("put", 1))
+DEBIT_LEGS = {"long_straddle": LONG_STRADDLE, "long_call_spread": LONG_CALL_SPREAD,
+              "long_put_spread": LONG_PUT_SPREAD}
+
+
+def test_the_debit_leg_sets_are_single_exported_owners_in_ascending_strike_order():
+    # restated here, never read back: buying what the credit structures sell. A spread lists its
+    # strikes low to high, like CONDOR_LEGS: the long call under the short call, the SHORT put
+    # under the long put (a long put spread's bought put is its HIGHER strike)
+    assert contracts.LONG_STRADDLE_LEGS == LONG_STRADDLE
+    assert contracts.LONG_CALL_SPREAD_LEGS == LONG_CALL_SPREAD
+    assert contracts.LONG_PUT_SPREAD_LEGS == LONG_PUT_SPREAD
+    assert {"LONG_STRADDLE_LEGS", "LONG_CALL_SPREAD_LEGS", "LONG_PUT_SPREAD_LEGS",
+            "structure_max_loss", "structure_payoff"} <= set(contracts.__all__)
+    # they are not selector candidates: the selector chooses among CREDIT structures only
+    assert not set(DEBIT_LEGS.values()) & set(contracts.STRUCTURES.values())
+
+
+def test_structure_credit_of_the_debit_structures_is_a_negative_credit_and_the_right_widths():
+    # long legs at the ask, short legs at the bid; the spreads' width is the later strike less the
+    # earlier, positive because the strikes ascend; a straddle's two rights pair with nothing
+    credit, widths = contracts.structure_credit(LONG_CALL_SPREAD, (100.0, 105.0),
+                                                ((2.0, 2.2), (0.9, 1.0)))
+    assert credit == pytest.approx(-2.2 + 0.9) and widths == (5.0,)
+    credit, widths = contracts.structure_credit(LONG_PUT_SPREAD, (95.0, 100.0),
+                                                ((1.0, 1.1), (2.0, 2.2)))
+    assert credit == pytest.approx(1.0 - 2.2) and widths == (5.0,)
+    credit, widths = contracts.structure_credit(LONG_STRADDLE, (100.0, 100.0),
+                                                ((1.9, 2.0), (2.3, 2.4)))
+    assert credit == pytest.approx(-2.0 - 2.4) and widths == ()
+
+
+@pytest.mark.parametrize("legs, strikes, level, want", [
+    # long straddle at 100: worth the distance from the strike either way, nothing at it
+    (LONG_STRADDLE, (100.0, 100.0), 95.0, 5.0), (LONG_STRADDLE, (100.0, 100.0), 108.0, 8.0),
+    (LONG_STRADDLE, (100.0, 100.0), 100.0, 0.0),
+    # long call spread 100 / 105: 0 below, the gain between, the width above
+    (LONG_CALL_SPREAD, (100.0, 105.0), 98.0, 0.0), (LONG_CALL_SPREAD, (100.0, 105.0), 103.0, 3.0),
+    (LONG_CALL_SPREAD, (100.0, 105.0), 110.0, 5.0),
+    # long put spread, short 95 under long 100: 0 above, the gain between, the width below
+    (LONG_PUT_SPREAD, (95.0, 100.0), 102.0, 0.0), (LONG_PUT_SPREAD, (95.0, 100.0), 97.0, 3.0),
+    (LONG_PUT_SPREAD, (95.0, 100.0), 90.0, 5.0),
+])
+def test_structure_payoff_of_the_debit_structures_by_hand(legs, strikes, level, want):
+    assert contracts.structure_payoff(legs, level, strikes) == want
+
+
+def test_structure_payoff_has_one_owner_contracts_and_distribution_re_exports_it():
+    from index_options import distribution
+
+    assert distribution.structure_payoff is contracts.structure_payoff
+    assert "structure_payoff" in distribution.__all__
+
+
+@pytest.mark.parametrize("name, strikes, credit, multiplier, want", [
+    # the debit is what a long structure can lose: fees included, nothing else
+    ("long_straddle", (100.0, 100.0), -(4.4 * 100 + 4 * 0.65), 100, 4.4 * 100 + 4 * 0.65),
+    ("long_call_spread", (100.0, 105.0), -130.0 - 1.3, 100, 131.3),
+    ("long_put_spread", (95.0, 100.0), -120.0 - 1.3, 100, 121.3),
+    ("long_call_spread", (100.0, 105.0), -13.0, 10, 13.0),
+])
+def test_structure_max_loss_of_a_long_structure_is_its_debit(name, strikes, credit, multiplier,
+                                                              want):
+    got = contracts.structure_max_loss(DEBIT_LEGS[name], strikes, credit, multiplier)
+    assert got == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("legs, strikes, credit, multiplier, want", [
+    (CONDOR_LEGS, (90.0, 95.0, 105.0, 115.0), 150.0, 100, 850.0),       # the wider wing, 10
+    (CONDOR_LEGS, (85.0, 95.0, 105.0, 110.0), 300.0, 100, 700.0),       # the wider wing is the PUT
+    (contracts.PUT_SPREAD_LEGS, (92.0, 95.0), 60.0, 100, 240.0),
+    (contracts.CALL_SPREAD_LEGS, (106.0, 109.0), 50.0, 100, 250.0),
+    (CONDOR_LEGS, (90.0, 95.0, 105.0, 115.0), 15.0, 10, 85.0),
+])
+def test_structure_max_loss_of_a_credit_structure_by_hand(legs, strikes, credit, multiplier, want):
+    assert contracts.structure_max_loss(legs, strikes, credit, multiplier) == want
+
+
+def test_structure_max_loss_is_the_multiplier_times_the_widest_width_less_the_credit_exactly():
+    # the rule the selector and the ledger study each restated until ADR-0197: pinned over random
+    # condors, put spreads and call spreads, credits and multipliers, to the bit
+    rng = random.Random(197)
+    for _ in range(400):
+        ks = sorted(rng.sample(range(40, 400), 4))
+        strikes = tuple(k / 2 for k in ks)
+        for legs, picked in ((CONDOR_LEGS, strikes), (contracts.PUT_SPREAD_LEGS, strikes[:2]),
+                             (contracts.CALL_SPREAD_LEGS, strikes[2:])):
+            credit, multiplier = rng.uniform(-50.0, 900.0), rng.choice([1, 10, 100])
+            _, widths = contracts.structure_credit(legs, picked, [(0.0, 0.0)] * len(legs))
+            assert contracts.structure_max_loss(legs, picked, credit, multiplier) == (
+                multiplier * max(widths) - credit), (legs, picked, credit, multiplier)
+
+
+def test_structure_max_loss_of_exact_decimals_stays_decimal():
+    got = contracts.structure_max_loss(
+        CONDOR_LEGS, (Decimal("90"), Decimal("95"), Decimal("105"), Decimal("115")),
+        Decimal("150.35"), 100)
+    assert got == Decimal("849.65") and isinstance(got, Decimal)
+
+
+@pytest.mark.parametrize("legs, strikes", [
+    ((("call", -1),), (100.0,)),                                  # a naked short call
+    ((("put", -1), ("call", -1)), (95.0, 105.0)),                 # a short strangle
+    ((("call", 1), ("call", -2)), (100.0, 105.0)),                # a call ratio: slope -1 on top
+    ((("call", -1), ("call", 1), ("call", -1)), (95.0, 100.0, 105.0)),
+])
+def test_a_structure_whose_payoff_falls_without_bound_above_its_top_strike_has_infinite_loss(
+    legs, strikes
+):
+    assert contracts.structure_max_loss(legs, strikes, 1000.0, 100) == math.inf
+
+
+def test_structure_max_loss_finds_the_worst_kink_not_just_the_ends():
+    # a short put alone loses most at zero, the strike per share
+    assert contracts.structure_max_loss((("put", -1),), (100.0,), 250.0, 100) == 100 * 100.0 - 250.0
+    # a put butterfly (long 90, short two 100s, long 110) pays 0 at 0, at 90 and from 110 up, and 10
+    # at 100 (between 90 and 100 it pays L - 90): never negative, so it can lose only its debit
+    fly = (("put", 1), ("put", -2), ("put", 1))
+    assert contracts.structure_max_loss(fly, (90.0, 100.0, 110.0), -500.0, 100) == 500.0
+    # the short butterfly is its negation: worst at the 100 body, 10 a share against the credit
+    short_fly = (("put", -1), ("put", 2), ("put", -1))
+    assert contracts.structure_max_loss(short_fly, (90.0, 100.0, 110.0), 200.0, 100) == 800.0
+
+
+@pytest.mark.parametrize("args", [
+    ((), (), 1.0, 100),                                                # no legs at all
+    (LONG_STRADDLE, (100.0,), -1.0, 100),                              # strikes do not match legs
+    (LONG_STRADDLE, (100.0, 100.0), -1.0, 0),                          # multiplier < 1
+    (LONG_STRADDLE, (100.0, 100.0), -1.0, 1.5),
+    (LONG_STRADDLE, (100.0, 100.0), -1.0, True),
+    (LONG_STRADDLE, (100.0, 100.0), float("nan"), 100),                # credit not finite
+    (LONG_STRADDLE, (100.0, 100.0), "1", 100),
+    (LONG_STRADDLE, (0.0, 100.0), -1.0, 100),                          # a strike must be positive
+    (LONG_STRADDLE, (100.0, -5.0), -1.0, 100),
+])
+def test_structure_max_loss_refuses_what_it_cannot_value(args):
+    with pytest.raises(ValueError):
+        contracts.structure_max_loss(*args)
