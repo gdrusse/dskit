@@ -173,8 +173,46 @@ class RawChainFeatureBuilder:
             record["rn_interior_mass"] = proxy["mass"] if proxy else np.nan
             for j, probability in enumerate(self.proxy_probabilities):
                 record[self._qname(probability)] = proxy["quantiles"][j] if proxy else np.nan
+            if rows is not None:
+                volume = (pd.to_numeric(rows.get("volume"), errors="coerce")
+                          if "volume" in rows else pd.Series(np.nan, index=rows.index))
+                volume = volume.where(np.isfinite(volume) & volume.ge(0))
+                put_volume = float(volume[rows.type.eq("put")].sum(min_count=1))
+                call_volume = float(volume[rows.type.eq("call")].sum(min_count=1))
+                total_volume = put_volume+call_volume
+                record["chain_log_volume"] = (np.log1p(total_volume)
+                                                if np.isfinite(total_volume) else np.nan)
+                record["chain_put_call_volume_imbalance"] = (
+                    (put_volume-call_volume)/total_volume
+                    if np.isfinite(total_volume) and total_volume > 0 else np.nan)
+                record["chain_total_oi_snapshot"] = float(rows.open_interest.sum())
+                for greek in ("delta", "gamma", "vega"):
+                    values = (pd.to_numeric(rows.get(greek), errors="coerce")
+                              if greek in rows else pd.Series(np.nan, index=rows.index))
+                    valid = np.isfinite(values)
+                    exposure = (abs(values[valid])*rows.loc[valid, "open_interest"]).sum(
+                        min_count=1)
+                    record[f"chain_log_{greek}_oi"] = (
+                        np.log1p(float(exposure)) if np.isfinite(exposure) else np.nan)
+                weights = volume.where(volume > 0)
+                record["chain_volume_weighted_rel_spread"] = (
+                    float(np.average(rows.loc[weights.notna(), "rel_spread"],
+                                     weights=weights.dropna()))
+                    if weights.notna().any() else np.nan)
+            else:
+                for name in ("chain_log_volume", "chain_put_call_volume_imbalance",
+                             "chain_total_oi_snapshot", "chain_log_delta_oi",
+                             "chain_log_gamma_oi", "chain_log_vega_oi",
+                             "chain_volume_weighted_rel_spread"):
+                    record[name] = np.nan
             records.append(record)
-        return pd.DataFrame(records).sort_values(keys).reset_index(drop=True)
+        result = pd.DataFrame(records).sort_values(keys).reset_index(drop=True)
+        group = result.groupby(["symbol", "expiry"], sort=False)
+        lag_oi = group.chain_total_oi_snapshot.shift(1)
+        lag2_oi = group.chain_total_oi_snapshot.shift(2)
+        result["chain_log_lag_open_interest"] = np.log1p(lag_oi)
+        result["chain_log_lag_oi_change"] = np.log1p(lag_oi)-np.log1p(lag2_oi)
+        return result.drop(columns=["chain_total_oi_snapshot"])
 
     def build_archive(self, meta, archive_root, output):
         """Scan bounded annual parquet files and atomically publish features."""
@@ -189,7 +227,8 @@ class RawChainFeatureBuilder:
             return digest.hexdigest()
 
         columns = ["symbol", "date", "expiration", "strike", "type", "mark", "bid",
-                   "ask", "bid_size", "ask_size", "open_interest", "implied_volatility"]
+                   "ask", "bid_size", "ask_size", "open_interest", "volume",
+                   "implied_volatility", "delta", "gamma", "vega"]
         parts = []
         meta = meta.copy()
         metadata_columns = ["symbol", "quote_date", "expiry", "chain_underlying_price"]
@@ -231,7 +270,14 @@ class RawChainFeatureBuilder:
                 continue
             wanted = set(zip(requested.quote_date, requested.expiry))
             selected = []
-            for batch in pq.ParquetFile(path).iter_batches(columns=columns, batch_size=250_000):
+            parquet = pq.ParquetFile(path)
+            available = set(parquet.schema_arrow.names)
+            required_columns = set(columns[:11]+["implied_volatility"])
+            if required_columns-available:
+                raise ValueError(f"raw chain lacks required columns: "
+                                 f"{sorted(required_columns-available)}")
+            selected_columns = [name for name in columns if name in available]
+            for batch in parquet.iter_batches(columns=selected_columns, batch_size=250_000):
                 frame = batch.to_pandas()
                 mask = [key in wanted for key in zip(frame.date, frame.expiration)]
                 if any(mask):
@@ -276,6 +322,96 @@ class ExactExpiryCDFPanel:
 
     def __init__(self, config):
         self.config = config
+
+    @staticmethod
+    def ohlc_features(prices, windows):
+        """Build close-known daily range and jump proxies with backward windows."""
+        import numpy as np
+        import pandas as pd
+
+        required = {"date", "open", "high", "low", "close"}
+        missing = required-set(prices)
+        if missing:
+            raise ValueError(f"missing OHLC columns: {sorted(missing)}")
+        if (not isinstance(windows, (list, tuple)) or not windows
+                or any(type(w) is not int or w < 1 for w in windows)):
+            raise ValueError("OHLC windows must be non-empty positive integers")
+        frame = prices.sort_values("date", kind="mergesort").copy()
+        values = frame[["open", "high", "low", "close"]].astype(float)
+        if ((values <= 0) | ~np.isfinite(values)).any(axis=None):
+            raise ValueError("OHLC values must be finite and positive")
+        prior = values.close.shift(1)
+        frame["overnight_return"] = np.log(values.open/prior)
+        frame["intraday_return"] = np.log(values.close/values.open)
+        frame["log_high_low_range"] = np.log(values.high/values.low)
+        frame["parkinson_variance"] = frame.log_high_low_range**2/(4*np.log(2))
+        close_variance = np.log(values.close/prior)**2
+        frame["jump_variance_proxy"] = (close_variance-frame.parkinson_variance).clip(lower=0)
+        for window in windows:
+            frame[f"range_variance_{window}"] = frame.parkinson_variance.rolling(
+                window, min_periods=window).mean()
+            frame[f"jump_variance_{window}"] = frame.jump_variance_proxy.rolling(
+                window, min_periods=window).mean()
+            frame[f"overnight_variance_{window}"] = frame.overnight_return.pow(2).rolling(
+                window, min_periods=window).mean()
+            frame[f"intraday_variance_{window}"] = frame.intraday_return.pow(2).rolling(
+                window, min_periods=window).mean()
+        return frame.drop(columns=["open", "high", "low", "close"])
+
+    @staticmethod
+    def add_matched_dte_vrp(frame, reference_floor):
+        """Add requested-session implied minus backward realized variance."""
+        import numpy as np
+
+        sessions = frame.sessions_to_expiry.astype(float)
+        implied = frame.chain_atm_iv.astype(float).pow(2)*sessions/252.
+        realized = frame.rv_22.astype(float).pow(2)*sessions
+        floor = max(float(reference_floor), np.finfo(float).eps)**2*sessions
+        frame["matched_implied_variance"] = implied
+        frame["matched_trailing_variance"] = realized
+        frame["matched_vrp"] = implied-realized
+        frame["matched_vrp_ratio"] = implied/np.maximum(realized, floor)-1
+        return frame
+
+    @staticmethod
+    def add_macro_event_features(frame, calendars):
+        """Count only events whose scheduled date was known by each entry."""
+        import pandas as pd
+
+        if calendars is None:
+            return frame, {"available": False,
+                           "reason": "no local point-in-time macro calendar"}
+        if not isinstance(calendars, dict) or not calendars:
+            raise ValueError("macro event calendars must be a non-empty mapping")
+        quote = pd.to_datetime(frame.quote_date)
+        end = pd.to_datetime(frame.planned_settlement_date)
+        total = None
+        for family, records in sorted(calendars.items()):
+            if not isinstance(family, str) or not family or not isinstance(records, list):
+                raise ValueError("invalid macro event calendar family")
+            count = pd.Series(0, index=frame.index, dtype=int)
+            for record in records:
+                if not isinstance(record, dict) or set(record) != {"event_date", "known_at"}:
+                    raise ValueError("macro events require event_date and known_at")
+                event = pd.Timestamp(record["event_date"])
+                known = pd.Timestamp(record["known_at"])
+                count += ((known <= quote) & (event > quote) & (event <= end)).astype(int)
+            frame[f"macro_{family}_count"] = count
+            frame[f"macro_{family}_inside"] = (count > 0).astype(int)
+            total = count.copy() if total is None else total+count
+        frame["macro_event_count"] = total
+        frame["macro_any_event"] = (total > 0).astype(int)
+        return frame, {"available": True, "families": sorted(calendars)}
+
+    @staticmethod
+    def dividend_window_eligibility(dividends, entry_index, end_index):
+        """Return historical path completeness without filling unknown dividends."""
+        import numpy as np
+        values = dividends.isna().to_numpy().astype(int)
+        cumulative = np.r_[0, np.cumsum(values)]
+        entry = np.asarray(entry_index, dtype=int)
+        end = np.asarray(end_index, dtype=int)
+        return cumulative[end+1]-cumulative[entry] == 0
 
     @staticmethod
     def _availability_dates(observation_dates, lag_sessions=0, lag_days=0):
@@ -491,6 +627,9 @@ class ExactExpiryCDFPanel:
             prices = price_reader.run(None, {})["records"]
             self.reader_fingerprints[symbol] = price_reader.fingerprint()
             price_frame = pd.DataFrame(prices).set_index("date")
+            ohlc = None
+            if c.get("ohlc_windows"):
+                ohlc = self.ohlc_features(price_frame.reset_index(), c["ohlc_windows"])
             rows = meta[meta.symbol == symbol].copy()
             expiry = pd.DatetimeIndex(pd.to_datetime(rows.expiry))
             end_index = sessions.searchsorted(expiry, side="right")-1
@@ -516,8 +655,8 @@ class ExactExpiryCDFPanel:
             closes = price_frame.close.reindex(sessions.strftime("%Y-%m-%d"))
             dividends = price_frame.dividend_amount.reindex(closes.index)
             missing = closes.isna().to_numpy().astype(int)
-            dividend_missing = np.r_[0, np.cumsum(dividends.isna().to_numpy().astype(int))]
-            rows["dividends_known"] = dividend_missing[end_index+1]-dividend_missing[entry_index] == 0
+            rows["dividends_known"] = self.dividend_window_eligibility(
+                dividends, entry_index, end_index)
             refused[symbol]["unknown_dividend_window_not_entry_eligible"] = int((~rows.dividends_known).sum())
             cumulative_missing = np.r_[0, np.cumsum(missing)]
             complete = cumulative_missing[end_index+1]-cumulative_missing[entry_index] == 0
@@ -539,6 +678,11 @@ class ExactExpiryCDFPanel:
             lag_frame = pd.DataFrame(lags).drop(columns=["label"])
             features = pd.DataFrame(rv).merge(lag_frame, on="date", validate="one_to_one")
             rows = rows.merge(features, left_on="quote_date", right_on="date", validate="many_to_one")
+            if ohlc is not None:
+                rows = rows.merge(ohlc, left_on="quote_date", right_on="date",
+                                  validate="many_to_one", suffixes=("", "_ohlc"))
+                if "date_ohlc" in rows:
+                    rows = rows.drop(columns=["date_ohlc"])
             iv_reader = IndexCloseRows("iv", {"root": c["root"], "source": c["iv_source"],
                                               "symbol": iv_symbol})
             iv = iv_reader.run(None, {})["records"]
@@ -557,6 +701,9 @@ class ExactExpiryCDFPanel:
             rows["life_fraction_sessions"] = rows.series_age_sessions/rows.series_total_tenor_sessions
             rows["calendar_days_per_session"] = rows.calendar_dte/rows.sessions_to_expiry
             rows["reference_scale"] = rows.rv_22.clip(lower=c["reference_floor"])*np.sqrt(rows.sessions_to_expiry)
+            rows["strategy_dividend_eligible"] = rows.dividends_known.astype(int)
+            refused[symbol]["strategy_dividend_eligible"] = int(rows.dividends_known.sum())
+            refused[symbol]["strategy_dividend_ineligible"] = int((~rows.dividends_known).sum())
             for probability in c.get("raw_chain", {}).get("proxy_probabilities", []):
                 name = RawChainFeatureBuilder._qname(probability)
                 rows[name] = rows[name]/rows.reference_scale
@@ -624,6 +771,10 @@ class ExactExpiryCDFPanel:
         if c.get("surface_features") and c.get("raw_chain", {}).get("proxy_probabilities"):
             result = self.add_surface_dynamics(
                 result, c["raw_chain"]["proxy_probabilities"])
+        if c.get("matched_dte_vrp"):
+            result = self.add_matched_dte_vrp(result, c["reference_floor"])
+        result, self.macro_event_status = self.add_macro_event_features(
+            result, c.get("macro_event_calendars"))
         return result
 
 
@@ -739,6 +890,7 @@ def _main():
     provenance = {"refused": adapter.refused, "sha256": adapter.source_hashes,
                   "readers": adapter.reader_fingerprints,
                   "market_coverage": getattr(adapter, "market_coverage", {}),
+                  "macro_event_status": getattr(adapter, "macro_event_status", {}),
                   "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:

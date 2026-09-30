@@ -27764,3 +27764,94 @@ is only +0.0146%; both paired intervals cross zero, QQQ/IWM do not improve, and
 condor-loss MSE is marginally worse. Carry it as the protocol-qualified offline
 research incumbent, but treat it as practically tied and not trading-ready.
 See `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.
+
+## ADR-0197 — Point-in-time tail data feature ablation
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0196. Base commit:
+`9248d9e77c706c4bb341160cc8bbb31b8549da02`. Worktree:
+`/home/russell/dskit-cdf-tail-data`.
+
+### Scope and estimand
+
+Improve the physical terminal-return CDF at each exact listed ETF expiry using
+only entry-known information already present in the pinned local archives.
+Strategy optimization, execution, trading, new vendor acquisition and use of
+future realized values as predictors remain out of scope.
+
+### Data contract
+
+The panel may add five JSON-declared feature families:
+
+1. daily OHLC state: prior-close-to-open and open-to-close returns, log range,
+   Parkinson range variance, a close-to-close gap proxy, and backward-only
+   rolling range/jump summaries;
+2. exact-requested-DTE variance-risk-premium proxies: entry ATM implied
+   variance over the requested session fraction less backward-looking realized
+   variance scaled to the same requested sessions;
+3. raw-chain flow, Greek and liquidity aggregates from valid entry-snapshot
+   rows only, including put/call volume, open interest, quote depth, spread and
+   unsigned Greek-weighted exposure proxies; open-interest changes use a
+   one-observation lag within the listed expiry and no dealer-sign claim;
+4. additional local Cboe closes joined strictly from a prior calendar date,
+   with explicit age and missingness; and
+5. configured macro-event dates summarized only by whether/count of known
+   scheduled events inside the entry-to-requested-expiry window. Event dates
+   are data, not inferred from future releases. If no point-in-time local event
+   calendar exists, that family is retained as an explicit unavailable result,
+   not synthesized.
+
+Same-session OHLC is valid only for the existing after-close research
+estimand. It is not a claim that a 15:45 order knew the 16:00 close. Actual
+settlement DTE, terminal outcomes and future dividends remain excluded from
+predictors. Every rolling statistic uses rows no later than the entry date.
+
+SPY/QQQ dividend paths remain checked as before. The all-null IWM dividend
+history must never be filled with zero: IWM rows remain eligible for modeling
+the raw terminal close but are explicitly ineligible for any downstream
+strategy P&L or early-exercise calculation until a point-in-time dividend
+source is acquired. Persist per-index eligibility counts in provenance.
+
+### Experiment and stopping rule
+
+One standard JSON drives a fresh prepared cache, bounded development searches,
+selection, development/early/middle/late evaluations and reporting. Compare
+the unchanged ADR-0196 research incumbent with cumulative and family ablations
+that alter only the incumbent MLP feature set inside the unchanged guarded
+tail blend. Search 2016–2018, apply the ADR-0195 six-tail guard versus the
+unchanged reference, and freeze before opening reused 2019–2025 history.
+
+Promote only when a candidate strictly improves development equal-index/
+actual-DTE-cell CRPS, passes every per-index 5%/95% tail guard, preserves paired
+coverage and has no point-in-time violation. Later history is descriptive and
+cannot reverse selection. Every stage stays below 30 minutes and 6 GiB, with
+at most two CPU threads and one CUDA job. No one-off execution script is
+authorized.
+
+### Tests and exit
+
+Focused RED/GREEN tests must cover OHLC formulae and past-only windows,
+requested-DTE VRP scaling, order-invariant flow/Greek aggregation, lagged OI,
+prior-date Cboe joins, event-window boundaries, absent-calendar refusal/status,
+all-null dividend non-imputation and optimizer ineligibility, config identity
+and exclusion of actual DTE/labels. Exit requires complete bounded stages or
+explicit retained family failures, a standalone memo, review evidence,
+RE-ENTRY and action journal, plus two independent final lenses with no
+unresolved Critical/Major findings. Generated artifacts remain ignored.
+
+### Outcome (2026-09-30)
+
+Completed as a governed negative result. The standardized preparation and
+development search completed within the declared caps, but the selector
+refused all five feature-family candidates because none preserved all six
+per-index tail deviations. The best average candidate, exact-requested-DTE
+VRP, improved development equal-cell CRPS by 0.270% versus the frozen research
+incumbent, but worsened the QQQ and SPY upper-tail deviations. Per protocol,
+selection stopped and no 2019--2025 partition was opened.
+
+Macro-event flags remain explicitly unavailable because the local archive has
+no point-in-time event schedule. IWM's all-null dividend series remains null:
+all 31,946 retained IWM modeling rows are marked strategy-ineligible, while
+SPY and QQQ have 44,770 and 32,639 eligible rows. Retain ADR-0196 as the
+offline research incumbent; no trading or deployment authority follows. See
+`children/index_options/docs/memos/2026-09-30-tail-data-feature-ablation.md`.

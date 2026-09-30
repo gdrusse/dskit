@@ -1,5 +1,21 @@
 # Re-entry
 
+## ADR-0197 point-in-time tail-data ablation completed (2026-09-30)
+
+- Added causal OHLC, requested-horizon VRP, entry-snapshot flow/Greek/liquidity
+  and prior-date Cboe families through one standard JSON. No local point-in-time
+  macro-event calendar exists, so that family is explicitly unavailable.
+- All five candidates failed at least one 2016--2018 per-index tail guard. VRP
+  led average CRPS (+0.270% versus ADR-0196) but worsened QQQ/SPY upper-tail
+  deviations. Selection refused; 2019--2025 and the evaluator stayed unopened.
+- IWM's 31,946 retained modeling rows remain dividend-null and strategy
+  ineligible; SPY/QQQ are fully eligible. Nothing was imputed or promoted.
+- Keep ADR-0196 as the offline research incumbent; no trading authority. Memo:
+  `children/index_options/docs/memos/2026-09-30-tail-data-feature-ablation.md`.
+  Review: `docs/review-evidence/ADR-0197.md`. Journal A0615. Focused tests:
+  100 passed. Luna review C0/M0/m1/n0; the retained Minor is non-persistence of
+  a machine-readable empty-feasible-set record before the expected exception.
+
 ## ADR-0196 center-only conditioned transport completed (2026-09-30)
 
 - Objective remains a physical terminal-return/price CDF at each exact option

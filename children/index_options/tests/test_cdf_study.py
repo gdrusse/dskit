@@ -88,6 +88,101 @@ def test_fred_age_and_staleness_use_observation_date(monkeypatch):
     assert np.isnan(out.rate.iloc[1])
 
 
+def test_ohlc_features_use_only_current_and_prior_prices():
+    prices = pd.DataFrame({
+        'date': pd.bdate_range('2020-01-02', periods=6).strftime('%Y-%m-%d'),
+        'open': [100., 102., 101., 104., 103., 106.],
+        'high': [102., 103., 105., 105., 107., 108.],
+        'low': [99., 100., 100., 102., 102., 104.],
+        'close': [101., 101., 104., 103., 106., 105.],
+    })
+    first = ExactExpiryCDFPanel.ohlc_features(prices.iloc[:5], [3])
+    extended = ExactExpiryCDFPanel.ohlc_features(prices, [3]).iloc[:5]
+    pd.testing.assert_frame_equal(first.reset_index(drop=True), extended.reset_index(drop=True))
+    row = first.iloc[1]
+    assert row.overnight_return == pytest.approx(np.log(102/101))
+    assert row.intraday_return == pytest.approx(np.log(101/102))
+    assert row.log_high_low_range == pytest.approx(np.log(103/100))
+    assert row.parkinson_variance == pytest.approx(np.log(103/100)**2/(4*np.log(2)))
+    assert np.isnan(first.range_variance_3.iloc[1])
+    assert np.isfinite(first.range_variance_3.iloc[-1])
+
+
+def test_matched_dte_vrp_uses_requested_sessions_not_actual_dte():
+    frame = pd.DataFrame({
+        'chain_atm_iv': [.20], 'rv_22': [.01], 'sessions_to_expiry': [10],
+        'actual_calendar_dte': [99],
+    })
+    out = ExactExpiryCDFPanel.add_matched_dte_vrp(frame.copy(), 1e-3)
+    implied = .20**2*10/252
+    realized = .01**2*10
+    assert out.matched_implied_variance.iloc[0] == pytest.approx(implied)
+    assert out.matched_trailing_variance.iloc[0] == pytest.approx(realized)
+    assert out.matched_vrp.iloc[0] == pytest.approx(implied-realized)
+    changed = frame.copy()
+    changed.actual_calendar_dte = 2
+    other = ExactExpiryCDFPanel.add_matched_dte_vrp(changed, 1e-3)
+    columns = ['matched_implied_variance', 'matched_trailing_variance',
+               'matched_vrp', 'matched_vrp_ratio']
+    pd.testing.assert_frame_equal(out[columns], other[columns])
+
+
+def test_macro_event_windows_require_entry_known_schedule_records():
+    frame = pd.DataFrame({
+        'quote_date': ['2020-01-02', '2020-01-10'],
+        'planned_settlement_date': ['2020-01-31', '2020-01-31'],
+    })
+    records = {'fomc': [
+        {'event_date': '2020-01-15', 'known_at': '2019-12-01'},
+        {'event_date': '2020-01-20', 'known_at': '2020-01-05'},
+        {'event_date': '2020-02-01', 'known_at': '2019-12-01'},
+    ]}
+    out, status = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), records)
+    assert out.macro_fomc_count.tolist() == [1, 2]
+    assert out.macro_any_event.tolist() == [1, 1]
+    assert status == {'available': True, 'families': ['fomc']}
+    unchanged, missing = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), None)
+    pd.testing.assert_frame_equal(unchanged, frame)
+    assert missing['available'] is False and 'point-in-time' in missing['reason']
+
+
+def test_dividend_path_missing_marks_optimizer_ineligible_without_imputation():
+    dividends = pd.Series([np.nan, np.nan, np.nan])
+    eligible = ExactExpiryCDFPanel.dividend_window_eligibility(dividends, [0], [2])
+    assert eligible.tolist() == [False]
+    assert dividends.isna().all()
+
+
+def test_raw_chain_flow_and_greek_aggregates_are_order_invariant_and_lag_oi():
+    dates = ['2020-01-02']*2+['2020-01-03']*2+['2020-01-06']*2
+    chain = pd.DataFrame({
+        'symbol': ['SPY']*6, 'date': dates, 'expiration': ['2020-02-21']*6,
+        'strike': [95.,105.]*3, 'type': ['put','call']*3,
+        'mark': [2.,2.]*3, 'bid': [1.9]*6, 'ask': [2.1]*6,
+        'bid_size': [10]*6, 'ask_size': [12]*6,
+        'open_interest': [100,200,110,220,130,240],
+        'volume': [10,20,15,25,18,30],
+        'implied_volatility': [.2]*6, 'delta': [-.3,.3]*3,
+        'gamma': [.01]*6, 'vega': [.1]*6,
+    })
+    meta = pd.DataFrame({
+        'symbol': ['SPY']*3, 'quote_date': ['2020-01-02','2020-01-03','2020-01-06'],
+        'expiry': ['2020-02-21']*3, 'chain_underlying_price': [100.]*3,
+    })
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1,.1],
+        max_node_gap=.1, proxy_probabilities=[.1,.5,.9], min_wing_nodes=1,
+        max_inner_gap=.1, max_outer_gap=.2)
+    first = builder.transform(chain, meta)
+    shuffled = builder.transform(chain.sample(frac=1, random_state=8), meta)
+    pd.testing.assert_frame_equal(first, shuffled)
+    assert first.chain_log_volume.iloc[-1] == pytest.approx(np.log1p(48))
+    assert first.chain_put_call_volume_imbalance.iloc[-1] == pytest.approx((18-30)/48)
+    assert np.isnan(first.chain_log_lag_open_interest.iloc[0])
+    assert first.chain_log_lag_open_interest.iloc[1] == pytest.approx(np.log1p(300))
+    assert first.chain_log_lag_oi_change.iloc[2] == pytest.approx(np.log1p(330)-np.log1p(300))
+    assert first.chain_log_gamma_oi.iloc[-1] == pytest.approx(np.log1p(.01*(130+240)))
+
+
 def test_raw_chain_builder_is_order_invariant_and_emits_valid_proxy_quantiles():
     chain = pd.DataFrame({
         'symbol': ['SPY']*10, 'date': ['2020-01-02']*10,
@@ -386,6 +481,32 @@ def test_predictive_cdf_downside_config_pins_bounded_grouped_inventory():
         assert {key: value for key, value in study['models'][name].items() if key != 'equivalence'} == {
             key: value for key, value in previous['study']['models'][name].items()
             if key != 'equivalence'}
+
+
+def test_tail_data_config_pins_causal_family_ablation_and_dividend_policy():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-tail-data.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    assert config['data']['ohlc_windows'] == [5, 22]
+    assert config['data']['matched_dte_vrp'] is True
+    assert 'macro_event_calendars' not in config['data']
+    assert list(experiment['candidates']) == [
+        'ohlc_only', 'vrp_only', 'flow_only', 'cboe_only', 'all_local']
+    assert experiment['candidate_groups'] == experiment['search_partitions'] == {
+        'tail_data': list(experiment['candidates'])}
+    assert experiment['selection_guard']['reference'] == 'research_incumbent'
+    assert study['features'][52] == 'actual_calendar_dte'
+    assert study['features'][199:204] == [
+        'overnight_return', 'intraday_return', 'log_high_low_range',
+        'parkinson_variance', 'jump_variance_proxy']
+    assert study['features'][212:216] == [
+        'matched_implied_variance', 'matched_trailing_variance',
+        'matched_vrp', 'matched_vrp_ratio']
+    for spec in experiment['candidates'].values():
+        selected = spec['params']['incumbent_params']['mlp']['feature_indices']
+        assert 52 not in selected
+    assert 'strategy_dividend_eligible' not in study['features']
+    CDFHyperparameterStudy(config)
 
 
 def test_predictive_cdf_refinement_config_pins_bounded_grouped_inventory():
