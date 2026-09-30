@@ -1,5 +1,27 @@
 # Re-entry
 
+## index_options: strategy-alternatives build complete (ADR-0193..0197) (2026-09-30)
+
+- All five steps of memo A0612 are on main, each reviewed by two fresh Sonnet
+  lenses with zero unresolved Critical/Major; the ADR-0197 correction round
+  (`813b872`) closed C0/M0 on both lenses (evidence appended to
+  `docs/review-evidence/ADR-0197.md`). Child suite 1777 passed / 23 failed
+  (the pre-existing `test_configs.py` pins); tests/pipeline 5282 passed.
+- Recorded backlog (small, not fixed): hedge verdict can flip a half-cent
+  tie by one cent (and the README over-states tie handling);
+  `DefinedRiskCondor.evaluate()` now refuses non-positive strikes; the
+  "charge biases the verdict against the sleeve" note holds only for a core
+  with non-negative mean; nits listed in the evidence.
+- **Nothing has run on real data.** Next (owner's WSL, `./ob` with
+  `optionshist-chain`, `cboe-index`, `cboe-index-wide`): from
+  `children/index_options`, `python -m dskit.pipeline walkforward
+  configs/grid/<cell>-{put-spread,gate,select,empirical-select}.json --asof
+  <today>` for spy-30-45 first, then `python -m index_options.ledger_studies
+  allocate|hedge <walk dirs>`. Read: `*_put_*` vs `*_call_*`,
+  `*_residual_t`, `*_gate_*_closed_*`, select minus empirical-select,
+  `*_size_*_pnl_per_weight`. Research/lockbox note: 2019-2025 is already
+  inspected; the recorder's SPX/XSP chains (Sep 2026→) are the only unseen data.
+
 ## index_options: ADR-0197 landed (debit structures, hedge study) (2026-09-30)
 
 - Step 5 of memo A0612. Candidate `f1cbaee` (Claude Sonnet 5.5, TDD) with the
