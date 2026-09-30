@@ -27708,3 +27708,10 @@ options), ratio spreads and backspreads, IWM, real runs.
 
 **Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
 Critical/Major before merge.
+
+**Clarification (2026-09-30, orchestrator; review evidence ADR-0197).** The
+debit gate lives in the `_priced` hook (with a `_net_credit` seam) rather than
+`_gate`; `structure_payoff` moved to contracts (re-exported by distribution).
+The inherited American charge stays on a debit vertical's short leg as the
+ADR-0187 conservative bound (long legs ignored). The width gate is corrected
+to include fees in the follow-up candidate.

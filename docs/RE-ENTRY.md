@@ -1,5 +1,20 @@
 # Re-entry
 
+## index_options: ADR-0197 landed (debit structures, hedge study) (2026-09-30)
+
+- Step 5 of memo A0612. Candidate `f1cbaee` (Claude Sonnet 5.5, TDD) with the
+  ADR-0196 backlog; two fresh Sonnet skeptics: correctness C0/M0/m4/n5, tests
+  C0/M0/m6/n6. Evidence `docs/review-evidence/ADR-0197.md`. Child suite 1725
+  passed / 23 failed (same pre-existing pins); tests/pipeline 5282 passed.
+- Built: `structure_max_loss` (one max-loss owner); long straddle / long call
+  spread / long put spread backtests; `ledger_studies hedge` (core + sleeve vs
+  k × core at equal CVaR5); `allocate` now over shared dates with a labelled
+  union block and partial-walk refusal; `mean_or_zero` / `t_or_zero`; 10 new
+  documents.
+- In flight: one correction candidate for the ten Minors (hedge verdict tie,
+  fee-aware debit width gate, buy-side pins, straddle tie order and gate
+  wording, abstract enforcement). Do not read `hedge` verdicts until it lands.
+
 ## index_options: ADR-0196 landed (sizing study, allocation CLI) (2026-09-30)
 
 - Step 4 of memo A0612. Candidate `5ec47ef` (Claude Sonnet 5.5, TDD) with the
