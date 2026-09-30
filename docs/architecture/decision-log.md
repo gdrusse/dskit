@@ -27855,3 +27855,49 @@ all 31,946 retained IWM modeling rows are marked strategy-ineligible, while
 SPY and QQQ have 44,770 and 32,639 eligible rows. Retain ADR-0196 as the
 offline research incumbent; no trading or deployment authority follows. See
 `children/index_options/docs/memos/2026-09-30-tail-data-feature-ablation.md`.
+
+## ADR-0199 — Guarded forward selection for option decision regions
+
+2026-09-30. Status: approved by owner in this chat; implementation and
+publication authorized. Owner: index_options. Parent: ADR-0197. Base commit:
+`b9a6920f`. Worktree:
+`/home/russell/dskit-cdf-feature-forward-selection`.
+
+### Scope and decision rule
+
+Improve the offline physical terminal-return CDF at exact ETF expiries using
+the entry-known feature families already prepared by ADR-0197. The primary
+development comparison is the proper, actual eligible strike/wing decision
+region score from the frozen archive diagnostic; full-CDF equal-cell CRPS is
+retained as a paired descriptive score. Tail deviations versus the frozen
+ADR-0196 center-only research incumbent are model-acceptance constraints, not
+evidence that a feature family is uninformative. No contract selection,
+execution, trading, new acquisition, or deployment is authorized.
+
+### Protocol
+
+Start with incumbent features. Test each available ADR-0197 family separately,
+retuning only JSON-declared MLP regularization/model hyperparameters. Retain a
+family only when it strictly improves the development decision-region proper
+score and has no material guarded-tail harm; record rejected improvement as a
+failed acceptance constraint rather than a negative feature conclusion. Then
+run a frozen forward-selection order, declared pairwise interactions, and a
+backward ablation of the retained set. If the existing center-only transport
+seam can route the winning features without changing its 5%/95% maps, compare
+that route separately; otherwise record it unsupported without adding a local
+mechanism.
+
+Each phase is a standard JSON document/stage with a fresh immutable root. Fit,
+selection and later 2019--2025 evaluation remain separated chronologically;
+later results cannot replace a frozen development choice. Use the actual
+archive strike/wing inventory, not synthetic strike proxies. Each process is
+bounded below 30 minutes and 6 GiB, with no one-off execution script.
+
+### Exit
+
+Require focused RED/GREEN coverage for grouped feature inventories, candidate
+identity, guard-versus-evidence semantics, decision-region pairing and
+center-only endpoint preservation. Require a standalone memo with feature,
+row/cell and train/validation counts, every phase result, limitations, an
+action journal and RE-ENTRY update. Before publication, Luna skeptic review(s)
+must resolve every Critical/Major finding. Generated artifacts remain ignored.
