@@ -1,5 +1,21 @@
 # Re-entry
 
+## index_options: ADR-0194 landed (term-structure / VRP-sign gate study) (2026-09-30)
+
+- Step 2 of memo A0612. Candidate `2990217` (Claude Sonnet 5.5, TDD) with the
+  ADR-0193 Minor backlog; two fresh Sonnet skeptics: correctness C0/M0/m0/n5,
+  tests C0/M0/m5/n4. Evidence `docs/review-evidence/ADR-0194.md`. Child suite
+  945 passed / 23 failed (same pre-existing pins).
+- Built: `stats.expanding_percentile`; `VolRegimeSignals` (previous-session
+  VIX, VIX3M, rv_22 → ratio, expanding pct, VRP, four gates); optional
+  `gate_fields` annotation (closed/open/unknown per gate; trades unchanged);
+  14 `<cell>-gate.json` condor docs; the 14 put-spread docs carry the study.
+- Minor backlog (thresholds into the documents so the hash covers them,
+  float-noise guard into `dskit.pipeline.stats`, side-total type, put-spread
+  doc notes) rides the ADR-0195 candidate.
+- Owner's WSL run needs `cboe-index-wide` (VIX3M) in `./ob`; read
+  `<book>_gate_*_closed_mean_pnl_usd` / `_closed_t` (H1: negative).
+
 ## index_options: ADR-0193 landed (wing split, put spread, delta benchmark) (2026-09-30)
 
 - Step 1 of memo A0612. Candidate `73ab724` (Claude Sonnet 5.5, TDD), two

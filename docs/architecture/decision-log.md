@@ -27431,6 +27431,12 @@ tests/integration); zero unresolved Critical/Major before merge.
 (b) All 14 SPY/QQQ cells, or 30-45 only? (c) Also fix the pre-existing stale
 child manifest and zoo-approval pins (23 failing tests on main), or leave?
 
+**Amendment (2026-09-30, review evidence ADR-0193/0194).** Only a put
+spread's American charge is dividend-free: the item-5 delta benchmark reads
+`dividend_amount`, so `PutSpreadQuoteBacktest` refuses a series without it and
+IWM still needs a dividend source. The `*_t` statistics use Newey-West with
+lags 0 (variance divided by n), not a sample-sd t.
+
 ## ADR-0194 — Term-structure and VRP-sign entry-gate study (annotate-only)
 
 2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0193
