@@ -1,6 +1,7 @@
 """Shipped declarations resolve through the public framework interfaces."""
 
 import json
+import re
 
 import pytest
 
@@ -40,6 +41,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "index_options/__init__.py", "index_options/contracts.py",
         "index_options/observations.py", "index_options/nodes.py",
         "index_options/distribution.py",
+        # ADR-0196: the read-only studies over walk ledgers, and their tests
+        "index_options/ledger_studies.py", "tests/test_ledger_studies.py",
         "configs/source-fixture.json", "configs/suite-fixture.json", "configs/run-fixture.json",
         "configs/run-synthetic-distribution.json", "configs/run-synthetic-har.json",
         "configs/run-synthetic-lightgbm.json", "configs/run-distribution-zoo.json",
@@ -95,8 +98,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # test_quote_backtest.py) = 86, less those 6 plus the other 20 cells' 6 each = 120,
     # for owner question 4's expansion to every cell (2026-09-27) = 206,
     # plus ADR-0193's 14 put-spread documents = 220, plus ADR-0194's 14 gate documents = 234,
-    # plus ADR-0195's 28 select documents (14 cells x two rungs) = 262
-    assert len(actual) == 262
+    # plus ADR-0195's 28 select documents (14 cells x two rungs) = 262,
+    # plus ADR-0196's ledger_studies.py and its test = 264
+    assert len(actual) == 264
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -431,15 +435,33 @@ def test_every_generated_document_that_shipped_before_is_unchanged(child_root):
     assert checked == 21 + 21 * 5   # har-vix, then five of the six extras per cell (no zoo)
 
 
-def _without_the_gate_study(doc):
-    """A gate-study document with the study taken back out (restated here, not the generator's)."""
+def _without_the_sizing_study(doc):
+    """A sized document with the ADR-0196 study taken back out (restated here, not the generator's)."""
     plain = copy.deepcopy(doc)
+    del plain["pipeline"]["sizing"]
+    backtest = plain["pipeline"]["backtest"]
+    backtest["inputs"]["forecasts"] = "$signals.rows"
+    del backtest["params"]["size_fields"]
+    return plain
+
+
+def _without_the_gate_study(doc):
+    """A study document with both studies taken back out (restated here, not the generator's)."""
+    plain = _without_the_sizing_study(doc)
     for key in ("vix3m", "signals"):
         del plain["pipeline"][key]
     backtest = plain["pipeline"]["backtest"]
     backtest["inputs"]["forecasts"] = "$model.rows"
     del backtest["params"]["gate_fields"]
     return plain
+
+
+def _described(notes):
+    """A document's notes without its one run sentence, restated here (never the generator's)."""
+    stripped = re.sub(r" ?Run: python -m dskit\.pipeline walkforward \S+ --asof <today>\.", "",
+                      notes)
+    assert stripped != notes, "no run sentence to strip"
+    return stripped
 
 
 @pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
@@ -501,9 +523,11 @@ def test_a_cell_without_a_backtest_has_no_put_spread_document_and_the_base_is_un
     spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
     document = grid.put_spread_document(base, spy)
     assert base == before   # derived on a copy
+    assert "walkforward" not in document["notes"]     # A-N4: the shipper ends it with the one run sentence
     # the ADR-0193 generator is unchanged; the shipped file is that document with the gate study
-    assert grid.gate_study_document(document, name_suffix="") == _grid(
-        child_root, "spy-30-45-put-spread.json")
+    # (ADR-0194) and the sizing study (ADR-0196) on top, and the one run sentence of ADR-0196
+    gated = grid.gate_study_document(document, name_suffix="")
+    assert _differences(gated, _grid(child_root, "spy-30-45-put-spread.json")) == SIZING_PATHS
     assert "vix3m" not in document["pipeline"] and "gate_fields" not in \
         document["pipeline"]["backtest"]["params"]
 
@@ -517,6 +541,17 @@ GATE_NAMES = ["gate_term_inverted", "gate_term_high_pct", "gate_vrp_nonpositive"
 SIGNALS_KNOBS = {"implied_field": "iv_index", "realized_field": "rv_22", "periods_per_year": 252,
                  "inverted_at": 1.0, "high_ratio_pct": 0.8, "min_history": 252,
                  "lag_sessions": 1}
+
+
+#: ADR-0196's pre-registered sizing knobs, typed out here — never read from the node or the grid.
+SIZING_KNOBS = {"implied_field": "iv_index", "realized_field": "rv_22", "lag_sessions": 1,
+                "min_history": 252, "min_weight": 0.25, "max_weight": 4.0}
+#: The three weights' names in their order, restated here (never read from the node or the grid).
+SIZE_NAMES = ["size_inv_implied_var", "size_inv_realized_var", "size_implied"]
+#: Every path at which a sized document differs from the same document without the study (the
+#: notes also gain the run sentence of the file the shipper names).
+SIZING_PATHS = {"/notes", "/pipeline/sizing", "/pipeline/backtest/inputs/forecasts",
+                "/pipeline/backtest/params/size_fields", "/pipeline/backtest/notes"}
 
 
 def _differences(a, b, path=""):
@@ -565,12 +600,13 @@ def test_a_gate_document_is_its_condor_document_plus_the_gate_study_only(child_r
     condor = _grid(child_root, f"{cell.name}.json")
     gate = _grid(child_root, f"{cell.name}-gate.json")
     assert _differences(condor, gate) == {
-        "/name", "/notes", "/pipeline/vix3m", "/pipeline/signals",
+        "/name", "/notes", "/pipeline/vix3m", "/pipeline/signals", "/pipeline/sizing",
         "/pipeline/backtest/inputs/forecasts", "/pipeline/backtest/params/gate_fields",
-        "/pipeline/backtest/notes"}
+        "/pipeline/backtest/params/size_fields", "/pipeline/backtest/notes"}
     assert gate["name"] == f"index-options-grid-{cell.name}-har-vix-gate"
     assert "ADR-0194" in gate["notes"] and "Never decision-eligible" in gate["notes"]
-    assert gate["notes"] != condor["notes"] and gate["notes"].startswith(condor["notes"])
+    # A-N4: the source's description is kept, its run sentence (for the SOURCE file) is not
+    assert gate["notes"].startswith(_described(condor["notes"])) and gate["notes"] != condor["notes"]
     assert gate["pipeline"]["backtest"]["notes"].startswith(condor["pipeline"]["backtest"]["notes"])
     assert gate["pipeline"]["backtest"]["notes"] != condor["pipeline"]["backtest"]["notes"]
     assert _without_the_gate_study(gate)["pipeline"] == {
@@ -594,13 +630,14 @@ def test_the_gate_study_is_wired_the_same_way_into_every_document_that_carries_i
         PayoffSelectQuoteBacktest,
         PutSpreadQuoteBacktest,
         VolRegimeSignals,
+        VolSizingWeights,
     )
 
     doc = _grid(child_root, name.format(cell.name))
     pipe = doc["pipeline"]
     assert list(pipe)[:8] == ["underlying", "vix", "vix_by_date", "market", "rv", "labels",
                               "fwd", "model"]
-    assert list(pipe)[8:10] == ["vix3m", "signals"]      # the study sits right after the model
+    assert list(pipe)[8:11] == ["vix3m", "signals", "sizing"]     # right after the model
     assert pipe["vix3m"]["uses"] == "index_options.observations:IndexCloseRows"
     assert pipe["vix3m"]["params"] == {"root": "./ob", "source": "cboe-index-wide",
                                        "symbol": "VIX3M"}
@@ -612,12 +649,21 @@ def test_the_gate_study_is_wired_the_same_way_into_every_document_that_carries_i
     assert set(pipe["signals"]) == {"uses", "inputs", "params", "notes"}
     assert pipe["signals"]["params"] == SIGNALS_KNOBS and pipe["signals"]["notes"]
     assert VolRegimeSignals.validate_params(pipe["signals"]["params"]) == []
+    # ADR-0196: the sizing node reads the annotated rows and the backtest reads ITS rows, with
+    # every knob written out too
+    assert pipe["sizing"]["uses"] == "index_options.nodes:VolSizingWeights"
+    assert pipe["sizing"]["inputs"] == {"rows": "$signals.rows"}
+    assert set(pipe["sizing"]) == {"uses", "inputs", "params", "notes"}
+    assert pipe["sizing"]["params"] == SIZING_KNOBS and pipe["sizing"]["notes"]
+    assert VolSizingWeights.validate_params(pipe["sizing"]["params"]) == []
     backtest = pipe["backtest"]
-    assert backtest["inputs"] == {"forecasts": "$signals.rows", "chain": "$chain.records",
+    assert backtest["inputs"] == {"forecasts": "$sizing.rows", "chain": "$chain.records",
                                   "underlying": "$underlying.records"}
     assert backtest["params"]["gate_fields"] == GATE_NAMES
-    assert list(backtest["params"])[-1] == "gate_fields"
+    assert backtest["params"]["size_fields"] == SIZE_NAMES
+    assert list(backtest["params"])[-2:] == ["gate_fields", "size_fields"]
     assert list(VolRegimeSignals.GATE_FIELDS) == GATE_NAMES
+    assert list(VolSizingWeights.SIZE_FIELDS) == SIZE_NAMES
     cls = (PutSpreadQuoteBacktest if "put-spread" in name
            else PayoffSelectQuoteBacktest if "select" in name else CondorQuoteBacktest)
     assert cls.validate_params(backtest["params"]) == []
@@ -629,7 +675,7 @@ def test_the_gate_study_is_wired_the_same_way_into_every_document_that_carries_i
 @pytest.mark.parametrize("name", GATE_STUDY_NAMES)
 @pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
 def test_a_gate_study_document_resolves_through_the_planner(child_root, monkeypatch, cell, name):
-    from index_options.nodes import VolRegimeSignals
+    from index_options.nodes import VolRegimeSignals, VolSizingWeights
 
     monkeypatch.chdir(child_root)
     path = child_root / GRID / name.format(cell.name)
@@ -637,11 +683,14 @@ def test_a_gate_study_document_resolves_through_the_planner(child_root, monkeypa
     assert planned.resolved["signals"].cls is VolRegimeSignals
     assert planned.role_of("signals") == "transform"
     assert set(planned.order) == set(json.loads(path.read_text())["pipeline"])
-    assert {("model", "signals"), ("vix3m", "signals"), ("signals", "backtest")} <= set(
-        planned.edges)
+    assert planned.resolved["sizing"].cls is VolSizingWeights
+    assert planned.role_of("sizing") == "transform"
+    assert {("model", "signals"), ("vix3m", "signals"), ("signals", "sizing"),
+            ("sizing", "backtest")} <= set(planned.edges)
     assert ("model", "backtest") not in planned.edges     # rewired, not wired twice
+    assert ("signals", "backtest") not in planned.edges
     order = list(planned.order)
-    assert order.index("signals") < order.index("backtest")
+    assert order.index("signals") < order.index("sizing") < order.index("backtest")
     assert order.index("vix3m") < order.index("signals") and order.index("model") < order.index(
         "signals")
 
@@ -660,8 +709,11 @@ def test_the_cli_validates_and_plans_a_gate_document_and_a_put_spread_document(c
         assert planned["nodes"]["signals"]["class"] == "index_options.nodes:VolRegimeSignals"
         assert planned["nodes"]["signals"]["inputs"] == {"rows": "$model.rows",
                                                          "term": "$vix3m.records"}
-        assert planned["nodes"]["backtest"]["inputs"]["forecasts"] == "$signals.rows"
-        assert planned["order"].index("signals") < planned["order"].index("backtest")
+        assert planned["nodes"]["sizing"]["class"] == "index_options.nodes:VolSizingWeights"
+        assert planned["nodes"]["sizing"]["inputs"] == {"rows": "$signals.rows"}
+        assert planned["nodes"]["backtest"]["inputs"]["forecasts"] == "$sizing.rows"
+        assert planned["order"].index("signals") < planned["order"].index("sizing") < \
+            planned["order"].index("backtest")
 
 
 def test_gate_study_document_refuses_a_document_without_a_backtest_and_leaves_its_input_alone(
@@ -678,7 +730,8 @@ def test_gate_study_document_refuses_a_document_without_a_backtest_and_leaves_it
     before = copy.deepcopy(condor)
     gated = grid.gate_study_document(condor)
     assert condor == before and gated != before
-    assert gated == _grid(child_root, "spy-30-45-gate.json")
+    # the shipped file is this document with the sizing study (ADR-0196) and its run sentence
+    assert _differences(gated, _grid(child_root, "spy-30-45-gate.json")) == SIZING_PATHS
     # a document the study was already applied to is not studied twice
     with pytest.raises(ValueError, match="already"):
         grid.gate_study_document(gated)
@@ -733,8 +786,10 @@ def test_gate_study_document_keeps_the_sources_description_and_names_by_suffix(c
     assert default["name"] == f"{source['name']}-gate" and plain["name"] == source["name"]
     assert grid.gate_study_document(source, name_suffix="-x")["name"] == f"{source['name']}-x"
     for gated in (default, plain):
-        assert gated["notes"].startswith(source["notes"]) and gated["notes"] != source["notes"]
+        assert gated["notes"].startswith(_described(source["notes"]))      # A-N4: minus its run
+        assert gated["notes"] != source["notes"]
         assert "ADR-0194" in gated["notes"] and "Never decision-eligible" in gated["notes"]
+        assert "walkforward" not in gated["notes"]       # the run sentence is the shipper's
     assert default["pipeline"] == plain["pipeline"]
 
 
@@ -767,9 +822,10 @@ SELECT_KNOBS = {"candidate_structures": ["put_spread", "call_spread", "condor"],
 #: Every path at which a select document may differ from its source document (the gate study's
 #: seven plus the backtest's class and the three candidate knobs).
 SELECT_PATHS = {
-    "/name", "/notes", "/pipeline/vix3m", "/pipeline/signals",
+    "/name", "/notes", "/pipeline/vix3m", "/pipeline/signals", "/pipeline/sizing",
     "/pipeline/backtest/uses", "/pipeline/backtest/notes",
     "/pipeline/backtest/inputs/forecasts", "/pipeline/backtest/params/gate_fields",
+    "/pipeline/backtest/params/size_fields",
     "/pipeline/backtest/params/candidate_structures",
     "/pipeline/backtest/params/candidate_short_q",
     "/pipeline/backtest/params/candidate_wing_z"}
@@ -829,7 +885,8 @@ def test_a_select_document_is_its_source_except_the_declared_paths(
     shipped = _grid(child_root, template.format(cell.name))
     assert _differences(base, shipped) == SELECT_PATHS
     assert shipped["name"] == f"{base['name']}-select"
-    assert shipped["notes"].startswith(base["notes"]) and "ADR-0195" in shipped["notes"]
+    assert shipped["notes"].startswith(_described(base["notes"]))        # A-N4
+    assert "ADR-0195" in shipped["notes"]
     assert "ADR-0194" in shipped["notes"] and "Never decision-eligible" in shipped["notes"]
     assert shipped["notes"].index("ADR-0195") < shipped["notes"].index("ADR-0194")
     backtest, original = shipped["pipeline"]["backtest"], base["pipeline"]["backtest"]
@@ -840,14 +897,16 @@ def test_a_select_document_is_its_source_except_the_declared_paths(
     # condor's, so the implied book is the source's condor at its short_q / wing_z
     params = backtest["params"]
     assert {k: params[k] for k in SELECT_KNOBS} == SELECT_KNOBS
-    assert list(params)[-4:] == [*SELECT_KNOBS, "gate_fields"]
-    assert params["gate_fields"] == GATE_NAMES
-    rest = {k: v for k, v in params.items() if k not in (*SELECT_KNOBS, "gate_fields")}
+    assert list(params)[-5:] == [*SELECT_KNOBS, "gate_fields", "size_fields"]
+    assert params["gate_fields"] == GATE_NAMES and params["size_fields"] == SIZE_NAMES
+    rest = {k: v for k, v in params.items()
+            if k not in (*SELECT_KNOBS, "gate_fields", "size_fields")}
     assert rest == original["params"]
     assert (params["short_q"], params["wing_z"]) == (0.1, 0.5)
     # the study itself is the ADR-0194 one, knobs written out
     assert shipped["pipeline"]["signals"]["params"] == SIGNALS_KNOBS
-    assert shipped["pipeline"]["backtest"]["inputs"]["forecasts"] == "$signals.rows"
+    assert shipped["pipeline"]["sizing"]["params"] == SIZING_KNOBS
+    assert shipped["pipeline"]["backtest"]["inputs"]["forecasts"] == "$sizing.rows"
     assert {k: v for k, v in shipped.items() if k not in ("name", "notes", "pipeline")} == {
         k: v for k, v in base.items() if k not in ("name", "notes", "pipeline")}
 
@@ -896,7 +955,7 @@ def test_select_document_refuses_a_document_it_cannot_derive_from_and_leaves_its
     before = copy.deepcopy(condor)
     selected = grid.select_document(condor)
     assert condor == before and selected != before
-    assert selected == _grid(child_root, "spy-30-45-select.json")
+    assert _differences(selected, _grid(child_root, "spy-30-45-select.json")) == SIZING_PATHS
     with pytest.raises(ValueError, match="PayoffSelectQuoteBacktest"):
         grid.select_document(selected)                            # never selected twice
     # the gate study's own preconditions still apply: a condor document already studied
@@ -905,7 +964,8 @@ def test_select_document_refuses_a_document_it_cannot_derive_from_and_leaves_its
             **condor["pipeline"], "signals": {}, "vix3m": {}}})
     empirical = grid.grid_document(json.loads(
         (child_root / "configs" / "run-real-distribution.json").read_text()), spy, "empirical")
-    assert grid.select_document(empirical) == _grid(child_root, "spy-30-45-empirical-select.json")
+    assert _differences(grid.select_document(empirical), _grid(
+        child_root, "spy-30-45-empirical-select.json")) == SIZING_PATHS
 
 
 @pytest.mark.parametrize("name", ["spy-30-45-select.json", "spy-30-45-empirical-select.json"])
@@ -920,9 +980,10 @@ def test_a_select_document_resolves_through_the_planner_to_the_selector(
     assert planned.resolved["backtest"].cls is PayoffSelectQuoteBacktest
     assert planned.role_of("backtest") == "score"
     assert set(planned.order) == set(json.loads(path.read_text())["pipeline"])
-    assert {("signals", "backtest"), ("chain", "backtest"), ("underlying", "backtest")} <= set(
+    assert {("sizing", "backtest"), ("chain", "backtest"), ("underlying", "backtest")} <= set(
         planned.edges)
-    assert ("model", "backtest") not in planned.edges
+    assert ("model", "backtest") not in planned.edges and ("signals", "backtest") not in \
+        planned.edges
     params = json.loads(path.read_text())["pipeline"]["backtest"]["params"]
     assert PayoffSelectQuoteBacktest.validate_params(params) == []
 
@@ -940,5 +1001,171 @@ def test_the_cli_validates_and_plans_a_select_document_on_each_rung(child_root):
         planned = json.loads(done.stdout)       # the last one is the plan
         assert planned["nodes"]["backtest"]["class"] == \
             "index_options.nodes:PayoffSelectQuoteBacktest"
-        assert planned["nodes"]["backtest"]["inputs"]["forecasts"] == "$signals.rows"
-        assert planned["order"].index("signals") < planned["order"].index("backtest")
+        assert planned["nodes"]["backtest"]["inputs"]["forecasts"] == "$sizing.rows"
+        assert planned["order"].index("sizing") < planned["order"].index("backtest")
+
+
+# -- ADR-0196: the sizing study, composed on the gate study ------------------------------------
+
+
+def test_the_sizing_study_is_exported_and_its_node_is_the_single_owner_of_the_weight_names():
+    from index_options.nodes import VolSizingWeights
+
+    assert "sizing_study_document" in grid.__all__
+    assert list(VolSizingWeights.SIZE_FIELDS) == SIZE_NAMES        # grid reads it, never restates
+
+
+def test_sizing_study_document_is_the_gate_study_plus_one_node_and_three_paths(child_root):
+    gated = grid.gate_study_document(_spy_condor(child_root))
+    before = copy.deepcopy(gated)
+    sized = grid.sizing_study_document(gated)
+    assert gated == before                                           # derived on a copy
+    assert _differences(gated, sized) == SIZING_PATHS
+    assert sized["name"] == gated["name"]                            # the file names the study
+    assert list(sized["pipeline"]) == [
+        *list(gated["pipeline"])[:list(gated["pipeline"]).index("signals") + 1], "sizing",
+        *list(gated["pipeline"])[list(gated["pipeline"]).index("signals") + 1:]]
+    assert sized["pipeline"]["sizing"]["params"] == SIZING_KNOBS
+    assert sized["pipeline"]["sizing"]["inputs"] == {"rows": "$signals.rows"}
+    assert _without_the_sizing_study(sized)["pipeline"] == {
+        **gated["pipeline"],
+        "backtest": {**gated["pipeline"]["backtest"],
+                     "notes": sized["pipeline"]["backtest"]["notes"]}}
+    assert sized["notes"].startswith(gated["notes"]) and "ADR-0196" in sized["notes"]
+    assert sized["pipeline"]["backtest"]["notes"].startswith(gated["pipeline"]["backtest"]["notes"])
+    assert "Never decision-eligible" in sized["notes"]
+    # the notes' numbers are the knobs', and the node is told to stay annotate-only
+    assert "0.25" in sized["notes"] and "4.0" in sized["notes"] and "252" in sized["notes"]
+
+
+def test_sizing_study_document_refuses_a_document_it_cannot_size_and_leaves_its_input_alone(
+    child_root
+):
+    plain = _spy_condor(child_root)
+    with pytest.raises(ValueError, match="signals"):                 # no gate study to size
+        grid.sizing_study_document(plain)
+    base = json.loads((child_root / "configs" / "run-real-har-vix.json").read_text())
+    iwm = next(c for c in grid.CELLS if c.underlying.symbol == "IWM")
+    with pytest.raises(ValueError, match="backtest"):
+        grid.sizing_study_document(grid.grid_document(base, iwm))
+    gated = grid.gate_study_document(plain)
+    sized = grid.sizing_study_document(gated)
+    with pytest.raises(ValueError, match="already carries the sizing study"):
+        grid.sizing_study_document(sized)
+    declared = copy.deepcopy(gated)
+    declared["pipeline"]["backtest"]["params"]["size_fields"] = ["mine"]
+    before = copy.deepcopy(declared)
+    with pytest.raises(ValueError, match="size_fields"):
+        grid.sizing_study_document(declared)
+    elsewhere = copy.deepcopy(gated)
+    elsewhere["pipeline"]["backtest"]["inputs"]["forecasts"] = "$model.rows"
+    with pytest.raises(ValueError, match=r"forecasts.*\$signals\.rows"):
+        grid.sizing_study_document(elsewhere)
+    assert declared == before
+
+
+def test_the_grid_composes_the_sizing_study_on_exactly_the_56_documents_that_carry_the_gate_study(
+    child_root
+):
+    files = grid.grid_files(child_root / "configs")
+    sized = {f for f, doc in files.items() if "sizing" in doc["pipeline"]}
+    assert sized == {f"grid/{stem}-{kind}.json" for stem in BACKTEST_STEMS
+                     for kind in ("gate", "put-spread", "select", "empirical-select")}
+    assert len(sized) == 56
+    assert {f for f, doc in files.items() if "signals" in doc["pipeline"]} == sized   # no others
+    for relpath, doc in files.items():
+        assert ("size_fields" in doc["pipeline"].get("backtest", {}).get("params", {})) == (
+            relpath in sized), relpath
+
+
+@pytest.mark.parametrize("name", GATE_STUDY_NAMES)
+@pytest.mark.parametrize("cell", BACKTEST_CELLS[:3], ids=lambda c: c.name)
+def test_every_sizing_knob_and_the_size_fields_are_in_the_identity_hash(child_root, cell, name):
+    # as with the signals (ADR-0195 B-M2): written out, so editing the node's defaults can never
+    # change what a shipped document computes while its hash and run directory stay put
+    from dskit.pipeline.document import PipelineDocument
+
+    shipped = _grid(child_root, name.format(cell.name))
+    assert shipped["pipeline"]["sizing"]["params"] == SIZING_KNOBS
+    baseline = PipelineDocument.from_obj(shipped).hash
+    for knob, other in (("implied_field", "vix"), ("realized_field", "rv_5"),
+                        ("lag_sessions", 2), ("min_history", 250), ("min_weight", 0.5),
+                        ("max_weight", 3.0)):
+        changed = copy.deepcopy(shipped)
+        changed["pipeline"]["sizing"]["params"][knob] = other
+        assert PipelineDocument.from_obj(changed).hash != baseline, knob
+    bare = copy.deepcopy(shipped)
+    del bare["pipeline"]["sizing"]["params"]
+    assert PipelineDocument.from_obj(bare).hash != baseline
+    narrower = copy.deepcopy(shipped)
+    narrower["pipeline"]["backtest"]["params"]["size_fields"] = SIZE_NAMES[:2]
+    assert PipelineDocument.from_obj(narrower).hash != baseline
+
+
+def test_the_sizing_knobs_are_the_nodes_own_defaults_written_out_in_full(child_root):
+    from index_options.nodes import VolSizingWeights
+
+    doc = grid.sizing_study_document(grid.gate_study_document(_spy_condor(child_root)))
+    assert doc["pipeline"]["sizing"]["params"] == dict(VolSizingWeights.DEFAULTS) == SIZING_KNOBS
+
+
+# -- ADR-0196 (ADR-0195 review A-N4): one run instruction, for the file the reader holds --------
+
+RUN_SENTENCE = "Run: python -m dskit.pipeline walkforward configs/grid/{file} --asof <today>."
+
+
+@pytest.mark.parametrize("name", GATE_STUDY_NAMES)
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_derived_documents_notes_carry_exactly_one_run_instruction_and_it_names_its_own_file(
+    child_root, cell, name
+):
+    file = name.format(cell.name)
+    notes = _grid(child_root, file)["notes"]
+    assert notes.count("python -m dskit.pipeline walkforward") == 1
+    assert notes.endswith(RUN_SENTENCE.format(file=file))
+    assert re.findall(r"configs/grid/[\w.-]+\.json", notes) == [f"configs/grid/{file}"]
+    assert "Run THIS document" not in notes and "<this file>" not in notes
+    assert "Never decision-eligible" in notes
+
+
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_derived_document_keeps_its_sources_description_but_not_its_run_instruction(
+    child_root, cell
+):
+    condor = _grid(child_root, f"{cell.name}.json")
+    empirical = _grid(child_root, f"{cell.name}-empirical.json")
+    # the condor cell document is itself generated and keeps its own single run sentence
+    assert condor["notes"].count("walkforward") == 1
+    assert RUN_SENTENCE.format(file=f"{cell.name}.json") in condor["notes"]
+    for derived, source in ((f"{cell.name}-gate.json", condor), (f"{cell.name}-select.json", condor),
+                            (f"{cell.name}-empirical-select.json", empirical)):
+        notes = _grid(child_root, derived)["notes"]
+        assert notes.startswith(_described(source["notes"])), derived
+        assert RUN_SENTENCE.format(file=f"{cell.name}.json") not in notes, derived
+        assert RUN_SENTENCE.format(file=f"{cell.name}-empirical.json") not in notes, derived
+    put_spread = _grid(child_root, f"{cell.name}-put-spread.json")["notes"]
+    assert put_spread.startswith(f"ADR-0193 cell {cell.name}:")
+
+
+# -- ADR-0196 (ADR-0195 review A-N1): the empirical control is not "premium only" -------------
+
+
+def test_the_empirical_control_is_described_as_an_unconditional_shape_trailing_vol_forecast(
+    child_root
+):
+    from index_options.nodes import PayoffSelectQuoteBacktest
+
+    readme = (child_root / "README.md").read_text(encoding="utf-8")
+    where = {"the README": readme, "the class docstring": PayoffSelectQuoteBacktest.__doc__,
+             "the grid module docstring": grid.__doc__,
+             "AGENTS.md": (child_root / "AGENTS.md").read_text(encoding="utf-8")}
+    for cell in BACKTEST_CELLS:
+        for name in (f"{cell.name}-select.json", f"{cell.name}-empirical-select.json"):
+            where[name] = _grid(child_root, name)["notes"]
+    for label, text in where.items():
+        assert not re.search(r"premium[- ]only|premium alone|only the quotes'? premium",
+                             text, re.IGNORECASE), label
+    for label in ("the README", "the class docstring", "spy-30-45-select.json",
+                  "qqq-1-empirical-select.json"):
+        text = re.sub(r"\s+", " ", where[label]).lower()
+        assert "unconditional" in text and "trailing" in text and "conditional-forecast" in text, label

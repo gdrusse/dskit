@@ -1097,6 +1097,14 @@ class NeweyWestInterval(MeanIntervalEstimator):
     caller's process. Raising ``level`` widens these bounds; it does not
     buy coverage.
 
+    A sample constant to float noise is refused like an exactly constant
+    one (ADR-0195): the standard error comes from
+    :func:`~dskit.pipeline.stats.newey_west_mean`, which reports none (0.0)
+    for a spread of at most :data:`~dskit.pipeline.stats.NO_VARIANCE_RTOL`
+    times the largest magnitude, so ``interval`` raises "found no spread"
+    instead of returning a bracket a few ulps wide around the mean. The
+    tolerance is the stats owner's; nothing here restates it.
+
     The critical value is Student-t on ``independent_units - 1`` degrees
     of freedom, NOT ``n - 1``. Overlapping observations are not each a
     degree of freedom, and pairing a HAC standard error with the raw row

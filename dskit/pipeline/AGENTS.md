@@ -92,6 +92,8 @@ on it without breaking its rulings.
   `across_fold_t` share ONE no-variance rule (`stats.NO_VARIANCE_RTOL`,
   relative to the largest magnitude): a float-noise-constant series has
   `t` None, never ~1e16. Do not restate that tolerance in a caller.
+  `NeweyWestInterval` inherits it: a float-noise-constant sample is refused
+  ("no spread") like an exactly constant one, never bracketed a few ulps wide.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -552,7 +554,9 @@ dskit/pipeline/
 │                      registry; no-information vs mean (Clark–West, h*);
 │                      P&L series summaries lower_tail_mean + max_drawdown;
 │                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio;
-│                      expanding_percentile (look-ahead-free mid-rank, ADR-0194)
+│                      expanding_percentile (look-ahead-free mid-rank, ADR-0194) +
+│                      expanding_quantile (look-ahead-free running quantile, linear
+│                      interpolation, ADR-0196)
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)

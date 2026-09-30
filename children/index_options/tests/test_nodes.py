@@ -548,3 +548,404 @@ def test_numpy_scalar_inputs_give_plain_bool_gates_which_the_backtest_accepts():
         assert type(out[name]) is bool or out[name] is None, (name, type(out[name]))
     assert out["gate_term_inverted"] is False and out["gate_vrp_nonpositive"] is False
     assert out["gate_any"] is None      # the percentile is unknown with one earlier ratio
+
+
+# -- ADR-0196: the lagged-rows seam and VolSizingWeights -----------------------------------------
+#
+# VolRegimeSignals and VolSizingWeights both read the PREVIOUS row (lag_sessions back) of the same
+# instrument in asof_ms order. That mechanism (ordering, the lag, the refusals, putting the added
+# fields on every row) has ONE owner, _LaggedRowSignals, with two hooks a member supplies.
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import random  # noqa: E402
+from abc import ABC  # noqa: E402
+
+import index_options.nodes as nodes_module  # noqa: E402
+from index_options.nodes import VolSizingWeights  # noqa: E402
+
+SEAM = getattr(nodes_module, "_LaggedRowSignals", None)
+
+
+def _regime_scenario(seed, n_rows, instruments=("SPY", "QQQ"), rename=False):
+    """Deterministic rows and term records with every awkward cell a node must read as unknown."""
+    rng = random.Random(seed)
+    days = [(date(2020, 1, 1) + timedelta(days=k)).isoformat() for k in range(n_rows)]
+    junk = [None, 0, 0.0, -3.0, "x", True]
+    rows = []
+    for instrument in instruments:
+        level = rng.uniform(15, 25)
+        for k, day in enumerate(days):
+            level = max(5.0, level + rng.gauss(0, 1.5))
+            iv = rng.choice(junk) if rng.random() < 0.08 else round(level, 6)
+            rv = rng.choice(junk) if rng.random() < 0.08 else round(abs(rng.gauss(0.01, 0.004)), 8)
+            implied, realized = ("vix", "rv_5") if rename else ("iv_index", "rv_22")
+            row = {"instrument": instrument, "asof_ms": 1000 + k, "date": day, "close": 100.0 + k,
+                   implied: iv, realized: rv, "marker": f"{instrument}{k}"}
+            if rng.random() < 0.05:
+                del row[implied]
+            if rng.random() < 0.03:
+                del row["date"]
+            rows.append(row)
+    rng.shuffle(rows)
+    term = [{"instrument": "VIX3M", "date": day,
+             "close": rng.choice(junk) if rng.random() < 0.06 else round(rng.uniform(15, 28), 6)}
+            for day in days if rng.random() > 0.04]
+    return rows, term
+
+
+#: name -> (scenario arguments, node params, sha256 of the node's whole output as JSON).
+#: Frozen from VolRegimeSignals as ADR-0195 shipped it (2399882), by running these very
+#: scenarios BEFORE the refactor onto the seam: every row, every added field, key order and
+#: float bit included.
+FROZEN_SIGNALS = {
+    "two_instruments_min_history_2": (
+        dict(seed=1, n_rows=40), {"min_history": 2},
+        "5be6aee7032022442680b1442cc618110f4d5cf0f5b4349862987096c6c127c4"),
+    "lag_2_moved_thresholds_renamed_fields": (
+        dict(seed=2, n_rows=40, rename=True),
+        {"lag_sessions": 2, "inverted_at": 0.9, "high_ratio_pct": 0.5, "periods_per_year": 250,
+         "min_history": 3, "implied_field": "vix", "realized_field": "rv_5"},
+        "d6d762b18e1b84bc90b23e44988d6bdee7f6d2255a2c21043501f63d6fb02bb4"),
+    "one_instrument_default_history": (
+        dict(seed=3, n_rows=360, instruments=("SPY",)), {},
+        "a11e32df4d91abddf86cc0a456cda1452da9d6837ce465fc0f7a948ba09363b5"),
+}
+
+
+@pytest.mark.parametrize("name", FROZEN_SIGNALS)
+def test_the_signals_node_is_byte_identical_to_what_adr_0195_shipped(name):
+    scenario, params, digest = FROZEN_SIGNALS[name]
+    rows, term = _regime_scenario(**scenario)
+    out = VolRegimeSignals("signals", params).run(None, {"rows": rows, "term": term})["rows"]
+    assert len(out) == len(rows)
+    assert hashlib.sha256(json.dumps(out, allow_nan=False).encode()).hexdigest() == digest
+
+
+def test_the_frozen_scenarios_reach_every_branch_of_the_signals():
+    # a digest over a scenario that never percentiles, inverts or blanks would freeze nothing
+    for name, (scenario, params, _digest) in FROZEN_SIGNALS.items():
+        rows, term = _regime_scenario(**scenario)
+        out = VolRegimeSignals("signals", params).run(None, {"rows": rows, "term": term})["rows"]
+        assert any(r["vix_term_ratio_pct"] is not None for r in out), name
+        assert any(r["vix_term_ratio"] is None for r in out), name          # a blanked reading
+        assert {r["gate_any"] for r in out} == {True, False, None} or name.startswith(
+            "one_instrument"), name
+        assert any(r["vrp"] is None for r in out) and any(r["vrp"] is not None for r in out), name
+
+
+def test_the_seam_is_one_abstract_owner_and_both_nodes_are_its_members():
+    assert SEAM is not None and issubclass(SEAM, ABC)
+    assert issubclass(VolRegimeSignals, SEAM) and issubclass(VolSizingWeights, SEAM)
+    assert SEAM.__abstractmethods__ == frozenset({"_read", "_annotate"})
+    # the mechanism is written once: a member supplies the hooks and its own knobs, nothing else
+    for member in (VolRegimeSignals, VolSizingWeights):
+        for owned in ("run", "_by_instrument", "_lagged", "validate_inputs", "serving_effect",
+                      "_knob"):
+            assert owned not in vars(member), (member.__name__, owned)
+
+
+def test_a_member_missing_a_hook_refuses_at_construction_not_later():
+    class NoAnnotate(SEAM):
+        def _read(self, previous, context):
+            return None
+
+    class NoRead(SEAM):
+        def _annotate(self, readings):
+            return []
+
+    for cls in (NoAnnotate, NoRead):
+        with pytest.raises(TypeError, match="abstract"):
+            cls("x", {})
+
+
+class _Echo(SEAM if SEAM is not None else object):
+    """The smallest member: reads the previous row's ``x`` and stamps it, with its running count."""
+
+    def _read(self, previous, context):
+        return None if previous is None else previous.get("x")
+
+    def _annotate(self, readings):
+        return [{"prev_x": r, "n_seen": sum(v is not None for v in readings[:k])}
+                for k, r in enumerate(readings)]
+
+
+def _echo_rows(instrument="A", n=4, **extra):
+    return [{"instrument": instrument, "asof_ms": 10 + k, "x": float(k), **extra}
+            for k in range(n)]
+
+
+def test_the_seam_orders_lags_and_assembles_whatever_the_hooks_say():
+    rows = _echo_rows("A") + _echo_rows("B", x_shift=1)
+    shuffled = [rows[k] for k in (5, 2, 7, 0, 3, 6, 1, 4)]
+    out = _Echo("e", {}).run(None, {"rows": shuffled})["rows"]
+    assert [(r["instrument"], r["asof_ms"]) for r in out] == [
+        (r["instrument"], r["asof_ms"]) for r in shuffled]             # input order, every row
+    for r in out:
+        k = r["asof_ms"] - 10
+        assert r["prev_x"] == (None if k == 0 else float(k - 1)), r      # the row before it
+        assert r["n_seen"] == max(0, k - 1)       # readings at positions before it that exist
+    lagged = _Echo("e", {"lag_sessions": 2}).run(None, {"rows": rows})["rows"]
+    assert [r["prev_x"] for r in lagged if r["instrument"] == "A"] == [None, None, 0.0, 1.0]
+
+
+def test_the_seam_refuses_what_it_cannot_order_and_names_the_node():
+    node = _Echo("e", {})
+    with pytest.raises(ValueError, match=r"e: row 2 needs a numeric asof_ms"):
+        node.run(None, {"rows": [_echo_rows()[0], {"instrument": "A", "x": 1.0}]})
+    with pytest.raises(ValueError, match=r"e: row 1 needs a numeric asof_ms"):
+        node.run(None, {"rows": ["not a row"]})
+    with pytest.raises(ValueError, match=r"e: A repeats asof_ms 11"):
+        node.run(None, {"rows": _echo_rows() + [dict(_echo_rows()[1])]})
+    assert node.validate_inputs({"rows": []}) == []
+    assert node.validate_inputs({"rows": ()}) == ["rows must be a list of forecast rows"]
+    assert node.serving_effect({}, {}) == "forbidden"
+    assert (node.role, node.outputs) == ("transform", ("rows",))
+
+
+def test_the_seam_owns_the_shared_knobs_and_their_defaults_once():
+    # implied_field / realized_field / lag_sessions / min_history: one declaration, one check
+    shared = {"implied_field": "iv_index", "realized_field": "rv_22", "lag_sessions": 1,
+              "min_history": 252}
+    assert SEAM.SHARED_DEFAULTS == shared
+    for member in (VolRegimeSignals, VolSizingWeights):
+        assert {k: member.DEFAULTS[k] for k in shared} == shared
+        assert set(shared) <= set(member._PARAMS)
+        for bad in ({"implied_field": ""}, {"realized_field": 3}, {"lag_sessions": 0},
+                    {"min_history": True}, {"lag_sessions": 1.5}):
+            assert member.validate_params(bad), (member.__name__, bad)
+    assert SEAM.validate_params({}) == [] and SEAM.validate_params({"lag_sessions": 3}) == []
+    assert any("unknown" in p and "surprise" in p for p in SEAM.validate_params({"surprise": 1}))
+
+
+# VolSizingWeights: every expected number is restated by hand from the inputs below.
+#
+#   row   iv   rv      the row reads its PREVIOUS row's iv and rv (one-session lag), so the
+#   0     20   0.010    readings are   row 1: (20, .010)   row 2: (30, .020)   row 3: (24, .015)
+#   1     30   0.020                   row 4: (40, .030)   row 5: (22, .010)
+#   2     24   0.015    and with min_history 1 each weight compares today's reading to the
+#   3     40   0.030    expanding MEDIAN of the EARLIER readings (row 1 has none: unknown):
+#   4     22   0.010      row 2: earlier iv [20], iv^2 [400], rv^2 [1e-4]
+#   5     25   0.012      row 3: [20, 30], [400, 900] -> 650, [1e-4, 4e-4] -> 2.5e-4
+#                         row 4: [20, 24, 30] -> 24, [400, 576, 900] -> 576, rv^2 -> 2.25e-4
+#                         row 5: [20, 24, 30, 40] -> 27, iv^2 -> (576 + 900) / 2 = 738,
+#                                rv^2 [1e-4, 2.25e-4, 4e-4, 9e-4] -> 3.125e-4
+#   size_inv_implied_var  = median(iv^2) / iv^2      size_inv_realized_var = median(rv^2) / rv^2
+#   size_implied          = iv / median(iv)
+#   row 2: 400 / 900 = 0.4444   1e-4 / 4e-4 = 0.25      30 / 20 = 1.5
+#   row 3: 650 / 576 = 1.12847  2.5e-4 / 2.25e-4 = 1.1111   24 / 25 = 0.96
+#   row 4: 576 / 1600 = 0.36    2.25e-4 / 9e-4 = 0.25   40 / 24 = 1.66667
+#   row 5: 738 / 484 = 1.52479  3.125e-4 / 1e-4 = 3.125  22 / 27 = 0.81481
+
+SZ_IV = [20.0, 30.0, 24.0, 40.0, 22.0, 25.0]
+SZ_RV = [0.010, 0.020, 0.015, 0.030, 0.010, 0.012]
+SIZE_NAMES = ("size_inv_implied_var", "size_inv_realized_var", "size_implied")
+UNCLIPPED = [None, None, (400 / 900, 0.25, 1.5), (650 / 576, 2.5e-4 / 2.25e-4, 0.96),
+             (0.36, 0.25, 40 / 24), (738 / 484, 3.125, 22 / 27)]
+
+
+def _sizing(rows, **params):
+    node = VolSizingWeights("sizing", {"min_history": 1, **params})
+    return node.run(None, {"rows": rows})["rows"]
+
+
+def _weights(row):
+    return tuple(row[name] for name in SIZE_NAMES)
+
+
+def _assert_weights(row, want):
+    if want is None:
+        assert _weights(row) == (None, None, None)
+        return
+    assert _weights(row) == pytest.approx(want, abs=1e-12)
+
+
+def test_the_weights_are_the_previous_readings_against_their_expanding_median_by_hand():
+    out = _sizing(_signal_rows(SZ_IV, SZ_RV))
+    assert len(out) == 6
+    for row, want in zip(out, UNCLIPPED):
+        _assert_weights(row, want if want is None else tuple(min(4.0, max(0.25, w)) for w in want))
+    assert out[2]["size_inv_realized_var"] == pytest.approx(0.25, abs=1e-12)   # on the lower clip
+    # the three names are on the class, once, in this order, and the node adds exactly them
+    assert VolSizingWeights.SIZE_FIELDS == SIZE_NAMES
+    assert all(set(SIZE_NAMES) <= set(row) for row in out)
+    assert set(out[0]) - set(_signal_rows(SZ_IV, SZ_RV)[0]) == set(SIZE_NAMES)
+
+
+def test_weights_clip_at_both_ends():
+    # min_weight 0.5 lifts row 2's 0.4444 / 0.25 and row 4's 0.36 / 0.25; max_weight 1.2 caps
+    # row 2's 1.5, row 4's 1.6667 and row 5's 1.5248 / 3.125; what lies between is untouched
+    out = _sizing(_signal_rows(SZ_IV, SZ_RV), min_weight=0.5, max_weight=1.2)
+    for row, want in zip(out, UNCLIPPED):
+        _assert_weights(row, want if want is None else tuple(min(1.2, max(0.5, w)) for w in want))
+    assert _weights(out[2]) == (0.5, 0.5, 1.2) and _weights(out[4]) == (0.5, 0.5, 1.2)
+    assert _weights(out[5])[:2] == (1.2, 1.2) and _weights(out[5])[2] == pytest.approx(22 / 27)
+    assert _weights(out[3]) == pytest.approx((650 / 576, 2.5e-4 / 2.25e-4, 0.96), abs=1e-12)
+    # a weight exactly on a bound is that bound; equal bounds make every weight that number
+    flat = _sizing(_signal_rows(SZ_IV, SZ_RV), min_weight=1.0, max_weight=1.0)
+    assert all(_weights(r) == (1.0, 1.0, 1.0) for r in flat[2:])
+    assert all(_weights(r) == (None, None, None) for r in flat[:2])
+
+
+def test_a_lag_of_two_is_the_same_weights_one_row_later():
+    lag1 = _sizing(_signal_rows(SZ_IV, SZ_RV))
+    lag2 = _sizing(_signal_rows(SZ_IV, SZ_RV), lag_sessions=2)
+    assert _weights(lag2[0]) == _weights(lag2[1]) == _weights(lag2[2]) == (None,) * 3
+    for k in range(5):
+        assert _weights(lag2[k + 1]) == _weights(lag1[k]), k
+    # row 3 at lag 2 reads row 1 (30, .02) against the one earlier reading, row 0's (20, .01)
+    assert _weights(lag2[3]) == pytest.approx((400 / 900, 0.25, 1.5), abs=1e-12)
+
+
+def test_the_same_rows_own_iv_and_realized_vol_never_inform_its_weights_and_nothing_looks_ahead():
+    base = _sizing(_signal_rows(SZ_IV, SZ_RV))
+    rng = random.Random(196)
+    for k in range(6):
+        ivs, rvs = list(SZ_IV), list(SZ_RV)
+        ivs[k], rvs[k] = rng.uniform(5, 90), rng.uniform(0.001, 0.09)
+        moved = _sizing(_signal_rows(ivs, rvs))
+        assert [_weights(r) for r in moved[:k + 1]] == [_weights(r) for r in base[:k + 1]], k
+    for k in range(1, 7):                          # a prefix is weighed the same inside the whole
+        prefix = _sizing(_signal_rows(SZ_IV[:k], SZ_RV[:k]))
+        assert [_weights(r) for r in prefix] == [_weights(r) for r in base[:k]], k
+    assert _weights(_sizing(_signal_rows(SZ_IV[:5] + [99.0], SZ_RV[:5] + [0.5]))[5]) == \
+        _weights(base[5])
+
+
+def test_a_missing_or_non_positive_reading_blanks_only_the_weights_that_need_it():
+    for bad in (None, 0, 0.0, -5.0, "x", True, float("nan"), float("inf")):
+        ivs = [20.0, bad, 24.0, 40.0, 22.0, 25.0]
+        out = _sizing(_signal_rows(ivs, SZ_RV))
+        # row 2 reads the bad iv: both implied weights unknown, the realized one survives
+        assert out[2]["size_inv_implied_var"] is None and out[2]["size_implied"] is None, bad
+        assert out[2]["size_inv_realized_var"] == pytest.approx(0.25, abs=1e-12), bad
+        # the bad reading never entered the history: row 3's median is over [20] alone (row 2 has
+        # no iv), so 400 / 576 and 24 / 20 (clipped above 4? no: 1.2), not over a blank
+        assert out[3]["size_inv_implied_var"] == pytest.approx(400 / 576, abs=1e-12), bad
+        assert out[3]["size_implied"] == pytest.approx(24 / 20, abs=1e-12), bad
+    for bad in (None, 0.0, -0.01, "x", True):
+        rvs = [0.010, bad, 0.015, 0.030, 0.010, 0.012]
+        out = _sizing(_signal_rows(SZ_IV, rvs))
+        assert out[2]["size_inv_realized_var"] is None, bad
+        assert out[2]["size_inv_implied_var"] == pytest.approx(400 / 900, abs=1e-12), bad
+        assert out[2]["size_implied"] == pytest.approx(1.5, abs=1e-12), bad
+        assert out[3]["size_inv_realized_var"] == pytest.approx(1e-4 / 2.25e-4, abs=1e-12), bad
+    # a row without the fields at all reads as unknown, never as an error
+    rows = [{"instrument": "SPY", "asof_ms": k} for k in range(3)]
+    assert all(_weights(r) == (None,) * 3 for r in _sizing(rows))
+
+
+def test_min_history_counts_earlier_finite_readings_exactly():
+    out = _sizing(_signal_rows(SZ_IV, SZ_RV), min_history=3)
+    assert [_weights(r) == (None,) * 3 for r in out] == [True, True, True, True, False, False]
+    # a blank reading does not count toward the history: row 2 reads a blank, so row 5 has only
+    # the readings of rows 0, 2 and 3 before row 4's
+    ivs = [20.0, None, 24.0, 40.0, 22.0, 25.0]
+    out = _sizing(_signal_rows(ivs, SZ_RV), min_history=3)
+    assert [r["size_implied"] is None for r in out] == [True, True, True, True, True, False]
+    assert out[5]["size_implied"] == pytest.approx(22 / 24)        # median of iv [20, 24, 40]
+    assert out[5]["size_inv_realized_var"] is not None and out[4]["size_inv_realized_var"] is not None
+
+
+def test_the_default_history_is_two_hundred_and_fifty_two_earlier_readings():
+    n = 256
+    rows = [{"instrument": "SPY", "asof_ms": k, "iv_index": 20.0 + (k % 7), "rv_22": 0.01 + 1e-4 * (k % 5)}
+            for k in range(n)]
+    out = VolSizingWeights("sizing", {}).run(None, {"rows": rows})["rows"]
+    known = [k for k, r in enumerate(out) if r["size_implied"] is not None]
+    assert known == list(range(253, n))      # row 253 has readings at rows 1..252: 252 earlier ones
+    assert out[252]["size_implied"] is None
+
+
+def test_each_instrument_reads_its_own_previous_row_and_its_own_history():
+    spy = _signal_rows(SZ_IV, SZ_RV)
+    qqq = _signal_rows([50.0, 60.0, 70.0, 80.0, 90.0, 100.0], [0.02] * 6, instrument="QQQ")
+    out = _sizing([r for pair in zip(qqq, spy) for r in pair])             # interleaved
+    assert [_weights(r) for r in out if r["instrument"] == "SPY"] == [
+        _weights(r) for r in _sizing(spy)]
+    # QQQ's own series: row 2 reads 60 against the median of [50]
+    qqq_out = [r for r in out if r["instrument"] == "QQQ"]
+    assert _weights(qqq_out[2])[2] == pytest.approx(min(4.0, 60 / 50))
+    assert _weights(qqq_out[2])[1] == pytest.approx(1.0)       # a constant realized vol: ratio 1
+
+
+def test_every_row_comes_back_unchanged_in_input_order_and_the_input_is_untouched():
+    rows = _signal_rows(SZ_IV, SZ_RV)
+    before = copy.deepcopy(rows)
+    order = (3, 0, 5, 2, 1, 4)
+    shuffled = [rows[k] for k in order]
+    out = _sizing(shuffled)
+    assert rows == before
+    assert [r["marker"] for r in out] == [f"SPY{k}" for k in order]
+    for original, row in zip(shuffled, out):
+        assert {k: v for k, v in row.items() if k not in SIZE_NAMES} == original
+    assert {r["marker"]: _weights(r) for r in out} == {
+        r["marker"]: _weights(r) for r in _sizing(rows)}
+    assert all(type(w) is float for r in out for w in _weights(r) if w is not None)
+
+
+def test_the_field_names_are_knobs_for_the_sizing_node_too():
+    rows = [{**r, "vix": r["iv_index"], "rv_5": r["rv_22"]} for r in _signal_rows(SZ_IV, SZ_RV)]
+    for r in rows:
+        del r["iv_index"], r["rv_22"]
+    renamed = _sizing(rows, implied_field="vix", realized_field="rv_5")
+    assert [_weights(r) for r in renamed] == [_weights(r) for r in _sizing(_signal_rows(SZ_IV, SZ_RV))]
+
+
+def test_the_sizing_defaults_are_the_owners_numbers_typed_out_independently():
+    # the generator reads DEFAULTS and writes them into 56 documents, so a test that reads them
+    # too asserts nothing: these are ADR-0196's answers (previous session, 252 sessions of history,
+    # weights between a quarter and four times)
+    assert VolSizingWeights.DEFAULTS == {
+        "implied_field": "iv_index", "realized_field": "rv_22", "lag_sessions": 1,
+        "min_history": 252, "min_weight": 0.25, "max_weight": 4.0}
+    assert VolSizingWeights._PARAMS == tuple(sorted((
+        "implied_field", "realized_field", "lag_sessions", "min_history", "min_weight",
+        "max_weight")))
+    assert VolSizingWeights.SIZE_FIELDS == ("size_inv_implied_var", "size_inv_realized_var",
+                                            "size_implied")
+    assert VolSizingWeights.role == "transform" and VolSizingWeights.outputs == ("rows",)
+    assert VolSizingWeights.serving_effect({}, {}) == "forbidden"
+    # omitted knobs ARE these defaults: 253 rows is the first to carry a weight
+    assert VolSizingWeights.validate_params({}) == []
+    assert VolSizingWeights.validate_params(dict(VolSizingWeights.DEFAULTS)) == []
+
+
+@pytest.mark.parametrize("change", [
+    {"surprise": 1}, {"implied_field": ""}, {"implied_field": 3}, {"realized_field": ""},
+    {"realized_field": None}, {"lag_sessions": 0}, {"lag_sessions": -1}, {"lag_sessions": True},
+    {"lag_sessions": 1.5}, {"min_history": 0}, {"min_history": True}, {"min_history": 1.5},
+    {"min_history": "252"}, {"min_weight": 0}, {"min_weight": -0.25}, {"min_weight": True},
+    {"min_weight": "0.25"}, {"min_weight": float("nan")}, {"min_weight": float("inf")},
+    {"max_weight": 0}, {"max_weight": -4.0}, {"max_weight": True}, {"max_weight": None},
+    {"max_weight": float("nan")}, {"min_weight": 5.0}, {"max_weight": 0.2},
+    {"min_weight": 2.0, "max_weight": 1.0},
+])
+def test_every_sizing_knob_refuses_a_bad_value_and_a_crossed_clip(change):
+    assert VolSizingWeights.validate_params(change)
+    with pytest.raises(ConfigError, match=next(iter(change))):
+        VolSizingWeights("sizing", change)
+
+
+def test_a_clip_with_equal_bounds_is_accepted_and_the_inputs_must_be_a_list():
+    assert VolSizingWeights.validate_params({"min_weight": 1, "max_weight": 1}) == []
+    node = VolSizingWeights("sizing", {})
+    assert node.validate_inputs({"rows": []}) == []
+    assert node.validate_inputs({"rows": None}) == ["rows must be a list of forecast rows"]
+    assert node.validate_inputs({}) == ["rows must be a list of forecast rows"]
+    rows = _signal_rows(SZ_IV, SZ_RV)
+    with pytest.raises(ValueError, match="repeats"):
+        node.run(None, {"rows": rows + [dict(rows[2])]})
+    with pytest.raises(ValueError, match="asof_ms"):
+        node.run(None, {"rows": [{**rows[0], "asof_ms": None}]})
+    both = rows + [{**r, "instrument": "QQQ"} for r in rows]      # the same stamp on two instruments
+    assert len(node.run(None, {"rows": both})["rows"]) == 12
+
+
+def test_numpy_scalar_readings_give_plain_float_weights():
+    np = pytest.importorskip("numpy")
+    rows = [{"instrument": "SPY", "asof_ms": k, "iv_index": np.float64(SZ_IV[k]),
+             "rv_22": np.float64(SZ_RV[k])} for k in range(6)]
+    out = _sizing(rows)
+    assert all(type(w) is float for r in out for w in _weights(r) if w is not None)
+    assert _weights(out[5]) == pytest.approx(tuple(min(4.0, max(0.25, w)) for w in UNCLIPPED[5]))

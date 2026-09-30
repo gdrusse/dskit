@@ -257,13 +257,56 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   `<cell>-empirical-select.json`, both with the ADR-0194 study and the
   pre-registered 45 candidates (`grid.SELECT_*`: the three structures x
   short_q {0.10, 0.16, 0.20, 0.25, 0.30} x wing_z {0.35, 0.65, 1.0}). **Reading
-  them:** the empirical rung's forecast is the unconditional distribution, so
-  its selector sees only the quotes' premium, while the har-vix selector sees
-  the premium and the forecast. The forecast's value is the DIFFERENCE between
-  the two runs' model books (one chain, one candidate set, the same rules), never
-  either run's level; `always` is the same comparison without the edge gate.
+  them:** the empirical rung's forecast is the unconditional standardized shape
+  scaled by TRAILING realized vol, so its selector sees the quotes plus a
+  trailing-vol forecast (not the quotes alone), while the har-vix selector sees
+  the conditional forecast. The har-vix minus empirical DIFFERENCE of the model
+  books (one chain, one candidate set, the same rules) measures the
+  conditional-forecast increment over that baseline, never either run's level;
+  `always` is the same comparison without the edge gate.
   Run: `python -m dskit.pipeline walkforward configs/grid/spy-30-45-select.json --asof <today>`
   and the `-empirical-select` twin.
+- Volatility-scaled sizing study (ADR-0196, offline, annotate-only, never
+  decision-eligible): how MUCH to sell. `VolSizingWeights` (beside
+  `VolRegimeSignals`, on the same one-session lag, both subclassing
+  `_LaggedRowSignals`) reads the previous row's `implied_field` (`iv_index`) and
+  `realized_field` (`rv_22`) and gives every row three weights against the
+  expanding median of the EARLIER readings
+  (`dskit.pipeline.stats.expanding_quantile`): `size_inv_implied_var`
+  (median VIX^2 / VIX^2, the volatility-managed direction),
+  `size_inv_realized_var` (the same on realized variance) and `size_implied`
+  (VIX / median VIX, the opposite bet), each clipped to [`min_weight` 0.25,
+  `max_weight` 4.0] and null before `min_history` 252 earlier readings or on a
+  missing or non-positive input. Every backtest takes an optional `size_fields`
+  (distinct row-field names; a positive finite weight or null; a declared field
+  the row lacks, or another value, refuses): each ledger entry records `sizes`
+  from its ENTRY row and every book adds, per field and over its traded cells
+  that have a weight, `<book>_<field>_n`, `_mean_weight`, `_total_pnl_usd` (sum
+  of w x pnl), `_pnl_per_weight` (that over the sum of w: comparable to the
+  unsized mean), `_t`, `_cvar_usd` and `_max_drawdown_usd` (on the w x pnl
+  sequence) and `_unknown_n`. **No trade changes**: one contract stays one
+  contract, so this says what sizing would have done, not what a sized strategy
+  earns. The 56 gate, put-spread, select and empirical-select documents gain a
+  `sizing` node right after `signals` (every knob written out, so the hash covers
+  it) and `size_fields`, through `grid.sizing_study_document`; each of them now
+  ends its notes with ONE run sentence for its own file.
+- Allocation study (ADR-0196, read-only, never decision-eligible): where to
+  sell. `python -m index_options.ledger_studies allocate <walk dir> <walk dir>
+  [...] [--book model]` takes the walk-forward summary directory of each
+  underlying (SPY first wins ties; two or more, one instrument each), reads every
+  fold's backtest record and report (`runs.walk_fold_dirs`,
+  `driver.resolve_json_artifact`) and gathers the book's entered cells (`model`
+  by default, or `always`). The ex-ante score of a cell is its entry's
+  `model_expected_pnl_usd / max_loss`, `max_loss = multiplier x the widest
+  vertical - credit_usd` (the legs: the report's own, or `selected.structure`
+  for the selector). On each date in the UNION of the entry dates the
+  `allocate` series takes, among the underlyings that entered, the cell with the
+  highest score (a tie goes to the earlier argument); `equal` takes the mean P&L
+  of those that entered; each underlying is also listed `alone:<SYMBOL>`. One table,
+  `series n mean_pnl_usd t cvar5_usd max_drawdown_usd`, from the backtests' own
+  owners of those statistics. It refuses, with one `error:` line and exit 1,
+  unless every fold declares the same `dte_min` / `dte_max`, every report is an
+  archived-quote backtest and every cell can be scored; it writes nothing.
 
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
@@ -405,6 +448,7 @@ journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
+                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196);
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
@@ -424,6 +468,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
                            # + <symbol>-<bucket>-select.json and -empirical-select.json for the
                            # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
+                           # (all 56 of these carry the ADR-0196 sizing study: VolSizingWeights)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
@@ -433,7 +478,7 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest (.py)
+                           # quote_backtest, ledger_studies (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or

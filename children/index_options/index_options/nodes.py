@@ -22,6 +22,7 @@ from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
     expanding_percentile,
+    expanding_quantile,
     lower_tail_mean,
     max_drawdown,
     newey_west_mean,
@@ -50,7 +51,7 @@ from .distribution import CondorGeometry, condor_payoff, structure_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
            "CondorQuoteBacktest", "PayoffSelectQuoteBacktest", "PutSpreadQuoteBacktest",
-           "VolRegimeSignals"]
+           "VolRegimeSignals", "VolSizingWeights"]
 
 
 class CondorPayoffDiagnostic(Node):
@@ -400,6 +401,21 @@ class _CondorBacktestBase(Node, ABC):
     the un-annotated node makes, and absent ``gate_fields`` the outputs are
     exactly those. A non-bool, non-``None`` value, or a declared field the
     entry row lacks, refuses.
+
+    **Entry-size annotation (ADR-0196).** A member may also declare
+    ``size_fields``, distinct names of forecast-row fields holding a positive
+    finite weight, or ``None`` where it is unknown. Each ledger entry then
+    carries ``sizes``, the weights read from the ENTRY row, and every book
+    reports, per field and over its traded cells that carry a weight, the book
+    as if each trade had been taken at that many contracts:
+    ``<book>_<field>_n``, ``_mean_weight``, ``_total_pnl_usd`` (the sum of
+    ``w x pnl``), ``_pnl_per_weight`` (that sum over the sum of ``w``: comparable
+    to the unsized mean), ``_t`` (of ``w x pnl``), ``_cvar_usd``,
+    ``_max_drawdown_usd`` (both on the ``w x pnl`` sequence) and ``_unknown_n``
+    (no weight). Nothing is skipped and no trade changes (one contract stays
+    one contract): absent ``size_fields`` the outputs are exactly those of the
+    un-annotated node. A weight that is neither a positive finite number nor
+    ``None``, or a declared field the entry row lacks, refuses.
     """
 
     role = "score"
@@ -412,7 +428,7 @@ class _CondorBacktestBase(Node, ABC):
     #: Knobs every member takes with these defaults.
     DEFAULTS = {"min_edge_usd": 0.0, "cvar_alpha": 0.95}
     #: Optional knobs every member accepts, no default: absent means the feature is off.
-    SHARED_OPTIONAL = ("gate_fields",)
+    SHARED_OPTIONAL = ("gate_fields", "size_fields")
     FORWARD_FIELD = "close"
 
     @staticmethod
@@ -458,19 +474,24 @@ class _CondorBacktestBase(Node, ABC):
         alpha = params.get("cvar_alpha", cls.DEFAULTS["cvar_alpha"])
         if not number_ok(alpha) or not 0 < alpha < 1:
             problems.append(f"cvar_alpha must be in (0, 1), got {alpha!r}")
-        cls._gate_fields_problems(problems, params)
+        for name in cls.SHARED_OPTIONAL:
+            cls._distinct_list_problems(problems, params, name, cls._name_ok,
+                                        "non-empty strings")
 
     @staticmethod
-    def _gate_fields_problems(problems, params):
-        """Check the optional ``gate_fields``: a non-empty list of distinct non-empty strings."""
-        if "gate_fields" not in params:
+    def _name_ok(value):
+        """Say whether ``value`` is a usable field name: a non-empty string."""
+        return isinstance(value, str) and bool(value)
+
+    @staticmethod
+    def _distinct_list_problems(problems, params, name, accepts, what):
+        """Check a declared ``params[name]`` is a non-empty list of distinct values ``accepts`` takes; absent is fine."""
+        if name not in params:
             return
-        fields = params["gate_fields"]
-        if (not isinstance(fields, list) or not fields
-                or any(not isinstance(f, str) or not f for f in fields)
-                or len(set(fields)) != len(fields)):
-            problems.append("gate_fields must be a non-empty list of distinct non-empty "
-                            f"strings, got {fields!r}")
+        values = params[name]
+        if (not isinstance(values, list) or not values
+                or not all(accepts(v) for v in values) or len(set(values)) != len(values)):
+            problems.append(f"{name} must be a non-empty list of distinct {what}, got {values!r}")
 
     def validate_inputs(self, inputs):
         """Require a list of forecast rows, plus whatever the member needs.
@@ -533,21 +554,32 @@ class _CondorBacktestBase(Node, ABC):
         """Extra flat metrics per book from its traded cells; none by default."""
         return {}
 
-    def _read_gates(self, row):
-        """Return ``{field: bool or None}`` read from an entry row; refuse an absent field or a non-bool."""
+    def _read_fields(self, row, knob, what, accepts, expected):
+        """Return ``{field: value}`` for the names ``params[knob]`` declares, read from an entry row; refuse an absent field or a value ``accepts`` does not take."""
         where = f"{row.get('instrument')} {row.get('date')}"
-        gates = {}
-        for field in self.params["gate_fields"]:
+        values = {}
+        for field in self.params[knob]:
             if field not in row:
-                raise ValueError(f"{self.key}: gate field {field!r} is absent from the "
-                                 f"forecast row {where} — a misspelt gate_fields name, or rows "
+                raise ValueError(f"{self.key}: {what} field {field!r} is absent from the "
+                                 f"forecast row {where} — a misspelt {knob} name, or rows "
                                  "that did not come through the node that writes it")
             value = row[field]
-            if value is not None and not isinstance(value, bool):
-                raise ValueError(f"{self.key}: gate field {field!r} on {where} must be a bool "
-                                 f"or None, got {value!r}")
-            gates[field] = value
-        return gates
+            if not accepts(value):
+                raise ValueError(f"{self.key}: {what} field {field!r} on {where} must be "
+                                 f"{expected}, got {value!r}")
+            values[field] = value
+        return values
+
+    def _read_gates(self, row):
+        """Return ``{gate: bool or None}`` read from an entry row."""
+        return self._read_fields(row, "gate_fields", "gate",
+                                 lambda v: v is None or isinstance(v, bool), "a bool or None")
+
+    def _read_sizes(self, row):
+        """Return ``{field: weight or None}`` read from an entry row; a weight is a positive finite number."""
+        return self._read_fields(row, "size_fields", "size",
+                                 lambda v: v is None or price_ok(v),
+                                 "a positive finite number or None")
 
     def _walk(self, ctx, rows):
         """Walk each instrument's in-split rows oldest first, one open position at a time."""
@@ -572,6 +604,8 @@ class _CondorBacktestBase(Node, ABC):
                     continue
                 if "gate_fields" in self.params:
                     entry["gates"] = self._read_gates(row)
+                if "size_fields" in self.params:
+                    entry["sizes"] = self._read_sizes(row)
                 ledger.append(entry)
                 cursor = self._cursor_after(index, entry)
         return ledger, skipped, sum(len(v) for v in by_instrument.values())
@@ -589,6 +623,30 @@ class _CondorBacktestBase(Node, ABC):
                                 f"{book}_{field}_{label}_mean_pnl_usd": self._mean(pnls),
                                 f"{book}_{field}_{label}_t": self._t(pnls)})
             metrics[f"{book}_{field}_unknown_n"] = len(by_state[None])
+        return metrics
+
+    def _weighted(self, book, field, entries):
+        """Return ``(weights, sized, n_traded)``: the ``field`` weights of a book's traded entries that have one, each ``w x pnl``, and how many entries traded."""
+        pairs = [(entry["sizes"][field], entry["books"][book]["pnl_usd"]) for entry in entries]
+        known = [(w, w * pnl) for w, pnl in pairs if w is not None]
+        return [w for w, _sized in known], [sized for _w, sized in known], len(pairs)
+
+    def _size_field_metrics(self, book, entries):
+        """Report a book's traded entries as if each had been taken at its weight, per size field."""
+        alpha = self._knob("cvar_alpha")
+        metrics = {}
+        for field in self.params.get("size_fields", ()):
+            weights, sized, n_traded = self._weighted(book, field, entries)
+            total = sum(sized, 0.0)
+            metrics.update({
+                f"{book}_{field}_n": len(sized),
+                f"{book}_{field}_mean_weight": self._mean(weights),
+                f"{book}_{field}_total_pnl_usd": total,
+                f"{book}_{field}_pnl_per_weight": total / sum(weights) if weights else 0.0,
+                f"{book}_{field}_t": self._t(sized),
+                f"{book}_{field}_cvar_usd": lower_tail_mean(sized, alpha) if sized else 0.0,
+                f"{book}_{field}_max_drawdown_usd": max_drawdown(sized),
+                f"{book}_{field}_unknown_n": n_traded - len(sized)})
         return metrics
 
     def _metrics(self, ledger, skipped, n_in_split):
@@ -609,8 +667,9 @@ class _CondorBacktestBase(Node, ABC):
                 f"{book}_mean_credit_usd": self._mean([c["credit_usd"] for c in traded]),
             })
             metrics.update({f"{book}_{k}": v for k, v in self._book_extras(traded).items()})
-            metrics.update(self._gate_field_metrics(
-                book, [entry for entry in ledger if entry["books"][book]["entered"]]))
+            entered = [entry for entry in ledger if entry["books"][book]["entered"]]
+            metrics.update(self._gate_field_metrics(book, entered))
+            metrics.update(self._size_field_metrics(book, entered))
             for reason in self.BOOK_REASONS:
                 metrics[f"{book}_n_skipped_{reason}"] = sum(
                     c["reason"] == reason for c in cells)
@@ -698,7 +757,7 @@ class CondorBacktest(_CondorBacktestBase):
         ``half_spread_min``, ``half_spread_frac``. Optional: ``hold_steps`` (21),
         ``trading_days_per_year`` (252; ``T = hold_steps / it``),
         ``min_edge_usd`` (0), ``cvar_alpha`` (0.95), ``rate`` (0),
-        ``gate_fields`` (see :class:`_CondorBacktestBase`).
+        ``gate_fields``, ``size_fields`` (see :class:`_CondorBacktestBase`).
 
     Examples
     --------
@@ -980,7 +1039,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         ``dte_max`` (ints, 1 <= min <= max), ``max_abs_log_moneyness``
         (> 0), ``label_horizon`` (int >= 1) and ``carry_rate`` (>= 0).
         Optional: ``min_edge_usd`` (0), ``cvar_alpha`` (0.95), ``gate_fields``
-        (see :class:`_CondorBacktestBase`).
+        and ``size_fields`` (see :class:`_CondorBacktestBase`).
 
     Examples
     --------
@@ -1008,6 +1067,8 @@ class CondorQuoteBacktest(_CondorBacktestBase):
     FORECAST_BOOKS = ("model", "always")
     #: The report's ``kind`` and ``units``: what this node's output calls itself.
     REPORT_KIND = "archived_quote_condor_backtest"
+    #: The report's ``pricing``: what every archived-quote member declares (the ledger studies read it).
+    REPORT_PRICING = "archived_eod_quotes"
     UNITS = "USD per condor, one contract per leg"
     #: Calendar days a settlement close may precede the settlement date (Sandy, 2012).
     MAX_SETTLEMENT_GAP_DAYS = 4
@@ -1429,7 +1490,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
 
     def _report(self, ledger, metrics):
         """Return the archived-quote report; never decision-eligible."""
-        return {"kind": self.REPORT_KIND, "pricing": "archived_eod_quotes",
+        return {"kind": self.REPORT_KIND, "pricing": self.REPORT_PRICING,
                 "decision_eligible": False,
                 "units": self.UNITS,
                 "params": {k: self._knob(k) for k in self._PARAMS if k in self.params
@@ -1545,8 +1606,10 @@ class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
     ``<book>_<side>_total_pnl_usd`` / ``_mean_pnl_usd`` / ``_hit_rate`` cover
     the traded cells that CONTAIN that side (a call spread has no put side), which
     for a fixed condor or put spread is every traded cell. The empirical rung's
-    forecast makes the same selector a premium-only control: what the
-    forecast adds is the difference between the two runs, never the level.
+    forecast (the unconditional standardized shape scaled by TRAILING realized
+    vol) makes the same selector an unconditional-shape, trailing-vol control:
+    the har-vix minus empirical difference measures the conditional-forecast
+    increment over that baseline, never either run's level.
     Role ``score``, forbidden for serving, never decision-eligible: fills are
     the end-of-day touch at zero latency.
 
@@ -1602,23 +1665,14 @@ class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
             All problems; empty when usable.
         """
         problems = super().validate_params(params)
-        cls._list_problems(problems, params, "candidate_structures",
-                           lambda name: isinstance(name, str) and name in STRUCTURES,
-                           f"names from {list(STRUCTURES)}")
-        cls._list_problems(problems, params, "candidate_short_q", cls._short_q_ok,
-                           "numbers in (0, 0.5)")
-        cls._list_problems(problems, params, "candidate_wing_z", price_ok, "positive numbers")
+        cls._distinct_list_problems(problems, params, "candidate_structures",
+                                    lambda name: isinstance(name, str) and name in STRUCTURES,
+                                    f"names from {list(STRUCTURES)}")
+        cls._distinct_list_problems(problems, params, "candidate_short_q", cls._short_q_ok,
+                                    "numbers in (0, 0.5)")
+        cls._distinct_list_problems(problems, params, "candidate_wing_z", price_ok,
+                                    "positive numbers")
         return problems
-
-    @staticmethod
-    def _list_problems(problems, params, name, accepts, what):
-        """Check a declared ``params[name]`` is a non-empty list of distinct values ``accepts`` takes."""
-        if name not in params:
-            return
-        values = params[name]
-        if (not isinstance(values, list) or not values
-                or not all(accepts(v) for v in values) or len(set(values)) != len(values)):
-            problems.append(f"{name} must be a non-empty list of distinct {what}, got {values!r}")
 
     def _candidates(self):
         """Yield every declared ``(structure, short_q, wing_z)`` in tie-break order."""
@@ -1686,7 +1740,199 @@ class PayoffSelectQuoteBacktest(CondorQuoteBacktest):
                 **{f"n_{name}": counts[name] for name in STRUCTURES}}
 
 
-class VolRegimeSignals(Node):
+class _LaggedRowSignals(Node, ABC):
+    """Annotate forecast rows from each row's PREVIOUS reading of the same instrument.
+
+    The one owner of what :class:`VolRegimeSignals` (ADR-0194) and
+    :class:`VolSizingWeights` (ADR-0196) share: for each instrument in
+    ``asof_ms`` order, the row ``lag_sessions`` earlier (one by default) is
+    what a row may read, never its own day, and every input row comes back
+    unchanged, in input order, with the member's fields added. The lag is the
+    point: the 16:15 ET VIX close of day ``t`` cannot inform a 16:00 ET entry
+    on day ``t``.
+
+    The mechanism is ordering (:meth:`_by_instrument`), the lag
+    (:meth:`_lagged`), the refusals, the shared knobs (:data:`SHARED_DEFAULTS`)
+    and the output assembly (:meth:`run`). A member supplies two hooks:
+    :meth:`_read` turns one lagged row into a reading, and :meth:`_annotate`
+    turns an instrument's whole series of readings into one dict of added fields
+    per position (a series-level rule, such as an expanding percentile or
+    quantile, sees only the EARLIER readings, so nothing looks ahead). Role
+    ``transform``; forbidden for serving.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        The member's knobs, default-deny (``_PARAMS``).
+
+    Examples
+    --------
+    The smallest member stamps each row with the previous row's ``x``::
+
+        class Echo(_LaggedRowSignals):
+            def _read(self, previous, context):
+                return None if previous is None else previous.get("x")
+
+            def _annotate(self, readings):
+                return [{"prev_x": reading} for reading in readings]
+
+        out = Echo("echo", {}).run(ctx, {"rows": rows})["rows"]
+    """
+
+    role = "transform"
+    outputs = ("rows",)
+    #: The knobs every member takes, with their defaults, stated once: the previous row's
+    #: implied-vol and realized-vol fields, how many rows back it is, and how many earlier
+    #: readings a series-level rule needs.
+    SHARED_DEFAULTS = {"implied_field": "iv_index", "realized_field": "rv_22",
+                       "lag_sessions": 1, "min_history": 252}
+    #: A member's knobs and defaults: :data:`SHARED_DEFAULTS` plus its own.
+    DEFAULTS = SHARED_DEFAULTS
+    _PARAMS = tuple(sorted(DEFAULTS))
+    #: The input ports, name -> what it carries; every one must be a list.
+    PORTS = {"rows": "forecast rows"}
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the shared knobs and refuse any name the class does not declare.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        cls._shared_problems(problems, params)
+        return problems
+
+    @classmethod
+    def _shared_problems(cls, problems, params):
+        """Check the two field names and the two history knobs every member declares."""
+        for knob in ("implied_field", "realized_field"):
+            value = params.get(knob, cls.DEFAULTS[knob])
+            if not isinstance(value, str) or not value:
+                problems.append(f"{knob} must be a non-empty string, got {value!r}")
+        for knob in ("min_history", "lag_sessions"):
+            check_int_param(problems, knob, params.get(knob, cls.DEFAULTS[knob]), ge=1)
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Keep the study node out of served graphs.
+
+        Parameters
+        ----------
+        params, verified_run_evidence : dict
+            Unused.
+
+        Returns
+        -------
+        str
+            Always forbidden.
+        """
+        return "forbidden"
+
+    def validate_inputs(self, inputs):
+        """Require every declared input port to be a list.
+
+        Parameters
+        ----------
+        inputs : dict
+            The wired inputs.
+
+        Returns
+        -------
+        list of str
+            Empty when usable.
+        """
+        return [f"{port} must be a list of {what}" for port, what in self.PORTS.items()
+                if not isinstance(inputs.get(port), list)]
+
+    def _knob(self, name):
+        """Return a declared knob or its default."""
+        return self.params.get(name, self.DEFAULTS[name])
+
+    def _by_instrument(self, rows):
+        """Group ``(input index, row)`` by instrument in ``asof_ms`` order; a repeated stamp refuses."""
+        grouped = {}
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict) or not number_ok(row.get("asof_ms")):
+                raise ValueError(f"{self.key}: row {index + 1} needs a numeric asof_ms, "
+                                 f"got {row!r}")
+            grouped.setdefault(str(row.get("instrument")), []).append((index, row))
+        for instrument, ordered in grouped.items():
+            ordered.sort(key=lambda pair: pair[1]["asof_ms"])
+            for (_, earlier), (_, later) in zip(ordered, ordered[1:]):
+                if earlier["asof_ms"] == later["asof_ms"]:
+                    raise ValueError(f"{self.key}: {instrument} repeats asof_ms "
+                                     f"{later['asof_ms']}")
+        return grouped
+
+    def _lagged(self, ordered):
+        """Return, per position, the row ``lag_sessions`` earlier of the same instrument, or ``None``."""
+        lag = int(self._knob("lag_sessions"))
+        return [ordered[k - lag][1] if k >= lag else None for k in range(len(ordered))]
+
+    def _previous_fields(self, previous):
+        """Return the lagged row's raw ``(implied, realized)`` fields; ``(None, None)`` with no such row."""
+        if previous is None:
+            return None, None
+        return (previous.get(self._knob("implied_field")),
+                previous.get(self._knob("realized_field")))
+
+    def _context(self, inputs):
+        """Return what :meth:`_read` needs beyond the lagged row, built once from the inputs; nothing by default."""
+        return None
+
+    @abstractmethod
+    def _read(self, previous, context):
+        """Return one row's reading from its lagged row ``previous`` (``None`` where it has none)."""
+
+    @abstractmethod
+    def _annotate(self, readings):
+        """Return one dict of added fields per position from an instrument's series of readings, oldest first."""
+
+    def run(self, ctx, inputs):
+        """Add the member's fields to every row, each from that row's lagged reading.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused: the node reads only its inputs and params.
+        inputs : dict
+            ``rows`` (forecast rows carrying ``instrument`` and ``asof_ms``) and
+            the member's other ports.
+
+        Returns
+        -------
+        dict
+            ``rows``: every input row, unchanged and in input order, plus the
+            member's fields.
+
+        Raises
+        ------
+        ValueError
+            When a row lacks a numeric ``asof_ms``, an instrument repeats an
+            ``asof_ms``, or the member refuses its other inputs.
+        """
+        context = self._context(inputs)
+        rows = inputs["rows"]
+        added = [None] * len(rows)
+        for ordered in self._by_instrument(rows).values():
+            readings = [self._read(previous, context) for previous in self._lagged(ordered)]
+            for (index, _row), extra in zip(ordered, self._annotate(readings)):
+                added[index] = extra
+        return {"rows": [{**row, **extra} for row, extra in zip(rows, added)]}
+
+
+class VolRegimeSignals(_LaggedRowSignals):
     """Annotate forecast rows with the VIX curve's slope and the variance premium's sign.
 
     ADR-0194. For each instrument in ``asof_ms`` order, row ``t`` reads the
@@ -1713,7 +1959,8 @@ class VolRegimeSignals(Node):
       none is and any is ``None``; else ``False``).
 
     An input that is missing or not positive makes that output ``None``,
-    never ``False``: an unknown is not a green light. Role ``transform``;
+    never ``False``: an unknown is not a green light. The ordering, lag and
+    output assembly are :class:`_LaggedRowSignals`'. Role ``transform``;
     forbidden for serving.
 
     Parameters
@@ -1736,16 +1983,14 @@ class VolRegimeSignals(Node):
         out["rows"][0]["gate_any"]
     """
 
-    role = "transform"
-    outputs = ("rows",)
     #: The four gate fields added to every row, in this order; the backtest's
     #: ``gate_fields`` and the grid's gate documents read this tuple.
     GATE_FIELDS = ("gate_term_inverted", "gate_term_high_pct", "gate_vrp_nonpositive",
                    "gate_any")
-    DEFAULTS = {"implied_field": "iv_index", "realized_field": "rv_22",
-                "periods_per_year": 252, "inverted_at": 1.0, "high_ratio_pct": 0.8,
-                "min_history": 252, "lag_sessions": 1}
+    DEFAULTS = {**_LaggedRowSignals.SHARED_DEFAULTS, "periods_per_year": 252,
+                "inverted_at": 1.0, "high_ratio_pct": 0.8}
     _PARAMS = tuple(sorted(DEFAULTS))
+    PORTS = {"rows": "forecast rows", "term": "index-close records"}
 
     @classmethod
     def validate_params(cls, params):
@@ -1761,12 +2006,7 @@ class VolRegimeSignals(Node):
         list of str
             All problems; empty when usable.
         """
-        problems = []
-        reject_unknown_params(problems, params, cls._PARAMS)
-        for knob in ("implied_field", "realized_field"):
-            value = params.get(knob, cls.DEFAULTS[knob])
-            if not isinstance(value, str) or not value:
-                problems.append(f"{knob} must be a non-empty string, got {value!r}")
+        problems = super().validate_params(params)
         for knob in ("periods_per_year", "inverted_at"):
             value = params.get(knob, cls.DEFAULTS[knob])
             if not price_ok(value):
@@ -1774,51 +2014,12 @@ class VolRegimeSignals(Node):
         pct = params.get("high_ratio_pct", cls.DEFAULTS["high_ratio_pct"])
         if not number_ok(pct) or not 0 < pct <= 1:
             problems.append(f"high_ratio_pct must be in (0, 1], got {pct!r}")
-        for knob in ("min_history", "lag_sessions"):
-            check_int_param(problems, knob, params.get(knob, cls.DEFAULTS[knob]), ge=1)
         return problems
 
-    @classmethod
-    def serving_effect(cls, params, verified_run_evidence):
-        """Keep the study node out of served graphs.
-
-        Parameters
-        ----------
-        params, verified_run_evidence : dict
-            Unused.
-
-        Returns
-        -------
-        str
-            Always forbidden.
-        """
-        return "forbidden"
-
-    def validate_inputs(self, inputs):
-        """Require the forecast rows and the term-index records, both lists.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired inputs.
-
-        Returns
-        -------
-        list of str
-            Empty when usable.
-        """
-        return [f"{port} must be a list of {what}"
-                for port, what in (("rows", "forecast rows"), ("term", "index-close records"))
-                if not isinstance(inputs.get(port), list)]
-
-    def _knob(self, name):
-        """Return a declared knob or its default."""
-        return self.params.get(name, self.DEFAULTS[name])
-
-    def _term_closes(self, records):
+    def _context(self, inputs):
         """Index the term-index records by date; a record without one, or a repeated date, refuses."""
         closes = {}
-        for n, record in enumerate(records, start=1):
+        for n, record in enumerate(inputs["term"], start=1):
             day = record.get("date") if isinstance(record, dict) else None
             if not isinstance(day, str) or not day:
                 raise ValueError(f"{self.key}: term row {n} needs a date, got {record!r}")
@@ -1827,35 +2028,13 @@ class VolRegimeSignals(Node):
             closes[day] = record.get("close")
         return closes
 
-    def _by_instrument(self, rows):
-        """Group ``(input index, row)`` by instrument in ``asof_ms`` order; a repeated stamp refuses."""
-        grouped = {}
-        for index, row in enumerate(rows):
-            if not isinstance(row, dict) or not number_ok(row.get("asof_ms")):
-                raise ValueError(f"{self.key}: row {index + 1} needs a numeric asof_ms, "
-                                 f"got {row!r}")
-            grouped.setdefault(str(row.get("instrument")), []).append((index, row))
-        for instrument, ordered in grouped.items():
-            ordered.sort(key=lambda pair: pair[1]["asof_ms"])
-            for (_, earlier), (_, later) in zip(ordered, ordered[1:]):
-                if earlier["asof_ms"] == later["asof_ms"]:
-                    raise ValueError(f"{self.key}: {instrument} repeats asof_ms "
-                                     f"{later['asof_ms']}")
-        return grouped
-
-    def _lagged(self, ordered):
-        """Return, per position, the row ``lag_sessions`` earlier of the same instrument, or ``None``."""
-        lag = int(self._knob("lag_sessions"))
-        return [ordered[k - lag][1] if k >= lag else None for k in range(len(ordered))]
-
-    def _readings(self, previous, term):
+    def _read(self, previous, context):
         """Return ``(ratio, vrp)`` from the previous row and its date's term close; ``None`` where an input is unusable."""
         if previous is None:
             return None, None
-        implied = previous.get(self._knob("implied_field"))
-        realized = previous.get(self._knob("realized_field"))
+        implied, realized = self._previous_fields(previous)
         day = previous.get("date")
-        closes = term.get(day) if isinstance(day, str) else None
+        closes = context.get(day) if isinstance(day, str) else None
         ratio = implied / closes if price_ok(implied) and price_ok(closes) else None
         vrp = ((implied / 100) ** 2 - self._knob("periods_per_year") * realized ** 2
                if price_ok(implied) and price_ok(realized) else None)
@@ -1876,39 +2055,121 @@ class VolRegimeSignals(Node):
         return {"vix_term_ratio": ratio, "vix_term_ratio_pct": pct, "vrp": vrp,
                 **dict(zip(self.GATE_FIELDS, (*verdicts, self._any(verdicts))))}
 
-    def run(self, ctx, inputs):
-        """Add the ratio, its percentile, the premium and the four gates to every row.
+    def _annotate(self, readings):
+        """Return each position's ratio, its expanding percentile, the premium and the four gates."""
+        percentiles = expanding_percentile(
+            [ratio for ratio, _vrp in readings], int(self._knob("min_history")))
+        return [self._signals(ratio, pct, vrp)
+                for (ratio, vrp), pct in zip(readings, percentiles)]
+
+
+class VolSizingWeights(_LaggedRowSignals):
+    """Annotate forecast rows with volatility-scaled size weights, each read from the previous session.
+
+    ADR-0196. For each instrument in ``asof_ms`` order, row ``t`` reads the
+    row ``lag_sessions`` earlier of the SAME instrument (one session by
+    default): its ``implied_field`` (the VIX close) and ``realized_field`` (a
+    per-session vol). Each weight compares that lagged reading with the
+    EXPANDING MEDIAN of the readings before it (the instrument's own earlier
+    lagged values, via :func:`~dskit.pipeline.stats.expanding_quantile`),
+    then is clipped to ``[min_weight, max_weight]``. Every input row comes
+    back unchanged (in input order) with :attr:`SIZE_FIELDS` added:
+
+    * ``size_inv_implied_var`` — median(implied^2) / implied^2: sell LESS after
+      high implied variance (the volatility-managed direction);
+    * ``size_inv_realized_var`` — median(realized^2) / realized^2: the same on
+      realized variance;
+    * ``size_implied`` — implied / median(implied): sell MORE after high VIX
+      (the opposite direction; the literature conflicts, so both are measured).
+
+    A weight is ``None`` before ``min_history`` earlier readings exist, or where
+    the lagged input is missing or not positive: an unknown is not a weight
+    of one. A weight is a plain positive ``float``. The ordering, lag and output
+    assembly are :class:`_LaggedRowSignals`'. Role ``transform``; forbidden for
+    serving.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        All optional, default-deny: ``implied_field`` (``"iv_index"``),
+        ``realized_field`` (``"rv_22"``), ``lag_sessions`` (int >= 1, 1),
+        ``min_history`` (int >= 1, 252), ``min_weight`` (positive, 0.25) and
+        ``max_weight`` (positive, at least ``min_weight``, 4.0).
+
+    Examples
+    --------
+    Rows from a forecast model, weighed by the previous session's vol::
+
+        node = VolSizingWeights("sizing", {})
+        out = node.run(ctx, {"rows": forecasts})
+        out["rows"][-1]["size_implied"]
+    """
+
+    #: The three weight fields added to every row, in this order; the backtest's
+    #: ``size_fields`` and the grid's sizing documents read this tuple.
+    SIZE_FIELDS = ("size_inv_implied_var", "size_inv_realized_var", "size_implied")
+    DEFAULTS = {**_LaggedRowSignals.SHARED_DEFAULTS, "min_weight": 0.25, "max_weight": 4.0}
+    _PARAMS = tuple(sorted(DEFAULTS))
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the declaration; every problem is reported.
 
         Parameters
         ----------
-        ctx : NodeContext
-            Unused: the node reads only its inputs and params.
-        inputs : dict
-            ``rows`` (forecast rows carrying ``instrument``, ``asof_ms``,
-            ``date`` and the two declared fields) and ``term`` (the second
-            vol index's records: ``date`` and ``close``).
+        params : dict
+            The candidate configuration.
 
         Returns
         -------
-        dict
-            ``rows``: every input row, unchanged and in input order, plus
-            ``vix_term_ratio``, ``vix_term_ratio_pct``, ``vrp`` and
-            :attr:`GATE_FIELDS`.
-
-        Raises
-        ------
-        ValueError
-            When a row lacks a numeric ``asof_ms``, an instrument repeats an
-            ``asof_ms``, a term record lacks a ``date`` or the term series
-            repeats one.
+        list of str
+            All problems; empty when usable.
         """
-        term = self._term_closes(inputs["term"])
-        rows = inputs["rows"]
-        added = [None] * len(rows)
-        for ordered in self._by_instrument(rows).values():
-            readings = [self._readings(previous, term) for previous in self._lagged(ordered)]
-            percentiles = expanding_percentile(
-                [ratio for ratio, _vrp in readings], int(self._knob("min_history")))
-            for (index, _row), (ratio, vrp), pct in zip(ordered, readings, percentiles):
-                added[index] = self._signals(ratio, pct, vrp)
-        return {"rows": [{**row, **extra} for row, extra in zip(rows, added)]}
+        problems = super().validate_params(params)
+        low, high = (params.get(knob, cls.DEFAULTS[knob]) for knob in ("min_weight", "max_weight"))
+        for knob, value in (("min_weight", low), ("max_weight", high)):
+            if not price_ok(value):
+                problems.append(f"{knob} must be a positive number, got {value!r}")
+        if price_ok(low) and price_ok(high) and low > high:
+            problems.append(f"min_weight {low!r} must not exceed max_weight {high!r}")
+        return problems
+
+    def _read(self, previous, context):
+        """Return the lagged ``(implied, realized)`` readings, each ``None`` unless a positive number."""
+        implied, realized = self._previous_fields(previous)
+        return (float(implied) if price_ok(implied) else None,
+                float(realized) if price_ok(realized) else None)
+
+    @staticmethod
+    def _squares(values):
+        """Return ``values`` squared, a missing one staying ``None``."""
+        return [None if v is None else v * v for v in values]
+
+    def _median(self, series):
+        """Return each position's median of the STRICTLY EARLIER finite values, ``None`` before ``min_history`` of them."""
+        return expanding_quantile(series, 0.5, int(self._knob("min_history")))
+
+    @staticmethod
+    def _ratios(numerators, denominators):
+        """Return the elementwise ratio, ``None`` wherever either side is ``None``."""
+        return [None if n is None or d is None else n / d
+                for n, d in zip(numerators, denominators)]
+
+    def _weight(self, ratio):
+        """Clip one ratio to ``[min_weight, max_weight]``; ``None`` (no history, no reading) stays ``None``."""
+        if ratio is None:
+            return None
+        return min(self._knob("max_weight"), max(self._knob("min_weight"), ratio))
+
+    def _annotate(self, readings):
+        """Return each position's three weights against the expanding median of the earlier readings."""
+        implied = [reading[0] for reading in readings]
+        realized = [reading[1] for reading in readings]
+        implied_var, realized_var = self._squares(implied), self._squares(realized)
+        ratios = (self._ratios(self._median(implied_var), implied_var),
+                  self._ratios(self._median(realized_var), realized_var),
+                  self._ratios(implied, self._median(implied)))
+        return [dict(zip(self.SIZE_FIELDS, map(self._weight, position)))
+                for position in zip(*ratios)]

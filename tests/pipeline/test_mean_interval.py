@@ -475,6 +475,17 @@ class TestADegenerateSampleRefusesRatherThanNarrowing:
             NeweyWestInterval().interval(MeanEvidence(values, overlap_steps=2))
         assert "standard error" in str(err.value).lower()
 
+    def test_a_series_constant_to_float_noise_is_refused_like_an_exactly_constant_one(self):
+        # A-N2 (ADR-0195 review): NeweyWestInterval inherits the stats rule, so a sample whose
+        # spread is within stats.NO_VARIANCE_RTOL of its largest magnitude has no standard
+        # error here either (it was once a ~1e-15 "interval" around 37.35)
+        values = [37.35 + (1e-14 if i % 3 == 0 else 0.0) for i in range(60)]
+        assert max(values) - min(values) > 0.0             # not exactly constant
+        with pytest.raises(ValueError, match=r"no spread in this sample \(standard error 0\.0\)"):
+            NeweyWestInterval().interval(MeanEvidence(values, overlap_steps=0))
+        genuine = [37.35 + (1e-3 if i % 3 == 0 else 0.0) for i in range(60)]   # 3e-5 relative
+        assert NeweyWestInterval().interval(MeanEvidence(genuine, overlap_steps=0)).width > 0.0
+
     def test_constant_units_never_yield_a_zero_width_interval(self):
         values = [1.0] * 60
         units = [f"u{i // 5:02d}" for i in range(60)]

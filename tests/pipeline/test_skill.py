@@ -283,23 +283,39 @@ def _write_fold(root, cutoff, series, gaps=True):
     return run_dir
 
 
+SERIES = ("AAA", "BBB")
+#: Rows behind every fold's MSPE pair in :func:`_write_walk`.
+FOLD_ROWS = 40
+
+
+def _fold_means(n_folds):
+    """The training-mean MSPE of each fold's series, ``[{name: mspe_mean}]`` in fold order."""
+    rng = random.Random(99)
+    return [{name: 1.0 + rng.gauss(0.0, 0.05) for name in SERIES} for _ in range(n_folds)]
+
+
+def _fold_edge(i, n_folds, edge, edge_step):
+    """Fold ``i``'s edge: ``edge`` spread evenly about itself by ``edge_step``."""
+    return edge + edge_step * (i - (n_folds - 1) / 2)
+
+
 def _write_walk(root, n_folds=20, gaps=True, edge=0.02, edge_step=0.0):
     """A walk-forward summary over ``n_folds`` folds of two series.
 
-    Every fold's edge is ``edge`` unless ``edge_step`` spreads them evenly about it (fold ``i``
-    gets ``edge + edge_step * (i - (n_folds - 1) / 2)``): identical edges leave the per-fold
-    R^2 constant to float noise, which the across-fold t rightly reports as no variance.
+    Every fold's edge is ``edge`` unless ``edge_step`` spreads them evenly about it
+    (:func:`_fold_edge`): identical edges leave the per-fold R^2 constant to float noise, which
+    the across-fold t rightly reports as no variance.
     """
-    rng = random.Random(99)
+    means = _fold_means(n_folds)
     summary = os.path.join(root, "walk")
     os.makedirs(summary, exist_ok=True)
     folds = []
     for i in range(n_folds):
         series = {}
-        for name in ("AAA", "BBB"):
-            mean = 1.0 + rng.gauss(0.0, 0.05)
-            fold_edge = edge + edge_step * (i - (n_folds - 1) / 2)
-            series[name] = (mean * (1.0 - fold_edge), mean, 40, 1.2, 0.11)
+        for name in SERIES:
+            fold_edge = _fold_edge(i, n_folds, edge, edge_step)
+            series[name] = (means[i][name] * (1.0 - fold_edge), means[i][name], FOLD_ROWS, 1.2,
+                            0.11)
         run_dir = _write_fold(root, f"2024-{i + 1:02d}-01", series, gaps=gaps)
         folds.append({"cutoff": f"2024-{i + 1:02d}-01", "run_dir": run_dir,
                       "state": "ran", "score": 0.0})
@@ -333,7 +349,24 @@ class TestScoreWalk:
             assert row["t_pool"] is None
             assert row["passes"] is None
             assert row["t_fold"] is not None
-            assert row["r2oos"] == pytest.approx(0.02, abs=1e-3)
+        # B-F2 (ADR-0195 review): the pooled R^2 is WEIGHTED by each fold's training-mean MSPE
+        # (every fold has the same 40 rows), so it is not exactly the 0.02 the edges average to:
+        # R^2 = 1 - sum(n m (1 - e)) / sum(n m) = sum(m e) / sum(m), worked here from the
+        # fixture's own means and edges, never from dskit
+        means = _fold_means(20)
+        edges = [0.02 + 0.001 * (i - 9.5) for i in range(20)]
+
+        def weighted(names):
+            return (sum(means[i][n] * edges[i] for i in range(20) for n in names)
+                    / sum(means[i][n] for i in range(20) for n in names))
+
+        expected = {"AAA": weighted(["AAA"]), "BBB": weighted(["BBB"]),
+                    "GROUP": weighted(["AAA", "BBB"])}
+        assert {row["series"] for row in scored["rows"]} == set(expected)
+        for row in scored["rows"]:
+            assert row["r2oos"] == pytest.approx(expected[row["series"]], abs=1e-9)
+            assert row["n_rows"] == (20 * FOLD_ROWS * (2 if row["series"] == "GROUP" else 1))
+        assert max(abs(v - 0.02) for v in expected.values()) > 1e-6   # the weighting really bites
 
     def test_a_losing_walk_fails_on_both_halves(self, tmp_path):
         summary = _write_walk(str(tmp_path), edge=-0.02)

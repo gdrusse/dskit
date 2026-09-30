@@ -915,6 +915,164 @@ def test_expanding_percentile_is_public():
     assert "expanding_percentile" in stats.__all__
 
 
+# --- ADR-0196: expanding_quantile, the percentile's sibling ---------------------------------------
+#
+# The q-quantile of the STRICTLY EARLIER finite values, linear interpolation between order
+# statistics (position q (n - 1) in the ascending list; the fraction between its two neighbours).
+
+
+def _quantile_oracle(values, q, min_history):
+    """The rule written out from the definition, as a weighted average of the two neighbours."""
+    out = []
+    for i, value in enumerate(values):
+        prior = sorted(v for v in values[:i] if v is not None and math.isfinite(v))
+        if value is None or not math.isfinite(value) or len(prior) < min_history:
+            out.append(None)
+            continue
+        position = q * (len(prior) - 1)
+        low = min(math.floor(position), len(prior) - 1)
+        high = min(low + 1, len(prior) - 1)
+        out.append(prior[low] * (1 - (position - low)) + prior[high] * (position - low))
+    return out
+
+
+#: Hand cases: 4 3 and 10 have earlier finites [1, 4], [1, 3, 4], ... (None, nan and inf are missing).
+QUANTILE_SERIES = [4.0, 1.0, 3.0, 10.0, None, float("nan"), 2.0, float("inf"), 7.0, 0.0]
+
+
+def test_expanding_quantile_hand_cases_at_the_median_and_the_lower_quartile():
+    from dskit.pipeline.stats import expanding_quantile
+
+    # median, min_history 2. Earlier finite values, and the interpolation at q (n - 1):
+    #   i2 (3):  [1, 4]              1.0 -> 2.5                 i3 (10): [1, 3, 4]        -> 3.0
+    #   i6 (2):  [1, 3, 4, 10]       1.5 -> 3 + 0.5 * 1 = 3.5   i8 (7):  [1, 2, 3, 4, 10] -> 3.0
+    #   i9 (0):  [1, 2, 3, 4, 7, 10] 2.5 -> 3 + 0.5 * 1 = 3.5
+    assert expanding_quantile(QUANTILE_SERIES, 0.5, 2) == pytest.approx(
+        [None, None, 2.5, 3.0, None, None, 3.5, None, 3.0, 3.5])
+    # lower quartile: i2 0.25 -> 1 + 0.25 * 3 = 1.75     i3 0.5 -> 1 + 0.5 * 2 = 2.0
+    #   i6 0.75 -> 1 + 0.75 * 2 = 2.5     i8 1.0 -> exactly 2.0     i9 1.25 -> 2 + 0.25 * 1 = 2.25
+    assert expanding_quantile(QUANTILE_SERIES, 0.25, 2) == pytest.approx(
+        [None, None, 1.75, 2.0, None, None, 2.5, None, 2.0, 2.25])
+
+
+def test_expanding_quantile_zero_and_one_are_the_earlier_minimum_and_maximum_exactly():
+    from dskit.pipeline.stats import expanding_quantile
+
+    assert expanding_quantile([5.0, 3.0, 9.0, 1.0], 0, 1) == [None, 5.0, 3.0, 3.0]
+    assert expanding_quantile([5.0, 3.0, 9.0, 1.0], 1, 1) == [None, 5.0, 5.0, 9.0]
+    assert expanding_quantile([5.0, 3.0, 9.0, 1.0], 0.5, 1) == [None, 5.0, 4.0, 5.0]
+    assert expanding_quantile([5, 3, 9, 1], 1, 1) == [None, 5.0, 5.0, 9.0]    # ints are numbers
+    assert all(isinstance(v, float) for v in expanding_quantile([5, 3, 9, 1], 1, 1)[1:])
+
+
+@pytest.mark.parametrize("q", [0.0, 0.1, 0.3, 0.5, 0.9, 1.0])
+def test_expanding_quantile_of_tied_values_is_that_value_exactly(q):
+    from dskit.pipeline.stats import expanding_quantile
+
+    assert expanding_quantile([7.0] * 5, q, 1) == [None, 7.0, 7.0, 7.0, 7.0]
+    assert expanding_quantile([0.1, 0.1, 0.1, 0.1], q, 2) == [None, None, 0.1, 0.1]  # no float noise
+    # ties inside a longer history: the two neighbours are equal, so the fraction is moot
+    assert expanding_quantile([1.0, 2.0, 2.0, 2.0, 3.0, 9.0], 0.5, 1)[5] == 2.0
+
+
+def test_expanding_quantile_needs_min_history_earlier_finite_values_exactly():
+    from dskit.pipeline.stats import expanding_quantile
+
+    values = [1.0, None, 2.0, float("nan"), 3.0, 4.0]
+    assert expanding_quantile(values, 0.5, 3) == [None, None, None, None, None, 2.0]
+    assert expanding_quantile(values, 0.5, 2)[4] == 1.5 and expanding_quantile(values, 0.5, 2)[3] is None
+    assert expanding_quantile(values, 0.5, 4) == [None] * 6       # only three predecessors ever
+    assert expanding_quantile([], 0.5, 1) == []
+
+
+def test_expanding_quantile_matches_the_definition_and_the_standard_library_on_random_series():
+    import random
+    import statistics
+
+    from dskit.pipeline.stats import expanding_quantile
+
+    rng = random.Random(196)
+    for _ in range(60):
+        values = [rng.choice([None, float("nan"), float(rng.randint(0, 6)), rng.random() * 10])
+                  for _ in range(rng.randint(0, 40))]
+        for q in (0.0, 0.1, 0.25, 0.5, 0.77, 1.0):
+            for min_history in (1, 3, 10):
+                assert expanding_quantile(values, q, min_history) == pytest.approx(
+                    _quantile_oracle(values, q, min_history), rel=1e-12, abs=1e-12)
+    # the library's inclusive method is the same linear interpolation: its quartiles at 0.25/0.5/0.75
+    values = [rng.random() for _ in range(30)]
+    for q, cut in ((0.25, 0), (0.5, 1), (0.75, 2)):
+        got = expanding_quantile(values, q, 2)
+        for i in range(2, 30):
+            want = statistics.quantiles(values[:i], n=4, method="inclusive")[cut]
+            assert got[i] == pytest.approx(want, rel=1e-12)
+
+
+def test_expanding_quantile_never_looks_ahead():
+    import random
+
+    from dskit.pipeline.stats import expanding_quantile
+
+    rng = random.Random(1960)
+    values = [rng.choice([None, float(rng.randint(0, 9))]) for _ in range(60)]
+    for q in (0.0, 0.5, 0.8, 1.0):
+        full = expanding_quantile(values, q, 3)
+        for k in range(len(values) + 1):     # a prefix is scored the same as inside the whole
+            assert expanding_quantile(values[:k], q, 3) == full[:k]
+        changed = values[:30] + [1e9 if v is not None else 1.0 for v in values[30:]]
+        assert expanding_quantile(changed, q, 3)[:30] == full[:30]
+        assert expanding_quantile(values + [123.0], q, 3)[:len(values)] == full
+    # a position's own value never enters its own quantile
+    assert expanding_quantile([1.0, 2.0, 3.0, 1e12], 1, 1)[3] == 3.0
+
+
+@pytest.mark.parametrize("function", ["expanding_percentile", "expanding_quantile"])
+@pytest.mark.parametrize("min_history", [0, -1, True, False, 2.0, "3", None])
+def test_both_expanding_functions_refuse_a_min_history_that_is_not_a_positive_int(
+    function, min_history
+):
+    from dskit.pipeline import stats
+
+    args = (0.5,) if function == "expanding_quantile" else ()
+    with pytest.raises(ValueError, match="min_history must be an int >= 1"):
+        getattr(stats, function)([1.0, 2.0], *args, min_history)
+
+
+@pytest.mark.parametrize("function", ["expanding_percentile", "expanding_quantile"])
+@pytest.mark.parametrize("values", [(1.0, 2.0), None, "12", {1: 2.0}, iter([1.0, 2.0])])
+def test_both_expanding_functions_refuse_anything_but_a_list(function, values):
+    from dskit.pipeline import stats
+
+    args = (0.5,) if function == "expanding_quantile" else ()
+    with pytest.raises(ValueError, match="values must be a list"):
+        getattr(stats, function)(values, *args, 1)
+
+
+@pytest.mark.parametrize("function", ["expanding_percentile", "expanding_quantile"])
+@pytest.mark.parametrize("bad", ["1.0", True, [1.0], {}])
+def test_both_expanding_functions_refuse_a_cell_that_is_neither_a_number_nor_missing(function, bad):
+    from dskit.pipeline import stats
+
+    args = (0.5,) if function == "expanding_quantile" else ()
+    with pytest.raises(ValueError, match=r"values\[1\]"):
+        getattr(stats, function)([1.0, bad, 2.0], *args, 1)
+
+
+@pytest.mark.parametrize("q", [-0.1, 1.0000001, float("nan"), float("inf"), True, False, "0.5",
+                               None, [0.5]])
+def test_expanding_quantile_refuses_a_q_outside_zero_to_one(q):
+    from dskit.pipeline.stats import expanding_quantile
+
+    with pytest.raises(ValueError, match=r"q must be a number in \[0, 1\]"):
+        expanding_quantile([1.0, 2.0], q, 1)
+
+
+def test_expanding_quantile_is_public():
+    from dskit.pipeline import stats
+
+    assert "expanding_quantile" in stats.__all__
+
+
 # --- ADR-0195 (ADR-0194 review B-M3/B-M4): one owner of the "no variance" rule ------------------
 #
 # A series whose spread is at most a named RELATIVE tolerance of its largest magnitude is constant
@@ -992,6 +1150,39 @@ def test_the_tolerance_is_relative_and_named_once(t_test):
         assert test(_series_with_spread(2.0, magnitude))["t"] is not None  # outside it
         assert test([-v for v in _series_with_spread(0.5, magnitude)])["t"] is None
         assert test([-v for v in _series_with_spread(2.0, magnitude)])["t"] is not None
+
+
+def test_the_no_variance_tolerance_is_one_named_value_pinned_against_a_literal():
+    from dskit.pipeline import stats
+
+    assert stats.NO_VARIANCE_RTOL == 1e-12       # restated here: changing it moves every t-test
+
+
+#: At 1e12 one ulp is 2**-13, so a spread of exactly 1.0 sits ON the boundary
+#: (``1e-12 * 1e12 == 1.0``) and ``1.0 + 2**-13`` is the very next spread above it.
+BOUNDARY = [1e12, 1e12 - 1.0]
+JUST_OVER = [1e12, 1e12 - 1.0 - 2.0 ** -13]
+
+
+@pytest.mark.parametrize("t_test", ["newey_west_mean", "across_fold_t"])
+@pytest.mark.parametrize("order", [1, -1], ids=["descending", "ascending"])
+def test_a_spread_exactly_on_the_tolerance_has_no_variance_in_either_order(t_test, order):
+    # B-F1 (ADR-0195 review): "at most" includes equality, and the scale is the LARGEST
+    # magnitude whichever end of the series it sits at (a first-, last-, smallest- or
+    # mean-magnitude norm would scale by 1e12 - 1 or 1e12 - 0.5 and let t through)
+    from dskit.pipeline import stats
+
+    out = getattr(stats, t_test)(BOUNDARY[::order])
+    assert out["t"] is None and out["se"] == 0.0 and out["p_value"] == 0.0
+
+
+@pytest.mark.parametrize("t_test", ["newey_west_mean", "across_fold_t"])
+@pytest.mark.parametrize("order", [1, -1], ids=["descending", "ascending"])
+def test_the_next_representable_spread_above_the_tolerance_keeps_its_t(t_test, order):
+    from dskit.pipeline import stats
+
+    out = getattr(stats, t_test)(JUST_OVER[::order])
+    assert out["t"] is not None and out["t"] > 1e12 and out["se"] > 0.0
 
 
 def test_the_lag_path_and_the_dm_wrapper_inherit_the_noise_rule():

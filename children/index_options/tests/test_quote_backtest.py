@@ -2259,6 +2259,59 @@ def test_a_tie_between_structures_follows_the_nesting_structure_outermost():
     assert cell["selected"]["score"] == pytest.approx(98.7 / (500.0 - 98.7))
 
 
+#: Sorted: Q(0.1) = -1.0 and Q(0.2) = -0.4 below, Q(0.8) = Q(0.9) = +0.4 above; the extremes
+#: -1.0 and +1.0 settle at 95.1 and 105.1, inside every short strike the market below offers.
+TIE_DRAWS = [-1.0, -0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.4, 1.0]
+
+
+def _two_quotable_puts_and_calls():
+    """Only put 95 / 94 and call 106 / 107 can trade: each structure has exactly one spread."""
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if int(q["strike"]) not in (94, 95, 106, 107):
+            q["bid_size"] = q["ask_size"] = 0
+    return _set(chain, put95={"bid": 1.5, "ask": 1.6}, put94={"bid": 0.9, "ask": 1.0},
+                call106={"bid": 1.5, "ask": 1.6}, call107={"bid": 0.9, "ask": 1.0})
+
+
+def test_a_tie_between_structures_across_short_q_follows_structure_outermost_then_short_q():
+    # B-F3 (ADR-0195 review). s' = 0.05. Both short puts are 95 whatever q (96-98 cannot be
+    # sold), but the long put of q = 0.1 targets 100 e^{0.05 (-1.0 - 0.5)} = 92.8 and nothing at
+    # or under it is quotable, so (put_spread, 0.1) is unscorable; (put_spread, 0.2) targets 95.6
+    # and gets [94, 95]. Both short calls are 106 and both long calls 107 (Q(0.8) = Q(0.9)), so the
+    # calls are scored at either q. Every payoff is zero (the draws stay inside the shorts), so
+    # the put spread [94, 95] and the call spread [106, 107], both credit 0.5 a share over a
+    # width of 1, have E_P = 48.7 = credit and max loss 51.3: an EXACT tie between
+    # (put_spread, 0.2) and (call_spread, 0.1), which only the nesting can break. Structure
+    # outermost reaches (put_spread, 0.2) first; a short_q-outer order would meet
+    # (call_spread, 0.1) first.
+    chain = _two_quotable_puts_and_calls()
+    row = [_select_row(samples=TIE_DRAWS)]
+    alone = {}
+    for structure, q in (("put_spread", 0.1), ("put_spread", 0.2), ("call_spread", 0.1),
+                         ("call_spread", 0.2)):
+        _, report = _run_select(row, chain, FLAT, candidate_structures=[structure],
+                                candidate_short_q=[q])
+        alone[structure, q] = report["ledger"][0]["books"]["model"]
+    assert alone["put_spread", 0.1]["selected"] is None      # no quotable long put that far out
+    assert alone["put_spread", 0.2]["strikes"] == [94.0, 95.0]
+    assert alone["call_spread", 0.1]["strikes"] == alone["call_spread", 0.2]["strikes"] == [
+        106.0, 107.0]
+    tied = alone["put_spread", 0.2]["selected"]["score"]
+    assert tied == alone["call_spread", 0.1]["selected"]["score"] == pytest.approx(48.7 / 51.3)
+    _, report = _run_select(row, chain, FLAT, candidate_structures=["put_spread", "call_spread"],
+                            candidate_short_q=[0.1, 0.2])
+    cell = report["ledger"][0]["books"]["model"]
+    assert (cell["selected"]["structure"], cell["selected"]["short_q"]) == ("put_spread", 0.2)
+    assert cell["strikes"] == [94.0, 95.0] and cell["selected"]["n_candidates_scored"] == 3
+    # the declared order of the structures, not of the quantiles, settles it
+    _, report = _run_select(row, chain, FLAT, candidate_structures=["call_spread", "put_spread"],
+                            candidate_short_q=[0.1, 0.2])
+    cell = report["ledger"][0]["books"]["model"]
+    assert (cell["selected"]["structure"], cell["selected"]["short_q"]) == ("call_spread", 0.1)
+    assert cell["strikes"] == [106.0, 107.0]
+
+
 @pytest.mark.parametrize("fee", [41.0, 44.0])
 def test_a_candidate_the_credit_gate_refuses_is_never_scored(fee):
     # fees of 41 a leg: the put spread keeps 90 - 82 = 8, the call spread 70 - 82 and the condor
@@ -2675,3 +2728,303 @@ def test_the_selector_needs_every_condor_knob_and_every_candidate_knob():
         assert cls.validate_params({**full, "candidate_structures": structures}) == []
     assert cls.validate_params({**full, "gate_fields": ["g"], "min_edge_usd": 1.0,
                                 "cvar_alpha": 0.9}) == []
+
+
+# -- ADR-0196: size_fields annotate each entry with weights and report the weighted books -------
+#
+# size_fields names forecast-row fields (a positive finite weight, or None) that the backtest
+# READS at each entry and records; it never changes a trade and never skips one. Per book and
+# field, over the TRADED cells that carry a weight, it reports the book as if each trade had been
+# taken at that many contracts: the weighted P&L w x pnl and its total, t, CVaR and drawdown.
+
+#: Every per-field size metric's suffix, restated here (never read from the node).
+SIZE_SUFFIXES = ("n", "mean_weight", "total_pnl_usd", "pnl_per_weight", "t", "cvar_usd",
+                 "max_drawdown_usd", "unknown_n")
+#: Weights per entry of GATE_LEVELS' six worked entries; None is an unknown weight.
+SIZE_W = [1.0, 2.0, None, 0.5, 4.0, 1.0]
+SIZE_V = [0.5, None, 3.0, 1.0, 2.0, None]
+#: The model book's P&L at each entry (levels 80, 97, 93.5, 97, 110, 97), from the hand tables.
+CONDOR_MODEL_PNL = [CONDOR_PNL["model"][level] for level in GATE_LEVELS]
+CONDOR_IMPLIED_PNL = [CONDOR_PNL["implied"][level] for level in GATE_LEVELS]
+PUT_SPREAD_MODEL_PNL = [PUT_SPREAD_PNL["model"][level] for level in GATE_LEVELS]
+
+
+def _sized(pnls, weights, alpha=0.95):
+    """One book's size metrics, written out from the definitions (never read from the node)."""
+    pairs = [(w, p) for w, p in zip(weights, pnls) if w is not None]
+    sized = [w * p for w, p in pairs]
+    n = len(sized)
+    total_weight = sum(w for w, _p in pairs)
+    tail = max(1, math.ceil(round((1 - alpha) * n, 9)))
+    path, peak, worst = 0.0, 0.0, 0.0
+    for value in sized:
+        path += value
+        peak = max(peak, path)
+        worst = max(worst, peak - path)
+    spread = max(sized) - min(sized) if sized else 0.0
+    return {"n": n, "mean_weight": total_weight / n if n else 0.0,
+            "total_pnl_usd": sum(sized), "pnl_per_weight": sum(sized) / total_weight if n else 0.0,
+            "t": _t(sized) if n >= 2 and spread > 0 else 0.0,
+            "cvar_usd": sum(sorted(sized)[:tail]) / tail if n else 0.0,
+            "max_drawdown_usd": worst,
+            "unknown_n": len([w for w in weights if w is None])}
+
+
+def _assert_the_sized_book(metrics, book, field, want):
+    for suffix in SIZE_SUFFIXES:
+        assert metrics[f"{book}_{field}_{suffix}"] == pytest.approx(want[suffix]), (book, field,
+                                                                                    suffix)
+
+
+def test_the_hand_computed_sized_condor_model_book():
+    # weights 1 / 2 / - / 0.5 / 4 / 1 on P&L -142.6 / 157.4 / 7.4 / 157.4 / -42.6 / 157.4: the
+    # entry with no weight (7.4) is left out, the rest weigh in as w x pnl
+    #   [-142.6, 314.8, 78.7, -170.4, 157.4]: total 237.9, weights sum 8.5 (mean 1.7)
+    #   worst one (CVaR at 0.95 over five is the single worst) -170.4; the path -142.6, 172.2,
+    #   250.9, 80.5, 237.9 peaks at 250.9 and falls 170.4 to 80.5 (more than the first 142.6 dip)
+    days, chain, series = _trades(GATE_LEVELS)
+    metrics, report = _run(_gated_rows(days, w=SIZE_W), chain, series, size_fields=["w"])
+    assert CONDOR_MODEL_PNL == pytest.approx([-142.6, 157.4, 7.4, 157.4, -42.6, 157.4])
+    assert metrics["model_w_n"] == 5 and metrics["model_w_unknown_n"] == 1
+    assert metrics["model_w_mean_weight"] == pytest.approx(1.7)
+    assert metrics["model_w_total_pnl_usd"] == pytest.approx(237.9)
+    assert metrics["model_w_pnl_per_weight"] == pytest.approx(237.9 / 8.5)
+    assert metrics["model_w_cvar_usd"] == pytest.approx(-170.4)
+    assert metrics["model_w_max_drawdown_usd"] == pytest.approx(170.4)
+    assert metrics["model_w_t"] == pytest.approx(_t([-142.6, 314.8, 78.7, -170.4, 157.4]))
+    _assert_the_sized_book(metrics, "model", "w", _sized(CONDOR_MODEL_PNL, SIZE_W))
+    assert [e["sizes"] for e in report["ledger"]] == [{"w": w} for w in SIZE_W]
+    assert report["params"]["size_fields"] == ["w"]
+
+
+@pytest.mark.parametrize("cls, sides, pnl_of", [
+    (CondorQuoteBacktest, ("put", "call"), {"model": CONDOR_MODEL_PNL,
+                                            "always": CONDOR_MODEL_PNL,
+                                            "implied": CONDOR_IMPLIED_PNL}),
+    (PutSpreadQuoteBacktest, ("put",), {"model": PUT_SPREAD_MODEL_PNL,
+                                        "always": PUT_SPREAD_MODEL_PNL,
+                                        "implied": [PUT_SPREAD_PNL["implied"][lv]
+                                                    for lv in GATE_LEVELS]}),
+])
+def test_each_book_and_each_size_field_is_summarized_over_its_own_trades(cls, sides, pnl_of):
+    days, chain, series = _trades(GATE_LEVELS)
+    rows = _gated_rows(days, w=SIZE_W, v=SIZE_V)
+    metrics, report = _run_node(cls, sides, rows, chain, series, size_fields=["w", "v"])
+    assert all(list(e["sizes"]) == ["w", "v"] for e in report["ledger"])      # declared order
+    for book, pnls in pnl_of.items():
+        for field, weights in (("w", SIZE_W), ("v", SIZE_V)):
+            _assert_the_sized_book(metrics, book, field, _sized(pnls, weights))
+    # the two fields are independent: v's unknowns are not w's
+    assert (metrics["model_w_unknown_n"], metrics["model_v_unknown_n"]) == (1, 2)
+    assert (metrics["model_w_n"], metrics["model_v_n"]) == (5, 4)
+
+
+@pytest.mark.parametrize("cls, sides", [(CondorQuoteBacktest, ("put", "call")),
+                                        (PutSpreadQuoteBacktest, ("put",))])
+def test_sizing_never_changes_the_trades_and_absent_size_fields_change_nothing(cls, sides):
+    days, chain, series = _trades(GATE_LEVELS)
+    rows = _gated_rows(days, w=SIZE_W, g=GATE_A)
+    plain_metrics, plain = _run_node(cls, sides, rows, chain, series)
+    assert all("sizes" not in e for e in plain["ledger"])
+    assert "size_fields" not in plain["params"]              # emitted only when present
+    assert not any("_w_" in k for k in plain_metrics)
+    metrics, sized = _run_node(cls, sides, rows, chain, series, size_fields=["w"])
+    assert [{k: v for k, v in e.items() if k != "sizes"} for e in sized["ledger"]] == \
+        plain["ledger"]                                       # no entry skipped, none added
+    assert {k: v for k, v in metrics.items() if "_w_" not in k} == plain_metrics
+    assert {k: v for k, v in sized["params"].items() if k != "size_fields"} == plain["params"]
+    assert sized["chain"] == plain["chain"] and sized["kind"] == plain["kind"]
+    # alongside gate_fields: each annotation is its own, both ride the same entries
+    both_metrics, both = _run_node(cls, sides, rows, chain, series, size_fields=["w"],
+                                   gate_fields=["g"])
+    assert all(list(e) [-2:] == ["gates", "sizes"] for e in both["ledger"])
+    assert {k: v for k, v in both_metrics.items() if "_g_" not in k} == metrics
+
+
+def test_a_book_that_did_not_trade_an_entry_does_not_weigh_it():
+    days, chain, series = _trades([80.0, 97.0, 97.0])
+    rows = _gated_rows(days, w=[2.0, 1.0, 3.0])
+    # the model book skips every entry (expected 157.4 does not beat 200); always trades them all
+    metrics, _ = _run(rows, chain, series, size_fields=["w"], min_edge_usd=200.0)
+    assert metrics["model_n_trades"] == 0 and metrics["always_n_trades"] == 3
+    for suffix in SIZE_SUFFIXES:
+        assert metrics[f"model_w_{suffix}"] == 0, suffix       # every count, total and t is zero
+    _assert_the_sized_book(metrics, "always", "w", _sized([-142.6, 157.4, 157.4], [2.0, 1.0, 3.0]))
+    assert isinstance(metrics["model_w_total_pnl_usd"], float)
+    assert isinstance(metrics["model_w_cvar_usd"], float)
+
+
+def test_a_sized_book_with_no_weighted_trade_reports_float_zeros():
+    days, chain, series = _trades([97.0, 97.0])
+    metrics, _ = _run(_gated_rows(days, w=[None, None]), chain, series, size_fields=["w"])
+    assert metrics["model_n_trades"] == 2 and metrics["model_w_unknown_n"] == 2
+    for suffix in SIZE_SUFFIXES[:-1]:
+        assert metrics[f"model_w_{suffix}"] == 0.0 and isinstance(metrics[f"model_w_{suffix}"],
+                                                                  (int, float)), suffix
+    assert isinstance(metrics["model_w_total_pnl_usd"], float)
+    assert isinstance(metrics["model_w_mean_weight"], float)
+
+
+def test_a_constant_weight_of_one_is_the_unsized_book():
+    days, chain, series = _trades(GATE_LEVELS)
+    metrics, _ = _run(_gated_rows(days, one=[1.0] * 6), chain, series, size_fields=["one"])
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_one_n"] == metrics[f"{book}_n_trades"] == 6
+        assert metrics[f"{book}_one_total_pnl_usd"] == pytest.approx(
+            metrics[f"{book}_total_pnl_usd"])
+        assert metrics[f"{book}_one_pnl_per_weight"] == pytest.approx(
+            metrics[f"{book}_mean_pnl_usd"])
+        assert metrics[f"{book}_one_mean_weight"] == 1.0
+        assert metrics[f"{book}_one_cvar_usd"] == pytest.approx(metrics[f"{book}_cvar_usd"])
+        assert metrics[f"{book}_one_max_drawdown_usd"] == pytest.approx(
+            metrics[f"{book}_max_drawdown_usd"])
+        assert metrics[f"{book}_one_t"] == pytest.approx(metrics[f"{book}_pnl_t"])
+
+
+def test_a_uniform_scale_scales_the_money_and_leaves_the_per_weight_and_the_t_alone():
+    days, chain, series = _trades(GATE_LEVELS)
+    rows = _gated_rows(days, one=[1.0] * 6, three=[3.0] * 6)
+    metrics, _ = _run(rows, chain, series, size_fields=["one", "three"])
+    for suffix in ("total_pnl_usd", "cvar_usd", "max_drawdown_usd"):
+        assert metrics[f"model_three_{suffix}"] == pytest.approx(3 * metrics[f"model_one_{suffix}"])
+    for suffix in ("pnl_per_weight", "t"):
+        assert metrics[f"model_three_{suffix}"] == pytest.approx(metrics[f"model_one_{suffix}"])
+    assert metrics["model_three_mean_weight"] == 3.0
+
+
+def test_each_entry_reads_the_weights_of_its_own_row_and_instrument():
+    days, chain, series = _trades([97.0])
+    qqq_chain = _set(_chain(days[0], "2024-03-08", close=50.0, strikes=range(44, 57),
+                            instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": 50.0, "asof_ms": _ms(d),
+                   "dividend_amount": 0.0} for d in SESSIONS]
+    rows = [_row(days[0], w=2.0), _row(days[0], close=50.0, instrument="QQQ", w=0.5)]
+    _, report = _run(rows, chain + qqq_chain, series + qqq_series, size_fields=["w"])
+    assert {e["instrument"]: e["sizes"] for e in report["ledger"]} == {
+        "SPY": {"w": 2.0}, "QQQ": {"w": 0.5}}
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1.0, True, False, "1", "", [1.0], {"w": 1.0},
+                                 float("nan"), float("inf"), -float("inf")])
+def test_a_weight_that_is_not_a_positive_finite_number_or_none_refuses_naming_the_field_and_row(bad):
+    days, chain, series = _trades([97.0, 97.0])
+    rows = _gated_rows(days, w=[1.5, bad])
+    with pytest.raises(ValueError, match=rf"size field 'w'.*SPY {days[1]}.*positive"):
+        _run(rows, chain, series, size_fields=["w"])
+
+
+def test_an_integer_weight_is_a_number_and_a_none_is_an_unknown_weight():
+    days, chain, series = _trades([97.0, 97.0])
+    metrics, _ = _run(_gated_rows(days, w=[2, None]), chain, series, size_fields=["w"])
+    assert (metrics["model_w_n"], metrics["model_w_unknown_n"]) == (1, 1)
+    assert metrics["model_w_total_pnl_usd"] == pytest.approx(2 * 157.4)
+
+
+def test_a_size_field_absent_from_an_entry_row_refuses_as_a_typo():
+    days, chain, series = _trades([97.0])
+    with pytest.raises(ValueError, match=rf"size field 'w_typo'.*absent.*SPY {days[0]}"):
+        _run(_gated_rows(days, w=[1.0]), chain, series, size_fields=["w_typo"])
+
+
+def test_a_weight_on_a_row_that_never_becomes_an_entry_is_not_read():
+    days, chain, series = _trades([97.0])
+    rows = _gated_rows(days, w=[2.0]) + [_row("2024-03-04", w="junk"), _row("2024-03-11", w="junk")]
+    metrics, report = _run(rows, chain, series, size_fields=["w"])
+    assert metrics["n_skipped_no_chain"] == 1 and len(report["ledger"]) == 1
+    assert metrics["model_w_n"] == 1
+
+
+def test_the_selector_sizes_whatever_structure_it_picked():
+    rows, chain, series = _mixed_winners()
+    for row, weight in zip(rows, (2.0, None, 0.5)):
+        row["w"] = weight
+    metrics, report = _run_select(rows, chain, series, size_fields=["w"])
+    # the picks' P&L: condor -142.6, call spread -131.3, put spread 88.7; weights 2 / - / 0.5
+    want = _sized([-142.6, -131.3, 88.7], [2.0, None, 0.5])
+    assert want["total_pnl_usd"] == pytest.approx(-285.2 + 44.35)
+    for book in ("model", "always"):
+        _assert_the_sized_book(metrics, book, "w", want)
+    _assert_the_sized_book(metrics, "implied", "w", _sized([-32.6, -132.6, 67.4], [2.0, None, 0.5]))
+    assert [e["sizes"] for e in report["ledger"]] == [{"w": 2.0}, {"w": None}, {"w": 0.5}]
+    plain_metrics, plain = _run_select(*_mixed_winners())
+    assert [{k: v for k, v in e.items() if k != "sizes"} for e in report["ledger"]] == \
+        plain["ledger"]
+
+
+def test_the_proxy_backtest_sizes_its_entries_the_same_way():
+    def row(i, **extra):
+        return {"asof_ms": 100 + i, "instrument": "SPX", "date": f"d{i}", "close": 1000.0,
+                "iv_index": 20.0, "reference_scale": 0.05, "samples": list(DRAWS),
+                "outcome": 0.0, **extra}
+
+    rows = [row(0, w=2.0), row(1), row(2), row(3, w=None), row(4), row(5), row(6, w=0.5)]
+    out = CondorBacktest("bt", {**_PROXY, "size_fields": ["w"]}).run(CTX, {"forecasts": rows})
+    ledger = out["report"].value["ledger"]
+    assert [e["date"] for e in ledger] == ["d0", "d3", "d6"]
+    assert [e["sizes"] for e in ledger] == [{"w": 2.0}, {"w": None}, {"w": 0.5}]
+    pnls = [e["books"]["always"]["pnl_usd"] for e in ledger]
+    _assert_the_sized_book(out["metrics"], "always", "w", _sized(pnls, [2.0, None, 0.5]))
+    assert out["metrics"]["always_w_unknown_n"] == 1
+
+
+_SELECT_BASE = {**PARAMS, **SELECT_KNOBS}
+
+
+@pytest.mark.parametrize("cls, base", [
+    (CondorQuoteBacktest, PARAMS), (PutSpreadQuoteBacktest, PARAMS),
+    (PayoffSelectQuoteBacktest, _SELECT_BASE), (CondorBacktest, _PROXY)])
+def test_every_backtest_accepts_size_fields_and_refuses_a_malformed_declaration(cls, base):
+    assert "size_fields" in cls._PARAMS and "gate_fields" in cls._PARAMS
+    assert cls.validate_params({**base, "size_fields": ["w"]}) == []
+    assert cls.validate_params({**base, "size_fields": ["w", "v"]}) == []
+    assert cls.validate_params({**base, "size_fields": ["w"], "gate_fields": ["g"]}) == []
+    for bad in ([], "w", ["w", "w"], [""], [1], ["w", None], None, ("w",), {"w": 1}, [True]):
+        problems = cls.validate_params({**base, "size_fields": bad})
+        assert any("size_fields must be a non-empty list of distinct non-empty strings" in p
+                   for p in problems), bad
+        with pytest.raises(ConfigError, match="size_fields"):
+            cls("bt", {**base, "size_fields": bad})
+
+
+def test_the_distinct_list_rule_has_one_home_so_gates_sizes_and_candidates_cannot_drift():
+    # B-N1 (ADR-0195 review): gate_fields, size_fields and the selector's three candidate lists
+    # are all "a non-empty list of distinct <items>", worded and checked in ONE place
+    import index_options.nodes as nodes
+
+    source = Path(nodes.__file__).read_text(encoding="utf-8")
+    assert source.count("must be a non-empty list of distinct") == 1
+    base = {**PARAMS, **SELECT_KNOBS}
+    for knob, bad in (("candidate_structures", []), ("candidate_short_q", [0.1, 0.1]),
+                      ("candidate_wing_z", [0.5, "x"]), ("gate_fields", [""]),
+                      ("size_fields", ["w", "w"])):
+        (problem,) = [p for p in PayoffSelectQuoteBacktest.validate_params({**base, knob: bad})
+                      if knob in p]
+        assert problem.startswith(f"{knob} must be a non-empty list of distinct "), problem
+
+
+def test_signals_then_sizing_then_the_backtest_carry_both_annotations_to_each_entry():
+    # the shipped wiring: model rows -> VolRegimeSignals -> VolSizingWeights -> backtest. The
+    # weights are the previous session's (hand-worked in test_nodes: size_implied 1.5, 0.96,
+    # 1.6667, 0.8148 from the third row on), the gates survive the second node, and the ledger
+    # records each entry's own row's values
+    from index_options.nodes import VolRegimeSignals, VolSizingWeights
+
+    days, chain, series = _trades(GATE_LEVELS)
+    ivs, rvs = [20.0, 30.0, 24.0, 40.0, 22.0, 25.0], [0.010, 0.020, 0.015, 0.030, 0.010, 0.012]
+    rows = [{**_row(d), "iv_index": iv, "rv_22": rv} for d, iv, rv in zip(days, ivs, rvs)]
+    term = [{"instrument": "VIX3M", "date": d, "close": 25.0} for d in days]
+    signalled = VolRegimeSignals("signals", {"min_history": 1}).run(
+        None, {"rows": rows, "term": term})["rows"]
+    sized = VolSizingWeights("sizing", {"min_history": 1}).run(None, {"rows": signalled})["rows"]
+    metrics, report = _run(sized, chain, series, gate_fields=["gate_any"],
+                           size_fields=["size_implied", "size_inv_implied_var"])
+    got = [e["sizes"]["size_implied"] for e in report["ledger"]]
+    assert got[:2] == [None, None]
+    assert got[2:] == pytest.approx([1.5, 0.96, 40 / 24, 22 / 27], abs=1e-12)
+    assert [e["sizes"]["size_inv_implied_var"] for e in report["ledger"]][2] == pytest.approx(
+        400 / 900, abs=1e-12)
+    assert all("gate_any" in e["gates"] for e in report["ledger"])
+    weighted = _sized(CONDOR_MODEL_PNL, got)
+    _assert_the_sized_book(metrics, "model", "size_implied", weighted)
+    assert metrics["model_size_implied_n"] == 4 and metrics["model_size_implied_unknown_n"] == 2

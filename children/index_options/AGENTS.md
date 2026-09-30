@@ -40,8 +40,21 @@ Use README.md for installation, the temporary demo and focused tests.
   implied book stays the condor) on per-trade leg sets: contracts.STRUCTURES and
   CALL_SPREAD_LEGS own the structures, ONE _american_charge rule serves every
   leg set, and grid.select_document makes the 28 <cell>-select.json and
-  <cell>-empirical-select.json (the empirical rung is the premium-only
-  control; the forecast's value is the difference). Never decision-eligible.
+  <cell>-empirical-select.json (the empirical rung is the unconditional-shape,
+  trailing-vol control; the har-vix minus empirical difference is the
+  conditional-forecast increment). ADR-0196 adds the sizing
+  study, annotate-only: VolSizingWeights (the previous session's VIX and
+  realized vol against their expanding median, three weights clipped to
+  [0.25, 4]; it and VolRegimeSignals share ONE lagged-rows seam,
+  _LaggedRowSignals), the backtests' optional size_fields (each book's traded
+  P&L as if taken at w contracts; no trade changes) and
+  grid.sizing_study_document on the 56 gate/put-spread/select documents. A
+  weight name has one owner, VolSizingWeights.SIZE_FIELDS. A derived document
+  keeps its source's description but ends with ONE run sentence for its own
+  file (grid._finished). index_options.ledger_studies is the read-only CLI
+  over walk ledgers (allocate: per entry date the underlying with the higher
+  ex-ante E_P[pnl] / max_loss, against each alone and an equal split).
+  Never decision-eligible.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
 - Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
@@ -77,6 +90,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
+                           # ledger_studies.py (read-only CLI over walk ledgers, ADR-0196: allocate)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison),
@@ -101,6 +115,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
                            # + <symbol>-<bucket>-select.json and -empirical-select.json for the
                            # 14 SPY/QQQ cells (ADR-0195 payoff selector, with the gate study)
+                           # (all 56 of these carry the ADR-0196 sizing study: VolSizingWeights)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
@@ -110,5 +125,5 @@ docs/research/              # README.md, .gitkeep; distribution-modeling/, real-
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data,
-                           # quote_backtest (.py)
+                           # quote_backtest, ledger_studies (.py)
 ```

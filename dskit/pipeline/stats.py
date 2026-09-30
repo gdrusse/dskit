@@ -50,9 +50,11 @@ and :func:`payoff_ratio`. A trade-level t-test is :func:`across_fold_t`
 over the trade P&L list — the same one-sample Student t, so it is not
 restated.
 
-One causal ranking helper joins them (ADR-0194): :func:`expanding_percentile`
-scores each position of a time-ordered series against only the values before
-it (mid-rank), so a regime threshold read off a series never sees the future.
+Two causal helpers join them: :func:`expanding_percentile` (ADR-0194) scores
+each position of a time-ordered series against only the values before it
+(mid-rank), and :func:`expanding_quantile` (ADR-0196) answers the quantile of
+only those values (linear interpolation), so a regime threshold or a running
+median read off a series never sees the future. One private walk serves both.
 
 Import cost: stdlib only.
 """
@@ -86,6 +88,7 @@ __all__ = [
     "dm_lags",
     "dm_loss_series",
     "expanding_percentile",
+    "expanding_quantile",
     "lower_tail_mean",
     "max_drawdown",
     "max_informative_horizon",
@@ -1782,6 +1785,29 @@ def quantile_bin(value, edges):
     """
     return bisect.bisect_right(edges, value)
 
+def _earlier_finite(values, min_history):
+    """Validate a time-ordered series, then yield ``(value, prior)`` per position.
+
+    ``prior`` is the ascending list of the STRICTLY EARLIER finite values, live
+    (read it before advancing), when ``value`` is itself finite and at least
+    ``min_history`` earlier finite values exist; ``None`` otherwise. The one
+    owner of the causal walk and its input rules that :func:`expanding_percentile`
+    and :func:`expanding_quantile` share.
+    """
+    if not isinstance(values, list):
+        raise ValueError(f"values must be a list, got {type(values).__name__}")
+    if isinstance(min_history, bool) or not isinstance(min_history, int) or min_history < 1:
+        raise ValueError(f"min_history must be an int >= 1, got {min_history!r}")
+    prior = []
+    for i, value in enumerate(values):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise ValueError(f"values[{i}] must be a number or None, got {value!r}")
+        finite = value is not None and math.isfinite(value)
+        yield value, (prior if finite and len(prior) >= min_history else None)
+        if finite:
+            bisect.insort(prior, value)
+
+
 def expanding_percentile(values, min_history):
     """Return each value's mid-rank among the STRICTLY EARLIER finite values.
 
@@ -1821,24 +1847,76 @@ def expanding_percentile(values, min_history):
         out = expanding_percentile([1.0, 2.0, 2.0], min_history=2)
         # -> [None, None, 0.75]
     """
-    if not isinstance(values, list):
-        raise ValueError(f"values must be a list, got {type(values).__name__}")
-    if isinstance(min_history, bool) or not isinstance(min_history, int) or min_history < 1:
-        raise ValueError(f"min_history must be an int >= 1, got {min_history!r}")
-    prior, out = [], []
-    for i, value in enumerate(values):
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
-            raise ValueError(f"values[{i}] must be a number or None, got {value!r}")
-        finite = value is not None and math.isfinite(value)
-        if finite and len(prior) >= min_history:
-            below = bisect.bisect_left(prior, value)
-            equal = bisect.bisect_right(prior, value) - below
-            out.append((below + 0.5 * equal) / len(prior))
-        else:
+    out = []
+    for value, prior in _earlier_finite(values, min_history):
+        if prior is None:
             out.append(None)
-        if finite:
-            bisect.insort(prior, value)
+            continue
+        below = bisect.bisect_left(prior, value)
+        equal = bisect.bisect_right(prior, value) - below
+        out.append((below + 0.5 * equal) / len(prior))
     return out
+
+
+def _interpolated(ordered, q):
+    """The ``q``-quantile of a non-empty ascending list, linearly interpolated between neighbours."""
+    position = q * (len(ordered) - 1)
+    low = min(int(position), len(ordered) - 1)
+    fraction = position - low
+    if fraction == 0.0:
+        return float(ordered[low])
+    return float(ordered[low] + fraction * (ordered[low + 1] - ordered[low]))
+
+
+def expanding_quantile(values, q, min_history):
+    """Return the ``q``-quantile of the STRICTLY EARLIER finite values at each position.
+
+    The look-ahead-free running quantile of a time-ordered series, the
+    sibling of :func:`expanding_percentile`: position ``i`` is answered from
+    ``values[:i]`` only, so appending later values never changes an earlier
+    output, and a value never enters its own quantile. With ``n`` earlier
+    finite values in ascending order ``x[0] .. x[n - 1]`` the quantile is
+    linearly interpolated between order statistics: ``p = q (n - 1)``,
+    ``lo = floor(p)``, ``x[lo] + (p - lo) (x[lo + 1] - x[lo])``, so ``q = 0``
+    is the earlier minimum, ``q = 1`` the earlier maximum, ``q = 0.5`` the
+    median, and a run of equal values answers that value exactly. A
+    ``None``, NaN or infinite cell answers ``None`` and never enters the
+    history; an answer is a ``float``.
+
+    Parameters
+    ----------
+    values : list of (float or None)
+        Time-ordered observations. ``None`` and non-finite floats are
+        missing; anything else that is not a real number is refused.
+    q : float
+        The quantile level in ``[0, 1]`` (a bool is not a number).
+    min_history : int
+        The number of earlier finite values needed before a position is
+        answered, ``>= 1``; a position with fewer answers ``None``.
+
+    Returns
+    -------
+    list of (float or None)
+        One entry per input value.
+
+    Raises
+    ------
+    ValueError
+        When ``q`` is not a number in ``[0, 1]``, ``values`` is not a list,
+        ``min_history`` is not an int ``>= 1`` (a bool is not one), or a cell
+        is neither a real number nor ``None``.
+
+    Examples
+    --------
+    The running median, from the third value on::
+
+        out = expanding_quantile([4.0, 1.0, 3.0, 10.0], 0.5, min_history=2)
+        # -> [None, None, 2.5, 3.0]
+    """
+    if not number_ok(q) or not 0 <= q <= 1:
+        raise ValueError(f"q must be a number in [0, 1], got {q!r}")
+    return [None if prior is None else _interpolated(prior, q)
+            for _value, prior in _earlier_finite(values, min_history)]
 
 
 def correction(name):

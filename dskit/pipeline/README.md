@@ -410,7 +410,9 @@ overlap in observation steps. `newey_west_mean` and `across_fold_t` (every
 t-test here that is not a bootstrap) share ONE no-variance rule: a series
 whose spread is at most `stats.NO_VARIANCE_RTOL` times its largest magnitude
 is constant to float noise, so its `t` is `None` (never a ~1e16 artifact) and
-the sign of the mean sets `p_value`.
+the sign of the mean sets `p_value`. `NeweyWestInterval` (`mean_interval.py`)
+inherits the rule: a float-noise-constant sample is refused ("no spread") like
+an exactly constant one, never bracketed a few ulps wide.
 
 `event-grid` requires integer `period_ms > 0` and
 `0 <= offset_ms < period_ms`; it preserves order and keeps rows satisfying
@@ -774,7 +776,9 @@ dskit/pipeline/
 │                      (Clark–West HAC + sequential h*, ADR-0057); P&L series
 │                      summaries lower_tail_mean (empirical CVaR) + max_drawdown;
 │                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio;
-│                      expanding_percentile (look-ahead-free mid-rank, ADR-0194)
+│                      expanding_percentile (look-ahead-free mid-rank, ADR-0194) +
+│                      expanding_quantile (look-ahead-free running quantile, linear
+│                      interpolation, ADR-0196)
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
