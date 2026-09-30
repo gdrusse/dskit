@@ -75,6 +75,11 @@ def test_exact_manifest_and_agent_parity(child_root):
             f"{u}-{b}" for u in ("spy", "qqq", "iwm")
             for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45"))
           for name in _cell_extra_files(stem)),
+        # ADR-0193: one put-credit-spread document per dividend-carrying (SPY, QQQ) cell,
+        # and ADR-0194: the same cells' condor gate-study documents
+        *(f"configs/grid/{u}-{b}-{kind}.json" for u in ("spy", "qqq")
+          for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45")
+          for kind in ("put-spread", "gate")),
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -87,8 +92,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the options-dataset-hist source config (ADR-0182 amendment, 2026-09-25) = 57,
     # plus ADR-0187's original 29 (grid.py, 21 cells, 6 worked-cell documents,
     # test_quote_backtest.py) = 86, less those 6 plus the other 20 cells' 6 each = 120,
-    # for owner question 4's expansion to every cell (2026-09-27) = 206
-    assert len(actual) == 206
+    # for owner question 4's expansion to every cell (2026-09-27) = 206,
+    # plus ADR-0193's 14 put-spread documents = 220, plus ADR-0194's 14 gate documents = 234
+    assert len(actual) == 234
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -173,7 +179,9 @@ def test_the_grid_is_twenty_one_cells_with_the_adr_buckets_and_starts():
 def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     files = grid.grid_files(child_root / "configs")
     expected = {f"grid/{c.name}.json" for c in grid.CELLS} | {
-        f"grid/{n}" for c in grid.CELLS for n in _cell_extra_files(c.name)}
+        f"grid/{n}" for c in grid.CELLS for n in _cell_extra_files(c.name)} | {
+        f"grid/{c.name}-{kind}.json" for c in grid.CELLS if c.underlying.backtest
+        for kind in ("put-spread", "gate")}
     assert set(files) == expected
     for relpath, document in files.items():
         assert (child_root / "configs" / relpath).read_text() == \
@@ -381,8 +389,10 @@ def test_the_grid_adds_exactly_one_put_spread_document_per_backtest_cell(child_r
     spreads = {f for f in files if f.endswith("-put-spread.json")}
     assert spreads == {f"grid/{stem}-put-spread.json" for stem in BACKTEST_STEMS}
     assert len(spreads) == 14 and not any("iwm" in f for f in spreads)
-    # everything else is what shipped before: a har-vix document per cell and its six extras
-    assert set(files) - spreads == {f"grid/{stem}.json" for stem in ALL_STEMS} | {
+    # everything else is what shipped before ADR-0193 — a har-vix document per cell and its six
+    # extras — plus ADR-0194's gate documents (pinned in their own test below)
+    gates = {f for f in files if f.endswith("-gate.json")}
+    assert set(files) - spreads - gates == {f"grid/{stem}.json" for stem in ALL_STEMS} | {
         f"grid/{name}" for stem in ALL_STEMS for name in _cell_extra_files(stem)}
     for cell in grid.CELLS:
         assert (f"grid/{cell.name}-put-spread.json" in files) is cell.underlying.backtest
@@ -409,7 +419,7 @@ def test_every_generated_document_that_shipped_before_is_unchanged(child_root):
     files = grid.grid_files(child_root / "configs")
     checked = 0
     for relpath, document in files.items():
-        if relpath.endswith(("-put-spread.json", "-zoo.json")):
+        if relpath.endswith(("-put-spread.json", "-gate.json", "-zoo.json")):
             continue
         assert (child_root / "configs" / relpath).read_text() == \
             json.dumps(document, indent=2) + "\n", relpath
@@ -417,14 +427,31 @@ def test_every_generated_document_that_shipped_before_is_unchanged(child_root):
     assert checked == 21 + 21 * 5   # har-vix, then five of the six extras per cell (no zoo)
 
 
+def _without_the_gate_study(doc):
+    """A gate-study document with the study taken back out (restated here, not the generator's)."""
+    plain = copy.deepcopy(doc)
+    for key in ("vix3m", "signals"):
+        del plain["pipeline"][key]
+    backtest = plain["pipeline"]["backtest"]
+    backtest["inputs"]["forecasts"] = "$model.rows"
+    del backtest["params"]["gate_fields"]
+    return plain
+
+
 @pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
-def test_a_put_spread_document_swaps_only_the_backtest_node_and_its_labels(child_root, cell):
+def test_a_put_spread_document_swaps_only_the_backtest_node_and_carries_the_gate_study(
+    child_root, cell
+):
+    # ADR-0194 re-pointed this ADR-0193 pin: a put-spread document is the condor cell's with the
+    # backtest node swapped AND the gate study on top; with the study taken out, only the swap
+    # remains, exactly as ADR-0193 shipped it.
     base = _grid(child_root, f"{cell.name}.json")
-    doc = _grid(child_root, f"{cell.name}-put-spread.json")
-    assert doc["name"] == f"index-options-grid-{cell.name}-put-spread"
-    assert doc["notes"] != base["notes"] and "put credit spread" in doc["notes"]
-    assert f"configs/grid/{cell.name}-put-spread.json" in doc["notes"]
-    assert "ADR-0193" in doc["notes"] and "Never decision-eligible" in doc["notes"]
+    shipped = _grid(child_root, f"{cell.name}-put-spread.json")
+    assert shipped["name"] == f"index-options-grid-{cell.name}-put-spread-gate"
+    assert shipped["notes"] != base["notes"] and "ADR-0194" in shipped["notes"]
+    assert f"index-options-grid-{cell.name}-put-spread" in shipped["notes"]   # the source it studies
+    assert "Never decision-eligible" in shipped["notes"]
+    doc = _without_the_gate_study(shipped)
     assert list(doc) == list(base) and list(doc["pipeline"]) == list(base["pipeline"])
     for key in base:
         if key not in ("name", "notes", "pipeline"):
@@ -466,4 +493,167 @@ def test_a_cell_without_a_backtest_has_no_put_spread_document_and_the_base_is_un
     spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
     document = grid.put_spread_document(base, spy)
     assert base == before   # derived on a copy
-    assert document == _grid(child_root, "spy-30-45-put-spread.json")
+    # the ADR-0193 generator is unchanged; the shipped file is that document with the gate study
+    assert grid.gate_study_document(document) == _grid(child_root, "spy-30-45-put-spread.json")
+    assert "vix3m" not in document["pipeline"] and "gate_fields" not in \
+        document["pipeline"]["backtest"]["params"]
+
+
+# -- ADR-0194: the gate study, on the put-spread documents and on new condor gate documents ----
+
+#: The four gates' names in their order, restated here (never read from the node or the grid).
+GATE_NAMES = ["gate_term_inverted", "gate_term_high_pct", "gate_vrp_nonpositive", "gate_any"]
+
+
+def _differences(a, b, path=""):
+    """Every path at which two JSON values differ; a key on one side only is a path too."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = set()
+        for key in a.keys() | b.keys():
+            if key not in a or key not in b:
+                out.add(f"{path}/{key}")
+            else:
+                out |= _differences(a[key], b[key], f"{path}/{key}")
+        return out
+    return set() if a == b else {path or "/"}
+
+
+def test_the_gate_study_is_exported_and_its_source_is_the_wide_cboe_index_stream():
+    assert "gate_study_document" in grid.__all__
+    assert grid.TERM_SOURCE == "cboe-index-wide" and grid.TERM_SYMBOL == "VIX3M"
+
+
+def test_the_grid_adds_exactly_one_gate_document_per_backtest_cell(child_root):
+    files = grid.grid_files(child_root / "configs")
+    gates = {f for f in files if f.endswith("-gate.json")}
+    assert gates == {f"grid/{stem}-gate.json" for stem in BACKTEST_STEMS}
+    assert len(gates) == 14 and not any("iwm" in f for f in gates)
+    for cell in grid.CELLS:
+        assert set(grid.cell_files(child_root / "configs", cell)) & gates == (
+            {f"grid/{cell.name}-gate.json"} if cell.underlying.backtest else set())
+
+
+def test_every_shipped_gate_and_put_spread_file_equals_its_generator(child_root, tmp_path):
+    files = {f: d for f, d in grid.grid_files(child_root / "configs").items()
+             if f.endswith(("-gate.json", "-put-spread.json"))}
+    assert len(files) == 28
+    for relpath, document in files.items():
+        assert (child_root / "configs" / relpath).read_text() == \
+            json.dumps(document, indent=2) + "\n", relpath
+    written = grid.write_grid(child_root / "configs", tmp_path)
+    for relpath in files:
+        assert relpath in written
+        assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
+
+
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_gate_document_is_its_condor_document_plus_the_gate_study_only(child_root, cell):
+    condor = _grid(child_root, f"{cell.name}.json")
+    gate = _grid(child_root, f"{cell.name}-gate.json")
+    assert _differences(condor, gate) == {
+        "/name", "/notes", "/pipeline/vix3m", "/pipeline/signals",
+        "/pipeline/backtest/inputs/forecasts", "/pipeline/backtest/params/gate_fields",
+        "/pipeline/backtest/notes"}
+    assert gate["name"] == f"index-options-grid-{cell.name}-har-vix-gate"
+    assert "ADR-0194" in gate["notes"] and "Never decision-eligible" in gate["notes"]
+    assert gate["notes"] != condor["notes"]
+    assert gate["pipeline"]["backtest"]["notes"].startswith(condor["pipeline"]["backtest"]["notes"])
+    assert gate["pipeline"]["backtest"]["notes"] != condor["pipeline"]["backtest"]["notes"]
+    assert _without_the_gate_study(gate)["pipeline"] == {
+        **condor["pipeline"], "backtest": {
+            **condor["pipeline"]["backtest"],
+            "notes": gate["pipeline"]["backtest"]["notes"]}}
+    assert gate["walkforward"] == condor["walkforward"]
+
+
+@pytest.mark.parametrize("name", ["{}-gate.json", "{}-put-spread.json"])
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_the_gate_study_is_wired_the_same_way_into_every_document_that_carries_it(
+    child_root, cell, name
+):
+    from index_options.nodes import CondorQuoteBacktest, PutSpreadQuoteBacktest, VolRegimeSignals
+
+    doc = _grid(child_root, name.format(cell.name))
+    pipe = doc["pipeline"]
+    assert list(pipe)[:8] == ["underlying", "vix", "vix_by_date", "market", "rv", "labels",
+                              "fwd", "model"]
+    assert list(pipe)[8:10] == ["vix3m", "signals"]      # the study sits right after the model
+    assert pipe["vix3m"]["uses"] == "index_options.observations:IndexCloseRows"
+    assert pipe["vix3m"]["params"] == {"root": "./ob", "source": "cboe-index-wide",
+                                       "symbol": "VIX3M"}
+    assert "since_ms" not in pipe["vix3m"]["params"]
+    assert set(pipe["vix3m"]) == {"uses", "params", "notes"} and pipe["vix3m"]["notes"]
+    # the default knobs are the ADR's and are not written out
+    assert pipe["signals"]["uses"] == "index_options.nodes:VolRegimeSignals"
+    assert pipe["signals"]["inputs"] == {"rows": "$model.rows", "term": "$vix3m.records"}
+    assert set(pipe["signals"]) == {"uses", "inputs", "notes"} and pipe["signals"]["notes"]
+    assert VolRegimeSignals.validate_params({}) == []
+    backtest = pipe["backtest"]
+    assert backtest["inputs"] == {"forecasts": "$signals.rows", "chain": "$chain.records",
+                                  "underlying": "$underlying.records"}
+    assert backtest["params"]["gate_fields"] == GATE_NAMES
+    assert list(backtest["params"])[-1] == "gate_fields"
+    assert list(VolRegimeSignals.GATE_FIELDS) == GATE_NAMES
+    cls = PutSpreadQuoteBacktest if "put-spread" in name else CondorQuoteBacktest
+    assert cls.validate_params(backtest["params"]) == []
+    # only the backtest reads the annotated rows; score and the condor report keep the model's
+    assert pipe["score"]["inputs"] == {"forecasts": "$model.rows"}
+    assert pipe["condor"]["inputs"] == {"forecasts": "$model.rows"}
+
+
+@pytest.mark.parametrize("name", ["{}-gate.json", "{}-put-spread.json"])
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_gate_study_document_resolves_through_the_planner(child_root, monkeypatch, cell, name):
+    from index_options.nodes import VolRegimeSignals
+
+    monkeypatch.chdir(child_root)
+    path = child_root / GRID / name.format(cell.name)
+    planned = plan(load_document(str(path)))
+    assert planned.resolved["signals"].cls is VolRegimeSignals
+    assert planned.role_of("signals") == "transform"
+    assert set(planned.order) == set(json.loads(path.read_text())["pipeline"])
+    assert {("model", "signals"), ("vix3m", "signals"), ("signals", "backtest")} <= set(
+        planned.edges)
+    assert ("model", "backtest") not in planned.edges     # rewired, not wired twice
+    order = list(planned.order)
+    assert order.index("signals") < order.index("backtest")
+    assert order.index("vix3m") < order.index("signals") and order.index("model") < order.index(
+        "signals")
+
+
+def test_the_cli_validates_and_plans_a_gate_document_and_a_put_spread_document(child_root):
+    import subprocess
+    import sys
+
+    for name in ("spy-30-45-gate.json", "qqq-1-put-spread.json"):
+        for verb in ("validate", "plan"):
+            done = subprocess.run(
+                [sys.executable, "-m", "dskit.pipeline", verb, f"configs/grid/{name}"],
+                cwd=child_root, capture_output=True, text=True, timeout=120)
+            assert done.returncode == 0, (name, verb, done.stderr[-500:])
+        planned = json.loads(done.stdout)       # the last one is the plan
+        assert planned["nodes"]["signals"]["class"] == "index_options.nodes:VolRegimeSignals"
+        assert planned["nodes"]["signals"]["inputs"] == {"rows": "$model.rows",
+                                                         "term": "$vix3m.records"}
+        assert planned["nodes"]["backtest"]["inputs"]["forecasts"] == "$signals.rows"
+        assert planned["order"].index("signals") < planned["order"].index("backtest")
+
+
+def test_gate_study_document_refuses_a_document_without_a_backtest_and_leaves_its_input_alone(
+    child_root
+):
+    base = json.loads((child_root / "configs" / "run-real-har-vix.json").read_text())
+    iwm = next(c for c in grid.CELLS if c.underlying.symbol == "IWM")
+    no_backtest = grid.grid_document(base, iwm)
+    assert "backtest" not in no_backtest["pipeline"]
+    with pytest.raises(ValueError, match="backtest"):
+        grid.gate_study_document(no_backtest)
+    spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
+    condor = grid.grid_document(base, spy)
+    before = copy.deepcopy(condor)
+    gated = grid.gate_study_document(condor)
+    assert condor == before and gated != before
+    assert gated == _grid(child_root, "spy-30-45-gate.json")
+    # a document the study was already applied to is not studied twice
+    with pytest.raises(ValueError, match="already"):
+        grid.gate_study_document(gated)

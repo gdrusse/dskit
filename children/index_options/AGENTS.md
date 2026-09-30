@@ -25,7 +25,14 @@ Use README.md for installation, the temporary demo and focused tests.
   structure_payoff, PUT_SPREAD_LEGS; american_put_carry and american_call_dividend
   compose american_short_charge) for PutSpreadQuoteBacktest, the condor's put
   wing alone; both backtests add side_pnl_usd (wing split) and a delta-matched
-  stock benchmark. Never decision-eligible.
+  stock benchmark. Never decision-eligible. ADR-0194 adds the entry-gate study,
+  annotate-only: VolRegimeSignals (VIX/VIX3M ratio, its expanding percentile
+  and the variance premium's sign, each read from the PREVIOUS session) and the
+  backtests' optional gate_fields, which record each entry's gates and split its
+  traded P&L by them without skipping an entry; grid.gate_study_document puts
+  both in the 14 put-spread documents and the 14 <cell>-gate.json (VIX3M is
+  the ADR-0182 cboe-index-wide source; no real run here). A gate name has one
+  owner, VolRegimeSignals.GATE_FIELDS.
 - contracts.py owns instrument/quote/settlement validation and exact money.
   observations.py subclasses ObservationRows; nodes.py delegates to that owner.
 - Children are wrappers: Black-76 + VolIndexSmileQuotes (option_pricing),
@@ -81,6 +88,8 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
                            # question 4, expanded 2026-09-27 from the one worked cell)
                            # + <symbol>-<bucket>-put-spread.json for the 14 SPY/QQQ cells (ADR-0193)
+                           # + <symbol>-<bucket>-gate.json for the 14 SPY/QQQ cells; both carry
+                           # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

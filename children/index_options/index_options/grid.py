@@ -21,6 +21,12 @@ Every cell that carries a backtest also ships a put-credit-spread document
 (:func:`put_spread_document`, ADR-0193): the cell's document with only its
 backtest node swapped for :class:`~index_options.nodes.PutSpreadQuoteBacktest`
 at :data:`PUT_SPREAD_SHORT_Q` / :data:`PUT_SPREAD_WING_Z`.
+
+ADR-0194 adds the entry-gate study, annotate-only: :func:`gate_study_document`
+puts the VIX3M closes and :class:`~index_options.nodes.VolRegimeSignals` in
+front of a document's backtest, which then records what standing aside on each
+gate would have removed. It is applied to every put-spread document and, as a
+new ``<cell>-gate.json``, to every backtest cell's condor document.
 """
 
 import copy
@@ -29,6 +35,8 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
+
+from .nodes import VolRegimeSignals
 
 __all__ = [
     "BUCKETS",
@@ -46,6 +54,7 @@ __all__ = [
     "Cell",
     "Underlying",
     "cell_files",
+    "gate_study_document",
     "grid_document",
     "grid_files",
     "hpo_document",
@@ -76,6 +85,12 @@ PUT_SPREAD_WING_Z = 0.65
 ROOT = "./ob"
 #: The archive source: closes with ex-dividend amounts, and the end-of-day chains.
 CHAIN_SOURCE = "optionshist-chain"
+#: The Cboe source holding the vol-index term structure (ADR-0194): the wide recorder's
+#: separate stream, because the pack keeps one cursor per stream and ``cboe-index`` (VIX
+#: alone) is already backfilled.
+TERM_SOURCE = "cboe-index-wide"
+#: The second vol index the gate study reads from :data:`TERM_SOURCE`: the three-month VIX.
+TERM_SYMBOL = "VIX3M"
 
 
 class Bucket(NamedTuple):
@@ -230,6 +245,11 @@ def _cell_file(cell, rung):
 def _put_spread_file(cell):
     """Return the file name of one cell's put-credit-spread document."""
     return f"{cell.name}-put-spread.json"
+
+
+def _gate_file(cell):
+    """Return the file name of one cell's condor gate-study document."""
+    return f"{cell.name}-gate.json"
 
 
 def _load(path):
@@ -427,6 +447,99 @@ def put_spread_document(base, cell):
     return doc
 
 
+def gate_study_document(doc):
+    """Return a backtest document with the ADR-0194 entry-gate study on top.
+
+    Parameters
+    ----------
+    doc : dict
+        A cell document carrying a backtest: :func:`grid_document` for a
+        cell with a dividend source, or :func:`put_spread_document`. It is
+        copied, never changed.
+
+    Returns
+    -------
+    dict
+        The document with two nodes right after ``model`` — ``vix3m``
+        (:class:`~index_options.observations.IndexCloseRows` over
+        :data:`TERM_SYMBOL` from :data:`TERM_SOURCE`) and ``signals``
+        (:class:`~index_options.nodes.VolRegimeSignals` at its default
+        knobs, over ``$model.rows`` and ``$vix3m.records``) — the backtest's
+        ``forecasts`` re-wired to ``$signals.rows`` and its ``gate_fields``
+        set to :attr:`~index_options.nodes.VolRegimeSignals.GATE_FIELDS`,
+        and the document's name and notes and the backtest's notes re-worded.
+        Nothing else differs, so the study measures the same trades.
+
+    Raises
+    ------
+    ValueError
+        When the document has no ``model`` or ``backtest`` node (an
+        underlying without a dividend source), or already carries the study.
+    """
+    pipe = doc["pipeline"]
+    for key in ("model", "backtest"):
+        if key not in pipe:
+            raise ValueError(f"{doc['name']}: the gate study needs a {key!r} node, and this "
+                             "document has none (an underlying without a dividend source "
+                             "carries no backtest)")
+    if {"vix3m", "signals"} & set(pipe):
+        raise ValueError(f"{doc['name']}: the document already carries the gate study")
+    out = copy.deepcopy(doc)
+    defaults = VolRegimeSignals.DEFAULTS
+    out["name"] = f"{doc['name']}-gate"
+    out["notes"] = (
+        f"ADR-0194 entry-gate study of {doc['name']}, annotate-only: the same forecasts, chain "
+        "and trades, plus two nodes. vix3m reads the Cboe VIX3M closes and signals "
+        "(index_options.nodes.VolRegimeSignals) gives every forecast row the PREVIOUS "
+        "session's VIX / VIX3M ratio and its expanding percentile, the previous session's "
+        "variance premium ((VIX/100)^2 less annualized realized variance) and four boolean "
+        f"gates: the curve inverted (ratio >= {defaults['inverted_at']}), the ratio in its own "
+        f"top tail (percentile >= {defaults['high_ratio_pct']}), a non-positive premium, and "
+        "any of them; an input that is missing gives null, never false. The backtest reads "
+        "those rows and, per book and gate, reports the traded P&L where the gate was closed "
+        "(it would have stood aside), open, or unknown: no entry is skipped, so the metrics "
+        "say what standing aside would have removed, not what a gated strategy earns. The "
+        "lag is one session, so the 16:15 ET VIX close never informs a 16:00 ET entry. "
+        "Generated by index_options.grid.gate_study_document, so edit the base rung or the "
+        "grid table and rewrite with write_grid, never this file. Needs a pulled ./ob "
+        f"holding what the base document needs plus {TERM_SOURCE} ({TERM_SYMBOL}; register "
+        "and backfill configs/source-cboe-index-wide.json). Run: python -m dskit.pipeline "
+        "walkforward <this file> --asof <today>. Never decision-eligible.")
+    ordered = {}
+    for key, node in out["pipeline"].items():
+        ordered[key] = node
+        if key == "model":
+            ordered["vix3m"] = {
+                "uses": "index_options.observations:IndexCloseRows",
+                "params": {"root": ROOT, "source": TERM_SOURCE, "symbol": TERM_SYMBOL},
+                "notes": (f"{TERM_SYMBOL} daily closes from the wide Cboe source "
+                          f"({TERM_SOURCE}; the history starts 2007-12): the three-month "
+                          "VIX, the far end of the curve the gate compares the VIX to. Read "
+                          "only by signals."),
+            }
+            ordered["signals"] = {
+                "uses": "index_options.nodes:VolRegimeSignals",
+                "inputs": {"rows": "$model.rows", "term": "$vix3m.records"},
+                "notes": ("Adds the term ratio, its percentile, the variance premium and "
+                          "the four gates to every model row, each read from the PREVIOUS "
+                          "session (lag_sessions 1). The knobs are the node's defaults "
+                          "(implied iv_index, realized rv_22, 252 periods a year, the "
+                          "thresholds above); write one here only to change it, which moves "
+                          "this document's hash."),
+            }
+    out["pipeline"] = ordered
+    backtest = ordered["backtest"]
+    backtest["inputs"]["forecasts"] = "$signals.rows"
+    backtest["params"]["gate_fields"] = list(VolRegimeSignals.GATE_FIELDS)
+    backtest["notes"] += (
+        " ADR-0194: the forecast rows come from signals, and gate_fields names its four "
+        "gates. Each ledger entry records the gates read from its entry row and every book "
+        "reports <book>_<gate>_closed_n / _closed_mean_pnl_usd / _closed_t (gate true: it "
+        "would have stood aside), the same three _open_ (false) and _unknown_n (null) over "
+        "its traded cells. Annotation only: the trades are unchanged.")
+    return out
+
+
 def hpo_document(cell_document, rung):
     """Return the per-fold re-tune document of one rung on one cell (ADR-0043).
 
@@ -547,7 +660,8 @@ def cell_files(configs_dir, cell):
     dict
         ``grid/<file>`` -> document, for the rungs in :data:`ZOO_RUNGS`, the
         zoo, one HPO document per key of :data:`HPO_SPACES` and, for a cell
-        with a backtest, its put-credit-spread document.
+        with a backtest, its put-credit-spread document and its condor gate
+        document, both carrying :func:`gate_study_document`'s study.
     """
     configs_dir = Path(configs_dir)
     out = {}
@@ -560,8 +674,10 @@ def cell_files(configs_dir, cell):
         out[f"grid/{cell.name}-hpo-{rung}.json"] = hpo_document(
             out[f"grid/{_cell_file(cell, rung)}"], rung)
     if cell.underlying.backtest:
-        out[f"grid/{_put_spread_file(cell)}"] = put_spread_document(
-            _load(configs_dir / RUNGS[GRID_RUNG]), cell)
+        out[f"grid/{_put_spread_file(cell)}"] = gate_study_document(put_spread_document(
+            _load(configs_dir / RUNGS[GRID_RUNG]), cell))
+        out[f"grid/{_gate_file(cell)}"] = gate_study_document(
+            out[f"grid/{_cell_file(cell, GRID_RUNG)}"])
     return out
 
 
@@ -576,8 +692,8 @@ def grid_files(configs_dir):
     Returns
     -------
     dict
-        ``grid/<file>`` -> document, the put-credit-spread documents of the
-        backtest cells included.
+        ``grid/<file>`` -> document, the put-credit-spread and condor gate
+        documents of the backtest cells included.
     """
     configs_dir = Path(configs_dir)
     base = _load(configs_dir / RUNGS[GRID_RUNG])

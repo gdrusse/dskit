@@ -1180,6 +1180,25 @@ def test_each_wing_hits_independently_of_the_other():
     assert metrics["model_call_hit_rate"] == 1.0
 
 
+def test_a_wing_that_earns_exactly_zero_is_not_a_hit_at_either_level():
+    # ADR-0193 review B-M3: the model's put side is credit 1.0 (bid 2.0 less ask 1.0) x 100
+    # with no fees, and a settlement at 94 takes the 95 short put 1 point in the money:
+    # 100 - 100 = exactly 0.0 on the put wing. p > 0 is the one hit rule, side and book.
+    chain = _set(_chain(ENTRY, EXPIRY), put92={"bid": 0.9, "ask": 1.0})
+    metrics, report = _run([_row(ENTRY)], chain, _settled_at(94.0), fee_per_leg=0.0)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["side_pnl_usd"]["put"] == 0.0
+    assert metrics["model_put_hit_rate"] == 0.0
+    assert metrics["model_put_mean_pnl_usd"] == 0.0 and metrics["model_put_total_pnl_usd"] == 0.0
+    assert cell["side_pnl_usd"]["call"] > 0 and metrics["model_call_hit_rate"] == 1.0
+    assert metrics["model_hit_rate"] == 1.0            # the book earns the call wing's credit
+    # the same rule at book level: a whole book that earns exactly zero is no hit either
+    spread_metrics, spread = _run_put_spread([_row(ENTRY)], chain, _settled_at(94.0),
+                                             fee_per_leg=0.0)
+    assert spread["ledger"][0]["books"]["model"]["pnl_usd"] == 0.0
+    assert spread_metrics["model_hit_rate"] == 0.0 and spread_metrics["model_put_hit_rate"] == 0.0
+
+
 def test_an_empty_book_reports_zero_for_every_side_and_benchmark_statistic():
     chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
     metrics, _ = _run([_row(ENTRY)], chain, FLAT)
@@ -1333,6 +1352,21 @@ def test_a_t_statistic_is_zero_with_fewer_than_two_trades_or_no_variance():
     assert metrics["model_pnl_t"] == 0.0 and metrics["model_residual_t"] == 0.0
     assert metrics["model_residual_mean_pnl_usd"] == pytest.approx(
         MODEL_CREDIT - MODEL_DELTA * 100 * -3.0)
+
+
+@pytest.mark.parametrize("cls", [CondorQuoteBacktest, PutSpreadQuoteBacktest])
+def test_a_series_constant_to_float_noise_has_a_zero_t_not_a_rounding_artifact(cls):
+    # ADR-0193 review A-F1: three equal 1.7 credits summed in different orders differ in the
+    # last bit, and mean / (sd / sqrt(n)) over that noise is ~1e16 — a sentinel, not a t.
+    noisy = [1.7000000000000004, 1.7000000000000004, 1.7]
+    assert max(noisy) - min(noisy) > 0.0      # the reproducer really is not exactly constant
+    assert cls._t(noisy) == 0.0
+    assert cls._t([1.7, 1.7, 1.7]) == 0.0     # the exactly constant case stays zero
+    assert cls._t([0.0, 0.0]) == 0.0
+    # a spread far above float noise is real variance: one part in 1e6 of the magnitude
+    real = [1.7 * (1 + 1e-6), 1.7, 1.7 * (1 - 1e-6)]
+    assert cls._t(real) == pytest.approx(_t(real))
+    assert abs(cls._t(real)) > 1.0
 
 
 def test_only_the_trades_with_a_delta_enter_the_residual_t():
@@ -1557,3 +1591,211 @@ def test_a_put_spreads_ledger_and_metrics_match_a_condor_on_everything_they_shar
         assert p_metrics[f"{book}_total_pnl_usd"] == pytest.approx(
             p_metrics[f"{book}_put_total_pnl_usd"])
         assert p_metrics[f"{book}_put_hit_rate"] == c_metrics[f"{book}_put_hit_rate"]
+
+
+# -- ADR-0194: the entry-gate annotation --------------------------------------------------------
+#
+# gate_fields names forecast-row fields (bool or None) that the backtest READS at each entry and
+# records; it never skips an entry. Per book and gate the traded cells split three ways: the gate
+# CLOSED (True: it would have stood aside), OPEN (False) or UNKNOWN (None).
+
+#: One worked entry a fortnight apart per level (Friday entry, Friday expiry), settling at it.
+GATE_LEVELS = [80.0, 97.0, 93.5, 97.0, 110.0, 97.0]
+GATE_A = [True, True, False, False, None, True]
+GATE_B = [None] * 6
+SUFFIXES = ("closed_n", "closed_mean_pnl_usd", "closed_t", "open_n", "open_mean_pnl_usd",
+            "open_t", "unknown_n")
+#: Each book's P&L per settlement level, restated by hand (no early exercise in these paths).
+CONDOR_PNL = {"model": {80.0: -142.6, 93.5: 7.4, 97.0: 157.4, 110.0: -42.6},
+              "implied": {80.0: -32.6, 93.5: -32.6, 97.0: 67.4, 110.0: -132.6}}
+PUT_SPREAD_PNL = {"model": {80.0: -211.3, 93.5: -61.3, 97.0: 88.7, 110.0: 88.7},
+                  "implied": {80.0: -81.3, 93.5: -81.3, 97.0: 18.7, 110.0: 18.7}}
+
+
+def _trades(levels):
+    """``(days, chain, closes)`` for one worked entry per level, a fortnight apart."""
+    days = [date(2024, 3, 1) + timedelta(days=14 * k) for k in range(len(levels))]
+    chain = [q for d in days
+             for q in _chain(d.isoformat(), (d + timedelta(days=7)).isoformat())]
+    closes = {d: 100.0 for d in _weekdays("2024-03-01",
+                                          (days[-1] + timedelta(days=12)).isoformat())}
+    closes.update({(d + timedelta(days=7)).isoformat(): level for d, level in zip(days, levels)})
+    return [d.isoformat() for d in days], chain, _series(sorted(closes.items()))
+
+
+def _gated_rows(days, **gates):
+    return [_row(d, **{name: values[k] for name, values in gates.items()})
+            for k, d in enumerate(days)]
+
+
+def _group(pnls, gates, state):
+    return [p for p, g in zip(pnls, gates) if g is state]
+
+
+@pytest.mark.parametrize("cls, sides, table", [
+    (CondorQuoteBacktest, ("put", "call"), CONDOR_PNL),
+    (PutSpreadQuoteBacktest, ("put",), PUT_SPREAD_PNL),
+])
+def test_gate_fields_bucket_each_books_trades_by_the_gate_at_entry(cls, sides, table):
+    days, chain, series = _trades(GATE_LEVELS)
+    rows = _gated_rows(days, g_a=GATE_A, g_b=GATE_B)
+    metrics, report = _run_node(cls, sides, rows, chain, series, gate_fields=["g_a", "g_b"])
+    assert [e["gates"] for e in report["ledger"]] == [
+        {"g_a": a, "g_b": None} for a in GATE_A]
+    assert all(list(e["gates"]) == ["g_a", "g_b"] for e in report["ledger"])   # declared order
+    assert report["params"]["gate_fields"] == ["g_a", "g_b"]
+    for book, pnl_of in (("model", table["model"]), ("always", table["model"]),
+                         ("implied", table["implied"])):
+        pnls = [pnl_of[level] for level in GATE_LEVELS]
+        assert metrics[f"{book}_n_trades"] == 6
+        for state, label in ((True, "closed"), (False, "open")):
+            group = _group(pnls, GATE_A, state)
+            assert metrics[f"{book}_g_a_{label}_n"] == len(group)
+            assert metrics[f"{book}_g_a_{label}_mean_pnl_usd"] == pytest.approx(
+                sum(group) / len(group))
+            assert metrics[f"{book}_g_a_{label}_t"] == pytest.approx(_t(group))
+        assert metrics[f"{book}_g_a_unknown_n"] == 1
+        # a gate that is unknown everywhere: every trade is unknown, both sides are empty
+        assert metrics[f"{book}_g_b_unknown_n"] == 6
+        for label in ("closed", "open"):
+            assert metrics[f"{book}_g_b_{label}_n"] == 0
+            assert metrics[f"{book}_g_b_{label}_mean_pnl_usd"] == 0.0
+            assert metrics[f"{book}_g_b_{label}_t"] == 0.0
+    # every gate metric carries the book and the field; nothing else is added
+    added = {k for k in metrics if "_g_a_" in k or "_g_b_" in k}
+    assert added == {f"{b}_{g}_{s}" for b in CondorQuoteBacktest.BOOKS
+                     for g in ("g_a", "g_b") for s in SUFFIXES}
+
+
+def test_the_hand_computed_gate_groups_of_the_condor_model_book():
+    # the model book: levels 80 / 97 / 93.5 / 97 / 110 / 97 earn -142.6 / 157.4 / 7.4 / 157.4 /
+    # -42.6 / 157.4. g_a closed on entries 0, 1, 5: (-142.6 + 157.4 + 157.4) / 3 = 57.4; open on
+    # entries 2, 3: (7.4 + 157.4) / 2 = 82.4; entry 4 is unknown
+    days, chain, series = _trades(GATE_LEVELS)
+    metrics, _ = _run(_gated_rows(days, g_a=GATE_A), chain, series, gate_fields=["g_a"])
+    assert metrics["model_g_a_closed_n"] == 3 and metrics["model_g_a_open_n"] == 2
+    assert metrics["model_g_a_closed_mean_pnl_usd"] == pytest.approx(57.4)
+    assert metrics["model_g_a_open_mean_pnl_usd"] == pytest.approx(82.4)
+    assert metrics["model_g_a_unknown_n"] == 1
+    # closed t: mean 57.4, sd with divisor n = sqrt(((-200)^2 + 100^2 + 100^2) / 3) = sqrt(20000)
+    assert metrics["model_g_a_closed_t"] == pytest.approx(57.4 / (math.sqrt(20000.0) / math.sqrt(3)))
+    # open t: [7.4, 157.4], mean 82.4, sd 75 -> 82.4 / (75 / sqrt(2))
+    assert metrics["model_g_a_open_t"] == pytest.approx(82.4 / (75.0 / math.sqrt(2)))
+
+
+def test_a_gate_group_with_no_variance_or_one_trade_has_a_zero_t():
+    days, chain, series = _trades([97.0, 97.0, 97.0, 80.0])
+    rows = _gated_rows(days, g=[True, True, True, False])
+    metrics, _ = _run(rows, chain, series, gate_fields=["g"])
+    assert metrics["model_g_closed_n"] == 3 and metrics["model_g_closed_t"] == 0.0
+    assert metrics["model_g_open_n"] == 1 and metrics["model_g_open_t"] == 0.0
+    assert metrics["model_g_open_mean_pnl_usd"] == pytest.approx(-142.6)
+
+
+@pytest.mark.parametrize("cls, sides", [(CondorQuoteBacktest, ("put", "call")),
+                                        (PutSpreadQuoteBacktest, ("put",))])
+def test_annotating_never_changes_the_trades_and_absent_gate_fields_change_nothing(cls, sides):
+    days, chain, series = _trades(GATE_LEVELS)
+    plain_metrics, plain = _run_node(cls, sides, _gated_rows(days, g_a=GATE_A), chain, series)
+    assert all("gates" not in e for e in plain["ledger"])
+    assert "gate_fields" not in plain["params"]           # emitted only when present
+    assert not any("_g_a_" in k for k in plain_metrics)
+    metrics, gated = _run_node(cls, sides, _gated_rows(days, g_a=GATE_A), chain, series,
+                               gate_fields=["g_a"])
+    assert [{k: v for k, v in e.items() if k != "gates"} for e in gated["ledger"]] == \
+        plain["ledger"]                                     # no entry skipped, none added
+    assert {k: v for k, v in metrics.items() if "_g_a_" not in k} == plain_metrics
+    assert {k: v for k, v in gated["params"].items() if k != "gate_fields"} == plain["params"]
+    assert gated["chain"] == plain["chain"] and gated["kind"] == plain["kind"]
+
+
+def test_a_book_that_did_not_trade_an_entry_does_not_count_its_gate():
+    days, chain, series = _trades([80.0, 97.0, 97.0])
+    rows = _gated_rows(days, g=[True, False, None])
+    # the model book skips every entry (expected 157.4 does not beat 200); always trades them all
+    metrics, report = _run(rows, chain, series, gate_fields=["g"], min_edge_usd=200.0)
+    assert metrics["model_n_trades"] == 0 and metrics["always_n_trades"] == 3
+    for suffix in SUFFIXES:
+        assert metrics[f"model_g_{suffix}"] == 0, suffix       # every count, mean and t is zero
+    assert [metrics[f"always_g_{s}"] for s in ("closed_n", "open_n", "unknown_n")] == [1, 1, 1]
+    assert [e["gates"] for e in report["ledger"]] == [{"g": True}, {"g": False}, {"g": None}]
+
+
+def test_each_entry_reads_the_gates_of_its_own_row_and_instrument():
+    days, chain, series = _trades([97.0])
+    qqq_chain = _set(_chain(days[0], "2024-03-08", close=50.0, strikes=range(44, 57),
+                            instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": 50.0, "asof_ms": _ms(d),
+                   "dividend_amount": 0.0} for d in SESSIONS]
+    rows = [_row(days[0], g=True), _row(days[0], close=50.0, instrument="QQQ", g=False)]
+    _, report = _run(rows, chain + qqq_chain, series + qqq_series, gate_fields=["g"])
+    assert {e["instrument"]: e["gates"] for e in report["ledger"]} == {
+        "SPY": {"g": True}, "QQQ": {"g": False}}
+
+
+@pytest.mark.parametrize("bad", [1, 0, 1.0, "True", "", [True], {"g": True}])
+def test_a_gate_value_that_is_not_a_bool_or_none_refuses_naming_the_field_and_the_row(bad):
+    days, chain, series = _trades([97.0, 97.0])
+    rows = _gated_rows(days, g=[True, bad])
+    with pytest.raises(ValueError, match=rf"'g'.*SPY {days[1]}"):
+        _run(rows, chain, series, gate_fields=["g"])
+
+
+def test_a_gate_field_absent_from_an_entry_row_refuses_as_a_typo_and_a_none_is_unknown():
+    days, chain, series = _trades([97.0])
+    with pytest.raises(ValueError, match=rf"'g_typo'.*absent.*SPY {days[0]}"):
+        _run(_gated_rows(days, g=[True]), chain, series, gate_fields=["g_typo"])
+    metrics, _ = _run(_gated_rows(days, g=[None]), chain, series, gate_fields=["g"])
+    assert metrics["model_g_unknown_n"] == 1
+
+
+def test_a_gate_on_a_row_that_never_becomes_an_entry_is_not_read():
+    # 03-04 lies inside the open position (passed over) and 03-11 has no chain (no_chain): a
+    # malformed gate on either is no entry's gate, so nothing reads it
+    days, chain, series = _trades([97.0])
+    rows = _gated_rows(days, g=[True]) + [_row("2024-03-04", g="junk"), _row("2024-03-11", g="junk")]
+    metrics, report = _run(rows, chain, series, gate_fields=["g"])
+    assert metrics["n_skipped_no_chain"] == 1 and len(report["ledger"]) == 1
+    assert metrics["model_g_closed_n"] == 1
+
+
+#: The proxy backtest's declared knobs (the ADR-0182 smile constants, restated for this check).
+_PROXY = {"split": "val", "hold_steps": 3, "short_q": 0.1, "wing_points": 25,
+          "strike_increment": 5, "multiplier": 100, "fee_per_leg": 0.65, "atm_ratio": 0.794,
+          "put_skew_per_z": 0.176, "call_skew_per_z": -0.064, "smile_curvature": 0.045,
+          "iv_floor": 0.05, "iv_ceiling": 2.0, "half_spread_min": 0.0, "half_spread_frac": 0.0,
+          "trading_days_per_year": 36}
+
+
+@pytest.mark.parametrize("cls", [CondorQuoteBacktest, PutSpreadQuoteBacktest, CondorBacktest])
+def test_every_backtest_accepts_gate_fields_and_refuses_a_malformed_declaration(cls):
+    assert "gate_fields" in cls._PARAMS
+    base = {**PARAMS} if cls is not CondorBacktest else dict(_PROXY)
+    assert cls.validate_params({**base, "gate_fields": ["g"]}) == []
+    assert cls.validate_params({**base, "gate_fields": ["g", "h"]}) == []
+    for bad in ([], "g", ["g", "g"], [""], [1], ["g", None], None, ("g",), {"g": 1}, [True]):
+        problems = cls.validate_params({**base, "gate_fields": bad})
+        assert any("gate_fields" in p for p in problems), bad
+        with pytest.raises(ConfigError, match="gate_fields"):
+            cls("bt", {**base, "gate_fields": bad})
+
+
+def test_the_proxy_backtest_annotates_its_entries_the_same_way():
+    def row(i, **extra):
+        return {"asof_ms": 100 + i, "instrument": "SPX", "date": f"d{i}", "close": 1000.0,
+                "iv_index": 20.0, "reference_scale": 0.05, "samples": list(DRAWS),
+                "outcome": 0.0, **extra}
+
+    rows = [row(0, g=True), row(1), row(2), row(3, g=False), row(4), row(5), row(6, g=None)]
+    node = CondorBacktest("bt", {**_PROXY, "gate_fields": ["g"]})
+    out = node.run(CTX, {"forecasts": rows})
+    ledger = out["report"].value["ledger"]
+    assert [e["date"] for e in ledger] == ["d0", "d3", "d6"]
+    assert [e["gates"] for e in ledger] == [{"g": True}, {"g": False}, {"g": None}]
+    m = out["metrics"]
+    assert (m["always_g_closed_n"], m["always_g_open_n"], m["always_g_unknown_n"]) == (1, 1, 1)
+    plain = CondorBacktest("bt", dict(_PROXY)).run(CTX, {"forecasts": [
+        {k: v for k, v in r.items() if k != "g"} for r in rows]})
+    assert [{k: v for k, v in e.items() if k != "gates"} for e in ledger] == \
+        plain["report"].value["ledger"]

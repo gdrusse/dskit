@@ -804,3 +804,112 @@ def test_monitors_bin_through_the_pipeline_owner():
     from dskit.production import monitors
 
     assert not hasattr(monitors, "_quantile_edges")
+
+
+# --- ADR-0194: the expanding mid-rank percentile ---------------------------
+
+
+def _percentile_oracle(values, min_history):
+    """The rule written out by brute force: mid-rank among strictly earlier finite values."""
+    out = []
+    for i, value in enumerate(values):
+        prior = [v for v in values[:i] if v is not None and math.isfinite(v)]
+        if value is None or not math.isfinite(value) or len(prior) < min_history:
+            out.append(None)
+            continue
+        below = sum(v < value for v in prior)
+        equal = sum(v == value for v in prior)
+        out.append((below + 0.5 * equal) / len(prior))
+    return out
+
+
+def test_expanding_percentile_hand_cases_ties_and_missing_values():
+    from dskit.pipeline.stats import expanding_percentile
+
+    values = [3.0, 1.0, 2.0, 2.0, 5.0, None, float("nan"), 2.0, float("inf"), 0.0]
+    # i2: 2 among [1, 3] = 1/2;  i3: 2 among [1, 2, 3] = (1 + 1/2) / 3;  i4: 5 tops all four;
+    # None / nan / inf give None and never enter the history;  i7: 2 among [1, 2, 2, 3, 5]
+    # = (1 + 2/2) / 5;  i9: 0 is below all six earlier finite values (inf is not one)
+    assert expanding_percentile(values, 2) == pytest.approx(
+        [None, None, 0.5, 0.5, 1.0, None, None, 0.4, None, 0.0])
+
+
+def test_expanding_percentile_mid_ranks_ties_at_one_half_and_orders_the_extremes():
+    from dskit.pipeline.stats import expanding_percentile
+
+    assert expanding_percentile([7.0] * 4, 1) == [None, 0.5, 0.5, 0.5]
+    assert expanding_percentile([1.0, 2.0, 3.0, 4.0], 1) == [None, 1.0, 1.0, 1.0]
+    assert expanding_percentile([4.0, 3.0, 2.0, 1.0], 1) == [None, 0.0, 0.0, 0.0]
+    assert expanding_percentile([1, 2, 1], 1) == [None, 1.0, 0.25]  # ints are numbers: (0 + 1/2) / 2
+
+
+def test_expanding_percentile_needs_min_history_earlier_finite_values_exactly():
+    from dskit.pipeline.stats import expanding_percentile
+
+    values = [1.0, None, 2.0, float("nan"), 3.0, 4.0]
+    # min_history 3: the third finite value (3.0, index 4) has only two finite predecessors,
+    # so the first defined position is index 5, whose three predecessors are 1, 2, 3
+    assert expanding_percentile(values, 3) == [None, None, None, None, None, 1.0]
+    assert expanding_percentile(values, 2)[4] == 1.0 and expanding_percentile(values, 2)[3] is None
+    assert expanding_percentile(values, 4) == [None] * 6      # only three predecessors ever
+    assert expanding_percentile([], 1) == []
+
+
+def test_expanding_percentile_matches_the_brute_force_rule_on_random_tied_series():
+    import random
+
+    from dskit.pipeline.stats import expanding_percentile
+
+    rng = random.Random(194)
+    for _ in range(60):
+        values = [rng.choice([None, float("nan"), float(rng.randint(0, 6)), rng.random()])
+                  for _ in range(rng.randint(0, 40))]
+        for min_history in (1, 3, 10):
+            assert expanding_percentile(values, min_history) == \
+                _percentile_oracle(values, min_history)
+
+
+def test_expanding_percentile_never_looks_ahead():
+    import random
+
+    from dskit.pipeline.stats import expanding_percentile
+
+    rng = random.Random(1940)
+    values = [rng.choice([None, float(rng.randint(0, 9))]) for _ in range(60)]
+    full = expanding_percentile(values, 3)
+    for k in range(len(values) + 1):     # a prefix is scored the same as inside the whole
+        assert expanding_percentile(values[:k], 3) == full[:k]
+    changed = values[:30] + [1e9 if v is not None else 1.0 for v in values[30:]]
+    assert expanding_percentile(changed, 3)[:30] == full[:30]   # later values never move earlier ones
+    # a later value does not even move its own predecessors' scores when appended
+    assert expanding_percentile(values + [123.0], 3)[:len(values)] == full
+
+
+@pytest.mark.parametrize("min_history", [0, -1, True, False, 2.0, "3", None])
+def test_expanding_percentile_refuses_a_min_history_that_is_not_a_positive_int(min_history):
+    from dskit.pipeline.stats import expanding_percentile
+
+    with pytest.raises(ValueError, match="min_history"):
+        expanding_percentile([1.0, 2.0], min_history)
+
+
+@pytest.mark.parametrize("values", [(1.0, 2.0), None, "12", {1: 2.0}, iter([1.0, 2.0])])
+def test_expanding_percentile_refuses_anything_but_a_list(values):
+    from dskit.pipeline.stats import expanding_percentile
+
+    with pytest.raises(ValueError, match="values must be a list"):
+        expanding_percentile(values, 1)
+
+
+@pytest.mark.parametrize("bad", ["1.0", True, [1.0], {}])
+def test_expanding_percentile_refuses_a_cell_that_is_neither_a_number_nor_missing(bad):
+    from dskit.pipeline.stats import expanding_percentile
+
+    with pytest.raises(ValueError, match=r"values\[1\]"):
+        expanding_percentile([1.0, bad, 2.0], 1)
+
+
+def test_expanding_percentile_is_public():
+    from dskit.pipeline import stats
+
+    assert "expanding_percentile" in stats.__all__

@@ -507,6 +507,9 @@ def test_structure_credit_of_a_put_spread_is_its_own_credit_and_one_width():
      (10.0, 10.0)),
     # no vertical: two rights, or two legs of one sign
     ((("put", -1), ("call", -1)), (95.0, 105.0), ()),
+    # ... and two rights of OPPOSITE signs: the right clause alone keeps these apart (B-M2)
+    ((("put", 1), ("call", -1)), (95.0, 105.0), ()),
+    ((("call", -1), ("put", 1)), (105.0, 95.0), ()),
     ((("put", 1), ("put", 1)), (95.0, 100.0), ()),
     ((("call", -1),), (100.0,), ()),
 ])
@@ -691,6 +694,24 @@ def test_dividends_paid_sums_the_ex_dates_after_entry_up_to_and_including_settle
         contracts.dividends_paid(_series(WINDOW), "2024-03-01", "2024-03-01")
     with pytest.raises(ValueError, match="no closes between"):
         contracts.dividends_paid([], "2024-03-01", "2024-03-08")
+
+
+def test_dividends_paid_excludes_the_day_after_settlement_and_never_reads_an_unused_none():
+    # ADR-0193 review B-M4. 2024-03-08 is a Friday; an ex-date on the very next day (a
+    # Saturday here, a Thursday for a Wednesday expiry) is one calendar day past the window.
+    rows = _series(WINDOW + [("2024-03-09", 106.0)], [("2024-03-09", 3.0), ("2024-03-08", 0.25)])
+    assert contracts.dividends_paid(rows, "2024-03-01", "2024-03-08") == pytest.approx(0.25)
+    # the entry day's amount is never read, so a missing one is no refusal (it is not paid
+    # to a holder from that close on); nor is a missing one after settlement
+    unread = _series(WINDOW + [("2024-03-09", 106.0)], [("2024-03-04", 0.5)])
+    unread[0]["dividend_amount"] = None
+    unread[-1]["dividend_amount"] = None
+    assert contracts.dividends_paid(unread, "2024-03-01", "2024-03-08") == pytest.approx(0.5)
+    # ... while a None on the last session inside the window still refuses
+    last = _series(WINDOW + [("2024-03-09", 106.0)])
+    last[-2]["dividend_amount"] = None
+    with pytest.raises(ValueError, match="dividend_amount on 2024-03-08"):
+        contracts.dividends_paid(last, "2024-03-01", "2024-03-08")
 
 
 def test_the_composite_return_contract_is_unchanged():

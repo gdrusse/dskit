@@ -195,6 +195,44 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   that ignores dividends and early exercise). The 14 SPY/QQQ cells ship
   generated `configs/grid/<cell>-put-spread.json` (`short_q` 0.16, `wing_z`
   0.65). Run: `python -m dskit.pipeline walkforward configs/grid/spy-30-45-put-spread.json --asof <today>`.
+  Two things to know when reading the numbers. Every `*_t` is the `lags=0`
+  Newey-West t, mean / (sd / sqrt(n)) with the standard deviation on divisor
+  n, so it overstates a sample-sd (n - 1) t by sqrt(n / (n - 1)) (1.22 at n =
+  3, 1.02 at n = 30); a series constant to float noise (spread at most 1e-12 of
+  its magnitude) reads 0.0 rather than a rounding artifact. And the delta
+  benchmark reads `dividend_amount` (the cash paid on ex-dates in the window),
+  so even the put spread refuses an underlying series without it; only its
+  American charge (put carry) is dividend-free.
+- Entry-gate study (ADR-0194, offline, annotate-only, never decision-eligible):
+  does standing aside when the VIX curve is inverted, or when the variance
+  premium is not positive, remove losing entries? `VolRegimeSignals` takes the
+  model's `rows` and the VIX3M closes (`term`, an `IndexCloseRows` over
+  `cboe-index-wide`) and, per instrument in `asof_ms` order, gives every row
+  `vix_term_ratio` (VIX / VIX3M), `vix_term_ratio_pct` (its
+  `dskit.pipeline.stats.expanding_percentile` among the instrument's EARLIER
+  ratios; null before `min_history` 252), `vrp` ((VIX/100)^2 less
+  `periods_per_year` 252 x realized variance, `rv_22` being per-session) and
+  the booleans `gate_term_inverted` (ratio >= `inverted_at` 1.0),
+  `gate_term_high_pct` (percentile >= `high_ratio_pct` 0.8),
+  `gate_vrp_nonpositive` (`vrp` <= 0) and `gate_any` (true if any is true; null
+  if none is and any is null). A missing or non-positive input gives null,
+  never false. **Every value is read from the PREVIOUS session's row**
+  (`lag_sessions` 1) and that day's VIX3M close: the 16:15 ET VIX close of day
+  t cannot inform a 16:00 ET entry on day t. All knobs are optional and
+  default-deny; the node is forbidden for serving. All three backtests
+  (`CondorBacktest`, `CondorQuoteBacktest`, `PutSpreadQuoteBacktest`) take an optional `gate_fields` (distinct row-field names,
+  bool or null): each ledger entry then records `gates` from its ENTRY row (a
+  non-bool value, or a declared field the row lacks, refuses) and every book
+  adds, per gate, `<book>_<gate>_closed_n` / `_closed_mean_pnl_usd` /
+  `_closed_t` (gate true: it would have stood aside), the same three `_open_*`
+  (false) and `_unknown_n` (null) over its traded cells. **No entry is
+  skipped**: the trades are those of the same document without `gate_fields`, so
+  the metrics say what standing aside would have removed, not what a gated
+  strategy earns. The 14 put-spread documents now carry the study (they had
+  never been run) and each SPY/QQQ cell ships `configs/grid/<cell>-gate.json`,
+  its condor document with the study. It needs VIX3M in the store
+  (`source-cboe-index-wide.json`, history from 2007-12):
+  `python -m dskit.pipeline walkforward configs/grid/spy-30-45-gate.json --asof <today>`.
 
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
@@ -351,6 +389,8 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
                            # question 4, expanded 2026-09-27 from the one worked cell)
                            # + <symbol>-<bucket>-put-spread.json for the 14 SPY/QQQ cells (ADR-0193)
+                           # + <symbol>-<bucket>-gate.json for the 14 SPY/QQQ cells; both carry
+                           # the ADR-0194 gate study (VIX3M + VolRegimeSignals)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

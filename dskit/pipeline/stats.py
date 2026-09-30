@@ -50,6 +50,10 @@ and :func:`payoff_ratio`. A trade-level t-test is :func:`across_fold_t`
 over the trade P&L list — the same one-sample Student t, so it is not
 restated.
 
+One causal ranking helper joins them (ADR-0194): :func:`expanding_percentile`
+scores each position of a time-ordered series against only the values before
+it (mid-rank), so a regime threshold read off a series never sees the future.
+
 Import cost: stdlib only.
 """
 
@@ -80,6 +84,7 @@ __all__ = [
     "diebold_mariano_test",
     "dm_lags",
     "dm_loss_series",
+    "expanding_percentile",
     "lower_tail_mean",
     "max_drawdown",
     "max_informative_horizon",
@@ -1761,6 +1766,65 @@ def quantile_bin(value, edges):
         ``0 .. len(edges)``.
     """
     return bisect.bisect_right(edges, value)
+
+def expanding_percentile(values, min_history):
+    """Return each value's mid-rank among the STRICTLY EARLIER finite values.
+
+    The look-ahead-free percentile of a time-ordered series: position ``i``
+    is scored against ``values[:i]`` only, so appending later values never
+    changes an earlier output. The rank is the mid-rank, ``(below +
+    0.5 * equal) / n_prior`` over the earlier finite values, so a value
+    tied with its whole history scores ``0.5`` and one above all of it
+    ``1.0``. A ``None``, NaN or infinite cell scores ``None`` and never
+    enters the history.
+
+    Parameters
+    ----------
+    values : list of (float or None)
+        Time-ordered observations. ``None`` and non-finite floats are
+        missing; anything else that is not a real number is refused.
+    min_history : int
+        The number of earlier finite values needed before a position is
+        scored, ``>= 1``; a position with fewer scores ``None``.
+
+    Returns
+    -------
+    list of (float or None)
+        One entry per input value, in ``[0, 1]`` or ``None``.
+
+    Raises
+    ------
+    ValueError
+        When ``values`` is not a list, ``min_history`` is not an int
+        ``>= 1`` (a bool is not one), or a cell is neither a real number
+        nor ``None``.
+
+    Examples
+    --------
+    A value tied with one of its two predecessors and above the other::
+
+        out = expanding_percentile([1.0, 2.0, 2.0], min_history=2)
+        # -> [None, None, 0.75]
+    """
+    if not isinstance(values, list):
+        raise ValueError(f"values must be a list, got {type(values).__name__}")
+    if isinstance(min_history, bool) or not isinstance(min_history, int) or min_history < 1:
+        raise ValueError(f"min_history must be an int >= 1, got {min_history!r}")
+    prior, out = [], []
+    for i, value in enumerate(values):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise ValueError(f"values[{i}] must be a number or None, got {value!r}")
+        finite = value is not None and math.isfinite(value)
+        if finite and len(prior) >= min_history:
+            below = bisect.bisect_left(prior, value)
+            equal = bisect.bisect_right(prior, value) - below
+            out.append((below + 0.5 * equal) / len(prior))
+        else:
+            out.append(None)
+        if finite:
+            bisect.insort(prior, value)
+    return out
+
 
 def correction(name):
     """Look up a registered correction entry, loudly."""
