@@ -27550,7 +27550,7 @@ distinguish risk-neutral proxy from physical CDF, report effective dependence,
 and recommend retain/replace without a trading claim.
 ## ADR-0194 — Tail-constrained option/incumbent quantile blend
 
-2026-09-30. Status: approved by owner in chat; implementation authorized.
+2026-09-30. Status: completed; offline research incumbent promoted, no trading.
 Owner: index_options. Parent: ADR-0193. Base worktree:
 `/home/russell/dskit-cdf-option-surface`.
 
@@ -27850,5 +27850,96 @@ continuous joins, index pooling and finite tails, proper-score reconstruction,
 and JSON/config refusal. Exit requires all bounded stages or explicit retained
 failures, completion/hash evidence, a standalone memo, review evidence,
 RE-ENTRY and append-only journal updates, and zero unresolved Critical/Major
-review findings. Generated artifacts remain ignored; do not push or merge.
+review findings. Generated artifacts remain ignored; publication requires the
+later owner authorization plus clean independent review.
+
+### Sequential Phase B amendment (2026-09-30)
+
+Phase A completed all three development searches, but the selector correctly
+refused every family before later-period evaluation. Dynamic PIT and beta pools
+worsened CRPS and tail calibration. GPD tails improved development equal-cell
+CRPS by about 1.18%, but failed the per-index 5%/95% guards.
+
+Before any Phase B result is inspected, test the same declared GPD construction
+around the governed center-only incumbent instead of the raw option transport.
+This is leakage-safe without double calibration: the nested incumbent selects
+its blend on the preceding calibration year, while the outer GPD parameters use
+fit labels only. The GPD wrapper itself never reads calibration labels. Compare
+5% and 10% splice thresholds and prior strengths 25/100 in one fresh JSON and
+artifact root. Controls, years, score packet, guard and promotion rule remain
+unchanged. If no candidate passes all guards, stop and retain ADR-0196.
+
+### Resource-correct Phase C replay (2026-09-30)
+
+The unchanged Phase B challenger passed selection, but its first late-period
+evaluation retained five redundant controls and reached 6,416,424 KiB peak RSS
+(6.12 GiB), violating the 6 GiB ceiling. Treat the entire Phase B evaluation
+root as resource-invalid evidence; it cannot support the result.
+
+Replay the already frozen `center_gpd_05_prior25` specification in a fresh root
+with only the horizon empirical control and ADR-0196 center incumbent. Candidate
+parameters, development years, selected variant, guard, score resolutions,
+evaluation partitions and data/provenance remain byte-for-byte unchanged.
+Removing redundant legacy controls cannot influence any fit or selection. Use
+only this replay for final results and require every stage below the original
+limits.
+
+### Phase D allocator-correct replay (2026-09-30)
+
+Phase C proved redundant controls were not the cause: late evaluation still
+reached 6,431,384 KiB. Review of the CUDA MLP lifecycle found temporary
+training and inference tensors were released by Python scope but unused CUDA
+allocator blocks were never explicitly returned between sequential annual
+fits. Add deterministic lifecycle cleanup after each fit and prediction
+(`del`, garbage collection, then `torch.cuda.empty_cache()` on declared CUDA).
+No weights, predictions, candidate, score, selection or data contract changes.
+
+Run the exact Phase C document in one final fresh root under the new
+implementation identity. Phase A–C evaluation artifacts remain retained but
+invalid for the final claim. Phase D alone must pass every completion, hash,
+time and memory gate.
+
+### Phase E bounded-anchor replay (2026-09-30)
+
+Phase D reduced ordinary live CUDA retention, but the late partition still
+peaked at 6,440,992 KiB (6.14 GiB), above the unchanged 6 GiB ceiling. The
+remaining avoidable allocation is the GPD wrapper asking its nested endpoint
+for every fit-row quantile grid at once even though it retains only the two
+splice anchors. Add a declared positive `anchor_batch_size` and concatenate
+only those two anchor columns from bounded endpoint calls. This is a numerical
+resource refactor: fit rows, endpoint weights, splice probabilities, GPD
+estimation, validation curves and all selection rules remain unchanged. A
+focused test must prove the endpoint never receives more than the declared
+batch and that fitted tails/curves are identical to an unbatched fit.
+
+Replay only the already-frozen Phase D late partition first. If and only if it
+is below 6 GiB, complete the other partitions and final report in the same
+fresh root. Phase D evidence is retained but resource-invalid; Phase E alone
+may support the final claim.
+
+### Phase F review-correct final replay (2026-09-30)
+
+Independent skeptic review found four Major gaps before Phase E could produce
+evidence. Correct them before any final replay: make the selector itself enforce
+strict equal-cell CRPS improvement and lower/upper equal-cell tail-score
+noninferiority; construct every dynamic PIT prior from outcomes already mature
+at the forecast date; delete live final-batch CUDA tensor references before
+allocator cleanup; and persist process peak RSS plus stage wall time in every
+completion record. Tests must fail first for the selector and immature-PIT
+case. Phase E's interrupted search is retained but invalid. Run the unchanged
+frozen candidate and controls in a fresh Phase F root; only Phase F may support
+the final outcome, subject to a clean independent re-review and all original
+limits.
+
+### Outcome
+
+Phase F selected `center_gpd_05_prior25`. It passed enforced development strict
+equal-cell CRPS improvement, lower/upper tail-score noninferiority and all six
+per-index 5%/95% guards. On 68,084 reused 2019–2025 forecasts it improves
+equal-cell CRPS 0.08045% versus ADR-0196; paired 60/120-date intervals exclude
+zero. Proper lower/upper tail scores improve, but 5% lower hit frequency remains
+7.956% overall and 9.794% for QQQ. Promote only as the governed offline research
+incumbent and optimizer-prototype CDF input, not as production-good calibration
+or trading authority. Phase F stages remain below 4:03 and 3.63 GiB. Superseded
+Phase B–E artifacts are retained but invalid for claims.
 

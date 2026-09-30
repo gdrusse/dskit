@@ -13,10 +13,12 @@ import json
 from pathlib import Path
 import time
 
-__all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve", "CDFEstimator",
+__all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
+           "BetaTransformedCurve", "CDFEstimator",
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
            "QuantileCDF", "CatBoostQuantileCDF", "OptionImpliedTransportCDF",
-           "TailConstrainedQuantileBlendCDF",
+           "TailConstrainedQuantileBlendCDF", "DynamicPITRecalibratedCDF",
+           "BetaTransformedPoolCDF", "SemiparametricGPDTailCDF",
            "SplineFlowCDF", "SetMixtureCDF", "MixtureMLPCDF", "StudentMixtureCurve",
            "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
@@ -404,6 +406,34 @@ class ConvexCurve(_Curve):
             lo = np.where(mask, mid, lo)
             hi = np.where(mask, hi, mid)
         return (lo+hi)/2
+
+
+class BetaTransformedCurve(_Curve):
+    """Apply a beta-CDF calibration map to a row-compatible base CDF."""
+
+    def __init__(self, base, alpha, beta):
+        import math
+        if (not isinstance(base, _Curve) or isinstance(alpha, bool) or isinstance(beta, bool)
+                or not math.isfinite(alpha) or not math.isfinite(beta)
+                or alpha <= 0 or beta <= 0):
+            raise ValueError("invalid beta-transformed curve")
+        self.base, self.alpha, self.beta = base, float(alpha), float(beta)
+
+    def cdf(self, values):
+        from scipy.special import betainc
+        return betainc(self.alpha, self.beta, self.base.cdf(values))
+
+    def quantile(self, probabilities):
+        import numpy as np
+        from scipy.special import betaincinv
+        p = np.asarray(probabilities, dtype=float)
+        if not np.isfinite(p).all() or (p <= 0).any() or (p >= 1).any():
+            raise ValueError("quantile probabilities must be strictly inside (0,1)")
+        return self.base.quantile(betaincinv(self.alpha, self.beta, p))
+
+    def _arrays(self):
+        return {"kind": "beta_transformed", "alpha": self.alpha, "beta": self.beta,
+                **{"base_"+key: value for key, value in self.base._arrays().items()}}
 
 
 class CDFEstimator(ABC):
@@ -949,6 +979,376 @@ class OptionImpliedTransportCDF(CDFEstimator):
             spliced[middle] = proxy_values[middle]
             values[active] = np.maximum.accumulate(spliced, axis=1)
         return _ActiveGridCurve(values, p, active)
+
+
+def _label_free_endpoint(path, params):
+    if not isinstance(path, str) or path.count(":") != 1 or not isinstance(params, dict):
+        raise ValueError("invalid endpoint declaration")
+    module, name = path.split(":", 1)
+    estimator = getattr(importlib.import_module(module), name)
+    if getattr(estimator, "consumes_calibration_labels", False):
+        raise ValueError("nested endpoint cannot consume calibration labels")
+    return estimator(**params)
+
+
+def _weighted_quantiles(values, probabilities, weights):
+    import numpy as np
+    values, probabilities, weights = (np.asarray(value, dtype=float)
+                                      for value in (values, probabilities, weights))
+    order = np.argsort(values, kind="stable")
+    values, weights = values[order], weights[order]
+    total = weights.sum()
+    if not len(values) or not np.isfinite(values).all() or not np.isfinite(weights).all() \
+            or (weights < 0).any() or total <= 0:
+        raise ValueError("invalid weighted quantile inputs")
+    cumulative = (np.cumsum(weights)-.5*weights)/total
+    return np.interp(probabilities, cumulative, values, left=values[0], right=values[-1])
+
+
+class DynamicPITRecalibratedCDF(CDFEstimator):
+    """Causal rolling PIT recalibration with delayed-label admission."""
+
+    consumes_calibration_labels = True
+
+    def __init__(self, endpoint_class, endpoint_params, knots=401, map_knots=21,
+                 half_life_days=90., lookback_days=1095, prior_strength=50.,
+                 minimum_rows=50):
+        import math
+        if (type(knots) is not int or knots < 5 or type(map_knots) is not int
+                or map_knots < 3 or isinstance(half_life_days, bool)
+                or not math.isfinite(half_life_days) or half_life_days <= 0
+                or type(lookback_days) is not int or lookback_days < 1
+                or isinstance(prior_strength, bool) or not math.isfinite(prior_strength)
+                or prior_strength < 0 or type(minimum_rows) is not int or minimum_rows < 2):
+            raise ValueError("invalid dynamic PIT parameters")
+        self.endpoint = _label_free_endpoint(endpoint_class, endpoint_params)
+        self.knots, self.map_knots = knots, map_knots
+        self.half_life_days, self.lookback_days = float(half_life_days), lookback_days
+        self.prior_strength, self.minimum_rows = float(prior_strength), minimum_rows
+
+    def _validate_x(self, x):
+        self.endpoint._validate_x(x)
+
+    def _map(self, pit, weights=None):
+        import numpy as np
+        p = np.linspace(0., 1., self.map_knots)
+        x = (np.quantile(pit, p) if weights is None
+             else _weighted_quantiles(pit, p, weights))
+        return np.r_[0., np.clip(x[1:-1], 1e-9, 1-1e-9), 1.]
+
+    def fit(self, x, y, cal_x, cal_y):
+        import numpy as np
+        self._validate_x(x); self._validate_x(cal_x)
+        self.endpoint.fit(x, y, cal_x, cal_y)
+        self.cal_pit = self.endpoint.curve(cal_x).cdf(np.asarray(cal_y)[:, None])[:, 0]
+        if len(self.cal_pit) < 2 or not np.isfinite(self.cal_pit).all():
+            raise ValueError("insufficient finite calibration PIT rows")
+        self.map_p = np.linspace(0., 1., self.map_knots)
+        self.global_map_x = self._map(self.cal_pit)
+        self.cal_context = None
+        self.admitted_rows_by_date = []
+        return self
+
+    def fit_context(self, calibration, date_field, end_field):
+        import pandas as pd
+        if len(calibration) != len(self.cal_pit):
+            raise ValueError("calibration context length mismatch")
+        _validate_temporal_frame(calibration, date_field, end_field)
+        self.cal_context = pd.DataFrame({
+            "date": pd.to_datetime(calibration[date_field]).to_numpy(),
+            "end": pd.to_datetime(calibration[end_field]).to_numpy(),
+            "pit": self.cal_pit})
+        return self
+
+    def _curve_from_maps(self, base, maps):
+        import numpy as np
+        p = np.linspace(0., 1., self.knots)
+        mapped = np.array([np.interp(p, self.map_p, row) for row in maps])
+        values = base.quantile(np.clip(mapped, 1e-9, 1-1e-9))
+        return GridCurve(np.maximum.accumulate(values, axis=1), p)
+
+    def curve(self, x):
+        import numpy as np
+        self._validate_x(x)
+        maps = np.tile(self.global_map_x, (len(x), 1))
+        return self._curve_from_maps(self.endpoint.curve(x), maps)
+
+    def curve_context(self, x, dates, ends, outcomes):
+        import numpy as np
+        import pandas as pd
+        if self.cal_context is None:
+            raise ValueError("dynamic PIT temporal context was not fitted")
+        self._validate_x(x)
+        dates = pd.to_datetime(np.asarray(dates)).to_numpy()
+        ends = pd.to_datetime(np.asarray(ends)).to_numpy()
+        outcomes = np.asarray(outcomes, dtype=float)
+        if (dates.shape != (len(x),) or ends.shape != (len(x),)
+                or outcomes.shape != (len(x),) or not np.isfinite(outcomes).all()
+                or np.any(ends <= dates)):
+            raise ValueError("invalid forecast temporal context")
+        base = self.endpoint.curve(x)
+        validation_pit = base.cdf(outcomes[:, None])[:, 0]
+        maps = np.tile(self.global_map_x, (len(x), 1))
+        admitted = []
+        for date in np.unique(dates):
+            matured_cal = self.cal_context.end.to_numpy() < date
+            prior = (self._map(self.cal_context.pit.to_numpy()[matured_cal])
+                     if matured_cal.sum() >= 2 else self.map_p)
+            cal_age = (date-self.cal_context.date.to_numpy()).astype("timedelta64[D]").astype(int)
+            cal_mask = ((self.cal_context.end.to_numpy() < date) & (cal_age >= 0)
+                        & (cal_age <= self.lookback_days))
+            val_age = (date-dates).astype("timedelta64[D]").astype(int)
+            val_mask = ((ends < date) & (val_age >= 0) & (val_age <= self.lookback_days))
+            pit = np.r_[self.cal_context.pit.to_numpy()[cal_mask], validation_pit[val_mask]]
+            age = np.r_[cal_age[cal_mask], val_age[val_mask]]
+            admitted.append(int(len(pit)))
+            local = prior
+            if len(pit) >= self.minimum_rows:
+                weights = np.exp2(-age/self.half_life_days)
+                proposal = self._map(pit, weights)
+                effective = weights.sum()**2/np.square(weights).sum()
+                shrink = effective/(effective+self.prior_strength)
+                local = np.maximum.accumulate(
+                    shrink*proposal+(1.-shrink)*prior)
+            maps[dates == date] = local
+        self.admitted_rows_by_date = admitted
+        return self._curve_from_maps(base, maps)
+
+    def _research_state(self):
+        return {"half_life_days": self.half_life_days,
+                "lookback_days": self.lookback_days,
+                "prior_strength": self.prior_strength,
+                "minimum_rows": self.minimum_rows,
+                "admitted_rows_by_date": self.admitted_rows_by_date}
+
+
+class BetaTransformedPoolCDF(CDFEstimator):
+    """Finite-grid beta-transformed CDF pool selected on calibration labels."""
+
+    consumes_calibration_labels = True
+
+    def __init__(self, left_class, left_params, right_class, right_params,
+                 index_indices, cell_indices, knots, weights, alphas, betas,
+                 tail_probability=.1, crps_weight=1., tail_weight=1.):
+        import math
+        grids = (weights, alphas, betas)
+        if (not index_indices or not cell_indices or not set(index_indices).issubset(cell_indices)
+                or any(type(v) is not int or v < 0 for v in [*index_indices, *cell_indices])
+                or type(knots) is not int or knots < 11
+                or any(not isinstance(g, (list, tuple)) or not g for g in grids)
+                or any(isinstance(v, bool) or not math.isfinite(v)
+                       for g in grids for v in g)
+                or any(not 0 <= v <= 1 for v in weights)
+                or any(v <= 0 for g in (alphas, betas) for v in g)
+                or not 0 < tail_probability < .5
+                or any(isinstance(v, bool) or not math.isfinite(v) or v < 0
+                       for v in (crps_weight, tail_weight))
+                or crps_weight+tail_weight <= 0):
+            raise ValueError("invalid beta pool parameters")
+        self.left = _label_free_endpoint(left_class, left_params)
+        self.right = _label_free_endpoint(right_class, right_params)
+        self.index_indices, self.cell_indices = tuple(index_indices), tuple(cell_indices)
+        self.knots = knots
+        self.weights, self.alphas, self.betas = tuple(weights), tuple(alphas), tuple(betas)
+        self.tail_probability = float(tail_probability)
+        self.crps_weight, self.tail_weight = float(crps_weight), float(tail_weight)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or max((*self.index_indices, *self.cell_indices)) >= x.shape[1]:
+            raise ValueError("index or cell indices outside input")
+        groups = x[:, self.index_indices]
+        if not np.isfinite(x[:, self.cell_indices]).all() or not np.isin(groups, [0, 1]).all() \
+                or not (groups.sum(1) == 1).all():
+            raise ValueError("invalid index/cell metadata")
+        self.left._validate_x(x); self.right._validate_x(x)
+
+    @staticmethod
+    def _row_scores(curve, outcomes, probabilities, tail_probability):
+        import numpy as np
+        q = curve.quantile(probabilities)
+        residual = outcomes[:, None]-q
+        pinball = (probabilities[None, :]-(residual < 0))*residual
+        crps = 2*np.mean(pinball, axis=1)
+        lower = 2*np.mean(pinball[:, probabilities <= tail_probability], axis=1)
+        upper = 2*np.mean(pinball[:, probabilities >= 1-tail_probability], axis=1)
+        return crps, lower, upper
+
+    def _calibration_pool(self, left, right, weight):
+        """Build one deterministic dense CDF grid; avoid repeated inversions."""
+        import numpy as np
+        p = (np.arange(self.knots)+.5)/self.knots
+        values = np.sort(np.concatenate([left.quantile(p), right.quantile(p)], axis=1), axis=1)
+        span = np.maximum(values[:, -1]-values[:, 0], 1.)
+        values = np.column_stack([values[:, 0]-span, values, values[:, -1]+span])
+        probabilities = ConvexCurve(left, right, weight).cdf(values)
+        probabilities[:, 0], probabilities[:, -1] = 0., 1.
+        return GridCurve(values, np.maximum.accumulate(probabilities, axis=1))
+
+    def fit(self, x, y, cal_x, cal_y):
+        import itertools
+        import numpy as np
+        self._validate_x(x); self._validate_x(cal_x)
+        self.left.fit(x, y, cal_x, cal_y); self.right.fit(x, y, cal_x, cal_y)
+        cells = np.asarray(cal_x)[:, self.cell_indices]
+        _, cell = np.unique(cells, axis=0, return_inverse=True)
+        counts = np.bincount(cell)
+        row_weight = 1./(len(counts)*counts[cell])
+        p = (np.arange(self.knots)+.5)/self.knots
+        choices = []
+        left, right = self.left.curve(cal_x), self.right.curve(cal_x)
+        for weight in self.weights:
+            pooled = self._calibration_pool(left, right, weight)
+            for alpha, beta in itertools.product(self.alphas, self.betas):
+                curve = BetaTransformedCurve(pooled, alpha, beta)
+                crps, lower, upper = self._row_scores(curve, np.asarray(cal_y), p,
+                                                       self.tail_probability)
+                score = np.dot(row_weight, self.crps_weight*crps
+                                + self.tail_weight*(lower+upper)/2)
+                choices.append((float(score), float(weight), float(alpha), float(beta)))
+        self.selected = min(choices)
+        return self
+
+    def curve(self, x):
+        self._validate_x(x)
+        _, weight, alpha, beta = self.selected
+        return BetaTransformedCurve(ConvexCurve(self.left.curve(x), self.right.curve(x), weight),
+                                    alpha, beta)
+
+    def _research_state(self):
+        score, weight, alpha, beta = self.selected
+        return {"objective": score, "weight": weight, "alpha": alpha, "beta": beta,
+                "grid_candidates": len(self.weights)*len(self.alphas)*len(self.betas)}
+
+
+class SemiparametricGPDTailCDF(CDFEstimator):
+    """Preserve an endpoint center and attach partially pooled GPD tails."""
+
+    def __init__(self, endpoint_class, endpoint_params, index_indices, knots=401,
+                 splice_probabilities=(.1, .9), minimum_exceedances=30,
+                 prior_strength=50., shape_bounds=(-.4, .8), probability_floor=1e-5,
+                 anchor_batch_size=8192):
+        import math
+        if (not index_indices or any(type(v) is not int or v < 0 for v in index_indices)
+                or type(knots) is not int or knots < 11
+                or len(splice_probabilities) != 2
+                or not 0 < splice_probabilities[0] < .5 < splice_probabilities[1] < 1
+                or type(minimum_exceedances) is not int or minimum_exceedances < 3
+                or isinstance(prior_strength, bool) or not math.isfinite(prior_strength)
+                or prior_strength < 0 or len(shape_bounds) != 2
+                or not -1 < shape_bounds[0] < shape_bounds[1] < 1
+                or not 0 < probability_floor < min(splice_probabilities[0],
+                                                   1-splice_probabilities[1])
+                or type(anchor_batch_size) is not int or anchor_batch_size < 1):
+            raise ValueError("invalid semiparametric GPD parameters")
+        if not isinstance(endpoint_class, str) or endpoint_class.count(":") != 1 \
+                or not isinstance(endpoint_params, dict):
+            raise ValueError("invalid GPD endpoint declaration")
+        module, name = endpoint_class.split(":", 1)
+        self.endpoint = getattr(importlib.import_module(module), name)(**endpoint_params)
+        self.index_indices, self.knots = tuple(index_indices), knots
+        self.splice_probabilities = tuple(float(v) for v in splice_probabilities)
+        self.minimum_exceedances = minimum_exceedances
+        self.prior_strength = float(prior_strength)
+        self.shape_bounds = tuple(float(v) for v in shape_bounds)
+        self.probability_floor = float(probability_floor)
+        self.anchor_batch_size = anchor_batch_size
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or max(self.index_indices) >= x.shape[1]:
+            raise ValueError("index indices outside input")
+        groups = x[:, self.index_indices]
+        if not np.isin(groups, [0, 1]).all() or not (groups.sum(1) == 1).all():
+            raise ValueError("index identities must be one-hot")
+        self.endpoint._validate_x(x)
+
+    def _fit_tail(self, excess):
+        import numpy as np
+        from scipy.stats import genpareto
+        excess = np.asarray(excess, dtype=float)
+        if len(excess) < self.minimum_exceedances or not np.isfinite(excess).all() \
+                or (excess <= 0).any():
+            return None
+        shape, _, scale = genpareto.fit(excess, floc=0.)
+        shape = float(np.clip(shape, *self.shape_bounds))
+        scale = float(max(scale, np.finfo(float).eps))
+        return shape, scale
+
+    def _anchor_quantiles(self, x):
+        """Read only splice anchors through bounded endpoint predictions."""
+        import numpy as np
+        probabilities = list(self.splice_probabilities)
+        return np.vstack([
+            self.endpoint.curve(x[start:start+self.anchor_batch_size]).quantile(probabilities)
+            for start in range(0, len(x), self.anchor_batch_size)
+        ])
+
+    def fit(self, x, y, cal_x, cal_y):
+        import numpy as np
+        self._validate_x(x)
+        self.endpoint.fit(x, y, cal_x, cal_y)
+        y = np.asarray(y, dtype=float)
+        lo, hi = self.splice_probabilities
+        anchors = self._anchor_quantiles(x)
+        left_all, right_all = anchors[:, 0]-y, y-anchors[:, 1]
+        self.global_tails = (self._fit_tail(left_all[left_all > 0]),
+                             self._fit_tail(right_all[right_all > 0]))
+        if any(value is None for value in self.global_tails):
+            raise ValueError("insufficient global tail exceedances")
+        groups = np.asarray(x)[:, self.index_indices].argmax(1)
+        self.group_tails, self.group_diagnostics = [], []
+        for group in range(len(self.index_indices)):
+            mask = groups == group
+            local = [self._fit_tail(tail[mask & (tail > 0)])
+                     for tail in (left_all, right_all)]
+            fitted, fallback = [], False
+            for side, global_fit in zip(local, self.global_tails):
+                if side is None:
+                    fitted.append(global_fit); fallback = True
+                else:
+                    count = int((mask & ((left_all if len(fitted) == 0 else right_all) > 0)).sum())
+                    weight = count/(count+self.prior_strength)
+                    fitted.append(tuple(weight*a+(1-weight)*b
+                                        for a, b in zip(side, global_fit)))
+            self.group_tails.append(tuple(fitted))
+            self.group_diagnostics.append({
+                "index_position": group, "fallback": "global" if fallback else "pooled",
+                "left_shape": fitted[0][0], "left_scale": fitted[0][1],
+                "right_shape": fitted[1][0], "right_scale": fitted[1][1]})
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        from scipy.stats import genpareto
+        self._validate_x(x)
+        p = np.linspace(0., 1., self.knots)
+        safe = np.clip(p, self.probability_floor, 1-self.probability_floor)
+        base = self.endpoint.curve(x)
+        values = base.quantile(safe)
+        lo, hi = self.splice_probabilities
+        anchors = base.quantile([lo, hi])
+        groups = np.asarray(x)[:, self.index_indices].argmax(1)
+        for row, group in enumerate(groups):
+            left, right = self.group_tails[group]
+            mask = p < lo
+            conditional = np.clip(1-safe[mask]/lo, 0, 1-self.probability_floor)
+            values[row, mask] = anchors[row, 0]-genpareto.ppf(
+                conditional, left[0], loc=0, scale=left[1])
+            mask = p > hi
+            conditional = np.clip((safe[mask]-hi)/(1-hi), 0, 1-self.probability_floor)
+            values[row, mask] = anchors[row, 1]+genpareto.ppf(
+                conditional, right[0], loc=0, scale=right[1])
+        return GridCurve(np.maximum.accumulate(values, axis=1), p)
+
+    def _research_state(self):
+        return {"splice_probabilities": list(self.splice_probabilities),
+                "anchor_batch_size": self.anchor_batch_size,
+                "global": {"left": list(self.global_tails[0]),
+                           "right": list(self.global_tails[1])},
+                "groups": self.group_diagnostics}
 
 
 class TailConstrainedQuantileBlendCDF(CDFEstimator):
@@ -1497,6 +1897,7 @@ class MixtureMLPCDF(CDFEstimator):
             return self._fit(x, y, cal_x, cal_y)
 
     def _fit(self, x, y, cal_x, cal_y):
+        import gc
         import torch
         from sklearn.preprocessing import StandardScaler
 
@@ -1538,6 +1939,10 @@ class MixtureMLPCDF(CDFEstimator):
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
+        del xx, yy, hh, optimizer, order, logw, mu, sigma, logp, loss, ix
+        gc.collect()
+        if self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
         return self
 
     def _equivalence_state(self):
@@ -1581,6 +1986,7 @@ class MixtureMLPCDF(CDFEstimator):
         MixtureCurve
             Ensemble curve; components times seeds Gaussian terms.
         """
+        import gc
         import numpy as np
         import torch
 
@@ -1596,8 +2002,13 @@ class MixtureMLPCDF(CDFEstimator):
                 weights.append(logw.exp().cpu().numpy()/len(self.models))
                 means.append(mu.cpu().numpy())
                 scales.append(sigma.cpu().numpy())
-        return self._curve(np.concatenate(weights, 1), np.concatenate(means, 1),
-                           np.concatenate(scales, 1))
+        result = self._curve(np.concatenate(weights, 1), np.concatenate(means, 1),
+                             np.concatenate(scales, 1))
+        del xx, hh, logw, mu, sigma
+        gc.collect()
+        if self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+        return result
 
 
 class StudentMixtureMLPCDF(MixtureMLPCDF):
@@ -2084,11 +2495,12 @@ class ChronologicalCDFStudy:
     KEYS = {"features", "group", "date", "end", "horizon", "target", "reference",
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
-            "comparison_references", "identity", "series_identity", "notes"}
+            "comparison_references", "identity", "series_identity", "tail_probabilities",
+            "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
-        missing = self.KEYS-{"notes"}-set(config)
+        missing = self.KEYS-{"notes", "tail_probabilities"}-set(config)
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
         for spec in config["models"].values():
@@ -2147,8 +2559,12 @@ class ChronologicalCDFStudy:
             selected = selected_variants
         picked = pd.concat([later[(later.model == name) & (later.variant == variant)]
                             for name, variant in selected.items()])
-        metrics = ["crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse",
+        metrics = ["crps", "tail_crps", "lower_tail_quantile_score",
+                   "upper_tail_quantile_score", "raw_return_crps", "strike_brier", "condor_loss_mse",
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
+        metrics.extend(name for name in scores.columns
+                       if (name.startswith("below_") or name.startswith("above_"))
+                       and name not in metrics)
         metrics = [m for m in metrics if m in scores]
         records, grids = [], []
         keys = c["identity"]
@@ -2242,7 +2658,7 @@ class ChronologicalCDFStudy:
                 frame[(date >= v) & (date < stop)])
 
     @staticmethod
-    def scores(curve, y, samples, intervals, points):
+    def scores(curve, y, samples, intervals, points, tail_probabilities=None):
         """Score a curve with midpoint-quantile CRPS and tail CDF quadrature.
 
         Parameters
@@ -2271,10 +2687,25 @@ class ChronologicalCDFStudy:
             grid = a+(np.arange(points)+.5)*(b-a)/points
             error = curve.cdf(grid)-(y[:, None] <= grid)
             tail += np.mean(error**2, axis=1)*(b-a)
+        residual = y[:, None]-q
+        pinball = (p[None, :]-(residual < 0))*residual
+        lower = p <= .1
+        upper = p >= .9
         pit = curve.cdf(y[:, None])[:, 0]
-        return {"crps": crps, "tail_crps": tail, "pit": pit,
-                "below_05": (pit < .05).astype(float),
-                "above_95": (pit > .95).astype(float)}, q
+        result = {"crps": crps, "tail_crps": tail, "pit": pit,
+                  "lower_tail_quantile_score": 2*np.mean(pinball[:, lower], axis=1),
+                  "upper_tail_quantile_score": 2*np.mean(pinball[:, upper], axis=1)}
+        levels = [.05, .95] if tail_probabilities is None else tail_probabilities
+        names = {.01: "01", .025: "025", .05: "05", .1: "10",
+                 .9: "90", .95: "95", .975: "975", .99: "99"}
+        if (not isinstance(levels, (list, tuple)) or not levels
+                or any(level not in names for level in levels)):
+            raise ValueError("unsupported tail probability")
+        for level in levels:
+            prefix = "below" if level < .5 else "above"
+            result[f"{prefix}_{names[level]}"] = ((pit < level) if level < .5
+                                                   else (pit > level)).astype(float)
+        return result, q
 
     def run(self, frame, diagnostic=None):
         """Fit paired annual folds and retain row scores, counts and curves.
@@ -2364,6 +2795,8 @@ class ChronologicalCDFStudy:
                         model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
                                   imputer.transform(model_cal[c["features"]]),
                                   (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
+                        if hasattr(model, "fit_context"):
+                            model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
                         label = spec.get("equivalence")
                         if label:
                             if not hasattr(model, "_equivalence_state"):
@@ -2387,7 +2820,9 @@ class ChronologicalCDFStudy:
                         model._validate_x(band[c["features"]].to_numpy())
                     xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
                     count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
-                    raw = model.curve(xv)
+                    raw = (model.curve_context(
+                        xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
+                        if hasattr(model, "curve_context") else model.curve(xv))
                     variants = {"raw": raw}
                     if spec["calibrate"]:
                         pit = model.curve(xc).cdf(yc[:, None])[:, 0]
@@ -2395,7 +2830,9 @@ class ChronologicalCDFStudy:
                     else:
                         variants["calibrated"] = raw
                     for variant, curve in variants.items():
-                        scored, draws = self.scores(curve, yv, c["samples"], c["tail_intervals"], c["tail_points"])
+                        scored, draws = self.scores(
+                            curve, yv, c["samples"], c["tail_intervals"], c["tail_points"],
+                            c.get("tail_probabilities"))
                         columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
                                                       c["group"], c["date"], c["end"], c["horizon"]]))
                         part = val[columns].copy()
@@ -2478,12 +2915,20 @@ class CDFHyperparameterStudy:
         if guard is not None:
             import math
             guard_keys = {"reference", "variant", "metrics", "target", "tolerance"}
-            if (not isinstance(guard, dict) or set(guard) != guard_keys
+            optional_guard_keys = {"cell_improvement_metrics", "cell_noninferiority_metrics"}
+            metric_lists = ([guard.get(name, []) for name in optional_guard_keys]
+                            if isinstance(guard, dict) else [None])
+            if (not isinstance(guard, dict) or not guard_keys.issubset(guard)
+                    or set(guard)-guard_keys-optional_guard_keys
                     or guard["reference"] not in c["models"]
                     or guard["variant"] not in ("raw", "calibrated")
                     or not isinstance(guard["metrics"], list) or not guard["metrics"]
                     or len(set(guard["metrics"])) != len(guard["metrics"])
                     or any(not isinstance(metric, str) or not metric for metric in guard["metrics"])
+                    or any(not isinstance(values, list)
+                           or len(set(values)) != len(values)
+                           or any(not isinstance(metric, str) or not metric for metric in values)
+                           for values in metric_lists)
                     or isinstance(guard["target"], bool) or not math.isfinite(guard["target"])
                     or isinstance(guard["tolerance"], bool)
                     or not math.isfinite(guard["tolerance"]) or guard["tolerance"] < 0):
@@ -2614,9 +3059,14 @@ class CDFHyperparameterStudy:
         atomic_write(str(path), json.dumps(value, indent=2, allow_nan=False).encode())
 
     def _complete(self, path, identity, stage, partition, **extra):
+        import resource
         files = {str(p.relative_to(path)): self._file_hash(p) for p in sorted(path.rglob("*")) if p.is_file()}
         self._write(path/"complete.json", {"identity": identity, "stage": stage, "partition": partition,
-                                           "files": files, **extra})
+                                           "files": files,
+                                           "resource": {
+                                               "peak_rss_kib": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
+                                               "stage_wall_seconds": time.monotonic()-self._stage_started,
+                                           }, **extra})
 
     def _load(self, path, identity, stage, partition):
         record = json.loads((path/"complete.json").read_text())
@@ -2700,6 +3150,29 @@ class CDFHyperparameterStudy:
                         "reference_mean": float(right[group]),
                         "candidate_deviation": candidate_deviation,
                         "reference_deviation": reference_deviation,
+                        "passed": bool(ok),
+                    })
+            for comparison, strict in (("cell_improvement_metrics", True),
+                                       ("cell_noninferiority_metrics", False)):
+                for metric in guard.get(comparison, []):
+                    if metric not in scores:
+                        raise ValueError(f"selection guard metric absent: {metric}")
+                    keys = [c["group"], c["horizon"]]
+                    left = candidate.groupby(keys)[metric].mean()
+                    right = reference.groupby(keys)[metric].mean()
+                    if (not left.index.equals(right.index) or not np.isfinite(left).all()
+                            or not np.isfinite(right).all()):
+                        raise ValueError("selection guard cell coverage mismatch")
+                    candidate_mean, reference_mean = float(left.mean()), float(right.mean())
+                    ok = (candidate_mean < reference_mean-guard["tolerance"] if strict
+                          else candidate_mean <= reference_mean+guard["tolerance"])
+                    passed &= ok
+                    comparisons.append({
+                        "comparison": ("cell_strict_improvement" if strict
+                                       else "cell_noninferiority"),
+                        "metric": metric,
+                        "candidate_mean": candidate_mean,
+                        "reference_mean": reference_mean,
                         "passed": bool(ok),
                     })
             evidence.append({"model": name, "variant": variant,
@@ -2833,6 +3306,7 @@ class CDFHyperparameterStudy:
             Partition scores, frozen selection, or the completed report.
         """
         import pandas as pd
+        self._stage_started = time.monotonic()
         c, e = self.base, self.experiment
         if stage not in ("search", "select", "evaluate", "report") or not provenance:
             raise ValueError("invalid stage or missing provenance")

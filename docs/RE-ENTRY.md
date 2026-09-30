@@ -1,5 +1,26 @@
 # Re-entry
 
+## ADR-0197 semiparametric tail calibration completed (2026-09-30)
+
+- Objective remains a physical terminal-return/price CDF at each exact listed
+  expiry for later strike/payoff evaluation; no optimizer, execution or trading
+  authority. One standard JSON runs the governed comparisons.
+- Dynamic causal PIT and beta-transformed pooling did not qualify. A 5%/95%
+  semiparametric GPD layer around ADR-0196 passed the enforced development
+  guards and is the new offline research incumbent.
+- On 68,084 reused 2019–2025 forecasts, equal-cell CRPS improves 0.08045%
+  versus ADR-0196 (60/120-date intervals 0.02795–0.12445% and
+  0.02693–0.12086%). Proper lower/upper tail scores improve 1.268%/0.619%, but
+  5% lower hits remain 7.956% overall and 9.794% for QQQ. This is not yet
+  production-good tail calibration.
+- Phase F is the only valid root; all stages are below 30 minutes/6 GiB
+  (slowest/peak 4:03/3.63 GiB). Focused core tests: 109 passed. Initial Luna
+  review C0/M4/m0; all four Majors were resolved. Final Luna re-review:
+  C0/M0/m1, with its one memo-only aggregation Minor corrected.
+- Memo: `children/index_options/docs/memos/2026-09-30-dynamic-tail-calibration-and-gpd.md`.
+  Review: `docs/review-evidence/ADR-0197.md`. Journal A0615. Generated outputs
+  remain ignored.
+
 ## ADR-0196 center-only conditioned transport completed (2026-09-30)
 
 - Objective remains a physical terminal-return/price CDF at each exact option
