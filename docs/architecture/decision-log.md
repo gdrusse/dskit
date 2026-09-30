@@ -27574,3 +27574,131 @@ multiple structures per entry, IWM, real runs.
 
 **Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
 Critical/Major before merge.
+
+**Amendment (2026-09-30, review evidence ADR-0195).** The empirical-rung
+control is not premium-only: its draws are the unconditional standardized
+shape scaled by trailing realized vol, so the har-vix minus empirical
+difference measures the CONDITIONAL-forecast increment over that baseline.
+
+## ADR-0196 — Volatility-scaled sizing study and cross-underlying allocation study
+
+2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0195
+merges** (answer: both parts: sizing annotation + allocation CLI; merge per step). Owner:
+Russell. Base: ADR-0195's merge. Branch: `claude/index-options-strategies`.
+Step 4 of the strategy-alternatives memo (A0612): HOW MUCH to sell at each
+entry, and WHERE (SPY vs QQQ). Offline code and synthetic tests only.
+
+**Context.** Evidence (A0611): Moreira & Muir 2017 (volatility-managed
+exposure helps equity factors; options untested); Cederburg et al. 2020 (the
+real-time versions mostly do not help); Yang 2024 WP (cutting short-vol
+exposure after high vol raises Sharpe); Bondarenko / Malkiel (higher VIX, higher
+put-write returns). The literature conflicts, so the test is two-sided. The
+cross-underlying premium evidence is thin (Goyal & Saretto is single-stock).
+Sweep (`expanding_quantile`, `VolSizingWeights`, `sizing_fields`, "allocation
+study"): none exists. Reused: ADR-0194's annotate-only pattern and signals
+node, `stats.expanding_percentile`'s sorted-list approach,
+`runs.walk_fold_dirs`, `driver.resolve_json_artifact`.
+
+**Decision proposed.**
+
+1. **dskit core** — `stats.expanding_quantile(values, q, min_history)`: the
+   q-quantile (linear interpolation) of STRICTLY EARLIER finite values;
+   `None` before `min_history`. Same no-look-ahead tests as ADR-0194's
+   percentile.
+2. **Child node `VolSizingWeights`** (one job: weights, beside
+   `VolRegimeSignals`). From the previous row's `implied_field` and
+   `realized_field` (the same one-row lag), each weight is the ratio of the
+   signal's expanding median (over earlier lagged values) to today's lagged
+   value, clipped to [`min_weight`, `max_weight`] (0.25, 4):
+   `size_inv_implied_var` (VIX²), `size_inv_realized_var` (rv²),
+   `size_implied` (the inverse direction: VIX / median VIX). `None` before
+   `min_history` (252) or on a missing input. Weight names declared once.
+3. **Backtest annotation** — `_CondorBacktestBase` optional `size_fields`
+   (same rules as `gate_fields`). Per book and field, over traded cells with a
+   weight: `_n`, `_mean_weight`, `_total_pnl_usd` (Σ w·pnl), `_pnl_per_weight`
+   (Σ w·pnl / Σ w, comparable to the unsized mean), `_t` (of w·pnl),
+   `_cvar_usd`, `_max_drawdown_usd`, `_unknown_n`. No trade changes; constant
+   sizing is the existing book metrics.
+4. **Documents** — the ADR-0194 gate documents and the ADR-0195 select
+   documents gain a `sizing` node after `signals` and `size_fields`
+   (generated; the select documents are unrun, and the gate documents are
+   unrun as of this ADR).
+5. **Allocation study (CLI, child)** — `python -m index_options.ledger_studies allocate
+   <walk dir> <walk dir> ... [--book model]`: reads each walk's fold ledgers
+   via `walk_fold_dirs` + `resolve_json_artifact`, requires one bucket across
+   the dirs, aligns entries by date, and on each shared entry date takes only
+   the underlying with the higher ex-ante `expected_pnl / max_loss` (ties by
+   declared order). It prints that rule against each underlying alone and an
+   equal split: n, mean, t, CVaR5 and max drawdown. It is read-only and writes
+   nothing, like `dskit.pipeline skill`. New file `index_options/ledger_studies.py` (one module for read-only studies over walk ledgers; ADR-0197 adds `hedge`).
+
+**Files.** Modify `dskit/pipeline/stats.py` + its tests; child
+`index_options/{nodes,grid}.py`, tests, README/CLAUDE/AGENTS. New
+`index_options/ledger_studies.py`, `tests/test_ledger_studies.py`,
+`docs/review-evidence/ADR-0196.md`.
+
+**Non-goals.** Trade-changing sizing (contracts ≠ 1), CRRA / Kelly, allocation
+across buckets (different cadences), IWM, real runs.
+
+**Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
+Critical/Major before merge.
+
+## ADR-0197 — Debit (positive-convexity) structures and the hedge-sleeve test
+
+2026-09-30. **Status: owner-approved 2026-09-30; RED authorized after ADR-0196
+merges** (answer: all three debit structures + hedge-sleeve study; merge per step). Owner:
+Russell. Base: ADR-0196's merge. Branch: `claude/index-options-strategies`.
+Step 5 of the strategy-alternatives memo (A0612): test the "positive upside"
+structures on archived quotes, each in its evidence-backed role. Offline
+code and synthetic tests only.
+
+**Context.** Evidence (A0611): bought protection has negative standalone EV
+(Israelov 2019; AQR 2020; Harvey et al. 2019), so a hedge sleeve must beat a
+SMALLER condor at the same CVaR5; long straddles pay only when the VIX curve
+is inverted, at short horizons (Johnson 2017); long ATM/ITM call spreads carry
+the equity premium with a floored loss (hypothesis; calls are the least
+overpriced options). Sweep (`DebitStructureQuoteBacktest`,
+`LONG_STRADDLE_LEGS`, `ledger_studies`, "hedge sleeve"): none exists.
+Reused: ADR-0193/0195's per-trade leg sets and generic American charge,
+ADR-0194's gate annotation, ADR-0196's `ledger_studies` module.
+
+**Decision proposed.**
+
+1. **Leg sets** (contracts, single owners): `LONG_STRADDLE_LEGS`
+   (put +1, call +1, one strike), `LONG_CALL_SPREAD_LEGS` (call +1, call −1),
+   `LONG_PUT_SPREAD_LEGS` (put −1, put +1).
+2. **`DebitStructureQuoteBacktest(CondorQuoteBacktest)`**, abstract over
+   one hook, `_target_strikes`; the same walk, settlement, side split,
+   benchmark, gates and sizing. Its `_gate` override prices the DEBIT (long
+   legs at ask, short at bid, plus fees) and refuses `nonpositive_debit`
+   and, for spreads, `debit_not_below_width`; the model book enters when
+   E_P[pnl] > `min_edge_usd`. Members:
+   - `LongStraddleQuoteBacktest`: the ATM strike (nearest the forward with
+     both sides quotable to buy).
+   - `LongCallSpreadQuoteBacktest`: long call at the `long_q` forecast
+     quantile (default 0.5, i.e. ATM), short `wing_z` above.
+   - `LongPutSpreadQuoteBacktest`: long put at `long_q` (0.35), short
+     `wing_z` below.
+   The implied book uses the VIX-lognormal quantile, as the condor does.
+3. **Hedge-sleeve study** — `python -m index_options.ledger_studies hedge
+   <core walk> <sleeve walk> [--book model]`: joins the two ledgers on entry
+   date (both walks share one cadence; a date missing from either is
+   counted, not joined), forms core + sleeve per date, finds the scale
+   `k = CVaR5(core + sleeve) / CVaR5(core)` and prints the mean, t, CVaR5 and
+   max drawdown of core + sleeve against `k × core`. The sleeve earns its place
+   only if core + sleeve beats `k × core`. Read-only.
+4. **Documents** (generated from the cell documents, backtest swapped): long
+   straddle with the ADR-0194 gate study for buckets 1, 2-3 and 5; long call
+   spread and long put spread for 30-45; SPY and QQQ; 10 files
+   `configs/grid/<cell>-<structure>.json`.
+
+**Files.** Modify child `index_options/{contracts,nodes,grid,ledger_studies}.py`,
+tests, README/CLAUDE/AGENTS. New: 10 documents,
+`docs/review-evidence/ADR-0197.md`.
+
+**Non-goals.** Early monetization or exits before settlement (needs daily
+marks; a later ADR), 60-90 DTE buckets, VIX options, a trend sleeve (not
+options), ratio spreads and backspreads, IWM, real runs.
+
+**Process.** TDD; Sonnet author; two fresh Sonnet skeptics; zero unresolved
+Critical/Major before merge.

@@ -1,5 +1,21 @@
 # Re-entry
 
+## index_options: ADR-0195 landed (forecast-scored payoff selector) (2026-09-30)
+
+- Step 3 of memo A0612. Candidate `9b3b1c4` (Claude Sonnet 5.5, TDD) with the
+  ADR-0194 backlog; two fresh Sonnet skeptics: correctness C0/M0/m0/n4, tests
+  C0/M0/m3/n3. Evidence `docs/review-evidence/ADR-0195.md`. Child suite 1215
+  passed / 23 failed (same pre-existing pins); tests/pipeline 5219 passed.
+- Built: per-trade leg sets with one generic American charge;
+  `CALL_SPREAD_LEGS`, `STRUCTURES`; `PayoffSelectQuoteBacktest` (45
+  pre-registered candidates scored E_P[pnl]/max_loss at bid/ask; implied
+  condor benchmark); 28 `<cell>-select.json` / `<cell>-empirical-select.json`
+  (empirical = conditional-forecast control, see ADR-0195 amendment);
+  core `stats.NO_VARIANCE_RTOL` (float-noise-constant series → t None).
+- Minor backlog (RTOL boundary pin, test_skill tolerance, tie-order pin,
+  wording nits) rides the ADR-0196 candidate. ADR-0196 and ADR-0197 texts are
+  in the decision log, owner-approved.
+
 ## index_options: ADR-0194 landed (term-structure / VRP-sign gate study) (2026-09-30)
 
 - Step 2 of memo A0612. Candidate `2990217` (Claude Sonnet 5.5, TDD) with the
