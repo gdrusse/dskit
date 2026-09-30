@@ -9,6 +9,14 @@ shares with the synthetic track are module functions (ADR-0187):
 :func:`american_short_charge`. :class:`DefinedRiskCondor` calls the first
 two and keeps raising on a bad quote or credit; a backtest classifies the
 same problems instead.
+
+ADR-0193 generalizes them from the condor to a leg set. :func:`structure_credit`
+owns the bid/ask credit rule for any leg tuple and :func:`condor_credit` is
+its call on :data:`CONDOR_LEGS`; :data:`PUT_SPREAD_LEGS` is the condor's put
+wing. The American charge splits into :func:`american_put_carry` (needs no
+dividend data) and :func:`american_call_dividend`, which
+:func:`american_short_charge` composes; :func:`dividends_paid` is the
+dividend rule a hedge benchmark shares with the call charge.
 """
 
 import math
@@ -16,6 +24,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, Inexact, InvalidOperation, localcontext
+from itertools import pairwise
 import re
 from types import MappingProxyType
 
@@ -25,18 +34,26 @@ from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
     "CONDOR_LEGS",
+    "PUT_SPREAD_LEGS",
     "CashIndexContract",
     "DefinedRiskCondor",
+    "american_call_dividend",
+    "american_put_carry",
     "american_short_charge",
     "condor_credit",
+    "dividends_paid",
     "leg_intrinsic",
     "quote_problems",
+    "structure_credit",
 ]
 
 #: The one owner of an iron condor's leg order and signed quantity: long
 #: put, short put, short call, long call. The standardized geometry, the
 #: cashflow owner and both backtests read it; none restates it.
 CONDOR_LEGS = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+#: The condor's put wing, a long put under a short put (ADR-0193): a prefix of
+#: :data:`CONDOR_LEGS`, so the two structures share one leg order.
+PUT_SPREAD_LEGS = CONDOR_LEGS[:2]
 _LEG_SIGNS = tuple(sign for _right, sign in CONDOR_LEGS)
 #: The side a quote is judged for: both sizes, a sale (bid) or a purchase (ask).
 _SIDES = (None, "sell", "buy")
@@ -200,13 +217,62 @@ def quote_problems(bid, ask, bid_size, ask_size, count, side=None):
     return problems
 
 
+def structure_credit(legs, strikes, quotes):
+    """Return a leg set's per-share entry credit and its vertical widths.
+
+    Short legs sell at the bid, long legs buy at the ask — the one owner of
+    that rule (ADR-0187, generalized from the condor to any leg tuple by
+    ADR-0193). It never raises on the answer: the cashflow owner refuses a
+    credit outside ``(0, narrower width)`` and a backtest classifies it.
+
+    A *vertical pair* is two consecutive legs of one right with opposite
+    signs (one long, one short, in either order); its width is the later
+    leg's strike less the earlier leg's, in leg order, so it is positive
+    when the strikes ascend as the tuple lists them. Legs of two rights, or
+    of one sign, pair with nothing.
+
+    Parameters
+    ----------
+    legs : sequence of (str, int)
+        ``(right, signed quantity)`` per leg, e.g. :data:`CONDOR_LEGS`.
+    strikes : sequence of Decimal or float
+        One strike per leg, in leg order.
+    quotes : sequence of (bid, ask)
+        One pair per leg, in leg order and the strikes' numeric family.
+
+    Returns
+    -------
+    tuple
+        ``(credit, widths)``: the credit, and a tuple with one width per
+        vertical pair in leg order (empty when there is none).
+
+    Raises
+    ------
+    ValueError
+        When ``strikes`` or ``quotes`` do not match ``legs`` in number.
+
+    Examples
+    --------
+    A put credit spread, short the 100 at its bid, long the 95 at its ask::
+
+        credit, widths = structure_credit(PUT_SPREAD_LEGS, (95.0, 100.0),
+                                          ((1.0, 1.1), (2.0, 2.2)))
+        # -> credit 0.9 (2.0 - 1.1), widths (5.0,)
+    """
+    placed = list(zip(legs, strikes, quotes, strict=True))
+    credit = sum(-sign * (ask if sign > 0 else bid)
+                 for (_right, sign), _strike, (bid, ask) in placed)
+    widths = tuple(later - earlier
+                   for ((right, sign), earlier, _quote), ((next_right, next_sign), later, _next)
+                   in pairwise(placed) if right == next_right and sign * next_sign < 0)
+    return credit, widths
+
+
 def condor_credit(strikes, quotes):
     """Return a condor's per-share entry credit and both wing widths.
 
-    Short legs sell at the bid, long legs buy at the ask — the one owner of
-    that rule (ADR-0187). It never raises on the answer: the cashflow owner
-    refuses a credit outside ``(0, narrower width)`` and a backtest
-    classifies it.
+    :func:`structure_credit` on :data:`CONDOR_LEGS`: shorts at the bid, longs
+    at the ask (ADR-0187).
 
     Parameters
     ----------
@@ -219,10 +285,208 @@ def condor_credit(strikes, quotes):
     -------
     tuple
         ``(credit, (put_width, call_width))``.
+
+    Raises
+    ------
+    ValueError
+        When ``strikes`` or ``quotes`` are not four long.
     """
-    credit = sum(-sign * (ask if sign > 0 else bid)
-                 for sign, (bid, ask) in zip(_LEG_SIGNS, quotes))
-    return credit, (strikes[1] - strikes[0], strikes[3] - strikes[2])
+    return structure_credit(CONDOR_LEGS, strikes, quotes)
+
+
+def _charge_dates(entry_date, settle_date):
+    """Parse the charge window's ISO dates and require it to run forward: ``(entry, settle)``."""
+    entry, settle = _day(entry_date, "entry_date"), _day(settle_date, "settle_date")
+    if settle <= entry:
+        raise ValueError(f"settle_date {settle_date} must follow entry_date {entry_date}")
+    return entry, settle
+
+
+def _charge_strike(name, strike):
+    """Require a short strike to be a positive number."""
+    if not price_ok(strike):
+        raise ValueError(f"{name} must be a positive number, got {strike!r}")
+
+
+def _charge_rows(rows, entry, settle):
+    """Return the ``[entry, settle]`` sessions oldest first as ``(date, row)``, closes checked."""
+    window = []
+    for row in rows:
+        day = _day(row["date"], "date")
+        if entry <= day <= settle:
+            if not price_ok(row.get("close")):
+                raise ValueError(f"close on {row['date']} must be a positive number, "
+                                 f"got {row.get('close')!r}")
+            window.append((day, row))
+    window.sort(key=lambda pair: pair[0])
+    if not window:
+        raise ValueError(f"no closes between {entry.isoformat()} and {settle.isoformat()}")
+    return window
+
+
+def _session_dividend(row):
+    """Return one session's ex-date cash per share, refusing an unusable amount."""
+    dividend = row.get("dividend_amount")
+    if not number_ok(dividend) or dividend < 0:
+        raise ValueError(f"dividend_amount on {row['date']} must be a finite "
+                         f"number >= 0, got {dividend!r}")
+    return dividend
+
+
+def american_put_carry(rows, short_put, entry_date, settle_date, carry_rate, multiplier):
+    """Return the conservative early-exercise carry on a short put.
+
+    ETF options are American and physically settled (ADR-0187). From the
+    first close ``s`` in ``[entry_date, settle_date)`` below ``short_put``,
+    the position is assumed long the stock at ``short_put``, and
+    ``short_put x (exp(carry_rate x tau) - 1)`` with
+    ``tau = (settle_date - s) / 365`` is charged. It ignores what assignment
+    would gain (forfeited extrinsic value, our own long legs, dividends on
+    assigned stock), so the bound is conservative. It reads closes only:
+    no dividend data is needed (ADR-0193), so a put-only structure runs
+    where none exists.
+
+    Parameters
+    ----------
+    rows : list of dict
+        ``date`` (ISO) and ``close`` (positive) per session; rows outside
+        ``[entry_date, settle_date]`` are ignored.
+    short_put : float
+        The short put strike.
+    entry_date, settle_date : str
+        ISO dates; the window is ``[entry_date, settle_date]``.
+    carry_rate : float
+        A constant upper bound on the cash rate, >= 0.
+    multiplier : int
+        Shares per contract.
+
+    Returns
+    -------
+    float
+        The carry in USD per contract, ``0.0`` when no close is below the
+        strike.
+
+    Raises
+    ------
+    ValueError
+        When the window is empty or inverted, the rate or strike is
+        unusable, or a close in the window is not a positive number.
+
+    Examples
+    --------
+    A put that closes in the money four days before settlement::
+
+        carry = american_put_carry(rows, 95.0, "2024-03-01", "2024-03-08", 0.055, 100)
+        # -> 95.0 * (exp(0.055 * 4 / 365) - 1) * 100 when 03-04 is the first close below 95
+    """
+    entry, settle = _charge_dates(entry_date, settle_date)
+    if not number_ok(carry_rate) or carry_rate < 0:
+        raise ValueError(f"carry_rate must be a finite number >= 0, got {carry_rate!r}")
+    _charge_strike("short_put", short_put)
+    _integer(multiplier, "multiplier", 1)
+    for day, row in _charge_rows(rows, entry, settle):
+        if day < settle and row["close"] < short_put:
+            tau = (settle - day).days / 365
+            return short_put * (math.exp(carry_rate * tau) - 1) * multiplier
+    return 0.0
+
+
+def american_call_dividend(rows, short_call, entry_date, settle_date, multiplier):
+    """Return the conservative early-assignment dividend cost of a short call.
+
+    ETF options are American and physically settled (ADR-0187). The dividend
+    is charged for the first ex-date in ``(entry_date, settle_date]`` whose
+    pre-ex close (the previous session's close) is above ``short_call``, and
+    for every later ex-date in the window, because from then on the position
+    is assumed short the stock. It ignores what assignment would gain, so
+    the bound is conservative.
+
+    Parameters
+    ----------
+    rows : list of dict
+        ``date`` (ISO), ``close`` (positive) and ``dividend_amount`` (the
+        ex-date cash, ``0`` otherwise) per session; rows outside the window
+        are ignored.
+    short_call : float
+        The short call strike.
+    entry_date, settle_date : str
+        ISO dates; the window is ``[entry_date, settle_date]``.
+    multiplier : int
+        Shares per contract.
+
+    Returns
+    -------
+    float
+        The dividends charged, in USD per contract.
+
+    Raises
+    ------
+    ValueError
+        When the window is empty or inverted, the strike is unusable, a
+        close is not a positive number, or a session after the entry and up
+        to settlement carries no usable ``dividend_amount`` (``None``
+        refuses, it is never skipped).
+
+    Examples
+    --------
+    A 1.50 dividend whose pre-ex close is above the 102 strike::
+
+        cost = american_call_dividend(rows, 102.0, "2024-03-01", "2024-03-08", 100)
+        # -> 150.0
+    """
+    entry, settle = _charge_dates(entry_date, settle_date)
+    _charge_strike("short_call", short_call)
+    _integer(multiplier, "multiplier", 1)
+    call, assigned, previous_close = 0.0, False, None
+    for day, row in _charge_rows(rows, entry, settle):
+        if day > entry:
+            dividend = _session_dividend(row)
+            if dividend > 0 and (assigned or (previous_close is not None
+                                              and previous_close > short_call)):
+                assigned = True
+                call += dividend
+        previous_close = row["close"]
+    return call * multiplier
+
+
+def dividends_paid(rows, entry_date, settle_date):
+    """Return the ex-date cash per share paid in ``(entry_date, settle_date]``.
+
+    What a holder of the stock across the window receives: the same session
+    rule and the same refusal of an unusable ``dividend_amount`` as
+    :func:`american_call_dividend`, with no assignment logic.
+
+    Parameters
+    ----------
+    rows : list of dict
+        ``date`` (ISO), ``close`` (positive) and ``dividend_amount`` per
+        session; rows outside ``[entry_date, settle_date]`` are ignored.
+    entry_date, settle_date : str
+        ISO dates; the entry day's own ex-date is not paid to a holder from
+        that close on.
+
+    Returns
+    -------
+    float
+        The sum, ``0.0`` when there is none.
+
+    Raises
+    ------
+    ValueError
+        When the window is empty or inverted, a close is not a positive
+        number, or a session after the entry carries no usable
+        ``dividend_amount``.
+
+    Examples
+    --------
+    One ex-date inside the window::
+
+        paid = dividends_paid(rows, "2024-03-01", "2024-03-08")
+        # -> 0.5 when only 03-04 paid 0.5
+    """
+    entry, settle = _charge_dates(entry_date, settle_date)
+    return sum((_session_dividend(row) for day, row in _charge_rows(rows, entry, settle)
+                if day > entry), 0.0)
 
 
 def american_short_charge(rows, short_put, short_call, entry_date, settle_date,
@@ -231,22 +495,10 @@ def american_short_charge(rows, short_put, short_call, entry_date, settle_date,
 
     ETF options are American and physically settled (ADR-0187). Each short
     leg is valued at its European payoff on ``settle_date`` minus a one-sided
-    bound on what early assignment can cost:
-
-    * **short call, dividends** — the dividend is charged for the first
-      ex-date in ``(entry_date, settle_date]`` whose pre-ex close (the
-      previous session's close) is above ``short_call``, and for every
-      later ex-date in the window, because from then on the position is
-      assumed short the stock;
-    * **short put, carry** — from the first close ``s`` in
-      ``[entry_date, settle_date)`` below ``short_put``, the position is
-      assumed long the stock at ``short_put``, and
-      ``short_put x (exp(carry_rate x tau) - 1)`` with
-      ``tau = (settle_date - s) / 365`` is charged.
-
-    Both ignore what assignment would gain (forfeited extrinsic value, our
-    own long legs, dividends on assigned stock), so the bound is
-    conservative.
+    bound on what early assignment can cost; ADR-0193 split the two bounds
+    into :func:`american_call_dividend` (the short call, dividends) and
+    :func:`american_put_carry` (the short put, carry), which this composes.
+    Both ignore what assignment would gain, so the bound is conservative.
 
     Parameters
     ----------
@@ -276,46 +528,9 @@ def american_short_charge(rows, short_put, short_call, entry_date, settle_date,
         up to settlement carries no ``dividend_amount`` (``None`` refuses,
         it is never skipped).
     """
-    entry, settle = _day(entry_date, "entry_date"), _day(settle_date, "settle_date")
-    if settle <= entry:
-        raise ValueError(f"settle_date {settle_date} must follow entry_date {entry_date}")
-    if not number_ok(carry_rate) or carry_rate < 0:
-        raise ValueError(f"carry_rate must be a finite number >= 0, got {carry_rate!r}")
-    for name, strike in (("short_put", short_put), ("short_call", short_call)):
-        if not price_ok(strike):
-            raise ValueError(f"{name} must be a positive number, got {strike!r}")
-    _integer(multiplier, "multiplier", 1)
-    window = []
-    for row in rows:
-        day = _day(row["date"], "date")
-        if entry <= day <= settle:
-            if not price_ok(row.get("close")):
-                raise ValueError(f"close on {row['date']} must be a positive number, "
-                                 f"got {row.get('close')!r}")
-            window.append((day, row))
-    window.sort(key=lambda pair: pair[0])
-    if not window:
-        raise ValueError(f"no closes between {entry_date} and {settle_date}")
-    call, assigned, previous_close = 0.0, False, None
-    for day, row in window:
-        if day > entry:
-            dividend = row.get("dividend_amount")
-            if not number_ok(dividend) or dividend < 0:
-                raise ValueError(f"dividend_amount on {row['date']} must be a finite "
-                                 f"number >= 0, got {dividend!r}")
-            if dividend > 0 and (assigned or (previous_close is not None
-                                              and previous_close > short_call)):
-                assigned = True
-                call += dividend
-        previous_close = row["close"]
-    put = 0.0
-    for day, row in window:
-        if day < settle and row["close"] < short_put:
-            tau = (settle - day).days / 365
-            put = short_put * (math.exp(carry_rate * tau) - 1)
-            break
-    return {"call_dividend_usd": call * multiplier, "put_carry_usd": put * multiplier,
-            "total_usd": (call + put) * multiplier}
+    put = american_put_carry(rows, short_put, entry_date, settle_date, carry_rate, multiplier)
+    call = american_call_dividend(rows, short_call, entry_date, settle_date, multiplier)
+    return {"call_dividend_usd": call, "put_carry_usd": put, "total_usd": call + put}
 
 
 def _amount_text(value):

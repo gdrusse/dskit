@@ -17,7 +17,7 @@ import pytest
 from dskit.pipeline.base import ConfigError
 
 from index_options.contracts import american_short_charge
-from index_options.nodes import CondorBacktest, CondorQuoteBacktest
+from index_options.nodes import CondorBacktest, CondorQuoteBacktest, PutSpreadQuoteBacktest
 
 #: Draws whose 10%/90% quantiles are exactly -1 and +1.
 DRAWS = [-1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
@@ -84,10 +84,40 @@ def _series(closes, dividends=()):
              "dividend_amount": paid.get(d, 0.0)} for d, c in closes]
 
 
-def _run(forecasts, chain, underlying, **over):
-    node = CondorQuoteBacktest("bt", {**PARAMS, **over})
+#: The condor's legs and the put spread's, restated here (never read from the node).
+CONDOR = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+PUT_SPREAD = CONDOR[:2]
+
+
+def _assert_the_wing_split(sides, ledger):
+    """ADR-0193 on EVERY entry of EVERY run: an entered cell's sides sum to its P&L
+    within 1e-9 and name exactly the structure's sides; a cell that did not enter has
+    neither a split nor a benchmark."""
+    for entry in ledger:
+        for book, cell in entry["books"].items():
+            if cell["entered"]:
+                assert tuple(cell["side_pnl_usd"]) == sides, (entry["date"], book)
+                assert abs(sum(cell["side_pnl_usd"].values()) - cell["pnl_usd"]) <= 1e-9, (
+                    entry["date"], book)
+            else:
+                assert cell["side_pnl_usd"] is None, (entry["date"], book)
+                assert cell["delta"] is None and cell["equity_pnl_usd"] is None
+
+
+def _run_node(node_cls, sides, forecasts, chain, underlying, **over):
+    node = node_cls("bt", {**PARAMS, **over})
     out = node.run(CTX, {"forecasts": forecasts, "chain": chain, "underlying": underlying})
+    _assert_the_wing_split(sides, out["report"].value["ledger"])
     return out["metrics"], out["report"].value
+
+
+def _run(forecasts, chain, underlying, **over):
+    return _run_node(CondorQuoteBacktest, ("put", "call"), forecasts, chain, underlying, **over)
+
+
+def _run_put_spread(forecasts, chain, underlying, **over):
+    return _run_node(PutSpreadQuoteBacktest, ("put",), forecasts, chain, underlying,
+                     **over)
 
 
 # -- the worked entry ---------------------------------------------------------------------
@@ -289,7 +319,8 @@ def test_a_target_outside_the_band_is_counted():
     # only the model book reports an expectation, and at the entry level
     cell = report["ledger"][0]["books"]["model"]
     assert cell == {"strikes": None, "credit_usd": None, "american_charge_usd": None,
-                    "pnl_usd": None, "entered": False, "reason": "target_outside_band"}
+                    "pnl_usd": None, "entered": False, "reason": "target_outside_band",
+                    "side_pnl_usd": None, "delta": None, "equity_pnl_usd": None}
     assert report["ledger"][0]["books"]["always"] == cell
     assert set(report["ledger"][0]["books"]["implied"]) == set(cell)
 
@@ -1054,3 +1085,475 @@ def test_cvar_takes_the_declared_tail_and_the_drawdown_follows_time_order():
     assert metrics["model_max_drawdown_usd"] == pytest.approx(277.8)
     assert metrics["model_cvar_usd"] == pytest.approx(-142.6)
     assert metrics["model_hit_rate"] == pytest.approx(1 / 3)
+
+
+# -- ADR-0193: the wing split, the put-spread book and the delta-matched benchmark -------------
+#
+# Every expected value is restated by hand. The worked chain: the model strikes are
+# [92, 95, 106, 108] (put side 92/95, call side 106/108), the implied [95, 96, 104, 106].
+#   model  put side  (2.0 - 1.1) * 100 - 2 * 0.65 = 88.7   call side (1.5 - 0.8) * 100 - 1.3 = 68.7
+#   implied put side (2.4 - 2.2) * 100 - 1.3      = 18.7   call side (2.1 - 1.6) * 100 - 1.3 = 48.7
+
+MODEL_PUT_CREDIT, MODEL_CALL_CREDIT = 88.7, 68.7
+IMPLIED_PUT_CREDIT, IMPLIED_CALL_CREDIT = 18.7, 48.7
+
+
+def _carry(strike, days):
+    """The put carry on ``strike`` for ``days`` calendar days at the worked 5.5%, x 100."""
+    return strike * (math.exp(0.055 * days / 365) - 1) * 100
+
+
+def test_the_worked_entry_splits_into_its_two_wings():
+    metrics, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    books = report["ledger"][0]["books"]
+    for book, put, call in (("model", MODEL_PUT_CREDIT, MODEL_CALL_CREDIT),
+                            ("always", MODEL_PUT_CREDIT, MODEL_CALL_CREDIT),
+                            ("implied", IMPLIED_PUT_CREDIT, IMPLIED_CALL_CREDIT)):
+        assert books[book]["side_pnl_usd"] == pytest.approx({"put": put, "call": call})
+        assert list(books[book]["side_pnl_usd"]) == ["put", "call"]
+        assert metrics[f"{book}_put_total_pnl_usd"] == pytest.approx(put)
+        assert metrics[f"{book}_call_total_pnl_usd"] == pytest.approx(call)
+        assert metrics[f"{book}_put_mean_pnl_usd"] == pytest.approx(put)
+        assert metrics[f"{book}_call_mean_pnl_usd"] == pytest.approx(call)
+        assert metrics[f"{book}_put_hit_rate"] == 1.0 == metrics[f"{book}_call_hit_rate"]
+
+
+@pytest.mark.parametrize("level, model, implied", [
+    # (put side, call side) of each book, settled at `level`
+    (80.0, (88.7 - 300.0, 68.7), (18.7 - 100.0, 48.7)),     # through every put wing
+    (93.5, (88.7 - 150.0, 68.7), (18.7 - 100.0, 48.7)),     # short put 95 -1.5 (long 92 out); 96/95 -1.0
+    (110.0, (88.7, 68.7 - 200.0), (18.7, 48.7 - 200.0)),    # through every call wing
+])
+def test_a_losing_settlement_lands_on_the_wing_that_lost(level, model, implied):
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _settled_at(level))
+    books = report["ledger"][0]["books"]
+    for book, (put, call) in (("model", model), ("always", model), ("implied", implied)):
+        assert books[book]["side_pnl_usd"]["put"] == pytest.approx(put)
+        assert books[book]["side_pnl_usd"]["call"] == pytest.approx(call)
+
+
+def test_each_wing_carries_its_own_american_charge():
+    # ex-date 03-07 (1.0); the 03-06 close 107 is above both short calls (106, 104) -> 100 on
+    # the call side of every book; the 03-07 close 94 is below both short puts (95, 96) ->
+    # one day of carry on that book's own short put; settled at 97 with nothing else owing
+    dividends = [("2024-03-07", 1.0)]
+    closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                     ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes, dividends))
+    books = report["ledger"][0]["books"]
+    model_put = MODEL_PUT_CREDIT - _carry(95.0, 1)
+    assert books["model"]["side_pnl_usd"]["put"] == pytest.approx(model_put)
+    assert books["model"]["side_pnl_usd"]["call"] == pytest.approx(MODEL_CALL_CREDIT - 100.0)
+    assert books["implied"]["side_pnl_usd"]["put"] == pytest.approx(
+        IMPLIED_PUT_CREDIT - _carry(96.0, 1))
+    assert books["implied"]["side_pnl_usd"]["call"] == pytest.approx(IMPLIED_CALL_CREDIT - 100.0)
+    # the cell's own charge is still the composite: both wings, summed
+    assert books["model"]["american_charge_usd"] == pytest.approx(100.0 + _carry(95.0, 1))
+
+
+def test_the_wing_split_metrics_are_the_per_side_total_mean_and_hit_rate_over_the_trades():
+    # settlements 80 / 93.5 / 97: the put side earns 88.7 less 300, 150 and 0, the call side
+    # keeps 68.7 each time
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    metrics, report = _run(rows, chain, series)
+    puts = [88.7 - 300.0, 88.7 - 150.0, 88.7]
+    for book in ("model", "always"):
+        assert [e["books"][book]["side_pnl_usd"]["put"] for e in report["ledger"]] == \
+            pytest.approx(puts)
+        assert metrics[f"{book}_put_total_pnl_usd"] == pytest.approx(sum(puts))
+        assert metrics[f"{book}_put_mean_pnl_usd"] == pytest.approx(sum(puts) / 3)
+        assert metrics[f"{book}_put_hit_rate"] == pytest.approx(1 / 3)
+        assert metrics[f"{book}_call_total_pnl_usd"] == pytest.approx(3 * 68.7)
+        assert metrics[f"{book}_call_mean_pnl_usd"] == pytest.approx(68.7)
+        assert metrics[f"{book}_call_hit_rate"] == 1.0
+    # the sides add up to the book, side by side and in the totals
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_put_total_pnl_usd"] + metrics[f"{book}_call_total_pnl_usd"] == \
+            pytest.approx(metrics[f"{book}_total_pnl_usd"])
+
+
+def test_each_wing_hits_independently_of_the_other():
+    # settlements 80 / 97 / 80: the put side loses twice (-211.3), the call side always wins
+    rows, chain, series = _three_trades(80.0, 97.0, 80.0)
+    metrics, _ = _run(rows, chain, series)
+    assert metrics["model_put_hit_rate"] == pytest.approx(1 / 3)
+    assert metrics["model_call_hit_rate"] == 1.0
+
+
+def test_an_empty_book_reports_zero_for_every_side_and_benchmark_statistic():
+    chain = _chain(ENTRY, EXPIRY, bid_size=0, ask_size=0)
+    metrics, _ = _run([_row(ENTRY)], chain, FLAT)
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0
+        for stat in ("put_total_pnl_usd", "put_mean_pnl_usd", "put_hit_rate",
+                     "call_total_pnl_usd", "call_mean_pnl_usd", "call_hit_rate",
+                     "delta_equity_total_usd", "residual_mean_pnl_usd", "residual_t", "pnl_t",
+                     "n_no_delta"):
+            assert metrics[f"{book}_{stat}"] == 0.0, stat
+
+
+# -- the delta-matched benchmark ----------------------------------------------------------
+
+
+def _forward_delta(right, strike, iv=0.2, dte=7, forward=100.0):
+    """Black-76 forward delta at rate 0, written out independently of dskit."""
+    sd = iv * math.sqrt(dte / 365)
+    d1 = (math.log(forward / strike) + sd * sd / 2) / sd
+    return NormalDist().cdf(d1) if right == "call" else -NormalDist().cdf(-d1)
+
+
+def _structure_delta(legs, strikes, **kwargs):
+    return sum(sign * _forward_delta(right, k, **kwargs)
+               for (right, sign), k in zip(legs, strikes))
+
+
+MODEL_DELTA = _structure_delta(CONDOR, MODEL_STRIKES)
+IMPLIED_DELTA = _structure_delta(CONDOR, IMPLIED_STRIKES)
+MODEL_PUT_SPREAD_DELTA = _structure_delta(PUT_SPREAD, MODEL_STRIKES[:2])
+
+
+def test_the_benchmark_is_the_structures_delta_times_the_underlyings_move():
+    # entered at 100, settled at 97, no ex-date: the stock leg earns delta x 100 x (97 - 100)
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    books = report["ledger"][0]["books"]
+    for book, delta in (("model", MODEL_DELTA), ("always", MODEL_DELTA),
+                        ("implied", IMPLIED_DELTA)):
+        assert books[book]["delta"] == pytest.approx(delta)
+        assert books[book]["equity_pnl_usd"] == pytest.approx(delta * 100 * -3.0)
+    # a condor's short strangle is net short the stock only slightly: the sign is the legs'
+    assert MODEL_DELTA != 0.0 and abs(MODEL_DELTA) < 0.1
+
+
+def test_the_benchmark_adds_the_dividends_paid_after_entry_up_to_settlement():
+    # a 1.0 ex-date on 03-07 lies in (03-01, 03-08]: the stock earns the move AND the dividend;
+    # one on the entry day and one after settlement are not the holder's
+    dividends = [("2024-03-01", 5.0), ("2024-03-07", 1.0), ("2024-03-11", 9.0)]
+    closes = [(d, 100.0) for d in SESSIONS[:-3]] + [("2024-03-08", 97.0), ("2024-03-11", 98.0),
+                                                     ("2024-03-12", 99.0)]
+    _, report = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), _series(closes, dividends))
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["equity_pnl_usd"] == pytest.approx(MODEL_DELTA * 100 * (97.0 - 100.0 + 1.0))
+
+
+def test_the_delta_uses_the_traded_legs_own_iv_and_calendar_days_over_365():
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        q["iv"] = {("put", 92.0): 0.35, ("put", 95.0): 0.30, ("call", 106.0): 0.25,
+                   ("call", 108.0): 0.28}.get((q["right"], q["strike"]), 0.2)
+    _, report = _run([_row(ENTRY)], chain, FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    expected = (_forward_delta("put", 92.0, iv=0.35) - _forward_delta("put", 95.0, iv=0.30)
+                - _forward_delta("call", 106.0, iv=0.25) + _forward_delta("call", 108.0, iv=0.28))
+    assert cell["delta"] == pytest.approx(expected)
+    # ... on dte 7, never the 5 sessions the strikes were scaled by
+    on_sessions = _structure_delta(CONDOR, MODEL_STRIKES, dte=5)
+    assert cell["delta"] != pytest.approx(on_sessions)
+
+
+@pytest.mark.parametrize("bad", [None, 0.0, -0.2, float("nan")])
+def test_a_traded_leg_without_a_usable_iv_leaves_no_benchmark_and_is_counted(bad):
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == "put" and q["strike"] == 92.0:   # the model's long put alone
+            q["iv"] = bad
+    metrics, report = _run([_row(ENTRY)], chain, FLAT)
+    books = report["ledger"][0]["books"]
+    for book in ("model", "always"):
+        assert books[book]["entered"] is True
+        assert books[book]["delta"] is None and books[book]["equity_pnl_usd"] is None
+        assert metrics[f"{book}_n_no_delta"] == 1
+        assert metrics[f"{book}_delta_equity_total_usd"] == 0.0
+        assert metrics[f"{book}_residual_mean_pnl_usd"] == 0.0
+        assert metrics[f"{book}_residual_t"] == 0.0
+    # the implied book's legs (95, 96, 104, 106) all carry one
+    assert books["implied"]["delta"] == pytest.approx(IMPLIED_DELTA)
+    assert metrics["implied_n_no_delta"] == 0
+
+
+def test_a_book_is_benchmarked_only_over_its_trades_with_a_delta():
+    # two instruments; SPY's long put loses its iv, QQQ's legs are whole: the residual mean
+    # and the equity total read QQQ alone while the P&L totals read both
+    qqq_chain = _set(_chain(ENTRY, EXPIRY, close=50.0, strikes=range(44, 57), instrument="QQQ"),
+                     put47={"bid": 1.0, "ask": 1.1}, call53={"bid": 1.0, "ask": 1.1})
+    spy_chain = _chain(ENTRY, EXPIRY)
+    for q in spy_chain:
+        if q["right"] == "put" and q["strike"] == 92.0:
+            q["iv"] = None
+    qqq_series = [{"instrument": "QQQ", "date": d, "close": 50.0, "asof_ms": _ms(d),
+                   "dividend_amount": 0.0} for d in SESSIONS]
+    rows = [_row(ENTRY), _row(ENTRY, close=50.0, instrument="QQQ")]
+    metrics, report = _run(rows, spy_chain + qqq_chain, FLAT + qqq_series)
+    qqq, spy = report["ledger"]
+    assert spy["books"]["model"]["equity_pnl_usd"] is None
+    delta = _structure_delta(CONDOR, [46.0, 47.0, 53.0, 54.0], forward=50.0)
+    equity = delta * 100 * (50.0 - 50.0)    # QQQ never moves
+    assert qqq["books"]["model"]["equity_pnl_usd"] == pytest.approx(equity)
+    assert metrics["model_n_trades"] == 2 and metrics["model_n_no_delta"] == 1
+    assert metrics["model_delta_equity_total_usd"] == pytest.approx(equity)
+    assert metrics["model_residual_mean_pnl_usd"] == pytest.approx(
+        qqq["books"]["model"]["pnl_usd"] - equity)
+
+
+def _t(values):
+    """The lags=0 t of a mean, written out: mean / (sd / sqrt(n)), sd with divisor n."""
+    n = len(values)
+    mean = sum(values) / n
+    sd = math.sqrt(sum((v - mean) ** 2 for v in values) / n)
+    return mean / (sd / math.sqrt(n))
+
+
+def test_the_benchmark_metrics_are_the_residual_mean_and_the_two_t_statistics():
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    metrics, report = _run(rows, chain, series)
+    pnls = [e["books"]["model"]["pnl_usd"] for e in report["ledger"]]
+    assert pnls == pytest.approx([-142.6, 7.4, 157.4])
+    equity = [MODEL_DELTA * 100 * (level - 100.0) for level in (80.0, 93.5, 97.0)]
+    residual = [p - e for p, e in zip(pnls, equity)]
+    assert metrics["model_delta_equity_total_usd"] == pytest.approx(sum(equity))
+    assert metrics["model_residual_mean_pnl_usd"] == pytest.approx(sum(residual) / 3)
+    assert metrics["model_pnl_t"] == pytest.approx(_t(pnls))
+    assert metrics["model_residual_t"] == pytest.approx(_t(residual))
+    assert metrics["model_n_no_delta"] == 0
+    # 7.4 / sqrt((150^2 + 0 + 150^2) / 3 / 3): the divisor-n standard deviation, not n - 1
+    assert metrics["model_pnl_t"] == pytest.approx(7.4 / math.sqrt(15000 / 3))
+    # every book is judged the same way, each on its own trades
+    for book in ("always", "implied"):
+        assert f"{book}_residual_t" in metrics and f"{book}_pnl_t" in metrics
+    assert metrics["always_pnl_t"] == pytest.approx(metrics["model_pnl_t"])
+
+
+def test_a_t_statistic_is_zero_with_fewer_than_two_trades_or_no_variance():
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)   # one trade
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 1
+        assert metrics[f"{book}_pnl_t"] == 0.0 and metrics[f"{book}_residual_t"] == 0.0
+    rows, chain, series = _three_trades(97.0, 97.0, 97.0)   # three identical trades
+    metrics, _ = _run(rows, chain, series)
+    assert metrics["model_n_trades"] == 3
+    assert metrics["model_pnl_t"] == 0.0 and metrics["model_residual_t"] == 0.0
+    assert metrics["model_residual_mean_pnl_usd"] == pytest.approx(
+        MODEL_CREDIT - MODEL_DELTA * 100 * -3.0)
+
+
+def test_only_the_trades_with_a_delta_enter_the_residual_t():
+    # the middle entry has no iv on its long put: the residual t is over the other two
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    for q in chain:
+        if q["date"] == "2024-03-11" and q["right"] == "put" and q["strike"] == 92.0:
+            q["iv"] = None
+    metrics, report = _run(rows, chain, series)
+    pnls = [e["books"]["model"]["pnl_usd"] for e in report["ledger"]]
+    equity = {0: MODEL_DELTA * 100 * -20.0, 2: MODEL_DELTA * 100 * -3.0}
+    residual = [pnls[k] - equity[k] for k in (0, 2)]
+    assert metrics["model_n_no_delta"] == 1
+    assert metrics["model_residual_t"] == pytest.approx(_t(residual))
+    assert metrics["model_residual_mean_pnl_usd"] == pytest.approx(sum(residual) / 2)
+    assert metrics["model_pnl_t"] == pytest.approx(_t(pnls))  # the P&L t reads every trade
+
+
+# -- PutSpreadQuoteBacktest ----------------------------------------------------------------
+
+
+def test_the_put_spread_is_a_condor_quote_backtest_with_the_put_wing_as_its_legs():
+    cls = PutSpreadQuoteBacktest
+    assert issubclass(cls, CondorQuoteBacktest)
+    assert CondorQuoteBacktest.LEGS == CONDOR and cls.LEGS == PUT_SPREAD
+    # SIDES is the distinct rights of LEGS, in leg order: derived, never a second list
+    for node_cls in (CondorQuoteBacktest, cls):
+        assert node_cls.SIDES == tuple(dict.fromkeys(right for right, _ in node_cls.LEGS))
+    assert CondorQuoteBacktest.SIDES == ("put", "call") and cls.SIDES == ("put",)
+    # the same books, reasons and knobs: nothing the condor declares is restated
+    assert cls.BOOKS == CondorQuoteBacktest.BOOKS
+    assert cls.ROW_REASONS == CondorQuoteBacktest.ROW_REASONS
+    assert cls.BOOK_REASONS == CondorQuoteBacktest.BOOK_REASONS
+    assert cls._PARAMS == CondorQuoteBacktest._PARAMS
+    assert cls.serving_effect(PARAMS, {}) == "forbidden" and cls.role == "score"
+
+
+def test_the_put_spread_refuses_the_condors_bad_knobs_and_needs_its_required_ones():
+    cls = PutSpreadQuoteBacktest
+    for change in ({"split": "nope"}, {"short_q": 0.5}, {"wing_z": 0}, {"wing_points": 25},
+                   {"multiplier": 0}, {"carry_rate": -0.01}, {"hold_steps": 21}):
+        with pytest.raises(ConfigError, match=next(iter(change))):
+            cls("bt", {**PARAMS, **change})
+    for missing in PARAMS:
+        with pytest.raises(ConfigError, match=missing):
+            cls("bt", {k: v for k, v in PARAMS.items() if k != missing})
+    assert cls.validate_params(dict(PARAMS)) == []
+
+
+def test_the_put_spread_report_names_itself_and_is_never_decision_eligible():
+    _, report = _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    assert report["kind"] == "archived_quote_put_spread_backtest"
+    assert report["pricing"] == "archived_eod_quotes" and report["decision_eligible"] is False
+    assert "put spread" in report["units"] and "condor" not in report["units"]
+    assert report["params"]["short_q"] == 0.1
+    _, condor = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    assert condor["kind"] == "archived_quote_condor_backtest"
+
+
+@pytest.mark.parametrize("series", [
+    FLAT, _settled_at(80.0), _settled_at(93.5), _settled_at(110.0),
+    _series([(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                   ("2024-03-08", 97.0), ("2024-03-11", 98.0)],
+            [("2024-03-07", 1.0)]),
+], ids=["flat", "put-wing-lost", "inside-the-put-wing", "call-wing-lost", "dividend-and-carry"])
+def test_where_both_enter_at_the_same_strikes_the_put_spread_is_the_condors_put_side(series):
+    _, condor = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), series)
+    _, spread = _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY), series)
+    for book in CondorQuoteBacktest.BOOKS:
+        c, p = condor["ledger"][0]["books"][book], spread["ledger"][0]["books"][book]
+        assert c["entered"] and p["entered"]
+        assert p["strikes"] == c["strikes"][:2]
+        assert abs(p["pnl_usd"] - c["side_pnl_usd"]["put"]) <= 1e-9, book
+        assert abs(p["side_pnl_usd"]["put"] - p["pnl_usd"]) <= 1e-9
+        assert p["credit_usd"] == pytest.approx(
+            IMPLIED_PUT_CREDIT if book == "implied" else MODEL_PUT_CREDIT)
+
+
+def test_the_put_spread_charges_only_the_put_carry_never_the_call_dividend():
+    dividends = [("2024-03-07", 1.0)]
+    closes = [(d, 100.0) for d in SESSIONS[:3]] + [("2024-03-06", 107.0), ("2024-03-07", 94.0),
+                                                     ("2024-03-08", 97.0), ("2024-03-11", 98.0)]
+    metrics, report = _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY),
+                                      _series(closes, dividends))
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["american_charge_usd"] == pytest.approx(_carry(95.0, 1))   # no 100 dividend
+    assert cell["pnl_usd"] == pytest.approx(MODEL_PUT_CREDIT - _carry(95.0, 1))
+    assert metrics["model_american_charge_usd"] == pytest.approx(_carry(95.0, 1))
+
+
+def _call_side_unquotable():
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == "call":
+            q["bid_size"] = q["ask_size"] = 0
+    return chain
+
+
+def test_where_the_call_side_is_unquotable_the_condor_skips_and_the_put_spread_enters():
+    metrics, report = _run([_row(ENTRY)], _call_side_unquotable(), FLAT)
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 0
+        assert metrics[f"{book}_n_skipped_no_quotable_strike"] == 1
+    metrics, report = _run_put_spread([_row(ENTRY)], _call_side_unquotable(), FLAT)
+    books = report["ledger"][0]["books"]
+    assert books["model"]["strikes"] == [92.0, 95.0] == books["always"]["strikes"]
+    assert books["implied"]["strikes"] == [95.0, 96.0]   # the condor's implied short put
+    assert books["model"]["credit_usd"] == pytest.approx(MODEL_PUT_CREDIT)
+    assert books["implied"]["credit_usd"] == pytest.approx(IMPLIED_PUT_CREDIT)
+    for book in CondorQuoteBacktest.BOOKS:
+        assert metrics[f"{book}_n_trades"] == 1 and books[book]["side_pnl_usd"] is not None
+        assert metrics[f"{book}_put_total_pnl_usd"] == metrics[f"{book}_total_pnl_usd"]
+        assert f"{book}_call_total_pnl_usd" not in metrics   # a put spread has no call side
+
+
+def test_the_put_spreads_band_is_checked_on_its_own_exponents_only():
+    chain = _chain(ENTRY, EXPIRY, strikes=range(88, 117))
+    for draws, band, spread_enters in (
+        (CALL_HEAVY, 0.09, True), (CALL_HEAVY, 0.11, True),   # only the CALLS exceed
+        (PUT_HEAVY, 0.09, False), (PUT_HEAVY, 0.11, False),   # the puts exceed
+    ):
+        _, condor = _run([_row(ENTRY, samples=list(draws))], chain, FLAT,
+                         max_abs_log_moneyness=band)
+        _, spread = _run_put_spread([_row(ENTRY, samples=list(draws))], chain, FLAT,
+                                    max_abs_log_moneyness=band)
+        assert condor["ledger"][0]["books"]["model"]["reason"] == "target_outside_band"
+        cell = spread["ledger"][0]["books"]["model"]
+        assert cell["entered"] is spread_enters
+        if not spread_enters:
+            assert cell["reason"] == "target_outside_band"
+        else:
+            assert cell["strikes"] == [92.0, 95.0]
+
+
+def test_the_put_spread_classifies_quotability_and_geometry_on_its_own_legs():
+    # the put side unquotable: no_quotable_strike (the call side never consulted)
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == "put":
+            q["bid_size"] = q["ask_size"] = 0
+    metrics, _ = _run_put_spread([_row(ENTRY)], chain, FLAT)
+    assert metrics["model_n_skipped_no_quotable_strike"] == 1 and metrics["model_n_trades"] == 0
+    # a constant forecast puts BOTH shorts at 100: degenerate for the condor, fine for the spread
+    flat = _set(_chain(ENTRY, EXPIRY), put100={"bid": 2.0, "ask": 2.2}, put97={"bid": 1.0, "ask": 1.1})
+    rows = [_row(ENTRY, samples=[0.0] * 10)]
+    metrics, _ = _run([*rows], flat, FLAT)
+    assert metrics["model_n_skipped_degenerate_strikes"] == 1
+    metrics, report = _run_put_spread(rows, flat, FLAT)
+    assert metrics["model_n_skipped_degenerate_strikes"] == 0 and metrics["model_n_trades"] == 1
+    assert report["ledger"][0]["books"]["model"]["strikes"] == [97.0, 100.0]
+
+
+def test_the_put_spread_pays_two_legs_of_fees_and_judges_credit_against_its_own_width():
+    # fees of 40 per leg: 90 - 80 = 10 > 0 on two legs; the condor's 160 - 160 = 0 is not
+    metrics, _ = _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=40.0)
+    assert metrics["model_n_trades"] == 1
+    metrics, _ = _run([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT, fee_per_leg=40.0)
+    assert metrics["model_n_skipped_nonpositive_credit"] == 1
+    # a put credit of 2.4 is under the put width 3 but the condor's 3.1 is over its call wing 2
+    rich = _chain(ENTRY, EXPIRY)
+    for q in rich:
+        if q["right"] == "put" and q["strike"] == 95.0:
+            q["bid"], q["ask"] = 3.5, 3.6
+    _, condor = _run([_row(ENTRY)], rich, FLAT)
+    assert condor["ledger"][0]["books"]["model"]["reason"] == "credit_not_below_width"
+    _, spread = _run_put_spread([_row(ENTRY)], rich, FLAT)
+    cell = spread["ledger"][0]["books"]["model"]
+    assert cell["entered"] is True and cell["credit_usd"] == pytest.approx(240 - 1.3)
+    # ... and reaching the put width 3 refuses: 4.5 - 1.1 = 3.4
+    for q in rich:
+        if q["right"] == "put" and q["strike"] == 95.0:
+            q["bid"], q["ask"] = 4.5, 4.6
+    metrics, _ = _run_put_spread([_row(ENTRY)], rich, FLAT)
+    assert metrics["model_n_skipped_credit_not_below_width"] == 1
+
+
+def test_the_put_spreads_model_book_expects_the_put_wings_payoff_only():
+    # under the losing draws one of a hundred settles through the puts (-3 per share) and one
+    # through the calls; the put spread expects 88.7 - 3.0 = 85.7, the condor 157.4 - 5.0
+    rows = [_row(ENTRY, samples=list(LOSING_DRAWS))]
+    _, spread = _run_put_spread(rows, _chain(ENTRY, EXPIRY), FLAT)
+    assert spread["ledger"][0]["model_expected_pnl_usd"] == pytest.approx(85.7)
+    metrics, _ = _run_put_spread(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=86.0)
+    assert metrics["model_n_skipped_below_min_edge"] == 1 and metrics["always_n_trades"] == 1
+    metrics, _ = _run_put_spread(rows, _chain(ENTRY, EXPIRY), FLAT, min_edge_usd=85.0)
+    assert metrics["model_n_trades"] == 1
+
+
+def test_the_put_spreads_benchmark_is_its_own_delta_and_it_reads_the_dividends():
+    _, report = _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY), FLAT)
+    cell = report["ledger"][0]["books"]["model"]
+    assert cell["delta"] == pytest.approx(MODEL_PUT_SPREAD_DELTA)
+    assert MODEL_PUT_SPREAD_DELTA > 0     # a short put is long the stock
+    assert cell["equity_pnl_usd"] == pytest.approx(MODEL_PUT_SPREAD_DELTA * 100 * -3.0)
+    # a leg without an iv on the CALL side is nobody's business but the condor's
+    chain = _chain(ENTRY, EXPIRY)
+    for q in chain:
+        if q["right"] == "call" and q["strike"] == 106.0:
+            q["iv"] = None
+    metrics, _ = _run_put_spread([_row(ENTRY)], chain, FLAT)
+    assert metrics["model_n_no_delta"] == 0
+    metrics, _ = _run([_row(ENTRY)], chain, FLAT)
+    assert metrics["model_n_no_delta"] == 1
+    # the benchmark reads the ex-date cash even where the put charge would not: a session
+    # without a dividend_amount refuses, as it does for the condor's call charge
+    series = _series([(d, 100.0) for d in SESSIONS])
+    series[3]["dividend_amount"] = None
+    with pytest.raises(ValueError, match="dividend_amount"):
+        _run_put_spread([_row(ENTRY)], _chain(ENTRY, EXPIRY), series)
+
+
+def test_a_put_spreads_ledger_and_metrics_match_a_condor_on_everything_they_share():
+    rows, chain, series = _three_trades(80.0, 93.5, 97.0)
+    c_metrics, condor = _run(rows, chain, series)
+    p_metrics, spread = _run_put_spread(rows, chain, series)
+    assert [e["date"] for e in condor["ledger"]] == [e["date"] for e in spread["ledger"]]
+    for key in ("n_rows_in_split", "n_entries"):
+        assert c_metrics[key] == p_metrics[key]
+    for book in CondorQuoteBacktest.BOOKS:
+        assert p_metrics[f"{book}_put_total_pnl_usd"] == pytest.approx(
+            c_metrics[f"{book}_put_total_pnl_usd"])
+        assert p_metrics[f"{book}_total_pnl_usd"] == pytest.approx(
+            p_metrics[f"{book}_put_total_pnl_usd"])
+        assert p_metrics[f"{book}_put_hit_rate"] == c_metrics[f"{book}_put_hit_rate"]

@@ -3,7 +3,8 @@
 Two pieces, both venue-neutral:
 
 * :func:`black76` — Black (1976) on a forward: the one closed form every
-  cash-settled index option, future option or FX forward option shares.
+  cash-settled index option, future option or FX forward option shares —
+  and :func:`black76_delta`, its forward delta.
 * :class:`VolIndexSmileQuotes` — a PROXY bid/ask for one option leg when
   no historical option quote exists, built from a volatility-index close
   (quoted in percent: VIX for SPX, VXN for NDX, RVX for RUT, ...). The
@@ -48,12 +49,27 @@ from statistics import NormalDist
 
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76"]
+__all__ = ["RIGHTS", "VolIndexSmileQuotes", "black76", "black76_delta"]
 
 #: The two option rights.
 RIGHTS = ("put", "call")
 
 _STANDARD_NORMAL = NormalDist()
+
+
+def _black76_terms(right, forward, strike, vol, years, rate):
+    """Refuse a bad input; return ``(d1, d2, discount)`` — the one owner of the checks."""
+    if right not in RIGHTS:
+        raise ValueError(f"right must be one of {list(RIGHTS)}, got {right!r}")
+    for name, value in (("forward", forward), ("strike", strike), ("vol", vol),
+                        ("years", years)):
+        if not price_ok(value):
+            raise ValueError(f"{name} must be a positive finite number, got {value!r}")
+    if not number_ok(rate):
+        raise ValueError(f"rate must be a finite number, got {rate!r}")
+    sd = vol * math.sqrt(years)
+    d1 = (math.log(forward / strike) + sd * sd / 2) / sd
+    return d1, d1 - sd, math.exp(-rate * years)
 
 
 def black76(right, forward, strike, vol, years, rate=0.0):
@@ -89,22 +105,54 @@ def black76(right, forward, strike, vol, years, rate=0.0):
 
         black76("call", 100.0, 100.0, 0.2, 1.0)  # ~7.9656
     """
-    if right not in RIGHTS:
-        raise ValueError(f"right must be one of {list(RIGHTS)}, got {right!r}")
-    for name, value in (("forward", forward), ("strike", strike), ("vol", vol),
-                        ("years", years)):
-        if not price_ok(value):
-            raise ValueError(f"{name} must be a positive finite number, got {value!r}")
-    if not number_ok(rate):
-        raise ValueError(f"rate must be a finite number, got {rate!r}")
-    sd = vol * math.sqrt(years)
-    d1 = (math.log(forward / strike) + sd * sd / 2) / sd
-    d2 = d1 - sd
+    d1, d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
     cdf = _STANDARD_NORMAL.cdf
-    discount = math.exp(-rate * years)
     if right == "call":
         return discount * (forward * cdf(d1) - strike * cdf(d2))
     return discount * (strike * cdf(-d2) - forward * cdf(-d1))
+
+
+def black76_delta(right, forward, strike, vol, years, rate=0.0):
+    """Return the forward delta of a European option on a forward (Black 1976).
+
+    The derivative of :func:`black76` with respect to ``forward``: what a
+    consumer needs to size a hedge in the underlying, per unit of it.
+
+    Parameters
+    ----------
+    right : str
+        ``"put"`` or ``"call"``.
+    forward, strike : float
+        Positive levels.
+    vol : float
+        Positive annualized volatility.
+    years : float
+        Positive time to expiry in years.
+    rate : float
+        Continuously compounded discount rate; default 0.
+
+    Returns
+    -------
+    float
+        ``DF * N(d1)`` for a call and ``-DF * N(-d1)`` for a put,
+        ``DF = exp(-rate * years)``; so ``call - put = DF``.
+
+    Raises
+    ------
+    ValueError
+        On exactly the inputs :func:`black76` refuses, with its messages.
+
+    Examples
+    --------
+    An at-the-money one-year put at 20% vol::
+
+        black76_delta("put", 100.0, 100.0, 0.2, 1.0)  # ~-0.4602
+    """
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    cdf = _STANDARD_NORMAL.cdf
+    if right == "call":
+        return discount * cdf(d1)
+    return -discount * cdf(-d1)
 
 
 def _wing_minimum(atm_ratio, slope, curvature):

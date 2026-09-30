@@ -1,6 +1,7 @@
 """Standardized condor geometry and its report node (ADR-0168)."""
 
 import math
+import random
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 
 from dskit.pipeline.node import ConfigError
 
+from index_options import contracts, distribution
 from index_options.contracts import leg_intrinsic
 from index_options.distribution import CondorGeometry, strike_z
 from index_options.nodes import CondorDistributionReport
@@ -153,3 +155,51 @@ def test_report_node_refuses_empty_split_and_bad_params():
             CondorDistributionReport("c", dict(PARAMS, **bad))
     with pytest.raises(ConfigError):
         CondorDistributionReport("c", {"split": "val"})
+
+
+# -- ADR-0193: the leg-set payoff owner ---------------------------------------------------
+
+
+def _condor_payoff_as_shipped(level, strikes):
+    """ADR-0168's four-leg sum, restated by hand: the pin for the leg-set refactor."""
+    signs = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+    return sum(sign * leg_intrinsic(right, k, level) for (right, sign), k in zip(signs, strikes))
+
+
+def test_structure_payoff_over_the_condor_legs_is_the_shipped_condor_payoff_exactly():
+    rng = random.Random(193)
+    for _ in range(300):  # unsorted strikes too: the payoff never validates geometry
+        strikes = tuple(rng.uniform(50.0, 500.0) for _ in range(4))
+        level = rng.uniform(20.0, 600.0)
+        shipped = _condor_payoff_as_shipped(level, strikes)
+        assert distribution.condor_payoff(level, strikes) == shipped
+        assert distribution.structure_payoff(contracts.CONDOR_LEGS, level, strikes) == shipped
+    exact = (Decimal("470"), Decimal("480"), Decimal("515"), Decimal("530"))
+    got = distribution.structure_payoff(contracts.CONDOR_LEGS, Decimal("521.5"), exact)
+    assert got == Decimal("-6.5") and isinstance(got, Decimal)
+    assert "structure_payoff" in distribution.__all__
+
+
+def test_the_leg_tuple_has_one_owner_and_distribution_imports_it():
+    assert distribution._LEGS is contracts.CONDOR_LEGS
+
+
+@pytest.mark.parametrize("level, payoff", [
+    (80.0, -5.0),    # through both puts: the long 90 pays 10, the short 95 pays -15
+    (93.0, -2.0),    # inside the wing: only the short 95 pays, -(95 - 93)
+    (95.0, 0.0),     # at the short strike
+    (120.0, 0.0),    # far above both: a put spread pays nothing
+])
+def test_a_put_spread_pays_the_put_wing_of_the_condor(level, payoff):
+    strikes = (90.0, 95.0, 106.0, 108.0)
+    got = distribution.structure_payoff(contracts.PUT_SPREAD_LEGS, level, strikes[:2])
+    assert got == payoff
+    # the condor is its put wing plus its call wing, leg for leg
+    wings = got + distribution.structure_payoff(contracts.CONDOR_LEGS[2:], level, strikes[2:])
+    assert wings == pytest.approx(distribution.condor_payoff(level, strikes))
+
+
+def test_structure_payoff_refuses_strikes_that_do_not_match_its_legs():
+    for strikes in ((95.0,), (90.0, 95.0, 106.0)):
+        with pytest.raises(ValueError):
+            distribution.structure_payoff(contracts.PUT_SPREAD_LEGS, 93.0, strikes)

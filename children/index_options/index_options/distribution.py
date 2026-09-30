@@ -20,16 +20,53 @@ from dskit.pipeline.stats import lower_tail_mean
 
 from .contracts import CONDOR_LEGS, leg_intrinsic
 
-__all__ = ["CondorGeometry", "condor_payoff", "strike_z"]
+__all__ = ["CondorGeometry", "condor_payoff", "strike_z", "structure_payoff"]
 
 #: Leg order and signed quantities — the cashflow owner's, never restated.
 _LEGS = CONDOR_LEGS
 
 
+def structure_payoff(legs, level, strikes):
+    """Return a leg set's settlement payoff per unit, credit excluded.
+
+    The one owner of the leg-sum (ADR-0193, generalized from the condor):
+    each leg contributes ``sign x`` its intrinsic value at ``level``.
+
+    Parameters
+    ----------
+    legs : sequence of (str, int)
+        ``(right, signed quantity)`` per leg, e.g. ``CONDOR_LEGS``.
+    level : float
+        Settlement level.
+    strikes : sequence of float
+        One strike per leg, in leg order.
+
+    Returns
+    -------
+    float
+        The signed sum: ``0`` when every leg expires worthless, negative
+        when the short legs finish in the money.
+
+    Raises
+    ------
+    ValueError
+        When ``strikes`` do not match ``legs`` in number.
+
+    Examples
+    --------
+    A put credit spread settling between its strikes::
+
+        structure_payoff(PUT_SPREAD_LEGS, 93.0, (90.0, 95.0))
+        # -> -2.0
+    """
+    return sum(sign * leg_intrinsic(right, k, level)
+               for (right, sign), k in zip(legs, strikes, strict=True))
+
+
 def condor_payoff(level, strikes):
     """Return a long-wing condor's settlement payoff per unit, credit excluded.
 
-    The one owner of the four-leg payoff sum: the standardized geometry
+    :func:`structure_payoff` on the condor's legs: the standardized geometry
     and the USD backtest (ADR-0182) both call it.
 
     Parameters
@@ -44,8 +81,7 @@ def condor_payoff(level, strikes):
     float
         Between ``-max(wing)`` and ``0``.
     """
-    return sum(sign * leg_intrinsic(right, k, level)
-               for (right, sign), k in zip(_LEGS, strikes))
+    return structure_payoff(_LEGS, level, strikes)
 
 
 def strike_z(strike, forward, reference_scale):

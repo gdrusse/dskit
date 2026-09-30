@@ -357,3 +357,113 @@ def test_synthetic_distribution_config_pins_its_agreements(child_root):
     assert model["fit_split"] == "train"
     assert all(doc["pipeline"][k]["params"]["split"] != model["fit_split"]
                for k in ("score", "condor"))
+
+
+# -- ADR-0193: the put-credit-spread documents, one per dividend-carrying cell ----------------
+
+#: The 14 SPY and QQQ cell stems (restated here, never read from the generator's table).
+BACKTEST_STEMS = [f"{u}-{b}" for u in ("spy", "qqq")
+                  for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45")]
+ALL_STEMS = [f"{u}-{b}" for u in ("spy", "qqq", "iwm")
+             for b in ("1", "2-3", "5", "7-10", "14", "21", "30-45")]
+BACKTEST_CELLS = [c for c in grid.CELLS if c.name in BACKTEST_STEMS]
+
+
+def test_the_put_spread_strikes_are_the_owners_answers_and_exported():
+    # 0.16 quantile ~ a 16-delta short put, wing 0.65 further ~ a 5-delta long put (ADR-0193)
+    assert grid.PUT_SPREAD_SHORT_Q == 0.16 and grid.PUT_SPREAD_WING_Z == 0.65
+    assert {"PUT_SPREAD_SHORT_Q", "PUT_SPREAD_WING_Z", "put_spread_document"} <= set(grid.__all__)
+    assert 0 < grid.PUT_SPREAD_SHORT_Q < 0.5 and grid.PUT_SPREAD_WING_Z > 0
+
+
+def test_the_grid_adds_exactly_one_put_spread_document_per_backtest_cell(child_root):
+    files = grid.grid_files(child_root / "configs")
+    spreads = {f for f in files if f.endswith("-put-spread.json")}
+    assert spreads == {f"grid/{stem}-put-spread.json" for stem in BACKTEST_STEMS}
+    assert len(spreads) == 14 and not any("iwm" in f for f in spreads)
+    # everything else is what shipped before: a har-vix document per cell and its six extras
+    assert set(files) - spreads == {f"grid/{stem}.json" for stem in ALL_STEMS} | {
+        f"grid/{name}" for stem in ALL_STEMS for name in _cell_extra_files(stem)}
+    for cell in grid.CELLS:
+        assert (f"grid/{cell.name}-put-spread.json" in files) is cell.underlying.backtest
+        assert set(grid.cell_files(child_root / "configs", cell)) & spreads == (
+            {f"grid/{cell.name}-put-spread.json"} if cell.underlying.backtest else set())
+
+
+def test_every_shipped_put_spread_file_equals_its_generator(child_root, tmp_path):
+    files = {f: d for f, d in grid.grid_files(child_root / "configs").items()
+             if f.endswith("-put-spread.json")}
+    assert len(files) == 14
+    for relpath, document in files.items():
+        assert (child_root / "configs" / relpath).read_text() == \
+            json.dumps(document, indent=2) + "\n", relpath
+    written = grid.write_grid(child_root / "configs", tmp_path)
+    for relpath in files:
+        assert relpath in written
+        assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
+
+
+def test_every_generated_document_that_shipped_before_is_unchanged(child_root):
+    # the zoo documents are excluded: their approval hashes were pinned by hand and already
+    # differ from the generator on the base (a pre-existing, separate failure)
+    files = grid.grid_files(child_root / "configs")
+    checked = 0
+    for relpath, document in files.items():
+        if relpath.endswith(("-put-spread.json", "-zoo.json")):
+            continue
+        assert (child_root / "configs" / relpath).read_text() == \
+            json.dumps(document, indent=2) + "\n", relpath
+        checked += 1
+    assert checked == 21 + 21 * 5   # har-vix, then five of the six extras per cell (no zoo)
+
+
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_put_spread_document_swaps_only_the_backtest_node_and_its_labels(child_root, cell):
+    base = _grid(child_root, f"{cell.name}.json")
+    doc = _grid(child_root, f"{cell.name}-put-spread.json")
+    assert doc["name"] == f"index-options-grid-{cell.name}-put-spread"
+    assert doc["notes"] != base["notes"] and "put credit spread" in doc["notes"]
+    assert f"configs/grid/{cell.name}-put-spread.json" in doc["notes"]
+    assert "ADR-0193" in doc["notes"] and "Never decision-eligible" in doc["notes"]
+    assert list(doc) == list(base) and list(doc["pipeline"]) == list(base["pipeline"])
+    for key in base:
+        if key not in ("name", "notes", "pipeline"):
+            assert doc[key] == base[key], key
+    for node in base["pipeline"]:
+        if node != "backtest":
+            assert doc["pipeline"][node] == base["pipeline"][node], node
+    swapped, original = doc["pipeline"]["backtest"], base["pipeline"]["backtest"]
+    assert swapped["uses"] == "index_options.nodes:PutSpreadQuoteBacktest"
+    assert original["uses"] == "index_options.nodes:CondorQuoteBacktest"
+    assert swapped["inputs"] == original["inputs"]
+    assert swapped["notes"] != original["notes"] and "put credit spread" in swapped["notes"]
+    assert list(swapped) == list(original) and list(swapped["params"]) == list(original["params"])
+    changed = {k for k in original["params"] if swapped["params"][k] != original["params"][k]}
+    assert changed == {"short_q", "wing_z"}
+    assert (swapped["params"]["short_q"], swapped["params"]["wing_z"]) == (0.16, 0.65)
+    assert (original["params"]["short_q"], original["params"]["wing_z"]) == (0.1, 0.5)
+
+
+@pytest.mark.parametrize("cell", BACKTEST_CELLS, ids=lambda c: c.name)
+def test_a_put_spread_document_resolves_through_the_planner(child_root, monkeypatch, cell):
+    from index_options.nodes import PutSpreadQuoteBacktest
+
+    monkeypatch.chdir(child_root)
+    path = child_root / GRID / f"{cell.name}-put-spread.json"
+    planned = plan(load_document(str(path)))
+    assert planned.resolved["backtest"].cls is PutSpreadQuoteBacktest
+    assert set(planned.order) == set(_grid(child_root, f"{cell.name}-put-spread.json")["pipeline"])
+    params = json.loads(path.read_text())["pipeline"]["backtest"]["params"]
+    assert PutSpreadQuoteBacktest.validate_params(params) == []
+
+
+def test_a_cell_without_a_backtest_has_no_put_spread_document_and_the_base_is_untouched(child_root):
+    base = json.loads((child_root / "configs" / "run-real-har-vix.json").read_text())
+    before = copy.deepcopy(base)
+    iwm = next(c for c in grid.CELLS if c.underlying.symbol == "IWM")
+    with pytest.raises(ValueError, match="IWM"):
+        grid.put_spread_document(base, iwm)
+    spy = next(c for c in grid.CELLS if c.name == "spy-30-45")
+    document = grid.put_spread_document(base, spy)
+    assert base == before   # derived on a copy
+    assert document == _grid(child_root, "spy-30-45-put-spread.json")

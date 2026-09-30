@@ -10,6 +10,7 @@ import math
 
 import pytest
 
+from dskit.pipeline import option_pricing
 from dskit.pipeline.option_pricing import RIGHTS, VolIndexSmileQuotes, black76
 
 YEARS = 21 / 252
@@ -57,6 +58,66 @@ def test_black76_monotonicity_and_refusals():
             black76(*args)
     with pytest.raises(ValueError, match="rate"):
         black76("call", 100.0, 100.0, 0.2, 1.0, rate=float("inf"))
+
+
+# -- black76_delta (ADR-0193) ------------------------------------------------------------
+
+#: One refused argument tuple per rule black76 enforces; the delta shares every one.
+REFUSED = [
+    ("fwd", 100.0, 100.0, 0.2, 1.0), ("call", 0.0, 100.0, 0.2, 1.0),
+    ("call", 100.0, 0.0, 0.2, 1.0), ("call", 100.0, 100.0, 0.0, 1.0),
+    ("call", 100.0, 100.0, 0.2, -1.0), ("call", 100.0, float("nan"), 0.2, 1.0),
+    ("put", float("inf"), 100.0, 0.2, 1.0), ("put", 100.0, 100.0, True, 1.0),
+    ("put", 100.0, 100.0, 0.2, None),
+]
+
+
+def test_black76_delta_known_values():
+    # ATM, F=K=100, vol 20%, 1y: d1 = 0.1, N(0.1) = 0.539828; the put is N(0.1) - 1
+    assert option_pricing.black76_delta("call", 100.0, 100.0, 0.2, 1.0) == pytest.approx(
+        0.539828, abs=1e-6)
+    assert option_pricing.black76_delta("put", 100.0, 100.0, 0.2, 1.0) == pytest.approx(
+        -0.460172, abs=1e-6)
+    # a discounted delta carries DF = exp(-rate * years) = exp(-0.02)
+    assert option_pricing.black76_delta("call", 100.0, 100.0, 0.2, 0.5, rate=0.04) == \
+        pytest.approx(math.exp(-0.02) * 0.5 * (1 + math.erf(0.1 * math.sqrt(0.5) / 2 ** 0.5)),
+                      abs=1e-9)
+    assert "black76_delta" in option_pricing.__all__
+
+
+@pytest.mark.parametrize("right", RIGHTS)
+@pytest.mark.parametrize("moneyness", [0.7, 0.9, 1.0, 1.1, 1.4])
+@pytest.mark.parametrize("rate", [0.0, 0.04])
+def test_black76_delta_is_the_forward_derivative_of_black76(right, moneyness, rate):
+    forward, vol, years = 100.0, 0.25, 0.4
+    strike = forward * moneyness
+    step = 1e-4 * forward
+    central = (black76(right, forward + step, strike, vol, years, rate)
+               - black76(right, forward - step, strike, vol, years, rate)) / (2 * step)
+    assert option_pricing.black76_delta(right, forward, strike, vol, years, rate) == \
+        pytest.approx(central, abs=1e-7)
+
+
+@pytest.mark.parametrize("rate", [0.0, 0.03, -0.01])
+def test_black76_delta_put_call_relation_is_the_discount_factor(rate):
+    for strike in (60.0, 100.0, 140.0):
+        call = option_pricing.black76_delta("call", 100.0, strike, 0.3, 0.75, rate)
+        put = option_pricing.black76_delta("put", 100.0, strike, 0.3, 0.75, rate)
+        assert call - put == pytest.approx(math.exp(-rate * 0.75), abs=1e-12)
+        assert 0.0 <= call <= 1.0 and -1.0 <= put <= 0.0
+
+
+@pytest.mark.parametrize("args", REFUSED)
+def test_black76_delta_refuses_what_black76_refuses_with_the_same_message(args):
+    with pytest.raises(ValueError) as price:
+        black76(*args)
+    with pytest.raises(ValueError) as delta:
+        option_pricing.black76_delta(*args)
+    assert str(delta.value) == str(price.value)
+    with pytest.raises(ValueError, match="rate"):
+        option_pricing.black76_delta("call", 100.0, 100.0, 0.2, 1.0, rate=float("inf"))
+    with pytest.raises(ValueError, match="rate"):
+        black76("call", 100.0, 100.0, 0.2, 1.0, rate=float("nan"))
 
 
 # -- VolIndexSmileQuotes ----------------------------------------------------------------

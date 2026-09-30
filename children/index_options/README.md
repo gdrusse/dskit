@@ -183,6 +183,18 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   harness only in `model`; `python -m dskit.pipeline staged
   configs/run-distribution-zoo.json --asof 1978-06-01` plans them, waits for
   the pasted inventory hash in `approval`, then runs and compares all three.
+- Put spread, wing split and delta benchmark (ADR-0193, offline, never
+  decision-eligible): `PutSpreadQuoteBacktest` is `CondorQuoteBacktest` on the
+  put wing alone (same knobs, books and walk; two legs of fees; American put
+  carry only; it enters where the condor's call side is unquotable). Every
+  entered cell of either backtest carries `side_pnl_usd` (`put`/`call`, summing
+  to `pnl_usd`; metrics `<book>_<side>_{total_pnl_usd,mean_pnl_usd,hit_rate}`)
+  and a delta-matched stock benchmark (`delta`, `equity_pnl_usd`; metrics
+  `<book>_delta_equity_total_usd`, `_residual_mean_pnl_usd`, `_residual_t`,
+  `_pnl_t`, `_n_no_delta`; Black-76 hedge ratio at rate 0, an approximation
+  that ignores dividends and early exercise). The 14 SPY/QQQ cells ship
+  generated `configs/grid/<cell>-put-spread.json` (`short_q` 0.16, `wing_z`
+  0.65). Run: `python -m dskit.pipeline walkforward configs/grid/spy-30-45-put-spread.json --asof <today>`.
 
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
@@ -338,6 +350,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
                            # (har-vix) + every cell's <symbol>-<bucket>-{empirical,vix,
                            # lightgbm-vix,zoo,hpo-har-vix,hpo-lightgbm-vix}.json (owner
                            # question 4, expanded 2026-09-27 from the one worked cell)
+                           # + <symbol>-<bucket>-put-spread.json for the 14 SPY/QQQ cells (ADR-0193)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

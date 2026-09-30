@@ -441,3 +441,264 @@ def test_the_entry_close_is_the_pre_ex_close_of_an_ex_date_on_the_next_session()
                     ("2024-03-06", 101.0), ("2024-03-07", 101.0), ("2024-03-08", 101.0)],
                    [("2024-03-04", 1.5)])
     assert american_short_charge(rows, **CHARGE)["call_dividend_usd"] == 150.0
+
+
+# -- ADR-0193: leg-set owners, the put-spread legs and the split American charge ----------
+
+import random  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
+
+from index_options import contracts  # noqa: E402
+
+
+def _condor_credit_as_shipped(strikes, quotes):
+    """ADR-0187's ``condor_credit``, restated by hand: the pin for the leg-set refactor."""
+    signs = (1, -1, -1, 1)
+    credit = sum(-s * (ask if s > 0 else bid) for s, (bid, ask) in zip(signs, quotes))
+    return credit, (strikes[1] - strikes[0], strikes[3] - strikes[2])
+
+
+def test_the_put_spread_legs_are_the_condors_first_two_and_exported():
+    assert contracts.PUT_SPREAD_LEGS == (("put", 1), ("put", -1)) == CONDOR_LEGS[:2]
+    assert "PUT_SPREAD_LEGS" in contracts.__all__ and "structure_credit" in contracts.__all__
+    assert {"american_put_carry", "american_call_dividend", "dividends_paid"} <= set(
+        contracts.__all__)
+
+
+def test_structure_credit_over_the_condor_legs_is_the_shipped_condor_credit_exactly():
+    rng = random.Random(193)
+    for _ in range(300):  # unsorted strikes and crossed quotes too: neither ever raises
+        strikes = tuple(rng.uniform(50.0, 500.0) for _ in range(4))
+        quotes = tuple((rng.uniform(0.0, 9.0), rng.uniform(0.0, 9.0)) for _ in range(4))
+        shipped = _condor_credit_as_shipped(strikes, quotes)
+        assert condor_credit(strikes, quotes) == shipped
+        assert contracts.structure_credit(CONDOR_LEGS, strikes, quotes) == shipped
+    for _ in range(100):  # exact Decimals keep their type and their digits
+        strikes = tuple(Decimal(rng.randrange(400, 5000)) / 10 for _ in range(4))
+        quotes = tuple((Decimal(rng.randrange(0, 900)) / 100, Decimal(rng.randrange(0, 900)) / 100)
+                       for _ in range(4))
+        result = contracts.structure_credit(CONDOR_LEGS, strikes, quotes)
+        assert result == _condor_credit_as_shipped(strikes, quotes) == condor_credit(strikes, quotes)
+        assert isinstance(result[0], Decimal) and all(isinstance(w, Decimal) for w in result[1])
+
+
+def test_structure_credit_of_a_put_spread_is_its_own_credit_and_one_width():
+    # short put at the bid (2.0), long put at the ask (1.1)
+    credit, widths = contracts.structure_credit(
+        contracts.PUT_SPREAD_LEGS, (95.0, 100.0), ((1.0, 1.1), (2.0, 2.2)))
+    assert credit == pytest.approx(0.9) and widths == (5.0,)
+    # it is the put side of the condor's credit: the two sides sum to the whole
+    strikes = (92.0, 95.0, 106.0, 108.0)
+    quotes = ((1.0, 1.1), (2.0, 2.2), (1.5, 1.6), (0.7, 0.8))
+    put, put_widths = contracts.structure_credit(CONDOR_LEGS[:2], strikes[:2], quotes[:2])
+    call, call_widths = contracts.structure_credit(CONDOR_LEGS[2:], strikes[2:], quotes[2:])
+    assert put + call == pytest.approx(condor_credit(strikes, quotes)[0])
+    assert (put_widths, call_widths) == ((3.0,), (2.0,))
+
+
+@pytest.mark.parametrize("legs, strikes, widths", [
+    # a vertical pair: consecutive legs of ONE right with opposite signs; the width is the
+    # later leg's strike less the earlier leg's, in leg order
+    ((("put", 1), ("put", -1)), (90.0, 100.0), (10.0,)),
+    ((("call", -1), ("call", 1)), (100.0, 110.0), (10.0,)),
+    (CONDOR_LEGS, (90.0, 100.0, 110.0, 125.0), (10.0, 15.0)),
+    # a butterfly: only the two outer consecutive pairs are verticals
+    ((("call", 1), ("call", -1), ("call", -1), ("call", 1)), (90.0, 100.0, 100.0, 110.0),
+     (10.0, 10.0)),
+    # no vertical: two rights, or two legs of one sign
+    ((("put", -1), ("call", -1)), (95.0, 105.0), ()),
+    ((("put", 1), ("put", 1)), (95.0, 100.0), ()),
+    ((("call", -1),), (100.0,), ()),
+])
+def test_the_widths_are_those_of_consecutive_same_right_opposite_sign_pairs(
+    legs, strikes, widths
+):
+    quotes = [(1.0, 1.1)] * len(legs)
+    assert contracts.structure_credit(legs, strikes, quotes)[1] == widths
+
+
+def test_structure_credit_refuses_a_strike_or_quote_list_that_does_not_match_its_legs():
+    quotes = ((1.0, 1.1), (2.0, 2.2))
+    legs = contracts.PUT_SPREAD_LEGS
+    for strikes, pairs in (((95.0,), quotes), ((90.0, 95.0, 100.0), quotes),
+                           ((95.0, 100.0), quotes[:1]),
+                           ((95.0, 100.0), quotes * 2)):  # a condor's quotes on a put spread
+        with pytest.raises(ValueError):
+            contracts.structure_credit(legs, strikes, pairs)
+    with pytest.raises(ValueError):  # and a condor's four strikes cannot ride a put spread
+        contracts.condor_credit((90.0, 95.0), quotes)
+
+
+def _random_series(rng, entry="2024-03-01", days=8):
+    """Random closes and ex-dates over ``days`` sessions (ISO dates, one per calendar day)."""
+    start = date.fromisoformat(entry)
+    return [{"date": (start + timedelta(days=k)).isoformat(),
+             "close": round(rng.uniform(88.0, 112.0), 2),
+             "dividend_amount": round(rng.choice([0.0, 0.0, 0.5, 1.25]), 2)}
+            for k in range(days)]
+
+
+def _american_short_charge_as_shipped(rows, short_put, short_call, entry_date, settle_date,
+                                      carry_rate, multiplier):
+    """ADR-0187's ``american_short_charge`` restated in the test's own words (per-share math)."""
+    entry, settle = date.fromisoformat(entry_date), date.fromisoformat(settle_date)
+    window = sorted((r for r in rows if entry <= date.fromisoformat(r["date"]) <= settle),
+                    key=lambda r: r["date"])
+    call, assigned, previous = 0.0, False, None
+    for row in window:
+        if date.fromisoformat(row["date"]) > entry:
+            if row["dividend_amount"] > 0 and (assigned or (previous is not None
+                                                            and previous > short_call)):
+                assigned = True
+                call += row["dividend_amount"]
+        previous = row["close"]
+    put = 0.0
+    for row in window:
+        day = date.fromisoformat(row["date"])
+        if day < settle and row["close"] < short_put:
+            tau = (settle - day).days / 365
+            put = short_put * (math.exp(carry_rate * tau) - 1)
+            break
+    return call * multiplier, put * multiplier
+
+
+def test_the_split_charges_are_the_shipped_composite_pieces_on_random_series():
+    rng = random.Random(1930)
+    for _ in range(200):
+        rows = _random_series(rng)
+        short_put, short_call = rng.uniform(92.0, 100.0), rng.uniform(100.0, 108.0)
+        rate, multiplier = rng.choice([0.0, 0.055]), rng.choice([1, 100])
+        args = (rows, short_put, short_call, "2024-03-01", "2024-03-08", rate, multiplier)
+        call, put = _american_short_charge_as_shipped(*args)
+        assert contracts.american_call_dividend(
+            rows, short_call, "2024-03-01", "2024-03-08", multiplier) == call
+        assert contracts.american_put_carry(
+            rows, short_put, "2024-03-01", "2024-03-08", rate, multiplier) == put
+        composite = american_short_charge(*args)
+        assert set(composite) == {"call_dividend_usd", "put_carry_usd", "total_usd"}
+        assert composite["call_dividend_usd"] == call and composite["put_carry_usd"] == put
+        assert composite["total_usd"] == pytest.approx(call + put, rel=1e-12, abs=1e-12)
+
+
+def test_put_carry_needs_no_dividend_data_while_the_composite_and_the_call_charge_do():
+    bare = [{"date": d, "close": c} for d, c in (
+        ("2024-03-01", 100.0), ("2024-03-04", 94.0), ("2024-03-05", 93.0),
+        ("2024-03-06", 96.0), ("2024-03-07", 97.0), ("2024-03-08", 98.0))]
+    carry = contracts.american_put_carry(bare, 95.0, "2024-03-01", "2024-03-08", 0.055, 100)
+    assert carry == pytest.approx(95.0 * (math.exp(0.055 * 4 / 365) - 1) * 100)
+    for refuser in (
+        lambda: american_short_charge(bare, **CHARGE),
+        lambda: contracts.american_call_dividend(bare, 102.0, "2024-03-01", "2024-03-08", 100),
+    ):
+        with pytest.raises(ValueError, match="dividend_amount on 2024-03-04"):
+            refuser()
+
+
+def test_the_call_charge_takes_no_carry_rate_and_the_put_carry_no_short_call():
+    import inspect
+
+    assert list(inspect.signature(contracts.american_call_dividend).parameters) == [
+        "rows", "short_call", "entry_date", "settle_date", "multiplier"]
+    assert list(inspect.signature(contracts.american_put_carry).parameters) == [
+        "rows", "short_put", "entry_date", "settle_date", "carry_rate", "multiplier"]
+    itm = _series(WINDOW, [("2024-03-07", 1.5)])
+    assert contracts.american_call_dividend(itm, 102.0, "2024-03-01", "2024-03-08", 100) == 150.0
+    assert contracts.american_put_carry(itm, 95.0, "2024-03-01", "2024-03-08", 0.055, 100) == 0.0
+
+
+#: One refused input per rule of the shared validation, each with the message it must carry.
+BAD_CHARGE_INPUTS = [
+    ({"settle_date": "2024-03-01"}, "settle_date 2024-03-01 must follow entry_date 2024-03-01"),
+    ({"settle_date": "2024/03/08"}, "settle_date must be an ISO date"),
+    ({"entry_date": "2024/03/01"}, "entry_date must be an ISO date"),
+    ({"multiplier": 100.0}, "multiplier must use an integer"),
+    ({"multiplier": 0}, "multiplier"),
+    ({"short_put": 0}, "short_put must be a positive number, got 0"),
+    ({"short_call": -1.0}, "short_call must be a positive number, got -1.0"),
+    ({"carry_rate": -0.01}, "carry_rate must be a finite number >= 0, got -0.01"),
+    ({"carry_rate": "0.055"}, "carry_rate must be a finite number >= 0, got '0.055'"),
+]
+#: Which knob each function under test owns; a bad input outside its knobs is not its business.
+OWNS = {
+    "american_put_carry": {"settle_date", "entry_date", "multiplier", "short_put", "carry_rate"},
+    "american_call_dividend": {"settle_date", "entry_date", "multiplier", "short_call"},
+    "american_short_charge": {"settle_date", "entry_date", "multiplier", "short_put",
+                              "short_call", "carry_rate"},
+}
+
+
+def _charge(name, rows, **kwargs):
+    """Call ``name`` with ``CHARGE`` restricted to the knobs it takes, then ``kwargs`` applied."""
+    knobs = {k: v for k, v in dict(CHARGE, **kwargs).items() if k in OWNS[name]}
+    return getattr(contracts, name)(rows, **knobs)
+
+
+@pytest.mark.parametrize("name, change, message", [
+    (name, change, message) for name in sorted(OWNS)
+    for change, message in BAD_CHARGE_INPUTS if next(iter(change)) in OWNS[name]
+])
+def test_every_charge_function_refuses_a_bad_input_it_owns_with_the_same_message(
+    name, change, message
+):
+    with pytest.raises(ValueError, match=message):
+        _charge(name, _series(WINDOW), **change)
+
+
+@pytest.mark.parametrize("name", sorted(OWNS))
+def test_every_charge_function_refuses_a_bad_window_the_same_way(name):
+    bad_date = _series(WINDOW)
+    bad_date[2]["date"] = "2024/03/05"
+    with pytest.raises(ValueError, match="^date must be an ISO date"):
+        _charge(name, bad_date)
+    flat = _series(WINDOW)
+    flat[2]["close"] = 0.0
+    with pytest.raises(ValueError, match="close on 2024-03-05 must be a positive number, got 0.0"):
+        _charge(name, flat)
+    with pytest.raises(ValueError, match="no closes between 2024-03-01 and 2024-03-08"):
+        _charge(name, [])
+
+
+@pytest.mark.parametrize("name", ["american_call_dividend", "american_short_charge"])
+def test_the_dividend_readers_refuse_an_unusable_ex_date_amount_only_inside_the_window(name):
+    for bad in (None, -0.5, float("nan"), "0.5", True):
+        rows = _series(WINDOW)
+        rows[3]["dividend_amount"] = bad
+        with pytest.raises(ValueError, match="dividend_amount on 2024-03-06 must be a finite "
+                                             "number >= 0"):
+            _charge(name, rows)
+    outside = _series(WINDOW + [("2024-03-11", 106.0)])
+    outside[-1]["dividend_amount"] = None   # after settlement: never read
+    outside[0]["dividend_amount"] = None    # the entry day's own ex-date: never read
+    clean = _series(WINDOW + [("2024-03-11", 106.0)])
+    assert _charge(name, outside) == _charge(name, clean)
+
+
+def test_dividends_paid_sums_the_ex_dates_after_entry_up_to_and_including_settlement():
+    rows = _series(WINDOW + [("2024-03-11", 106.0)],
+                   [("2024-03-01", 9.0), ("2024-03-04", 0.5), ("2024-03-08", 0.25),
+                    ("2024-03-11", 7.0)])
+    # the entry day's (9.0) and the day after settlement's (7.0) are outside (entry, settle]
+    assert contracts.dividends_paid(rows, "2024-03-01", "2024-03-08") == pytest.approx(0.75)
+    assert contracts.dividends_paid(list(reversed(rows)), "2024-03-01", "2024-03-08") == \
+        pytest.approx(0.75)
+    assert contracts.dividends_paid(_series(WINDOW), "2024-03-01", "2024-03-08") == 0.0
+    # the same refusals as the charge: window, unusable amount, a settle date that is not later
+    bad = _series(WINDOW)
+    bad[4]["dividend_amount"] = None
+    with pytest.raises(ValueError, match="dividend_amount on 2024-03-07"):
+        contracts.dividends_paid(bad, "2024-03-01", "2024-03-08")
+    with pytest.raises(ValueError, match="settle_date 2024-03-01 must follow"):
+        contracts.dividends_paid(_series(WINDOW), "2024-03-01", "2024-03-01")
+    with pytest.raises(ValueError, match="no closes between"):
+        contracts.dividends_paid([], "2024-03-01", "2024-03-08")
+
+
+def test_the_composite_return_contract_is_unchanged():
+    rows = _series(WINDOW, [("2024-03-07", 1.5)])
+    rows[4]["close"] = 94.0  # the put goes in the money on 03-07: one day of carry
+    charged = american_short_charge(rows, **CHARGE)
+    assert charged["put_carry_usd"] == pytest.approx(95.0 * (math.exp(0.055 / 365) - 1) * 100)
+    assert list(charged) == ["call_dividend_usd", "put_carry_usd", "total_usd"]
+    assert charged["call_dividend_usd"] == contracts.american_call_dividend(
+        rows, 102.0, "2024-03-01", "2024-03-08", 100) == 150.0
+    assert charged["total_usd"] == pytest.approx(150.0 + charged["put_carry_usd"])

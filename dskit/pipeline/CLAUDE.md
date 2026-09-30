@@ -751,7 +751,8 @@ dskit/pipeline/
 │                      registry; no-information vs mean (Clark–West, h*);
 │                      P&L series summaries lower_tail_mean + max_drawdown;
 │                      sharpe_ratio (n + CI), PSR, DSR, profit_factor, payoff_ratio
-├── option_pricing.py black76 (European on a forward) + VolIndexSmileQuotes:
+├── option_pricing.py black76 (European on a forward) + black76_delta (its
+│                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement)
