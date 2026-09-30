@@ -222,7 +222,7 @@ class CondorDecisionAudit:
                                    if complete_charges else None)
         midpoint_cdf = (None if curve is None else
                         curve.cdf(np.log(threshold.midpoints/spot)/reference_scale)[0])
-        return {"strike_brier": brier,
+        return {"strike_brier": brier, "unique_wing_templates": len(intervals),
                 "weighted_crps": threshold.weighted_crps(
                     cdf, terminal, midpoint_cdf=midpoint_cdf),
                 "candidates": records, "nominal": nominal, "robust": robust}
@@ -235,7 +235,7 @@ class DecisionRegionStudy:
             "output", "max_rows_per_symbol", "chain_rule", "audit",
             "underlying", "strata", "limits", "notes"}
     AUDIT_KEYS = {"price_step", "support_margin_fraction", "mesh_tolerance",
-                  "floor", "radius"}
+                  "floor", "radius", "score_refinement_factor", "score_tolerance"}
     CHAIN_COLUMNS = ("symbol", "date", "expiration", "strike", "type",
                      "bid", "ask", "bid_size", "ask_size")
     IDENTITY = ("symbol", "quote_date", "expiry")
@@ -265,7 +265,10 @@ class DecisionRegionStudy:
                 or not math.isfinite(v) for v in audit.values())
                 or audit["price_step"] <= 0 or audit["support_margin_fraction"] <= 0
                 or audit["mesh_tolerance"] < 0 or audit["floor"] <= 0
-                or audit["radius"] < 0):
+                or audit["radius"] < 0
+                or type(audit["score_refinement_factor"]) is not int
+                or audit["score_refinement_factor"] < 2
+                or audit["score_tolerance"] < 0):
             raise ValueError("invalid decision-region audit settings")
         self.config = config
         self.rule = EligibleCondorChain(**config["chain_rule"])
@@ -464,19 +467,37 @@ class DecisionRegionStudy:
         (stage/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
         return manifest
 
-    def _price_grid(self, strikes, spot):
+    def _price_grid(self, strikes, spot, *, step=None):
         import numpy as np
 
         settings = self.config["audit"]
         lower = max(np.finfo(float).tiny, min(strikes)-
                     settings["support_margin_fraction"]*spot)
         upper = max(strikes)+settings["support_margin_fraction"]*spot
-        regular = np.linspace(lower, upper, max(2, int(np.ceil(
-            (upper-lower)/settings["price_step"]))+1))
+        step = settings["price_step"] if step is None else step
+        regular = np.linspace(lower, upper, max(2, int(np.ceil((upper-lower)/step))+1))
         grid = np.unique(np.r_[regular, strikes])
         if len(grid) > self.config["limits"]["max_grid_nodes"]:
             raise ValueError("price grid exceeds declared implementation cap")
         return grid
+
+    @staticmethod
+    def check_weighted_score_refinement(rows, tolerance):
+        """Refuse a local-score quadrature that changes ranking when refined."""
+        import numpy as np
+
+        required = {"model", "weighted_crps", "weighted_crps_refined"}
+        if (required-set(rows) or not np.isfinite(rows[["weighted_crps",
+                                                         "weighted_crps_refined"]]).all().all()
+                or not np.isfinite(tolerance) or tolerance < 0):
+            raise ValueError("invalid weighted-score refinement evidence")
+        error = abs(rows.weighted_crps_refined-rows.weighted_crps)
+        if (error > tolerance).any():
+            raise ValueError("weighted-score quadrature refinement exceeds tolerance")
+        coarse = rows.groupby("model").weighted_crps.mean().sort_values(kind="mergesort")
+        refined = rows.groupby("model").weighted_crps_refined.mean().sort_values(kind="mergesort")
+        if list(coarse.index) != list(refined.index):
+            raise ValueError("weighted-score ranking changes after refinement")
 
     def evaluate(self):
         """Score frozen models on identical entry-known candidates and rows."""
@@ -576,6 +597,18 @@ class DecisionRegionStudy:
                             radius=self.config["audit"]["radius"],
                             american_charges=charges[key], curve=curve,
                             reference_scale=float(row.reference_scale))
+                        refinement = self.config["audit"]["score_refinement_factor"]
+                        refined_grid = self._price_grid(
+                            strikes, float(row.spot),
+                            step=self.config["audit"]["price_step"]/refinement)
+                        refined_cdf = curve.cdf(
+                            np.log(refined_grid/float(row.spot))/float(row.reference_scale))[0]
+                        intervals = sorted({pair for item in candidates
+                                            for pair in ((item["strikes"][0], item["strikes"][1]),
+                                                         (item["strikes"][2], item["strikes"][3]))})
+                        refined_score = CDFThresholdAudit(
+                            refined_grid, intervals, self.config["audit"]["floor"]
+                        ).weighted_crps(refined_cdf, float(row.terminal_price))
                         score_key = (*key, model, self.config["models"][model])
                         if score_key not in score_lookup.index:
                             raise ValueError("missing paired frozen full-curve score")
@@ -603,7 +636,11 @@ class DecisionRegionStudy:
                                         "full_crps_standardized": float(saved.crps),
                                         "full_crps_log_return": float(saved.raw_return_crps),
                                         "weighted_crps": result["weighted_crps"],
+                                        "weighted_crps_refined": refined_score,
+                                        "weighted_crps_quadrature_error": abs(
+                                            refined_score-result["weighted_crps"]),
                                         "strike_brier": result["strike_brier"],
+                                        "unique_wing_templates": result["unique_wing_templates"],
                                         "loss_bias": float(np.mean([x["loss_bias"] for x in
                                                                     result["candidates"]])),
                                         "loss_mae": float(np.mean([x["abs_error"] for x in
@@ -624,8 +661,12 @@ class DecisionRegionStudy:
                                         "max_mesh_gap": max(x["mesh_gap"] for x in
                                                             result["candidates"])})
                 print("decision-region", symbol, model, len(keys), flush=True)
+        score_rows = pd.DataFrame(records)
+        eligible = score_rows.loc[score_rows.reason.isna()]
+        self.check_weighted_score_refinement(
+            eligible, self.config["audit"]["score_tolerance"])
         stage.mkdir(parents=True)
-        pd.DataFrame(records).to_parquet(stage/"scores.parquet", index=False)
+        score_rows.to_parquet(stage/"scores.parquet", index=False)
         pd.DataFrame(candidate_records).to_parquet(stage/"candidate_scores.parquet",
                                                    index=False)
         result = {"config_sha256": self._config_digest(), "rows": len(records),
@@ -667,6 +708,11 @@ class DecisionRegionStudy:
                    "eligible_rows": int(rows.reason.isna().sum()),
                    "total_rows": len(rows),
                    "candidate_rows": len(candidates),
+                   "unique_eligible_forecasts": int(rows.loc[rows.reason.isna(),
+                                                               list(self.IDENTITY)].drop_duplicates().shape[0]),
+                   "unique_wing_templates": int(rows.loc[rows.reason.isna(),
+                                                         "unique_wing_templates"].sum()
+                                                / len(self.config["models"])),
                    "charge_status": rows.american_charge_status.value_counts(
                        dropna=False).to_dict(),
                    "by_entry_sha256": self._digest(stage/"by_entry.csv"),

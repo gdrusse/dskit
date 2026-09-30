@@ -1,5 +1,20 @@
 # Re-entry
 
+## ADR-0199 GPD decision-region screen completed (2026-09-30)
+
+- The raw `center_gpd_05_prior25` development archive was audited on 60 fixed
+  SPY/QQQ/IWM identities, 9,566 chain rows and 1,824 deduplicated wing
+  templates. Its refined positive-floor wing score (0.117494) was slightly
+  worse than `center_incumbent` (0.117432); no model or feature is promoted.
+- A 2x quadrature config refused its 0.002 tolerance before output. Fresh r4
+  uses a 4x refinement, max error 0.001444 below 0.05, and identical rankings.
+  The screen is date-only, after-close, raw-GridCurve and non-executable; the
+  full 18,616-row panel exceeds its 100,000-chain-row bound.
+- ADR-0197 feature forecasts are composite rather than raw GridCurve, so the
+  bounded feature-forward protocol remains unrun and makes no feature claim.
+  Memo: `children/index_options/docs/memos/2026-09-30-gpd-decision-region-screen.md`.
+  Journal A0616. Generated output is ignored.
+
 ## ADR-0197 point-in-time tail-data ablation completed (2026-09-30)
 
 - Added causal OHLC, requested-horizon VRP, entry-snapshot flow/Greek/liquidity

@@ -27901,3 +27901,39 @@ center-only endpoint preservation. Require a standalone memo with feature,
 row/cell and train/validation counts, every phase result, limitations, an
 action journal and RE-ENTRY update. Before publication, Luna skeptic review(s)
 must resolve every Critical/Major finding. Generated artifacts remain ignored.
+
+### Phase-0 resolution and frozen screen (2026-09-30)
+
+The archive has only quote dates, not source timestamps. Every decision-region
+result is therefore an after-date-close, complete-snapshot diagnostic; it is
+not evidence that a historical intraday quote was known or executable. The
+current atom-aware audit admits only raw `GridCurve` archives. It rejects a
+calibrated archive or a composite archive rather than silently substituting a
+mesh approximation for the spread-loss diagnostic.
+
+The first admissible screen is
+`configs/run-cdf-gpd-decision-regions-screen-r4.json`: 20 lexicographically
+evenly spaced development identities per SPY/QQQ/IWM, weight `1/20` each,
+selected before scores, versus the frozen `horizon_empirical`,
+`center_incumbent`, and `center_gpd_05_prior25` raw curves. It is explicitly
+screen-only: the complete 18,616-row development panel exceeds its 100,000
+chain-row/30-minute/6-GiB bound, so it cannot select a model or feature. Its
+0.50-dollar proper-score grid is compared with a 0.125-dollar refinement;
+per-row error is at most 0.05 and the model rank must be identical. Positive
+floor weights deduplicate wing intervals within each forecast. A fresh root
+replaced the initial 2x-refinement screen after it refused its 0.002 error
+bound; that refusal is retained, not overwritten.
+
+If a raw-grid feature forecast becomes available, its only permitted protocol
+is frozen as follows: incumbent indices `0..41`; family additions in order
+`ohlc=199..211`, `vrp=212..215`, `flow=216..223`, then `cboe=224..247`; pair
+interactions `[ohlc,vrp]`, `[vrp,flow]`, `[flow,cboe]`; then backward ablation
+of every retained family. Each family has the same eight MLP trials: hidden
+width `{8,16}`, dropout `{0,0.1}`, weight decay `{0.03,0.1}`, seed `11`,
+with all other ADR-0197 settings fixed. Development only (2016--2018), raw
+weighted-wing score rank, unchanged six-tail acceptance guard, exact paired
+identities, and the declared screen sample are mandatory. A center-only route
+is eligible only when its saved 5%/95% quantiles equal the incumbent to
+`1e-12`. The current ADR-0197 feature candidates are composite, not raw-grid,
+so this protocol intentionally cannot execute yet; no feature result is
+claimed.

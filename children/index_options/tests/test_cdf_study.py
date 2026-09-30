@@ -125,7 +125,8 @@ def test_decision_region_source_refuses_unbound_marker_and_wrong_settlement(tmp_
                        "min_wing_width": 5., "max_wing_width": 5.,
                        "max_candidates": 10, "fee_per_leg": 0., "multiplier": 100},
         "audit": {"price_step": .5, "support_margin_fraction": .02,
-                  "mesh_tolerance": .5, "floor": .1, "radius": 0.},
+                  "mesh_tolerance": .5, "floor": .1, "radius": 0.,
+                  "score_refinement_factor": 2, "score_tolerance": .01},
         "limits": {"max_seconds": 1800, "max_address_space_mib": 6144,
                    "max_chain_rows": 100000, "max_grid_nodes": 4001},
     }
@@ -155,6 +156,21 @@ def test_decision_region_rejects_unsupported_archived_curve_family(tmp_path):
     np.savez_compressed(source, kind="grid", calibration_x=np.array([[0., 1.]]))
     with pytest.raises(ValueError, match="raw GridCurve"):
         cdf_study.DecisionRegionStudy._check_curve_archive(source)
+
+
+def test_decision_region_refinement_requires_small_error_and_stable_rank():
+    rows = pd.DataFrame({
+        "model": ["base", "base", "candidate", "candidate"],
+        "weighted_crps": [.20, .20, .19, .19],
+        "weighted_crps_refined": [.20001, .20001, .19001, .19001],
+    })
+    cdf_study.DecisionRegionStudy.check_weighted_score_refinement(rows, 1e-3)
+    with pytest.raises(ValueError, match="quadrature"):
+        cdf_study.DecisionRegionStudy.check_weighted_score_refinement(rows, 1e-6)
+    unstable = rows.copy()
+    unstable.loc[unstable.model.eq("candidate"), "weighted_crps_refined"] = .21
+    with pytest.raises(ValueError, match="ranking"):
+        cdf_study.DecisionRegionStudy.check_weighted_score_refinement(unstable, .1)
 
 
 def test_option_surface_features_are_scale_stable_and_preserve_missingness():
