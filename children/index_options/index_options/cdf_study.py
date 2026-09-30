@@ -10,12 +10,669 @@ import hashlib
 import json
 from pathlib import Path
 
-from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy, CDFHyperparameterStudy
+from dskit.pipeline.libs.predictive_cdf import (
+    ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
+    DiscreteCDFGrid, GridCurve,
+)
 from dskit.pipeline.libs.observations import ObservationRows
 from .observations import IndexCloseRows
-from .contracts import CONDOR_LEGS
+from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
+                        quote_problems)
 
-__all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic"]
+__all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic",
+           "EligibleCondorChain", "CondorDecisionAudit", "DecisionRegionStudy"]
+
+
+class EligibleCondorChain:
+    """Enumerate the full declared one-lot universe from one dated snapshot.
+
+    Annual archive quotes lack source timestamps. They support an after-close
+    strike/payoff diagnostic only; an executable decision refuses explicitly.
+    """
+
+    def __init__(self, max_abs_log_moneyness, min_wing_width, max_wing_width,
+                 max_candidates, fee_per_leg, multiplier):
+        import math
+
+        values = (max_abs_log_moneyness, min_wing_width, max_wing_width,
+                  fee_per_leg, multiplier)
+        if (any(isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) for v in values)
+                or max_abs_log_moneyness <= 0 or min_wing_width <= 0
+                or max_wing_width < min_wing_width or fee_per_leg < 0
+                or multiplier <= 0 or type(max_candidates) is not int
+                or max_candidates < 1):
+            raise ValueError("invalid eligible-condor rule")
+        self.band = max_abs_log_moneyness
+        self.min_width, self.max_width = min_wing_width, max_wing_width
+        self.max_candidates = max_candidates
+        self.fee, self.multiplier = fee_per_leg, multiplier
+
+    def candidates(self, chain, spot, *, executable=False):
+        """Return every qualifying four-leg candidate in stable strike order."""
+        import math
+
+        required = {"symbol", "date", "expiration", "strike", "type",
+                    "bid", "ask", "bid_size", "ask_size"}
+        if required-set(chain):
+            raise ValueError(f"chain lacks {sorted(required-set(chain))}")
+        if (chain.empty or chain[["symbol", "date", "expiration"]].isna().any().any()
+                or any(chain[field].nunique() != 1 for field in
+                       ("symbol", "date", "expiration"))
+                or chain.duplicated(["strike", "type"]).any()
+                or not isinstance(spot, (int, float)) or not math.isfinite(spot)
+                or spot <= 0):
+            raise ValueError("invalid single-entry chain or spot")
+        if executable:
+            if "source_timestamp" not in chain:
+                raise ValueError("source quote timestamp required for executable choice")
+            raise ValueError("timestamp freshness and decision clock not configured")
+        eligible = {"put": {"buy": [], "sell": []},
+                    "call": {"buy": [], "sell": []}}
+        for row in chain.itertuples(index=False):
+            right, strike = row.type, row.strike
+            if (right not in eligible or not isinstance(strike, (int, float))
+                    or not math.isfinite(strike) or strike <= 0
+                    or abs(math.log(strike / spot)) > self.band
+                    or (right == "put" and strike >= spot)
+                    or (right == "call" and strike <= spot)):
+                continue
+            for side in ("buy", "sell"):
+                if not quote_problems(row.bid, row.ask, row.bid_size,
+                                      row.ask_size, 1, side=side):
+                    eligible[right][side].append(row)
+        result = []
+        for long_put in eligible["put"]["buy"]:
+            for short_put in eligible["put"]["sell"]:
+                if not (long_put.strike < short_put.strike
+                        and self.min_width <= short_put.strike-long_put.strike
+                        <= self.max_width):
+                    continue
+                for short_call in eligible["call"]["sell"]:
+                    for long_call in eligible["call"]["buy"]:
+                        if not (short_call.strike < long_call.strike
+                                and self.min_width <= long_call.strike-short_call.strike
+                                <= self.max_width):
+                            continue
+                        strikes = (long_put.strike, short_put.strike,
+                                   short_call.strike, long_call.strike)
+                        legs = (long_put, short_put, short_call, long_call)
+                        credit, widths = condor_credit(
+                            strikes, [(row.bid, row.ask) for row in legs])
+                        if not 0 < credit < min(widths):
+                            continue
+                        net = credit-4*self.fee/self.multiplier
+                        if net <= 0:
+                            continue
+                        result.append({"id": "-".join(str(k) for k in strikes),
+                                       "strikes": strikes, "net_credit": float(net)})
+                        if len(result) > self.max_candidates:
+                            raise ValueError("candidate universe exceeds declared cap")
+        return sorted(result, key=lambda item: item["strikes"])
+
+
+class CondorDecisionAudit:
+    """Audit one frozen CDF against the entire entry-known candidate universe."""
+
+    def __init__(self, mesh_tolerance, floor):
+        import math
+
+        if (not math.isfinite(mesh_tolerance) or mesh_tolerance < 0
+                or not math.isfinite(floor) or floor <= 0):
+            raise ValueError("invalid mesh tolerance or score floor")
+        self.mesh_tolerance, self.floor = mesh_tolerance, floor
+
+    def evaluate(self, grid, cdf, *, terminal, spot, candidates, radius,
+                 american_charges=None, curve=None, reference_scale=None):
+        """Return score, candidate loss errors, and nominal/robust choices."""
+        import numpy as np
+
+        if (not isinstance(candidates, (list, tuple))
+                or not np.isfinite([terminal, spot]).all() or spot <= 0):
+            raise ValueError("invalid outcome, spot or candidates")
+        if ((curve is None) != (reference_scale is None)
+                or (curve is not None and (not isinstance(curve, GridCurve)
+                                           or len(curve.values) != 1))):
+            raise ValueError("exact decision audit requires one frozen GridCurve")
+        if any(set(item) != {"id", "strikes", "net_credit"} for item in candidates):
+            raise ValueError("invalid candidate fields")
+        if (american_charges is not None
+                and set(american_charges) != {item["id"] for item in candidates}):
+            raise ValueError("American charge inventory differs from candidates")
+        intervals = sorted({pair for item in candidates
+                            for pair in ((item["strikes"][0], item["strikes"][1]),
+                                         (item["strikes"][2], item["strikes"][3]))})
+        threshold = CDFThresholdAudit(grid, intervals, self.floor)
+        distribution = DiscreteCDFGrid(grid, cdf)
+        strike_set = sorted({strike for item in candidates
+                             for strike in item["strikes"]})
+        brier = (float(np.mean([threshold.strike_brier(cdf, k, terminal)
+                                for k in strike_set])) if strike_set else None)
+        records, choices = [], []
+        nominal = {"id": None, "robust_value": 0., "worst_loss": 0.}
+        for item in candidates:
+            strikes = tuple(item["strikes"])
+            if (len(strikes) != 4 or not all(a < b for a, b in
+                                            zip(strikes, strikes[1:]))
+                    or not threshold.grid[0] < strikes[0]
+                    or not strikes[-1] < threshold.grid[-1]):
+                raise ValueError("candidate strikes outside shared support")
+            if curve is None:
+                put_expected = threshold.expected_spread_loss(
+                    cdf, strikes[0], strikes[1], "put")
+                call_expected = threshold.expected_spread_loss(
+                    cdf, strikes[2], strikes[3], "call")
+            else:
+                put_expected = threshold.gridcurve_log_spread_loss(
+                    curve, 0, strikes[0], strikes[1], "put", spot, reference_scale)
+                call_expected = threshold.gridcurve_log_spread_loss(
+                    curve, 0, strikes[2], strikes[3], "call", spot, reference_scale)
+            direct = put_expected+call_expected
+            loss = -CondorCDFDiagnostic.payoff(
+                threshold.grid[None, :], np.asarray(strikes)[None, :])[0]
+            grid_loss = float(distribution.masses @ loss)
+            gap = abs(direct - grid_loss)
+            if gap > self.mesh_tolerance:
+                raise ValueError(f"mesh expected-loss gap {gap} exceeds tolerance")
+            realized = float(-CondorCDFDiagnostic.payoff(
+                np.asarray([[terminal]]), np.asarray(strikes)[None, :])[0, 0])
+            put_realized = max(strikes[1]-terminal, 0)-max(strikes[0]-terminal, 0)
+            call_realized = max(terminal-strikes[2], 0)-max(terminal-strikes[3], 0)
+            charge = (american_charges[item["id"]]
+                      if american_charges is not None else None)
+            if charge is not None and (not np.isfinite(charge) or charge < 0):
+                raise ValueError("invalid American charge")
+            records.append({"id": item["id"], "expected_loss": direct,
+                            "realized_loss": realized, "loss_bias": direct-realized,
+                            "abs_error": abs(direct-realized),
+                            "squared_error": (direct-realized)**2,
+                            "put_expected_loss": put_expected,
+                            "put_realized_loss": put_realized,
+                            "put_abs_error": abs(put_expected-put_realized),
+                            "call_expected_loss": call_expected,
+                            "call_realized_loss": call_realized,
+                            "call_abs_error": abs(call_expected-call_realized),
+                            "mesh_gap": gap, "american_charge": charge})
+            choices.append({"id": item["id"], "net_credit": item["net_credit"],
+                            "loss": loss})
+            direct_value = item["net_credit"]-direct
+            if direct_value > nominal["robust_value"]:
+                nominal = {"id": item["id"], "robust_value": direct_value,
+                           "worst_loss": direct}
+        if radius == 0:
+            robust = nominal.copy()
+        else:
+            grid_nominal = distribution.choose(choices, radius=0., spot=spot)
+            if grid_nominal["id"] != nominal["id"]:
+                raise ValueError("mesh changes nominal candidate ranking")
+            robust = distribution.choose(choices, radius=radius, spot=spot)
+        complete_charges = all(record["american_charge"] is not None
+                               for record in records)
+        realized_pnl = ({item["id"]: item["net_credit"]-record["realized_loss"]
+                         -record["american_charge"]
+                         for item, record in zip(candidates, records)}
+                        if complete_charges else {})
+        oracle = max([0., *realized_pnl.values()]) if complete_charges else None
+        for selection in (nominal, robust):
+            selection["realized_pnl"] = (realized_pnl[selection["id"]]
+                                         if selection["id"] is not None
+                                         and complete_charges else
+                                         (0. if complete_charges else None))
+            selection["regret"] = (oracle-selection["realized_pnl"]
+                                   if complete_charges else None)
+        midpoint_cdf = (None if curve is None else
+                        curve.cdf(np.log(threshold.midpoints/spot)/reference_scale)[0])
+        return {"strike_brier": brier,
+                "weighted_crps": threshold.weighted_crps(
+                    cdf, terminal, midpoint_cdf=midpoint_cdf),
+                "candidates": records, "nominal": nominal, "robust": robust}
+
+
+class DecisionRegionStudy:
+    """JSON-driven posthoc audit of saved OOF curves on archived chain strikes."""
+
+    KEYS = {"forecast_root", "partition", "models", "symbols", "archive_root",
+            "output", "max_rows_per_symbol", "chain_rule", "audit",
+            "underlying", "strata", "limits", "notes"}
+    AUDIT_KEYS = {"price_step", "support_margin_fraction", "mesh_tolerance",
+                  "floor", "radius"}
+    CHAIN_COLUMNS = ("symbol", "date", "expiration", "strike", "type",
+                     "bid", "ask", "bid_size", "ask_size")
+    IDENTITY = ("symbol", "quote_date", "expiry")
+
+    def __init__(self, config):
+        import math
+
+        if (set(config)-self.KEYS or self.KEYS-{"notes"}-set(config)
+                or set(config["audit"]) != self.AUDIT_KEYS
+                or not config["models"] or not config["symbols"]
+                or len(config["symbols"]) != len(set(config["symbols"]))
+                or type(config["max_rows_per_symbol"]) is not int
+                or config["max_rows_per_symbol"] < 1):
+            raise ValueError("invalid decision-region JSON document")
+        if any(variant != "raw" for variant in config["models"].values()):
+            raise ValueError("decision-region pilot requires raw GridCurve variants")
+        limits = config["limits"]
+        if (set(limits) != {"max_seconds", "max_address_space_mib",
+                            "max_chain_rows", "max_grid_nodes"}
+                or any(type(v) is not int or v < 1 for v in limits.values())
+                or limits["max_seconds"] > 1800
+                or limits["max_address_space_mib"] > 6144
+                or limits["max_grid_nodes"] < 2):
+            raise ValueError("invalid decision-region limits")
+        audit = config["audit"]
+        if (any(isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) for v in audit.values())
+                or audit["price_step"] <= 0 or audit["support_margin_fraction"] <= 0
+                or audit["mesh_tolerance"] < 0 or audit["floor"] <= 0
+                or audit["radius"] < 0):
+            raise ValueError("invalid decision-region audit settings")
+        self.config = config
+        self.rule = EligibleCondorChain(**config["chain_rule"])
+        if (set(config["underlying"]) != {"root", "source", "since_ms", "carry_rate"}
+                or not math.isfinite(config["underlying"]["carry_rate"])
+                or config["underlying"]["carry_rate"] < 0):
+            raise ValueError("invalid underlying/assignment source")
+        if (set(config["strata"]) != {"tenor_days", "iv", "wing_log_moneyness"}
+                or any(len(bounds) != 2 or not all(math.isfinite(v) and v > 0
+                                                   for v in bounds)
+                       or bounds[0] >= bounds[1]
+                       for bounds in config["strata"].values())):
+            raise ValueError("invalid frozen reporting strata")
+        self.output = Path(config["output"])
+
+    def _enforce_limits(self):
+        """Apply the JSON budget inside the WSL stage process."""
+        import resource
+        import signal
+
+        limits = self.config["limits"]
+        requested = limits["max_address_space_mib"]*1024*1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS,
+                           (min(requested, soft) if soft != resource.RLIM_INFINITY
+                            else requested, hard))
+        def timed_out(_signum, _frame):
+            raise TimeoutError("decision stage exceeded JSON time budget")
+        signal.signal(signal.SIGALRM, timed_out)
+        signal.setitimer(signal.ITIMER_REAL, limits["max_seconds"])
+
+    def _band(self, name, value):
+        import math
+
+        if not math.isfinite(value):
+            return "missing"
+        low, high = self.config["strata"][name]
+        return "low" if value <= low else "middle" if value <= high else "high"
+
+    @staticmethod
+    def _digest(path):
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(8*1024*1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _curve_path(self, symbol, model):
+        variant = self.config["models"][model]
+        if variant not in ("raw", "calibrated"):
+            raise ValueError("invalid frozen variant")
+        return (Path(self.config["forecast_root"])/"evaluate"/
+                self.config["partition"]/
+                f"{symbol}-{model}-{variant}-curves.npz")
+
+    def _config_digest(self):
+        return hashlib.sha256(json.dumps(self.config, sort_keys=True,
+                                         allow_nan=False).encode()).hexdigest()
+
+    @staticmethod
+    def _check_curve_archive(path):
+        import numpy as np
+
+        with np.load(path, allow_pickle=False) as archive:
+            if str(archive["kind"]) != "grid" or "calibration_x" in archive:
+                raise ValueError("decision-region pilot requires raw GridCurve archives")
+
+    def _verified_partition(self, partition):
+        marker = partition/"complete.json"
+        try:
+            record = json.loads(marker.read_text())
+            selected_path = Path(self.config["forecast_root"])/"selection"/"selected.json"
+            selected = json.loads(selected_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid frozen completion or selection record") from exc
+        if (record.get("stage") != "evaluate"
+                or record.get("partition") != self.config["partition"]
+                or not isinstance(record.get("identity"), dict)
+                or record.get("selection_hash") != self._digest(selected_path)
+                or not isinstance(record.get("files"), dict)
+                or any(selected.get("variants", {}).get(model) != variant
+                       for model, variant in self.config["models"].items())):
+            raise ValueError("frozen completion or model selection mismatch")
+        paths = [partition/"input_panel.parquet", partition/"scores.parquet",
+                 *(self._curve_path(symbol, model)
+                   for symbol in self.config["symbols"]
+                   for model in self.config["models"])]
+        for path in paths:
+            if record["files"].get(path.name) != self._digest(path):
+                raise ValueError(f"frozen completion hash mismatch: {path.name}")
+        for path in paths[2:]:
+            self._check_curve_archive(path)
+        return {str(path): self._digest(path) for path in
+                [marker, selected_path, *paths]}
+
+    @staticmethod
+    def validate_panel_temporal(panel):
+        """Refuse rows whose entry, expiry and actual settlement clocks differ."""
+        import numpy as np
+        import pandas as pd
+        import exchange_calendars as xc
+        from dskit.pipeline.libs.predictive_cdf import _validate_temporal_frame
+
+        required = {"quote_date", "expiry", "settlement_date", "actual_calendar_dte",
+                    "spot", "terminal_price", "reference_scale"}
+        if required-set(panel) or panel.empty:
+            raise ValueError("missing temporal settlement fields")
+        _validate_temporal_frame(panel, "quote_date", "settlement_date")
+        expiry = pd.to_datetime(panel.expiry, format="%Y-%m-%d", errors="coerce")
+        if (expiry.isna().any() or not expiry.dt.strftime("%Y-%m-%d").eq(panel.expiry).all()
+                or not (expiry > pd.to_datetime(panel.quote_date)).all()):
+            raise ValueError("invalid declared expiry")
+        calendar = xc.get_calendar("XNYS", start=panel.quote_date.min(),
+                                   end=(expiry.max()+pd.Timedelta(days=10)))
+        sessions = calendar.sessions.tz_localize(None)
+        expected = sessions[sessions.searchsorted(expiry, side="right")-1]
+        actual = pd.to_datetime(panel.settlement_date)
+        days = (actual-pd.to_datetime(panel.quote_date)).dt.days
+        if (not (expected == actual.to_numpy()).all()
+                or not np.array_equal(days.to_numpy(),
+                                      panel.actual_calendar_dte.to_numpy())
+                or not np.isfinite(panel[["spot", "terminal_price",
+                                          "reference_scale"]]).all().all()
+                or (panel[["spot", "terminal_price", "reference_scale"]] <= 0).any().any()):
+            raise ValueError("settlement date, DTE or outcome disagrees")
+
+    def prepare(self):
+        """Pin a deterministic paired forecast sample and its dated raw chain."""
+        import numpy as np
+        import pandas as pd
+        import pyarrow.parquet as pq
+
+        stage = self.output/"prepare"
+        if stage.exists():
+            raise FileExistsError(stage)
+        partition = Path(self.config["forecast_root"])/"evaluate"/self.config["partition"]
+        sources = self._verified_partition(partition)
+        panel_path = partition/"input_panel.parquet"
+        panel = pd.read_parquet(panel_path)
+        self.validate_panel_temporal(panel)
+        if panel.duplicated(list(self.IDENTITY)).any():
+            raise ValueError("duplicate forecast panel identity")
+        targets = []
+        for symbol in self.config["symbols"]:
+            paired = None
+            for model in self.config["models"]:
+                path = self._curve_path(symbol, model)
+                with np.load(path, allow_pickle=False) as archive:
+                    identities = archive["identities"]
+                if identities.ndim != 2 or identities.shape[1] != len(self.IDENTITY):
+                    raise ValueError("invalid saved forecast identities")
+                keys = [tuple(row) for row in identities]
+                if len(keys) != len(set(keys)):
+                    raise ValueError("duplicate saved forecast identity")
+                if paired is not None and set(keys) != paired:
+                    raise ValueError("models lack identical OOF forecast identities")
+                paired = set(keys)
+                sources[str(path)] = self._digest(path)
+            ordered = sorted(paired)
+            count = min(len(ordered), self.config["max_rows_per_symbol"])
+            indices = np.linspace(0, len(ordered)-1, count, dtype=int)
+            targets.extend(ordered[i] for i in indices)
+        target_set = set(targets)
+        selected = panel.set_index(list(self.IDENTITY)).loc[sorted(target_set)].reset_index()
+        if len(selected) != len(target_set):
+            raise ValueError("saved forecast identities absent from input panel")
+        parts = []
+        retained = 0
+        for (symbol, year), group in selected.groupby(
+                ["symbol", selected.quote_date.str[:4]], sort=True):
+            source = (Path(self.config["archive_root"])/str(symbol).lower()/
+                      f"options_{year}.parquet")
+            wanted = set(zip(group.quote_date, group.expiry))
+            for batch in pq.ParquetFile(source).iter_batches(
+                    columns=list(self.CHAIN_COLUMNS), batch_size=250_000):
+                frame = batch.to_pandas()
+                mask = [(date, expiry) in wanted for date, expiry in
+                        zip(frame.date, frame.expiration)]
+                if any(mask):
+                    chosen = frame.loc[mask]
+                    retained += len(chosen)
+                    if retained > self.config["limits"]["max_chain_rows"]:
+                        raise ValueError("matching chain rows exceed JSON cap")
+                    parts.append(chosen)
+            sources[str(source)] = self._digest(source)
+        chain = (pd.concat(parts, ignore_index=True) if parts
+                 else pd.DataFrame(columns=self.CHAIN_COLUMNS))
+        stage.mkdir(parents=True)
+        selected.to_parquet(stage/"panel.parquet", index=False)
+        chain.to_parquet(stage/"chain.parquet", index=False)
+        manifest = {"config_sha256": self._config_digest(), "sources": sources,
+                    "selected_rows": len(selected), "chain_rows": len(chain),
+                    "panel_sha256": self._digest(stage/"panel.parquet"),
+                    "chain_sha256": self._digest(stage/"chain.parquet"),
+                    "clock": "after_date_close_indicative_not_executable"}
+        (stage/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
+        return manifest
+
+    def _price_grid(self, strikes, spot):
+        import numpy as np
+
+        settings = self.config["audit"]
+        lower = max(np.finfo(float).tiny, min(strikes)-
+                    settings["support_margin_fraction"]*spot)
+        upper = max(strikes)+settings["support_margin_fraction"]*spot
+        regular = np.linspace(lower, upper, max(2, int(np.ceil(
+            (upper-lower)/settings["price_step"]))+1))
+        grid = np.unique(np.r_[regular, strikes])
+        if len(grid) > self.config["limits"]["max_grid_nodes"]:
+            raise ValueError("price grid exceeds declared implementation cap")
+        return grid
+
+    def evaluate(self):
+        """Score frozen models on identical entry-known candidates and rows."""
+        import numpy as np
+        import pandas as pd
+
+        stage = self.output/"evaluate"
+        if stage.exists():
+            raise FileExistsError(stage)
+        prepared = self.output/"prepare"
+        manifest = json.loads((prepared/"manifest.json").read_text())
+        if manifest["config_sha256"] != self._config_digest():
+            raise ValueError("decision-region JSON changed after preparation")
+        for source, digest in manifest["sources"].items():
+            if self._digest(source) != digest:
+                raise ValueError("frozen source changed after preparation")
+        for name in ("panel", "chain"):
+            if self._digest(prepared/f"{name}.parquet") != manifest[f"{name}_sha256"]:
+                raise ValueError("prepared decision input changed")
+        panel = pd.read_parquet(prepared/"panel.parquet")
+        self.validate_panel_temporal(panel)
+        chain = pd.read_parquet(prepared/"chain.parquet")
+        partition = Path(self.config["forecast_root"])/"evaluate"/self.config["partition"]
+        frozen_scores = pd.read_parquet(partition/"scores.parquet")
+        score_keys = [*self.IDENTITY, "model", "variant"]
+        if (frozen_scores.duplicated(score_keys).any()
+                or not {"crps", "raw_return_crps"}.issubset(frozen_scores)):
+            raise ValueError("invalid frozen full-curve scores")
+        score_lookup = frozen_scores.set_index(score_keys)
+        grouped = {(key[0], key[1], key[2]): part for key, part in
+                   chain.groupby(["symbol", "date", "expiration"], sort=False)}
+        identities = [tuple(row) for row in panel[list(self.IDENTITY)].itertuples(
+            index=False, name=None)]
+        close_rows, close_fingerprints = {}, {}
+        source = self.config["underlying"]
+        for symbol in self.config["symbols"]:
+            reader = IndexCloseRows("decision_close", {
+                "root": source["root"], "source": source["source"],
+                "since_ms": source["since_ms"], "symbol": symbol})
+            close_rows[symbol] = reader.run(None, {})["records"]
+            close_fingerprints[symbol] = reader.fingerprint()
+        closes = {symbol: {item["date"]: item for item in rows}
+                  for symbol, rows in close_rows.items()}
+        inventory = {}
+        charges = {}
+        for key, row in zip(identities, panel.itertuples(index=False)):
+            entry_close = closes[key[0]].get(key[1])
+            settled_close = closes[key[0]].get(row.settlement_date)
+            if (entry_close is None or settled_close is None
+                    or abs(entry_close["close"]-row.spot) > 1e-8
+                    or abs(settled_close["close"]-row.terminal_price) > 1e-8):
+                raise ValueError("settlement or entry price disagrees with frozen closes")
+            rows = grouped.get(key)
+            inventory[key] = (self.rule.candidates(rows, float(row.spot))
+                              if rows is not None else [])
+            if not bool(row.dividends_known):
+                charges[key] = {item["id"]: None for item in inventory[key]}
+                continue
+            window = [item for item in close_rows[key[0]]
+                      if key[1] <= item["date"] <= row.settlement_date]
+            charges[key] = {
+                item["id"]: american_short_charge(
+                    window, item["strikes"][1], item["strikes"][2],
+                    key[1], row.settlement_date, source["carry_rate"],
+                    self.rule.multiplier)["total_usd"]/self.rule.multiplier
+                for item in inventory[key]}
+        records, candidate_records = [], []
+        scorer = CondorDecisionAudit(self.config["audit"]["mesh_tolerance"],
+                                     self.config["audit"]["floor"])
+        for symbol in self.config["symbols"]:
+            keys = [key for key in identities if key[0] == symbol]
+            for model in self.config["models"]:
+                with np.load(self._curve_path(symbol, model), allow_pickle=False) as archive:
+                    lookup = {tuple(row): i for i, row in enumerate(archive["identities"])}
+                    if not set(keys).issubset(lookup):
+                        raise ValueError("prepared identity absent from saved model")
+                    for key in keys:
+                        row = panel.loc[(panel.symbol == key[0])
+                                        & (panel.quote_date == key[1])
+                                        & (panel.expiry == key[2])].iloc[0]
+                        candidates = inventory[key]
+                        if not candidates:
+                            records.append({**dict(zip(self.IDENTITY, key)),
+                                            "model": model, "candidates": 0,
+                                            "reason": "no_eligible_condor"})
+                            continue
+                        strikes = sorted({strike for candidate in candidates
+                                          for strike in candidate["strikes"]})
+                        grid = self._price_grid(strikes, float(row.spot))
+                        curve = CDFHyperparameterStudy.restore_curve(
+                            archive, [lookup[key]])
+                        price_z = np.log(grid/float(row.spot))/float(row.reference_scale)
+                        cdf = curve.cdf(price_z)[0]
+                        result = scorer.evaluate(
+                            grid, cdf, terminal=float(row.terminal_price),
+                            spot=float(row.spot), candidates=candidates,
+                            radius=self.config["audit"]["radius"],
+                            american_charges=charges[key], curve=curve,
+                            reference_scale=float(row.reference_scale))
+                        score_key = (*key, model, self.config["models"][model])
+                        if score_key not in score_lookup.index:
+                            raise ValueError("missing paired frozen full-curve score")
+                        saved = score_lookup.loc[score_key]
+                        tenor = int(row.calendar_dte)
+                        tenor_band = self._band("tenor_days", tenor)
+                        regime = self._band("iv", float(row.own_iv))
+                        for candidate, result_row in zip(candidates, result["candidates"]):
+                            short_put, short_call = candidate["strikes"][1:3]
+                            distance = max(abs(np.log(short_put/row.spot)),
+                                           abs(np.log(short_call/row.spot)))
+                            candidate_records.append({
+                                **dict(zip(self.IDENTITY, key)), "model": model,
+                                "tenor_band": tenor_band, "regime": regime,
+                                "wing_region": self._band("wing_log_moneyness", distance),
+                                "wing_distance": distance,
+                                "net_credit": candidate["net_credit"],
+                                **result_row})
+                        records.append({**dict(zip(self.IDENTITY, key)), "model": model,
+                                        "candidates": len(candidates), "reason": None,
+                                        "requested_tenor_days": tenor,
+                                        "tenor_band": tenor_band,
+                                        "entry_iv": float(row.own_iv),
+                                        "regime": regime,
+                                        "full_crps_standardized": float(saved.crps),
+                                        "full_crps_log_return": float(saved.raw_return_crps),
+                                        "weighted_crps": result["weighted_crps"],
+                                        "strike_brier": result["strike_brier"],
+                                        "loss_bias": float(np.mean([x["loss_bias"] for x in
+                                                                    result["candidates"]])),
+                                        "loss_mae": float(np.mean([x["abs_error"] for x in
+                                                                   result["candidates"]])),
+                                        "loss_mse": float(np.mean([x["squared_error"] for x in
+                                                                   result["candidates"]])),
+                                        "put_spread_mae": float(np.mean([x["put_abs_error"] for x in
+                                                                         result["candidates"]])),
+                                        "call_spread_mae": float(np.mean([x["call_abs_error"] for x in
+                                                                          result["candidates"]])),
+                                        "nominal_id": result["nominal"]["id"],
+                                        "nominal_regret": result["nominal"]["regret"],
+                                        "robust_id": result["robust"]["id"],
+                                        "robust_regret": result["robust"]["regret"],
+                                        "american_charge_status": (
+                                            "evaluated" if bool(row.dividends_known)
+                                            else "unknown_dividend_window"),
+                                        "max_mesh_gap": max(x["mesh_gap"] for x in
+                                                            result["candidates"])})
+                print("decision-region", symbol, model, len(keys), flush=True)
+        stage.mkdir(parents=True)
+        pd.DataFrame(records).to_parquet(stage/"scores.parquet", index=False)
+        pd.DataFrame(candidate_records).to_parquet(stage/"candidate_scores.parquet",
+                                                   index=False)
+        result = {"config_sha256": self._config_digest(), "rows": len(records),
+                  "scores_sha256": self._digest(stage/"scores.parquet"),
+                  "candidate_scores_sha256": self._digest(stage/"candidate_scores.parquet"),
+                  "underlying_fingerprints": close_fingerprints}
+        (stage/"manifest.json").write_text(json.dumps(result, indent=2)+"\n")
+        return result
+
+    def report(self):
+        """Summarize the frozen audit without changing its paired row universe."""
+        import pandas as pd
+
+        stage = self.output/"report"
+        if stage.exists():
+            raise FileExistsError(stage)
+        evaluated = self.output/"evaluate"
+        manifest = json.loads((evaluated/"manifest.json").read_text())
+        if manifest["config_sha256"] != self._config_digest():
+            raise ValueError("decision-region JSON changed before report")
+        for name in ("scores", "candidate_scores"):
+            if self._digest(evaluated/f"{name}.parquet") != manifest[f"{name}_sha256"]:
+                raise ValueError("decision score artifact changed before report")
+        rows = pd.read_parquet(evaluated/"scores.parquet")
+        candidates = pd.read_parquet(evaluated/"candidate_scores.parquet")
+        metrics = ["full_crps_standardized", "weighted_crps", "strike_brier",
+                   "loss_bias", "loss_mae", "loss_mse", "put_spread_mae",
+                   "call_spread_mae", "nominal_regret", "robust_regret"]
+        by_entry = rows.groupby(["symbol", "tenor_band", "regime", "model"],
+                                dropna=False)[metrics].agg(["mean", "count"])
+        by_wing = candidates.groupby(["symbol", "tenor_band", "regime",
+                                      "wing_region", "model"], dropna=False)[
+                                          ["abs_error", "put_abs_error", "call_abs_error",
+                                           "loss_bias", "american_charge"]].agg(["mean", "count"])
+        stage.mkdir(parents=True)
+        by_entry.to_csv(stage/"by_entry.csv")
+        by_wing.to_csv(stage/"by_wing.csv")
+        summary = {"config_sha256": self._config_digest(),
+                   "eligible_rows": int(rows.reason.isna().sum()),
+                   "total_rows": len(rows),
+                   "candidate_rows": len(candidates),
+                   "charge_status": rows.american_charge_status.value_counts(
+                       dropna=False).to_dict(),
+                   "by_entry_sha256": self._digest(stage/"by_entry.csv"),
+                   "by_wing_sha256": self._digest(stage/"by_wing.csv")}
+        (stage/"summary.json").write_text(json.dumps(summary, indent=2)+"\n")
+        return summary
 
 
 class RawChainFeatureBuilder:
@@ -870,8 +1527,16 @@ def _main():
     parser.add_argument("config")
     parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
     parser.add_argument("--partition")
+    parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if args.decision_stage:
+        if args.stage or args.partition or set(config) != {"decision_study"}:
+            parser.error("decision stage needs a standalone decision_study document")
+        study = DecisionRegionStudy(config["decision_study"])
+        study._enforce_limits()
+        print(json.dumps(getattr(study, args.decision_stage)(), indent=2), flush=True)
+        return
     if args.stage == "prepare":
         import pandas as pd
         if args.partition:

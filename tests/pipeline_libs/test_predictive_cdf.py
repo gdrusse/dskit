@@ -6,6 +6,7 @@ import pytest
 
 from dskit.pipeline.libs.predictive_cdf import (
     AdaptiveEmpiricalMLPBlendCDF, CalibratedCurve, ChronologicalCDFStudy,
+    CDFHyperparameterStudy,
     CatBoostQuantileCDF,
     ConvexCurve, GridCurve, MixtureCurve,
     HorizonEmpiricalCDF, ScaledEmpiricalCDF, MonotoneCDF, QuantileCDF, MixtureMLPCDF,
@@ -13,6 +14,80 @@ from dskit.pipeline.libs.predictive_cdf import (
     SplineFlowCDF,
     TailConstrainedQuantileBlendCDF,
 )
+from dskit.pipeline.libs import predictive_cdf
+
+
+def test_threshold_audit_scores_fixed_intervals_and_refuses_post_choice_weights():
+    CDFThresholdAudit = predictive_cdf.CDFThresholdAudit
+    grid = np.linspace(80., 120., 401)
+    uniform = np.clip((grid - 80.) / 40., 0., 1.)
+    intervals = [(85., 95.), (105., 115.)]
+    audit = CDFThresholdAudit(grid, intervals, floor=.1)
+    assert np.all(audit.weights > 0)
+    assert audit.strike_brier(uniform, 90., 100.) == pytest.approx(.25**2)
+    assert audit.expected_spread_loss(uniform, 85., 95., "put") == pytest.approx(2.5)
+    assert audit.expected_spread_loss(uniform, 105., 115., "call") == pytest.approx(2.5)
+    assert audit.weighted_crps(uniform, 100.) < audit.weighted_crps(np.clip(uniform+.2, 0, 1), 100.)
+    with pytest.raises(ValueError, match="grid|interval"):
+        CDFThresholdAudit(grid, [(79., 95.)], floor=.1)
+
+
+def test_gridcurve_atom_is_not_smeared_in_log_price_spread_integral():
+    from scipy.integrate import quad
+
+    prices = np.array([9., 10., 11., 11., 16., 17.])
+    curve = GridCurve(np.log(prices / 13.)[None, :],
+                      [[0., 0., 0., .5, 1., 1.]])
+    audit = predictive_cdf.CDFThresholdAudit(
+        np.arange(9., 17.5, .5), [(10., 12.), (14., 15.)], floor=.1)
+    put = audit.gridcurve_log_spread_loss(curve, 0, 10., 12., "put", 13., 1.)
+    call = audit.gridcurve_log_spread_loss(curve, 0, 14., 15., "call", 13., 1.)
+    reference_put = quad(lambda x: curve.cdf([np.log(x/13.)])[0, 0],
+                         10., 12., points=[11.], epsabs=1e-11)[0]
+    reference_call = quad(lambda x: 1.-curve.cdf([np.log(x/13.)])[0, 0],
+                          14., 15., epsabs=1e-11)[0]
+    assert put == pytest.approx(reference_put, abs=1e-10)
+    assert call == pytest.approx(reference_call, abs=1e-10)
+    assert put+call < .75
+    sampled = curve.cdf(np.log(audit.grid/13.))[0]
+    assert audit.expected_spread_loss(sampled, 10., 12., "put") + \
+           audit.expected_spread_loss(sampled, 14., 15., "call") > .75
+
+
+def test_clipped_cdf_grid_preserves_interior_cdf_and_w1_budget():
+    grid = predictive_cdf.DiscreteCDFGrid([0., 1., 2.], [.2, .8, .9])
+    np.testing.assert_allclose(grid.masses, [.2, .6, .2])
+    np.testing.assert_allclose(np.cumsum(grid.masses), [.2, .8, 1.])
+    centered = predictive_cdf.DiscreteCDFGrid([0., 1., 2.], [0., 1., 1.])
+    loss = np.array([1., 0., 1.])
+    assert centered.worst_expected_loss(loss, radius=0., spot=1.) == pytest.approx(0.)
+    assert centered.worst_expected_loss(loss, radius=.5, spot=1.) == pytest.approx(.5)
+    assert centered.worst_expected_loss(loss, radius=1., spot=1.) == pytest.approx(1.)
+    with pytest.raises(ValueError, match="CDF"):
+        predictive_cdf.DiscreteCDFGrid([0., 1., 2.], [.2, .1, .9])
+
+
+def test_w1_candidate_selection_uses_one_ball_and_no_trade():
+    grid = predictive_cdf.DiscreteCDFGrid([0., 1., 2.], [0., 1., 1.])
+    candidates = [
+        {"id": "fragile", "net_credit": .4, "loss": [1., 0., 1.]},
+        {"id": "stable", "net_credit": .2, "loss": [0., 0., 0.]},
+    ]
+    assert grid.choose(candidates, radius=0., spot=1.)["id"] == "fragile"
+    assert grid.choose(candidates, radius=.5, spot=1.)["id"] == "stable"
+    assert grid.choose(candidates[:1], radius=.5, spot=1.)["id"] is None
+    assert grid.choose([{"id": "tie", "net_credit": 0., "loss": [0., 0., 0.]}],
+                       radius=0., spot=1.)["id"] is None
+
+
+def test_frozen_curve_archive_restores_exact_grid_rows(tmp_path):
+    source = GridCurve(np.array([[0., 1.], [1., 2.]]),
+                       np.array([[0., 1.], [0., 1.]]))
+    path = tmp_path/"curves.npz"
+    np.savez_compressed(path, row_index=np.array([0, 1]), **source._arrays())
+    with np.load(path, allow_pickle=False) as archive:
+        restored = CDFHyperparameterStudy.restore_curve(archive, [1])
+    assert restored.cdf([1.25])[0, 0] == pytest.approx(.25)
 
 
 class _StaticGridEstimator:
