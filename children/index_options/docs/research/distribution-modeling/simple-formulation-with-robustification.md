@@ -34,19 +34,19 @@ For candidate $x$, let its executable credit per share be
 $c_t(x)=b_{SP}+b_{SC}-a_{LP}-a_{LC}$ and let $f_t(x)$ denote fees and a declared
 execution allowance per share. At expiry, its capped intrinsic loss is
 
-$$
+```math
 L_x(S_T)=(K_{SP}-S_T)^+-(K_{LP}-S_T)^+
           +(S_T-K_{SC})^+-(S_T-K_{LC})^+.
-$$
+```
 
 For any coherent CDF $F$, including CDFs with atoms,
 
-$$
+```math
 \mathbb E_F[L_x]
 =\int_{K_{LP}}^{K_{SP}}F(s)\,ds
  +\int_{K_{SC}}^{K_{LC}}[1-F(s)]\,ds.
 \tag{1}
-$$
+```
 
 Thus nominal expected profit is $M[c_t(x)-f_t(x)-\mathbb E_{\widehat F_t}L_x]$,
 with multiplier $M$. Four endpoint probabilities alone do not determine (1).
@@ -67,14 +67,14 @@ $Q_j=\sum_{k\le j}q_k$, $\widehat Q_j=\sum_{k\le j}\widehat p_{t,k}$.
 
 The proposed ambiguity set is the following polytope:
 
-$$
+```math
 \begin{aligned}
 \mathcal U_t=\{q:\;&q_k\ge0,\quad \textstyle\sum_kq_k=1,\\
 &\ell_{t,j}\le Q_j\le u_{t,j}\quad(j\in\mathcal J_t),\\
 &\textstyle\sum_{j=1}^{m-1}\frac{s_{j+1}-s_j}{S_t}|Q_j-\widehat Q_j|
 \le\rho_t\}.
 \end{aligned}\tag{2}
-$$
+```
 
 $\mathcal J_t$ includes all eligible strikes and wing-interior grid points.
 Set a declared finite modeling interval $[A_t,B_t]$ strictly beyond the lowest
@@ -120,20 +120,20 @@ predeclared fallback or decline to trade.
 For each feasible candidate, let $\ell_{x,k}=L_x(s_k)$. Its worst plausible
 expected loss is a linear program:
 
-$$
+```math
 R_t(x)=\max_{q\in\mathcal U_t}\sum_kq_k\ell_{x,k}.
 \tag{3}
-$$
+```
 
 Select
 
-$$
+```math
 x_t^*\in\arg\max_{x\in\mathcal X_t\cup\{\varnothing\}}
 \begin{cases}
 M[c_t(x)-f_t(x)-R_t(x)],&x\ne\varnothing,\\
 0,&x=\varnothing.
 \end{cases}\tag{4}
-$$
+```
 
 Break ties toward no trade. The ambiguity set is fixed **before** selecting
 $x$, so every candidate faces the same plausible distribution family. Retain
@@ -175,9 +175,9 @@ crossing zero; its condor-loss MSE is slightly worse (0.076746 versus
 Use the following staged protocol on identical, chronologically valid rows:
 
 1. **Audit:** map every entry-known eligible strike to the saved CDF; compute
-   Brier score $(F_t(K)-1\{S_T\le K\})^2$ at strikes, plus the proper
+   Brier score $(F_t(K)-1\lbrace S_T\le K\rbrace)^2$ at strikes, plus the proper
    threshold-weighted CRPS
-   $\int w_t(s)[F_t(s)-1\{S_T\le s\}]^2ds$. The global floor maintains
+   $\int w_t(s)[F_t(s)-1\lbrace S_T\le s\rbrace]^2ds$. The global floor maintains
    whole-curve identification. Report by index, requested tenor, moneyness,
    wing width and regime, alongside full CRPS and the existing tail guard.
 2. **Payoff diagnosis:** for predeclared eligible spread/condor templates,
