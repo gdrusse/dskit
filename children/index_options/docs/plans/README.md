@@ -23,6 +23,33 @@ risk limits, monitoring and authority contracts, with paper evidence before
 live approval. RL hedging and deep models are optional later questions.
 Neither model sophistication nor backtest profit guarantees an edge.
 
+## Three-step data selection (owner rulings, 2026-10-01)
+
+Current direction; supersedes conflicting cohort/split wording below. Each step
+is a ticker/source-neutral JSON pipeline whose outputs feed the next; nothing
+derivable from a prior step is typed in.
+
+| Step | Inputs | Outputs |
+|---|---|---|
+| 1. Tradable dates | ticker; option-chain source; one configurable underlying-close source | dates per exact DTE 1-45 (table + chart); argmax DTE, ties to shorter |
+| 2. Feature availability | ticker; family set (implied CDF is one family); step-1 dates at the selected DTE | dates per family; dates for every non-empty family combination; per-date feature/family gaps |
+| 3. Holdout and folds | step-1 DTE and dates; step-2 availability; holdout share H (0.2), tau (0.9), train/validation sizes and retrain interval, all in dates | locked holdout dates; admitted families; training dates; fold table (train/val dates, boundaries, purge counts) |
+
+- Step 1 has no CDF filter: "available" means any option with a valid bid/ask,
+  since the MIO may select any. A missing implied CDF is a step-2 gap.
+- The holdout is locked first (last H of step-1 dates, purging earlier labels
+  that reach it) and is the final frozen MIO test.
+- A family is admitted when available on at least tau of pre-holdout dates;
+  training uses complete-case dates. Gaps are assumed random for now, though
+  surface gaps cluster in 2011-2014. Rows are weighted equally.
+- Folds keep intraday_equities' rolling-origin shape (warmup fold, retrain per
+  fold) without its extra late periods. Windows and the retrain interval count
+  dates, so retraining follows expiry frequency; embargo = selected DTE.
+- Planned features: weekday one-hot (ADR-0214) and expiry density. Pre-2021
+  entries are mostly Fridays, so weekday is partly confounded with era.
+- Status: steps 1-2 are being rebuilt for QQQ/SPY/IWM/AMZN (real runs in
+  WSL); step 3 awaits its ADR (data-driven holdout and count-sized folds).
+
 ## Draft: Torch CDF feature families (2026-10-01)
 
 Planning only; feature choices and experiment design remain open.
