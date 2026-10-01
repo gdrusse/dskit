@@ -254,6 +254,16 @@ When a new package is created it **must** include, at the package level:
 
 Keep both trees current when files are added or removed.
 
+## Math in Markdown (must render on GitHub)
+
+Two commits (`d85a377`, `8c269a4`) fixed this same mistake. For any `.md`:
+
+- **Display math: a ```` ```math ```` fence** — never `$$…$$` or `\[…\]`.
+  GitHub applies markdown escapes inside `$$`, so `\{ \} \; \, \\` lose
+  their backslash and `aligned`/`cases` blocks break.
+- **Inline math: `$…$`** — never `\(…\)` or bare `(…)`. No backslash before
+  punctuation inside it: write `\lbrace`/`\rbrace`, or use `` $`…`$ ``.
+
 ## Configuration standards
 
 - **JSON is the interface.** A config declares the whole process; the code reads it.
