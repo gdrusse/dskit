@@ -37,10 +37,11 @@ condor/model rows, and 5,373 unique within-forecast wing templates. The chain
 quotes contain dates but no source timestamps, so every result is an
 after-close diagnostic and is not executable.
 
-The correction-selection cutoff was `2018-07-01`; radius calibration begins
-then, and final optimization begins `2018-10-01`. These three periods are
-disjoint, so residuals used to select a radius never participated in selecting
-the correction. Training is expanding-window and causal inside 2018. Forty forecast identities had enough settled
+The correction-selection cutoff was `2018-07-01`; radius history begins then,
+and final optimization begins `2018-10-01`. Correction-selection outcomes are
+excluded from radius history. Earlier final-period outcomes may update later
+radius choices only after strict settlement. Training is expanding-window and
+causal inside 2018. Forty forecast identities had enough settled
 history to pair all four corrected candidates with the unchanged model before
 the cutoff. Selection minimized the positive-floor, actual eligible-wing
 proper score, subject to each index's 5%/95% tail deviations being no worse
