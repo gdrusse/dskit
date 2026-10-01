@@ -44,7 +44,7 @@ centre makes a narrow, high-credit condor look better than it is.
 
 - $k\in K=\lbrace 1,\dots,m\rbrace$: grid points, with expiry prices $s_1<\dots<s_m$.
 - $j\in J=\lbrace 1,\dots,m-1\rbrace$: CDF points; the gap after $s_j$ is $s_{j+1}-s_j$.
-- $J^{\text{band}}_t\subseteq J$: CDF points that carry a band (the research note's $\mathcal J_t$).
+- $J_t^{\text{band}}\subseteq J$: CDF points that carry a band (the research note's $\mathcal J_t$).
 - $\mathcal X_t$: eligible condors at entry time $t$; $\varnothing$ means no trade.
 
 ### Parameters (fixed before choosing)
@@ -55,7 +55,7 @@ centre makes a narrow, high-credit condor look better than it is.
 - $\ell_{x,k}=L_x(s_k)$: loss of condor $x$ per share if it settles at $s_k$.
 - $c_t(x)$, $f_t(x)$: credit received and fees, per share; $M$: multiplier (100).
 - $\rho_t\ge0$: the budget, as a fraction of spot; $S_t\rho_t$ is in dollars per share.
-- $Q^{\text{lo}}_j\le Q^{\text{hi}}_j$: band for $j\in J^{\text{band}}_t$ (written $\ell_{t,j}, u_{t,j}$ in the research note).
+- $Q_j^{\text{lo}}\le Q_j^{\text{hi}}$: band for $j\in J_t^{\text{band}}$ (written $\ell_{t,j}, u_{t,j}$ in the research note).
 
 ### Decision variables
 
@@ -75,7 +75,7 @@ R_t(x)=\max_{q,\,Q,\,d}\ \sum_{k\in K}\ell_{x,k}\,q_k\qquad\text{subject to}
 Q_j=\sum_{k\le j}q_k\ \ (j\in J)\qquad\text{(I2)}\\
 d_j\ge Q_j-\widehat Q_j,\qquad d_j\ge\widehat Q_j-Q_j\ \ (j\in J)\qquad\text{(I3)}\\
 \sum_{j\in J}\frac{s_{j+1}-s_j}{S_t}\,d_j\le\rho_t\qquad\text{(I4)}\\
-Q^{\text{lo}}_j\le Q_j\le Q^{\text{hi}}_j\ \ (j\in J^{\text{band}}_t)\qquad\text{(I5)}
+Q_j^{\text{lo}}\le Q_j\le Q_j^{\text{hi}}\ \ (j\in J_t^{\text{band}})\qquad\text{(I5)}
 \end{gathered}
 ```
 
