@@ -1,0 +1,215 @@
+{
+  "notes": "Frozen SPY-only persistence study. The 2019 fold anchors the already inspected architecture/variant choice; 2020-2025 are descriptive persistence years. No retraining choice, architecture search, or optimizer tuning. Promotion requires decision-strike Brier skill versus horizon empirical with both 30- and 60-date paired interval lower bounds above zero; global CRPS, tail CRPS, and lower/upper tail quantile scores must each be no worse than 1% versus empirical, and absolute 5%/95% coverage deviation may not worsen by more than one percentage point. Date-only chains remain after-close indicative and non-executable.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {
+      "SPY": "VIX"
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "decision_regions": {
+      "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+      "max_chain_rows": 24000000,
+      "panel_years": [
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {
+        "max_seconds": 1800,
+        "max_resident_mib": 6144
+      },
+      "chain_rule": {
+        "max_abs_log_moneyness": 0.1,
+        "min_wing_width": 5,
+        "max_wing_width": 5,
+        "max_candidates": 5000,
+        "fee_per_leg": 0.5,
+        "multiplier": 100
+      }
+    }
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "decision_context": "decision_region_context",
+    "frozen_variants": {
+      "horizon_empirical": "raw",
+      "decision_mlp_wide": "raw"
+    },
+    "promotion_guard": {
+      "reference": "horizon_empirical",
+      "candidate": "decision_mlp_wide",
+      "local_metric": "decision_strike_brier",
+      "blocks": [30, 60],
+      "min_lower_bound": 0.0,
+      "noninferiority_pct": {
+        "crps": 1.0,
+        "tail_crps": 1.0,
+        "lower_tail_quantile_score": 1.0,
+        "upper_tail_quantile_score": 1.0
+      },
+      "coverage_targets": {"below_05": 0.05, "above_95": 0.05},
+      "max_coverage_deviation_increase": 0.01,
+      "authority": "descriptive_only"
+    },
+    "years": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "output": "pipeline_runs/predictive_cdf_decision_loss_spy_persistence_20261001",
+    "samples": 401,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2019,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 2000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "decision_mlp_wide": {
+        "class": "dskit.pipeline.libs.predictive_cdf:DecisionWeightedMixtureMLPCDF",
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 8,
+          "batch_size": 1024,
+          "seeds": [
+            11
+          ],
+          "device": "cuda",
+          "deterministic": true,
+          "dropout": 0.1,
+          "decision_weight": 1,
+          "global_cdf_weight": 0.25
+        },
+        "calibrate": false
+      }
+    }
+  }
+}

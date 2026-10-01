@@ -28663,3 +28663,25 @@ MLP led aggregate local Brier by 1.173%, with both intervals crossing zero;
 SPY improved 2.396% and QQQ worsened 4.376%. Every challenger worsened global
 CRPS. Therefore no model advances to optimization. The next test is a frozen
 SPY-specific persistence/guard study plus diagnosis of the QQQ degradation.
+
+## ADR-0209 — Frozen SPY persistence and descriptive promotion guard
+
+**Status:** completed 2026-10-01; guard failed, no promotion.
+
+Freeze the raw wide decision-weighted MLP and horizon-empirical reference from
+ADR-0208. Evaluate SPY annually from 2020 through 2025 with chronological
+purging and identical entry-known listed-strike contexts. No architecture,
+loss, feature, or calibration choice may change.
+
+Make the guard a JSON identity input and machine-evaluated report. Promotion
+would require both 30/60-date actual-strike Brier interval lower bounds above
+zero; CRPS, tail CRPS, and both tail quantile scores no worse than 1%; and
+5%/95% absolute coverage deviations no more than one percentage point worse.
+Historical inspected years have descriptive authority only even if the guard
+passes. Persist frozen variants explicitly and emit annual skill evidence.
+
+The candidate improved local Brier in five of six years and passed every
+global, tail, and coverage constraint. Its 60-date local lower bound was
++0.020%, but the 30-date lower bound was -0.223%; the frozen guard therefore
+failed. Do not weaken it post hoc. Diagnose QQQ by individual decision cutoff
+before considering any new model or robust optimizer input.

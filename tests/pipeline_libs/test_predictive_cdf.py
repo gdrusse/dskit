@@ -1,5 +1,7 @@
 """Independent numerical and temporal contracts for ADR-0189."""
 
+import copy
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -924,6 +926,67 @@ def test_summary_block_bootstrap_drops_unrepresented_sparse_cells(tmp_path):
     intervals = summary['paired_block_intervals']
     assert intervals and all(row['lo'] == pytest.approx(0.)
                              and row['hi'] == pytest.approx(0.) for row in intervals)
+
+
+def test_descriptive_guard_uses_frozen_variants_local_intervals_and_tail_checks(tmp_path):
+    output = tmp_path/'guard-summary'
+    output.mkdir()
+    model = {'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+             'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 21},
+             'calibrate': True}
+    config = {
+        'features': ['h', 'scale'], 'group': 'unit', 'date': 'date', 'end': 'end',
+        'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017, 2019],
+        'output': str(output), 'samples': 21, 'tail_intervals': [[-2, -1]],
+        'tail_points': 21, 'calibration_knots': 3, 'development_end': 2017,
+        'bootstrap': {'blocks': [1], 'replicates': 20, 'seed': 4},
+        'reference_model': 'reference', 'comparison_references': ['reference'],
+        'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+        'models': {'reference': model, 'candidate': model},
+        'decision_context': 'decision_region_context',
+        'frozen_variants': {'reference': 'raw', 'candidate': 'raw'},
+        'promotion_guard': {
+            'reference': 'reference', 'candidate': 'candidate',
+            'local_metric': 'decision_strike_brier', 'blocks': [1],
+            'min_lower_bound': 0.,
+            'noninferiority_pct': {'crps': 1., 'tail_crps': 1.,
+                                   'lower_tail_quantile_score': 1.,
+                                   'upper_tail_quantile_score': 1.},
+            'coverage_targets': {'below_05': .05, 'above_95': .05},
+            'max_coverage_deviation_increase': .01,
+            'authority': 'descriptive_only'}}
+    rows = []
+    for year in (2017, 2019):
+        for h, day in ((1, '01'), (2, '02')):
+            for name in ('reference', 'candidate'):
+                for variant in ('raw', 'calibrated'):
+                    candidate = name == 'candidate'
+                    rows.append({
+                        'unit': 'A', 'date': f'{year}-03-{day}',
+                        'end': f'{year}-03-03', 'expiry': f'{year}-03-03-{h}',
+                        'h': h, 'year': year, 'model': name, 'variant': variant,
+                        'decision_strike_brier': .09 if candidate else .1,
+                        'crps': .201 if candidate else .2, 'tail_crps': .2,
+                        'lower_tail_quantile_score': .2,
+                        'upper_tail_quantile_score': .2,
+                        'below_05': .05, 'above_95': .05})
+    summary = ChronologicalCDFStudy(config).summarize(pd.DataFrame(rows))
+    assert summary['selected_variants_from_development'] == config['frozen_variants']
+    assert summary['promotion_status'] == 'descriptive_guard_pass_no_promotion'
+    assert summary['promotion_guard']['passed']
+    assert all(check['passed'] for check in summary['promotion_guard']['local_intervals'])
+    assert all(check['passed'] for check in summary['promotion_guard']['noninferiority'])
+    assert all(check['passed'] for check in summary['promotion_guard']['coverage'])
+    annual = pd.read_csv(output/'skill_by_index_year.csv')
+    assert set(annual.year) == {2019}
+    assert set(annual.model) == {'reference', 'candidate'}
+    failed = copy.deepcopy(config)
+    failed['output'] = str(tmp_path/'guard-failure')
+    (tmp_path/'guard-failure').mkdir()
+    failed['promotion_guard']['min_lower_bound'] = 20.
+    refusal = ChronologicalCDFStudy(failed).summarize(pd.DataFrame(rows))
+    assert not refusal['promotion_guard']['passed']
+    assert refusal['promotion_status'] == 'descriptive_guard_failed_no_promotion'
 
 
 def test_student_curve_density_family_inverse_and_saved_degrees():

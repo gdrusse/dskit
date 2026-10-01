@@ -1,5 +1,16 @@
 # Re-entry
 
+## SPY decision-region persistence completed (2026-10-01)
+
+- Frozen raw wide decision MLP versus horizon empirical; no HPO/reselection.
+  23,141 eligible SPY forecasts across 2020--2025.
+- Local Brier skill by year: +9.560%, +5.418%, -0.753%, +0.551%, +0.087%,
+  +4.602%. All global, tail, and coverage guards passed.
+- Promotion guard failed only because the 30-date interval lower bound was
+  -0.223% (60-date +0.020%). Do not weaken the post-result gate or optimize.
+- Next: standardized QQQ entry-strike diagnosis by side, distance, DTE, year.
+  Memo: `children/index_options/docs/memos/2026-10-01-spy-decision-region-persistence.md`.
+
 ## Decision-region loss zoo completed (2026-09-30)
 
 - Added causal, identity-bound actual-strike training context and two new CDF

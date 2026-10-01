@@ -2950,11 +2950,13 @@ class ChronologicalCDFStudy:
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
-            "decision_context", "notes"}
+            "decision_context", "frozen_variants", "promotion_guard", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
-        missing = self.KEYS-{"notes", "tail_probabilities", "decision_context"}-set(config)
+        optional = {"notes", "tail_probabilities", "decision_context",
+                    "frozen_variants", "promotion_guard"}
+        missing = self.KEYS-optional-set(config)
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
         for spec in config["models"].values():
@@ -2969,6 +2971,40 @@ class ChronologicalCDFStudy:
                 estimator = getattr(importlib.import_module(module), cls)
                 if getattr(estimator, "consumes_calibration_labels", False):
                     raise ValueError("estimator consumes calibration labels; second map refused")
+        frozen = config.get("frozen_variants")
+        if (frozen is not None
+                and (set(frozen) != set(config["models"])
+                     or any(value not in ("raw", "calibrated")
+                            for value in frozen.values()))):
+            raise ValueError("invalid frozen variants")
+        guard = config.get("promotion_guard")
+        guard_keys = {"reference", "candidate", "local_metric", "blocks",
+                      "min_lower_bound", "noninferiority_pct", "coverage_targets",
+                      "max_coverage_deviation_increase", "authority"}
+        if guard is not None:
+            import math
+            if (set(guard) != guard_keys
+                    or guard["reference"] not in config["models"]
+                    or guard["candidate"] not in config["models"]
+                    or guard["reference"] == guard["candidate"]
+                    or guard["local_metric"] != "decision_strike_brier"
+                    or not isinstance(guard["blocks"], list) or not guard["blocks"]
+                    or any(type(v) is not int or v not in config["bootstrap"]["blocks"]
+                           for v in guard["blocks"])
+                    or len(set(guard["blocks"])) != len(guard["blocks"])
+                    or isinstance(guard["min_lower_bound"], bool)
+                    or not math.isfinite(guard["min_lower_bound"])
+                    or set(guard["noninferiority_pct"]) != {
+                        "crps", "tail_crps", "lower_tail_quantile_score",
+                        "upper_tail_quantile_score"}
+                    or any(isinstance(v, bool) or not math.isfinite(v) or v < 0
+                           for v in guard["noninferiority_pct"].values())
+                    or guard["coverage_targets"] != {"below_05": .05, "above_95": .05}
+                    or isinstance(guard["max_coverage_deviation_increase"], bool)
+                    or not math.isfinite(guard["max_coverage_deviation_increase"])
+                    or guard["max_coverage_deviation_increase"] < 0
+                    or guard["authority"] != "descriptive_only"):
+                raise ValueError("invalid descriptive promotion guard")
         self.config = config
 
     def to_obj(self):
@@ -3028,6 +3064,8 @@ class ChronologicalCDFStudy:
         selected = {name: min(("raw", "calibrated"), key=lambda v: dev_rel[(name, v)])
                     for name in c["models"]}
         selected[baseline] = "raw"
+        if selected_variants is None and c.get("frozen_variants") is not None:
+            selected_variants = c["frozen_variants"]
         if selected_variants is not None:
             if set(selected_variants) != set(c["models"]) or any(v not in ("raw", "calibrated") for v in selected_variants.values()):
                 raise ValueError("invalid frozen variants")
@@ -3043,7 +3081,7 @@ class ChronologicalCDFStudy:
                        if (name.startswith("below_") or name.startswith("above_"))
                        and name not in metrics)
         metrics = [m for m in metrics if m in scores]
-        records, grids = [], []
+        records, grids, yearly_grids = [], [], []
         keys = c["identity"]
         for metric in metrics:
             mean = picked.groupby(cells+["model"])[metric].mean().unstack("model")
@@ -3063,6 +3101,17 @@ class ChronologicalCDFStudy:
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
                     if metric in ("decision_strike_brier", "crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
+            if metric not in ("condor_loss_bias", "below_05", "above_95",
+                              "payoff_quadrature_gap"):
+                annual = picked.groupby([c["group"], "year", "model"])[metric].mean().unstack("model")
+                annual_ratio = annual.div(annual[baseline], axis=0)
+                for model in c["models"]:
+                    row = (100*(1-annual_ratio[model])).rename("skill").reset_index()
+                    row["metric"], row["model"] = metric, model
+                    n = (picked[picked.model == model]
+                         .groupby([c["group"], "year"]).size().rename("n").reset_index())
+                    yearly_grids.append(row.merge(n, on=[c["group"], "year"],
+                                                  validate="one_to_one"))
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
         # paired denominators cancel in each cell's candidate/reference ratio.
@@ -3103,10 +3152,59 @@ class ChronologicalCDFStudy:
                     intervals.append({"metric": interval_metric, "model": model, "reference": reference, "block_dates": width,
                                       "lo": float(lo), "hi": float(hi),
                                       "point": float(100*(1-np.mean(a.sum(0)/b.sum(0))))})
+        guard_result = None
+        if c.get("promotion_guard") is not None:
+            guard = c["promotion_guard"]
+            candidate, reference = guard["candidate"], guard["reference"]
+            local_checks = []
+            for width in guard["blocks"]:
+                matches = [row for row in intervals
+                           if row["metric"] == guard["local_metric"]
+                           and row["model"] == candidate
+                           and row["reference"] == reference
+                           and row["block_dates"] == width]
+                if len(matches) != 1:
+                    raise ValueError("promotion guard lacks unique local interval")
+                row = matches[0]
+                local_checks.append({"block_dates": width, "lo": row["lo"],
+                                     "threshold": guard["min_lower_bound"],
+                                     "passed": row["lo"] > guard["min_lower_bound"]})
+            noninferiority = []
+            for metric, margin in guard["noninferiority_pct"].items():
+                mean = picked.groupby(cells+["model"])[metric].mean().unstack("model")
+                skill = float(100*(1-(mean[candidate]/mean[reference]).mean()))
+                noninferiority.append({"metric": metric, "skill": skill,
+                                       "minimum": -float(margin),
+                                       "passed": skill >= -float(margin)})
+            coverage = []
+            for metric, target in guard["coverage_targets"].items():
+                mean = picked.groupby(cells+["model"])[metric].mean().unstack("model")
+                candidate_deviation = float((mean[candidate]-target).abs().mean())
+                reference_deviation = float((mean[reference]-target).abs().mean())
+                increase = candidate_deviation-reference_deviation
+                coverage.append({"metric": metric,
+                                 "candidate_abs_deviation": candidate_deviation,
+                                 "reference_abs_deviation": reference_deviation,
+                                 "increase": increase,
+                                 "maximum": guard["max_coverage_deviation_increase"],
+                                 "passed": increase <= guard["max_coverage_deviation_increase"]})
+            passed = all(row["passed"] for row in
+                         [*local_checks, *noninferiority, *coverage])
+            guard_result = {"candidate": candidate, "reference": reference,
+                            "authority": guard["authority"], "passed": passed,
+                            "local_intervals": local_checks,
+                            "noninferiority": noninferiority,
+                            "coverage": coverage}
         summary = {"selected_variants_from_development": selected,
                    "selection_metric": selection_metric,
-                   "promotion_status": "descriptive_only_no_promotion",
-                   "promotion_reason": "global and tail noninferiority are reported but not a preregistered gate",
+                   "promotion_status": ("descriptive_only_no_promotion" if guard_result is None
+                                        else ("descriptive_guard_pass_no_promotion"
+                                              if guard_result["passed"] else
+                                              "descriptive_guard_failed_no_promotion")),
+                   "promotion_reason": ("global and tail noninferiority are reported but not a preregistered gate"
+                                        if guard_result is None else
+                                        "historical inspected data have descriptive authority only"),
+                   "promotion_guard": guard_result,
                    "decision_eligible_rows_by_model": (
                        picked.dropna(subset=["decision_strike_brier"])
                        .groupby("model").size().to_dict()
@@ -3118,6 +3216,8 @@ class ChronologicalCDFStudy:
                    "limits": "Pointwise research intervals, not multiplicity-adjusted selection guarantees; historical evaluation already inspected."}
         (output/"comparison.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
         pd.concat(grids, ignore_index=True).to_csv(output/"skill_by_exact_day.csv", index=False)
+        pd.concat(yearly_grids, ignore_index=True).to_csv(
+            output/"skill_by_index_year.csv", index=False)
         picked.groupby([c["group"], "model"])[metrics].mean().to_csv(output/"metrics_by_index.csv")
         later.groupby(["model", "variant"])[metrics].mean().to_csv(output/"raw_vs_calibrated.csv")
         return summary
