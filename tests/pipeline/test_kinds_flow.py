@@ -1409,6 +1409,19 @@ class TestWeekdayOneHot:
         assert [k for k in omitted["records"][0] if k.startswith("dow_")] == [
             f"dow_{t}" for t in WEEKDAY_TAGS]
 
+    def test_an_omitted_baseline_runs_like_an_empty_one(self, ctx):
+        # Only the baseline is omitted, over a non-default ``weekdays``: a
+        # covered day projects identically and an uncovered one is refused
+        # identically, so run and validate_params share the one default.
+        covered = {"records": [self.day(self.MON), self.day(self.FRI)]}
+        assert self.node(weekdays=self.WORKDAYS).run(ctx, covered) == self.node(
+            weekdays=self.WORKDAYS, baseline=[]).run(ctx, covered)
+        uncovered = {"records": [self.day(self.SAT)]}
+        for node in (self.node(weekdays=self.WORKDAYS),
+                     self.node(weekdays=self.WORKDAYS, baseline=[])):
+            with pytest.raises(ValueError, match="sat"):
+                node.run(ctx, uncovered)
+
     def test_seven_default_columns_sum_to_one_per_row(self, ctx):
         rows = [self.day(f"2026-01-{d:02d}") for d in range(5, 19)]
         for row in self.node().run(ctx, {"records": rows})["records"]:
@@ -1495,6 +1508,37 @@ class TestWeekdayOneHot:
             {"date_field": "d", "prefix": "p", "weekdays": ["mon", "sat"],
              "baseline": ["sat", "sun"]})
         assert any("overlap" in p and "sat" in p for p in problems), problems
+
+    def test_a_baseline_alone_overlaps_the_all_seven_default_weekdays(self):
+        # ``weekdays`` is OMITTED: validation must judge the overlap against
+        # the default the run will use (all seven), not against nothing.
+        problems = WeekdayOneHot.validate_params(
+            {"date_field": "d", "prefix": "p", "baseline": ["sat", "sun"]})
+        assert any("overlap" in p and "sat" in p and "sun" in p for p in problems), problems
+
+    def test_a_baseline_alone_fails_construction_like_the_spelled_out_overlap(self):
+        for params in (
+            {"baseline": ["sat", "sun"]},
+            {"weekdays": list(WEEKDAY_TAGS), "baseline": ["sat", "sun"]},
+        ):
+            with pytest.raises(ConfigError, match="overlap"):
+                WeekdayOneHot("wd", {"date_field": "d", "prefix": "p", **params})
+
+    @pytest.mark.parametrize("baseline", [
+        [], ["sat", "sun"], ["mon"], ["Monday"], ["sat", "sat"], "sat", None,
+    ])
+    def test_omitted_weekdays_validate_like_the_spelled_out_default(self, baseline):
+        base = {"date_field": "d", "prefix": "p", "baseline": baseline}
+        spelled = {**base, "weekdays": list(WEEKDAY_TAGS)}
+        assert WeekdayOneHot.validate_params(base) == WeekdayOneHot.validate_params(spelled)
+
+    @pytest.mark.parametrize("weekdays", [
+        ["mon"], ["sat", "sun"], list(WEEKDAY_TAGS), ["Monday"], ["mon", "mon"], "mon", None,
+    ])
+    def test_omitted_baseline_validates_like_the_spelled_out_default(self, weekdays):
+        base = {"date_field": "d", "prefix": "p", "weekdays": weekdays}
+        assert WeekdayOneHot.validate_params(base) == WeekdayOneHot.validate_params(
+            {**base, "baseline": []})
 
     @pytest.mark.parametrize("which", ["weekdays", "baseline"])
     def test_a_duplicate_tag_is_refused(self, which):

@@ -143,13 +143,13 @@ class TestBothRegistersReachableFromThePackage:
         assert pipeline.EventBank is EventBank
         assert pipeline.EventGrid is kinds_flow.EventGrid
         assert pipeline.Eligibility is Eligibility
+        assert pipeline.BankingReport is BankingReport
+        for name in ("EventBank", "Eligibility", "BankingReport"):
+            assert name in pipeline.__all__
 
     def test_the_package_exports_the_weekday_kind(self):
         assert pipeline.WeekdayOneHot is kinds_flow.WeekdayOneHot
         assert "WeekdayOneHot" in pipeline.__all__
-        assert pipeline.BankingReport is BankingReport
-        for name in ("EventBank", "Eligibility", "BankingReport"):
-            assert name in pipeline.__all__
 
 
 class TestEventBankDefaultsHaveOneName:

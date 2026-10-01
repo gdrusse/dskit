@@ -1780,6 +1780,16 @@ connector, the `observations` kind and the public clause DSL):
       "revisit declared gaps" knob or an upstream-object fallback
       (`https://r2v2.pmxt.dev/`, the mirror lags the venue by weeks — the
       child's I-242) would be an ADR.
+- [ ] **Two date rules disagree (ADR-0214 follow-up).**
+      `dskit/pipeline/program_calendar.py:36` `_date_problem` still accepts
+      `20260105` and `2026-W02-1`; `document.date_problem` refuses both.
+      Point the former at the latter, then pin the calendar's accepted
+      spellings so the move is a declared one.
+- [ ] **`tod_columns` still hand-rolls its weekday columns (ADR-0214
+      follow-up, owner Q1).** `children/intraday_equities/intraday_equities/
+      features.py:65` `_WEEKDAYS` / `:349`: call `weekday_flags` with baseline
+      `sat`/`sun`, and pin the five `dow_*` columns by a float64 `tobytes()`
+      golden taken before the swap.
 - [x] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
       is a hand-kept list of the nine kinds (a deliberate restatement);
       deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping
