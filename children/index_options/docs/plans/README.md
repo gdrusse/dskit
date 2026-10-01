@@ -363,3 +363,50 @@ assignment study. In the two available 30/37-DTE expiries, MSFT had tighter
 median spreads and greater volume. The 44-DTE request returned no free snapshot
 for either symbol; retained artifacts do not establish active-contract coverage.
 AMZN is the operationally simpler baseline; MSFT is the liquidity benchmark. This is not evidence of a profitable strategy.
+
+### Executed JSON-only coverage selector
+
+The owner requested an argmax over exact horizons 1-45, implemented entirely by
+existing nodes in `configs/run-cdf-horizon-coverage.json`. Input ticker is
+`cohort.params.where[0].value`; source settings are `source.params`. `groupby`
+counts distinct quote dates, `max` plus `filter` selects the largest count, and
+`min` breaks ties toward the shorter horizon. No Python implementation changed.
+
+The source is the existing, validated options-derived CDF panel, imported with
+`configs/source-cdf-horizon-panel.json` through localtables. It is not a raw-chain
+CDF reconstruction pipeline. Its source contract requires an upstream verified
+eligibility flag and finite, ordered nine-quantile proxy; missing quantiles and
+missing targets are excluded. Fully observed distribution tails are not claimed.
+Historical actual settlement-close DTE supplies the exact horizon; this census
+does not establish a prospective holiday/calendar or execution policy.
+
+QQQ result: **7 days, 1,497 distinct dates**. Runner-up: 14 days, 1,400.
+Other anchors: 1 day, 1,281; 30 days, 754. These are CDF-eligible prepared-panel
+counts, not the larger raw-chain counts previously listed. All 45 output counts
+match an independent finite/monotonic-quantile census of the source parquet.
+
+Run: `pipeline_runs/qqq-cdf-horizon-coverage-2026-10-01-21153f83`.
+Counts: `pipeline_runs/cdf-horizon-counts.jsonl`; winner:
+`pipeline_runs/cdf-horizon-winner.jsonl`. Document identity:
+`16ea55b693f3867c6c2d521175439a676ae0c197c4ca0f1db137551cbe0f40c6`.
+Source panel SHA-256: b9a11111285f64ec1883c05ef69bdb3d3a5e44706ecf5d55f6da9e84c4a36afc.
+Acquisition snapshot: `8815723bdfc9a93e925f82bcb7f027307888ace6b9770d37878c9f17cb4b82ec`.
+
+WSL2 execution under hard 29-minute/6-GiB/no-swap caps: acquisition 37.64s,
+2,350,400 KiB peak RSS; pipeline 16.20s, 1,373,936 KiB. CPU only.
+Validation and planning passed. Focused existing Filter/Derive/GroupBy/KeyBy
+tests: 78 passed, 91 unrelated tests deselected. Three configuration graph
+probes passed: distinct-date/tie/exclusion behavior, ticker substitution and
+empty-cohort refusal. No unrelated suite or model fitting ran.
+
+Reproduce from `children/index_options`, with the worktree on PYTHONPATH:
+```bash
+python -m dskit.onboarding init --root ./pipeline_runs/cdf-horizon-source
+python -m dskit.onboarding register-source cdf-horizon-panel --catalog-source cdf-horizon-panel --connector localtables --config @configs/source-cdf-horizon-panel.json --activate --root ./pipeline_runs/cdf-horizon-source
+python -m dskit.onboarding acquire --source cdf-horizon-panel --stream input_panel --mode backfill --root ./pipeline_runs/cdf-horizon-source
+python -m dskit.pipeline run configs/run-cdf-horizon-coverage.json --asof 2026-10-01
+```
+Use a fresh onboarding root for changed source data and new report paths for a
+rerun; writers intentionally refuse to overwrite the previous evidence.
+Only prepared-data coverage is selected here; further feature/region admission
+can reduce the training sample.

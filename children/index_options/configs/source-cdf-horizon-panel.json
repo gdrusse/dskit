@@ -1,0 +1,12 @@
+{
+  "path": "/home/russell/dskit-cdf-option-surface/children/index_options/pipeline_runs/predictive_cdf_risk_neutral_20260929/evaluate/late",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "input_panel"
+  ],
+  "formats": [
+    "parquet"
+  ]
+}
