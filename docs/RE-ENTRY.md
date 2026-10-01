@@ -1,5 +1,26 @@
 # Re-entry
 
+## Three-index exact-horizon coverage automated (2026-10-01)
+
+- `children/index_options/configs/run-cdf-horizon-coverage.json`: set only
+  `foreach.keys` for ticker(s), plus `pipeline.source.params` if changing the
+  already prepared/acquired source. JSON-only; no new Python implementation.
+- Standard runner now retains the full DTE coverage arrays and winners in
+  `carry.json`, plus per-ticker charts under `artifacts/coverage_figure__<ticker>`.
+- Real combined QQQ/SPY/IWM run: `cdf-horizon-coverage-2026-10-01-6ae71aa4`.
+  All choose exact historical 7-day settlement: QQQ 1,497; SPY 1,879; IWM 1,377
+  eligible dates. All 135 horizon counts independently verified.
+- 37 nodes completed, 16.55s / 1.31 GiB peak RSS under WSL2 hard 29-minute /
+  6-GiB caps. 102 focused tests passed, 10 inapplicable conformance skips;
+  three graph probes passed. All charts have 45 points, zero skipped.
+- Candidate `96371511`: two fresh independent reviews, both C0/M0/m0/n0;
+  unchanged config after lock, retained reports identified in the plan.
+- Current runbook/source contract/results: final section of
+  `children/index_options/docs/plans/README.md`. A new raw-chain source still
+  requires upstream CDF preparation; these are coverage distributions, not
+  model skill or fitted return CDFs. Next: feature-family/PCA planning on the
+  selected seven-day horizon with chronological, region-specific evaluation.
+
 ## QQQ exact-horizon CDF coverage selector completed (2026-10-01)
 
 - JSON-only existing-node pipeline: `children/index_options/configs/run-cdf-horizon-coverage.json`;

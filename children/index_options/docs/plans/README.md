@@ -500,3 +500,13 @@ Next: use the selected exact seven-day horizon for the feature-family/PCA plan,
 then establish chronological training/validation/test admission and paired
 out-of-sample decision-region skill. Coverage maximization is not model skill
 and this census does not prove which horizon will predict best.
+
+Review lock: candidate `96371511` passed two fresh sequential independent lenses,
+`/root/coverage_multi_correctness` and `/root/coverage_multi_integration`, both
+C0/M0/m0/n0. Retained conversation reports independently verify all counts,
+isolation and persisted outputs; the correctness lens additionally exercised
+mixed-ticker fixtures with different winners, duplicates, ties and exclusions.
+Reviewed config blob: `383a3a5a0e247580969f3014750200374a13aa46` (unchanged).
+Reviewed plan blob: `ced3a145789bd837956ea5fd38ccf74c189ef19b`; subsequent changes
+only append this review evidence and the editorial re-entry summary. No pending
+in-scope findings. No implementation or behavioral contract changes after lock.
