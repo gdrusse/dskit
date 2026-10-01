@@ -1,0 +1,476 @@
+{
+  "notes": "ADR-0211 quick plumbing configuration, not acceptance evidence; two candidates with two epochs, otherwise identical frozen study.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {
+      "QQQ": "VXN"
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "decision_regions": {
+      "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+      "max_chain_rows": 14000000,
+      "panel_years": [
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019
+      ],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {
+        "max_seconds": 1740,
+        "max_resident_mib": 6144
+      },
+      "chain_rule": {
+        "max_abs_log_moneyness": 0.1,
+        "min_wing_width": 5,
+        "max_wing_width": 5,
+        "max_candidates": 5000,
+        "fee_per_leg": 0.5,
+        "multiplier": 100
+      }
+    }
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_QQQ"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "decision_context": "decision_region_context",
+    "years": [
+      2018,
+      2019
+    ],
+    "output": "pipeline_runs/qqq_torch_cdf_smoke_20261001/unused",
+    "samples": 201,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": false
+      }
+    },
+    "decision_acceptance": {
+      "blocks": [
+        30,
+        60
+      ],
+      "min_lower_bound": 0.0,
+      "max_bias_increase": 0.01
+    }
+  },
+  "experiment": {
+    "output": "pipeline_runs/qqq_torch_cdf_smoke_20261001",
+    "development_years": [
+      2018
+    ],
+    "label_cutoff": "2019-01-01",
+    "max_candidates": 2,
+    "candidates": {
+      "mlp_brier_slow": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true
+        },
+        "calibrate": false
+      },
+      "gru_brier_slow": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "sequence_indices": [
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ],
+              [
+                5
+              ],
+              [
+                4
+              ],
+              [
+                3
+              ],
+              [
+                2
+              ],
+              [
+                1
+              ],
+              [
+                0
+              ]
+            ],
+            "context_indices": [
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39
+            ],
+            "hidden_size": 16,
+            "num_layers": 1
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "decision_brier",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true
+        },
+        "calibrate": false
+      }
+    },
+    "candidate_groups": {
+      "mlp": [
+        "mlp_brier_slow"
+      ],
+      "gru": [
+        "gru_brier_slow"
+      ]
+    },
+    "search_partitions": {
+      "mlp": [
+        "mlp_brier_slow"
+      ],
+      "gru": [
+        "gru_brier_slow"
+      ]
+    },
+    "task_features": {
+      "QQQ": "is_QQQ"
+    },
+    "selection_metric": "decision_strike_brier",
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 201,
+      "tail_points": 101,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        201,
+        401
+      ],
+      "audit_rows": 16
+    },
+    "expected_cells": {
+      "development": {
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      },
+      "evaluation": {
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      }
+    },
+    "evaluation_partitions": {
+      "development": [
+        2018
+      ],
+      "later": [
+        2019
+      ]
+    }
+  }
+}

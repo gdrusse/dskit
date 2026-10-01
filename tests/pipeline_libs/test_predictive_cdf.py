@@ -1674,3 +1674,178 @@ def test_grouped_multiyear_flow_verifies_blend_and_audits_convex_curves(tmp_path
     assert evidence[0]['year'] == 2019 and evidence[0]['status'] == 'verified'
     convergence = json.loads((tmp_path/'hpo/report/convergence.json').read_text())
     assert any('blend_a' in row['file'] for row in convergence)
+
+
+def test_torch_cdf_json_encoder_and_loss_seam_exists():
+    assert hasattr(predictive_cdf, "TorchCDF"), "generic JSON Torch CDF missing"
+
+
+def test_decision_hpo_ranks_local_score_not_global_crps(tmp_path):
+    config, _ = _hpo_fixture(tmp_path)
+    config["experiment"]["selection_metric"] = "decision_strike_brier"
+    config["study"]["decision_context"] = "context"
+    study = CDFHyperparameterStudy(config)
+    rows = []
+    for name, local, global_score in [("reference", .2, .2), ("candidate", .1, .4)]:
+        for variant in ("raw", "calibrated"):
+            rows.append(dict(unit="A", h=1, model=name, variant=variant,
+                             crps=global_score, decision_strike_brier=local))
+    rank = study._rank(pd.DataFrame(rows))
+    assert rank[("candidate", "raw")] == pytest.approx(.5)
+
+
+@pytest.mark.parametrize("kind", ["mlp", "gru"])
+def test_torch_cdf_encoders_are_row_local_and_calibration_does_not_train(kind):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    encoder = {"kind": "mlp"} if kind == "mlp" else {
+        "kind": "gru", "sequence_indices": [[2], [1], [0]],
+        "context_indices": [3], "hidden_size": 4, "num_layers": 1}
+    losses = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.},
+              {"kind": "decision_log", "weight": .2}]
+    x = np.random.default_rng(1).normal(size=(6, 4))
+    y = np.linspace(-1, 1, 6)
+    context = [{"identity": [str(i)], "thresholds": [-.5, .5], "weights": [.5, .5]}
+               for i in range(6)]
+    def fit(cal_y):
+        model = predictive_cdf.TorchCDF(
+            encoder=encoder, losses=losses, components=2, hidden=[4],
+            epochs=2, batch_size=3, seeds=[7], device="cpu", deterministic=True)
+        return model.fit_decision_context(context, context).fit(x, y, x, cal_y)
+    model = fit(y)
+    other = fit(y+100)
+    np.testing.assert_allclose(model.curve(x).cdf([0]), other.curve(x).cdf([0]))
+    expected = model.curve(x).cdf([-.3, .4])
+    np.testing.assert_allclose(model.curve(x[::-1].copy()).cdf([-.3, .4])[::-1], expected, atol=1e-7)
+    np.testing.assert_allclose(model.curve(x[:1]).cdf([-.3, .4]), expected[:1], atol=1e-7)
+    report = model.loss_report(x, y, context)
+    assert report["n"] == report["eligible_n"] == 6
+    assert report["threshold_n"] == 12
+    assert report["composite"] == pytest.approx(sum(
+        term["mean"]*term["weight"] for term in report["terms"].values()))
+    assert np.isfinite(report["composite"])
+    # Genuine ordered sequence: flipping lag columns alters the fitted GRU forecast.
+    if kind == "gru":
+        changed = x.copy()
+        changed[:, :3] = changed[:, :3][:, ::-1]
+        assert not np.allclose(model.curve(changed).cdf([0]), model.curve(x).cdf([0]))
+
+
+def test_torch_loss_proper_scores_and_eligible_denominator():
+    import torch
+    y = torch.tensor([[0.], [9.]])
+    logw, mu, sigma = torch.zeros((2, 1)), torch.zeros((2, 1), requires_grad=True), torch.ones((2, 1))
+    context = (torch.zeros((2, 1)), torch.tensor([[1.], [0.]]))
+    model = predictive_cdf.TorchCDF(
+        encoder={"kind": "mlp"}, losses=[{"kind": "nll", "weight": .1},
+                                       {"kind": "decision_brier", "weight": 2.},
+                                       {"kind": "decision_log", "weight": 3.}],
+        device="cpu")
+    loss = model._objective_loss(y, logw, mu, sigma, torch.arange(2), context)
+    nll = .5*np.log(2*np.pi)+81/4
+    assert loss.item() == pytest.approx(.1*nll + 2*.25 + 3*np.log(2))
+    loss.backward()
+    assert torch.isfinite(mu.grad).all()
+    assert mu.grad[0].item() != 0  # local score supplies an actual gradient
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda e,terms: e.update(kind="lstm"),
+    lambda e,terms: e.update(unknown=1),
+    lambda e,terms: terms.append(dict(terms[0])),
+    lambda e,terms: terms[0].update(weight=-1),
+    lambda e,terms: terms[0].update(weight=float("nan")),
+    lambda e,terms: terms[1].update(kind="unknown"),
+])
+def test_torch_cdf_refuses_invalid_json(mutation):
+    encoder = {"kind": "mlp"}
+    losses = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}]
+    mutation(encoder, losses)
+    with pytest.raises(ValueError):
+        predictive_cdf.TorchCDF(encoder=encoder, losses=losses)
+
+
+def test_generic_decision_scores_count_excluded_and_accept_other_identity_shapes():
+    scorer = predictive_cdf.DecisionRegionScores([
+        {"identity": ["one"], "thresholds": [0.], "weights": [1.]},
+        {"identity": ["two", "region"], "thresholds": [], "weights": []}])
+    result = scorer.score(MixtureCurve([[1], [1]], [[0], [0]], [[1], [1]]), [0., 2.])
+    assert result["decision_strike_brier"][0] == pytest.approx(.25)
+    assert np.isnan(result["decision_strike_brier"][1])
+    assert result["decision_strike_count"].tolist() == [1, 0]
+
+
+def _decision_hpo_fixture(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    e, c = config["experiment"], config["study"]
+    for key in ("final_seeds", "screen_seed", "candidate_labels", "axes"):
+        e.pop(key)
+    e["candidate_groups"] = e["search_partitions"]
+    e["selection_metric"] = "decision_strike_brier"
+    c["decision_context"] = "context"
+    c["decision_acceptance"] = {"blocks": [1], "min_lower_bound": 0.,
+                                "max_bias_increase": .01}
+    e["candidates"]["candidate"] = {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {"encoder": {"kind": "mlp"}, "losses": [
+            {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}],
+            "components": 1, "hidden": [3], "epochs": 1, "seeds": [11], "device": "cpu"},
+        "calibrate": False}
+    contexts = []
+    for row in frame.itertuples():
+        eligible = not row.date.endswith("01")
+        contexts.append({"identity": [row.unit, row.date, row.expiry],
+                         "thresholds": [-.3, .3] if eligible else [],
+                         "weights": [.5, .5] if eligible else []})
+    frame["context"] = contexts
+    return config, frame
+
+
+def test_decision_hpo_end_to_end_keeps_exclusions_and_telemetry(tmp_path):
+    import json
+    config, frame = _decision_hpo_fixture(tmp_path)
+    study = CDFHyperparameterStudy(config)
+    provenance = {"fixture": "causal"}
+    study.run(frame, stage="search", partition="separate", provenance=provenance)
+    chosen = study.run(frame, stage="select", provenance=provenance)
+    assert chosen["selection_metric"] == "decision_strike_brier"
+    for partition in ("development", "later"):
+        study.run(frame, stage="evaluate", partition=partition, provenance=provenance)
+    report = study.run(frame, stage="report", provenance=provenance)
+    local = next(r for r in report["metrics"] if r["model"] == "candidate"
+                 and r["metric"] == "decision_strike_brier")
+    assert local["n"] == 8 and local["total_n"] == 10 and local["excluded_n"] == 2
+    assert local["threshold_n"] == 16
+    assert "candidate" in report["decision_acceptance"]
+    counts = json.loads((tmp_path/"hpo/evaluate/later/counts.json").read_text())
+    for band in ("training", "calibration", "validation"):
+        values = counts[0]["candidate_losses"][band]
+        assert values["composite"] > 0
+        assert values["n"] > values["eligible_n"] > 0
+        assert values["decision_skill_pct"] is not None
+    assert "candidate_training_nll_by_seed" not in counts[0]
+
+
+@pytest.mark.parametrize("defect", ["eligibility", "missing", "zero_reference"])
+def test_decision_pairing_and_denominator_refuse(tmp_path, defect):
+    config, frame = _decision_hpo_fixture(tmp_path)
+    study = CDFHyperparameterStudy(config)
+    expected = frame[frame.date.str.startswith("2017") & (frame.end < "2018-01-01")]
+    rows = []
+    for name in ("reference", "candidate"):
+        for variant in ("raw", "calibrated"):
+            for row in expected.itertuples():
+                rows.append(dict(unit=row.unit, date=row.date, expiry=row.expiry,
+                                 end=row.end, h=row.h, year=2017, model=name, variant=variant,
+                                 crps=.5, decision_strike_brier=.2, decision_strike_count=2))
+    scores = pd.DataFrame(rows)
+    if defect == "eligibility":
+        scores.loc[0, "decision_strike_count"] = 0
+        scores.loc[0, "decision_strike_brier"] = np.nan
+    elif defect == "missing":
+        scores.loc[0, "decision_strike_brier"] = np.nan
+    else:
+        scores.loc[scores.model == "reference", "decision_strike_brier"] = 0
+    with pytest.raises(ValueError):
+        study._check_scores(scores, expected, ["reference", "candidate"])
+        study._rank(scores)

@@ -2891,6 +2891,9 @@ def _main():
             parser.error("HPO requires an explicit --stage")
         CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
                                             partition=args.partition, provenance=provenance)
+        if config.get("data", {}).get("decision_regions"):
+            import signal
+            signal.setitimer(signal.ITIMER_REAL, 0.)
         return
     if args.stage or args.partition:
         parser.error("stage/partition require an experiment document")

@@ -28707,3 +28707,39 @@ the main failure. Far-cutoff gains have tiny reference error and do not support
 promotion. Keep the optimizer blocked. A next model study, if run, must be a
 pre-registered index-specific side/DTE correction or hierarchical head under
 the unchanged SPY local/global/tail guards, not a broader architecture zoo.
+
+## ADR-0211 — Configurable Torch CDF decision-region study
+
+**Status:** authorized by the owner's 2026-10-01 implementation request.
+Base: 8c269a46. This request supersedes the prior no-zoo recommendation.
+
+Extend the existing mixture estimator and chronological HPO seams. JSON chooses
+MLP or GRU (explicit oldest-to-newest lag-column groups plus context columns)
+and positive weighted proper-score terms: NLL, listed-threshold Brier or
+Bernoulli log score. Global and fixed-grid tail scores remain diagnostics.
+No instrument names, provider paths, or column names belong in the generic pack.
+Train-only preprocessing and the existing purged chronology remain authoritative.
+The GRU sees only per-row entry-known lags; never adjacent forecast/expiry rows.
+
+Reuse the source-hashed eligible listed-wing context and date-close indicative
+clock. Outcomes cannot create thresholds, weights, or eligibility.
+HPO selects on exactly paired eligible development decision-strike Brier skill
+against raw horizon empirical. Ineligible rows stay counted and cannot silently
+enter denominators. Global/tail/constructed-wing scores are diagnostics only.
+Acceptance uses later paired decision-strike intervals and local calibration
+bias noninferiority; all are descriptive on previously inspected years.
+
+Bound the QQQ screen to two encoders, three declared composite losses, and two
+learning rates, one development year and one later year, one seed, fixed epochs.
+Every process has <1800 seconds, <=6 GiB RAM, no swap; use CUDA and record peak
+GPU allocation. Reuse the standard CLI; no one-off runner scripts.
+
+Authorized paths: predictive_cdf.py and Torch library pack; focused tests;
+index_options cdf_study.py and JSON configs; package docs; this ADR; re-entry;
+standalone result memo and review evidence. No optimizer, provider pulls,
+serving, other children, full suite, or owner Path edits.
+
+Matrix: encoder causality/shapes; composite losses and gradients; invalid JSON
+refusal; purged train/cal/validation isolation; identity/eligibility pairing;
+decision ranking despite opposite CRPS ranking; loss/skill/count telemetry;
+decision-only guards; bounded real CLI run; two final reviews; commit and push.

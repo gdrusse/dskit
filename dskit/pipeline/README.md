@@ -303,6 +303,26 @@ checks exact paired identities/cells, and requires hash-pinned, atomically
 completed artifacts. Student log-return models support bounded payoff research,
 not finite unbounded price moments. Public Gaussian defaults remain unchanged.
 
+ADR-0211 adds `TorchCDF` in this pack: JSON `encoder` selects `mlp`
+or `gru`; GRU `sequence_indices` lists oldest-to-newest per-step column
+groups and `context_indices` partitions the remaining input columns.
+`losses` declares positive `kind`/`weight` terms: `nll`,
+`decision_brier`, `decision_log`. NLL plus at least one local term is
+required. No instrument or index is encoded in this estimator.
+`DecisionRegionScores` consumes caller-bound threshold/weight inventories;
+the domain adapter owns the source clock and listed-wing eligibility.
+Local loss means divide by eligible rows, while NLL uses all rows.
+
+For decision HPO, set `experiment.selection_metric=decision_strike_brier`.
+The standard search/select/evaluate/report CLI freezes development selection
+before later evaluation. `study.decision_acceptance` declares interval blocks,
+minimum local skill lower bound, and maximum equal-cell absolute local bias
+increase. This gate uses decision regions only; global/tail/constructed-wing
+metrics remain diagnostics. Counts retain total, eligible, excluded, threshold
+and date denominators. Final training/calibration/validation composite losses,
+components and local skill are recorded in `counts.json`; training mini-batch
+curves are labelled composite, never NLL. All acceptance remains descriptive.
+
 The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the
 cross-run view:
 
