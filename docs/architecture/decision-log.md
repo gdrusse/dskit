@@ -29103,3 +29103,79 @@ holidays, any run.
 
 **Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
 **Owner question 2.** Default `weekdays`: all seven (proposed) or Mon-Fri?
+
+## ADR-0217 — Feature-engineering step: exact-expiry panel features as a pipeline node
+
+**Status:** proposed 2026-10-01; awaiting owner approval (option (a), a thin
+child wrapper, approved in direction). Base: 46f3574. No Python until approved;
+the JSON pipeline (Phase A) is not gated, the node (Phase B) is.
+
+A step between step 1 (tradable dates) and step 2 (feature availability): a JSON
+pipeline whose output is a per-date panel, one row per ticker/quote_date/expiry
+of the step-1 cohort, engineered fields explicit null when not computable.
+
+**Inventory.** `ExactExpiryCDFPanel.read()` with the ADR-0203 tail-data `data`
+block already computes variance_gap (`add_matched_dte_vrp`), ohlc_shape
+(`ohlc_features`), expanded Cboe context (strictly-prior `merge_asof`, age,
+`_missing`) and positioning (from `raw_chain_features.parquet`, built for
+109,850 snapshots). The full panel is persisted only inside a model study
+(`ChronologicalCDFStudy.run` writes `input_panel.parquet` at the start of a
+fit; the HPO search stage passes just the 2016-2018 development slice, hence the
+ablation's years); `prepare` builds only the raw-chain cache. dskit has no
+arithmetic node, strictly-prior as-of join or OHLC-shape node.
+
+**Pipeline (Phase A).** `configs/run-step1b-feature-engineering.json` takes the
+selected DTE from step 1's `selection/selected.jsonl` (never typed), keeps step
+1's settled rows, adds engineered fields (always present; `fe_<family>_status`
+says why one is null) and pins its row count to step 1's `listed_forecasts`.
+Expiry density uses existing groupby/join nodes; weekday stays pending until
+ADR-0214 merges. Output `pipeline_runs/feature-engineering/panel/input_panel.jsonl`
+is onboarded as `cdf-horizon-panel`/`input_panel` under a new root, so step 2
+changes one line, `source.params.root`.
+
+1. **Home.** `index_options.cdf_study:ExactExpiryPanelFeatures(Node)`, role
+   `transform`, beside its only owner. Tier 3 (exact-expiry semantics are the
+   child's; project-specific). Calls `read()` unchanged, restates no formula.
+2. **Params** (default-deny): the tail-data `read()` keys minus `archive_root`
+   (`prepare` only). Required `root surface lifecycle symbols price_source
+   iv_source since max_dte lags windows feature_gap_days reference_floor
+   spot_tolerance`; optional `chain_features raw_chain market_symbols
+   fred_market_symbols surface_features ohlc_windows matched_dte_vrp`; plus
+   `fields` and `status_field`. `decision_regions`, `macro_event_calendars`
+   refused. One instance per family; `fields` is its contract columns plus those
+   its quality checks name (`market_*_age_days`, `market_*_missing`).
+3. **Run.** Narrow `symbols` to the input tickers (unknown refuses); call
+   `read()`; index by (symbol, quote_date, expiry); attach exactly `fields` in
+   input order, NaN/inf as null. A row `read()` did not produce gets all fields
+   null and status `identity_absent_from_engineered_panel`, else `computed`.
+   Refuses an input field collision, a column `read()` lacks, a duplicate
+   identity.
+4. **Outputs.** `records`; `summary` (rows, computed/absent, non-null per field,
+   refused counts); `provenance` (source sha256, reader fingerprints, market
+   coverage, adapter hash), moved to `ExactExpiryCDFPanel.provenance()` which
+   `cdf_study._main` then calls: one owner, identical dict (HPO hashes it).
+5. **Clock rules** (pipeline and `family_contracts`). VRP: entry-chain ATM IV
+   against backward 22-session realized vol, planned sessions. OHLC: entry bar
+   plus backward windows; after-close estimand only. Positioning: entry-snapshot
+   volume/spread and prior-observation OI kept; current-snapshot OI x greek
+   (`chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`) not attached, emitted null,
+   reason `oi_publication_clock_unverified`, until an audit shows archive
+   `open_interest` excludes the entry day's trades (step 2 then shows
+   positioning unavailable). Expanded Cboe: last close strictly before entry,
+   at most 7 days old, else null with `_missing`; download vintage not
+   certified. Nothing is imputed.
+
+**Pins.** Node values equal `read()` for the same identities; FE `data` block
+equals the tail-data block key by key over the node's keys; FE fields equal
+step 2's four family contracts; writer path and stream agree with the source
+config; status literals equal the class constants; `provenance()` equals
+today's `_main` dict. **Touched.** `cdf_study.py`, `tests/test_cdf_study.py`,
+the plan README runbook, the pipeline JSON.
+
+**Rejected.** Graduating generic kinds first (re-implements tested formulas,
+byte-parity risk); a panel-only `cdf_study` CLI stage (computation outside a
+pipeline). **Non-goals:** formula changes, macro, 21/41 quantiles, AMZN,
+training, selection.
+
+**Owner question.** The three OI x greek fields: null until the clock audit
+(proposed), or attached labelled unverified?
