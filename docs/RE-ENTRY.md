@@ -1,5 +1,1015 @@
 # Re-entry
 
+Warning: truncated output (original token count: 857393)
+... 2380993 bytes omitted ...
+
+## ADR-0201 center-only conditioned transport completed (2026-09-30)
+
+- Objective remains a physical terminal-return/price CDF at each exact option
+  expiry for later strike/payoff evaluation; no trading or contract optimizer.
+- Joint index/requested-horizon maps (Phase A) and separate index/horizon maps
+  (Phase B) all failed the six-tail development guard and stopped before later
+  evaluation. Phase C preserved global 5%/95% mappings and adjusted only the
+  center; Luna reviews C0/M0/m0/n0 and 187 affected tests pass.
+- Frozen Phase C winner improves development equal-cell CRPS 0.101% with all
+  six tail rates identical to ADR-0200. On reused 2019–2025 history, direct
+  skill is only +0.0146%; 60/120-date intervals cross zero, QQQ/IWM do not
+  improve, and condor-loss MSE is marginally worse.
+- Carry as the protocol-qualified offline research incumbent but treat it as
+  effectively tied, not trading-ready. Memo:
+  `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.
+  Review: `docs/review-evidence/ADR-0201.md`. Journal A0616. Generated outputs
+  remain ignored.
+
+## ADR-0200 guard-aware CDF selection completed (2026-09-30)
+
+- Added a generic JSON-declared development selection guard. It filters every
+  candidate/variant by per-index tail deviations before applying the unchanged
+  CRPS rank, persists every comparison, and refuses an empty feasible set.
+- New immutable run reused the exact ADR-0199 panel/provenance hashes in a fresh
+  root. Broad failed two guards; fine-tail failed SPY lower; very-conservative
+  passed all six and was frozen before later evaluation.
+- Selected blend improves development equal-cell CRPS 1.122%. On reused
+  2019–2025 history it improves 0.816% versus incumbent; 60/120-date intervals
+  exclude zero and every index improves CRPS plus both tail deviations.
+- Promote `tail_blend_very_conservative` as the governed **offline research
+  incumbent**, not a trading model. Memo:
+  `children/index_options/docs/memos/2026-09-30-guard-aware-cdf-selection.md`.
+  Review: `docs/review-evidence/ADR-0200.md`. Journal A0615. 126 affected tests pass. Luna
+  design/selection and final artifact reviews C0/M0/m0/n0.
+
+## ADR-0199 tail-constrained quantile blend completed (2026-09-30)
+
+- Implemented `TailConstrainedQuantileBlendCDF` and one JSON-only staged study
+  in `/home/russell/dskit-cdf-option-surface`. Per-index left/center/right
+  option weights are chosen on the preceding calibration year under incumbent
+  deterministic right-CDF PIT-tail guards; actual DTE is cell metadata only.
+- Frozen development winner: `tail_blend_fine_tails`. Full 68,084-row paired
+  history shows +1.307% equal-cell CRPS versus incumbent, with positive 60/120
+  date intervals, and better full-history lower/upper tail deviations for all
+  three indexes. It still fails the preregistered development guard: SPY lower
+  deviation 0.00828 versus incumbent 0.00738. Retain the incumbent; no trading.
+- The unselected very-conservative grid passed all six development tail checks
+  with ~1.12% CRPS lift, but it was not substituted after inspection. A future
+  run should predeclare a guard-aware top-level selector.
+- All stages completed under 30 minutes/6 GiB (prepare 15:58/1.63 GiB; maximum
+  observed RSS 3.82 GiB). Affected suite: 124 passed. Luna implementation
+  review C0/M0/m1/n0; deterministic PIT for atoms is the documented minor.
+- Memo: `children/index_options/docs/memos/2026-09-30-tail-constrained-quantile-blend.md`.
+  Review: `docs/review-evidence/ADR-0199.md`. Generated canonical artifacts are
+  ignored under `pipeline_runs/predictive_cdf_tail_blend_20260930`. Journal A0614. Work is not
+  committed or pushed; the owner did not request publication in this turn.
+
+## ADR-0198 risk-neutral CDF comparison completed (2026-09-29)
+
+- Owner-approved ADR-0198 is implemented in the isolated WSL2 worktree
+  `/home/russell/dskit-cdf-option-surface`, based on main
+  `0d44dd457867139fc75191b6ed0a218230360e69`. One standard JSON drives raw
+  preparation, seven search groups, selection, four evaluations and reporting;
+  there are no one-off execution scripts and no trading/deployment authority.
+- The pinned 53,407,120-row archive produced 109,850 chain identities and a
+  109,355-row modeling panel. The raw cache binds implementation, 51 annual
+  content hashes, and canonical spot metadata. Daily FRED inputs become usable
+  only after one complete intervening XNYS session; age/staleness are measured
+  from observation date. The source schema cannot identify adjusted
+  deliverables, so the memo explicitly limits the run to archive-standard rows.
+- Fifteen candidates across seven groups completed. Frozen before later
+  evaluation, option-implied transport was best on reused 2019–2025 history:
+  +2.750552% equal-cell CRPS versus empirical and +1.853372% versus incumbent;
+  both 120-date intervals exclude zero. It failed the development PIT-tail
+  guard for IWM and SPY, so retain the existing 25% empirical/MLP blend as the
+  governed research incumbent. No live option-selection claim follows.
+- Final packet: 68,084 paired later forecasts/model, 1,746 entry dates, 3,495
+  expiry series; 13 canonical manifests and 542 file hashes verified; 136
+  focused tests passed. Preparation took 16m10s/1.74 GiB; slowest evaluation
+  6m57s, peak 5.35 GiB. Stage resource values are console-observed and not
+  retained as canonical stage telemetry (the one final Minor caveat).
+- Fresh final reviews: Luna C0/M0/m0/n0; integration C0/M0/m1/n0. Evidence:
+  `docs/review-evidence/ADR-0198.md`. Standalone recommendation and full grids:
+  `children/index_options/docs/memos/2026-09-29-risk-neutral-cdf-architecture-comparison.md`.
+  Action journal A0613. Work is complete but not committed or pushed; owner did
+  not request publication in this turn. Preserve ignored canonical outputs and
+  all visibly suffixed superseded runs.
+
+## Joint-MIO speed-ups landed; full folds 2-19 run is next (2026-09-29)
+
+- **Landed on main** (`cbe6152`, remote containment verified), on top of the
+  merged Codex robust/persistent joint work: `13e340c` SolveRecord slacks off
+  HiGHS arrays; `a3ce8ae` compiled bit-exact replacement for appsi
+  `update_params`; `ce07c6c` exact per-scenario tangent windows (live tangent
+  rows 4096 -> ~818); `d3e67ce` ledger snapshot payload rendered once (same
+  bytes). No config, policy or identity-hash change.
+- **Measured** (synthetic 12-name/S=128 replay, one job at a time): 604 -> 332
+  ms/minute (0.55x); decide 551 -> 291 ms (HiGHS 286 -> 173, SolveRecord 101 ->
+  2, update 93 -> 44); checkpoint at history cap 142 -> 65 ms. Projected Fold 2
+  ~1h40m vs 3h00m (projection; real instances not timed here).
+- **Equivalence:** fixes 1-3 exact (bit/byte-identical). Windows keep the same
+  optimum (32/32 equal within 1e-9 at tight tolerance; robust lower edge holds
+  at optima only, by dominance). Default HiGHS abs gap 1e-6 already made answers
+  tolerance-driven, so same-state minutes differ in ~2% by 1-4 shares (each
+  within ~$0.03 expected utility; no bias, no cascade). A rerun of Fold 2 will
+  not reproduce $10,444.51 to the cent.
+- **Review:** owner-directed Sonnet author + ONE Haiku lens per fix (C0/M0/m0/n0
+  each), not the usual two-lens close; orchestrator re-derived the window
+  bounds by hand. Tests: pyomo/production focused 735 passed/8 skipped; child
+  nodes_capital+replay 584; simulation Joint/Solve 35; ruff clean. 25
+  pre-existing `cryptography` `_cffi_backend` failures in the cloud container
+  only (tests/production ADR-0147/captured-authorization files).
+- **Audit findings NOT acted on (owner: speed only, no policy change):** code
+  implements its math correctly, but (F1, critical) the free tranche split
+  values each name at the best of up to ~10 noisy heads -> buys on noise
+  (P(buy|zero edge) 0.73 at K=10 vs 0 at K=1, ~4.8x turnover); (F2) gamma 2 is
+  near risk-neutral at minute scale, CVaR $500 never binds -> 100% cash in 1-4
+  names; (F3) scenarios are SPY-residuals, no market factor; (F4) robust CI
+  measures an unconditional bias, Gamma=1 spreads into more names; (F5)
+  mip_abs_gap 1e-6 ~ 0.02-0.16% of objective. Fold 2 -$0.098/fill ~ modelled
+  fees $0.096/fill -> likely gross ~0. Owner rulings needed before any change.
+- **Not built:** direct highspy backend (~60-80 ms/min more; needs ADR); lean
+  form (no measured gain); per-tick checkpoint cadence (production semantics).
+- **Next:** in WSL, fresh worktree of main, confirm Fold 2's fee sum vs its
+  -$2,055, then run `configs/run-joint-simulation.json` folds 2-19 via
+  `tools/run_joint_simulation.sh` (tracked, not detached) and report with the
+  in-document evaluator.
+
+## ADR-0191 downside-aware CDF iteration completed (2026-09-28)
+
+- Reviewed packet and complete results fast-forwarded/pushed to main as
+  `d09382c97d5f4931821efa596dd8e2f847c8ceb3`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
+- Owner requested another iteration. Sol built one standard JSON,
+  `children/index_options/configs/run-predictive-cdf-downside.json`:
+  six symmetric scale-floor/weight settings and three index-head/weight
+  settings. Same 42 features/data/protocol; no production/dependency changes,
+  new acquisition, one-off execution script or trading. Isolated worktree
+  `/home/russell/dskit-cdf-downside-20260928`, base `969fd3e`.
+- Reviewed implementation `d713803a`, immutable protocol candidate
+  `257eb59191a96e1cef314139b2f3f10ce0f28c79`; Luna design and two final
+  lenses C0/M0. Eight child tests and seven reused focused integration tests
+  passed; no full suite. Actual findings retained in ADR-0191 evidence.
+  New Minors: equivalence metadata label rename and incomplete all-field test
+  pins (current dictionaries checked). Prior inverse-atom/external-freeze
+  automation limitations remain. No post-lock code/config edits.
+- All nine candidates, selection, four evaluations and standard final
+  evaluator completed: eight exit-0 stages, no omission/fallback. WSL2 CUDA,
+  at most two concurrent, each under 30 minutes/6 GiB; slowest 5m19.99s,
+  peak process RSS 2.526 GiB. Prior private interpreter reused read-only.
+- Primary frozen BEFORE evaluation in commit
+  `793bcd8998635f36d99b67b4666aae202bdf6559`: incumbent 25% MLP raw,
+  **no qualified challenger**. Floor .75 / weight .35 and index-head .25
+  win their groups on development CRPS but fail the per-index downside guard.
+  Floor SPY misses guard by one observation (526/8905 vs 525); no rule was
+  relaxed. This is a procedural failure, not proof of a meaningful difference.
+- Later floor skill +0.977245% vs empirical, direct +0.164269% vs incumbent,
+  but both paired intervals include zero. Incumbent skill remains +0.818035%.
+  Heads +0.793238% vs empirical, -0.026627% vs incumbent. Floor downside
+  5566/68084 = 8.1752% vs incumbent 5473/68084 = 8.0386%, target 5%.
+  Keep incumbent as research benchmark; floor is a modest descriptive lead,
+  not a qualified upgrade or trading model. No post-evaluation primary switch.
+- 18,616 development/133 cells, 68,084 later/135 cells; report 867,000 rows
+  across five models/two variants. Luna artifact audits passed all file hashes,
+  pairing, purges, fit reuse, and representative raw/calibrated exact CDF/PIT
+  reconstruction. All three final controls numerically reproduce prior run.
+- Standalone recommendation, full exact-day grids/counts, annual splits,
+  cutoff example, uncertainty and reproducibility:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-downside.md`.
+  Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_downside_20260928`
+  and logs `cdf_downside_logs_20260928`, all previous worktrees/environments.
+- No experiment remains running. Journal A0609 and publication are complete.
+  Next research, NOT started: genuinely new-date validation and a
+  predeclared downside/cutoff objective with tolerance justified before outcomes.
+
+## ADR-0191 CDF blend refinement completed (2026-09-28)
+
+- Results and reviewed packet merged/pushed by fast-forward as
+  `27ea30365f4b0bf577271ad0cda36de91e6046a1`; remote containment verified
+  after fetch. Windows Git supplied publication credentials only; all
+  computation stayed in WSL2. This handoff update changes no reviewed identity.
+- Owner requested further iteration on the successful blend. Sol built one
+  standardized JSON, `children/index_options/configs/run-predictive-cdf-refinement.json`;
+  no production code/dependency change or one-off execution script. Isolated
+  worktree `/home/russell/dskit-cdf-refinement-20260928`, base `abf360ca`.
+- Reviewed candidate `88f85a8b601861e2794039775c54ef996bbf3910`; two fresh
+  Luna lenses, C0/M0 after independent adjudication of the parent-owned
+  pre-evaluation freeze. Actual findings/evidence in ADR-0191 record. Seven
+  child and 13 reused integration tests pass; no full suite. Deferred Minors:
+  external freeze automation/test gap, inherited negligible inverse atom error.
+- All 13 candidates, selection, four evaluation partitions and final evaluator
+  completed, ten stages exit0. Same 42 features, data, purges, seeds and metrics.
+  WSL2/CUDA fitting; at most two concurrent capped stages. Slowest 9:39.82,
+  peak process RSS 2.644 GiB. Private prior-task interpreter reused read-only.
+- Primary frozen BEFORE any evaluation in commit
+  `af23efa06a72aaa60589105226a50d4e1d036ede`: raw small [8] network, 35% MLP /
+  65% empirical. Group finalists: original weight .30, small .35, wd.3 .35,
+  three-component .35. No post-evaluation primary substitution.
+- Primary later skill +0.964721% empirical versus old +0.818035%; direct gain
+  +0.150304% versus incumbent. Its 60/120-date paired intervals cross zero.
+  Beats incumbent in100/135 cells; downside misses worsen from8.039% to8.326%.
+  Keep old25% blend as research benchmark; smaller35% is a modest alternative,
+  not a clear upgrade or trading model. Descriptive mixture +1.028690% versus
+  empirical hurts IWM; it does not replace the frozen primary.
+- 18,616 development forecasts/133 cells; 68,084 evaluation/135 cells,
+  1,746 dates/3,495 series. All model/variant rows total1,213,800. Luna artifact
+  audit passed hashes, exact pairing, purges, fit reuse and representative
+  exact-CDF/PIT reconstruction. Full grid, annual counts, cutoff example and
+  standalone recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-refinement.md`.
+- Preserve ignored output `children/index_options/pipeline_runs/predictive_cdf_refinement_20260928`
+  and logs `cdf_refinement_logs_20260928`; preserve prior methods/HPO/feature
+  worktrees and private environment. No further experiment is running.
+- Authorized wrap/publication completed; next research, NOT started:
+  genuinely new-date validation and predeclared downside/cutoff objectives.
+
+## ADR-0191 additional CDF methods completed (2026-09-28)
+
+- Merged/pushed to remote main: reviewed source `1302738e`, complete results
+  and evidence `df3cec80bd6ec373de724d04116b632db9d31d6e`; remote containment
+  verified after fetch. WSL's credential bridge failed for push, so existing
+  Windows Git credentials published the same worktree. All computation stayed
+  in WSL2. The following handoff-only update does not alter reviewed identities.
+- Owner requested all three proposed methods, Sol build and Luna review.
+  Source locked at `1302738e3a38d9ae635ae5b3b2ae2a25028ee122` from base
+  `9d1814eb`: QRF (not Fourier-MMD DRF), Normal-CRPS NGBoost, and exact
+  empirical/MLP probability blends in the existing generic CDF pack.
+- One standardized JSON: `children/index_options/configs/run-predictive-cdf-methods.json`.
+  All nine development candidates, selection, four frozen evaluation
+  partitions and final evaluator completed. No one-off execution script,
+  failed/dropped stage, silent fallback, live model or trading.
+- Two fresh Luna final lenses: C0/M0; 93 focused/purity + 28 child integration
+  tests. Additional Luna artifact audits verified hashes, paired identities,
+  purges, unchanged selected specs and representative exact curve/PIT recovery.
+  Actual retained evidence: `docs/review-evidence/ADR-0191.md`. Deferred Minor:
+  convex inverse can fall about 1e-19 below an atom; no post-lock nit changes.
+- Finalists: raw QRF leaf100, NGBoost depth2/leaf20/rate.03, 25% MLP blend,
+  plus empirical and pooled-MLP controls. Blend/control fit-state equivalence
+  verified in all ten years; shared neural settings/seeds remain unchanged.
+- Primary full-CDF equal-cell skill: QRF -3.639%, NGBoost -1.029%, blend
+  +0.818%, MLP -1.917%. Blend index means: SPY +0.966%, QQQ +1.227%,
+  IWM +0.261%; positive in 123/135 cells. 30–45-day blend skill +0.481%
+  overall, IWM -0.040%. Carry blend as research challenger, retain empirical.
+- Blend nominal 95% paired block intervals above zero, but these are
+  unadjusted, dependent, reused-history comparisons. Its downside exceedance
+  is 8.039% instead of 5%. No fresh-data or profitable-trading claim.
+- 18,616 development forecasts/133 cells; 68,084 evaluation forecasts,
+  1,746 dates/3,495 series/all135 cells. Full grid, annual train/cal/validation
+  counts, cutoff example, uncertainty and recommendation:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-methods.md`.
+- All execution in WSL2; neural fits use CUDA, tree libraries CPU. Every
+  stage under 30 min/6 GiB; slowest 5:10.85, peak process RSS 3.250 GiB.
+  Separate private .venv; no shared-environment mutation; no full test suite.
+- Preserve `/home/russell/dskit-cdf-methods-20260928` for ignored outputs
+  `children/index_options/pipeline_runs/predictive_cdf_methods_20260928`
+  and sibling logs `cdf_methods_logs_20260928`, plus private dependencies.
+  Also preserve the older feature-research and HPO worktrees/artifacts.
+- Next research, not started: genuinely new-data validation and predeclared
+  downside/strike objectives. The current bounded implementation/review/run
+  gate is complete and published; no further experiment is running.
+
+## ADR-0190 JSON CDF HPO and pooled-head comparison completed (2026-09-28)
+
+- Merged/pushed to remote main: implementation `f396baca`, complete memo/evidence
+  `4327a9d0`; remote head verified after push. WSL computation succeeded; its
+  credential-helper bridge failed for push, so the existing Windows Git
+  credentials published the same WSL worktree. No experiment ran on Windows.
+- Owner requested architecture/training HPO, distribution-assumption research,
+  pooled separate heads, another memo, JSON-only standardized execution, and
+  Luna skeptics. Implementation/run source locked at `f396baca6b17e69a3ec44924c05bca220f250807`.
+- Generic Student mixtures, configurable MLP trunks/heads, pooled train-only
+  preprocessing and reusable HPO orchestration live in existing predictive_cdf;
+  the existing child CLI runs one master JSON. No one-off execution script,
+  dependency, broker, live model or optimizer was added.
+- Two fresh independent `gpt-5.6-luna` final lenses closed with zero unresolved
+  Critical/Major. One correctness finding about hardcoded generic cardinality
+  was withdrawn by fresh independent adjudication, not author-downgraded.
+  Actual verdicts/probes: `docs/review-evidence/ADR-0190.md`. 65 focused/purity
+  tests passed; ruff/diff checks clean; no full suite.
+- All 24 neural candidates (4 bundles × 2 families × 3 sharing structures),
+  six controls, selection, four final evaluation partitions and report completed
+  via `configs/run-predictive-cdf-hpo.json`. Each stage <7 min; max host RSS
+  2.90 GiB/process; CUDA fitting. Outputs are completion/hash-pinned and paired.
+- Strict development: 18,616 rows, 133 index/day cells (QQQ/IWM day26 absent);
+  research evaluation: 68,084 rows, 1,746 dates, 3,495 series, all 135 cells.
+  Finalists all raw, one-hidden-layer/16-unit Gaussian MLPs, fixed seed ensemble
+  [11,29]. Pooled models fit once per year; calibration remains index-specific.
+- Primary full-CDF skill vs horizon empirical: separate −1.97%, pooled −1.92%,
+  heads −2.11%. No lift and no positive finalist index-average score. Retain
+  empirical CDF reference. Pooled MLP's +3.05% fixed-condor loss-error skill is
+  secondary research only; 10.24% of outcomes fall below its nominal 5th percentile.
+  Do not infer calibrated strike probabilities, optimal trades or readiness.
+- Standalone memo with every exact-day cell, counts, uncertainty, training rules,
+  runtime and assumptions: `children/index_options/docs/memos/2026-09-28-predictive-cdf-hpo.md`.
+  Research sources: `children/index_options/docs/research/distribution-modeling/2026-09-28-cdf-distribution-assumptions-hpo.md`.
+- Preserve `/home/russell/dskit-cdf-hpo-20260928`: ignored artifacts under the
+  child's `pipeline_runs/predictive_cdf_hpo_20260928` and logs in sibling
+  `cdf_hpo_logs_20260928`. The old feature-research worktree also owns upstream
+  cache artifacts referenced by JSON; do not remove it.
+- Next research, not automatically started: predeclare strike/tenor payoff
+  objectives and a conservative empirical/MLP blend; test downside calibration
+  on genuinely new data. No broader search, execution or trading is authorized
+  by these results. The earlier ADR-0189 recommendation is now supplemented by
+  this explicitly bounded HPO evidence, not retroactively relabeled a fresh test.
+
+## ADR-0189 predictive price-CDF comparison completed (2026-09-28)
+
+- Owner asked to build the four researched distribution approaches, retain
+  MLP, compare and recommend. This is terminal-return CDF research, separate
+  from the prior exact-expiry daily-RMS/ElasticNet work; no trading.
+- Source locked at `0fa4da8b` after two fresh independent final lenses:
+  correctness C0/M0/m1/n0; tests/integration C0/M0/m2/n0. Focused tests plus
+  pipeline purity: 43 passed; ruff clean. Retained outputs and all five
+  deferred Minor families: `docs/review-evidence/ADR-0189.md`.
+- Corrected full run `children/index_options/pipeline_runs/predictive_cdf_reviewed_20260928`
+  exited 0 in 10:29.56, peak host RSS 2.91 GiB, CUDA MLPs. Six forecasters,
+  30 index/year folds, identical 39 learned-model inputs; 19,014 development
+  and 68,084 research-evaluation observations, 135 exact-calendar-day cells.
+  Both chronological label purges and nominal expiry identity are preserved;
+  model horizons use regular-holiday planned calendars, not hindsight closures.
+- Recommendation: keep horizon empirical as reference. No learned model has
+  positive overall equal-cell CRPS skill. MLP-3 is a SPY research challenger:
+  SPY +1.41%, QQQ −0.84%, IWM −4.73%; SPY 30–45 days only +0.14%. Do not
+  promote to final model or trading; tail calibration remains inadequate.
+- Full counts, exact-day grid, training/calibration procedure and an actual
+  strike-query/payoff example:
+  `children/index_options/docs/memos/2026-09-28-predictive-cdf-comparison.md`.
+  Earlier `predictive_cdf_20260928` is superseded, not final evidence.
+- Remaining: a predeclared development-only tuning/calibration study, new-data
+  evaluation, then executable strategy research if supported. No new run,
+  optimizer, serving model, IWM dividend-null entry or live trade is authorized
+  by these results. Previous ADR-0187 next-actions below are historical, not
+  the current instruction to run a trading grid.
+
+## ADR-0187 built, reviewed, all six owner questions answered, MERGED to main (2026-09-27)
+
+- **Owner directive:** build the code needed to run the index-options
+  backtests, sweep dskit first, no rework; the process is HPO plus model zoos.
+- **Where:** merged to `main` (was branch `claude/index-options-quote-backtest`,
+  fast-forwarded, no conflicts — `main` had not moved since the branch point).
+  All six questions are now answered (2026-09-27, see the ADR's "Owner
+  answers"): five confirm the proposed default already built (bucket units,
+  IWM restricted, the zero-size quote rule, snapshot reuse, `carry_rate`
+  0.055); question 4 changes scope — the model-comparison zoo and per-fold
+  HPO, originally scoped to one worked cell, now ship for every one of the
+  21 cells.
+- **Landed on `main`:** dskit — `ObservationRows.keep_values()/admit()`
+  hooks and opt-in `reuse_snapshot` (one parsed snapshot per class per
+  process), `dskit.onboarding.observations.stream_members`, the optionshist
+  `index_daily` stream (raw closes + dividends + splits). Child —
+  `contracts.quote_problems/condor_credit/american_short_charge` +
+  `CONDOR_LEGS`, `ChainQuoteRows`, `IndexCloseRows` dividend/split rules,
+  `_CondorBacktestBase` + `CondorQuoteBacktest`, `index_options/grid.py` and
+  the 147 generated `configs/grid/` documents (21 har-vix cells; every
+  cell's other rungs, zoo and two `hpo-grid` documents — expanded from 27
+  and one worked cell per owner question 4, 2026-09-27). Docs and trees
+  updated; the ADR carries the build record.
+- **Tests:** dskit 264 passed (observations pack, read seam, optionshist, both
+  purity gates); child 661 passed (every suite, manifest, an end-to-end cell
+  walk over a scripted archive store); ruff clean on the branch's files.
+- **Review — LOCKED at `e8b0e7f` (owner ruling 2026-09-26: only Critical/Major
+  block; Minors and Nits are recorded, not fixed):** six review rounds plus
+  two convergence checkpoints, summarized in full in the ADR-0187 build
+  record. Rounds 1–5 each found production clean but one or more test-only
+  Majors of ONE recurring family — a fixture whose value could not separate
+  a rule from a plausible substitute (a payoff sign, a gate reading the
+  credit instead of the expectation, a classification order, a dead knob, a
+  metric denominator). Two independent checkpoints changed the approach
+  when the family kept recurring: the first hand-inventoried every rule
+  against its nearest substitute; the second made the catalogue GENERATED —
+  an AST operator-mutation sweep (1,843 mutants) over every child scope the
+  build added, plus an 83-mutant hand catalogue of the operator classes the
+  generator cannot emit, with every survivor either killed by a fixture or
+  adjudicated equivalent by a runnable probe. Round 6, two fresh lenses on
+  the sweep's final tests-only candidate `e8b0e7f`, reported zero
+  Critical/Major from both: correctness C0 M0 m0 n1; tests (the full sweep
+  and catalogue re-run in full, every survivor re-adjudicated, 37 more
+  mutants of its own, 768+ hand-computed values) C0 M0 m3 n3. Per the
+  skill, two independent lenses at zero Critical/Major closes the
+  candidate. **Production, dskit and all 27 `configs/grid` identity hashes
+  are those of `00f0579`** — six rounds of review changed zero lines of
+  production code, only tests. The full Minor/Nit backlog (not fixed;
+  fixing any item would open a new candidate) is in the ADR record.
+- **Owner question 4's expansion, separately reviewed:** the grid-generator
+  change and 120 new documents (commit `d292b8e`, above `e8b0e7f`) do not
+  touch `nodes.py`/`contracts.py`/`observations.py`/dskit — confirmed
+  untouched by both this commit and every commit since the lock. One
+  independent lens (proportionate to the change's size: a loop over
+  already-reviewed generator functions, not new pricing/gating logic)
+  verified it from scratch — blob-level git diffs, fresh document loads
+  through the real planner, and mutation testing proving the generalized
+  tests actually discriminate correct from broken generator output.
+  Verdict C0 M0 m1 n0, PASS: one Minor, a test-count miscount in the
+  commit message and this record (126 generalized cases, not 155 — fixed
+  here; zero functional impact, the generalization itself was proven
+  correct by the reviewer's own mutation tests).
+- **Next bounded actions:** (1) step 0 on the owner's machine:
+  `acquire --stream index_daily` for `optionshist-chain`, then time one
+  bounded `ChainQuoteRows` scan (bound: 30 min, 6 GB) and check that
+  `dividend_amount` is 0, not null, on SPY/QQQ non-ex-dates (a null in a
+  window refuses the entry); (2) run `walkforward` over the grid, the 21
+  cells' zoos and their HPO documents; (3) run the evaluator on the
+  output; (4) work the backlog
+  if and when it matters (none of it is reachable on any shipped document).
+
+## F5a source branch retired; its evidence is on main (2026-09-26)
+
+- **Owner decision A (2026-09-26):** `origin/cursor/r5-f5a-private-plan-0f39@c489199`
+  (PR 14, closed unmerged) is deleted. Its code was superseded: owner decisions
+  0028/0029 said not to merge it, and ADR-0147 closed whole F5a on main.
+- **Evidence:** `docs/review-evidence/F5a/0001`-`0032` are on main at the same
+  paths, byte-identical to `c489199`. Record
+  `docs/review-evidence/F5a/0045-source-branch-evidence-import.v1.json` lists
+  each file's blob and sha256.
+- **Reading rule:** read `c489199:docs/review-evidence/F5a/<file>` as that path
+  on main. Every older "preserve the branch" or "protected source `c489199`"
+  line below is history, superseded by this note.
+
+## Wrap 2026-09-26: retrain backtest stopped; the MIO must solve all horizons jointly
+
+**Status.**
+- **Owner stop:** the full retrain backtest (`run-retrain-simulation.json`, per-minute, main `5f82644`) was stopped by the owner at 08:13 ET on 2026-09-26, partway through `simulate`.
+- **Stages completed:** calendar, memory, trade_memory, hpo_document, hpo, winners, walk_document, walk, inventory and gates are complete. Their journal rows are A54556–A54576; the run dir is `pipeline_runs/retrain-simulation-staged-2026-02-28-4bfcaaea`.
+- **Gates:** 12 of 25 units admitted: ADBE 5, CIEN 2, IWM 2, LITE 5, LLY 2, LRCX 10, LULU 5, MSTR 9, NOW 5, PANW 5, TER 5, XLK 5.
+- **Speed:** about 150 MIO solves per minute (about 0.4 s per solve) over the first ~26k solves. That is inside the plan's 10 s per-tick budget. No simulate output was written, because the run keeps its ledger in memory until the end.
+
+**Why it was stopped (owner ruling, 2026-09-26).**
+- **The deviation:** each tick solves one MIO *per lead group* (2/5/9/10 min), in ascending lead order on shared cash. This is ADR-0184's choice: `ForecastBundle` and `EquityKellyMIO` refuse mixed leads.
+- **What the plan says:** "normalize **or** separate incompatible holding horizons before they enter one scenario set" (§7). §3 also scores each candidate over its "normalized horizon".
+- **The ruling:** one joint solve per minute across all admitted names and horizons. The optimizer must be able to mix horizons. No normalization exists anywhere in dskit or pmquant (swept 2026-09-26).
+- **Wider rule:** the owner also ruled that any simulation shortcut against the plan must be raised with him explicitly, not only disclosed in an ADR. The 30-minute decision lattice was the first such case, fixed by ADR-0186.
+
+**Next bounded action.**
+- **Design:** write an ADR for a normalized joint MIO. For example, each scenario row is wealth at a common horizon H = the tick's longest admitted lead; a lot with lead L < H returns its L-minute scenario and then sits in cash. Relax `ForecastBundle`/`EquityKellyMIO`'s single-lead refusals only through that normalization.
+- **Build:** TDD, then the two-lens skeptic loop, then land.
+- **Rerun:** rerun the backtest. The template will change, so expect fresh stages.
+- **Report:** run the evaluator on the output.
+
+**Pending owner decisions.**
+- ADR-0187, the multi-horizon SPY/QQQ/IWM options study, is PROPOSED and unmerged, on branch `claude/multi-horizon-options-adr`. It has six owner questions.
+- EQ = 0.25 is a proxy. Replace it with Schwab's own Rule 605 figure once published.
+
+**Data landed today.** The SPY/QQQ/IWM EOD option archive is in `~/data/index_options/ob`: 53,407,120 rows, verified clean.
+
+## Retrain backtest unblocked: trade_memory's memory reading (2026-09-26 bug fix)
+
+- **Bug:** the retrain staged run died 15 s in at `trade_memory` (journal
+  A54559). `memory` had …246152 tokens truncated…dder, so evidence at h=1,3,5 returned a cap
+of 5 and evidence starting at h=3 capped as though 1 and 2 had passed. A cap
+asserts every horizon below it was tested. Fixed to refuse, naming the
+missing horizons. Also fixed: a byte-for-byte reimplementation of
+`reject_unknown_params`, a verdict that discarded the passing checks and
+slice evidence the ADR promised, and two literal defaults spelled twice.
+
+**Ledger.** Two independent id collisions were resolved this session; expect
+more whenever a branch that appends `actions.csv` rows sits unmerged. The
+branch's A18758-A18760 were byte-identical duplicates of main's
+A18774-A18776 — the same events journaled on both forks — so main's ledger
+was kept and only the genuinely new row appended. 18782 rows, unique,
+monotonic.
+
+**State.** ruff clean over `dskit`, `tests`, `children`. 8620 passed, 189
+skipped, 1 failed across the five packages; the one failure is the uid-0
+environment case (the container runs as root, so a directory chmod-ed to 0
+stays readable) and it fails on a pristine `main` too.
+
+**Open.**
+
+- All three remote branches are now merged and safe to delete, and none
+  could be deleted from the container: `git push --delete` is cut by the
+  proxy and the GitHub API returns 403 on write paths. Owner action.
+- `hpo_objective` stays `"ic"`. The research asks for the outer path score;
+  the scan node accepts only `mspe`/`ic`. A named gap, not a config value.
+- Seven generic dskit gaps from the 2026-09-06 research remain unbuilt, each
+  with a tier. Log-uniform range grammar in the child's scan node is the one
+  the finalist would have used.
+- P16 and the finalist both need owner inventory approval before any run.
+
+## Prior wrap: the finalist document is locked, not run (2026-09-07)
+
+Branch `claude/maine-memo-research-agents-4yb6c0`, merged to `main`.
+
+**Landed.**
+
+1. **`configs/run-final-hpo.json`** — the `final_hpo` phase, CONSTRUCTED and
+   validated, never executed. Identity `ee674709…`. Four stages: the locked
+   calendar gates the phase, `BenchmarkSelect` names the winner by max mean
+   path score over the three pinned compare artifacts, the memory preflight
+   verifies the caches, and `FinalistCandidate` materializes the finalist
+   document for whichever candidate the selector named. The document restates
+   no model name and refuses by name if the selector picks one it has no
+   recipe for. No walkforward: the phase declares no fold schedule. The
+   window is the calendar's, pinned by test against its dates, with a
+   1 ms test band so the lockbox is unreachable.
+2. **The spaces come from the 2026-09-06 research** — `learning_rate` added,
+   `max_depth`/`colsample_bytree` pinned rather than searched, log ladders,
+   24 draws against P13's 4; the MLP pins capacity and searches shrinkage.
+3. **Research recorded** (A18779-A18781, one topic folder): feature selection,
+   HPO search spaces, and the synthesis. Headline: the "HPO tunes noise"
+   lesson came from an 1,800-row single-name holdout; the pooled one is
+   ~45,000 rows, so the resolvable gap is 5-8x sharper and 4 draws was a
+   coverage failure. Tune first, mask features second, and do not reuse
+   `universe.keep_features` — it was chosen on the finalist window.
+4. **PR #8 merged** after review sent its private-import gate back: it was a
+   line scan three ordinary idioms walked past. Now an AST walk over every
+   package in both directions, one owner. Widening it surfaced eight further
+   breaches, fixed the same way.
+5. **`kronos.py` reaches the read seam at function depth** — main was red on
+   two of its own purity tests before this.
+
+**Verification.** ruff clean over `dskit`, `tests`, `children`. 8590 passed /
+1 failed across the five packages; the child suite is 11 failed / 368 passed.
+Every failure is identical on a pristine `main` checkout — the one is a uid-0
+environment case, the eleven need run artifacts this container has not got.
+
+**Next / open.**
+
+- `hpo_objective` stays `"ic"`. The research asks for the outer path score and
+  the scan node's vocabulary offers only `mspe`/`ic`; that is a named gap, not
+  something to spell into a config the node would refuse.
+- Seven generic dskit gaps are named across the two research notes, each with
+  a tier. None was solved child-side. Log-uniform range grammar in the scan
+  node is the one the finalist would have used.
+- `origin/feat/final-model-gates` was unmerged here: another agent's ADR-0109
+  horizon-conquest gate, 2 commits. It appends `actions.csv` rows, so expect
+  the same ledger-id collision this wrap already resolved once. (Superseded:
+  reviewed, fixed and merged later the same day — see the wrap above.)
+- `origin/claude/dskit-production-build-3g17vw` is merged and should be
+  deleted; every delete refspec from this container was cut off by the git
+  proxy, so it needs doing by hand.
+
+## Current state: P15 temporal-fusion zoo complete (2026-09-06)
+
+The three-candidate P15 run completed 20/20 paired outer folds per model under
+benchmark `5e88726b…`. Mean path scores were Ridge 0.001346, Transformer
+0.000835, and TCN 0.000409. No pairwise test rejected equal performance at
+the 0.016667 adjusted threshold; all three positive means depended on the
+same 2023-05-19 fold and became approximately zero or negative without it.
+Ridge is the simplest P15 frontier, but no model was promoted or refit.
+
+The nine-model P13/P14/P15 reference leaves P13 pooled native LightGBM as the
+practical development frontier. Cross-zoo values are descriptive, not paired
+tests. Memo:
+`children/intraday_equities/docs/memos/p15-temporal-fusion-model-zoo-results.md`.
+
+**Next:** treat the temporal zoo as a completed negative complexity ablation.
+Only spend on another sequence family after a sharper representation or loss
+hypothesis; keep promotion/final refit as a separate owner-approved action.
+
+## Current state: cross-benchmark model selector landed (2026-09-06)
+
+`BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned
+`compare.json` artifacts and names one winner by a config-declared
+`decision_metric` + `select` direction — never promotes (`auto_promote` False).
+Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
+the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Child config
+`configs/run-model-select.json` now chains P13+P14+P15, ranks all nine
+candidates, and selects `lgbm-pooled-h10`. The completed selector artifact is
+`pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+(SHA-256 `df474f64…`). This is descriptive ranking only, not a cross-zoo
+significance claim, final refit, or promotion.
+
+## Current state: horizon-conquest gate landed (2026-09-06)
+
+ADR-0109 (accepted) adds `dskit.pipeline.conquest:HorizonConquest` — the
+generic per-(unit,horizon) prediction-quality gate that caps a unit at the
+furthest contiguous horizon passing every config-declared check, with an
+optional `slice_field` for regime stability. Tier-1 stdlib-only, default-deny,
+fail-loud on duplicates/gaps/non-finite metrics; 21 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Journaled research at
+`children/intraday_equities/docs/research/horizon-cap-gates/2026-09-06-synthesis.md`.
+Branch `feat/final-model-gates` (based on local main, 2 commits ahead of origin).
+
+**Next:** after the final model is chosen (last zoo batch still running), a
+follow-on ADR wires the gate into the child over the final model's per-lead
+evidence and defines the over/underfit gap + slice floors as config. The gate
+itself ships now and is reusable by any project.
+
+## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
+
+The corrected two-candidate P14 run completed 20 paired outer folds per model
+under benchmark identity `70b5a399…` and approved inventory `85e1fb8c…`.
+Mean path scores were LSTM 0.001174 and GRU -0.000417. GRU minus LSTM was
+-0.001591 (`p=0.109186`), so the comparison selected the simpler LSTM frontier
+without detecting a reliable difference. LSTM's mean excluding its best fold
+was -0.000498; neither model was promoted or refit.
+
+The initial run exposed sparse no-trade minutes: strict 120-minute continuity
+left MSTR without fold-four path evidence. ADR-0104 and the config now state a
+causal bounded fill—carry the last close into OHLC and zero volume for gaps up
+to five minutes, while refusing longer gaps and session boundaries. Corrected
+MSTR fold-four coverage is 198 origins and both models finished 20/20 folds.
+Scoped verification passed (253 tests, 21 skips), Ruff/config validation and
+the diff check are clean, and final Major/Critical review is clear. Memo:
+`children/intraday_equities/docs/memos/p14-recurrent-fusion-model-zoo-results.md`.
+
+**Next:** retain pooled native LightGBM from P13 as the practical development
+frontier. Do not spend on a joint six-candidate rerun or promote a recurrent
+model unless a sharper sequence hypothesis is approved first.
+
+## Current state: P13 pooled/Kronos model zoo complete (2026-09-06)
+
+The four owner-approved candidates completed 20 outer folds each under
+benchmark identity `b017ea1b…` and approved inventory `8731619d…`. Mean path
+scores ranked pooled LightGBM 0.006401, pooled Torch MLP 0.005322, frozen
+Kronos+LightGBM 0.001175, and frozen Kronos+MLP -0.003852. LightGBM and the
+tabular MLP were not detectably different (`p=0.382351`); both Kronos variants
+were detectably worse than both tabular baselines after all-pairs Bonferroni.
+The comparison selected the simpler native LightGBM frontier but made no
+automatic promotion.
+
+ADR-0103 and its implementation add the generic verified local Kronos hidden
+state node/cache to dskit, expose the optional runtime through pmquant, add
+causal OHLCVA cache rows and P13 fusion, and allow Torch MLP width/depth HPO.
+The pmquant ladder model itself is unchanged. Final Bugbot review is clear;
+the real pinned 128-session GPU smoke passes. P13 D/E cache membership was
+narrowed to approved cohort names plus SPY after one WSL OOM on unused P12
+breadth names. The final run took about 7h25m; journal evidence is A18704-
+A18709. Memo:
+`children/intraday_equities/docs/memos/p13-pooled-kronos-model-zoo-results.md`.
+
+**Next:** treat pooled native LightGBM as the current simplest development
+frontier. If Kronos receives another exploratory attempt, first test an
+approved additive ablation against the full nonduplicative P12 feature set;
+do not fine-tune or promote while the cheaper frozen representation shows no
+incremental value and pretraining-contamination certainty remains low.
+
+## Current wrap: production merged, and its four follow-ups too (2026-09-06)
+
+`dskit.production` is BUILT — phases 1, 2, 2b and 3 — and MERGED to `main` at
+`8ea1b98`. ADR-0090 and ADR-0091 are **accepted**; the package is complete
+against `docs/new_package_proposals/production.md`, which is the contract.
+
+The four follow-ups landed as PR #8, reviewed and merged after one round
+that sent the private-import gate back (item 2). What they were:
+
+1. Main was red before the merge, from its own two new pipeline modules —
+   fourteen missing docstrings, and one spelling the run-root default instead
+   of importing it, which is the very defect its pin exists to catch. Fixed.
+2. Production was importing two PRIVATE driver names. §9.1 says twice that it
+   may not, and nothing checked — the purity gate tested what production
+   EXPORTS, never what it IMPORTS. Both rules are public with one owner now,
+   the private spellings survive as aliases, and the missing gate is written
+   and proven to fail on the old code.
+
+   **Review round (2026-09-06).** The first gate was a line scan matching
+   `from dskit.` and three ordinary idioms walked straight past it: a
+   parenthesized multi-line import, a relative `from ..pipeline.driver
+   import`, and reading the attribute off a module alias the file already
+   held for a legitimate public call. It was also scoped to `production`
+   alone while three documents claimed both directions — the coverage a pin
+   claims and lacks is the defect CLAUDE.md names. Rewritten as an AST walk
+   over EVERY package in both directions; the rule has one owner,
+   `private_cross_package_uses` in the toolkit's own gate, and each
+   package's gate calls it. All four forms are pinned by a synthetic test
+   and were re-proven against the real reverted file.
+
+   Widening it surfaced eight more breaches nobody had seen: `onboarding`
+   and `production` both read `_check_dict` / `_check_str` /
+   `_check_unknown` / `_raise_if` across the boundary from `dskit.assets`,
+   in exactly the multi-line form the old scan could not see. Same remedy
+   as the driver names — public in `assets.base`, private spellings kept as
+   aliases, the two callers importing the public name under their own
+   private alias. No behaviour changed.
+3. ADR-0101 **accepted**: the six connector packs' hand-rolled retries are one
+   owner in `dskit/onboarding/connector.py`, pinned by a scan so the copies
+   cannot return. One behaviour changes on purpose — against a
+   `Retry-After: nan`, two packs used to retry IMMEDIATELY and now wait the
+   ordinary backoff. The full graduation stays the eventual direction.
+4. `alpaca_quotes` carried its own hardcoded ceiling, a second copy of the cap
+   that nothing pinned. Gone.
+
+**Owner's standing objection, recorded.** This build reached outside its own
+package: thirteen files in `dskit/pipeline` and one in `dskit/onboarding`, none
+in `assets` or `journal`. It was authorised — §9 is titled "Changes outside the
+package" and ADR-0091 IS a pipeline change — but the footprint was never put in
+front of the owner plainly, and it should have been. The seam change was
+load-bearing (serving re-executes the backtest's own nodes, and that mechanism
+was private); the serving-effect classifications were not, and could have been
+their own later change. Future package work: state the cross-package footprint
+up front.
+
+**What it is.** The serving layer: an immutable release of a finished pipeline
+run, driven forward on a cadence — fetch, decide, guard, act, record. Every
+tick writes one decision into a hash-chained append-only ledger; every proposal
+passes a declared guard chain before anything is sent. The four rungs differ
+only by which objects were injected, and reaching a live venue additionally
+needs a recorded, expiring, independently authenticated maker-checker arm bound
+to the release hash. A child ships the venue executor, its accounting, its
+approval verifier and its fenced lease; dskit ships everything else.
+
+**What phase 2 added**: the series can score its own decisions. `outcomes`
+records what happened to each leg bitemporally; `report` gives attribution,
+calibration and a value curve at an explicit cut; `replay` re-runs the tape and
+diffs it. Plus the outcome and parity monitor families, four statistical
+monitors, a sqlite chain, a request signer, alert inhibition/silences/
+escalation/ack, the systemd heartbeat, readiness evidence drawn from the
+outcome fold, and durable guard holds. **Phase 3**: the exchange-calendar pack,
+the metric-sink seam with prometheus and opentelemetry exporters, and the
+websocket stream seam.
+
+**State.** 7973 passed over production, production_libs and pipeline; the full
+suite is 9560 passed with three failures that are all pre-existing on `main`
+(two uid-0 environment cases, one child's own config assertion). ruff clean,
+five purity gates at 44, the 20 pinned sha256 literals unmoved, `check_plan.py`
+CLEAN, and the pinned driver and search suites passing untouched.
+
+**Open, needing the owner.** ADR-0101 (proposed) holds the last phase-3 item:
+moving the onboarding connector packs onto `resilience.Retry`. It was NOT
+migrated, deliberately — the record names three obstacles the draft did not,
+two of which need a ruling, and the onboarding purity gate is a hard stop
+rather than something to adjust. Also open: whether `kinds_banking`'s newly
+pure classes and `TorchImportance` were the right calls (both flagged), and
+`authority.expire` plus `cash_flow.supersedes` remain folded but unproduced.
+
+**How to run it.** `python -m dskit.production validate|plan|ready|serve|
+status|verify` for the loop; `outcomes|report|replay` to score it, all
+read-only bar `outcomes`; the authenticated verbs are `arm-request|approve-arm|
+disarm|halt|reduce|resume|flatten-request|approve-flatten|execute-flatten|
+adopt|ack|silence|approve-hold`. See `dskit/production/README.md`.
+
+## Current state: P12 Gate 3 recovery complete (2026-09-05)
+
+Branch: `main`; `571884a` is pushed to `origin/main`. Focused recovery,
+staged-run, and concurrent-journal verification: 142 passed. P12 recovered
+without changing any original partial artifact.
+The only Gate 1 selection source was persisted `gate1.json` rows with boolean
+`gate1_passes=true`: 31 survivors. The final Gate 3 result is 25 pass / 6
+fail. Pass: LLY3, QQQ1, XLF3, XLE1, XLK5, BAC1, SMH5, IWM5, XBI1, FCX1,
+DAL1, NRG1, MET1, MSTR10, NOW5, LULU5, PANW5, INTC1, CIEN5, LRCX10,
+TER5, BIDU2, LITE5, ADBE5, ANET3. Fail: TQQQ3, NVDA2, UPRO60, AVGO10,
+NFLX3, BA1; all six beat all 19 draws but failed shipped calibration.
+
+A12580 is the immutable source inventory. A12581-A12596 separately record
+the 16 legitimate reconstructions with all 19 draw and 380 part action/path
+references each. The remaining 15 families were rerun completely. A18619 is
+the final `gate3_recovery.json`; its SHA-256 is
+`098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0`.
+It contains all 63 Gate 1 rows, the exact 16/15 partition, 285 rerun main
+walks and 5,700 matching part journals. NRG seed05 part00 replacement A12731
+passes the fixed journal seam. Recovery summary: A18622.
+
+The missing-evidence fix is `cd4fb1c`; continuation construction is
+`d1230ba`; the safe journal-label bound fix is `47bcdaa`. Independent review
+is clean after all major findings were resolved. A12618 preserves the failed
+long-label continuation attempt. A18620 appends corrected locations for smoke
+rows A2888-A2909; A18621 records the first 64-asset attempt's exit 143. Memo:
+`children/intraday_equities/docs/memos/p12-gate3-recovery-results.md`.
+
+**Next:** use the Gate 3 survivors as the fixed input to the ratified
+predictor-output/model-development plan. For future long runs on this 16-CPU
+host, set `INTRADAY_EQUITIES_FOLD_WORKERS=4`; benchmark before going wider.
+
+## Current state: predictor-output research + topic folders (2026-09-05)
+
+Branch: `main`. ADR-0096: `journal research` writes
+`docs/research/<topic>/<YYYY-MM-DD>-<name>.md` (no root markdown). Skills
+copied to Cursor + Claude; OpenCode `/research` updated. Deep-research
+finding for post-Gate-3 output:
+`children/intraday_equities/docs/research/post-gate3-predictor-output/2026-09-05-synthesis.md`
+(A12628–A12635). Journal/skeleton tests 38 passed. P12 Gate-3 recovery
+execute rows continued appending in the same ledger.
+
+**Next (owner):** ratify or amend the synthesis (pooled trunk + \(H_i\)
+heads, 5-seed ensembles, quantiles+conformal, empirical robust sets;
+large transformers as challengers only). P12 recovery still in flight
+elsewhere — do not treat this wrap as a Gate-3 result.
+## Current state: agent-doc sync + opencode setup (2026-09-05)
+
+Branch: `main`. Synced all nine `AGENTS.md`/`CLAUDE.md` pairs so the Codex-
+facing copies carry the latest rulings (the "prefer objects" ruling,
+ADR-0077/0079/0093, connector shapes, the intraday "Machine knobs" section),
+and added the commit-author standard. Added opencode support: `opencode.json`
+(registers `.cursor/skills` + the session-pull plugin), `.opencode/command/
+{wrap,research}.md`, and `.opencode/plugin/session-pull.ts`. No source code
+changed; no tests run.
+
+Next: restart opencode to load the config, skills, commands, and plugin.
+
+## Current state: P12 Gate 3 failed; closeout blocked (2026-09-05)
+
+Branch: main; the completed P10/P11, Gate 3, bounded-fold, and cohort-study
+work is committed, merged, and pushed (main equals origin/main). Their
+historical wraps remain below. No local branch from that work is unmerged.
+
+The 63-asset P12 study exited 1 at 16:09:05Z in Gate 3 walks. Memory and
+Gate 1 artifacts are present, but Gate 3 produced no final result. Journal
+row A12579 records the error: its seed-05 NRG h=1 part-00 fold finished
+without journal evidence. Do not infer or publish final Gate 3 verdicts from
+the partial artifacts.
+
+Next: diagnose and repair the missing journal-evidence failure, then resume or
+rerun P12. After a successful result, repair the smoke journal rows A2888-A2909,
+record the prior 64-asset attempt's exit 143, write the result memo, and wrap.
+Do not commit or push the failed P12 run as complete.
+
+## P12 recovery handoff — required sequence
+
+This wrap records the failure and recovery plan only; it does not claim a P12
+result. The next session must preserve the partial artifacts, build an
+asset-and-seed inventory from the persisted Gate 1 selection and Gate 3
+reports/actions, and extract a final outcome only for an auditable complete
+19-draw family. Every other survivor must be rerun.
+
+Verification for this documentation-and-evidence wrap: `git diff --check`;
+no test suite was run because no source code changed.
+
+First reproduce and fix NRG h=1 seed-05 part-00's missing journal evidence
+with a focused test. Obtain independent major/critical review and resolve its
+findings before execution. Then append a provenance-rich recovery journal
+entry plus one separate, source-linked entry for each legitimately
+reconstructed stock-and-horizon verdict. Create the continuation, run
+the remaining work, write a result memo, wrap, commit, and push main.
+
+## Prior wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
+
+Branch: `main`. Everything committed and pushed; the three feature branches
+and their worktrees are purged. `claude/dskit-production-build-3g17vw` and
+`claude/gate-3-null-design-docs-9me2mk` are other sessions' remote branches
+and were left alone.
+
+Landed, each looped through hostile review until no CRITICAL or MAJOR
+remained (rounds: ADR-0092 build 5, ADR-0093 build 2, ADR-0094 text 3,
+ADR-0094 build 3):
+
+- **ADR-0092 built.** `attempts.beat_all` owns the strict rank predicate;
+  P11's `Gate3WalksStage` stops an asset at the first null that matches or
+  beats it and emits `draws`; `Gate3ResultStage` takes `draws`, and a
+  stopped asset carries `p_bound = 2/(n_draws+1)` top-level with no
+  `gate3` block. P11's identity moved `355b6198 → b0388de8` (new stage
+  input/output); its completed artifacts are untouched.
+- **ADR-0093 built.** `dskit/pipeline/folds.py::BoundedFoldRunner` (cap in
+  the parent, `setrlimit` + `execvp` shim, width from the environment,
+  `measure_one` as the one memory reading), `runs.single_fold_row`,
+  `driver.FOLD_FIELDS`/`aggregate_folds`/`write_walkforward_summary`; the
+  child's own pool, cap wrapper and persisted per-fold peak are gone.
+- **ADR-0094 written, looped clean, accepted, built.** `modelability_study.py`
+  is the asset-local study over a document-declared cohort with one feature
+  cache per source group; P11 is now its pinned subclass; `attempts.
+  early_stop_p_bound` owns the stop bound. P12 (`configs/run-p12-
+  modelability.json`, identity `1a2d194f…`, forty names of cohorts D and E,
+  P11 geometry verbatim) had NOT yet run at the time of this wrap. Path: A2851 struck through, A2887
+  "Gate 3: fail-fast scramble refit" beneath it.
+
+Smoke (one asset, ORCL, `INTRADAY_EQUITIES_FOLD_WORKERS=2`): the whole
+staged document ran in 6 min 55 s; group-D cache build measured 13.88 GiB
+under the 17 GiB cap; median 2.10 s per fold against the 3.40 s baseline
+(journal A2886); ORCL failed Gate 1 at h=1, so no null draw ran inside the
+staged run — one was run separately as evidence (A2888–A2908). Memo:
+`children/intraday_equities/docs/memos/gate3-rebuild-fail-fast-fold-seam-and-p12.md`.
+
+Verification on the merged tree: child suite 341 passed, 11 skipped, 1 failed (the pre-existing start pin); tests/pipeline 1919 passed, 25 skipped. The one failure is the
+pre-existing `run-pb-s01-h01-lgbm-cross.json` start pin; the other two
+failures the brief named (the no-information-scan conformance ImportError,
+the root-only chmod test) did not reproduce on this machine.
+
+**Next step (owner):** decide whether to run P12 now
+(`INTRADAY_EQUITIES_FOLD_WORKERS=<w> python -m dskit.pipeline staged
+configs/run-p12-modelability.json --asof 2026-02-28 --adapter
+intraday_equities`; the group-E cache builds and is measured first, ~6 min;
+Gate 1 ~0.6–1.9 h at width 2) or first reconcile the five names the
+selection notes flag (MRK, MET, WDC, EOG, PANW); and whether to launch the
+revised P11 run under its new identity. Every judgement call taken
+overnight is listed in the memo's "Decisions taken without the owner".
+
+## Prior wrap: Gate 3 redesign (2026-09-05)
+
+Branch: `main`. Everything committed and pushed; merged feature branches
+purged. `claude/dskit-production-build-3g17vw` is another session's live
+work and was left alone.
+
+Landed: the Gate 3 null-design research doc, reviewed four rounds and merged
+with an independent revision that was already on `main`. Two ADRs, both
+skeptic-cleared and both still **proposed, awaiting owner approval**:
+
+- **ADR-0092** — Gate 3 stops at the first null exceedance (Besag–Clifford,
+  `h=1`, `B_max=19`). Same beat-all verdict; `E[draws | fail] = 2.73`, so
+  twelve failures and one passer cost ~52 walks against 247. Requires
+  extracting `beat_all` into `dskit/pipeline/attempts.py` and a `draws`
+  output on `Gate3WalksStage`. Calibration stays per-asset on completed
+  families.
+- **ADR-0093** — bounded parallel fold execution graduates from the child into
+  `dskit/pipeline/folds.py` as `BoundedFoldRunner` (seven rounds). Cap is
+  caller-supplied and never divided; `setrlimit`+`execv` shim, cap validated
+  in the parent with an `RLIM_INFINITY` guard; width from the environment;
+  `measure_one` owns the `RUSAGE_CHILDREN` contamination guard;
+  `single_fold_row`, `FOLD_FIELDS`/`FOLD_OPTIONAL_FIELDS`, and the driver
+  renames pin the fold-row shape.
+
+Shipped ahead of ADR-0093 (recorded there as the violation it is): the tape
+filter and a child-side fold pool in `modelability.py`. Measured on the
+recorded run: 3.40 s/fold, so today's gate is ~4.7 h; the tape filter is
+3.9% of a fold; concurrency is unmeasured. The pooled-null idea was rejected
+— `t_pool` is not location-pivotal (LLY's null centre is −0.37).
+
+Verification: child 278 passed; `tests/pipeline` 1,733 passed. Three
+pre-existing unrelated failures: the `run-pb-s01-h01-lgbm-cross.json` start
+pin, the `no-information-scan` conformance ImportError, and a root-only
+chmod test.
+
+**Next step (owner):** approve or amend ADR-0092/0093, then build under the
+TDD + skeptic loop. Nothing has been built. A new cohort (~40 stocks) wired
+through Gate 1 → Gate 3 needs its own ADR first: P11 pins `_ASSETS` to
+exactly 25.
+
+## Prior wrap: child infrastructure
+
+Branch: `main`.
+
+Landed: the Path schema now records label, purpose, relevant files, `LOCKED`,
+and owner-only Current Work. Generated decisioning README shows the full Path
+and the latest 10 Actions without deleting CSV history. The skeleton now
+initializes decisioning, explanations, memos, and research with skill
+reminders. `refresh-child-infra` and paired AGENTS/CLAUDE edit reminders are
+available.
+
+Verification: 38 focused journal/skeleton tests passed; final Bugbot found no
+bugs. Legacy two-column Path ledgers render read-only and refuse promotion
+until the human owner explicitly migrates them.
+
+Next step: apply `refresh-child-infra` to a chosen child when authorized.
+
+**Current policy:** Gate 1 selects provisional modelability candidates. Gate 3
+is their mandatory 19-seed whole-session refit audit. There is no Gate-2
+filter; HFDR belongs later in MIO (ADR-0089).
+
+Prior P11 wrap: 2026-09-04 on `main`. ADR-0089's direct Gate-1-to-Gate-3
+correction is implemented. The revised P11 run has not started.
+
+Verification: 77 targeted P11/config/attempt tests passed; Ruff and diff checks
+are clean. One known pre-existing config-pin test still rejects the 2020 start
+in `run-pb-s01-h01-lgbm-cross.json` against 2018. The full suite was not
+rerun.
+
+The prior Gate-2-only P11 run is historical evidence from a mistaken
+configuration. This wrap also includes the reusable `memo` skill and P11
+execution memo.
+
+## Historical P11 record (superseded)
+
+ADR-0087 is accepted. P11 trains one model per asset, stops the ordered
+`h=1,2,3,5,10,20,30,60` search at the first Gate-1 failure, and confirms only
+the selected horizon on untouched 2025-12-02 through 2026-02-28 observations.
+The generic fixed-family ledger reserves all 25 Bonferroni slots at alpha
+0.05 (0.002 each), valid under arbitrary dependence and arrival order.
+
+Gate 1 selected 13 assets: LLY h3, QQQ h1, XLF h3, XLE h1, XLK h5, TQQQ h3,
+NVDA h2, UPRO h60, BAC h1, AVGO h10, NFLX h3, SMH h5, and IWM h5. All 13
+failed Gate 2; UPRO was closest (raw p=0.0132419, adjusted p=0.331047). The
+other 12 assets failed Gate 1 at h1 and never entered confirmation. Full rows
+and decision math are in `children/intraday_equities/docs/memos/` plus the P11
+staged artifacts and append-only decision ledgers.
+
+Next step: run revised P11 through memory, Gate 1, Gate-3 walks and Gate-3
+result. Do not run Gate 2. Then design the predictive `pi_i` model and HFDR
+MIO seam under a separately approved ADR.
+
+## Landed this wrap: ADR-0082…0086
+
+- Hugging Face repositories enter as WORM acquisitions; pretrained encode,
+  classify and forecast nodes load only verified, manifest-pinned payloads.
+- Validation gained JSON-identity-safe `unique`, `accepted_values` and
+  grouped `distinct_count`; record flows gained deterministic `groupby`.
+- Record streams can be written through the shared atomic writer discipline.
+- Skeptic review corrections preserve JSON type identity, refuse output-key
+  collisions, structured-cardinality crashes, non-contiguous classifier labels
+  and non-finite group keys, and bind Hub cursors to `repo_id`.
+- The corresponding TODO entries are checked and ADR-0082…0086 are accepted.
+
+## Landed this wrap: pmquant child (PR #7)
+
+- `children/pmquant/` — prediction-market ladders (Kalshi, Polymarket) as
+  thin tier-3 kinds + JSON over dskit seams. `configs/run-e2e.json` is the
+  proof document (22 nodes; `tests/test_e2e.py` runs it on the synthetic
+  world). `run-kalshi-ladders.json` is its real-data twin.
+- dskit generic, ADR-0075…0080: onboarding packs `kalshi`, `polymarket`,
+  `predexon` + `leads.py`; the `localtables` connector; the `observations`
+  pipeline kind; the public clause DSL; `acquired_at` is the commit instant;
+  one backoff ceiling (`connector.MAX_BACKOFF_S`); Polymarket `closedTime`.
+- **Waiting on the owner:** `PREDEXON_API_KEY` in the environment before
+  `configs/source-predexon.json` can pull; the twin's real-data run on a
+  machine holding `~/pmquant_data`; the rulings listed in `TODO.md` under
+  "Found by the pmquant child build".
+- Also merged: `chore/quote-pull-budget` — the Alpaca quotes backfill
+  `budget_seconds` 3000 → 570, so an interrupted pull loses under ten minutes.
+- `fix/hstar-min-split-gain` is the pre-rewrite lineage (no common ancestor
+  with `main`); every file it carries is already in `main`. Safe to delete.
+
+## Reference
+
+P10 result:
+`pipeline_runs/p10-25-asset-modelability-staged-2026-02-28-b7c8efe9`
+
+P10 memo:
+`children/intraday_equities/docs/memos/p10-modelability-pipeline.md`
+
+P10 used pooled 25-asset fits and a study-wide 200-cell max-statistic
+correction. Gate 2 retained QQQ at three minutes and NFLX at ten; both later
+failed Gate 3's frozen null-spread calibration. P11 changes the estimand and
+must not overwrite or reinterpret those artifacts.
+
+<!-- keep-both: the other merge side follows — prune at the next /wrap -->
+
+# Re-entry
+
 ## index_options: strategy-alternatives build complete (ADR-0193..0197) (2026-09-30)
 
 - All five steps of memo A0612 are on main, each reviewed by two fresh Sonnet

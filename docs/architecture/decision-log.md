@@ -27715,3 +27715,413 @@ debit gate lives in the `_priced` hook (with a `_net_credit` seam) rather than
 The inherited American charge stays on a debit vertical's short leg as the
 ADR-0187 conservative bound (long legs ignored). The width gate is corrected
 to include fees in the follow-up candidate.
+
+## ADR-0198 — Risk-neutral bridge, raw-chain encoders and public-model probes
+
+2026-09-29. Status: approved by owner in chat; implementation authorized. Owner:
+index_options. Base: `0d44dd457867139fc75191b6ed0a218230360e69`.
+
+### Decision sought
+
+Run one bounded, JSON-only comparison of the remaining materially distinct CDF
+ideas: a chain-implied risk-neutral proxy corrected to a physical distribution,
+richer causal market features, CatBoost multi-quantiles, a conditional spline
+flow, raw-chain DeepSets and Set Transformer encoders, a distributional-forest
+control, and frozen public time-series/tabular foundation-model probes. This is
+offline reused-history research. It grants no trading, deployment, contract
+selection, acquisition from an unpinned source, or fresh-holdout claim.
+
+### Data and causal feature contract
+
+Reuse the pinned 53,407,120-row optionshist archive, exact-expiry lifecycle,
+index closes, Cboe index-wide histories, and already acquired daily market
+series under `/home/russell/data/index_options/ob`. Every input is available by
+the entry close. An external daily series is lagged one complete exchange
+session unless its retained source timestamp proves publication no later than
+the option snapshot. Current-vintage revisable macro releases are excluded;
+daily market observations may carry forward only by a declared maximum age and
+retain age/missingness fields. Future realized dividends are forbidden; only
+payments already observed by entry may form trailing features. No provider or
+series silently substitutes for an unavailable source. Intraday features are attempted only if
+an authenticated, pinned source exists; the present environment has no Alpaca
+credentials, so their absence is reported rather than filled from an
+uncontrolled web source.
+
+Build one reusable chain tensor per `(symbol, quote_date, nominal_expiry)` on a
+fixed standardized log-moneyness grid. Each node carries IV, mid, relative
+spread, open interest, quote depth, right and availability; raw ordering is
+irrelevant. Duplicate contracts, crossed/negative quotes, invalid IVs,
+nonpositive strikes/spot and off-grid adjusted deliverables refuse or receive a
+declared missing mask. All feature artifacts hash the source snapshots,
+configuration and implementation and are produced by a normal CLI stage, never
+a one-off script.
+
+Derive, where quotes pass coverage and shape guards:
+
+- ATM level; skew, curvature and their 1/5/22-session changes;
+- exact-expiry and neighboring-expiry term slopes;
+- risk-neutral variance, skewness, kurtosis and left/right tail integrals;
+- implied-minus-realized variance, liquidity asymmetry and quote-quality counts;
+- Cboe volatility level/term/vol-of-vol features and daily rates, credit,
+  dollar, oil and financial-condition features with explicit data ages; and
+- train-only surface principal components and innovations.
+
+The option-implied distribution is explicitly an **American-ETF proxy**, not a
+frictionless European or physical law. Infer a same-expiry forward from robust
+put/call parity only when paired quotes support it; otherwise refuse the proxy
+for that row. Form an OTM option price curve, project it to decreasing/convex
+no-arbitrage call prices, recover a nonnegative finite-grid density/CDF, and
+record projection distance, mass and moment diagnostics. Rates and observed
+past dividends enter only as causal features; the parity-implied forward, not
+future realized dividends, carries the market's dividend expectation.
+
+Listed strikes do not identify all tail mass. Never renormalize observed-strike
+mass to one. Require configurable minimum node counts on each side of the
+forward, maximum inner/outer moneyness gaps, and outer digital probabilities
+strictly inside `[0,1]`; otherwise mark the row proxy-ineligible. Inside the
+reliable strike interval use the projected proxy CDF. Complete each wing with
+the training-only horizon empirical CDF, multiplicatively rescaled on the left
+and on survival probability on the right to meet the proxy endpoint exactly.
+This explicit empirical-tail splice is the raw proxy control. Report endpoint
+mass and repeat diagnostics with a wider quote band; a proxy-dependent
+candidate falls back to the unchanged incumbent on an ineligible row. Thus all
+models emit forecasts for the same identities, while active-proxy coverage by
+index/day/year and common-eligible-only sensitivity remain explicit. Missing or
+failed proxies are never imputed into option features.
+
+### Generic model seams
+
+Extend `dskit.pipeline.libs.predictive_cdf` rather than branching the child CLI:
+
+1. `OptionImpliedTransportCDF`: consume a declared row-wise proxy grid, splice
+   its tails to a training-only empirical endpoint, and fit a monotone empirical
+   or regularized beta/spline PIT map from training rows. It composes with a
+   generic row-mask fallback to the incumbent, so scoring identities remain
+   complete. The raw spliced proxy is a control. Any calibration-label consumer
+   declares it and refuses a second calibrator.
+2. `CatBoostQuantileCDF`: one native MultiQuantile fit, deterministic CPU/GPU
+   declaration, sorted/rearranged quantiles and explicit finite tails. CatBoost
+   is a lazy optional extra; missing dependency refuses by name.
+3. `SplineFlowCDF`: a small conditional one-dimensional rational-quadratic
+   spline over a Normal base, Torch/CUDA, bounded knots/tails and fixed seeds.
+4. `SetMixtureCDF`: a mask-aware shared contract encoder with either mean/sum
+   DeepSets pooling or attention Set Transformer pooling, followed by a small
+   mixture-density head. Masks cannot become observations; permutation tests
+   must give identical curves.
+5. Reuse `QuantileForestCDF` as the distributional-forest control under the new
+   feature space; do not claim it implements a different DRF algorithm.
+6. `TabPFNCDF`: local pinned TabPFN regression distribution on a deterministic,
+   equal-cell training subsample within its documented row ceiling. No hosted
+   API or data upload is allowed.
+
+Frozen public time-series models enter through the existing acquired-snapshot,
+local-files-only transformer doorway. Add a generic
+`PretrainedDistributionForecast` beside the existing scalar signal; it validates
+either joint samples shaped `(row, sample, horizon)` or marginal quantiles
+shaped `(row, horizon, probability)`, with declared probabilities, sample count,
+seed, context, units and finite monotone outputs. A library subclass forecasts
+future log price from causal log-price history; selecting the declared session
+horizon and subtracting entry log price yields the exact-expiry terminal-return
+CDF without inventing independence between daily steps. Joint sample providers
+must retain joint draws; quantile-only providers are used only as horizon-
+marginal distributions. Artifact audits persist output representation and
+digest. Point-only models are recorded as unsupported, never promoted to CDFs.
+
+Add only thin library-specific subclasses for Chronos-2, TimesFM-3 and Moirai-2
+when an anonymously obtainable immutable checkpoint and license permit local
+use. They are zero-shot/frozen controls first. Fine-tuning is allowed only as a separate
+candidate when the upstream library exposes a deterministic local path and the
+training fold has no validation/evaluation dates; otherwise its unsupported
+status is an experiment result, not grounds to write patchwork code. Checkpoint
+commit, manifest, license, package version, documented pretraining-corpus
+coverage/cutoff and output digest are protocol identity. A public checkpoint is
+selection-eligible only when retained upstream evidence establishes that its
+pretraining corpus ends before the first scored entry date; a fold-specific
+checkpoint is eligible only for folds whose first scored entry follows that
+checkpoint's verified cutoff. Unknown, ambiguous or later cutoffs make the
+probe descriptive-only: retain its outputs and status, but exclude it from
+group winners, the primary freeze and every promotion claim. Fine-tuning on a
+causal local fold cannot cure an ineligible pretrained checkpoint. Network
+access is acquisition-only, never fit/evaluation.
+
+### Predeclared experiment and stopping rule
+
+One new JSON drives `prepare`, grouped `search`, `select`, four `evaluate`
+partitions and `report`. Candidate groups are rich fixed blend, option-implied
+transport, CatBoost multi-quantile, spline flow, DeepSets, Set Transformer,
+quantile forest, and public-model probes. Each group contains at most four
+bounded candidates; total candidates are capped at 24. Controls are empirical,
+the unchanged raw 25% incumbent, pure pooled MLP and raw option proxy where
+eligible. Every candidate/variant and every unavailable public probe remains in
+the completion inventory; nothing is silently dropped.
+
+Development is 2016–2018 with the existing settlement-label cutoff. Select one
+raw/calibrated finalist per group using equal index/actual-DTE-cell CRPS on
+the complete shared rows. Proxy-dependent forecasts use the incumbent fallback
+outside their declared eligibility mask; group and primary selection use that
+complete forecast, while a same-row incumbent comparison on active proxy rows
+is reported only as sensitivity. Before reading later scores, freeze finalists and one primary.
+Replace the incumbent only if a finalist has strictly lower development CRPS,
+no worse absolute below-5% and above-95% PIT deviation for every index within
+`1e-12`, and at least 90% of incumbent row coverage. The already inspected
+2019–2025 period is descriptive evaluation only. Report CRPS, tail CRPS,
+strike Brier, PIT/coverage, bounded-condor loss error, exact-day counts, annual
+stability, paired 60/120-date block intervals and common-cohort sensitivity.
+
+Each stage is limited to 30 minutes and 6 GiB process RSS, at most two CPU
+threads, one GPU job at a time and no silent CPU fallback for declared CUDA
+models. A public-model probe may have a separate 60-minute acquisition ceiling;
+training/evaluation retains the normal cap. Timeout, OOM, license/auth failure,
+unavailable weights or insufficient common coverage is reported explicitly and
+cannot be reclassified as a completed candidate.
+
+### Contract and focused tests
+
+| Invariant | Expected proof | Forbidden effect |
+|---|---|---|
+| chain preparation | fixed masks/tensor, permutation identity, source/config hashes | future quote, duplicate, adjusted contract or silent imputation |
+| proxy distribution | decreasing convex calls; interior mass retained; empirical-tail splice; monotone CDF | label use, observed-support renormalization, erased tail mass or claim of physical/American exactness |
+| dynamics/PCA | lagged entry-only changes; train-only PCA/scaling | evaluation-fitted transform or current-vintage macro leakage |
+| transport | monotone endpoints; training/calibration chronology declared | second calibration or evaluation-label fit |
+| multi-quantile/flow | ordered finite CDF and exact saved reconstruction | crossing curve, unstated tail or nonfinite density |
+| set encoders | mask-safe and permutation invariant; raw-chain ablation | order signal, padded-contract signal or row leakage |
+| eligibility/fallback | complete paired rows plus active-mask coverage and same-row sensitivity | dropped easy/hard dates, fabricated proxy or incomparable selection |
+| public models | WORM snapshot, local-only distribution load, validated sample/quantile shape, exact-DTE marginal and verified pretraining cutoff before each scored fold | mutable hub name, hosted upload, point-as-CDF, future input or unknown-cutoff probe in selection/promotion |
+| study inventory | <=24 candidates, eight groups, controls and failures retained | post-result HPO, omitted method or incomparable cohort |
+| chronology | annual fit/calibration/evaluation purges and paired identities | overlap leakage or fresh-test claim |
+| resources/completion | completion-last manifests and telemetry | partial-as-complete or silent fallback |
+
+### Authorized manifest and exit
+
+After approval, edits are limited to `pyproject.toml`; the existing generic
+predictive-CDF and transformer packs plus their focused tests/docs; existing
+option-pricing primitives and focused tests if the no-arbitrage proxy needs a
+generic owner; the child CDF adapter/tests/README/AGENTS/CLAUDE; one JSON
+`children/index_options/configs/run-predictive-cdf-risk-neutral.json`; one
+review record `docs/review-evidence/ADR-0198.md`; one standalone result memo;
+this ADR, RE-ENTRY, and the append-only child action journal/generated README.
+Generated data/model/run artifacts remain ignored. New optional dependencies
+must be separately named, version-bounded and lazy-imported.
+
+Exit requires Phase-0 design review, focused RED/GREEN evidence, affected
+purity/config tests, a complete bounded run or explicit retained failure for
+every public probe, immutable pre-evaluation freeze, full counts and two fresh
+independent final lenses with zero unresolved Critical/Major. The memo must
+distinguish risk-neutral proxy from physical CDF, report effective dependence,
+and recommend retain/replace without a trading claim.
+## ADR-0199 — Tail-constrained option/incumbent quantile blend
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0198. Base worktree:
+`/home/russell/dskit-cdf-option-surface`.
+
+### Decision sought
+
+Test whether the ADR-0198 option-implied transport's average-distribution gain
+can be retained while removing its IWM/SPY PIT-tail regression. Build one
+generic calibration-only quantile blend between the unchanged governed
+incumbent and the frozen option transport. This is offline reused-history
+research; it grants no trading, deployment or fresh-holdout authority.
+
+### Model contract
+
+`TailConstrainedQuantileBlendCDF` fits both declared endpoint estimators on the
+training fold. On the preceding-year calibration fold only, it selects separate
+left, center and right option weights for each one-hot index. The weight curve
+is linearly interpolated across declared probability anchors. Forecast
+quantiles are the weighted endpoint quantiles followed by monotone
+rearrangement, yielding a valid CDF. Probability anchors are exactly 0.05,
+0.50 and 0.95; the outer anchor weights remain constant through probabilities
+zero and one. Zero-hot, multi-hot and nonbinary index vectors all refuse.
+
+Selection searches only finite, JSON-declared weight grids. For each index it
+minimizes equally weighted actual-calendar-DTE-cell integrated quantile score,
+subject to both below-5% and above-95% absolute PIT deviations being no worse
+than the incumbent on calibration rows, within `1e-12`. Both the objective and
+PIT constraints are evaluated on the final rearranged forecast. The all-zero option
+weight is mandatory, so the feasible set always contains the unchanged
+incumbent. Actual DTE is calibration metadata only and cannot enter either
+endpoint forecast. The blend consumes calibration labels and therefore cannot
+receive a second calibrator.
+
+### Experiment and stopping rule
+
+One standard JSON drives prepare, one grouped search, development selection,
+four evaluation partitions and report. Compare three bounded grids: broad
+quarter-step weights, fine conservative tail weights with broad center weights,
+and very conservative tail weights. Controls are horizon empirical, the
+unchanged 25% incumbent and option transport. Development remains 2016–2018;
+later 2019–2025 history remains descriptive and already inspected. Freeze one
+candidate before later evaluation.
+
+Promotion still requires strict development equal-index/actual-DTE-cell CRPS
+improvement over the incumbent, complete paired coverage, and no worse
+below-5% or above-95% PIT deviation for every index. Report selected weights by
+fold/index, all metrics/counts/grids, direct skill versus both references and
+60/120-entry-date paired intervals. Retain the incumbent unless the full guard
+passes; do not substitute a later-period winner after the freeze.
+
+Every stage remains below 30 minutes and 6 GiB process RSS, at most two CPU
+threads and one GPU job. Completion-last manifests, source/protocol hashes and
+the ADR-0198 causal panel contract remain unchanged. No one-off execution
+script, new data acquisition, public model or architecture zoo is authorized.
+
+### Tests and exit
+
+Focused tests must prove zero-weight identity, endpoint identity, monotonic
+output, probability-varying weights, one-hot refusal, equal-cell optimization,
+calibration-only label use, tail constraints and deterministic reconstruction.
+Exit requires a complete bounded run, standalone memo, action journal and
+RE-ENTRY updates, plus Luna design and final reviews with zero unresolved
+Critical/Major findings. Generated artifacts remain ignored.
+
+### Outcome (2026-09-30)
+
+Completed. The frozen fine-tail blend improved full-history equal-cell CRPS
+1.307% versus the incumbent and improved both full-history tail deviations for
+all indexes. It missed the preregistered development SPY lower-tail guard
+(absolute deviation 0.00828 versus 0.00738), so the incumbent is retained.
+No post-inspection candidate substitution or trading authority was granted.
+See `children/index_options/docs/memos/2026-09-30-tail-constrained-quantile-blend.md`.
+
+## ADR-0200 — Guard-aware development selection
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0199. Base worktree:
+`/home/russell/dskit-cdf-option-surface`.
+
+### Context
+
+ADR-0199's CRPS-only selector froze the fine-tail grid before applying the
+predeclared promotion guard. That grid improved average CRPS but missed SPY's
+development lower-tail guard. The already-declared very-conservative grid
+improved development CRPS and passed all six index/tail comparisons, but was
+not substituted after inspection.
+
+### Decision
+
+Add a generic JSON-declared development selection guard to
+`CDFHyperparameterStudy`. Within a candidate group, rank only model/variant
+pairs whose per-index absolute deviations from the declared tail target are no
+worse than a declared frozen reference/variant for every declared metric,
+within a finite tolerance. Persist every comparison and feasibility verdict.
+Refuse when no candidate is feasible. The CRPS ranking remains unchanged among
+feasible candidates.
+
+Run a new standardized document containing the same three ADR-0199 grids and
+controls. Reuse the immutable ADR-0199 prepared panel by hash; acquire or
+prepare no new data. Search 2016–2018, freeze the feasible CRPS winner, then
+evaluate unchanged on development, early, middle and late partitions and run
+the evaluator. Later history cannot affect selection.
+
+### Guard and stopping rule
+
+The reference is raw `incumbent_blend_025`; guarded metrics are `below_05` and
+`above_95`; target is 0.05; tolerance is `1e-12`; grouping is index. Promotion
+requires strict development equal-index/actual-DTE-cell CRPS improvement over
+the incumbent and all six guard comparisons feasible. Otherwise retain the
+incumbent. This remains offline reused-history research with no trading or
+deployment authority.
+
+### Exit
+
+Require focused RED/GREEN tests, complete bounded stages under 30 minutes and
+6 GiB, standalone memo, journal and RE-ENTRY updates, immutable manifests, and
+Luna review with zero unresolved Critical/Major findings. Generated artifacts
+remain ignored.
+
+### Outcome (2026-09-30)
+
+Completed. Guard-aware selection rejected broad and fine-tail candidates and
+froze the very-conservative blend, which passed all six development tail
+comparisons and improved development equal-cell CRPS 1.122%. On reused later
+history it improved equal-cell CRPS 0.816%, with positive 60/120-date paired
+intervals and better per-index tail deviations. Promote it only as the offline
+research incumbent; no trading or deployment authority follows. See
+`children/index_options/docs/memos/2026-09-30-guard-aware-cdf-selection.md`.
+
+## ADR-0201 — Partially pooled index/horizon physical transport
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0200. Base worktree:
+`/home/russell/dskit-cdf-option-surface`.
+
+### Scope and estimand
+
+The research objective remains an accurate physical CDF of terminal index
+return at each exact option expiry. Entry spot converts that return CDF into a
+terminal index-price CDF, enabling strike probabilities and expected option
+payoffs. Strategy optimization, execution and trading remain out of scope.
+
+### Decision
+
+Extend the generic option-implied transport with optional training-only
+conditioning by declared index identity and requested calendar horizon. Fit a
+global PIT transport plus one transport per observed condition. Shrink each
+conditional PIT-quantile map toward the global map by
+`n_group / (n_group + prior_strength)`, then monotonically rearrange it.
+Unseen conditions use the global map. Actual realized DTE remains excluded;
+only entry-known requested horizon and one-hot index may condition transport.
+
+Compare three JSON-declared prior strengths (50, 200, 1000) inside the
+unchanged very-conservative tail blend. Controls are the ADR-0200 research
+incumbent, the prior global option transport and the empirical/MLP incumbent.
+Reuse the immutable prepared panel and provenance in a fresh output root.
+
+### Protocol and stopping rule
+
+Search 2016–2018 only. Use the ADR-0200 guard-aware selector: raw prior
+research incumbent reference, below/above 5% metrics, target 0.05 and tolerance
+`1e-12`, followed by equal-cell CRPS rank among feasible candidates. Freeze
+before development/early/middle/late evaluation. Promote only with strict
+development CRPS improvement and every guard passing; later history is
+descriptive and cannot reverse the development decision.
+
+### Exit
+
+Require focused tests for pooled/global identity, group separation, shrinkage,
+unseen fallback and deterministic curves; complete bounded standard stages;
+memo, journal and RE-ENTRY; and Luna reviews with zero unresolved
+Critical/Major findings. No one-off execution script or new acquisition.
+
+### Sequential Phase B amendment (2026-09-30)
+
+Phase A completed its declared search, but the selector refused all three
+index-plus-horizon maps before any later-period evaluation. The best rejected
+candidate (`prior50`) improved development equal-cell CRPS by only 0.104%,
+while worsening the SPY lower-tail and IWM upper-tail deviations relative to
+the frozen research incumbent. This is a negative result; no Phase A candidate
+is promoted and later partitions remain unopened.
+
+Before inspecting any Phase B result, preregister a fresh JSON/run root that
+ablates the conditioning granularity: index-only maps and requested-horizon-only
+maps, each with prior strengths 50, 200 and 1000. All other model, data,
+development years, guard, rank and stopping rules remain unchanged. Phase B is
+sequential exploratory research and cannot retroactively validate Phase A.
+
+### Sequential Phase C amendment (2026-09-30)
+
+Phase B also ended at the declared selector: no index-only or horizon-only map
+passed all six tail guards, so no later partition was opened. Before inspecting
+its candidate scores, preregister a structural response to the repeated failure:
+conditional transport may alter only probabilities strictly between 0.05 and
+0.95; the global transport remains fixed at and beyond those boundaries.
+Monotonicity is enforced inside the fixed global boundary values.
+
+Compare three conditioning granularities (index plus requested horizon,
+index-only, and requested-horizon-only), all with prior strength 50, in a fresh
+JSON/run root. Strength 50 is fixed from Phase A's preregistered CRPS ordering,
+not selected from Phase B. Data, outer conservative blend, development period,
+guard, rank and stopping rules remain unchanged. Promote only if strict
+development CRPS improvement survives every original tail guard.
+
+### Outcome (2026-09-30)
+
+Completed. Phases A and B produced no guard-feasible candidate and therefore
+opened no later partition. Phase C froze the center-only joint index/horizon
+candidate: +0.101% development equal-cell CRPS with all six tail rates exactly
+matching the ADR-0200 reference. On reused 2019–2025 history, its direct gain
+is only +0.0146%; both paired intervals cross zero, QQQ/IWM do not improve, and
+condor-loss MSE is marginally worse. Carry it as the protocol-qualified offline
+research incumbent, but treat it as practically tied and not trading-ready.
+See `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.

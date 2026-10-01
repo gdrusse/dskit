@@ -6,10 +6,266 @@ import pytest
 
 from dskit.pipeline.libs.predictive_cdf import (
     AdaptiveEmpiricalMLPBlendCDF, CalibratedCurve, ChronologicalCDFStudy,
+    CatBoostQuantileCDF,
     ConvexCurve, GridCurve, MixtureCurve,
     HorizonEmpiricalCDF, ScaledEmpiricalCDF, MonotoneCDF, QuantileCDF, MixtureMLPCDF,
-    NGBoostCDF, QuantileForestCDF,
+    NGBoostCDF, OptionImpliedTransportCDF, PCAAugmentedCDF, QuantileForestCDF, SetMixtureCDF,
+    SplineFlowCDF,
+    TailConstrainedQuantileBlendCDF,
 )
+
+
+class _StaticGridEstimator:
+    def __init__(self, shift):
+        self.shift = shift
+
+    def _validate_x(self, x):
+        assert np.asarray(x).ndim == 2
+
+    def fit(self, x, y, cal_x, cal_y):
+        return self
+
+    def curve(self, x):
+        values = np.tile(np.linspace(-2, 2, 21) + self.shift, (len(x), 1))
+        return GridCurve(values, np.linspace(0, 1, 21))
+
+
+def _tail_blend(**changes):
+    params = dict(
+        incumbent_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        incumbent_params={'horizon_index': 0, 'reference_index': 3, 'knots': 21},
+        option_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        option_params={'horizon_index': 0, 'reference_index': 4, 'knots': 21},
+        index_indices=[1, 2], cell_indices=[5, 1, 2], knots=21,
+        left_weights=[0, .5, 1], center_weights=[0, .5, 1],
+        right_weights=[0, .5, 1], tolerance=1e-12)
+    model = TailConstrainedQuantileBlendCDF(**{**params, **changes})
+    model.incumbent = _StaticGridEstimator(0)
+    model.option = _StaticGridEstimator(1)
+    return model
+
+
+def test_tail_constrained_quantile_blend_is_monotone_and_endpoint_exact():
+    p = np.linspace(0, 1, 21)
+    incumbent = np.tile(np.linspace(-2, 2, 21), (2, 1))
+    option = np.tile(np.linspace(-1, 3, 21), (2, 1))
+    np.testing.assert_array_equal(
+        TailConstrainedQuantileBlendCDF._blend(incumbent, option, p, [0, 0, 0]),
+        incumbent)
+    np.testing.assert_array_equal(
+        TailConstrainedQuantileBlendCDF._blend(incumbent, option, p, [1, 1, 1]),
+        option)
+    varied = TailConstrainedQuantileBlendCDF._blend(
+        incumbent, option[:, ::-1], p, [0, 1, 0])
+    assert (np.diff(varied, axis=1) >= 0).all()
+    assert not np.allclose(varied[:, 1], varied[:, 10])
+    strict = ConvexCurve(MixtureCurve([[1]], [[0]], [[1]]),
+                         MixtureCurve([[1]], [[1]], [[1]]), .25)
+    discretized = TailConstrainedQuantileBlendCDF._endpoint_quantiles(strict, p)
+    assert discretized.shape == (1, 21)
+    assert np.isfinite(discretized).all() and (np.diff(discretized) >= 0).all()
+
+
+def test_tail_constrained_blend_uses_calibration_labels_cells_and_tail_guards():
+    x = np.array([[5, 1, 0, 1, 1, 5], [5, 0, 1, 1, 1, 5]] * 10, dtype=float)
+    cal_x = np.array([[5, 1, 0, 1, 1, 5], [5, 1, 0, 1, 1, 5],
+                      [5, 1, 0, 1, 1, 7], [5, 0, 1, 1, 1, 5],
+                      [5, 0, 1, 1, 1, 7], [5, 0, 1, 1, 1, 9]], dtype=float)
+    positive = _tail_blend().fit(x, np.zeros(len(x)), cal_x, np.full(len(cal_x), 1.5))
+    negative = _tail_blend().fit(x, np.zeros(len(x)), cal_x, np.full(len(cal_x), -1.5))
+    assert not np.array_equal(positive.weights_by_index, negative.weights_by_index)
+    np.testing.assert_allclose(positive.calibration_row_weights_by_index[0], [1/4, 1/4, 1/2])
+    for row in positive.calibration_diagnostics + negative.calibration_diagnostics:
+        assert np.less_equal(row['selected_tail_deviation'],
+                             np.asarray(row['incumbent_tail_deviation']) + 1e-12).all()
+    assert (np.diff(positive.curve(cal_x).quantile(np.linspace(0, 1, 21)), axis=1) >= 0).all()
+
+
+@pytest.mark.parametrize('bad', [
+    np.array([[5, 0, 0, 1, 1, 5.]]),
+    np.array([[5, 1, 1, 1, 1, 5.]]),
+    np.array([[5, .5, .5, 1, 1, 5.]]),
+])
+def test_tail_constrained_blend_refuses_non_one_hot_index_rows(bad):
+    with pytest.raises(ValueError, match='one-hot'):
+        _tail_blend()._validate_x(bad)
+
+
+def test_tail_constrained_blend_requires_zero_and_excludes_actual_dte():
+    with pytest.raises(ValueError, match='include zero'):
+        _tail_blend(left_weights=[.25, .5])
+    with pytest.raises(ValueError, match='excluded'):
+        _tail_blend(option_params={'horizon_index': 0, 'reference_index': 5, 'knots': 21})
+
+
+def test_option_implied_transport_uses_proxy_and_falls_back_on_ineligible_rows():
+    x = np.array([
+        [-2., -1., 0., 1., 2., 1., 5., 1., 0.],
+        [99., 99., 99., 99., 99., 0., 5., 1., 0.],
+    ])
+    y = np.linspace(-2, 2, 20)
+    fit_x = np.tile(x[:1], (20, 1))
+    fit_x[:, 6] = np.tile([5., 10.], 10)
+    model = OptionImpliedTransportCDF(
+        proxy_indices=[0, 1, 2, 3, 4], probabilities=[.05, .25, .5, .75, .95],
+        eligible_index=5, condition_indices=[6, 7, 8], reference_index=6,
+        knots=21, tail_width=3., transport_knots=9,
+    ).fit(fit_x, y, fit_x, y)
+    curve = model.curve(x)
+    np.testing.assert_allclose(curve.quantile([.25, .5, .75])[0], [-1., 0., 1.], atol=.35)
+    assert np.isfinite(curve.quantile([.01, .99])).all()
+    assert np.all(np.diff(curve.cdf(np.linspace(-6, 6, 101)), axis=1) >= -1e-12)
+    assert curve._arrays()['active'].ravel().tolist() == [1, 0]
+
+
+def test_option_implied_transport_scales_empirical_tail_probability_mass():
+    probability = np.linspace(.005, .995, 199)
+    y = np.sign(probability-.5)*np.abs(2*probability-1)**2*8
+    fit_x = np.tile(np.array([[-2., -1., 0., 1., 2., 1., 5., 1., 0.]]), (len(y), 1))
+    model = OptionImpliedTransportCDF(
+        proxy_indices=[0, 1, 2, 3, 4], probabilities=[.05, .25, .5, .75, .95],
+        eligible_index=5, condition_indices=[6, 7, 8], reference_index=6,
+        knots=201, tail_width=3., transport_knots=0,
+    ).fit(fit_x, y, fit_x[:20], y[:20])
+    row = fit_x[:1]
+    empirical = model.fallback.curve(row)
+    proxy = model._proxy(row)
+    left_anchor, right_anchor = proxy.quantile([.05, .95])[0]
+    left_mass = empirical.cdf([[left_anchor]])[0, 0]
+    right_mass = 1.-empirical.cdf([[right_anchor]])[0, 0]
+    expected = np.r_[
+        empirical.quantile([.025*left_mass/.05])[0, 0],
+        empirical.quantile([1.-.025*right_mass/.05])[0, 0],
+    ]
+    curve = model.curve(row)
+    np.testing.assert_allclose(curve.quantile([.025, .975])[0], expected)
+    np.testing.assert_allclose(curve.quantile([.05, .95])[0],
+                               [left_anchor, right_anchor])
+    assert np.all(np.diff(curve.quantile(np.linspace(0, 1, 201))[0]) >= 0)
+
+
+def test_option_transport_partially_pools_index_horizon_maps_and_falls_back_global():
+    base = np.array([-2., -1., 0., 1., 2., 1., 5., 1., 0.])
+    x = np.column_stack([np.tile(base, (40, 1)), np.r_[np.zeros(20), np.ones(20)]])
+    x[20:, 6:9] = [5., 0., 1.]
+    y = np.r_[np.linspace(-1.8, -.2, 20), np.linspace(.2, 1.8, 20)]
+    common = dict(
+        proxy_indices=[0, 1, 2, 3, 4], probabilities=[.05, .25, .5, .75, .95],
+        eligible_index=5, condition_indices=[6, 7, 8], reference_index=6,
+        knots=21, tail_width=3., transport_knots=9,
+        transport_condition_indices=[9])
+    separate = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=0).fit(x, y, x[:8], y[:8])
+    pooled = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=1000).fit(x, y, x[:8], y[:8])
+    global_model = OptionImpliedTransportCDF(
+        **{k: v for k, v in common.items() if k != 'transport_condition_indices'}
+    ).fit(x, y, x[:8], y[:8])
+    assert len(separate.group_transports) == 2
+    keys = sorted(separate.group_transports)
+    assert not np.allclose(separate.group_transports[keys[0]],
+                           separate.group_transports[keys[1]])
+    for key in keys:
+        assert np.linalg.norm(pooled.group_transports[key]-pooled.transport_x) < np.linalg.norm(
+            separate.group_transports[key]-separate.transport_x)
+    unseen = x[:1].copy()
+    unseen[:, 9] = 2
+    query = [.05, .5, .95]
+    np.testing.assert_allclose(separate.curve(unseen).quantile(query),
+                               global_model.curve(unseen).quantile(query), rtol=0, atol=0)
+    mixed = separate.curve(x[[0, 20]]).quantile(query)
+    singles = np.vstack([separate.curve(x[[row]]).quantile(query) for row in (0, 20)])
+    np.testing.assert_allclose(mixed, singles, rtol=0, atol=0)
+    center_only = OptionImpliedTransportCDF(
+        **common, transport_prior_strength=0, transport_local_bounds=[.05, .95]
+    ).fit(x, y, x[:8], y[:8])
+    central = center_only.curve(x[:1]).quantile(query)
+    global_curve = global_model.curve(x[:1]).quantile(query)
+    np.testing.assert_allclose(central[:, [0, 2]], global_curve[:, [0, 2]], rtol=0, atol=1e-12)
+    assert not np.allclose(central[:, 1], global_curve[:, 1])
+    assert (np.diff(center_only.curve(x[:1]).quantile(np.linspace(0, 1, 101))) >= 0).all()
+
+
+def test_option_transport_conditioning_contract_refuses_invalid_settings():
+    common = dict(
+        proxy_indices=[0, 1], probabilities=[.25, .75], eligible_index=2,
+        condition_indices=[3], reference_index=4, knots=21)
+    with pytest.raises(ValueError, match='transport'):
+        OptionImpliedTransportCDF(**common, transport_prior_strength=10)
+    with pytest.raises(ValueError, match='transport'):
+        OptionImpliedTransportCDF(
+            **common, transport_condition_indices=[3, 3], transport_prior_strength=10)
+    for bounds in ([.95, .05], [0, .95], [.05, 1], [.05], [False, .95]):
+        with pytest.raises(ValueError, match='transport'):
+            OptionImpliedTransportCDF(
+                **common, transport_condition_indices=[3], transport_local_bounds=bounds)
+
+
+def test_pca_augmentation_fits_components_on_training_rows_only():
+    rng = np.random.default_rng(82)
+    x = rng.normal(size=(40, 4)); y = x[:, 0]+rng.normal(size=40)
+    model = PCAAugmentedCDF(
+        estimator_class='dskit.pipeline.libs.predictive_cdf:QuantileCDF',
+        estimator_params={'probabilities': [.1, .5, .9], 'trees': 5, 'leaves': 3,
+                          'min_child': 2, 'threads': 1, 'tail_width': 2.},
+        pca_indices=[0, 1, 2], components=2,
+    ).fit(x, y, x[:8]+1000, y[:8])
+    np.testing.assert_allclose(model.scaler.mean_, x[:, :3].mean(axis=0))
+    assert model.pca.components_.shape == (2, 3)
+    assert np.isfinite(model.curve(x[:3]).quantile([.1, .5, .9])).all()
+
+
+def test_set_mixture_is_permutation_invariant_and_mask_safe():
+    rng = np.random.default_rng(42)
+    # Three contracts x (moneyness, IV, spread), then three masks and two context fields.
+    contracts = rng.normal(size=(32, 3, 3))
+    masks = np.ones((32, 3))
+    context = rng.normal(size=(32, 2))
+    x = np.column_stack([contracts.reshape(32, -1), masks, context])
+    x[0, 9:12] = 0
+    y = rng.normal(size=32)
+    common = dict(nodes=3, node_features=3, tensor_indices=list(range(9)),
+                  mask_indices=[9, 10, 11], context_indices=[12, 13],
+                  components=2, hidden=8, epochs=2, batch_size=16,
+                  seeds=[7], device='cpu', deterministic=True)
+    model = SetMixtureCDF(pooling='deepsets', **common).fit(x, y, x[:8], y[:8])
+    order = [2, 0, 1]
+    permuted = x.copy()
+    permuted[:, :9] = contracts[:, order].reshape(32, -1)
+    permuted[:, 9:12] = x[:, 9:12][:, order]
+    np.testing.assert_allclose(model.curve(x[:6]).cdf([-.5, 0., .5]),
+                               model.curve(permuted[:6]).cdf([-.5, 0., .5]), atol=1e-7)
+    padded = x.copy()
+    padded[:, 6:9] = 1e6
+    padded[:, 11] = 0
+    baseline = x.copy()
+    baseline[:, 11] = 0
+    np.testing.assert_allclose(model.curve(padded[:6]).cdf(0),
+                               model.curve(baseline[:6]).cdf(0), atol=1e-7)
+    assert np.isfinite(model.curve(x[:1]).cdf(0)).all()
+
+
+def test_spline_flow_returns_ordered_finite_distribution():
+    pytest.importorskip('nflows')
+    rng = np.random.default_rng(9)
+    x = rng.normal(size=(48, 3)); y = .4*x[:, 0] + rng.normal(size=48)
+    model = SplineFlowCDF(hidden=8, bins=4, epochs=2, batch_size=16,
+                          probabilities=[.01, .1, .5, .9, .99], seed=3,
+                          device='cpu', deterministic=True).fit(x, y, x[:8], y[:8])
+    curve = model.curve(x[:5])
+    q = curve.quantile([.05, .5, .95])
+    assert np.isfinite(q).all() and (np.diff(q, axis=1) >= 0).all()
+
+
+def test_catboost_native_multiquantile_returns_ordered_curve():
+    pytest.importorskip('catboost')
+    rng = np.random.default_rng(10)
+    x = rng.normal(size=(60, 3)); y = x[:, 0] + rng.normal(size=60)
+    model = CatBoostQuantileCDF(probabilities=[.05, .5, .95], iterations=8,
+                                depth=3, threads=1, task_type='CPU').fit(
+                                    x, y, x[:8], y[:8])
+    q = model.curve(x[:4]).quantile([.05, .5, .95])
+    assert np.isfinite(q).all() and (np.diff(q, axis=1) >= 0).all()
 
 
 def test_mixture_cdf_hand_values_and_extremes():
@@ -539,6 +795,9 @@ def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs
     import dskit.pipeline.libs.predictive_cdf as pack
     assert hasattr(pack, 'CDFHyperparameterStudy'), 'standard JSON HPO orchestration is missing'
     config, frame = _hpo_fixture(tmp_path)
+    config['experiment']['selection_guard'] = {
+        'reference': 'reference', 'variant': 'raw',
+        'metrics': ['below_05', 'above_95'], 'target': .05, 'tolerance': 1.}
     study = pack.CDFHyperparameterStudy(config)
     provenance = {'sources': {'test': 'pinned'}, 'readers': {'fixture': 1}}
     with pytest.raises((FileNotFoundError, ValueError)):
@@ -553,6 +812,8 @@ def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs
     assert selected['models']['candidate']['params']['seeds'] == [11, 29]
     assert selected['screen_spec_hash'] != selected['final_spec_hash']
     assert selected['variants']['reference'] == 'raw'
+    assert selected['selection_guard'] == config['experiment']['selection_guard']
+    assert selected['selection_guard_evidence']['separate'][0]['feasible']
     study.run(frame, stage='evaluate', partition='development', provenance=provenance)
     study.run(frame, stage='evaluate', partition='later', provenance=provenance)
     report = study.run(frame, stage='report', provenance=provenance)
@@ -566,6 +827,49 @@ def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs
     search.iloc[:-1].to_parquet(scores_path, index=False)
     with pytest.raises(ValueError, match='hash|artifact'):
         study.run(frame, stage='select', provenance=provenance)
+
+
+def test_hpo_selection_guard_filters_by_every_group_and_persists_evidence(tmp_path):
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    config, _ = _hpo_fixture(tmp_path)
+    config['experiment']['selection_guard'] = {
+        'reference': 'reference', 'variant': 'raw',
+        'metrics': ['below_05', 'above_95'], 'target': .05, 'tolerance': 1e-12}
+    study = pack.CDFHyperparameterStudy(config)
+    rows = []
+    values = {
+        ('reference', 'raw'): {'A': (.08, .07), 'B': (.02, .09)},
+        ('candidate', 'raw'): {'A': (.07, .06), 'B': (.03, .08)},
+        ('candidate', 'calibrated'): {'A': (.09, .06), 'B': (.03, .08)},
+    }
+    for (model, variant), groups in values.items():
+        for group, (below, above) in groups.items():
+            rows.append({'unit': group, 'model': model, 'variant': variant,
+                         'below_05': below, 'above_95': above})
+    eligible, evidence = study._guard(
+        pd.DataFrame(rows), [('candidate', 'raw'), ('candidate', 'calibrated')])
+    assert eligible == [('candidate', 'raw')]
+    assert evidence[0]['feasible'] and not evidence[1]['feasible']
+    assert len(evidence[0]['comparisons']) == 4
+    failed = [row for row in evidence[1]['comparisons'] if not row['passed']]
+    assert failed == [{
+        'group': 'A', 'metric': 'below_05', 'candidate_mean': .09,
+        'reference_mean': .08, 'candidate_deviation': pytest.approx(.04),
+        'reference_deviation': pytest.approx(.03), 'passed': False}]
+    with pytest.raises(ValueError, match='no candidate'):
+        study._guard(pd.DataFrame(rows), [('candidate', 'calibrated')])
+
+
+def test_hpo_selection_guard_refuses_invalid_contract(tmp_path):
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    config, _ = _hpo_fixture(tmp_path)
+    config['experiment']['selection_guard'] = {
+        'reference': 'missing', 'variant': 'raw', 'metrics': ['below_05'],
+        'target': .05, 'tolerance': 0}
+    with pytest.raises(ValueError, match='selection guard'):
+        pack.CDFHyperparameterStudy(config)
 
 
 @pytest.mark.parametrize('mutation', ['head_nan', 'wrong_symbol', 'missing_cell', 'candidate_label', 'seed', 'resolution', 'extra_key'])

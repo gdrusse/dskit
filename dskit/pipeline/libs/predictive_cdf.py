@@ -15,9 +15,11 @@ import time
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve", "CDFEstimator",
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
-           "QuantileCDF", "MixtureMLPCDF", "StudentMixtureCurve",
+           "QuantileCDF", "CatBoostQuantileCDF", "OptionImpliedTransportCDF",
+           "TailConstrainedQuantileBlendCDF",
+           "SplineFlowCDF", "SetMixtureCDF", "MixtureMLPCDF", "StudentMixtureCurve",
            "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
-           "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF",
+           "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
 
 
@@ -718,6 +720,479 @@ class QuantileCDF(MonotoneCDF):
         return GridCurve(q, [0., *self.probabilities, 1.])
 
 
+class CatBoostQuantileCDF(CDFEstimator):
+    """One native CatBoost MultiQuantile model with rearranged finite tails."""
+
+    def __init__(self, probabilities, iterations=200, depth=6, learning_rate=.05,
+                 l2_leaf_reg=5., threads=2, task_type="CPU", tail_width=4., seed=829,
+                 feature_indices=None):
+        import math
+        if (len(probabilities) < 2 or probabilities[0] <= 0 or probabilities[-1] >= 1
+                or any(a >= b for a, b in zip(probabilities, probabilities[1:]))
+                or any(type(v) is not int or v < 1 for v in (iterations, depth, threads))
+                or task_type not in ("CPU", "GPU") or not math.isfinite(learning_rate)
+                or not math.isfinite(l2_leaf_reg) or not math.isfinite(tail_width)
+                or min(learning_rate, tail_width) <= 0 or l2_leaf_reg < 0
+                or type(seed) is not int or seed < 0
+                or (feature_indices is not None and
+                    (not feature_indices or len(set(feature_indices)) != len(feature_indices)
+                     or any(type(v) is not int or v < 0 for v in feature_indices)))):
+            raise ValueError("invalid CatBoost multi-quantile parameters")
+        self.probabilities = tuple(float(p) for p in probabilities)
+        self.tail_width = float(tail_width)
+        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
+        self.settings = dict(iterations=iterations, depth=depth, learning_rate=learning_rate,
+                             l2_leaf_reg=l2_leaf_reg, thread_count=threads,
+                             task_type=task_type, random_seed=seed, verbose=False,
+                             allow_writing_files=False)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        indices = getattr(self, "feature_indices", None)
+        if x.ndim != 2 or (indices is not None and max(indices) >= x.shape[1]):
+            raise ValueError("CatBoost feature indices outside input")
+
+    def _features(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        return x if getattr(self, "feature_indices", None) is None else x[:, self.feature_indices]
+
+    def fit(self, x, y, cal_x, cal_y):
+        from catboost import CatBoostRegressor
+        alpha = ",".join(format(p, ".12g") for p in self.probabilities)
+        self.model = CatBoostRegressor(loss_function=f"MultiQuantile:alpha={alpha}",
+                                       **self.settings)
+        self.model.fit(self._features(x), y)
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        q = np.asarray(self.model.predict(self._features(x)), dtype=float)
+        if q.ndim == 1:
+            q = q[:, None]
+        if q.shape != (len(x), len(self.probabilities)) or not np.isfinite(q).all():
+            raise ValueError("CatBoost returned invalid multi-quantiles")
+        q = np.maximum.accumulate(q, axis=1)
+        values = np.column_stack([q[:, 0]-self.tail_width, q, q[:, -1]+self.tail_width])
+        return GridCurve(values, [0., *self.probabilities, 1.])
+
+
+class _ActiveGridCurve(GridCurve):
+    """Grid curve retaining whether each row used its option-implied proxy."""
+
+    def __init__(self, values, probabilities, active):
+        import numpy as np
+        super().__init__(values, probabilities)
+        self.active = np.asarray(active, dtype="uint8").reshape(-1, 1)
+        if len(self.active) != len(self.values):
+            raise ValueError("active proxy mask does not match curve rows")
+
+    def _arrays(self):
+        return {**super()._arrays(), "active": self.active}
+
+
+class OptionImpliedTransportCDF(CDFEstimator):
+    """Calibrate row-wise risk-neutral proxy quantiles with empirical fallback.
+
+    The proxy columns are standardized terminal-return quantiles prepared from
+    the entry snapshot. A shared training-only PIT map transports active rows;
+    inactive rows use the unchanged conditioned empirical distribution.
+    """
+
+    def __init__(self, proxy_indices, probabilities, eligible_index,
+                 condition_indices, reference_index, knots=401, tail_width=4.,
+                 transport_knots=21, transport_condition_indices=None,
+                 transport_prior_strength=0., transport_local_bounds=None):
+        import math
+        indices = [*proxy_indices, eligible_index, *condition_indices, reference_index]
+        transport_indices = ([] if transport_condition_indices is None
+                             else list(transport_condition_indices))
+        local_bounds = ([] if transport_local_bounds is None
+                        else list(transport_local_bounds))
+        if (len(proxy_indices) != len(probabilities) or len(probabilities) < 2
+                or any(type(v) is not int or v < 0 for v in [*indices, *transport_indices])
+                or len(set(proxy_indices)) != len(proxy_indices)
+                or (transport_condition_indices is not None
+                    and (not transport_indices
+                         or len(set(transport_indices)) != len(transport_indices)))
+                or probabilities[0] <= 0 or probabilities[-1] >= 1
+                or any(a >= b for a, b in zip(probabilities, probabilities[1:]))
+                or type(knots) is not int or knots < 5
+                or type(transport_knots) is not int
+                or (transport_knots != 0 and transport_knots < 3)
+                or not math.isfinite(tail_width) or tail_width <= 0
+                or isinstance(transport_prior_strength, bool)
+                or not math.isfinite(transport_prior_strength)
+                or transport_prior_strength < 0
+                or (not transport_indices and transport_prior_strength != 0)
+                or (transport_local_bounds is not None
+                    and (not transport_indices or len(local_bounds) != 2
+                         or any(isinstance(v, bool) or not math.isfinite(v)
+                                for v in local_bounds)
+                         or not 0 < local_bounds[0] < local_bounds[1] < 1))):
+            raise ValueError("invalid option-implied transport parameters")
+        self.proxy_indices = tuple(proxy_indices)
+        self.probabilities = tuple(float(p) for p in probabilities)
+        self.eligible_index = eligible_index
+        self.tail_width, self.transport_knots = float(tail_width), transport_knots
+        self.transport_condition_indices = tuple(transport_indices)
+        self.transport_prior_strength = float(transport_prior_strength)
+        self.transport_local_bounds = (None if not local_bounds
+                                       else tuple(float(v) for v in local_bounds))
+        self.output_knots = knots
+        if not condition_indices:
+            raise ValueError("option-implied fallback needs conditioning fields")
+        self.fallback = HorizonEmpiricalCDF(condition_indices[0], reference_index, knots,
+                                            condition_indices=condition_indices)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        checked = (*self.proxy_indices, self.eligible_index,
+                   *self.transport_condition_indices)
+        if x.ndim != 2 or max(checked) >= x.shape[1]:
+            raise ValueError("proxy indices outside input")
+        active = x[:, self.eligible_index]
+        if not np.isin(active, [0, 1]).all():
+            raise ValueError("proxy eligibility must be binary")
+        q = x[:, self.proxy_indices]
+        if (not np.isfinite(q[active == 1]).all()
+                or (np.diff(q[active == 1], axis=1) < 0).any()):
+            raise ValueError("active proxy quantiles must be finite and ordered")
+        if (self.transport_condition_indices
+                and not np.isfinite(x[:, self.transport_condition_indices]).all()):
+            raise ValueError("transport conditions must be finite")
+        self.fallback._validate_x(x)
+
+    def _proxy(self, x):
+        import numpy as np
+        q = np.asarray(x, dtype=float)[:, self.proxy_indices]
+        q = np.maximum.accumulate(q, axis=1)
+        values = np.column_stack([q[:, 0]-self.tail_width, q, q[:, -1]+self.tail_width])
+        return GridCurve(values, [0., *self.probabilities, 1.])
+
+    def fit(self, x, y, cal_x, cal_y):
+        import numpy as np
+        self._validate_x(x)
+        self.fallback.fit(x, y, cal_x, cal_y)
+        active = np.asarray(x)[:, self.eligible_index] == 1
+        if not active.any():
+            raise ValueError("no eligible option-implied training rows")
+        pit = self._proxy(np.asarray(x)[active]).cdf(np.asarray(y)[active, None])[:, 0]
+        if self.transport_knots:
+            p = np.linspace(0, 1, self.transport_knots)
+            knots = np.quantile(pit, p)
+            self.transport_x = np.r_[0., np.clip(knots[1:-1], 1e-9, 1-1e-9), 1.]
+            self.transport_p = p
+        else:
+            self.transport_x = self.transport_p = np.array([0., 1.])
+        self.group_transports = {}
+        if self.transport_condition_indices:
+            conditions = np.asarray(x)[active][:, self.transport_condition_indices]
+            for condition in np.unique(conditions, axis=0):
+                mask = (conditions == condition).all(axis=1)
+                local = np.quantile(pit[mask], self.transport_p)
+                local = np.r_[0., np.clip(local[1:-1], 1e-9, 1-1e-9), 1.]
+                weight = mask.sum()/(mask.sum()+self.transport_prior_strength)
+                shrunk = weight*local + (1-weight)*self.transport_x
+                self.group_transports[tuple(condition.tolist())] = np.maximum.accumulate(shrunk)
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        self._validate_x(x)
+        x = np.asarray(x)
+        active = x[:, self.eligible_index] == 1
+        p = np.linspace(0, 1, self.output_knots)
+        fallback = self.fallback.curve(x).quantile(p)
+        values = fallback.copy()
+        if active.any():
+            global_mapped = np.interp(p, self.transport_p, self.transport_x)
+            mapped = np.tile(global_mapped, (active.sum(), 1))
+            if self.transport_condition_indices:
+                conditions = x[active][:, self.transport_condition_indices]
+                for row, condition in enumerate(conditions):
+                    transport = self.group_transports.get(tuple(condition.tolist()))
+                    if transport is not None:
+                        local = np.interp(p, self.transport_p, transport)
+                        if self.transport_local_bounds is not None:
+                            lo, hi = self.transport_local_bounds
+                            middle = (p > lo) & (p < hi)
+                            lower = np.interp(lo, self.transport_p, self.transport_x)
+                            upper = np.interp(hi, self.transport_p, self.transport_x)
+                            local[~middle] = global_mapped[~middle]
+                            local[middle] = np.clip(local[middle], lower, upper)
+                            local = np.maximum.accumulate(local)
+                        mapped[row] = local
+            mapped = np.clip(mapped, 0., 1.)
+            proxy = self._proxy(x[active])
+            lo, hi = self.probabilities[0], self.probabilities[-1]
+            empirical = self.fallback.curve(x[active])
+            left_anchor = proxy.quantile([lo])[:, 0]
+            right_anchor = proxy.quantile([hi])[:, 0]
+            empirical_at_left = empirical.cdf(left_anchor[:, None])[:, 0]
+            empirical_at_right = empirical.cdf(right_anchor[:, None])[:, 0]
+            raw_probability = mapped.copy()
+            left = raw_probability < lo
+            right = raw_probability > hi
+            if left.any():
+                raw_probability[left] *= np.repeat(
+                    empirical_at_left[:, None]/lo, len(p), axis=1)[left]
+            if right.any():
+                raw_probability[right] = 1.-(1.-raw_probability[right])*np.repeat(
+                    (1.-empirical_at_right)[:, None]/(1.-hi), len(p), axis=1)[right]
+            raw_probability = np.clip(raw_probability, 0., 1.)
+            spliced = empirical.quantile(raw_probability)
+            middle = (mapped >= lo) & (mapped <= hi)
+            proxy_values = proxy.quantile(mapped)
+            spliced[middle] = proxy_values[middle]
+            values[active] = np.maximum.accumulate(spliced, axis=1)
+        return _ActiveGridCurve(values, p, active)
+
+
+class TailConstrainedQuantileBlendCDF(CDFEstimator):
+    """Calibration-only, per-index quantile blend with incumbent tail guards."""
+
+    consumes_calibration_labels = True
+    anchors = (0.05, 0.50, 0.95)
+
+    def __init__(self, incumbent_class, incumbent_params, option_class, option_params,
+                 index_indices, cell_indices, knots, left_weights, center_weights,
+                 right_weights, tolerance=1e-12):
+        import math
+
+        classes = (incumbent_class, option_class)
+        mappings = (incumbent_params, option_params)
+        grids = (left_weights, center_weights, right_weights)
+        if (any(not isinstance(value, str) or value.count(":") != 1 for value in classes)
+                or any(not isinstance(value, dict) for value in mappings)
+                or not isinstance(index_indices, (list, tuple)) or not index_indices
+                or not isinstance(cell_indices, (list, tuple)) or not cell_indices
+                or any(type(v) is not int or v < 0 for v in [*index_indices, *cell_indices])
+                or len(set(index_indices)) != len(index_indices)
+                or len(set(cell_indices)) != len(cell_indices)
+                or not set(index_indices).issubset(cell_indices)
+                or type(knots) is not int or knots < 3
+                or isinstance(tolerance, bool) or not math.isfinite(tolerance)
+                or tolerance < 0):
+            raise ValueError("invalid tail-constrained blend parameters")
+        normalized = []
+        for grid in grids:
+            if (not isinstance(grid, (list, tuple)) or not grid
+                    or any(isinstance(v, bool) or not math.isfinite(v)
+                           or not 0 <= v <= 1 for v in grid)):
+                raise ValueError("blend weight grids must be finite and bounded")
+            values = tuple(float(v) for v in grid)
+            if len(set(values)) != len(values) or tuple(sorted(values)) != values or 0. not in values:
+                raise ValueError("blend weight grids must be sorted, unique and include zero")
+            normalized.append(values)
+
+        metadata = set(cell_indices) - set(index_indices)
+        if not metadata:
+            raise ValueError("actual-DTE cell metadata is required")
+
+        def declared_indices(value):
+            found = set()
+            if isinstance(value, dict):
+                for name, child in value.items():
+                    if name.endswith("_index") and type(child) is int:
+                        found.add(child)
+                    elif name.endswith("_indices") and isinstance(child, (list, tuple)):
+                        found.update(v for v in child if type(v) is int)
+                    found.update(declared_indices(child))
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    found.update(declared_indices(child))
+            return found
+
+        if any(metadata & declared_indices(params) for params in mappings):
+            raise ValueError("cell metadata must be excluded from endpoint predictors")
+        self.incumbent_class, self.option_class = classes
+        self.incumbent_params, self.option_params = (dict(v) for v in mappings)
+        self.index_indices, self.cell_indices = tuple(index_indices), tuple(cell_indices)
+        self.knots, self.weight_grids, self.tolerance = knots, tuple(normalized), float(tolerance)
+        self.incumbent = self._endpoint(incumbent_class, self.incumbent_params)
+        self.option = self._endpoint(option_class, self.option_params)
+
+    @staticmethod
+    def _endpoint(path, params):
+        module, name = path.split(":", 1)
+        estimator = getattr(importlib.import_module(module), name)
+        if getattr(estimator, "consumes_calibration_labels", False):
+            raise ValueError("nested endpoint cannot consume calibration labels")
+        return estimator(**params)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or max((*self.index_indices, *self.cell_indices)) >= x.shape[1]:
+            raise ValueError("index or cell indices outside input")
+        cells = x[:, self.cell_indices]
+        groups = x[:, self.index_indices]
+        if not np.isfinite(cells).all():
+            raise ValueError("reporting cell metadata must be finite")
+        if (not np.isin(groups, [0, 1]).all() or not (groups.sum(1) == 1).all()):
+            raise ValueError("index identities must be finite binary one-hot")
+        self.incumbent._validate_x(x)
+        self.option._validate_x(x)
+
+    @staticmethod
+    def _blend(incumbent, option, probabilities, weights):
+        import numpy as np
+        if all(weight == 0 for weight in weights):
+            return np.asarray(incumbent).copy()
+        if all(weight == 1 for weight in weights):
+            return np.asarray(option).copy()
+        curve_weight = np.interp(probabilities, TailConstrainedQuantileBlendCDF.anchors,
+                                 weights, left=weights[0], right=weights[-1])
+        return np.maximum.accumulate(
+            incumbent + curve_weight[None, :] * (option - incumbent), axis=1)
+
+    @staticmethod
+    def _endpoint_quantiles(curve, probabilities):
+        """Discretize strict-interior quantiles and extrapolate finite endpoints."""
+        import numpy as np
+        middle = curve.quantile(probabilities[1:-1])
+        left = middle[:, :1] - (middle[:, 1:2] - middle[:, :1])
+        right = middle[:, -1:] + (middle[:, -1:] - middle[:, -2:-1])
+        return np.maximum.accumulate(np.column_stack([left, middle, right]), axis=1)
+
+    @staticmethod
+    def _row_scores(values, probabilities, outcomes):
+        import numpy as np
+        residual = outcomes[:, None] - values
+        pinball = (probabilities[None, :] - (residual < 0)) * residual
+        return 2 * np.trapezoid(pinball, probabilities, axis=1)
+
+    @staticmethod
+    def _tail_deviation(values, probabilities, outcomes):
+        import numpy as np
+        pit = GridCurve(values, probabilities).cdf(outcomes[:, None])[:, 0]
+        return (abs(float(np.mean(pit < .05)) - .05),
+                abs(float(np.mean(pit > .95)) - .05))
+
+    def fit(self, x, y, cal_x, cal_y):
+        import itertools
+        import numpy as np
+
+        self._validate_x(x); self._validate_x(cal_x)
+        y, cal_y = np.asarray(y, dtype=float), np.asarray(cal_y, dtype=float)
+        if (y.shape != (len(x),) or cal_y.shape != (len(cal_x),)
+                or not len(cal_y) or not np.isfinite(y).all() or not np.isfinite(cal_y).all()):
+            raise ValueError("invalid training or calibration labels")
+        self.incumbent.fit(x, y, cal_x, cal_y)
+        self.option.fit(x, y, cal_x, cal_y)
+        p = np.linspace(0., 1., self.knots)
+        incumbent = self._endpoint_quantiles(self.incumbent.curve(cal_x), p)
+        option = self._endpoint_quantiles(self.option.curve(cal_x), p)
+        groups = np.asarray(cal_x)[:, self.index_indices].argmax(1)
+        cells = np.asarray(cal_x)[:, self.cell_indices]
+        self.weights_by_index = np.zeros((len(self.index_indices), 3))
+        self.calibration_diagnostics = []
+        self.calibration_row_weights_by_index = []
+        for group in range(len(self.index_indices)):
+            mask = groups == group
+            if not mask.any():
+                raise ValueError("calibration fold missing an index")
+            _, cell = np.unique(cells[mask], axis=0, return_inverse=True)
+            counts = np.bincount(cell)
+            row_weight = 1. / (len(counts) * counts[cell])
+            self.calibration_row_weights_by_index.append(row_weight.copy())
+            guard = self._tail_deviation(incumbent[mask], p, cal_y[mask])
+            feasible = []
+            for weights in itertools.product(*self.weight_grids):
+                values = self._blend(incumbent[mask], option[mask], p, weights)
+                tails = self._tail_deviation(values, p, cal_y[mask])
+                if all(tails[i] <= guard[i] + self.tolerance for i in range(2)):
+                    score = float(np.dot(row_weight,
+                                         self._row_scores(values, p, cal_y[mask])))
+                    feasible.append((score, sum(weights), tuple(weights), tails))
+            if not feasible:
+                raise ValueError("tail-constrained blend has no feasible candidate")
+            score, _, weights, tails = min(feasible)
+            self.weights_by_index[group] = weights
+            self.calibration_diagnostics.append({
+                "index_position": group, "weights": list(weights), "objective": score,
+                "incumbent_tail_deviation": list(guard), "selected_tail_deviation": list(tails),
+                "calibration_n": int(mask.sum()), "calibration_cells": int(len(counts)),
+                "feasible_candidates": int(len(feasible)),
+            })
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        self._validate_x(x)
+        p = np.linspace(0., 1., self.knots)
+        incumbent = self._endpoint_quantiles(self.incumbent.curve(x), p)
+        option = self._endpoint_quantiles(self.option.curve(x), p)
+        groups = np.asarray(x)[:, self.index_indices].argmax(1)
+        values = np.empty_like(incumbent)
+        for group, weights in enumerate(self.weights_by_index):
+            mask = groups == group
+            values[mask] = self._blend(incumbent[mask], option[mask], p, weights)
+        return GridCurve(values, p)
+
+    def _research_state(self):
+        """Return JSON-safe fitted calibration state for fold-level evidence."""
+        return {"anchors": list(self.anchors),
+                "weights_by_index": self.weights_by_index.tolist(),
+                "calibration_diagnostics": self.calibration_diagnostics}
+
+
+class PCAAugmentedCDF(CDFEstimator):
+    """Append train-only principal components before fitting a declared estimator."""
+
+    def __init__(self, estimator_class, estimator_params, pca_indices, components):
+        if (not isinstance(estimator_class, str) or ":" not in estimator_class
+                or not isinstance(estimator_params, dict)
+                or not isinstance(pca_indices, (list, tuple)) or not pca_indices
+                or any(type(value) is not int or value < 0 for value in pca_indices)
+                or len(set(pca_indices)) != len(pca_indices)
+                or type(components) is not int or not 0 < components <= len(pca_indices)
+                or estimator_class.endswith(":PCAAugmentedCDF")):
+            raise ValueError("invalid PCA augmentation parameters")
+        self.estimator_class = estimator_class
+        self.estimator_params = dict(estimator_params)
+        self.pca_indices = tuple(pca_indices)
+        self.components = components
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if (x.ndim != 2 or max(self.pca_indices) >= x.shape[1]
+                or np.isinf(x[:, self.pca_indices]).any()):
+            raise ValueError("PCA feature indices outside finite input")
+
+    def _augment(self, x):
+        import numpy as np
+        x = np.asarray(x, dtype=float)
+        scores = self.pca.transform(self.scaler.transform(x[:, self.pca_indices]))
+        return np.column_stack([x, scores])
+
+    def fit(self, x, y, cal_x, cal_y):
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+        self._validate_x(x); self._validate_x(cal_x)
+        self.scaler = StandardScaler().fit(x[:, self.pca_indices])
+        self.pca = PCA(n_components=self.components, svd_solver="full").fit(
+            self.scaler.transform(x[:, self.pca_indices]))
+        module, name = self.estimator_class.split(":", 1)
+        self.estimator = getattr(importlib.import_module(module), name)(**self.estimator_params)
+        self.estimator.fit(self._augment(x), y, self._augment(cal_x), cal_y)
+        return self
+
+    def curve(self, x):
+        self._validate_x(x)
+        return self.estimator.curve(self._augment(x))
+
+    def _equivalence_state(self):
+        state = self.estimator._equivalence_state()
+        return {**state, "pca_components": self.pca.components_.tolist(),
+                "pca_mean": self.scaler.mean_.tolist(),
+                "pca_scale": self.scaler.scale_.tolist()}
+
+
 class QuantileForestCDF(CDFEstimator):
     """Finite-grid conditional CDF from a mean-split quantile forest.
 
@@ -738,7 +1213,7 @@ class QuantileForestCDF(CDFEstimator):
     """
 
     def __init__(self, knots, trees=100, min_child=20, max_features=.5,
-                 max_samples_leaf=None, threads=2, seed=829):
+                 max_samples_leaf=None, threads=2, seed=829, feature_indices=None):
         import math
         values = (knots, trees, min_child, threads, seed)
         if (any(type(value) is not int for value in values) or knots < 3
@@ -746,11 +1221,27 @@ class QuantileForestCDF(CDFEstimator):
                 or isinstance(max_features, bool) or not math.isfinite(max_features)
                 or not 0 < max_features <= 1
                 or (max_samples_leaf is not None
-                    and (type(max_samples_leaf) is not int or max_samples_leaf < 1))):
+                    and (type(max_samples_leaf) is not int or max_samples_leaf < 1))
+                or (feature_indices is not None and
+                    (not feature_indices or len(set(feature_indices)) != len(feature_indices)
+                     or any(type(v) is not int or v < 0 for v in feature_indices)))):
             raise ValueError("invalid quantile-forest parameters")
         self.knots, self.trees, self.min_child = knots, trees, min_child
         self.max_features, self.threads, self.seed = max_features, threads, seed
         self.max_samples_leaf = max_samples_leaf
+        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if (x.ndim != 2 or (self.feature_indices is not None
+                            and max(self.feature_indices) >= x.shape[1])):
+            raise ValueError("quantile-forest feature indices outside input")
+
+    def _features(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        return x if self.feature_indices is None else x[:, self.feature_indices]
 
     def fit(self, x, y, cal_x, cal_y):
         """Fit one quantile-regression forest on training rows only."""
@@ -760,14 +1251,14 @@ class QuantileForestCDF(CDFEstimator):
             max_samples_leaf=self.max_samples_leaf,
             max_features=self.max_features, n_jobs=self.threads,
             random_state=self.seed)
-        self.model.fit(x, y)
+        self.model.fit(self._features(x), y)
         return self
 
     def curve(self, x):
         """Return the declared finite-support forest discretization."""
         import numpy as np
         p = np.linspace(0, 1, self.knots)
-        values = np.asarray(self.model.predict(x, quantiles=p.tolist()), dtype=float)
+        values = np.asarray(self.model.predict(self._features(x), quantiles=p.tolist()), dtype=float)
         if values.ndim == 1:
             values = values[:, None]
         values = np.maximum.accumulate(values, axis=1)
@@ -1136,6 +1627,250 @@ class StudentMixtureMLPCDF(MixtureMLPCDF):
 
     def _curve(self, weights, means, scales):
         return StudentMixtureCurve(weights, means, scales, self.degrees)
+
+
+class SetMixtureCDF(MixtureMLPCDF):
+    """Permutation-invariant raw-contract encoder with a mixture-density head."""
+
+    def __init__(self, nodes, node_features, tensor_indices, mask_indices,
+                 context_indices, pooling="deepsets", attention_heads=2, **settings):
+        positions = [*tensor_indices, *mask_indices, *context_indices]
+        if (type(nodes) is not int or type(node_features) is not int
+                or min(nodes, node_features) < 1
+                or len(tensor_indices) != nodes*node_features
+                or len(mask_indices) != nodes or not context_indices
+                or any(type(v) is not int or v < 0 for v in positions)
+                or len(set(positions)) != len(positions)
+                or pooling not in ("deepsets", "attention")
+                or type(attention_heads) is not int or attention_heads < 1):
+            raise ValueError("invalid set encoder contract")
+        self.nodes, self.node_features = nodes, node_features
+        self.tensor_indices = tuple(tensor_indices)
+        self.mask_indices = tuple(mask_indices)
+        self.context_indices = tuple(context_indices)
+        self.pooling, self.attention_heads = pooling, attention_heads
+        settings.pop("feature_indices", None)
+        settings.pop("head_features", None)
+        super().__init__(feature_indices=None, head_features=None, **settings)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or max((*self.tensor_indices, *self.mask_indices,
+                               *self.context_indices)) >= x.shape[1]:
+            raise ValueError("set encoder indices outside input")
+        masks = x[:, self.mask_indices]
+        nodes = x[:, self.tensor_indices].reshape(len(x), self.nodes, self.node_features)
+        if (not np.isin(masks, [0, 1]).all()
+                or np.isinf(x[:, self.context_indices]).any()
+                or not np.isfinite(nodes[masks == 1]).all()):
+            raise ValueError("invalid set mask, active node or context")
+
+    def _arrays_for_torch(self, x, fit=False):
+        import numpy as np
+        from sklearn.preprocessing import StandardScaler
+        x = np.asarray(x, dtype=float)
+        masks = x[:, self.mask_indices].astype(float)
+        nodes = x[:, self.tensor_indices].reshape(len(x), self.nodes, self.node_features)
+        if fit:
+            self.node_scaler = StandardScaler().fit(nodes[masks == 1])
+            self.context_scaler = StandardScaler().fit(x[:, self.context_indices])
+        flat = self.node_scaler.transform(nodes.reshape(-1, self.node_features)).reshape(nodes.shape)
+        flat = np.where(masks[:, :, None] == 1, flat, 0.)
+        context = self.context_scaler.transform(x[:, self.context_indices])
+        return flat, masks, context
+
+    def _build_set_module(self):
+        import torch
+        width, components = self.hidden[0], self.components
+        if self.pooling == "attention" and width % self.attention_heads:
+            raise ValueError("attention width must be divisible by attention heads")
+
+        class Module(torch.nn.Module):
+            def __init__(module):
+                super().__init__()
+                module.embed = torch.nn.Sequential(
+                    torch.nn.Linear(self.node_features, width), torch.nn.SiLU(),
+                    torch.nn.Linear(width, width))
+                module.attention = (torch.nn.TransformerEncoder(
+                    torch.nn.TransformerEncoderLayer(
+                        width, self.attention_heads, 2*width, dropout=self.dropout,
+                        activation="gelu", batch_first=True), 1)
+                    if self.pooling == "attention" else None)
+                layers, size = [], width+len(self.context_indices)
+                for hidden in self.hidden[1:]:
+                    layers.extend([torch.nn.Linear(size, hidden), torch.nn.SiLU()])
+                    size = hidden
+                layers.append(torch.nn.Linear(size, 3*components))
+                module.head = torch.nn.Sequential(*layers)
+
+            def forward(module, nodes, masks, context):
+                encoded = module.embed(nodes)
+                if module.attention is not None:
+                    safe = masks.clone()
+                    empty = safe.sum(1) == 0
+                    safe[empty, 0] = 1
+                    encoded = module.attention(encoded, src_key_padding_mask=safe == 0)
+                    encoded[empty] = 0
+                pooled = ((encoded*masks[:, :, None]).sum(1)
+                          / masks.sum(1, keepdim=True).clamp_min(1))
+                return module.head(torch.cat([pooled, context], dim=1))
+        return Module().to(self.device)
+
+    def fit(self, x, y, cal_x, cal_y):
+        with self._deterministic_context():
+            return self._fit_set(x, y, cal_x, cal_y)
+
+    def _fit_set(self, x, y, cal_x, cal_y):
+        import torch
+        self._validate_x(x); self._validate_x(cal_x)
+        nodes, masks, context = self._arrays_for_torch(x, fit=True)
+        tensors = [torch.tensor(v, dtype=torch.float32, device=self.device)
+                   for v in (nodes, masks, context)]
+        yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+        self.models, self.losses = [], []
+        for seed in self.seeds:
+            torch.manual_seed(seed)
+            model = self._build_set_module()
+            optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
+                                          weight_decay=self.weight_decay)
+            losses = []
+            for _ in range(self.epochs):
+                order = torch.randperm(len(yy), device=self.device); total = 0.
+                for start in range(0, len(yy), self.batch_size):
+                    ix = order[start:start+self.batch_size]
+                    logw, mu, sigma = self._parts(model(*(value[ix] for value in tensors)))
+                    loss = -torch.logsumexp(logw+self._logp(yy[ix], mu, sigma), dim=1).mean()
+                    if not torch.isfinite(loss):
+                        raise ValueError("nonfinite set likelihood")
+                    optimizer.zero_grad(); loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.); optimizer.step()
+                    total += loss.item()*len(ix)
+                losses.append(total/len(yy))
+            model.eval(); self.models.append(model); self.losses.append(losses)
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        import torch
+        self._validate_x(x)
+        values = [torch.tensor(v, dtype=torch.float32, device=self.device)
+                  for v in self._arrays_for_torch(x)]
+        weights, means, scales = [], [], []
+        with torch.no_grad():
+            for model in self.models:
+                logw, mu, sigma = self._parts(model(*values))
+                weights.append(logw.exp().cpu().numpy()/len(self.models))
+                means.append(mu.cpu().numpy()); scales.append(sigma.cpu().numpy())
+        return MixtureCurve(np.concatenate(weights, 1), np.concatenate(means, 1),
+                            np.concatenate(scales, 1))
+
+
+class SplineFlowCDF(CDFEstimator):
+    """Conditional one-dimensional rational-quadratic normalizing spline."""
+
+    def __init__(self, probabilities, hidden=32, bins=8, epochs=20,
+                 batch_size=1024, learning_rate=.001, weight_decay=.01,
+                 tail_bound=8., tail_width=2., seed=829, device="cuda",
+                 deterministic=False, feature_indices=None):
+        import math
+        if (len(probabilities) < 3 or probabilities[0] <= 0 or probabilities[-1] >= 1
+                or any(a >= b for a, b in zip(probabilities, probabilities[1:]))
+                or any(type(v) is not int or v < 1 for v in
+                       (hidden, bins, epochs, batch_size))
+                or any(not math.isfinite(v) or v <= 0 for v in
+                       (learning_rate, tail_bound, tail_width))
+                or not math.isfinite(weight_decay) or weight_decay < 0
+                or type(seed) is not int or seed < 0 or type(deterministic) is not bool
+                or (feature_indices is not None and
+                    (not feature_indices or len(set(feature_indices)) != len(feature_indices)
+                     or any(type(v) is not int or v < 0 for v in feature_indices)))):
+            raise ValueError("invalid spline-flow parameters")
+        self.probabilities = tuple(float(p) for p in probabilities)
+        self.hidden, self.bins, self.epochs, self.batch_size = hidden, bins, epochs, batch_size
+        self.learning_rate, self.weight_decay = learning_rate, weight_decay
+        self.tail_bound, self.tail_width = tail_bound, tail_width
+        self.seed, self.device, self.deterministic = seed, device, deterministic
+        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if (x.ndim != 2 or np.isinf(x).any()
+                or (self.feature_indices is not None
+                    and max(self.feature_indices) >= x.shape[1])):
+            raise ValueError("spline-flow features must be finite")
+
+    def _features(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        return x if self.feature_indices is None else x[:, self.feature_indices]
+
+    def fit(self, x, y, cal_x, cal_y):
+        import numpy as np
+        import torch
+        from sklearn.preprocessing import StandardScaler
+        from nflows.distributions.normal import StandardNormal
+        from nflows.flows.base import Flow
+        from nflows.transforms.autoregressive import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
+        self._validate_x(x); self._validate_x(cal_x)
+        if self.device.startswith("cuda") and not torch.cuda.is_available():
+            raise ValueError("declared CUDA spline flow is unavailable")
+        features = self._features(x)
+        self.scaler = StandardScaler().fit(features)
+        self.y_mean, self.y_scale = float(np.mean(y)), float(np.std(y))
+        if not np.isfinite(self.y_scale) or self.y_scale <= 0:
+            raise ValueError("spline-flow target has zero scale")
+        xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
+        yy = torch.tensor(((np.asarray(y)-self.y_mean)/self.y_scale)[:, None],
+                          dtype=torch.float32, device=self.device)
+        torch.manual_seed(self.seed)
+        transform = MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+            features=1, hidden_features=self.hidden, context_features=features.shape[1],
+            num_bins=self.bins, tails="linear", tail_bound=self.tail_bound,
+            num_blocks=2, use_residual_blocks=True, random_mask=False)
+        self.model = Flow(transform, StandardNormal([1])).to(self.device)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate,
+                                      weight_decay=self.weight_decay)
+        self.losses = []
+        old = torch.are_deterministic_algorithms_enabled()
+        if self.deterministic:
+            torch.use_deterministic_algorithms(True)
+        try:
+            for _ in range(self.epochs):
+                order = torch.randperm(len(xx), device=self.device); total = 0.
+                for start in range(0, len(xx), self.batch_size):
+                    ix = order[start:start+self.batch_size]
+                    loss = -self.model.log_prob(yy[ix], context=xx[ix]).mean()
+                    if not torch.isfinite(loss):
+                        raise ValueError("nonfinite spline-flow likelihood")
+                    optimizer.zero_grad(); loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.); optimizer.step()
+                    total += loss.item()*len(ix)
+                self.losses.append(total/len(xx))
+        finally:
+            if self.deterministic:
+                torch.use_deterministic_algorithms(old)
+        self.model.eval()
+        return self
+
+    def curve(self, x):
+        import numpy as np
+        import torch
+        from scipy.special import ndtri
+        self._validate_x(x)
+        context = torch.tensor(self.scaler.transform(self._features(x)), dtype=torch.float32,
+                               device=self.device)
+        p = np.asarray(self.probabilities)
+        z = torch.tensor(np.tile(ndtri(p), len(x))[:, None], dtype=torch.float32,
+                         device=self.device)
+        repeated = context.repeat_interleave(len(p), dim=0)
+        with torch.no_grad():
+            q, _ = self.model._transform.inverse(z, context=repeated)
+        q = q.cpu().numpy().reshape(len(x), len(p))*self.y_scale+self.y_mean
+        q = np.maximum.accumulate(q, axis=1)
+        values = np.column_stack([q[:, 0]-self.tail_width, q, q[:, -1]+self.tail_width])
+        return GridCurve(values, [0., *self.probabilities, 1.])
 
 
 class EmpiricalMLPBlendCDF(CDFEstimator):
@@ -1581,6 +2316,10 @@ class ChronologicalCDFStudy:
             distributions.append("quantile-forest")
         if "NGBoostCDF" in classes:
             distributions.append("ngboost")
+        if "CatBoostQuantileCDF" in classes:
+            distributions.append("catboost")
+        if "SplineFlowCDF" in classes:
+            distributions.append("nflows")
         versions = {name: version(name) for name in distributions}
         import torch
         versions["cuda"] = torch.version.cuda
@@ -1677,6 +2416,8 @@ class ChronologicalCDFStudy:
                                                 identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
                                                 row_index=val.index.to_numpy(), **curve._arrays())
                     count[name+"_seconds"] = time.monotonic()-start
+                    if hasattr(model, "_research_state"):
+                        count[name+"_research_state"] = model._research_state()
                     if isinstance(model, MixtureMLPCDF):
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
                     print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
@@ -1731,8 +2472,29 @@ class CDFHyperparameterStudy:
         self.grouped = "candidate_groups" in e
         required = self._COMMON_KEYS | ({"candidate_groups"} if self.grouped else
                                         {"final_seeds", "screen_seed", "candidate_labels", "axes"})
-        if set(e)-required-{"notes"} or required-set(e):
+        if set(e)-required-{"notes", "public_probes", "selection_guard"} or required-set(e):
             raise ValueError("unknown or missing experiment keys")
+        guard = e.get("selection_guard")
+        if guard is not None:
+            import math
+            guard_keys = {"reference", "variant", "metrics", "target", "tolerance"}
+            if (not isinstance(guard, dict) or set(guard) != guard_keys
+                    or guard["reference"] not in c["models"]
+                    or guard["variant"] not in ("raw", "calibrated")
+                    or not isinstance(guard["metrics"], list) or not guard["metrics"]
+                    or len(set(guard["metrics"])) != len(guard["metrics"])
+                    or any(not isinstance(metric, str) or not metric for metric in guard["metrics"])
+                    or isinstance(guard["target"], bool) or not math.isfinite(guard["target"])
+                    or isinstance(guard["tolerance"], bool)
+                    or not math.isfinite(guard["tolerance"]) or guard["tolerance"] < 0):
+                raise ValueError("invalid development selection guard")
+        probes = e.get("public_probes", [])
+        probe_keys = {"name", "checkpoint", "training_cutoff", "status", "reason"}
+        if (not isinstance(probes, list) or len({p.get("name") for p in probes}) != len(probes)
+                or any(set(p) != probe_keys or p["status"] != "descriptive_only"
+                       or p["training_cutoff"] is not None or not p["reason"]
+                       for p in probes)):
+            raise ValueError("invalid public probe inventory")
         self.inventory = CandidateInventory({"candidate": list(e["candidates"])}, max_candidates=e["max_candidates"])
         parts = e["search_partitions"]
         if self.grouped:
@@ -1823,6 +2585,10 @@ class CDFHyperparameterStudy:
             names.append("quantile-forest")
         if "NGBoostCDF" in classes:
             names.append("ngboost")
+        if "CatBoostQuantileCDF" in classes:
+            names.append("catboost")
+        if "SplineFlowCDF" in classes:
+            names.append("nflows")
         return {name: version(name) for name in sorted(names)}
 
     @staticmethod
@@ -1900,13 +2666,57 @@ class CDFHyperparameterStudy:
             raise ValueError("incomplete cells or nonpositive reference CRPS")
         return means.div(means[(c["reference_model"], "raw")], axis=0).mean()
 
+    def _guard(self, scores, candidates):
+        """Return feasible model/variants and complete development guard evidence."""
+        import numpy as np
+
+        guard = self.experiment.get("selection_guard")
+        if guard is None:
+            return candidates, []
+        c = self.base
+        reference = scores[(scores.model == guard["reference"])
+                           & (scores.variant == guard["variant"])]
+        evidence, feasible = [], []
+        for name, variant in candidates:
+            candidate = scores[(scores.model == name) & (scores.variant == variant)]
+            passed = True
+            comparisons = []
+            for metric in guard["metrics"]:
+                if metric not in scores:
+                    raise ValueError(f"selection guard metric absent: {metric}")
+                left = candidate.groupby(c["group"])[metric].mean()
+                right = reference.groupby(c["group"])[metric].mean()
+                if (set(left.index) != set(right.index) or not np.isfinite(left).all()
+                        or not np.isfinite(right).all()):
+                    raise ValueError("selection guard group coverage mismatch")
+                for group in sorted(left.index):
+                    candidate_deviation = abs(float(left[group])-guard["target"])
+                    reference_deviation = abs(float(right[group])-guard["target"])
+                    ok = candidate_deviation <= reference_deviation + guard["tolerance"]
+                    passed &= ok
+                    comparisons.append({
+                        "group": group, "metric": metric,
+                        "candidate_mean": float(left[group]),
+                        "reference_mean": float(right[group]),
+                        "candidate_deviation": candidate_deviation,
+                        "reference_deviation": reference_deviation,
+                        "passed": bool(ok),
+                    })
+            evidence.append({"model": name, "variant": variant,
+                             "feasible": bool(passed), "comparisons": comparisons})
+            if passed:
+                feasible.append((name, variant))
+        if not feasible:
+            raise ValueError("no candidate satisfies development selection guard")
+        return feasible, evidence
+
     def _select(self, frame, identity):
         import copy
         import pandas as pd
         e, c = self.experiment, self.base
         expected = self._expected(frame, e["development_years"])
         all_scores, controls, screen_specs, selected, variants = [], None, {}, {}, {}
-        rankings = {}
+        rankings, guard_evidence = {}, {}
         for partition, names in e["search_partitions"].items():
             path = self.output/"search"/partition
             self._load(path, identity, "search", partition)
@@ -1918,7 +2728,10 @@ class CDFHyperparameterStudy:
             controls = repeated
             rank = self._rank(scores)
             rankings.update({f"{n}:{v}": float(rank[(n, v)]) for n in names for v in ("raw", "calibrated")})
-            name, variant = min(((n, v) for n in names for v in ("raw", "calibrated")), key=lambda nv: rank[nv])
+            eligible, evidence = self._guard(
+                scores, [(n, v) for n in names for v in ("raw", "calibrated")])
+            guard_evidence[partition] = evidence
+            name, variant = min(eligible, key=lambda nv: rank[nv])
             screen_specs[name] = copy.deepcopy(e["candidates"][name])
             selected[name] = copy.deepcopy(screen_specs[name])
             if not self.grouped:
@@ -1931,6 +2744,8 @@ class CDFHyperparameterStudy:
             variants[name] = min(("raw", "calibrated"), key=lambda v: rank[(name, v)])
         variants[c["reference_model"]] = "raw"
         payload = {"models": selected, "variants": variants, "ranking": rankings,
+                   "selection_guard": self.experiment.get("selection_guard"),
+                   "selection_guard_evidence": guard_evidence,
                    "screen_spec_hash": self._digest(screen_specs), "final_spec_hash": self._digest(selected),
                    "screen_specs": screen_specs, "expected_identity_hash": self._frame_hash(expected[c["identity"]], c["identity"]),
                    "n": len(expected), "cells": len(expected[[c["group"], c["horizon"]]].drop_duplicates())}
@@ -2072,6 +2887,11 @@ class CDFHyperparameterStudy:
                 result = study.summarize(scores, selection["variants"])
                 scores.to_parquet(path/"scores.parquet", index=False)
                 self._write(path/"convergence.json", self._audit(paths, frame, diagnostic))
+                self._write(path/"public_probes.json", {
+                    "selection_eligible": [],
+                    "descriptive_only": e.get("public_probes", []),
+                    "rule": "unknown pretraining cutoff cannot enter historical selection or promotion",
+                })
                 self._complete(path, identity, stage, None, selection_hash=selection_hash)
                 return result
             if partition not in e["evaluation_partitions"]:

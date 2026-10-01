@@ -11,10 +11,251 @@ import json
 from pathlib import Path
 
 from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy, CDFHyperparameterStudy
+from dskit.pipeline.libs.observations import ObservationRows
 from .observations import IndexCloseRows
 from .contracts import CONDOR_LEGS
 
-__all__ = ["ExactExpiryCDFPanel", "CondorCDFDiagnostic"]
+__all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic"]
+
+
+class RawChainFeatureBuilder:
+    """Prepare order-invariant contract tensors and option-implied proxy quantiles."""
+
+    NODE_FIELDS = ("log_moneyness", "iv", "log_rel_spread", "log_oi", "log_depth")
+
+    def __init__(self, nodes, moneyness_bounds, max_node_gap, proxy_probabilities,
+                 min_wing_nodes, max_inner_gap, max_outer_gap):
+        import math
+        if (type(nodes) is not int or nodes < 3 or len(moneyness_bounds) != 2
+                or moneyness_bounds[0] >= 0 or moneyness_bounds[1] <= 0
+                or moneyness_bounds[0] >= moneyness_bounds[1]
+                or any(not math.isfinite(v) or v <= 0 for v in
+                       (max_node_gap, max_inner_gap, max_outer_gap))
+                or type(min_wing_nodes) is not int or min_wing_nodes < 1
+                or len(proxy_probabilities) < 3 or proxy_probabilities[0] <= 0
+                or proxy_probabilities[-1] >= 1
+                or any(a >= b for a, b in zip(proxy_probabilities,
+                                               proxy_probabilities[1:]))):
+            raise ValueError("invalid raw-chain feature contract")
+        self.nodes, self.bounds = nodes, tuple(moneyness_bounds)
+        self.max_node_gap = max_node_gap
+        self.proxy_probabilities = tuple(proxy_probabilities)
+        self.min_wing_nodes = min_wing_nodes
+        self.max_inner_gap, self.max_outer_gap = max_inner_gap, max_outer_gap
+
+    @staticmethod
+    def _qname(probability):
+        return f"rn_q_{int(round(10000*probability)):04d}"
+
+    @staticmethod
+    def _usable_quotes(rows):
+        """Mask invalid, crossed and duplicate contracts deterministically."""
+        import numpy as np
+        duplicate = rows.duplicated(["strike", "type"], keep=False)
+        finite = np.isfinite(rows[["strike", "mark", "bid", "ask", "bid_size",
+                                   "ask_size", "open_interest",
+                                   "implied_volatility"]]).all(axis=1)
+        valid = (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
+                 & (rows.bid >= 0) & (rows.ask >= rows.bid)
+                 & (rows.mark >= rows.bid) & (rows.mark <= rows.ask)
+                 & (rows.bid_size >= 0) & (rows.ask_size >= 0)
+                 & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
+        return rows.loc[valid].sort_values(["strike", "type"], kind="mergesort").copy()
+
+    def _proxy(self, rows, spot):
+        import numpy as np
+        import pandas as pd
+        clean = self._usable_quotes(rows)
+        paired = clean.pivot_table(index="strike", columns="type", values="mark",
+                                   aggfunc="median").dropna()
+        if paired.empty or not {"call", "put"}.issubset(paired.columns):
+            return None
+        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
+        forwards = forwards[np.isfinite(forwards) & (forwards > 0)]
+        if not len(forwards):
+            return None
+        forward = float(np.median(forwards))
+        clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
+                                             clean.mark+forward-clean.strike)
+        otm = clean[((clean.type == "put") & (clean.strike <= forward))
+                    | ((clean.type == "call") & (clean.strike >= forward))]
+        calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
+        strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
+        if len(strike) < 2*self.min_wing_nodes+1:
+            return None
+        left, right = strike < forward, strike > forward
+        logk = np.log(strike/forward)
+        if (left.sum() < self.min_wing_nodes or right.sum() < self.min_wing_nodes
+                or -logk[left].max() > self.max_inner_gap
+                or logk[right].min() > self.max_inner_gap
+                or (np.diff(logk) > self.max_outer_gap).any()):
+            return None
+        raw_slope = np.diff(price)/np.diff(strike)
+        from sklearn.isotonic import IsotonicRegression
+        slope = IsotonicRegression(increasing=True, y_min=-1., y_max=0.,
+                                   out_of_bounds="clip").fit_transform(
+                                       (strike[:-1]+strike[1:])/2, raw_slope,
+                                       sample_weight=np.diff(strike))
+        cdf = np.clip(1+slope, 0, 1)
+        if not (np.isfinite(cdf).all() and (np.diff(cdf) >= -1e-12).all()):
+            return None
+        informative = np.flatnonzero((cdf > 1e-4) & (cdf < 1-1e-4))
+        if len(informative) < 3:
+            return None
+        first, last = informative[0], informative[-1]
+        cdf = cdf[first:last+1]
+        midpoint = (strike[:-1]+strike[1:])/2
+        midpoint = midpoint[first:last+1]
+        p = np.r_[0., cdf, 1.]
+        values = np.r_[np.log(strike[first]/spot), np.log(midpoint/spot),
+                       np.log(strike[last+1]/spot)]
+        # Flat probability stretches are atoms; np.interp requires a stable
+        # increasing inverse grid, so retain the first occurrence explicitly.
+        keep = np.r_[True, np.diff(p) > 1e-12]
+        p, values = p[keep], values[keep]
+        if p[-1] < 1:
+            p, values = np.r_[p, 1.], np.r_[values, np.log(strike[-1]/spot)]
+        quantiles = np.interp(self.proxy_probabilities, p, values)
+        projected = price[0]+np.r_[0., np.cumsum(slope*np.diff(strike))]
+        return {"forward_ratio": forward/spot, "projection_distance": float(
+                    np.sqrt(np.mean((projected-price)**2))/spot),
+                "mass": float(cdf[-1]-cdf[0]), "quantiles": quantiles}
+
+    def transform(self, chain, meta):
+        """Return one fixed tensor/proxy row for every requested chain key."""
+        import numpy as np
+        import pandas as pd
+        required = {"symbol", "date", "expiration", "strike", "type", "mark",
+                    "bid", "ask", "bid_size", "ask_size", "open_interest",
+                    "implied_volatility"}
+        if required-set(chain) or {"symbol", "quote_date", "expiry",
+                                   "chain_underlying_price"}-set(meta):
+            raise ValueError("missing raw-chain or metadata columns")
+        keys = ["symbol", "quote_date", "expiry"]
+        lookup = {(r.symbol, r.quote_date, r.expiry): r.chain_underlying_price
+                  for r in meta[keys+["chain_underlying_price"]].itertuples(index=False)}
+        grouped = {(a, b, c): g for (a, b, c), g in
+                   chain.groupby(["symbol", "date", "expiration"], sort=False)}
+        centers = np.linspace(*self.bounds, self.nodes)
+        records = []
+        for key in sorted(lookup):
+            spot = float(lookup[key]); rows = grouped.get(key)
+            record = dict(zip(keys, key)); proxy = None
+            if rows is not None and np.isfinite(spot) and spot > 0:
+                rows = self._usable_quotes(rows)
+                rows["log_moneyness"] = np.log(rows.strike/spot)
+                rows["depth"] = rows.bid_size.fillna(0)+rows.ask_size.fillna(0)
+                rows["open_interest"] = rows.open_interest.fillna(0)
+                rows["rel_spread"] = (rows.ask-rows.bid)/rows.mark
+                proxy = self._proxy(rows, spot)
+            else:
+                rows = None
+            for i, center in enumerate(centers):
+                chosen = None
+                if rows is not None:
+                    right = "put" if center < 0 else "call"
+                    candidates = rows[(rows.type == right) & rows.implied_volatility.gt(0)
+                                      & rows.mark.gt(0) & rows.rel_spread.ge(0)]
+                    if len(candidates):
+                        distance = abs(candidates.log_moneyness-center)
+                        if distance.min() <= self.max_node_gap:
+                            chosen = candidates.loc[distance.sort_values(kind="mergesort").index[0]]
+                values = ([chosen.log_moneyness, chosen.implied_volatility,
+                           np.log1p(chosen.rel_spread), np.log1p(max(chosen.open_interest, 0)),
+                           np.log1p(max(chosen.depth, 0))] if chosen is not None
+                          else [np.nan]*len(self.NODE_FIELDS))
+                for field, value in zip(self.NODE_FIELDS, values):
+                    record[f"chain_node_{i:02d}_{field}"] = value
+                record[f"chain_node_{i:02d}_mask"] = int(chosen is not None)
+            record["rn_proxy_eligible"] = int(proxy is not None)
+            record["rn_forward_ratio"] = proxy["forward_ratio"] if proxy else np.nan
+            record["rn_projection_distance"] = proxy["projection_distance"] if proxy else np.nan
+            record["rn_interior_mass"] = proxy["mass"] if proxy else np.nan
+            for j, probability in enumerate(self.proxy_probabilities):
+                record[self._qname(probability)] = proxy["quantiles"][j] if proxy else np.nan
+            records.append(record)
+        return pd.DataFrame(records).sort_values(keys).reset_index(drop=True)
+
+    def build_archive(self, meta, archive_root, output):
+        """Scan bounded annual parquet files and atomically publish features."""
+        import pyarrow.parquet as pq
+        import pandas as pd
+
+        def content_hash(path):
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(8*1024*1024), b""):
+                    digest.update(block)
+            return digest.hexdigest()
+
+        columns = ["symbol", "date", "expiration", "strike", "type", "mark", "bid",
+                   "ask", "bid_size", "ask_size", "open_interest", "implied_volatility"]
+        parts = []
+        meta = meta.copy()
+        metadata_columns = ["symbol", "quote_date", "expiry", "chain_underlying_price"]
+        missing_metadata = set(metadata_columns)-set(meta)
+        if missing_metadata:
+            raise ValueError(f"missing raw-chain metadata columns: {sorted(missing_metadata)}")
+        canonical_metadata = (meta[metadata_columns]
+                              .sort_values(metadata_columns[:3], kind="mergesort")
+                              .reset_index(drop=True))
+        metadata_sha256 = hashlib.sha256(canonical_metadata.to_json(
+            orient="records", date_format="iso", double_precision=15).encode()).hexdigest()
+        meta["year"] = meta.quote_date.str[:4].astype(int)
+        identity = hashlib.sha256(json.dumps({
+            "nodes": self.nodes, "bounds": self.bounds, "max_node_gap": self.max_node_gap,
+            "probabilities": self.proxy_probabilities, "min_wing_nodes": self.min_wing_nodes,
+            "max_inner_gap": self.max_inner_gap, "max_outer_gap": self.max_outer_gap,
+            "metadata_sha256": metadata_sha256,
+            "implementation": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }, sort_keys=True).encode()).hexdigest()[:16]
+        cache = Path(str(output)+".parts")/identity
+        cache.mkdir(parents=True, exist_ok=True)
+        source_hashes = {}
+        for (symbol, year), requested in meta.groupby(["symbol", "year"]):
+            path = Path(archive_root)/symbol.lower()/f"options_{year}.parquet"
+            if not path.exists():
+                continue
+            source_digest = content_hash(path)
+            source_hashes[f"{symbol}-{year}"] = {
+                "path": str(path), "sha256": source_digest,
+            }
+            cached = cache/f"{symbol}-{year}-{source_digest[:16]}.parquet"
+            if cached.exists():
+                part = pd.read_parquet(cached)
+                expected = set(zip(requested.symbol, requested.quote_date, requested.expiry))
+                actual = set(zip(part.symbol, part.quote_date, part.expiry))
+                if actual != expected:
+                    raise ValueError("cached raw-chain identities disagree")
+                parts.append(part)
+                continue
+            wanted = set(zip(requested.quote_date, requested.expiry))
+            selected = []
+            for batch in pq.ParquetFile(path).iter_batches(columns=columns, batch_size=250_000):
+                frame = batch.to_pandas()
+                mask = [key in wanted for key in zip(frame.date, frame.expiration)]
+                if any(mask):
+                    selected.append(frame[mask])
+            chain = pd.concat(selected, ignore_index=True) if selected else pd.DataFrame(columns=columns)
+            part = self.transform(chain, requested)
+            temporary = cached.with_suffix(".tmp")
+            part.to_parquet(temporary, index=False); temporary.replace(cached)
+            parts.append(part)
+        result = pd.concat(parts, ignore_index=True)
+        if len(result) != len(meta) or result.duplicated(["symbol", "quote_date", "expiry"]).any():
+            raise ValueError("raw-chain preparation did not preserve requested identities")
+        target = Path(output); target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix+".tmp")
+        result.to_parquet(temporary, index=False); temporary.replace(target)
+        manifest = Path(str(target)+".sources.json")
+        temporary_manifest = manifest.with_suffix(manifest.suffix+".tmp")
+        temporary_manifest.write_text(json.dumps({
+            "metadata_columns": metadata_columns,
+            "metadata_sha256": metadata_sha256,
+            "sources": source_hashes,
+        }, indent=2, sort_keys=True)+"\n")
+        temporary_manifest.replace(manifest)
+        return result
 
 
 class ExactExpiryCDFPanel:
@@ -35,6 +276,28 @@ class ExactExpiryCDFPanel:
 
     def __init__(self, config):
         self.config = config
+
+    @staticmethod
+    def _availability_dates(observation_dates, lag_sessions=0, lag_days=0):
+        """Return conservative dates after the declared publication lag."""
+        import numpy as np
+        import pandas as pd
+
+        dates = pd.DatetimeIndex(pd.to_datetime(observation_dates))
+        if bool(lag_sessions) == bool(lag_days):
+            raise ValueError("declare exactly one of lag_sessions or lag_days")
+        if lag_days:
+            return dates+pd.to_timedelta(lag_days, unit="D")
+        import exchange_calendars as xcals
+        start = dates.min()-pd.Timedelta(days=10)
+        end = dates.max()+pd.Timedelta(days=30)
+        calendar = xcals.get_calendar("XNYS", start=start, end=end)
+        sessions = calendar.sessions.tz_localize(None)
+        positions = np.searchsorted(sessions.to_numpy(), dates.to_numpy(), side="right")
+        positions = positions+lag_sessions
+        if (positions >= len(sessions)).any():
+            raise ValueError("exchange-session availability outside calendar")
+        return pd.DatetimeIndex(sessions[positions])
 
     @staticmethod
     def add_surface_features(frame):
@@ -86,6 +349,105 @@ class ExactExpiryCDFPanel:
         frame["chain_has_put_call_oi"] = put_call.astype(int)
         return frame
 
+    @staticmethod
+    def add_surface_dynamics(frame, proxy_probabilities):
+        """Add causal same-series changes, cross-expiry slopes and proxy moments."""
+        import numpy as np
+        import pandas as pd
+
+        frame = frame.sort_values(["symbol", "expiry", "quote_date"]).copy()
+        group = frame.groupby(["symbol", "expiry"], sort=False)
+        surface = ("chain_log_atm_iv", "chain_log_skew25", "chain_log_curvature25")
+        for name in surface:
+            for lag in (1, 5, 22):
+                frame[f"{name}_change_{lag}"] = frame[name]-group[name].shift(lag)
+        frame["chain_liquidity_asymmetry"] = np.tanh(frame.chain_log_put_call_oi)
+        frame["implied_minus_realized_variance"] = (
+            frame.chain_atm_iv**2/252.-frame.rv_22**2)
+
+        frame["term_slope_prev"] = np.nan
+        frame["term_slope_next"] = np.nan
+        for _, index in frame.groupby(["symbol", "quote_date"], sort=False).groups.items():
+            ordered = frame.loc[index].sort_values("actual_calendar_dte")
+            dte = ordered.actual_calendar_dte.to_numpy(dtype=float)
+            iv = ordered.chain_log_atm_iv.to_numpy(dtype=float)
+            if len(ordered) > 1:
+                delta = np.diff(dte)
+                slope = np.divide(np.diff(iv), delta, out=np.full(len(delta), np.nan),
+                                  where=delta != 0)
+                frame.loc[ordered.index[1:], "term_slope_prev"] = slope
+                frame.loc[ordered.index[:-1], "term_slope_next"] = slope
+
+        qnames = [RawChainFeatureBuilder._qname(p) for p in proxy_probabilities]
+        q = frame[qnames].to_numpy(dtype=float)
+        grid = np.asarray(proxy_probabilities, dtype=float)
+        dense_p = np.linspace(grid[0], grid[-1], 99)
+        moments = np.full((len(frame), 6), np.nan)
+        for row in np.flatnonzero(np.isfinite(q).all(axis=1)):
+            values = np.interp(dense_p, grid, q[row])
+            mean = values.mean(); centered = values-mean
+            variance = np.mean(centered**2)
+            if variance > 0:
+                moments[row, 0:4] = [mean, variance,
+                                     np.mean(centered**3)/variance**1.5,
+                                     np.mean(centered**4)/variance**2]
+            moments[row, 4] = np.mean(np.maximum(-values, 0))
+            moments[row, 5] = np.mean(np.maximum(values, 0))
+        names = ("rn_mean", "rn_variance", "rn_skewness", "rn_kurtosis",
+                 "rn_left_tail_integral", "rn_right_tail_integral")
+        for column, values in zip(names, moments.T):
+            frame[column] = values
+        return frame.sort_index()
+
+    def _join_fred_features(self, frame, specifications):
+        """Join pinned market observations at their conservative availability dates."""
+        import numpy as np
+        import pandas as pd
+
+        quotes = pd.DataFrame({"quote_date": sorted(frame.quote_date.unique())})
+        quotes["quote_date_dt"] = pd.to_datetime(quotes.quote_date)
+        coverage = getattr(self, "market_coverage", {}).copy()
+        for feature, spec in specifications.items():
+            reader = ObservationRows(feature, {
+                "root": self.config["root"], "source": "fred-market-features",
+                "stream": spec["stream"], "key_fields": ["observation_date"],
+                "ts_field": "observation_date",
+            })
+            records = reader.run(None, {})["records"]
+            self.reader_fingerprints[f"fred:{spec['stream']}"] = reader.fingerprint()
+            values = pd.DataFrame(records)[["observation_date", spec["field"]]].copy()
+            values["observation_date"] = pd.to_datetime(values.observation_date)
+            values[feature] = pd.to_numeric(values[spec["field"]], errors="coerce")
+            values["available_date"] = self._availability_dates(
+                values.observation_date, spec.get("lag_sessions", 0),
+                spec.get("lag_days", 0))
+            values = values.dropna(subset=[feature]).sort_values("available_date")
+            joined = pd.merge_asof(quotes.sort_values("quote_date_dt"), values,
+                                   left_on="quote_date_dt", right_on="available_date",
+                                   direction="backward", allow_exact_matches=True)
+            age = (joined.quote_date_dt-joined.observation_date).dt.days
+            stale = age.isna() | age.gt(spec["max_age_days"])
+            joined.loc[stale, feature] = np.nan
+            joined["age_days"] = age
+            mapping = joined.set_index("quote_date")
+            frame[feature] = frame.quote_date.map(mapping[feature])
+            frame[feature+"_age_days"] = frame.quote_date.map(mapping.age_days)
+            frame[feature+"_missing"] = frame[feature].isna().astype(int)
+            coverage[feature] = {
+                "rows": int(frame[feature].notna().sum()),
+                "fraction": float(frame[feature].notna().mean()),
+                "lag_days": spec.get("lag_days", 0),
+                "lag_sessions": spec.get("lag_sessions", 0),
+                "age_basis": "observation_date",
+                "max_age_days": spec["max_age_days"],
+            }
+        if {"credit_cp_nonfinancial", "credit_cp_financial"}.issubset(frame):
+            frame["credit_cp_spread"] = (frame.credit_cp_financial
+                                         -frame.credit_cp_nonfinancial)
+            frame["credit_cp_spread_missing"] = frame.credit_cp_spread.isna().astype(int)
+        self.market_coverage = coverage
+        return frame
+
     def read(self):
         """Construct raw-price terminal log returns and backward-only inputs.
 
@@ -109,6 +471,9 @@ class ExactExpiryCDFPanel:
         lifecycle = pd.read_parquet(c["lifecycle"])
         keys = ["symbol", "quote_date", "expiry"]
         meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
+        if c.get("chain_features"):
+            chain_features = pd.read_parquet(c["chain_features"])
+            meta = meta.merge(chain_features, on=keys, validate="one_to_one")
         if c.get("surface_features", False):
             meta = self.add_surface_features(meta)
         calendar = xc.get_calendar("XNYS", start="1998-01-01", end="2026-12-31")
@@ -192,16 +557,73 @@ class ExactExpiryCDFPanel:
             rows["life_fraction_sessions"] = rows.series_age_sessions/rows.series_total_tenor_sessions
             rows["calendar_days_per_session"] = rows.calendar_dte/rows.sessions_to_expiry
             rows["reference_scale"] = rows.rv_22.clip(lower=c["reference_floor"])*np.sqrt(rows.sessions_to_expiry)
+            for probability in c.get("raw_chain", {}).get("proxy_probabilities", []):
+                name = RawChainFeatureBuilder._qname(probability)
+                rows[name] = rows[name]/rows.reference_scale
+            qnames = [RawChainFeatureBuilder._qname(p)
+                      for p in c.get("raw_chain", {}).get("proxy_probabilities", [])]
+            if qnames:
+                rows["rn_median"] = rows[qnames[len(qnames)//2]]
+                rows["rn_iqr"] = rows[qnames[-2]]-rows[qnames[1]]
+                rows["rn_left_width"] = rows[qnames[len(qnames)//2]]-rows[qnames[0]]
+                rows["rn_right_width"] = rows[qnames[-1]]-rows[qnames[len(qnames)//2]]
             good = rows.reference_scale.notna()
             refused[symbol]["missing_reference"] = int((~good).sum())
             refused[symbol]["iv_for_train_only_imputation"] = int(rows.own_iv.isna().sum())
             panels.append(rows[good])
         self.refused = refused
+        source_names = ["surface", "lifecycle"]+(["chain_features"] if c.get("chain_features") else [])
         self.source_hashes = {name: hashlib.sha256(Path(c[name]).read_bytes()).hexdigest()
-                              for name in ("surface", "lifecycle")}
+                              for name in source_names}
+        if c.get("chain_features"):
+            manifest = Path(str(c["chain_features"])+".sources.json")
+            if not manifest.exists():
+                raise ValueError("raw-chain source hash manifest is missing")
+            self.source_hashes["chain_feature_sources"] = hashlib.sha256(
+                manifest.read_bytes()).hexdigest()
         result = pd.concat(panels, ignore_index=True)
         for symbol in c["symbols"]:
             result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
+        lags = result[[f"ret_lag_{i}" for i in range(c["lags"])]].to_numpy()
+        for window in (5, 22):
+            values = lags[:, :window]
+            result[f"momentum_{window}"] = values.sum(1)
+            result[f"down_rv_{window}"] = np.sqrt(np.mean(np.minimum(values, 0)**2, axis=1))
+            result[f"up_rv_{window}"] = np.sqrt(np.mean(np.maximum(values, 0)**2, axis=1))
+        if c.get("market_symbols"):
+            self.market_coverage = {}
+            quotes = pd.DataFrame({"quote_date": sorted(result.quote_date.unique())})
+            quotes["quote_date_dt"] = pd.to_datetime(quotes.quote_date)
+            for feature, spec in c["market_symbols"].items():
+                symbol = spec["symbol"]
+                reader = IndexCloseRows(feature, {"root": c["root"], "source": c["iv_source"],
+                                                   "symbol": symbol})
+                records = reader.run(None, {})["records"]
+                self.reader_fingerprints[symbol] = reader.fingerprint()
+                values = pd.DataFrame(records)[["date", "close"]].drop_duplicates("date")
+                values["date"] = pd.to_datetime(values.date)
+                joined = pd.merge_asof(quotes.sort_values("quote_date_dt"), values.sort_values("date"),
+                                       left_on="quote_date_dt", right_on="date",
+                                       direction="backward", allow_exact_matches=False)
+                mapping = dict(zip(joined.quote_date, joined.close))
+                result[feature] = result.quote_date.map(mapping)
+                result[feature+"_age_days"] = (pd.to_datetime(result.quote_date)
+                                               -pd.to_datetime(result.quote_date.map(
+                                                   dict(zip(joined.quote_date,
+                                                            joined.date.dt.strftime("%Y-%m-%d")))))).dt.days
+                stale = result[feature+"_age_days"].gt(spec["max_age_days"])
+                result.loc[stale, feature] = np.nan
+                result[feature+"_missing"] = result[feature].isna().astype(int)
+                self.market_coverage[feature] = {
+                    "rows": int(result[feature].notna().sum()),
+                    "fraction": float(result[feature].notna().mean()),
+                    "lag_days": 1, "max_age_days": spec["max_age_days"],
+                }
+        if c.get("fred_market_symbols"):
+            result = self._join_fred_features(result, c["fred_market_symbols"])
+        if c.get("surface_features") and c.get("raw_chain", {}).get("proxy_probabilities"):
+            result = self.add_surface_dynamics(
+                result, c["raw_chain"]["proxy_probabilities"])
         return result
 
 
@@ -295,14 +717,28 @@ class CondorCDFDiagnostic:
 def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--stage", choices=["search", "select", "evaluate", "report"])
+    parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
     parser.add_argument("--partition")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if args.stage == "prepare":
+        import pandas as pd
+        if args.partition:
+            parser.error("prepare does not accept a partition")
+        data = config["data"]
+        surface = pd.read_parquet(data["surface"])
+        lifecycle = pd.read_parquet(data["lifecycle"])
+        meta = surface.merge(lifecycle, on=["symbol", "quote_date", "expiry"],
+                             validate="one_to_one")
+        builder = RawChainFeatureBuilder(**data["raw_chain"])
+        rows = builder.build_archive(meta, data["archive_root"], data["chain_features"])
+        print("prepared raw-chain rows", len(rows), flush=True)
+        return
     adapter = ExactExpiryCDFPanel(config["data"])
     frame = adapter.read()
     provenance = {"refused": adapter.refused, "sha256": adapter.source_hashes,
                   "readers": adapter.reader_fingerprints,
+                  "market_coverage": getattr(adapter, "market_coverage", {}),
                   "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:

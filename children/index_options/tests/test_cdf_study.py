@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel
+from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel, RawChainFeatureBuilder
 from index_options.distribution import condor_payoff
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
 
@@ -36,6 +36,200 @@ def test_option_surface_features_are_scale_stable_and_preserve_missingness():
     assert out.chain_log_contracts.iloc[0] == pytest.approx(np.log1p(99))
     assert out.chain_log_contracts.iloc[1] == 0
     assert np.isnan(out.chain_log_open_interest.iloc[1])
+
+
+def test_surface_dynamics_are_causal_by_expiry_and_emit_proxy_moments():
+    dates = pd.bdate_range('2020-01-02', periods=23).strftime('%Y-%m-%d')
+    rows = []
+    for expiry, offset, dte in [('2020-03-20', 0., 40), ('2020-04-17', .1, 68)]:
+        for i, date in enumerate(dates):
+            rows.append({'symbol': 'SPY', 'expiry': expiry, 'quote_date': date,
+                         'actual_calendar_dte': dte-i, 'chain_atm_iv': .2,
+                         'rv_22': .01, 'chain_log_atm_iv': i/100+offset,
+                         'chain_log_skew25': i/200, 'chain_log_curvature25': i/300,
+                         'chain_log_put_call_oi': .2,
+                         'rn_q_1000': -1., 'rn_q_5000': 0., 'rn_q_9000': 2.})
+    out = ExactExpiryCDFPanel.add_surface_dynamics(pd.DataFrame(rows), [.1, .5, .9])
+    first = out[out.expiry.eq('2020-03-20')].sort_values('quote_date')
+    assert first.chain_log_atm_iv_change_22.iloc[-1] == pytest.approx(.22)
+    assert first.chain_log_atm_iv_change_22.iloc[:22].isna().all()
+    assert out.term_slope_next.notna().sum() == len(dates)
+    assert out.term_slope_prev.notna().sum() == len(dates)
+    assert out.rn_variance.gt(0).all() and out.rn_right_tail_integral.gt(0).all()
+
+
+def test_fred_daily_availability_waits_for_one_complete_exchange_session():
+    dates = pd.to_datetime(['2020-07-01', '2020-07-02'])
+    available = ExactExpiryCDFPanel._availability_dates(dates, lag_sessions=1)
+    assert available.strftime('%Y-%m-%d').tolist() == ['2020-07-06', '2020-07-07']
+
+
+def test_fred_age_and_staleness_use_observation_date(monkeypatch):
+    class FakeObservationRows:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            return {'records': [{'observation_date': '2020-07-01', 'value': 7.}]}
+
+        def fingerprint(self):
+            return {'sha256': 'fake'}
+
+    monkeypatch.setattr('index_options.cdf_study.ObservationRows', FakeObservationRows)
+    panel = ExactExpiryCDFPanel({'root': '/unused'})
+    panel.reader_fingerprints = {}
+    frame = pd.DataFrame({'quote_date': ['2020-07-06', '2020-07-07']})
+    out = panel._join_fred_features(frame, {
+        'rate': {'stream': 'fake', 'field': 'value', 'lag_sessions': 1,
+                 'max_age_days': 5},
+    })
+    assert out.rate_age_days.tolist() == [5, 6]
+    assert out.rate.iloc[0] == pytest.approx(7.)
+    assert np.isnan(out.rate.iloc[1])
+
+
+def test_raw_chain_builder_is_order_invariant_and_emits_valid_proxy_quantiles():
+    chain = pd.DataFrame({
+        'symbol': ['SPY']*10, 'date': ['2020-01-02']*10,
+        'expiration': ['2020-02-21']*10,
+        'strike': np.repeat([90., 95., 100., 105., 110.], 2),
+        'type': ['put', 'call']*5,
+        'mark': [1., 11., 2., 7., 4., 4., 8., 2., 12., 1.],
+        'bid': [.9, 10.9, 1.9, 6.9, 3.9, 3.9, 7.9, 1.9, 11.9, .9],
+        'ask': [1.1, 11.1, 2.1, 7.1, 4.1, 4.1, 8.1, 2.1, 12.1, 1.1],
+        'bid_size': [10]*10, 'ask_size': [12]*10,
+        'open_interest': [100]*10, 'implied_volatility': [.3, .2, .27, .21, .25, .22, .24, .23, .23, .25],
+    })
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=5, moneyness_bounds=[-.15, .15],
+                                     max_node_gap=.08, proxy_probabilities=[.1, .25, .5, .75, .9],
+                                     min_wing_nodes=2, max_inner_gap=.08, max_outer_gap=.2)
+    a = builder.transform(chain, meta)
+    b = builder.transform(chain.sample(frac=1, random_state=4), meta)
+    pd.testing.assert_frame_equal(a, b)
+    q = a.filter(regex='^rn_q_').to_numpy()[0]
+    assert np.isfinite(q).all() and (np.diff(q) >= 0).all()
+    assert a.rn_proxy_eligible.iloc[0] == 1
+    assert a.filter(regex='^chain_node_').shape[1] == 5*(5+1)
+
+
+def test_raw_chain_builder_refuses_one_sided_proxy_without_crashing():
+    chain = pd.DataFrame({
+        'symbol': ['SPY'], 'date': ['2020-01-02'], 'expiration': ['2020-02-21'],
+        'strike': [100.], 'type': ['call'], 'mark': [4.], 'bid': [3.9], 'ask': [4.1],
+        'bid_size': [10], 'ask_size': [12], 'open_interest': [100],
+        'implied_volatility': [.2],
+    })
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=5, moneyness_bounds=[-.15, .15],
+                                     max_node_gap=.08, proxy_probabilities=[.1, .25,.5,.75,.9],
+                                     min_wing_nodes=2, max_inner_gap=.08, max_outer_gap=.2)
+    out = builder.transform(chain, meta)
+    assert out.rn_proxy_eligible.iloc[0] == 0
+    assert out.filter(regex='^rn_q_').isna().all(axis=None)
+
+
+def test_raw_chain_builder_masks_crossed_and_duplicate_contracts_deterministically():
+    chain = pd.DataFrame({
+        'symbol': ['SPY']*12, 'date': ['2020-01-02']*12,
+        'expiration': ['2020-02-21']*12,
+        'strike': [90,90,95,95,100,100,105,105,110,110,100,100],
+        'type': ['put','call']*5+['put','put'],
+        'mark': [1,11,2,7,4,4,8,2,12,1,4,4],
+        'bid': [.9,10.9,1.9,6.9,4.1,3.9,7.9,1.9,11.9,.9,3.9,3.9],
+        'ask': [1.1,11.1,2.1,7.1,3.9,4.1,8.1,2.1,12.1,1.1,4.1,4.1],
+        'bid_size': [10]*12, 'ask_size': [12]*12,
+        'open_interest': [100]*12, 'implied_volatility': [.25]*12,
+    })
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=5, moneyness_bounds=[-.15, .15],
+                                     max_node_gap=.08, proxy_probabilities=[.1,.25,.5,.75,.9],
+                                     min_wing_nodes=2, max_inner_gap=.08, max_outer_gap=.2)
+    first = builder.transform(chain, meta)
+    second = builder.transform(chain.sample(frac=1, random_state=7), meta)
+    clean = builder.transform(builder._usable_quotes(chain), meta)
+    pd.testing.assert_frame_equal(first, second)
+    pd.testing.assert_frame_equal(first, clean)
+
+
+def test_raw_chain_archive_cache_is_bound_to_annual_file_content(tmp_path):
+    archive = tmp_path/'archive'; (archive/'spy').mkdir(parents=True)
+    source = archive/'spy'/'options_2020.parquet'
+    row = {'symbol': 'SPY', 'date': '2020-01-02', 'expiration': '2020-02-21',
+           'strike': 100., 'type': 'call', 'mark': 4., 'bid': 3.9, 'ask': 4.1,
+           'bid_size': 10, 'ask_size': 12, 'open_interest': 100,
+           'implied_volatility': .2}
+    pd.DataFrame([row]).to_parquet(source, index=False)
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1, .1],
+                                     max_node_gap=.1, proxy_probabilities=[.1,.5,.9],
+                                     min_wing_nodes=1, max_inner_gap=.1, max_outer_gap=.2)
+    output = tmp_path/'features.parquet'
+    first = builder.build_archive(meta, archive, output)
+    first_manifest = Path(str(output)+'.sources.json').read_text()
+    row['implied_volatility'] = .3
+    pd.DataFrame([row]).to_parquet(source, index=False)
+    second = builder.build_archive(meta, archive, output)
+    second_manifest = Path(str(output)+'.sources.json').read_text()
+    assert first.chain_node_01_iv.iloc[0] == pytest.approx(.2)
+    assert second.chain_node_01_iv.iloc[0] == pytest.approx(.3)
+    assert first_manifest != second_manifest
+
+
+def test_raw_chain_archive_cache_is_bound_to_spot_metadata(tmp_path):
+    archive = tmp_path/'archive'; (archive/'spy').mkdir(parents=True)
+    source = archive/'spy'/'options_2020.parquet'
+    pd.DataFrame([{
+        'symbol': 'SPY', 'date': '2020-01-02', 'expiration': '2020-02-21',
+        'strike': 100., 'type': 'call', 'mark': 4., 'bid': 3.9, 'ask': 4.1,
+        'bid_size': 10, 'ask_size': 12, 'open_interest': 100,
+        'implied_volatility': .2,
+    }]).to_parquet(source, index=False)
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1, .1],
+                                     max_node_gap=.1, proxy_probabilities=[.1,.5,.9],
+                                     min_wing_nodes=1, max_inner_gap=.1, max_outer_gap=.2)
+    output = tmp_path/'features.parquet'
+    first = builder.build_archive(meta, archive, output)
+    first_manifest = json.loads(Path(str(output)+'.sources.json').read_text())
+    meta.loc[0, 'chain_underlying_price'] = 110.
+    second = builder.build_archive(meta, archive, output)
+    second_manifest = json.loads(Path(str(output)+'.sources.json').read_text())
+    assert first.chain_node_01_log_moneyness.iloc[0] == pytest.approx(0.)
+    assert second.chain_node_01_log_moneyness.iloc[0] == pytest.approx(np.log(100/110))
+    assert first_manifest['metadata_sha256'] != second_manifest['metadata_sha256']
+
+
+def test_risk_neutral_config_pins_architectures_and_excludes_actual_dte():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-risk-neutral.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    assert len(study['features']) == 199 and study['features'][52] == 'actual_calendar_dte'
+    assert experiment['candidate_groups'] == experiment['search_partitions']
+    assert sum(map(len, experiment['candidate_groups'].values())) == 15
+    assert list(experiment['candidate_groups']) == [
+        'rich_fixed', 'option_transport', 'catboost', 'spline_flow',
+        'deepsets', 'set_transformer', 'quantile_forest']
+    assert {p['name'] for p in experiment['public_probes']} == {
+        'chronos-2', 'timesfm-3', 'moirai-2', 'tabpfn'}
+    assert all(p['status'] == 'descriptive_only' and p['training_cutoff'] is None
+               for p in experiment['public_probes'])
+    for spec in experiment['candidates'].values():
+        params = spec['params']
+        if spec['class'].endswith(':PCAAugmentedCDF'):
+            params = params['estimator_params']['mlp']
+        selected = params.get('feature_indices', params.get('context_indices', []))
+        assert 52 not in selected
+    assert set(config['data']['fred_market_symbols']) == {
+        'rate_dff', 'rate_dgs3mo', 'rate_dgs10', 'credit_hy_oas',
+        'credit_cp_nonfinancial', 'credit_cp_financial', 'dollar_broad', 'oil_wti',
+        'financial_nfci', 'financial_anfci'}
+    CDFHyperparameterStudy(config)
 
 
 @pytest.mark.parametrize('column,value', [
