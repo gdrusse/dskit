@@ -2,7 +2,7 @@
 
 ## Question
 
-For a post-Gate-3 intraday equity model, should the input remain the engineered tabular feature set, become a long sequence of lagged returns/OHLCV bars, or combine both? How should this choice interact with per-name forecast horizon \(H\) and sampling period \(L\)?
+For a post-Gate-3 intraday equity model, should the input remain the engineered tabular feature set, become a long sequence of lagged returns/OHLCV bars, or combine both? How should this choice interact with per-name forecast horizon $H$ and sampling period $L$?
 
 ## Finding
 
@@ -28,7 +28,7 @@ The clean post-Gate-3 comparison is:
 
 Require each challenger to beat the incumbent on the same locked folds, names, labels, scoring instants, costs, and many-attempts correction. Ablate sequence-only versus features-only versus hybrid; otherwise a hybrid win cannot establish whether the sequence contributed anything.
 
-Finally, **\(H\) and \(L\) are different controls and should not be coupled mechanically**. \(H\) is the label lead; \(L\) is how often a decision row is formed. A history of \(W\) minutes contains \(W/L\) observations only if the input itself is downsampled at \(L\). It is preferable to retain one-minute input bars while evaluating decisions every \(L\) minutes, so changing decision cadence does not erase microstructure. If \(H/L>1\), adjacent labels overlap; that reduces effective sample size and requires embargo and overlap-aware inference, but it does not justify coarsening the input. Per-name \(H\) should control each name’s target/output head or model, while the candidate context lengths remain fixed in clock time—for example 20 minutes, two hours, and one session—so names are compared on equivalent information. Longer \(H\) may benefit from longer or multi-resolution context, but this must be tested rather than imposed; the project’s existing evidence that denser \(L\) helped short-\(H\) prediction warns against sacrificing minute-level observations.
+Finally, **$H$ and $L$ are different controls and should not be coupled mechanically**. $H$ is the label lead; $L$ is how often a decision row is formed. A history of $W$ minutes contains $W/L$ observations only if the input itself is downsampled at $L$. It is preferable to retain one-minute input bars while evaluating decisions every $L$ minutes, so changing decision cadence does not erase microstructure. If $H/L>1$, adjacent labels overlap; that reduces effective sample size and requires embargo and overlap-aware inference, but it does not justify coarsening the input. Per-name $H$ should control each name’s target/output head or model, while the candidate context lengths remain fixed in clock time—for example 20 minutes, two hours, and one session—so names are compared on equivalent information. Longer $H$ may benefit from longer or multi-resolution context, but this must be tested rather than imposed; the project’s existing evidence that denser $L$ helped short-$H$ prediction warns against sacrificing minute-level observations.
 
 ## Sources
 

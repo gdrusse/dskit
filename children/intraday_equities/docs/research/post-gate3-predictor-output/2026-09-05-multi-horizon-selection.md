@@ -1,7 +1,7 @@
 ## Question
 
-For each Gate-3-approved asset with terminal horizon \(H\), should the model zoo
-emit and evaluate forecasts at every lead \(k=1,\ldots,H\), and how should a
+For each Gate-3-approved asset with terminal horizon $H$, should the model zoo
+emit and evaluate forecasts at every lead $k=1,\ldots,H$, and how should a
 single deployable model be selected when relative performance can change by
 horizon?
 
@@ -54,12 +54,12 @@ lead, so long leads can dominate mechanically. Define before seeing zoo
 results a benchmark-relative, horizon-normalized multivariate loss at each
 forecast origin, for example
 
-\[
+```math
 D_{m,o}=\sum_{k=1}^{H} w_k
 \frac{\ell(y_{o,k},\hat y_{m,o,k})-
       \ell(y_{o,k},\hat y_{0,o,k})}{s_k},
 \qquad w_k\ge 0,\quad \sum_k w_k=1,
-\]
+```
 
 where model `0` is the frozen no-information benchmark and each scale `s_k`
 is estimated and frozen using training-only data. Capistran supports using a

@@ -92,8 +92,8 @@ For one decision time $t$:
 
 - $i \in I$ indexes the union of currently held stocks and newly eligible
   stocks.
-- $o \in \Omega=\{1,\ldots,S\}$ indexes joint future-return scenarios.
-- $j \in J=\{1,\ldots,K\}$ indexes tangent knots used to linearize concave
+- $`o \in \Omega=\{1,\ldots,S\}`$ indexes joint future-return scenarios.
+- $`j \in J=\{1,\ldots,K\}`$ indexes tangent knots used to linearize concave
   utility.
 - $\omega_o>0$ is scenario $o$'s probability, with
   $\sum_{o\in\Omega}\omega_o=1$.
@@ -134,9 +134,9 @@ For each $i$:
   the scenario mean.
 - $\pi_i^{upper}$ is the conservative upper bound used in the portfolio-level
   false-signal-capital constraint.
-- $e_i\in\{0,1\}$ says whether the upstream Gate-1/Gate-3 evidence permits a
+- $`e_i\in\{0,1\}`$ says whether the upstream Gate-1/Gate-3 evidence permits a
   new position.
-- $f_i\in\{0,1\}$ is an explicit forced-exit instruction; $f_i=1$ requires a
+- $`f_i\in\{0,1\}`$ is an explicit forced-exit instruction; $f_i=1$ requires a
   zero target even when the stock is currently held.
 - $H_i$ is the declared holding horizon and $T_i^{expiry}$ is the forecast
   expiry.
@@ -155,12 +155,12 @@ cannot be read directly as live eligibility: they explicitly say
 The scenario producer must encode parameter uncertainty consistently. Under
 the current proposed recentering rule,
 
-$$
+```math
 r_{oi}
 =r_{oi}^{gross}-\mu_i^{gross}
 +\left(1-\widehat\pi_i\right)\mu_i^{gross}
 =r_{oi}^{gross}-\widehat\pi_i\mu_i^{gross}.
-$$
+```
 
 The forecast bundle supplies the resulting $r_{oi}$; the optimizer verifies
 the provenance rather than inventing a new uncertainty transform at decision
@@ -228,9 +228,9 @@ signal. No such equity calibration artifact exists yet.
 
 A new candidate may enter only when:
 
-$$
+```math
 e_i=1,
-$$
+```
 
 its bundle entry is fresh and hash-verifiable, its quote is fresh and the market
 is neither halted, locked nor crossed, and $p_i$ exceeds the configured minimum
@@ -254,9 +254,9 @@ For each $i$:
 - $b_i,s_i\in\ell_i\mathbb Z_{\ge0}$: shares bought and sold now, in permitted
   lot increments;
 - $q_i\in\mathbb Z_{\ge0}$: target shares;
-- $y_i\in\{0,1\}$: whether the target position is active;
-- $a_i\in\{0,1\}$: whether any trade is active; and
-- $d_i\in\{0,1\}$: active direction, where 1 permits a buy and 0 a sell.
+- $`y_i\in\{0,1\}`$: whether the target position is active;
+- $`a_i\in\{0,1\}`$: whether any trade is active; and
+- $`d_i\in\{0,1\}`$: active direction, where 1 permits a buy and 0 a sell.
 
 This proposal is long-only: $h_i,q_i\ge0$. A negative live position is outside
 the model contract and must trigger an explicit operational path rather than be
@@ -273,20 +273,20 @@ The scalar $\eta\in\mathbb R$ is the optimized tail-loss threshold.
 
 Derived values are
 
-$$
+```math
 x_i=p_iq_i,\qquad v_i^+=p_ib_i,\qquad v_i^-=p_is_i.
-$$
+```
 
 Here $x_i$ is target exposure, while $v_i^+$ and $v_i^-$ are buy and sell
 notional. Costs attach to trades, never to unchanged inventory.
 
 The lot-rounded no-trade threshold is fixed before solving:
 
-$$
+```math
 band_i=\ell_i\left\lceil
 \frac{B^{bps}10^{-4}\max(p_ih_i,m_{ticket})}{p_i\ell_i}
 \right\rceil.
-$$
+```
 
 A mandatory exit sets $band_i=0$. Every big-$M$ bound below must be derived from
 the tighter of inventory, position, exposure, cash, and buying-power limits. If
@@ -298,71 +298,71 @@ a finite valid bound cannot be proved, the solve refuses.
 
 For every $i$:
 
-$$
+```math
 q_i=h_i+b_i-s_i. \tag{C1}
-$$
+```
 
 New risk and forced exits are constrained explicitly:
 
-$$
+```math
 b_i\le M_i^{buy}e_i,
 \qquad
 q_i\le M_i^{target}(1-f_i). \tag{C1a}
-$$
+```
 
 Thus an ineligible held stock can only stay unchanged or shrink, while a
 forced-exit row sets its target to zero.
 
 Target activation and minimum position value are
 
-$$
+```math
 x_i\le \bar x_i y_i,
 \qquad
 x_i\ge m_{ticket}y_i. \tag{C2}
-$$
+```
 
 The portfolio position-count cap is
 
-$$
+```math
 \sum_{i\in I}y_i\le N_{max}. \tag{C3}
-$$
+```
 
 The post-trade cash identity is
 
-$$
+```math
 C_{after}=C_0+\sum_i v_i^- -\sum_i v_i^+ - Cost_{entry}. \tag{C4}
-$$
+```
 
 Cash and buying-power limits are
 
-$$
+```math
 C_{after}\ge C_{reserve}, \tag{C5a}
-$$
+```
 
-$$
+```math
 \sum_i v_i^+ + Cost_{entry}
 \le BP_0+\sum_i\rho_i v_i^-. \tag{C5b}
-$$
+```
 
 The gross-exposure ceiling is deliberately an inequality, so cash may remain
 unused:
 
-$$
+```math
 \sum_i x_i\le X_{gross}. \tag{C6}
-$$
+```
 
 The locked false-signal-capital rule is
 
-$$
+```math
 \sum_i \pi_i^{upper}x_i
 \le q_{fdr}\sum_i x_i,
-$$
+```
 
 or equivalently
 
-$$
+```math
 \sum_i(\pi_i^{upper}-q_{fdr})x_i\le0. \tag{C7}
-$$
+```
 
 The point estimate $\widehat\pi_i$ changes the scenario mean; the upper bound
 $\pi_i^{upper}$ protects this separate portfolio-level rule. Neither replaces
@@ -372,17 +372,17 @@ the other.
 
 Buy and sell cannot both be active:
 
-$$
+```math
 0\le b_i\le M_i^{buy}d_i,
 \qquad
 0\le s_i\le M_i^{sell}(1-d_i). \tag{C8a}
-$$
+```
 
 The no-trade band is enforced inside the optimization:
 
-$$
+```math
 band_i a_i\le b_i+s_i\le M_i^{trade}a_i. \tag{C8b}
-$$
+```
 
 Thus $a_i=0$ forces no trade, while $a_i=1$ requires a change at least as large
 as the band. No post-solve rounding may alter the target.
@@ -391,20 +391,20 @@ as the band. No post-solve rounding may alter the target.
 
 Let the variable sell-side TAF charge be
 
-$$
+```math
 TAF_i(s_i)=\min(f_i^{TAF}s_i,\bar f_i^{TAF}),
-$$
+```
 
 implemented with an exact binary piecewise-linear construction for the proposed
 order grouping. Then
 
-$$
+```math
 Cost_{entry}=\sum_i\left[
 s_i^{bps}10^{-4}(v_i^++v_i^-)
 +TAF_i(s_i)
 +f_i^{31}10^{-4}v_i^-
 \right].
-$$
+```
 
 TAF and Section 31 are sell-only. The spread applies to changed notional on both
 sides. The same fee must never be subtracted upstream and again here.
@@ -413,11 +413,11 @@ sides. The same fee must never be subtracted upstream and again here.
 
 For every scenario $o$:
 
-$$
+```math
 W_o^{actual}=C_{after}
 +\sum_i(1+r_{oi})x_i
 -Cost_{exit,o}(q). \tag{C9}
-$$
+```
 
 `Cost_exit` prices liquidation at the declared horizon convention, including
 exit half-spread and sell-only capped fees. This makes the objective use
@@ -426,10 +426,10 @@ round-trip economics.
 Capital deployed now cannot be used for a better signal arriving soon. The
 calibrated opportunity charge gives
 
-$$
+```math
 W_o^{utility}=W_o^{actual}
 -\lambda_t^{bps}10^{-4}\sum_i x_i. \tag{C10}
-$$
+```
 
 Unspent cash is not penalized.
 
@@ -437,22 +437,22 @@ Unspent cash is not penalized.
 
 Use dimensionless wealth $w=W/W_0$ and define
 
-$$
+```math
 u_\gamma(W)=
 \begin{cases}
 \log(w), & \gamma=1,\\[4pt]
 \dfrac{w^{1-\gamma}-1}{1-\gamma}, & \gamma>1.
 \end{cases}
-$$
+```
 
 This normalization makes utility comparable across account sizes without mixing
 dollars into a dimensionless objective. For tangent knots $k_j$ spanning
 verified positive wealth bounds,
 
-$$
+```math
 t_o\le u(k_j)+u'(k_j)(W_o^{utility}-k_j),
 \qquad \forall o,j. \tag{C11}
-$$
+```
 
 The minimum of these tangent upper bounds is a piecewise-linear approximation
 that HiGHS can optimize together with whole-share decisions.
@@ -460,9 +460,9 @@ that HiGHS can optimize together with whole-share decisions.
 The existing `pmquant.mio.utility_at` accepts a Kelly fraction rather than
 $\gamma$. Until the API is renamed, the adapter must call it with
 
-$$
+```math
 kelly\_fraction=1/\gamma,
-$$
+```
 
 not with $\gamma$ itself.
 
@@ -470,20 +470,20 @@ not with $\gamma$ itself.
 
 Define scenario loss relative to opening wealth:
 
-$$
+```math
 L_o=W_0-W_o^{actual}.
-$$
+```
 
 The Rockafellar–Uryasev linear construction is
 
-$$
+```math
 z_o\ge L_o-\eta,\qquad z_o\ge0, \tag{C12a}
-$$
+```
 
-$$
+```math
 \eta+\frac{1}{1-\beta}\sum_o\omega_oz_o
 \le L_{CVaR}. \tag{C12b}
-$$
+```
 
 This limit uses actual wealth, so both entry and scenario-liquidation costs are
 inside the loss calculation.
@@ -492,9 +492,9 @@ inside the loss calculation.
 
 The solver maximizes scenario-weighted utility:
 
-$$
+```math
 \max\;\sum_{o\in\Omega}\omega_ot_o. \tag{OBJ}
-$$
+```
 
 The opportunity charge is already inside $W_o^{utility}$; adding a second
 standalone return hurdle would double-count it and could discard useful hedges.

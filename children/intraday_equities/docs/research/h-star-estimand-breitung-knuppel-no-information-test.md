@@ -10,19 +10,19 @@ Fix a loss L, a forecast Ŷ_{t+h|t} made from information I_t, and an uninformat
 
 Breitung and Knüppel (2021, *Journal of Applied Econometrics*), “How far can we forecast?”, define a maximum informative horizon h* by the **no-information** null, under quadratic loss:
 
-\[
+```math
 H_0(h):\quad
 \mathbb{E}\bigl[(Y_{t+h}-\hat Y_{t+h|t})^2\bigr]
 \;\ge\;
 \mathbb{E}\bigl[(Y_{t+h}-\mu)^2\bigr]
 \quad\text{for all }h>h^*.
-\]
+```
 
-If Ŷ is exactly the conditional mean, this is the same as \(\mathbb{E}[Y_{t+h}\mid I_t]=\mu\) (constant mean). If Ŷ is noisy or estimated, those two nulls split:
+If Ŷ is exactly the conditional mean, this is the same as $\mathbb{E}[Y_{t+h}\mid I_t]=\mu$ (constant mean). If Ŷ is noisy or estimated, those two nulls split:
 
-- Mincer–Zarnowitz \(Y_{t+h}=\alpha+\beta\hat Y_{t+h|t}+v\).
-- \(\beta=0\): no linear map of Ŷ beats the mean (uncorrelated).
-- \(\beta\le 1/2\): Ŷ is no better than an equal-weight mix with the mean (true no-information for MSPE). Alternative is \(\beta>1/2\).
+- Mincer–Zarnowitz $Y_{t+h}=\alpha+\beta\hat Y_{t+h|t}+v$.
+- $\beta=0$: no linear map of Ŷ beats the mean (uncorrelated).
+- $\beta\le 1/2$: Ŷ is no better than an equal-weight mix with the mean (true no-information for MSPE). Alternative is $\beta>1/2$.
 
 **H is not “farthest |IC| within 1 SE of the peak.”** That is an ad hoc location on a curve. The academic object is the **largest h at which we still reject no-information**, under a stated loss and a stated benchmark.
 

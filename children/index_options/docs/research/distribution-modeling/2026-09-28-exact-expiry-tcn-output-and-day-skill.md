@@ -21,18 +21,18 @@ For index (i), after-close quote date (t), and exact expiry (e), let
 (S(e)) be the last trading session on or before expiry and (N_{t,e}) the
 number of future trading sessions. The learned target is
 
-\[
+```math
 y_{i,t,e}=\sqrt{\frac{1}{N_{t,e}}
 \sum_{s=t+1}^{S(e)}\left[\log(P_{i,s}/P_{i,s-1})\right]^2}.
-\]
+```
 
 `daily_rms_hat` is one scalar in daily log-return volatility units. The output
 also carries exact expiry metadata and two deterministic transforms:
 
-\[
+```math
 \widehat V_{t,e}=N_{t,e}\widehat y_{t,e}^{,2},\qquad
 \widehat\sigma_{annual}=\sqrt{252}\widehat y_{t,e}.
-\]
+```
 
 The output schema is:
 
@@ -79,17 +79,17 @@ Training-fold medians replace missing inputs. Means and scales are fitted on
 training rows only. For standardized inputs (z_j) and target mean/scale
 ((\mu_y,s_y)), the forecast is
 
-\[
+```math
 \widehat y=\max\left(0,\mu_y+s_y\left[b+\sum_{j=1}^{38}\beta_jz_j\right]\right).
-\]
+```
 
 The coefficients minimize
 
-\[
+```math
 \frac{1}{2n}\lVert z_y-X_z\beta\rVert_2^2
 +0.03\left(0.75\lVert\beta\rVert_1
 +0.125\lVert\beta\rVert_2^2\right).
-\]
+```
 
 The L1-heavy mixture removes redundant features while the L2 component
 stabilizes correlated lags and maturity variables. The full-history

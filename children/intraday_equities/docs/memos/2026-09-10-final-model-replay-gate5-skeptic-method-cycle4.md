@@ -207,15 +207,15 @@ Halt on asof 3000 with no later bar: entry @ 2000, skipped `halted` @
 
 ## Math
 
-Let \(P_o, P_c\) be the expiry bar's open and close, qty \(q=10\).
-Schwab sell-per-share \(s(P)\) from the shipped rates.
+Let $P_o, P_c$ be the expiry bar's open and close, qty $q=10$.
+Schwab sell-per-share $s(P)$ from the shipped rates.
 
-\[
+```math
 q \cdot s(12.0) = 0.0285972,\quad q \cdot s(12.5) = 0.0297075
-\]
+```
 
 Recorded exit price under `forced_exit_price_field="close"` is still
-\(P_o=12.0\), not \(P_c=12.5\). The fee uses \(s(P_c)\). A ledger that
+$P_o=12.0$, not $P_c=12.5$. The fee uses $s(P_c)$. A ledger that
 adds price and fee therefore marks the exit at one print and costs it
 at another.
 

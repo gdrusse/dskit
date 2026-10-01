@@ -6,15 +6,15 @@ For weak-signal equity-return prediction, how should one choose among equal-weig
 
 ## Finding
 
-**Default: average five independently trained copies of the same validated architecture; extend to ten only if rolling out-of-time results show worthwhile incremental gain.** There is no universal “5–10” theorem. Lakshminarayanan, Pritzel, and Blundell recommend \(M=5\) and report materially better uncertainty estimates even at that size. Gu, Kelly, and Xiu use ten independently seeded networks and average their return forecasts; their supplement explicitly records `Ensemble=10`. This is strong precedent, not proof that ten is optimal for every financial dataset.
+**Default: average five independently trained copies of the same validated architecture; extend to ten only if rolling out-of-time results show worthwhile incremental gain.** There is no universal “5–10” theorem. Lakshminarayanan, Pritzel, and Blundell recommend $M=5$ and report materially better uncertainty estimates even at that size. Gu, Kelly, and Xiu use ten independently seeded networks and average their return forecasts; their supplement explicitly records `Ensemble=10`. This is strong precedent, not proof that ten is optimal for every financial dataset.
 
-The economics of member count are governed by error correlation. If members have equal residual variance \(\sigma^2\) and pairwise correlation \(\rho\), the average has variance approximately
+The economics of member count are governed by error correlation. If members have equal residual variance $\sigma^2$ and pairwise correlation $\rho$, the average has variance approximately
 
-\[
+```math
 \sigma^2\left[\rho+\frac{1-\rho}{M}\right].
-\]
+```
 
-With independent errors, five members remove 80% and ten remove 90% of the reducible variance. With \(\rho=0.8\), those totals become 0.84 and 0.82: ten barely improves upon five. Thus measure the ensemble’s marginal out-of-time improvement and residual correlation, rather than assuming a member count.
+With independent errors, five members remove 80% and ten remove 90% of the reducible variance. With $\rho=0.8$, those totals become 0.84 and 0.82: ten barely improves upon five. Thus measure the ensemble’s marginal out-of-time improvement and residual correlation, rather than assuming a member count.
 
 For tiny-SNR returns, equal weighting has an important advantage: it introduces no additional fitted parameters. Stacking can theoretically exploit unequal skill, but its meta-learner must estimate weights from scarce, serially dependent validation evidence. Wolpert’s stacking and Breiman’s stacked regression require genuinely out-of-fold level-one predictions. In finance this means purged, embargoed, temporally ordered predictions—not random cross-validation. Smith and Wallis explain why estimated forecast-combination weights often lose to simple averages: finite-sample weight error can exceed the population benefit. Highly correlated seed forecasts make that problem especially ill-conditioned. If stacking is tested, use strongly regularized, preferably nonnegative weights and compare it directly with equal weighting on untouched periods.
 

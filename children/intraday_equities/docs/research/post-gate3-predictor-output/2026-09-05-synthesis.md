@@ -13,7 +13,7 @@ forecast so a robust optimizer can consume calibrated uncertainty?
 
 **Do not default to a large transformer or a point estimate.** The
 evidence favors a small pooled trunk, direct per-name heads at each
-name’s selected horizon \(H_i\), equal-weight seed ensembles of a
+name’s selected horizon $H_i$, equal-weight seed ensembles of a
 validated small model, tabular features as incumbent, and a
 quantile-plus-scenario uncertainty product whose **set geometry is
 calibrated on out-of-sample joint residuals**, not on in-sample
@@ -21,8 +21,8 @@ confidence intervals.
 
 ### Output record
 
-At time \(t\), emit one direct terminal forecast per eligible name at
-that name’s \(H_i\) (not a shared horizon, not a full path). Attach a
+At time $t$, emit one direct terminal forecast per eligible name at
+that name’s $H_i$ (not a shared horizon, not a full path). Attach a
 non-crossing quantile grid, conformal interval corrections, and a
 pointer to a synchronized residual-scenario bank. Downstream Pyomo
 robust/DRO code needs **joint forecast-error** at the decision horizon,
@@ -31,14 +31,14 @@ and are not a covariance.
 
 A prediction interval for the next *realized* return is not a
 confidence set for *expected* alpha. Using the former as an
-uncertainty set for \(\mu\) is usually far too conservative.
+uncertainty set for $\mu$ is usually far too conservative.
 
 ### Architecture (see `2026-09-05-shared-heads.md`)
 
 Caruana (1997), Gu–Kelly–Xiu (2020), and Sirignano–Cont (2019) support
 **pooling**, not depth. P7 already showed untuned large nets overshoot
 a ~30-parameter budget on this SNR. Primary candidate: compact shared
-trunk + lightweight \((name, H_i)\) heads, with independent
+trunk + lightweight $(name, H_i)$ heads, with independent
 ridge/tree fallbacks per name and a leave-names-out check for negative
 transfer (Yu et al. PCGrad). Direct multi-step targets match
 heterogeneous Gate-3 horizons (Marcellino–Stock–Watson: direct is more
@@ -52,8 +52,8 @@ default.
 Keep the engineered tabular set and ridge/LightGBM as incumbent
 (Grinsztajn et al.; Gu–Kelly–Xiu). Sequence and hybrid models are
 separate, equal-protocol challengers on stationary channels (returns,
-ranges, volume changes), not raw prices. \(H\) is the label; \(L\) is
-decision cadence — do not coarsen the one-minute path just because \(H\)
+ranges, volume changes), not raw prices. $H$ is the label; $L$ is
+decision cadence — do not coarsen the one-minute path just because $H$
 is long.
 
 ### Ensembles (see `2026-09-05-ensembles.md`)
@@ -74,11 +74,11 @@ coverage alone. MC dropout / Gaussian NGBoost / raw residuals are not
 
 ### Robust sets (see `2026-09-05-robust-optimization-sets.md`)
 
-Estimate sets from purged walk-forward residual vectors \(e_t=r_t-\hat\mu_t\).
+Estimate sets from purged walk-forward residual vectors $e_t=r_t-\hat\mu_t$.
 Practical default: volatility-normalized residuals; shrinkage/factor
 ellipsoid if a conic solver is acceptable; Bertsimas–Sim budgeted
-polyhedron if order selection stays LP/MILP. Calibrate \(\Gamma\) /
-radius / Wasserstein \(\varepsilon\) on **decision** metrics
+polyhedron if order selection stays LP/MILP. Calibrate $\Gamma$ /
+radius / Wasserstein $\varepsilon$ on **decision** metrics
 (utility, turnover, no-trade rate, constraint violations), not only
 set coverage (Ben-Tal–Nemirovski; Delage–Ye; Esfahani–Kuhn).
 Over-wide boxes empty the book; under-calibrated intervals let the
@@ -87,7 +87,7 @@ optimizer treat noise as alpha.
 ### What not to do first
 
 - Train or fully fine-tune a large transformer as the production mean.
-- Emit only \(\hat\mu\).
+- Emit only $\hat\mu$.
 - Feed model CI half-widths straight into a box around expected return.
 - Reuse Gate 1–2 features as a constraint on later sequence models —
   they are an incumbent, not a ceiling.
