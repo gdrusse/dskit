@@ -410,3 +410,11 @@ Use a fresh onboarding root for changed source data and new report paths for a
 rerun; writers intentionally refuse to overwrite the previous evidence.
 Only prepared-data coverage is selected here; further feature/region admission
 can reduce the training sample.
+
+Coverage candidate `af9ad4f4` closed after two sequential independent reviews:
+`/root/horizon_json_correctness` and `/root/horizon_json_integration`, both
+C0/M0/m0/n0. Their retained conversation reports cover correctness/source
+semantics and integration/test quality respectively. The second lens separately
+verified all 45 counts and source SHA-256 and confirmed all three report writers
+refuse overwrite without changing bytes. No implementation/config changes after
+review; this evidence append and re-entry update are editorial only.

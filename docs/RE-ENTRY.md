@@ -1,5 +1,21 @@
 # Re-entry
 
+## QQQ exact-horizon CDF coverage selector completed (2026-10-01)
+
+- JSON-only existing-node pipeline: `children/index_options/configs/run-cdf-horizon-coverage.json`;
+  localtables source config beside it. No Python implementation changed.
+- QQQ argmax over exact actual settlement-close horizons 1-45: **7 days / 1,497
+  eligible dates**; runner-up 14 days / 1,400. All 45 counts independently verified.
+- Counts require the prepared panel's eligible nine-quantile proxy and observed
+  target; not raw-chain coverage, physical-probability calibration or prospective
+  execution. Feature/decision-region admission may reduce the sample further.
+- WSL2: 37.64s acquisition / 16.20s pipeline; hard 29-minute / 6-GiB caps;
+  78 focused tests and three graph probes. Both independent final lenses on
+  af9ad4f4 reported C0/M0/m0/n0; review outputs retained in this task.
+- Updated draft/runbook: `children/index_options/docs/plans/README.md`.
+  Next: continue feature-selection/PCA planning on the selected exact horizon;
+  no new training or feature search ran.
+
 ## Stock-options bootstrap accepted (2026-10-01)
 
 - ADR-0212 is accepted and the exact thin `children/stock_options` bootstrap
