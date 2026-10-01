@@ -1,16 +1,34 @@
-# Active handoff — 2026-10-01
+# Active handoff — 2026-10-01: conversion and feature-gap audits delivered
 
-ADR-0213 is owner-approved and implemented on cdf-runbook-reproduction.
-AMZN standard JSON runner produces options, expiry-close labels, full CDF
-proxies and compatible panel; 915 eligible rows / 549 dates, exact 42-DTE
-winner 90 dates. Focused tests pass; corrected final candidate awaiting independent review/closure.
-See children/stock_options/docs/plans/README.md for the complete runbook.
+AMZN conversion and both QQQ/AMZN JSON feature-gap interfaces are complete.
+Final candidate a0128bf3 passed two fresh independent lenses C0/M0/m0/N1;
+only deferred Nit is copied QQQ prose in AMZN writer metadata. Code, identities,
+outputs and predicates are correct. Final runtime/config/test/evidence blobs
+are locked; subsequent edits are closure documentation and automatic journals.
 
-QQQ JSON feature-gap audit is implemented and executed on the fixed 1,497-date
-cohort: 155 fields, 13 subgroups, explicit feature/family gap JSONL outputs.
-Core groups retain 1,497 dates; 32 newer fields need materialization. Source
-clock/vintage limits are emitted in the run outputs. No training/PCA/selection.
-Owner explicitly wants AMZN finished too; complete both final reviews and push.
+Published exact gap files:
+- children/index_options/pipeline_runs/qqq-feature-availability/feature-gaps.jsonl
+- children/stock_options/pipeline_runs/amzn-feature-availability/feature-gaps.jsonl
+
+Sibling family-gaps.jsonl, rows.jsonl, verification.json and runs/<run>/
+{carry,config,result}.json provide family failures, complete retained rows,
+hashes, source/clock caveats, counts and date windows. QQQ retains 1,497 dates:
+71,880 feature-gap cells. AMZN retains 90 selected 42-DTE dates: nine CDF
+fields complete; 146 candidate fields not materialized, 13,140 feature-gap
+cells. These are prepared-data gaps, not proof all underlying sources are absent.
+
+Both runbooks are children/<child>/docs/plans/README.md. Standard runner JSON:
+index_options/configs/run-qqq-feature-availability.json and
+stock_options/configs/run-amzn-feature-availability.json. Use existing source
+onboarding and fresh run_root/three writer paths for repeats; committed outputs
+refuse overwrite. WSL2, project venv, hard6GiB/no-swap/1740sec limits.
+Independent AMZN rerun byte-matched all three JSONL files in19.72sec/<1GiB.
+Conversion yields915eligibleCDFrows/549dates; exact42-DTE winner90dates.
+
+Next bounded task: materialize missing derivable families on the fixed QQQ
+cohort, inspect source release/vintage clocks, rerun gaps before feature
+selection/PCA/model training. AMZN returns/RV/OHLC need preparation; historical
+trade bars lack historical quote/IV/OI fields and current data cannot fill them.
 
 # Re-entry
 

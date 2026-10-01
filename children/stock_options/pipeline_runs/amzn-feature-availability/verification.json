@@ -1,0 +1,48 @@
+{
+  "run": "amzn-feature-availability-2026-10-01-cfe3c76c",
+  "cohort": 90,
+  "start": "2024-03-22",
+  "end": "2026-08-14",
+  "feature_gaps": 13140,
+  "reasons": {
+    "field_absent": 13140
+  },
+  "family_gaps": 1080,
+  "complete_by_family": {
+    "chain_nodes": 0,
+    "expanded_volatility_context": 0,
+    "implied_cdf": 90,
+    "liquidity": 0,
+    "macro_context": 0,
+    "ohlc_shape": 0,
+    "positioning_changes": 0,
+    "realized_volatility": 0,
+    "return_history": 0,
+    "surface_changes": 0,
+    "surface_level": 0,
+    "variance_gap": 0,
+    "volatility_context": 0
+  },
+  "checks": [
+    "exact selected cohort",
+    "all feature gap identities and reasons",
+    "all family gap identities",
+    "date milliseconds match",
+    "full panel unchanged except added asof_ms",
+    "CDF/options/labels hashes unchanged"
+  ],
+  "artifacts": {
+    "rows.jsonl": {
+      "sha256": "2d92692af27acb251060809b266dd5acabd0ec6637c46128f702fd8f47c202c7",
+      "bytes": 150812
+    },
+    "feature-gaps.jsonl": {
+      "sha256": "b4b17200380a17116cde2a4d8c53226cbc5912e4eee50fcd99ca2acaee3984b4",
+      "bytes": 1843650
+    },
+    "family-gaps.jsonl": {
+      "sha256": "dcec30594c2ee774b26dd5be0797a20291705696782865e7774bc91c45a7e587",
+      "bytes": 118800
+    }
+  }
+}
