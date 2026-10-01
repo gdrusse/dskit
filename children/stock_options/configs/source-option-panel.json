@@ -1,0 +1,13 @@
+{
+  "path": "pipeline_runs/option-panel",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "input_panel"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Imports the AMZN prepared option panel written by run-prepare-option-panel.json (its panel_rows node) as stream input_panel, so the shared index_options step-1/step-2 files can read it: register it as source cdf-horizon-panel and acquire into ./pipeline_runs/cdf-horizon-source, the names those files declare. The path is relative to the working directory at acquire time and must equal the directory panel_rows writes to; a test pins the two. quote_date is the row's entry date. Use a fresh onboarding root when the panel is re-prepared, since acquired data is immutable."
+}

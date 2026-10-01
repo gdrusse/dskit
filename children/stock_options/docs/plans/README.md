@@ -40,6 +40,7 @@ Run in WSL2, from this child, using the shared project environment:
       /usr/bin/time -v /home/russell/dskit/.venv/bin/python \
       -m dskit.pipeline run configs/run-cdf-horizon-coverage.json --asof 2026-10-01
 
+That last command is superseded (the file is retired) by "AMZN steps 1-2" below.
 Apply the same systemd resource prefix to each import for hard per-command
 caps. All are offline CPU tasks. Already acquired immutable data can be reused;
 do not repeat init. For an independent reproduction, use a fresh onboarding root
@@ -253,3 +254,33 @@ append evidence, update the re-entry summary and retain automatic journals.
 All 18 changed code/config/test/output paths byte-match the locked candidate.
 Next preparation work: materialize causally derivable families, then repeat
 the fixed-cohort audit. Do not infer model readiness from completed conversion.
+
+
+## AMZN steps 1-2 (shared index files)
+
+AMZN runs the same two files as the indices, `../index_options/configs/run-step1-expiry-coverage.json`
+and `run-step2-feature-availability.json`; this child's `run-cdf-horizon-coverage.json` and
+`run-amzn-feature-availability.json` are retired (run evidence stays). AMZN's one close source
+is the saved Alpaca IEX daily stock bars (single-exchange closes, not the consolidated official
+close); reading them needs ADR-0216's pinned-archive reader, not yet approved, so AMZN runs are
+BLOCKED until it lands (the prep config's `prices` node is repointed then; no Yahoo wiring is
+added). Option trade bars (`trade_close`) stand in for tradable quotes by declaration. After the
+archive root is acquired (runbook above), from `children/stock_options`:
+
+    mkdir -p pipeline_runs/option-panel pipeline_runs/step1-expiry-coverage/selection pipeline_runs/step2-feature-availability
+    python -m dskit.pipeline run configs/run-prepare-option-panel.json --asof 2026-10-01
+    python -m dskit.onboarding init --root ./pipeline_runs/cdf-horizon-source
+    python -m dskit.onboarding register-source cdf-horizon-panel --catalog-source cdf-horizon-panel --connector localtables --config @configs/source-option-panel.json --activate --root ./pipeline_runs/cdf-horizon-source
+    python -m dskit.onboarding acquire --source cdf-horizon-panel --stream input_panel --mode backfill --root ./pipeline_runs/cdf-horizon-source
+    # the only edit: foreach.keys = ["AMZN"] in both ../index_options/configs/run-step1-expiry-coverage.json and run-step2-feature-availability.json
+    python -m dskit.pipeline run ../index_options/configs/run-step1-expiry-coverage.json --asof 2026-10-01
+    python -m dskit.onboarding init --root ./pipeline_runs/step1-selection-source
+    python -m dskit.onboarding register-source step1-selection --catalog-source step1-selection --connector localtables --config @../index_options/configs/source-step1-selection.json --activate --root ./pipeline_runs/step1-selection-source
+    python -m dskit.onboarding acquire --source step1-selection --stream selected --mode backfill --root ./pipeline_runs/step1-selection-source
+    python -m dskit.pipeline run ../index_options/configs/run-step2-feature-availability.json --asof 2026-10-01
+    git checkout -- ../index_options/configs/run-step1-expiry-coverage.json ../index_options/configs/run-step2-feature-availability.json
+
+Caveats: trade bars are not bid/ask; the archive covers only 30-45 nominal DTE (1-29 were never
+collected); families other than the CDF are absent from the panel and report as gaps. Reading
+the outputs is as in the index runbook. Cross-check: step-2 `implied_cdf` "yes" dates equal the
+prior `coverage__amzn` `eligible_dates` at the new DTE (90 if the winner is 42).

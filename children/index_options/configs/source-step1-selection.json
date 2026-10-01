@@ -1,0 +1,13 @@
+{
+  "path": "pipeline_runs/step1-expiry-coverage/selection",
+  "layout": "file",
+  "effective_field": "last_entry_ms",
+  "effective_unit": "ms",
+  "streams": [
+    "selected"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Imports step 1's selected.jsonl (one winner row per ticker) for step 2: register it as source step1-selection and acquire stream selected into ./pipeline_runs/step1-selection-source. effective_field is last_entry_ms, the winner row's latest entry date, because every onboarded row needs an instant and step 1 writes no publication clock. The path is relative to the working directory at acquire time and must equal the directory step 1's selection_evidence writes to; a test pins the two. Use a fresh onboarding root whenever step 1 is re-run, since acquired data is immutable."
+}
