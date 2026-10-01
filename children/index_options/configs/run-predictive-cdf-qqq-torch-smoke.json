@@ -1,5 +1,5 @@
 {
-  "notes": "ADR-0211 quick plumbing configuration, not acceptance evidence; two candidates with two epochs, otherwise identical frozen study.",
+  "notes": "ADR-0211 quick plumbing configuration, not acceptance evidence; two candidates with two epochs, otherwise identical frozen study. Entry-metadata census: purged 2018 contains no 26-calendar-day QQQ cell; declare the observed 44 cells, with all 45 in 2019. No outcome or score informed this correction.",
   "data": {
     "root": "/home/russell/data/index_options/ob",
     "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
@@ -392,7 +392,6 @@
           23,
           24,
           25,
-          26,
           27,
           28,
           29,
