@@ -11,6 +11,7 @@ from dskit.pipeline.libs.predictive_cdf import (
     HorizonEmpiricalCDF, ScaledEmpiricalCDF, MonotoneCDF, QuantileCDF, MixtureMLPCDF,
     NGBoostCDF, OptionImpliedTransportCDF, PCAAugmentedCDF, QuantileForestCDF, SetMixtureCDF,
     SplineFlowCDF,
+    BetaTransformedPoolCDF, DynamicPITRecalibratedCDF, SemiparametricGPDTailCDF,
     TailConstrainedQuantileBlendCDF,
 )
 
@@ -28,6 +29,163 @@ class _StaticGridEstimator:
     def curve(self, x):
         values = np.tile(np.linspace(-2, 2, 21) + self.shift, (len(x), 1))
         return GridCurve(values, np.linspace(0, 1, 21))
+
+
+def _dynamic(**changes):
+    params = dict(
+        endpoint_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        endpoint_params={'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+        knots=41, map_knots=11, half_life_days=30, lookback_days=365,
+        prior_strength=5, minimum_rows=4)
+    model = DynamicPITRecalibratedCDF(**{**params, **changes})
+    model.endpoint = _StaticGridEstimator(0)
+    return model
+
+
+def test_dynamic_pit_recalibration_is_delayed_same_date_and_future_invariant():
+    x = np.ones((8, 2))
+    fit_y = np.linspace(-1.5, 1.5, len(x))
+    cal_x, cal_y = x[:4], np.array([-1.5, -1., -.5, 0.])
+    context = pd.DataFrame({
+        'date': ['2019-12-01', '2019-12-02', '2019-12-03', '2019-12-04'],
+        'end': ['2019-12-05'] * 4})
+    dates = np.array(['2020-01-02', '2020-01-02', '2020-02-10', '2020-03-20'])
+    ends = np.array(['2020-01-31', '2020-01-31', '2020-03-01', '2020-04-15'])
+    outcomes = np.array([1.5, 1.0, -1.5, 99.])
+
+    first = _dynamic().fit(x, fit_y, cal_x, cal_y)
+    first.fit_context(context, date_field='date', end_field='end')
+    curve = first.curve_context(x[:4], dates, ends, outcomes)
+    state = first._research_state()
+    assert state['admitted_rows_by_date'] == [4, 6, 7]
+    np.testing.assert_array_equal(curve.values[0], curve.values[1])
+
+    changed = _dynamic().fit(x, fit_y, cal_x, cal_y)
+    changed.fit_context(context, date_field='date', end_field='end')
+    altered = outcomes.copy(); altered[-1] = -99.
+    other = changed.curve_context(x[:4], dates, ends, altered)
+    np.testing.assert_array_equal(curve.values, other.values)
+    assert (np.diff(curve.values, axis=1) >= 0).all()
+
+
+def test_dynamic_pit_prior_excludes_immature_calibration_outcomes():
+    x = np.ones((8, 2)); fit_y = np.linspace(-1.5, 1.5, len(x))
+    context = pd.DataFrame({'date': ['2019-12-01'] * 4,
+                            'end': ['2019-12-15', '2019-12-15',
+                                    '2020-03-01', '2020-03-01']})
+    curves = []
+    for future in ([1.5, 1.5], [-1.5, -1.5]):
+        model = _dynamic(minimum_rows=2, prior_strength=10).fit(
+            x, fit_y, x[:4], np.r_[-1.5, -1.5, future])
+        model.fit_context(context, date_field='date', end_field='end')
+        curves.append(model.curve_context(
+            x[:1], ['2020-01-02'], ['2020-02-01'], [0.]).values)
+    np.testing.assert_array_equal(*curves)
+
+
+def test_dynamic_pit_recency_weighting_and_sparse_global_fallback():
+    old = pd.DataFrame({'date': ['2018-01-01'] * 4 + ['2019-12-20'] * 4,
+                        'end': ['2018-02-01'] * 4 + ['2019-12-25'] * 4})
+    x = np.ones((10, 2)); y = np.linspace(-1.5, 1.5, 10)
+    cal_y = np.r_[np.full(4, -1.5), np.full(4, 1.5)]
+    short = _dynamic(half_life_days=5, minimum_rows=20).fit(x, y, x[:8], cal_y)
+    short.fit_context(old, date_field='date', end_field='end')
+    fallback = short.curve_context(x[:1], ['2020-01-02'], ['2020-02-01'], [0.])
+    np.testing.assert_allclose(fallback.values, short.curve(x[:1]).values)
+    weighted = _dynamic(half_life_days=5, minimum_rows=4, prior_strength=0).fit(
+        x, y, x[:8], cal_y)
+    weighted.fit_context(old, date_field='date', end_field='end')
+    recent = weighted.curve_context(x[:1], ['2020-01-02'], ['2020-02-01'], [0.])
+    assert recent.quantile([.5])[0, 0] > fallback.quantile([.5])[0, 0]
+
+
+def test_beta_transformed_pool_is_finite_monotone_and_has_exact_identity():
+    params = dict(
+        left_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        left_params={'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+        right_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        right_params={'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+        index_indices=[2, 3], cell_indices=[0, 2, 3], knots=41,
+        weights=[0, .5, 1], alphas=[.75, 1, 1.25], betas=[.75, 1, 1.25],
+        tail_probability=.1, crps_weight=1, tail_weight=1)
+    x = np.array([[5, 1, 1, 0], [5, 1, 0, 1]] * 12, dtype=float)
+    y = np.tile(np.linspace(-1.5, 1.5, 12), 2)
+    identity = BetaTransformedPoolCDF(**{**params, 'weights': [0], 'alphas': [1], 'betas': [1]})
+    identity.left = _StaticGridEstimator(0); identity.right = _StaticGridEstimator(1)
+    identity.fit(x, y, x, y)
+    expected = identity.left.curve(x).cdf(np.linspace(-3, 3, 51))
+    np.testing.assert_allclose(identity.curve(x).cdf(np.linspace(-3, 3, 51)), expected)
+    model = BetaTransformedPoolCDF(**params)
+    model.left = _StaticGridEstimator(0); model.right = _StaticGridEstimator(1)
+    model.fit(x, y, x, y)
+    curve = model.curve(x)
+    assert np.isfinite(curve.quantile([.001, .05, .5, .95, .999])).all()
+    assert (np.diff(curve.cdf(np.linspace(-5, 5, 101)), axis=1) >= -1e-12).all()
+    assert model._research_state()['grid_candidates'] == 27
+
+
+def test_semiparametric_gpd_tails_preserve_center_and_pool_sparse_groups():
+    params = dict(
+        endpoint_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        endpoint_params={'horizon_index': 0, 'reference_index': 1, 'knots': 101},
+        index_indices=[2, 3], knots=101, splice_probabilities=[.1, .9],
+        minimum_exceedances=6, prior_strength=10, shape_bounds=[-.4, .8],
+        probability_floor=.0001)
+    x = np.array([[5, 1, 1, 0]] * 80 + [[5, 1, 0, 1]] * 4, dtype=float)
+    y = np.r_[np.linspace(-4, 4, 80), [-1, -.5, .5, 1]]
+    model = SemiparametricGPDTailCDF(**params)
+    model.endpoint = _StaticGridEstimator(0)
+    model.fit(x, y, x[:20], y[:20])
+    curve, base = model.curve(x[:2]), model.endpoint.curve(x[:2])
+    np.testing.assert_allclose(curve.quantile([.1, .25, .5, .75, .9]),
+                               base.quantile([.1, .25, .5, .75, .9]), atol=1e-10)
+    assert np.isfinite(curve.values).all() and (np.diff(curve.values, axis=1) >= 0).all()
+    state = model._research_state()
+    assert state['groups'][1]['fallback'] == 'global'
+    assert all(-.4 <= v['left_shape'] <= .8 and -.4 <= v['right_shape'] <= .8
+               for v in state['groups'])
+
+
+def test_semiparametric_gpd_anchor_batches_are_bounded_and_exact():
+    class TrackingGrid(_StaticGridEstimator):
+        def __init__(self, shift):
+            super().__init__(shift)
+            self.maximum_batch = 0
+
+        def curve(self, x):
+            self.maximum_batch = max(self.maximum_batch, len(x))
+            return super().curve(x)
+
+    params = dict(
+        endpoint_class='dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+        endpoint_params={'horizon_index': 0, 'reference_index': 1, 'knots': 101},
+        index_indices=[2, 3], knots=101, splice_probabilities=[.1, .9],
+        minimum_exceedances=6, prior_strength=10, shape_bounds=[-.4, .8],
+        probability_floor=.0001)
+    x = np.array([[5, 1, 1, 0]] * 80 + [[5, 1, 0, 1]] * 20, dtype=float)
+    y = np.linspace(-4, 4, len(x))
+    bounded = SemiparametricGPDTailCDF(**params, anchor_batch_size=7)
+    bounded.endpoint = TrackingGrid(0)
+    bounded.fit(x, y, x[:20], y[:20])
+    unbatched = SemiparametricGPDTailCDF(**params, anchor_batch_size=1000)
+    unbatched.endpoint = TrackingGrid(0)
+    unbatched.fit(x, y, x[:20], y[:20])
+    assert bounded.endpoint.maximum_batch == 7
+    np.testing.assert_equal(bounded.global_tails, unbatched.global_tails)
+    np.testing.assert_equal(bounded.group_tails, unbatched.group_tails)
+    np.testing.assert_array_equal(bounded.curve(x[:5]).values,
+                                  unbatched.curve(x[:5]).values)
+
+
+def test_scores_include_proper_quantile_tail_metrics_and_declared_hits():
+    curve = GridCurve([[-2., 0., 2.]], [[0., .5, 1.]])
+    scores, _ = ChronologicalCDFStudy.scores(
+        curve, np.array([.25]), 401, [[-2, -1], [1, 2]], 201,
+        tail_probabilities=[.01, .025, .05, .1, .9, .95, .975, .99])
+    assert scores['lower_tail_quantile_score'][0] >= 0
+    assert scores['upper_tail_quantile_score'][0] >= 0
+    assert {'below_01', 'below_025', 'below_05', 'below_10',
+            'above_90', 'above_95', 'above_975', 'above_99'}.issubset(scores)
 
 
 def _tail_blend(**changes):
@@ -819,7 +977,10 @@ def test_hpo_json_stages_freeze_development_and_refuse_partial_or_changed_inputs
     report = study.run(frame, stage='report', provenance=provenance)
     assert report['selected_variants_from_development'] == selected['variants']
     assert all(m['n'] == 10 for m in report['metrics'])
-    assert json.loads((tmp_path/'hpo/report/complete.json').read_text())['stage'] == 'report'
+    completion = json.loads((tmp_path/'hpo/report/complete.json').read_text())
+    assert completion['stage'] == 'report'
+    assert completion['resource']['peak_rss_kib'] > 0
+    assert completion['resource']['stage_wall_seconds'] >= 0
     assert (tmp_path/'hpo/report/convergence.json').exists()
     with pytest.raises(FileExistsError):
         study.run(frame, stage='search', partition='separate', provenance=provenance)
@@ -859,6 +1020,37 @@ def test_hpo_selection_guard_filters_by_every_group_and_persists_evidence(tmp_pa
         'reference_deviation': pytest.approx(.03), 'passed': False}]
     with pytest.raises(ValueError, match='no candidate'):
         study._guard(pd.DataFrame(rows), [('candidate', 'calibrated')])
+
+
+def test_hpo_selection_guard_enforces_equal_cell_improvement_and_tail_scores(tmp_path):
+    import dskit.pipeline.libs.predictive_cdf as pack
+
+    config, _ = _hpo_fixture(tmp_path)
+    config['experiment']['selection_guard'] = {
+        'reference': 'reference', 'variant': 'raw',
+        'metrics': ['below_05'], 'target': .05, 'tolerance': 1e-12,
+        'cell_improvement_metrics': ['crps'],
+        'cell_noninferiority_metrics': [
+            'lower_tail_quantile_score', 'upper_tail_quantile_score']}
+    study = pack.CDFHyperparameterStudy(config)
+    rows = []
+    for model, crps, lower, upper in [
+            ('reference', 1., .4, .3), ('candidate', .9, .39, .31)]:
+        for group in ('A', 'B'):
+            for horizon in (1, 2):
+                rows.append({'unit': group, 'h': horizon, 'model': model,
+                             'variant': 'raw', 'below_05': .05, 'crps': crps,
+                             'lower_tail_quantile_score': lower,
+                             'upper_tail_quantile_score': upper})
+    with pytest.raises(ValueError, match='no candidate'):
+        study._guard(pd.DataFrame(rows), [('candidate', 'raw')])
+    for row in rows:
+        if row['model'] == 'candidate':
+            row['upper_tail_quantile_score'] = .29
+    eligible, evidence = study._guard(pd.DataFrame(rows), [('candidate', 'raw')])
+    assert eligible == [('candidate', 'raw')]
+    assert {row.get('comparison') for row in evidence[0]['comparisons']} >= {
+        'cell_strict_improvement', 'cell_noninferiority'}
 
 
 def test_hpo_selection_guard_refuses_invalid_contract(tmp_path):

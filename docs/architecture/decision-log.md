@@ -28125,3 +28125,182 @@ is only +0.0146%; both paired intervals cross zero, QQQ/IWM do not improve, and
 condor-loss MSE is marginally worse. Carry it as the protocol-qualified offline
 research incumbent, but treat it as practically tied and not trading-ready.
 See `children/index_options/docs/memos/2026-09-30-center-only-conditioned-transport.md`.
+
+## ADR-0202 — Dynamic tail calibration of exact-expiry physical CDFs
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0201. Base:
+`9248d9e77c706c4bb341160cc8bbb31b8549da02` in the isolated WSL2 worktree
+`/home/russell/dskit-cdf-tail-calibration`.
+
+### Objective and limits
+
+Improve the calibration of the physical terminal-return CDF at each exact
+listed-option expiry, especially its 1%, 2.5%, 5%, 95%, 97.5% and 99% tails,
+without sacrificing the center-distribution CRPS improvement. Entry spot can
+convert the result to a terminal-price CDF for later strike/payoff evaluation.
+This remains offline reused-history research: no contract selection, execution,
+sizing, deployment, trading, or fresh-holdout claim is authorized.
+
+### Methods
+
+Add three generic estimator families behind the existing JSON-driven CDF seam.
+
+1. **Dynamic causal PIT recalibration.** Wrap one label-free endpoint. Begin a
+   validation year with the preceding calibration band, then forecast entry
+   dates in order. Before each date, admit only earlier forecasts whose outcome
+   availability date is strictly earlier than that entry date. Fit a monotone
+   PIT map with exponentially decayed entry-date weights and declared maximum
+   lookback. Same-date rows are forecast as a batch before any same-date label
+   can enter. Sparse maps shrink to the preceding-band global map. The wrapper
+   is the sole calibration-label consumer.
+2. **Beta-transformed CDF pool.** Form a CDF-space convex pool of the frozen
+   empirical/MLP and option-transport endpoints, then apply a beta CDF. Select
+   only from finite JSON-declared `(weight, alpha, beta)` grids on the preceding
+   calibration band. Minimize a declared proper composite of ordinary CRPS and
+   lower/upper quantile-weighted scores, with equal index/actual-DTE-cell row
+   weights. Nested label-consuming endpoints and a second calibrator refuse.
+3. **Semiparametric GPD tails.** Preserve a declared endpoint's center between
+   train-only splice probabilities and replace both outer quantile functions
+   with generalized-Pareto excess curves. Thresholds and exceedances use fit
+   labels only; left/right scale and shape are partially pooled by index with a
+   declared prior strength. Shape is bounded to keep finite means; continuity
+   and monotonicity at both joins are mandatory. Calibration labels are not
+   used by this estimator.
+
+All temporal context passes separately from predictors. Outcome dates schedule
+when historical labels become observable and can never enter endpoint features.
+Perturbing a future or same-date label must leave earlier forecasts bitwise
+unchanged. Actual calendar DTE remains reporting/calibration-cell metadata and
+is excluded from endpoint predictors.
+
+### Metrics, experiment and stopping rule
+
+Extend the row-level score packet with integrated lower and upper quantile
+scores over declared probability bands and hit indicators at 1%, 2.5%, 5%,
+10%, 90%, 95%, 97.5% and 99%. Ordinary CRPS, existing fixed-threshold tail
+CRPS, strike Brier, bounded-condor loss, PIT and counts remain. Scores are
+proper forecast-evaluation quantities; raw hit rates are diagnostics, not an
+optimization objective by themselves.
+
+One standard JSON reuses the immutable ADR-0201 prepared panel and provenance
+in a fresh output root. It compares at most twelve bounded candidates: dynamic
+PIT half-life/lookback choices, beta-pool grids and GPD threshold/pooling
+choices. Controls are the horizon empirical forecast, ADR-0193 option
+transport, ADR-0195 guard-aware incumbent and ADR-0201 center-only incumbent.
+Search and selection use 2016–2018 only. One candidate per family and one
+primary are frozen before opening 2019–2025 partitions.
+
+Primary promotion requires strict development equal-cell CRPS improvement
+versus ADR-0201, no worse equal-cell lower and upper quantile-weighted scores,
+and for every index no worse absolute 5%/95% hit-rate deviation within
+`1e-12`. If no candidate passes, retain ADR-0201. Later history is descriptive
+and cannot reverse the decision. Report paired 60/120-entry-date block
+intervals, exact-DTE grids, yearly and index counts, all declared hit levels,
+and tail-severity scores.
+
+Every stage remains below 30 minutes and 6 GiB process RSS, with at most two
+CPU threads and one GPU job. There are no one-off execution scripts, new data
+acquisitions, silent fallbacks or overwritten artifacts.
+
+### Tests and exit
+
+Focused tests must prove delayed-label admission, same-date batching, future
+label invariance, recency weighting, sparse/global fallback, beta-pool endpoint
+identities and monotonicity, finite-grid determinism, GPD center identity,
+continuous joins, index pooling and finite tails, proper-score reconstruction,
+and JSON/config refusal. Exit requires all bounded stages or explicit retained
+failures, completion/hash evidence, a standalone memo, review evidence,
+RE-ENTRY and append-only journal updates, and zero unresolved Critical/Major
+review findings. Generated artifacts remain ignored; publication requires the
+later owner authorization plus clean independent review.
+
+### Sequential Phase B amendment (2026-09-30)
+
+Phase A completed all three development searches, but the selector correctly
+refused every family before later-period evaluation. Dynamic PIT and beta pools
+worsened CRPS and tail calibration. GPD tails improved development equal-cell
+CRPS by about 1.18%, but failed the per-index 5%/95% guards.
+
+Before any Phase B result is inspected, test the same declared GPD construction
+around the governed center-only incumbent instead of the raw option transport.
+This is leakage-safe without double calibration: the nested incumbent selects
+its blend on the preceding calibration year, while the outer GPD parameters use
+fit labels only. The GPD wrapper itself never reads calibration labels. Compare
+5% and 10% splice thresholds and prior strengths 25/100 in one fresh JSON and
+artifact root. Controls, years, score packet, guard and promotion rule remain
+unchanged. If no candidate passes all guards, stop and retain ADR-0201.
+
+### Resource-correct Phase C replay (2026-09-30)
+
+The unchanged Phase B challenger passed selection, but its first late-period
+evaluation retained five redundant controls and reached 6,416,424 KiB peak RSS
+(6.12 GiB), violating the 6 GiB ceiling. Treat the entire Phase B evaluation
+root as resource-invalid evidence; it cannot support the result.
+
+Replay the already frozen `center_gpd_05_prior25` specification in a fresh root
+with only the horizon empirical control and ADR-0201 center incumbent. Candidate
+parameters, development years, selected variant, guard, score resolutions,
+evaluation partitions and data/provenance remain byte-for-byte unchanged.
+Removing redundant legacy controls cannot influence any fit or selection. Use
+only this replay for final results and require every stage below the original
+limits.
+
+### Phase D allocator-correct replay (2026-09-30)
+
+Phase C proved redundant controls were not the cause: late evaluation still
+reached 6,431,384 KiB. Review of the CUDA MLP lifecycle found temporary
+training and inference tensors were released by Python scope but unused CUDA
+allocator blocks were never explicitly returned between sequential annual
+fits. Add deterministic lifecycle cleanup after each fit and prediction
+(`del`, garbage collection, then `torch.cuda.empty_cache()` on declared CUDA).
+No weights, predictions, candidate, score, selection or data contract changes.
+
+Run the exact Phase C document in one final fresh root under the new
+implementation identity. Phase A–C evaluation artifacts remain retained but
+invalid for the final claim. Phase D alone must pass every completion, hash,
+time and memory gate.
+
+### Phase E bounded-anchor replay (2026-09-30)
+
+Phase D reduced ordinary live CUDA retention, but the late partition still
+peaked at 6,440,992 KiB (6.14 GiB), above the unchanged 6 GiB ceiling. The
+remaining avoidable allocation is the GPD wrapper asking its nested endpoint
+for every fit-row quantile grid at once even though it retains only the two
+splice anchors. Add a declared positive `anchor_batch_size` and concatenate
+only those two anchor columns from bounded endpoint calls. This is a numerical
+resource refactor: fit rows, endpoint weights, splice probabilities, GPD
+estimation, validation curves and all selection rules remain unchanged. A
+focused test must prove the endpoint never receives more than the declared
+batch and that fitted tails/curves are identical to an unbatched fit.
+
+Replay only the already-frozen Phase D late partition first. If and only if it
+is below 6 GiB, complete the other partitions and final report in the same
+fresh root. Phase D evidence is retained but resource-invalid; Phase E alone
+may support the final claim.
+
+### Phase F review-correct final replay (2026-09-30)
+
+Independent skeptic review found four Major gaps before Phase E could produce
+evidence. Correct them before any final replay: make the selector itself enforce
+strict equal-cell CRPS improvement and lower/upper equal-cell tail-score
+noninferiority; construct every dynamic PIT prior from outcomes already mature
+at the forecast date; delete live final-batch CUDA tensor references before
+allocator cleanup; and persist process peak RSS plus stage wall time in every
+completion record. Tests must fail first for the selector and immature-PIT
+case. Phase E's interrupted search is retained but invalid. Run the unchanged
+frozen candidate and controls in a fresh Phase F root; only Phase F may support
+the final outcome, subject to a clean independent re-review and all original
+limits.
+
+### Outcome
+
+Phase F selected `center_gpd_05_prior25`. It passed enforced development strict
+equal-cell CRPS improvement, lower/upper tail-score noninferiority and all six
+per-index 5%/95% guards. On 68,084 reused 2019–2025 forecasts it improves
+equal-cell CRPS 0.08045% versus ADR-0201; paired 60/120-date intervals exclude
+zero. Proper lower/upper tail scores improve, but 5% lower hit frequency remains
+7.956% overall and 9.794% for QQQ. Promote only as the governed offline research
+incumbent and optimizer-prototype CDF input, not as production-good calibration
+or trading authority. Phase F stages remain below 4:03 and 3.63 GiB. Superseded
+Phase B–E artifacts are retained but invalid for claims.

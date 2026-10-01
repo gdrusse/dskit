@@ -1,0 +1,1771 @@
+{
+  "notes": "ADR-0202 Phase B center-incumbent semiparametric GPD-tail study; no trading authority.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+    "chain_features": "/home/russell/dskit-cdf-option-surface/children/index_options/pipeline_runs/predictive_cdf_tail_blend_20260930/raw_chain_features.parquet",
+    "raw_chain": {
+      "nodes": 9,
+      "moneyness_bounds": [
+        -0.3,
+        0.3
+      ],
+      "max_node_gap": 0.04,
+      "proxy_probabilities": [
+        0.01,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        0.95,
+        0.99
+      ],
+      "min_wing_nodes": 3,
+      "max_inner_gap": 0.08,
+      "max_outer_gap": 0.12
+    },
+    "symbols": {
+      "SPY": "VIX",
+      "QQQ": "VXN",
+      "IWM": "RVX"
+    },
+    "market_symbols": {
+      "market_vix9d": {
+        "symbol": "VIX9D",
+        "max_age_days": 7
+      },
+      "market_vix3m": {
+        "symbol": "VIX3M",
+        "max_age_days": 7
+      },
+      "market_vix6m": {
+        "symbol": "VIX6M",
+        "max_age_days": 7
+      },
+      "market_vvix": {
+        "symbol": "VVIX",
+        "max_age_days": 7
+      },
+      "market_skew": {
+        "symbol": "SKEW",
+        "max_age_days": 7
+      },
+      "market_gvz": {
+        "symbol": "GVZ",
+        "max_age_days": 7
+      }
+    },
+    "fred_market_symbols": {
+      "rate_dff": {
+        "stream": "dff",
+        "field": "DFF",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs3mo": {
+        "stream": "dgs3mo",
+        "field": "DGS3MO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs10": {
+        "stream": "dgs10",
+        "field": "DGS10",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_hy_oas": {
+        "stream": "bamlh0a0hym2",
+        "field": "BAMLH0A0HYM2",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_nonfinancial": {
+        "stream": "dcpn3m",
+        "field": "DCPN3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_financial": {
+        "stream": "dcpf3m",
+        "field": "DCPF3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "dollar_broad": {
+        "stream": "dtwexbgs",
+        "field": "DTWEXBGS",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "oil_wti": {
+        "stream": "dcoilwtico",
+        "field": "DCOILWTICO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "financial_nfci": {
+        "stream": "nfci",
+        "field": "NFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      },
+      "financial_anfci": {
+        "stream": "anfci",
+        "field": "ANFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      }
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": true
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_SPY",
+      "is_QQQ",
+      "is_IWM",
+      "chain_log_atm_iv",
+      "chain_log_skew25",
+      "chain_log_curvature25",
+      "chain_log_rel_spread",
+      "chain_log_put_call_oi",
+      "chain_log_contracts",
+      "chain_log_open_interest",
+      "chain_log_quote_depth",
+      "chain_has_25d_pair",
+      "chain_has_put_call_oi",
+      "actual_calendar_dte",
+      "momentum_5",
+      "momentum_22",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "market_vix9d",
+      "market_vix9d_age_days",
+      "market_vix3m",
+      "market_vix3m_age_days",
+      "market_vix6m",
+      "market_vix6m_age_days",
+      "market_vvix",
+      "market_vvix_age_days",
+      "market_skew",
+      "market_skew_age_days",
+      "market_gvz",
+      "market_gvz_age_days",
+      "chain_node_00_log_moneyness",
+      "chain_node_00_iv",
+      "chain_node_00_log_rel_spread",
+      "chain_node_00_log_oi",
+      "chain_node_00_log_depth",
+      "chain_node_00_mask",
+      "chain_node_01_log_moneyness",
+      "chain_node_01_iv",
+      "chain_node_01_log_rel_spread",
+      "chain_node_01_log_oi",
+      "chain_node_01_log_depth",
+      "chain_node_01_mask",
+      "chain_node_02_log_moneyness",
+      "chain_node_02_iv",
+      "chain_node_02_log_rel_spread",
+      "chain_node_02_log_oi",
+      "chain_node_02_log_depth",
+      "chain_node_02_mask",
+      "chain_node_03_log_moneyness",
+      "chain_node_03_iv",
+      "chain_node_03_log_rel_spread",
+      "chain_node_03_log_oi",
+      "chain_node_03_log_depth",
+      "chain_node_03_mask",
+      "chain_node_04_log_moneyness",
+      "chain_node_04_iv",
+      "chain_node_04_log_rel_spread",
+      "chain_node_04_log_oi",
+      "chain_node_04_log_depth",
+      "chain_node_04_mask",
+      "chain_node_05_log_moneyness",
+      "chain_node_05_iv",
+      "chain_node_05_log_rel_spread",
+      "chain_node_05_log_oi",
+      "chain_node_05_log_depth",
+      "chain_node_05_mask",
+      "chain_node_06_log_moneyness",
+      "chain_node_06_iv",
+      "chain_node_06_log_rel_spread",
+      "chain_node_06_log_oi",
+      "chain_node_06_log_depth",
+      "chain_node_06_mask",
+      "chain_node_07_log_moneyness",
+      "chain_node_07_iv",
+      "chain_node_07_log_rel_spread",
+      "chain_node_07_log_oi",
+      "chain_node_07_log_depth",
+      "chain_node_07_mask",
+      "chain_node_08_log_moneyness",
+      "chain_node_08_iv",
+      "chain_node_08_log_rel_spread",
+      "chain_node_08_log_oi",
+      "chain_node_08_log_depth",
+      "chain_node_08_mask",
+      "rn_proxy_eligible",
+      "rn_forward_ratio",
+      "rn_projection_distance",
+      "rn_interior_mass",
+      "rn_q_0100",
+      "rn_q_0500",
+      "rn_q_1000",
+      "rn_q_2500",
+      "rn_q_5000",
+      "rn_q_7500",
+      "rn_q_9000",
+      "rn_q_9500",
+      "rn_q_9900",
+      "rn_median",
+      "rn_iqr",
+      "rn_left_width",
+      "rn_right_width",
+      "rate_dff",
+      "rate_dff_age_days",
+      "rate_dff_missing",
+      "rate_dgs3mo",
+      "rate_dgs3mo_age_days",
+      "rate_dgs3mo_missing",
+      "rate_dgs10",
+      "rate_dgs10_age_days",
+      "rate_dgs10_missing",
+      "credit_hy_oas",
+      "credit_hy_oas_age_days",
+      "credit_hy_oas_missing",
+      "dollar_broad",
+      "dollar_broad_age_days",
+      "dollar_broad_missing",
+      "oil_wti",
+      "oil_wti_age_days",
+      "oil_wti_missing",
+      "financial_nfci",
+      "financial_nfci_age_days",
+      "financial_nfci_missing",
+      "financial_anfci",
+      "financial_anfci_age_days",
+      "financial_anfci_missing",
+      "chain_log_atm_iv_change_1",
+      "chain_log_atm_iv_change_5",
+      "chain_log_atm_iv_change_22",
+      "chain_log_skew25_change_1",
+      "chain_log_skew25_change_5",
+      "chain_log_skew25_change_22",
+      "chain_log_curvature25_change_1",
+      "chain_log_curvature25_change_5",
+      "chain_log_curvature25_change_22",
+      "term_slope_prev",
+      "term_slope_next",
+      "chain_liquidity_asymmetry",
+      "implied_minus_realized_variance",
+      "rn_mean",
+      "rn_variance",
+      "rn_skewness",
+      "rn_kurtosis",
+      "rn_left_tail_integral",
+      "rn_right_tail_integral",
+      "market_vix9d_missing",
+      "market_vix3m_missing",
+      "market_vix6m_missing",
+      "market_vvix_missing",
+      "market_skew_missing",
+      "market_gvz_missing",
+      "credit_cp_nonfinancial",
+      "credit_cp_nonfinancial_age_days",
+      "credit_cp_nonfinancial_missing",
+      "credit_cp_financial",
+      "credit_cp_financial_age_days",
+      "credit_cp_financial_missing",
+      "credit_cp_spread",
+      "credit_cp_spread_missing"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "years": [
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "output": "/home/russell/dskit-cdf-option-surface/children/index_options/pipeline_runs/predictive_cdf_conditioned_transport_20260930/study",
+    "samples": 401,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical",
+      "research_incumbent",
+      "center_incumbent"
+    ],
+    "bootstrap": {
+      "blocks": [
+        60,
+        120
+      ],
+      "replicates": 400,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "incumbent_blend_025": {
+        "class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+        "params": {
+          "mlp_weight": 0.25,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "mlp": {
+            "components": 1,
+            "hidden": [
+              16
+            ],
+            "epochs": 8,
+            "batch_size": 1024,
+            "learning_rate": 0.003,
+            "weight_decay": 0.1,
+            "min_scale": 0.1,
+            "activation": "tanh",
+            "dropout": 0,
+            "seeds": [
+              11
+            ],
+            "device": "cuda",
+            "deterministic": true,
+            "feature_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41
+            ]
+          }
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "option_proxy_transport": {
+        "class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+        "params": {
+          "proxy_indices": [
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            136,
+            137
+          ],
+          "probabilities": [
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99
+          ],
+          "eligible_index": 125,
+          "condition_indices": [
+            27,
+            39,
+            40,
+            41
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "tail_width": 4,
+          "transport_knots": 21
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "research_incumbent": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TailConstrainedQuantileBlendCDF",
+        "params": {
+          "incumbent_class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+          "incumbent_params": {
+            "mlp_weight": 0.25,
+            "condition_indices": [
+              27,
+              39,
+              40,
+              41
+            ],
+            "reference_index": 38,
+            "knots": 401,
+            "mlp": {
+              "components": 1,
+              "hidden": [
+                16
+              ],
+              "epochs": 8,
+              "batch_size": 1024,
+              "learning_rate": 0.003,
+              "weight_decay": 0.1,
+              "min_scale": 0.1,
+              "activation": "tanh",
+              "dropout": 0,
+              "seeds": [
+                11
+              ],
+              "device": "cuda",
+              "deterministic": true,
+              "feature_indices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                35,
+                36,
+                37,
+                38,
+                39,
+                40,
+                41
+              ]
+            }
+          },
+          "option_class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+          "option_params": {
+            "proxy_indices": [
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137
+            ],
+            "probabilities": [
+              0.01,
+              0.05,
+              0.1,
+              0.25,
+              0.5,
+              0.75,
+              0.9,
+              0.95,
+              0.99
+            ],
+            "eligible_index": 125,
+            "condition_indices": [
+              27,
+              39,
+              40,
+              41
+            ],
+            "reference_index": 38,
+            "knots": 401,
+            "tail_width": 4,
+            "transport_knots": 21
+          },
+          "index_indices": [
+            39,
+            40,
+            41
+          ],
+          "cell_indices": [
+            52,
+            39,
+            40,
+            41
+          ],
+          "knots": 401,
+          "tolerance": 1e-12,
+          "left_weights": [
+            0,
+            0.025,
+            0.05,
+            0.075,
+            0.1
+          ],
+          "center_weights": [
+            0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5
+          ],
+          "right_weights": [
+            0,
+            0.025,
+            0.05,
+            0.075,
+            0.1
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "center_incumbent": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TailConstrainedQuantileBlendCDF",
+        "params": {
+          "incumbent_class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+          "incumbent_params": {
+            "mlp_weight": 0.25,
+            "condition_indices": [
+              27,
+              39,
+              40,
+              41
+            ],
+            "reference_index": 38,
+            "knots": 401,
+            "mlp": {
+              "components": 1,
+              "hidden": [
+                16
+              ],
+              "epochs": 8,
+              "batch_size": 1024,
+              "learning_rate": 0.003,
+              "weight_decay": 0.1,
+              "min_scale": 0.1,
+              "activation": "tanh",
+              "dropout": 0,
+              "seeds": [
+                11
+              ],
+              "device": "cuda",
+              "deterministic": true,
+              "feature_indices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                35,
+                36,
+                37,
+                38,
+                39,
+                40,
+                41
+              ]
+            }
+          },
+          "option_class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+          "option_params": {
+            "proxy_indices": [
+              129,
+              130,
+              131,
+              132,
+              133,
+              134,
+              135,
+              136,
+              137
+            ],
+            "probabilities": [
+              0.01,
+              0.05,
+              0.1,
+              0.25,
+              0.5,
+              0.75,
+              0.9,
+              0.95,
+              0.99
+            ],
+            "eligible_index": 125,
+            "condition_indices": [
+              27,
+              39,
+              40,
+              41
+            ],
+            "reference_index": 38,
+            "knots": 401,
+            "tail_width": 4,
+            "transport_knots": 21,
+            "transport_condition_indices": [
+              27,
+              39,
+              40,
+              41
+            ],
+            "transport_prior_strength": 50,
+            "transport_local_bounds": [
+              0.05,
+              0.95
+            ]
+          },
+          "index_indices": [
+            39,
+            40,
+            41
+          ],
+          "cell_indices": [
+            52,
+            39,
+            40,
+            41
+          ],
+          "knots": 401,
+          "tolerance": 1e-12,
+          "left_weights": [
+            0,
+            0.025,
+            0.05,
+            0.075,
+            0.1
+          ],
+          "center_weights": [
+            0,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5
+          ],
+          "right_weights": [
+            0,
+            0.025,
+            0.05,
+            0.075,
+            0.1
+          ]
+        },
+        "calibrate": false,
+        "pooled": true
+      }
+    },
+    "tail_probabilities": [
+      0.01,
+      0.025,
+      0.05,
+      0.1,
+      0.9,
+      0.95,
+      0.975,
+      0.99
+    ]
+  },
+  "experiment": {
+    "output": "/home/russell/dskit-cdf-tail-calibration/children/index_options/pipeline_runs/predictive_cdf_tail_calibration_center_gpd_20260930",
+    "development_years": [
+      2016,
+      2017,
+      2018
+    ],
+    "label_cutoff": "2019-01-01",
+    "max_candidates": 3,
+    "candidates": {
+      "center_gpd_05_prior25": {
+        "class": "dskit.pipeline.libs.predictive_cdf:SemiparametricGPDTailCDF",
+        "params": {
+          "endpoint_class": "dskit.pipeline.libs.predictive_cdf:TailConstrainedQuantileBlendCDF",
+          "endpoint_params": {
+            "incumbent_class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+            "incumbent_params": {
+              "mlp_weight": 0.25,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "mlp": {
+                "components": 1,
+                "hidden": [
+                  16
+                ],
+                "epochs": 8,
+                "batch_size": 1024,
+                "learning_rate": 0.003,
+                "weight_decay": 0.1,
+                "min_scale": 0.1,
+                "activation": "tanh",
+                "dropout": 0,
+                "seeds": [
+                  11
+                ],
+                "device": "cuda",
+                "deterministic": true,
+                "feature_indices": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12,
+                  13,
+                  14,
+                  15,
+                  16,
+                  17,
+                  18,
+                  19,
+                  20,
+                  21,
+                  22,
+                  23,
+                  24,
+                  25,
+                  26,
+                  27,
+                  28,
+                  29,
+                  30,
+                  31,
+                  32,
+                  33,
+                  34,
+                  35,
+                  36,
+                  37,
+                  38,
+                  39,
+                  40,
+                  41
+                ]
+              }
+            },
+            "option_class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+            "option_params": {
+              "proxy_indices": [
+                129,
+                130,
+                131,
+                132,
+                133,
+                134,
+                135,
+                136,
+                137
+              ],
+              "probabilities": [
+                0.01,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                0.75,
+                0.9,
+                0.95,
+                0.99
+              ],
+              "eligible_index": 125,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "tail_width": 4,
+              "transport_knots": 21,
+              "transport_condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "transport_prior_strength": 50,
+              "transport_local_bounds": [
+                0.05,
+                0.95
+              ]
+            },
+            "index_indices": [
+              39,
+              40,
+              41
+            ],
+            "cell_indices": [
+              52,
+              39,
+              40,
+              41
+            ],
+            "knots": 401,
+            "tolerance": 1e-12,
+            "left_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ],
+            "center_weights": [
+              0,
+              0.1,
+              0.2,
+              0.3,
+              0.4,
+              0.5
+            ],
+            "right_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ]
+          },
+          "index_indices": [
+            39,
+            40,
+            41
+          ],
+          "knots": 401,
+          "splice_probabilities": [
+            0.05,
+            0.95
+          ],
+          "minimum_exceedances": 50,
+          "prior_strength": 25,
+          "shape_bounds": [
+            -0.4,
+            0.8
+          ],
+          "probability_floor": 0.0001
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "center_gpd_05_prior100": {
+        "class": "dskit.pipeline.libs.predictive_cdf:SemiparametricGPDTailCDF",
+        "params": {
+          "endpoint_class": "dskit.pipeline.libs.predictive_cdf:TailConstrainedQuantileBlendCDF",
+          "endpoint_params": {
+            "incumbent_class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+            "incumbent_params": {
+              "mlp_weight": 0.25,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "mlp": {
+                "components": 1,
+                "hidden": [
+                  16
+                ],
+                "epochs": 8,
+                "batch_size": 1024,
+                "learning_rate": 0.003,
+                "weight_decay": 0.1,
+                "min_scale": 0.1,
+                "activation": "tanh",
+                "dropout": 0,
+                "seeds": [
+                  11
+                ],
+                "device": "cuda",
+                "deterministic": true,
+                "feature_indices": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12,
+                  13,
+                  14,
+                  15,
+                  16,
+                  17,
+                  18,
+                  19,
+                  20,
+                  21,
+                  22,
+                  23,
+                  24,
+                  25,
+                  26,
+                  27,
+                  28,
+                  29,
+                  30,
+                  31,
+                  32,
+                  33,
+                  34,
+                  35,
+                  36,
+                  37,
+                  38,
+                  39,
+                  40,
+                  41
+                ]
+              }
+            },
+            "option_class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+            "option_params": {
+              "proxy_indices": [
+                129,
+                130,
+                131,
+                132,
+                133,
+                134,
+                135,
+                136,
+                137
+              ],
+              "probabilities": [
+                0.01,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                0.75,
+                0.9,
+                0.95,
+                0.99
+              ],
+              "eligible_index": 125,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "tail_width": 4,
+              "transport_knots": 21,
+              "transport_condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "transport_prior_strength": 50,
+              "transport_local_bounds": [
+                0.05,
+                0.95
+              ]
+            },
+            "index_indices": [
+              39,
+              40,
+              41
+            ],
+            "cell_indices": [
+              52,
+              39,
+              40,
+              41
+            ],
+            "knots": 401,
+            "tolerance": 1e-12,
+            "left_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ],
+            "center_weights": [
+              0,
+              0.1,
+              0.2,
+              0.3,
+              0.4,
+              0.5
+            ],
+            "right_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ]
+          },
+          "index_indices": [
+            39,
+            40,
+            41
+          ],
+          "knots": 401,
+          "splice_probabilities": [
+            0.05,
+            0.95
+          ],
+          "minimum_exceedances": 50,
+          "prior_strength": 100,
+          "shape_bounds": [
+            -0.4,
+            0.8
+          ],
+          "probability_floor": 0.0001
+        },
+        "calibrate": false,
+        "pooled": true
+      },
+      "center_gpd_10_prior50": {
+        "class": "dskit.pipeline.libs.predictive_cdf:SemiparametricGPDTailCDF",
+        "params": {
+          "endpoint_class": "dskit.pipeline.libs.predictive_cdf:TailConstrainedQuantileBlendCDF",
+          "endpoint_params": {
+            "incumbent_class": "dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF",
+            "incumbent_params": {
+              "mlp_weight": 0.25,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "mlp": {
+                "components": 1,
+                "hidden": [
+                  16
+                ],
+                "epochs": 8,
+                "batch_size": 1024,
+                "learning_rate": 0.003,
+                "weight_decay": 0.1,
+                "min_scale": 0.1,
+                "activation": "tanh",
+                "dropout": 0,
+                "seeds": [
+                  11
+                ],
+                "device": "cuda",
+                "deterministic": true,
+                "feature_indices": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12,
+                  13,
+                  14,
+                  15,
+                  16,
+                  17,
+                  18,
+                  19,
+                  20,
+                  21,
+                  22,
+                  23,
+                  24,
+                  25,
+                  26,
+                  27,
+                  28,
+                  29,
+                  30,
+                  31,
+                  32,
+                  33,
+                  34,
+                  35,
+                  36,
+                  37,
+                  38,
+                  39,
+                  40,
+                  41
+                ]
+              }
+            },
+            "option_class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+            "option_params": {
+              "proxy_indices": [
+                129,
+                130,
+                131,
+                132,
+                133,
+                134,
+                135,
+                136,
+                137
+              ],
+              "probabilities": [
+                0.01,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                0.75,
+                0.9,
+                0.95,
+                0.99
+              ],
+              "eligible_index": 125,
+              "condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "reference_index": 38,
+              "knots": 401,
+              "tail_width": 4,
+              "transport_knots": 21,
+              "transport_condition_indices": [
+                27,
+                39,
+                40,
+                41
+              ],
+              "transport_prior_strength": 50,
+              "transport_local_bounds": [
+                0.05,
+                0.95
+              ]
+            },
+            "index_indices": [
+              39,
+              40,
+              41
+            ],
+            "cell_indices": [
+              52,
+              39,
+              40,
+              41
+            ],
+            "knots": 401,
+            "tolerance": 1e-12,
+            "left_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ],
+            "center_weights": [
+              0,
+              0.1,
+              0.2,
+              0.3,
+              0.4,
+              0.5
+            ],
+            "right_weights": [
+              0,
+              0.025,
+              0.05,
+              0.075,
+              0.1
+            ]
+          },
+          "index_indices": [
+            39,
+            40,
+            41
+          ],
+          "knots": 401,
+          "splice_probabilities": [
+            0.1,
+            0.9
+          ],
+          "minimum_exceedances": 50,
+          "prior_strength": 50,
+          "shape_bounds": [
+            -0.4,
+            0.8
+          ],
+          "probability_floor": 0.0001
+        },
+        "calibrate": false,
+        "pooled": true
+      }
+    },
+    "candidate_groups": {
+      "center_gpd": [
+        "center_gpd_05_prior25",
+        "center_gpd_05_prior100",
+        "center_gpd_10_prior50"
+      ]
+    },
+    "search_partitions": {
+      "center_gpd": [
+        "center_gpd_05_prior25",
+        "center_gpd_05_prior100",
+        "center_gpd_10_prior50"
+      ]
+    },
+    "task_features": {
+      "SPY": "is_SPY",
+      "QQQ": "is_QQQ",
+      "IWM": "is_IWM"
+    },
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 401,
+      "tail_points": 201,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        401,
+        1601
+      ],
+      "audit_rows": 12
+    },
+    "expected_cells": {
+      "development": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      },
+      "evaluation": {
+        "SPY": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "QQQ": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ],
+        "IWM": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45
+        ]
+      }
+    },
+    "evaluation_partitions": {
+      "development": [
+        2016,
+        2017,
+        2018
+      ],
+      "early": [
+        2019,
+        2020,
+        2021
+      ],
+      "middle": [
+        2022,
+        2023
+      ],
+      "late": [
+        2024,
+        2025
+      ]
+    },
+    "selection_guard": {
+      "reference": "center_incumbent",
+      "variant": "raw",
+      "metrics": [
+        "below_05",
+        "above_95"
+      ],
+      "target": 0.05,
+      "tolerance": 1e-12
+    },
+    "notes": "ADR-0202 Phase B preregistered center-incumbent GPD tails; GPD uses fit labels only and nested blend uses disjoint calibration labels."
+  }
+}
