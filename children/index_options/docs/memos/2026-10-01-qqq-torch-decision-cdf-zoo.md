@@ -27,6 +27,112 @@ also excludes labels settling in 2019. Both encoders use 22 entry-known return
 lags plus context. The GRU reads oldest to newest within a row, never across
 forecasts. All models share identities, features, scales, regions and splits.
 
+## What the selected regions mean
+
+The question is whether the forecast gets probabilities right at strikes that
+could matter for an entry decision. Each QQQ/date/expiry uses its own listed
+chain. Eligible condors have out-of-the-money puts and calls, exactly 5-dollar
+wings, valid side-specific quotes and sizes, positive credit after the configured
+fees, and every strike within an absolute log strike/spot distance of 0.1.
+The region contains the distinct endpoints of **all** qualifying candidates,
+not a winner chosen using the eventual outcome or a model's forecast.
+
+Within a forecast, put endpoints share half the weight and call endpoints
+share half. A strike repeated in several candidate condors is counted once.
+These are discrete, entry-known decision thresholds; the score does not average
+over an arbitrary whole-distribution grid. It also does not measure trading
+profit or directly score the probability inside every wing interval.
+
+At strike $K$, the model supplies the probability that the expiry price finishes
+at or below $K$. This is its cumulative distribution function (CDF). The realized
+answer is 1 if that event happens and 0 otherwise. The same entry-known scale
+maps both strikes and terminal returns into comparable units. Forecasts without
+eligible regions are excluded from local scores and counted explicitly.
+
+## Models: same forecast, different encoders
+
+Both neural models output a **three-component Gaussian mixture**: three smooth
+bell-shaped distributions, each with a learned center, spread and weight.
+Their weights sum to one, producing one coherent CDF. They differ in how the
+entry features are processed before those mixture parameters are produced.
+
+- **MLP (multilayer perceptron):** reads the 40 entry features together through
+  32-unit and 16-unit hidden layers. The 22 return lags occupy fixed input
+  positions; the other 18 features supply volatility, expiry/lifecycle,
+  reference-scale and instrument context.
+- **GRU (gated recurrent unit):** reads those same 22 lags oldest to newest,
+  updating a 16-unit memory within each forecast. Its final memory joins the
+  same 18 context features, followed by the same [32,16] mixture head.
+  Memory resets for each row; forecasts cannot exchange future information.
+- **Empirical reference:** estimates the training return distribution separately
+  for each exact time to expiry, represented by 401 quantile knots. It learns
+  no neural weights and uses no validation outcomes. Each challenger is compared
+  with this actual fitted reference on the same eligible observations.
+
+A larger sequence model is therefore being tested against both a simpler
+feature model and a historical-distribution reference, under the same scoring
+rules. This run does not establish that one architecture is generally superior.
+
+## Loss functions: what training rewards
+
+A loss is the error training tries to reduce. Let $p$ be the model's probability
+of finishing at or below one selected strike, and $e$ its realized 0-or-1 answer.
+Lower loss is better.
+
+**Decision Brier** uses $(p-e)^2$. It penalizes probability errors at the selected
+strikes. **Decision log** uses $-[e\log(p)+(1-e)\log(1-p)]$, with natural logarithms.
+It penalizes confident wrong probabilities more sharply. Each local term first
+averages strikes using the put/call-balanced weights, then averages eligible
+forecasts. As an illustration, if $p=0.20$ and the event occurs, Brier is
+$(0.20-1)^2=0.64$ and log loss is $-\log(0.20)=1.609$. These illustrate the
+definitions, not an additional observation from the study.
+
+**NLL (negative log likelihood)** is $-\log f(y)$, where $f$ is the model's
+density and $y$ is the realized scaled return. It rewards placing density near
+the full realized outcome, across all training rows. This term supplies
+whole-distribution training information; it is not the primary acceptance metric.
+Its coefficient does not imply a fixed percentage contribution because the
+terms have different numerical scales.
+
+The three JSON objectives, also used as the graph's loss labels, are:
+
+| Graph label | Minimized training objective | Intended emphasis |
+|---|---|---|
+| Brier | 0.1 × NLL + decision Brier | Squared probability error in selected regions |
+| Log | 0.1 × NLL + decision log | Stronger penalty for confidently wrong local probabilities |
+| Balanced | 0.1 × NLL + decision Brier + 0.25 × decision log | Both local penalties, at the declared weights |
+
+“Balanced” names this fixed combination; it does not mean the contributions
+are equal or the weights were optimized. Every candidate, whatever its training
+loss, is ranked by the same held-out decision Brier skill. Comparing composite
+loss magnitudes across different objectives would not rank forecast quality.
+
+## Graph: performance in the selected regions
+
+![Paired decision-region skill for all 12 model/loss/learning-rate combinations in 2018, and the two frozen 2019 finalists with 95% block-bootstrap intervals. All development skills are negative; neither later finalist passes acceptance.](2026-10-01-qqq-torch-decision-cdf-results.png)
+
+Panel A compares every tested encoder and loss at both learning rates on the
+2018 development holdout. Brier at 0.001 leads within both encoders; all twelve
+remain worse than empirical. The loss labels refer to the complete composites
+above, each including 0.1 × NLL. Lines connect the two learning rates within a
+model/loss pair; they are not uncertainty intervals.
+
+Panel B evaluates only the frozen winners in 2019, after the declared refit.
+Its bars are pointwise 95% intervals from 30-date and 60-date paired block
+bootstraps. The MLP point is positive, but neither finalist's lower bounds
+exceed zero. The other ten configurations were not tested in 2019, so this
+panel cannot rank all three loss functions on the later year.
+
+All plotted skill is the primary, equal-exact-DTE **selected-region** score.
+Zero means matching empirical; positive means lower local Brier error. This
+is not generic tail skill, global distribution fit, or in-sample training skill.
+The exact values, observation counts and loss reports follow below.
+
+The figure is rendered directly from the hash-verified selection/selected.json
+(skill_pct, raw variants) and report/comparison.json
+(decision_acceptance, points and intervals), whose hashes are recorded below.
+The PNG is a tracked memo asset; no new fit, HPO or selection was performed.
+
 ## Implementation and search
 
 TorchCDF extends the existing analytic Gaussian-mixture seam. JSON chooses MLP
