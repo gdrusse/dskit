@@ -1,16 +1,16 @@
 # Active handoff — 2026-10-01
 
-ADR-0213 is owner-approved and implemented on cdf-runbook-reproduction.
-AMZN standard JSON runner produces options, expiry-close labels, full CDF
-proxies and compatible panel; 915 eligible rows / 549 dates, exact 42-DTE
-winner 90 dates. Focused tests pass; corrected final candidate awaiting independent review/closure.
-See children/stock_options/docs/plans/README.md for the complete runbook.
+AMZN conversion and QQQ audit passed two independent lenses on 83dcba51.
+Requested QQQ outputs are pushed at aeea072a, under
+children/index_options/pipeline_runs/qqq-feature-availability/: start with
+feature-gaps.jsonl for exact feature/date/reason records.
 
-QQQ JSON feature-gap audit is implemented and executed on the fixed 1,497-date
-cohort: 155 fields, 13 subgroups, explicit feature/family gap JSONL outputs.
-Core groups retain 1,497 dates; 32 newer fields need materialization. Source
-clock/vintage limits are emitted in the run outputs. No training/PCA/selection.
-Owner explicitly wants AMZN finished too; complete both final reviews and push.
+Owner next requested the same AMZN gap interface. New stock config
+run-amzn-feature-availability.json keeps the selected 42-DTE/90-date cohort,
+with the same 155 fields and 13 family checks. Shared OptionCDFPanel now adds
+the index-compatible quote-date asof_ms grouping field; standalone quote-clock
+minor also corrected. Run/final reviews/push of this extension remain in flight.
+No training/PCA/feature computation. See both child plan runbooks for evidence.
 
 # Re-entry
 

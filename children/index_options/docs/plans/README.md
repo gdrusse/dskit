@@ -647,3 +647,22 @@ definitions/quality predicates, finite versus entry-time distinction, complete
 gap persistence and refusal to overwrite are the acceptance invariants.
 Changing ticker/horizon/source is an explicit new cohort, not a silent fallback.
 No generic implementation change is needed for this audit.
+
+
+Published output handoff (owner-requested): commit aeea072a includes the actual
+run files under children/index_options/pipeline_runs/qqq-feature-availability/.
+Start with feature-gaps.jsonl for exact feature/date/expiry/reason records;
+family-gaps.jsonl identifies failed family/date pairs, and rows.jsonl retains
+every baseline observation plus flags. The run subdirectory
+runs/qqq-feature-availability-2026-10-01-44bbebfb/ contains carry.json, config.json
+and result.json. In carry, family_contracts.merged explains quality predicates
+and clock limits; feature_profile__<feature>.records and summary_<family>.records
+provide counts and windows. These outputs are a committed evidence exception
+to the normally ignored pipeline_runs tree; do not overwrite them.
+Use fresh writer paths and run_root for a new execution.
+
+verification.json records independent equality of the exact source identities,
+all 71,880 feature-gap reason/identity tuples, and all 9,812 family-gap tuples.
+SHA-256: feature-gaps 8bafb07bb64c1aa29fa22b72fb93c8fb8974113560741ee5c99f1d6ae179bd01;
+family-gaps 0e09df69dffb505e66d041154dc7ceef2e2b6aa3c3f9e3eb91f187abe61fbf41;
+full rows e12fa2ca0f5f5e4c11b26e6101aa8cc8040e279548ad2a35a005d17e1413aac9.

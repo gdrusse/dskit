@@ -2067,6 +2067,7 @@ def test_option_panel_retains_rejected_observations_and_current_clock():
     inputs = {"bars": [], "snapshots": rows, "labels": [label], "contracts": []}
     out = node.run(None, inputs)
     assert out["records"][0]["rn_proxy_eligible"] == 1
+    assert out["records"][0]["asof_ms"] == 1711065600000
     rows[0]["quote_timestamp"] = "2024-03-22T20:01:00Z"
     rows[1]["quote_timestamp"] = "2024-03-22T19:00:00Z"
     rows[2]["contract_terms_status"] = "unverified_contract_terms"
@@ -2122,6 +2123,11 @@ def test_option_panel_refuses_quantile_field_collisions_and_missing_close_clock(
            "price_basis": "indicative_quote", "quote_timestamp": "2024-03-22T10:00:00Z"}
     node = predictive_cdf.OptionCDFPanel("panel", params)
     assert "unverified_entry_clock" in node._admission(row, {"spot": 100, "entry_close_at": None})
+    assert "unverified_entry_clock" in node._admission(row, {"spot": 100})
+    for stamp in ("NaT", "invalid", "2024-03-22T19:59:00"):
+        malformed = dict(row, quote_timestamp=stamp)
+        reasons = node._admission(malformed, {"spot": 100, "entry_close_at": "2024-03-22T20:00:00Z"})
+        assert "invalid_quote_clock" in reasons
 
 
 @pytest.mark.parametrize("day,expiry,reason", [

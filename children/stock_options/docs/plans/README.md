@@ -145,3 +145,79 @@ curves and a 42-day/90-date winner. All imported inputs are freshly acquired in
 option-archive-source-v2. Final relevant checks now total 87 passes: 52 archive,
 20 CDF/label, six index extraction, six stock config, three QQQ JSON-gap tests.
 The final reviewer/operator will revalidate the exact locked candidate.
+
+
+Final independent operator /root/amzn_runbook_operator reproduced candidate
+83dcba51 from this runbook using fresh imports and output roots. Evidence:
+pipeline_runs/amzn-independent-final-20261001/verification.json and logs;
+run outputs/stock-cdf-horizon-coverage-2026-10-01-a36da995. All four JSON artifact
+hashes equal the final primary run; every one of 8,235 configured quantiles
+matches interpolation of the exported inverse grid. Counts and winner match.
+Execution: 9.52 seconds, peak RSS 652,380 KiB, zero swaps; hard 6-GiB/no-swap/
+1,740-second limits independently confirmed. No runbook obstacles.
+SHA-256 options dd700fc6a413b6b6e53c435f78474666261882a675f7afe95bdad3c2504a4f4f;
+labels a8e3ffdc579c5f9ada8163932dcfbf9ae1de4a6940375792b1c2c7f33167f6f1;
+CDFs 538533d73508e935a5db03a53397298c29f6f8f9b2d7faf5ed0a92ba6e71ba81;
+panel 36f01b982877fb71a3917653ec0f05a5fa44fba4751221c9291c43af39553d74.
+
+First fresh final lens /root/conversion_gaps_correctness_final: C0/M0/m1/n0,
+candidate 83dcba51; 92 focused tests passed independently (52 archive,25 CDF,
+six index extraction,six stock configuration,three QQQ audit). One disclosed
+Minor remains in standalone OptionCDFPanel malformed-clock handling: omitted
+entry_close_at raises KeyError; quote_timestamp NaT can bypass age comparisons.
+Canonical archive import rejects NaT and generated labels always carry the
+clock key, so neither affects this supplied workflow. Defer public standalone
+input hardening; do not treat arbitrary hand-built quote records as validated.
+The second independent lens must complete before main integration.
+
+
+## AMZN feature-gap interface extension (owner request, 2026-10-01)
+
+Run configs/run-amzn-feature-availability.json through the same standard runner
+after archive onboarding. It embeds the same preparation and QQQ audit rules:
+155 fields, 13 families, identical predicates and feature/family gap schemas.
+Fixed cohort: AMZN, 42 actual calendar days, 90 eligible dates selected above.
+Family contracts state desired semantics; source_contract.merged.archive
+explains the data AMZN actually supplies. No feature computation or training.
+
+    mkdir -p pipeline_runs/amzn-feature-availability
+    python -m dskit.pipeline run configs/run-amzn-feature-availability.json --asof 2026-10-01
+
+Apply the same WSL2 systemd limits/interpreter as coverage. Outputs reside in
+pipeline_runs/amzn-feature-availability/: rows.jsonl, feature-gaps.jsonl,
+family-gaps.jsonl, and runs/<run>/{carry,config,result}.json. After publication,
+use fresh writer paths and run_root. Never silently shrink the selected cohort.
+Missing prepared fields are not proof raw sources cannot supply them.
+
+The initial execution exposed missing asof_ms: shared OptionCDFPanel now emits
+quote-date midnight UTC milliseconds, matching the index grouping coordinate,
+not a publication clock. A regression reproduced the failure and checks the
+exact epoch. Also closed the previously disclosed standalone malformed-clock
+minor with missing-key/NaT/invalid/naive timestamp regressions. A second execution
+caught the source-contract literal table shape; corrected and directly tested
+that node. Both failed run directories remain as local evidence.
+
+Extension matrix: same audit predicates/schema and stock preparation; exact
+90 identities retained; every missing feature/date/reason and family/date
+persisted; accurate date windows; bounded standard execution; no imputation,
+selection, PCA, model training or provider requests. Changed shared panel
+date/clock handling, requested JSON, focused tests and associated docs/evidence
+require fresh final lenses on the new immutable candidate.
+
+
+Successful audit: amzn-feature-availability-2026-10-01-cfe3c76c; 22.01 seconds,
+658,940 KiB peak RSS, zero swaps under hard caps. Exactly 90 unique dates
+2024-03-22 through 2026-08-14. Nine CDF fields complete throughout; other
+146 fields absent in this prepared panel: 13,140 feature/date gaps and
+1,080 family/date gaps. These are cells, not additional observations.
+Underlying-derived families remain a preparation task; historical quote/IV/OI
+features cannot be filled from current snapshots.
+
+Independent author-side verification matched every gap key/reason and date
+millisecond, and the exact selected source identities. All 1,362 panel rows
+equal the earlier run except added asof_ms; options/CDF/label artifact hashes
+are unchanged. verification.json carries the full checks and output hashes.
+The same seven audit evidence files as QQQ are retained for agent handoff.
+Focused extension checks: seven stock tests and eleven CDF/panel/label tests
+pass; previous 87-test run and both 83dcba51 lenses remain historical evidence.
+Fresh final reviews assess this changed candidate before main integration.

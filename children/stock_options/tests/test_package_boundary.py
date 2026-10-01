@@ -28,6 +28,7 @@ EXPECTED_FILES = {
     "configs/source-underlying-history.json",
     "configs/run-prepare-option-panel.json",
     "configs/run-cdf-horizon-coverage.json",
+    "configs/run-amzn-feature-availability.json",
 }
 
 
@@ -118,3 +119,48 @@ def test_stock_conversion_configs_use_shared_nodes_and_same_preparation():
     for name, cls in (("labels", ExpiryCloseLabels), ("panel", OptionCDFPanel)):
         assert cls.validate_params(prepared["pipeline"][name]["params"]) == []
         assert cls.validate_params(dict(prepared["pipeline"][name]["params"], typo=True))
+
+
+def test_amzn_feature_gaps_share_interface_and_keep_selected_cohort():
+    import json
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.kinds_flow import Derive, Filter
+
+    path = CHILD_ROOT / "configs/run-amzn-feature-availability.json"
+    assert path.exists(), "AMZN needs the same JSON feature-gap interface"
+    amzn = json.loads(path.read_text())
+    qqq = json.loads((CHILD_ROOT.parent / "index_options/configs/run-qqq-feature-availability.json").read_text())
+    prepared = json.loads((CHILD_ROOT / "configs/run-prepare-option-panel.json").read_text())
+    graph = amzn["pipeline"]
+    assert all(graph[k] == v for k, v in prepared["pipeline"].items())
+    assert amzn["foreach"] == qqq["foreach"]
+    assert graph["family_contracts"] == qqq["pipeline"]["family_contracts"]
+    for key, value in qqq["pipeline"].items():
+        if key.startswith(("check_", "summary_", "family_gap", "all_")):
+            if key == "family_gap_evidence":
+                continue
+            assert graph[key] == value
+    probabilities = prepared["pipeline"]["panel"]["params"]["probabilities"]
+    row = {f"rn_q_{round(p * 10000):04d}": p / 100 for p in probabilities}
+    row.update(symbol="AMZN", quote_date="2024-04-04", expiry="2024-05-16",
+               actual_calendar_dte=42, rn_proxy_eligible=1, terminal_return=.01)
+    rows = [row, dict(row, actual_calendar_dte=30), dict(row, symbol="QQQ")]
+    selected = Filter("cohort", graph["cohort"]["params"]).run(None, {"records": rows})["records"]
+    assert selected == [row]
+    for key, spec in graph.items():
+        if key.startswith("check_"):
+            selected = Derive(key, spec["params"]).run(None, {"records": selected})["records"]
+    assert len(selected) == 1
+    assert selected[0]["available_implied_cdf"] == 1
+    assert selected[0]["available_return_history"] == 0
+    assert selected[0]["available_all_families"] == 0
+    assert graph["row_evidence"]["params"]["expect"] == 90
+    assert graph["cohort"]["inputs"]["records"] == "$panel.records"
+    for node, filename in (("row_evidence", "rows.jsonl"),
+                           ("feature_gap_evidence", "feature-gaps.jsonl"),
+                           ("family_gap_evidence", "family-gaps.jsonl")):
+        assert graph[node]["params"]["path"] == "./pipeline_runs/amzn-feature-availability/" + filename
+    assert load_document(path).name == "amzn-feature-availability"
+    from dskit.pipeline.kinds_flow import Concat
+    source = Concat("source_contract", graph["source_contract"]["params"]).run(None, {})
+    assert source["merged"]["archive"]["expected_dates"] == 90

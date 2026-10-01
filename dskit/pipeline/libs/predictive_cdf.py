@@ -4736,9 +4736,14 @@ class OptionCDFPanel(Node):
             stamp = row.get("quote_timestamp")
             if not stamp:
                 reasons.append("missing_quote_timestamp")
-            elif label and label["entry_close_at"]:
-                age = (pd.Timestamp(label["entry_close_at"])-pd.Timestamp(stamp)).total_seconds()
-                if age < 0 or age > self.params["max_quote_age_seconds"]:
+            elif label and label.get("entry_close_at"):
+                try:
+                    age = (pd.Timestamp(label["entry_close_at"])-pd.Timestamp(stamp)).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    age = float("nan")
+                if not math.isfinite(age):
+                    reasons.append("invalid_quote_clock")
+                elif age < 0 or age > self.params["max_quote_age_seconds"]:
                     reasons.append("quote_outside_close_window")
         elif row["price_basis"] != "trade_close":
             reasons.append("unsupported_price_basis")
@@ -4778,6 +4783,7 @@ class OptionCDFPanel(Node):
                 duplicates = frame.duplicated(["strike", "type"], keep=False)
                 proxy = helper.estimate(frame.loc[~duplicates], label["spot"])
             record = {**label, "rn_proxy_eligible": int(proxy["eligible"]),
+                      "asof_ms": int(pd.Timestamp(label["quote_date"], tz="UTC").timestamp()*1000),
                       "option_rows": len(rows), "admissible_option_rows": len(usable),
                       "cdf_reasons": proxy["reasons"],
                       "cdf_kind": "american_option_price_proxy",
