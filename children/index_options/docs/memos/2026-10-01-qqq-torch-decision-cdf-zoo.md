@@ -225,6 +225,113 @@ MLP primary point estimate is therefore not a broad row-average gain.
 Global CRPS row means are 0.589682/0.600470 versus empirical 0.562838;
 tail-score means are 0.364390/0.364014 versus 0.346241. These are diagnostics only.
 
+## 30-day call-region census
+
+**The call strikes do not sit at fixed percentages above spot.** This
+2026-10-01 follow-up measures locations in archived chains. It does not refit
+forecasts, score additional outcomes or change the model's region rule.
+
+The scope is every archived QQQ snapshot with exactly **30 calendar days to
+actual expiry settlement**, from 2011-04-20 through 2025-12-10: 766 snapshots
+on 766 dates. As in the CDF study, settlement is the last XNYS session on or
+before the listed expiration date; old Saturday expirations map to Friday.
+Exactly-30-day availability is a subset of quote dates, not every day or a
+25–35-day approximation.
+
+Distance is 100 × (strike / unadjusted entry close − 1), in percentage points
+above spot. There are 68,722 call strike/date/expiry rows, including strikes
+below spot. The results focus on the **27,867 calls strictly above spot**.
+Each snapshot has equal total weight; its included strikes have equal weights.
+These are listing counts, not trading-volume or open-interest weights.
+
+![Historical QQQ 30-day call strikes relative to spot: yearly distributions, narrower model decision endpoints, and five listed calls on three actual dates.](2026-10-01-qqq-30-day-call-region.png)
+
+### Where the strikes fall
+
+| Population | Period | Snapshots | Strike observations | 10th percentile | Median | 90th percentile |
+|---|---|---:|---:|---:|---:|---:|
+| All listed calls above spot | 2011–2025 | 766 | 27,867 | +1.05% | +6.04% | +18.86% |
+| Positive two-sided quotes and sizes | 2011–2025 | 766 | 22,988 | +0.86% | +4.65% | +12.83% |
+| Existing model's eligible call endpoints | 2011–2019 | 365 | 5,408 | +0.70% | +4.41% | +9.11% |
+
+These percentiles describe strike locations, not event probabilities or
+confidence intervals. The middle 80% runs from the 10th to 90th percentile.
+Positive two-sided quotes mean finite bid/ask, bid > 0, ask ≥ bid and positive
+bid/ask sizes: an availability filter, not evidence of executable liquidity.
+
+The model-region row uses 365 eligible snapshots out of 380 exact-30-day study
+snapshots in 2011–2019; the other 15 have no qualifying condor. To separate the
+filter from the date range: on those **same 365 snapshots**, all listed calls
+above spot have 10th/50th/90th percentiles **+0.96% / +5.28% / +15.55%**
+(8,525 observations), versus **+0.70% / +4.41% / +9.11%** for the 5,408
+eligible endpoints.
+
+Across all 766 snapshots, the median nearest call is **+0.18%** above spot;
+the middle 90% of nearest-strike distances runs from **+0.02% to +0.78%**.
+The median farthest listed call is **+19.91%**, with a middle-90% range of
+**+7.02% to +46.93%** across snapshots. Early coverage is sparse: 2011 has
+only 12 exact-30-day snapshots, of which three have eligible study regions.
+
+### Actual examples
+
+These are the available exact-30-day snapshots nearest June 15 in each
+selected year, chosen by date without looking at outcomes.
+
+| Entry date | Entry close | First call above spot | Distance | Next call | Next distance |
+|---|---:|---:|---:|---:|---:|
+| 2011-06-15 | $54.29 | $55 | +1.308% | $56 | +3.150% |
+| 2019-06-12 | $182.34 | $182.5 | +0.088% | $183 | +0.362% |
+| 2025-06-18 | $528.99 | $529 | +0.002% | $530 | +0.191% |
+
+For the 2019 example, 100 × (182.50 / 182.34 − 1) = **0.08775%**.
+Strikes are in dollars; percentage spacing changes with spot and the listed
+increments. A fixed +5% target is not guaranteed: only **45.82% of snapshots**
+have a listed above-spot call within **0.1 percentage points** of +5%.
+
+### Implication for the scored region
+
+The existing log-moneyness cap of 0.1 imposes a call-side ceiling of
+100 × (exp(0.1) − 1) = **+10.517%**. This is a configured limit, not a
+boundary discovered in the archive. Eligible endpoints also depend on listed
+$5 wings, both sides' quote checks and positive net condor credit.
+
+A fixed $5 wing is **9.21%** of the $54.29 entry price in the 2011 example,
+but **0.95%** of $528.99 in the 2025 example. This illustrates the changing
+relative width of the rule; 2025 decision eligibility was not computed.
+The 2011 example has no qualifying condor under the saved study rule.
+
+The evidence supports deriving regions from each entry's actual chain.
+For interpreting skill, show distance bands within those regions alongside
+days to expiry: one pooled call score can mix different strike distances and
+grid densities. This census adopts no new band or model-selection rule.
+
+### Census evidence and reproduction
+
+The WSL scan read entry chain fields and quote-date closes from 15 local
+yearly files; no provider request, model fit or later outcome scoring.
+It scanned 15,345,882 option rows in **4.67 seconds**, with peak process RSS
+**522.25 MiB**, inside the enforced 1740s / 6 GiB / no-swap envelope.
+Summaries and the plot then operated on the small retained extracts.
+
+Local artifacts:
+ /home/russell/dskit-torch-decision-cdf/children/index_options/pipeline_runs/qqq_call_region_census_20261001.
+They include protocol.json (source paths/hashes, definitions and counts),
+listed_calls.parquet, decision_call_endpoints.parquet, per-population snapshot
+CSVs and summary.json. Reproduction: resolve actual expiry via XNYS, retain
+exactly 30 days, join unadjusted closes by quote date, calculate the distance,
+then apply the populations and weights above. Weighted endpoint quantiles
+invert the weighted cumulative distribution; per-snapshot quantiles use linear
+interpolation. The plotted bands describe distributions, not uncertainty.
+
+All 5,408 reconstructed decision strikes match listed calls one-to-one on
+date/expiry/strike, and study spots equal archive closes exactly on those rows.
+Duplicate keys, missing closes, nonfinite prices and non-session quote dates
+were checked. Figure values come from saved summaries and the rendered graph
+was visually inspected. Original model code/configs and evidence are unchanged;
+no test suite was rerun for this evidence-only extension.
+
+Census summary SHA256: fd258c0497f8e20c9612eeb438b9c31548a83dbddeb7077b7d339f33cab5893e.
+
 ## Execution and verification
 Six final standard CLI stages completed in 251.381s combined (4m11s).
 Maximum process RSS was 2.434 GiB; peak Torch CUDA allocation 257.2 MiB.

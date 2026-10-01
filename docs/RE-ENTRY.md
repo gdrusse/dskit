@@ -18,6 +18,9 @@
 - Memo: children/index_options/docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md.
   Expanded with encoder/loss explanations and a graph of selected-region skill
   by model/loss/rate, separating 2018 selection from frozen 2019 evaluation.
+  Added an exact-30-day historical call-region census: 766 snapshots
+  (2011–2025); listed OTM middle 80% +1.05%–18.86%. Existing model endpoints
+  (365 snapshots, 2011–2019): +0.70%–9.11%; the +10.52% ceiling is configured.
   Run: isolated WSL worktree's pipeline_runs/qqq_torch_cdf_20261001_r2.
   Next: retain empirical; any further tuning/new-period test is a separately
   declared study. Historical inspected data do not establish trading authority.
