@@ -14,8 +14,62 @@ from dskit.pipeline.libs.predictive_cdf import (
     SplineFlowCDF,
     BetaTransformedPoolCDF, DynamicPITRecalibratedCDF, SemiparametricGPDTailCDF,
     TailConstrainedQuantileBlendCDF,
+    DecisionWeightedMixtureMLPCDF, DecisionWeightedMonotoneCDF,
 )
 from dskit.pipeline.libs import predictive_cdf
+
+
+def _decision_context(identity=("SPY", "2020-01-02", "2020-02-21")):
+    return {"identity": list(identity), "thresholds": [-1., .5],
+            "weights": [.5, .5], "intervals": [[-1., -.5], [.2, .5]],
+            "status": "eligible",
+            "clock": "after_date_close_indicative_not_executable",
+            "provenance_sha256": "a"*64}
+
+
+def test_decision_context_binds_provenance_identity_and_refuses_executable_clock():
+    context = _decision_context()
+    inventory = predictive_cdf._decision_threshold_inventory([context])
+    np.testing.assert_allclose(inventory[0][0], [-1., .5])
+    bad = dict(context, provenance_sha256="bad")
+    with pytest.raises(ValueError, match="provenance"):
+        predictive_cdf._decision_threshold_inventory([bad])
+    bad = dict(context, clock="intraday_executable")
+    with pytest.raises(ValueError, match="clock"):
+        predictive_cdf._decision_threshold_inventory([bad])
+
+
+def test_decision_weighted_lightgbm_curve_predicts_directly_at_row_strikes():
+    model = DecisionWeightedMonotoneCDF(
+        thresholds=[-2., 0., 2.], trees=2, leaves=2, min_child=1, threads=1)
+
+    class LogisticCutoff:
+        @staticmethod
+        def predict_proba(x):
+            p = 1/(1+np.exp(-x[:, -1]))
+            return np.column_stack([1-p, p])
+
+    model.model = LogisticCutoff()
+    context = [_decision_context()]
+    curve = model.curve_decision_context(np.array([[3., 4.]]), context)
+    for cutoff in context[0]["thresholds"]:
+        assert curve.cdf([[cutoff]])[0, 0] == pytest.approx(
+            1/(1+np.exp(-cutoff)), abs=1e-12)
+
+
+def test_decision_weighted_mlp_requires_context_and_trains_analytic_cdf():
+    model = DecisionWeightedMixtureMLPCDF(
+        components=1, hidden=[3], epochs=1, batch_size=2, seeds=[3],
+        device="cpu", deterministic=True, decision_weight=1.,
+        global_cdf_weight=.25)
+    x = np.array([[0.], [1.]])
+    y = np.array([-.2, .3])
+    with pytest.raises(ValueError, match="context"):
+        model.fit(x, y, x, y)
+    contexts = [_decision_context(("SPY", f"2020-01-0{i+2}", "2020-02-21"))
+                for i in range(2)]
+    model.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    assert np.isfinite(model.curve(x).cdf([[-1., .5], [-1., .5]])).all()
 
 
 def test_threshold_audit_scores_fixed_intervals_and_refuses_post_choice_weights():
@@ -840,6 +894,36 @@ def test_study_end_to_end_paired_counts_and_zero_baseline_skill(tmp_path):
     assert summary['paired_block_intervals'][0]['hi'] == pytest.approx(0)
     with pytest.raises(FileExistsError):
         study.run(frame)
+
+
+def test_summary_block_bootstrap_drops_unrepresented_sparse_cells(tmp_path):
+    output = tmp_path/'sparse-summary'
+    output.mkdir()
+    config = {
+        'features': ['h', 'scale'], 'group': 'unit', 'date': 'date', 'end': 'end',
+        'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017, 2019],
+        'output': str(output), 'samples': 21, 'tail_intervals': [[-2, -1]],
+        'tail_points': 21, 'calibration_knots': 3, 'development_end': 2017,
+        'bootstrap': {'blocks': [1], 'replicates': 20, 'seed': 4},
+        'reference_model': 'reference', 'comparison_references': ['reference'],
+        'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+        'models': {'reference': {
+            'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+            'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 21},
+            'calibrate': True}}, 'decision_context': 'decision_region_context'}
+    rows = []
+    for year in (2017, 2019):
+        for h, day in ((1, '01'), (2, '02')):
+            for variant in ('raw', 'calibrated'):
+                rows.append({'unit': 'A', 'date': f'{year}-03-{day}',
+                             'end': f'{year}-03-03', 'expiry': f'{year}-03-03-{h}',
+                             'h': h, 'year': year, 'model': 'reference',
+                             'variant': variant, 'crps': .2,
+                             'decision_strike_brier': .1})
+    summary = ChronologicalCDFStudy(config).summarize(pd.DataFrame(rows))
+    intervals = summary['paired_block_intervals']
+    assert intervals and all(row['lo'] == pytest.approx(0.)
+                             and row['hi'] == pytest.approx(0.) for row in intervals)
 
 
 def test_student_curve_density_family_inverse_and_saved_degrees():

@@ -28632,3 +28632,34 @@ forecast is promoted and optimizer tuning remains deferred. The next bounded
 test is the identical frozen audit on later untouched partitions, reported
 descriptively by index. Persisting QQQ-only evidence would require an
 index-specific path; failure to persist ends this option-transport direction.
+
+## ADR-0208 — Decision-weighted CDF model zoo
+
+**Status:** completed 2026-09-30; descriptive only, no promotion.
+
+Train distribution models at the actual listed strikes defining feasible
+entry-time condors. Bind a source-hashed context to exact symbol/date/expiry
+identities and reuse the eligible-chain owner. Transform every deduplicated
+put/call strike into standardized log-return coordinates and balance local
+mass across sides. Refuse executable clocks because the archive is date-only.
+
+The Torch loss combines globally identifying Gaussian-mixture likelihood, a
+positive fixed global CDF Brier term, and actual-strike CDF Brier. Compare
+small Gaussian-mixture MLPs with a global MLP control, horizon empirical, and
+a separate direct-CDF LightGBM trained on expanded feature/cutoff rows with a
+monotonic cutoff constraint. LightGBM is not embedded in Torch. Payoff or wing
+integral error remains diagnostic and is not the training objective.
+
+Use chronological purged 2017--2019 folds, choose raw/calibrated variants on
+development actual-strike Brier, and report 2019 descriptively. Pair all models
+on identical identities and use 30/60-date circular block intervals carrying
+same-date indexes/horizons together. A sampled block with no observation in a
+sparse exact-day cell omits that cell; it is never imputed as zero. Global and
+tail metrics are safeguards, but no promotion is authorized without a newly
+preregistered noninferiority gate.
+
+The r5 run completed under a hard WSL2 30-minute/6-GiB/no-swap cgroup. The wide
+MLP led aggregate local Brier by 1.173%, with both intervals crossing zero;
+SPY improved 2.396% and QQQ worsened 4.376%. Every challenger worsened global
+CRPS. Therefore no model advances to optimization. The next test is a frozen
+SPY-specific persistence/guard study plus diagnosis of the QQQ degradation.

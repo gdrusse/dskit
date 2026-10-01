@@ -1,0 +1,45 @@
+{
+  "notes": "Bounded descriptive-only decision-region zoo; it cannot promote a model. Actual eligible listed-condor strikes are entry-known, deduplicated and put/call-balanced. The clock is explicitly after-close indicative and refuses executable use. Decision-strike Brier, global proper scores and tail diagnostics are all reported; a later preregistered guard must precede promotion. Run in WSL2 from the child root; immutable output refuses overwrite.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "symbols": {"SPY": "VIX", "QQQ": "VXN"},
+    "price_source": "optionshist-chain", "iv_source": "cboe-index-wide",
+    "since": "2007-01-01", "max_dte": 45, "lags": 22, "windows": [1, 5, 22, 66],
+    "feature_gap_days": 7, "reference_floor": 0.001, "spot_tolerance": 0.02,
+    "decision_regions": {
+      "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+      "max_chain_rows": 14000000,
+      "panel_years": [2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {"max_seconds": 1800, "max_address_space_mib": 6144},
+      "chain_rule": {"max_abs_log_moneyness": 0.1, "min_wing_width": 5.0, "max_wing_width": 5.0, "max_candidates": 5000, "fee_per_leg": 0.5, "multiplier": 100}
+    }
+  },
+  "diagnostic": {"strikes_z": [-2, -1, 1, 2], "integration_points": 101},
+  "study": {
+    "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "rv_1", "rv_5", "rv_22", "rv_66", "own_iv", "calendar_dte", "sessions_to_expiry", "log_calendar_dte", "log_sessions_to_expiry", "series_age_calendar", "series_age_sessions", "series_total_tenor_calendar", "series_total_tenor_sessions", "life_fraction_calendar", "life_fraction_sessions", "calendar_days_per_session", "reference_scale"],
+    "group": "symbol", "date": "quote_date", "end": "settlement_date",
+    "horizon": "actual_calendar_dte", "target": "terminal_return", "reference": "reference_scale",
+    "identity": ["symbol", "quote_date", "expiry"],
+    "series_identity": ["symbol", "expiry"],
+    "decision_context": "decision_region_context",
+    "years": [2017, 2018, 2019],
+    "output": "pipeline_runs/predictive_cdf_decision_loss_zoo_20260930",
+    "samples": 401, "tail_intervals": [[-2.5, -0.5], [0.5, 2.5]], "tail_points": 201,
+    "calibration_knots": 21,
+    "development_end": 2018,
+    "reference_model": "horizon_empirical",
+    "comparison_references": ["horizon_empirical", "mlp_global_control"],
+    "bootstrap": {"blocks": [30, 60], "replicates": 2000, "seed": 829},
+    "models": {
+      "horizon_empirical": {"class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF", "params": {"horizon_index": 27, "reference_index": 38, "knots": 401}, "calibrate": true},
+      "mlp_global_control": {"class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF", "params": {"components": 3, "hidden": [32, 16], "epochs": 8, "batch_size": 1024, "seeds": [11], "device": "cuda", "deterministic": true}, "calibrate": true},
+      "decision_mlp_small": {"class": "dskit.pipeline.libs.predictive_cdf:DecisionWeightedMixtureMLPCDF", "params": {"components": 1, "hidden": [16], "epochs": 8, "batch_size": 1024, "seeds": [11], "device": "cuda", "deterministic": true, "decision_weight": 1.0, "global_cdf_weight": 0.25}, "calibrate": true},
+      "decision_mlp_medium": {"class": "dskit.pipeline.libs.predictive_cdf:DecisionWeightedMixtureMLPCDF", "params": {"components": 3, "hidden": [32, 16], "epochs": 8, "batch_size": 1024, "seeds": [11], "device": "cuda", "deterministic": true, "decision_weight": 1.0, "global_cdf_weight": 0.25}, "calibrate": true},
+      "decision_mlp_wide": {"class": "dskit.pipeline.libs.predictive_cdf:DecisionWeightedMixtureMLPCDF", "params": {"components": 3, "hidden": [64, 32], "epochs": 8, "batch_size": 1024, "seeds": [11], "device": "cuda", "deterministic": true, "dropout": 0.1, "decision_weight": 1.0, "global_cdf_weight": 0.25}, "calibrate": true},
+      "decision_lightgbm": {"class": "dskit.pipeline.libs.predictive_cdf:DecisionWeightedMonotoneCDF", "params": {"thresholds": [-4, -3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3, 4], "trees": 120, "leaves": 7, "min_child": 200, "threads": 1, "tail_width": 4, "decision_weight": 1.0, "global_weight": 1.0}, "calibrate": true}
+    }
+  }
+}

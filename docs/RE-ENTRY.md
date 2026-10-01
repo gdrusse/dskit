@@ -1,5 +1,20 @@
 # Re-entry
 
+## Decision-region loss zoo completed (2026-09-30)
+
+- Added causal, identity-bound actual-strike training context and two new CDF
+  families: analytic decision-weighted Gaussian-mixture MLP and direct monotone
+  LightGBM cutoff CDF. No Torch/LightGBM wrapper or one-off script was used.
+- Clean r5: 32,588 panel rows; six models; three chronological years; 5,917
+  eligible later forecasts across 251 dates; 4m22s; 3.21 GiB RSS; hard WSL2
+  cgroup limits of 30 minutes/6 GiB/no swap; focused tests 165; Terra C0/M0.
+- Wide decision MLP had +1.173% aggregate actual-strike Brier skill, but both
+  30/60-date intervals crossed zero. It was +2.396% for SPY and -4.376% for
+  QQQ; every challenger worsened global CRPS. No model is promoted.
+- Next: a frozen SPY-specific persistence/guard study and a QQQ failure
+  diagnosis, not a larger zoo or optimizer tuning. Memo:
+  `children/index_options/docs/memos/2026-09-30-decision-region-loss-zoo-results.md`.
+
 ## Actual-listed-wing paired audit completed (2026-09-30)
 
 - Merged the risk-neutral, dynamic-tail, point-in-time feature, decision-region,

@@ -20,7 +20,8 @@ from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic",
-           "EligibleCondorChain", "CondorDecisionAudit", "DecisionRegionStudy",
+           "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
+           "DecisionRegionStudy",
            "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
            "RobustCorrectionStudy"]
 
@@ -244,6 +245,144 @@ class EligibleCondorChain:
                         if len(result) > self.max_candidates:
                             raise ValueError("candidate universe exceeds declared cap")
         return sorted(result, key=lambda item: item["strikes"])
+
+
+class DecisionRegionContextBuilder:
+    """Attach immutable actual-strike training context to exact-expiry rows."""
+
+    COLUMNS = ("symbol", "date", "expiration", "strike", "type",
+               "bid", "ask", "bid_size", "ask_size")
+    CLOCK = "after_date_close_indicative_not_executable"
+
+    def __init__(self, config):
+        required = {"archive_root", "chain_rule", "max_chain_rows", "clock", "limits"}
+        if (not required.issubset(config)
+                or set(config)-required != ({"panel_years"} if "panel_years" in config else set())
+                or config["clock"] != self.CLOCK
+                or type(config["max_chain_rows"]) is not int
+                or config["max_chain_rows"] < 1
+                or ("panel_years" in config
+                    and (not isinstance(config["panel_years"], list)
+                         or not config["panel_years"]
+                         or any(type(year) is not int for year in config["panel_years"])
+                         or config["panel_years"] != sorted(set(config["panel_years"]))))
+                or set(config["limits"]) != {"max_seconds", "max_resident_mib"}
+                or any(type(v) is not int or v < 1 for v in config["limits"].values())
+                or config["limits"]["max_seconds"] > 1800
+                or config["limits"]["max_resident_mib"] > 6144):
+            raise ValueError("invalid non-executable decision-context protocol")
+        self.config = config
+        self.rule = EligibleCondorChain(**config["chain_rule"])
+
+    @staticmethod
+    def _digest(path):
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as stream:
+            for block in iter(lambda: stream.read(8*1024*1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def build(self, panel):
+        """Scan exact identities and derive all unique eligible-wing strikes."""
+        import math
+        import numpy as np
+        import pandas as pd
+        import pyarrow.parquet as pq
+
+        identity = ["symbol", "quote_date", "expiry"]
+        required = {*identity, "spot", "reference_scale"}
+        if (required-set(panel) or panel.empty or panel.duplicated(identity).any()
+                or not np.isfinite(panel[["spot", "reference_scale"]]).all().all()
+                or (panel[["spot", "reference_scale"]] <= 0).any().any()):
+            raise ValueError("invalid decision-context panel identities")
+        if ("panel_years" in self.config
+                and not panel.quote_date.str[:4].astype(int).isin(
+                    self.config["panel_years"]).all()):
+            raise ValueError("decision-context panel exceeds declared years")
+        retained, sources, payloads = 0, {}, {}
+        for (symbol, year), rows in panel.groupby(
+                ["symbol", panel.quote_date.str[:4]], sort=True):
+            path = (Path(self.config["archive_root"])/str(symbol).lower()/
+                    f"options_{year}.parquet")
+            wanted = set(zip(rows.quote_date, rows.expiry))
+            parts = []
+            for batch in pq.ParquetFile(path).iter_batches(
+                    columns=list(self.COLUMNS), batch_size=250_000,
+                    use_threads=False):
+                frame = batch.to_pandas()
+                mask = [(date, expiry) in wanted for date, expiry in
+                        zip(frame.date, frame.expiration)]
+                if any(mask):
+                    chosen = frame.loc[mask]
+                    retained += len(chosen)
+                    if retained > self.config["max_chain_rows"]:
+                        raise ValueError("decision-context matching chain rows exceed cap")
+                    parts.append(chosen)
+            sources[str(path)] = self._digest(path)
+            chain = (pd.concat(parts, ignore_index=True) if parts
+                     else pd.DataFrame(columns=self.COLUMNS))
+            grouped = {(a, b, c): snapshot for (a, b, c), snapshot in
+                       chain.groupby(["symbol", "date", "expiration"], sort=False)}
+            for row in rows.itertuples(index=False):
+                key = (row.symbol, row.quote_date, row.expiry)
+                snapshot = grouped.get(key)
+                candidates = (self.rule.candidates(snapshot, float(row.spot))
+                              if snapshot is not None else [])
+                strikes = sorted({float(strike) for candidate in candidates
+                                  for strike in candidate["strikes"]})
+                thresholds = [math.log(strike/float(row.spot))/float(row.reference_scale)
+                              for strike in strikes]
+                wing_prices = sorted({tuple(pair) for candidate in candidates for pair in
+                                      ((candidate["strikes"][0], candidate["strikes"][1]),
+                                       (candidate["strikes"][2], candidate["strikes"][3]))})
+                intervals = [[math.log(low/float(row.spot))/float(row.reference_scale),
+                              math.log(high/float(row.spot))/float(row.reference_scale)]
+                             for low, high in wing_prices]
+                put = [i for i, strike in enumerate(strikes) if strike < row.spot]
+                call = [i for i, strike in enumerate(strikes) if strike > row.spot]
+                weights = np.zeros(len(strikes), dtype=float)
+                if put and call:
+                    weights[put], weights[call] = .5/len(put), .5/len(call)
+                elif strikes:
+                    weights[:] = 1./len(strikes)
+                payloads[key] = {"identity": list(key), "thresholds": thresholds,
+                                 "weights": weights.tolist(), "intervals": intervals,
+                                 "status": ("eligible" if strikes else
+                                            "no_eligible_condor"),
+                                 "clock": self.CLOCK}
+            del chain, grouped, parts
+        provenance = hashlib.sha256(json.dumps({
+            "clock": self.CLOCK, "sources": sources,
+            "chain_rule": self.config["chain_rule"]}, sort_keys=True).encode()).hexdigest()
+        contexts = []
+        for row in panel.itertuples(index=False):
+            key = (row.symbol, row.quote_date, row.expiry)
+            contexts.append({**payloads[key], "provenance_sha256": provenance})
+        self.provenance = {"sha256": provenance, "sources": sources,
+                           "matching_chain_rows": retained,
+                           "eligible_rows": sum(c["status"] == "eligible"
+                                                for c in contexts)}
+        return contexts
+
+    def enforce_process_limits(self):
+        """Bound wall time and RSS without blocking CUDA virtual mappings."""
+        import resource
+        import signal
+        import time
+
+        limits = self.config["limits"]
+        requested = limits["max_resident_mib"]*1024*1024
+        started = time.monotonic()
+        def check_budget(_signum, _frame):
+            # Linux reports ru_maxrss in KiB. CUDA reserves large virtual address
+            # ranges, so RLIMIT_AS would reject a low-RSS GPU process.
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024
+            if rss > requested:
+                raise MemoryError("decision-region zoo exceeded JSON RSS budget")
+            if time.monotonic()-started > limits["max_seconds"]:
+                raise TimeoutError("decision-region zoo exceeded JSON time budget")
+        signal.signal(signal.SIGALRM, check_budget)
+        signal.setitimer(signal.ITIMER_REAL, 1., 1.)
 
 
 class CondorDecisionAudit:
@@ -2301,6 +2440,19 @@ class ExactExpiryCDFPanel:
             result = self.add_matched_dte_vrp(result, c["reference_floor"])
         result, self.macro_event_status = self.add_macro_event_features(
             result, c.get("macro_event_calendars"))
+        if c.get("decision_regions"):
+            decision_config = c["decision_regions"]
+            if decision_config.get("panel_years"):
+                years = result.quote_date.str[:4].astype(int)
+                result = result.loc[years.isin(decision_config["panel_years"])].copy()
+                if result.empty:
+                    raise ValueError("decision-context declared years select no rows")
+            builder = DecisionRegionContextBuilder(decision_config)
+            result["decision_region_context"] = builder.build(result)
+            self.decision_region_provenance = builder.provenance
+            self.source_hashes.update({f"decision_chain:{path}": digest
+                                       for path, digest in
+                                       builder.provenance["sources"].items()})
         return result
 
 
@@ -2383,12 +2535,31 @@ class CondorCDFDiagnostic:
         z = np.array(self.strikes_z)
         truth = np.log(frame.terminal_price.to_numpy()/spot)/scale
         brier = ((curve.cdf(z)-(truth[:, None] <= z))**2).mean(1)
-        return {"condor_loss_mse": ((integral-realized)/width)**2,
+        result = {"condor_loss_mse": ((integral-realized)/width)**2,
                 "condor_loss_bias": (integral-realized)/width,
                 "expected_loss_per_share": integral,
                 "realized_loss_per_share": realized,
                 "payoff_quadrature_gap": abs(integral-mean_loss),
                 "strike_brier": brier}
+        if "decision_region_context" in frame:
+            from dskit.pipeline.libs.predictive_cdf import _decision_threshold_inventory
+            context = frame.decision_region_context.tolist()
+            inventory = _decision_threshold_inventory(context)
+            count = max(1, max(len(values) for values, _ in inventory))
+            thresholds = np.zeros((len(frame), count), dtype=float)
+            weights = np.zeros_like(thresholds)
+            for row, (values, mass) in enumerate(inventory):
+                thresholds[row, :len(values)] = values
+                weights[row, :len(mass)] = mass
+            truth = frame.terminal_return.to_numpy()/frame.reference_scale.to_numpy()
+            probabilities = curve.cdf(thresholds)
+            local = (
+                weights*(probabilities-(truth[:, None] <= thresholds))**2).sum(1)
+            counts = np.asarray([len(values) for values, _ in inventory], dtype=int)
+            local[counts == 0] = np.nan
+            result["decision_strike_brier"] = local
+            result["decision_strike_count"] = counts
+        return result
 
 
 def _main():
@@ -2400,6 +2571,11 @@ def _main():
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if config.get("data", {}).get("decision_regions"):
+        # The CLI is a one-study worker. Apply limits before loading/scanning
+        # archive data and deliberately let process exit restore OS state.
+        DecisionRegionContextBuilder(
+            config["data"]["decision_regions"]).enforce_process_limits()
     if args.robust_stage:
         if (args.stage or args.partition or args.decision_stage
                 or set(config) != {"robust_correction_study"}):
@@ -2455,6 +2631,12 @@ def _main():
     (output/"data_provenance.json").write_text(json.dumps({"refused": adapter.refused,
                                                          "sha256": adapter.source_hashes,
                                                          "readers": adapter.reader_fingerprints}, indent=2))
+    if config.get("data", {}).get("decision_regions"):
+        # The transient systemd service owns the hard wall/RSS limits. Stop the
+        # secondary periodic watchdog before Python restores SIGALRM's default
+        # disposition during interpreter shutdown.
+        import signal
+        signal.setitimer(signal.ITIMER_REAL, 0.)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel, RawChainFeatureBuilder
+from index_options.cdf_study import (CondorCDFDiagnostic, DecisionRegionContextBuilder,
+                                     ExactExpiryCDFPanel, RawChainFeatureBuilder)
 from index_options import cdf_study
 from index_options.distribution import condor_payoff
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
@@ -39,6 +40,58 @@ def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execu
     assert all(x["strikes"][1] != 95. for x in rule.candidates(rows, spot=100.))
     with pytest.raises(ValueError, match="timestamp"):
         rule.candidates(rows, spot=100., executable=True)
+
+
+def test_decision_context_uses_all_actual_eligible_strikes_and_pins_sources(tmp_path):
+    import resource
+    import signal
+
+    before_limit = resource.getrlimit(resource.RLIMIT_AS)
+    before_timer = signal.getitimer(signal.ITIMER_REAL)
+    archive = tmp_path/"spy"
+    archive.mkdir()
+    rows = pd.DataFrame({
+        "symbol": ["SPY"]*6, "date": ["2020-01-02"]*6,
+        "expiration": ["2020-02-21"]*6,
+        "strike": [85., 90., 95., 105., 110., 115.],
+        "type": ["put"]*3+["call"]*3,
+        "bid": [1., 2., 3., 3., 2., 1.],
+        "ask": [1.2, 2.2, 3.2, 3.2, 2.2, 1.2],
+        "bid_size": [3]*6, "ask_size": [3]*6})
+    rows.to_parquet(archive/"options_2020.parquet", index=False)
+    config = {"archive_root": str(tmp_path), "max_chain_rows": 100,
+              "clock": "after_date_close_indicative_not_executable",
+              "limits": {"max_seconds": 1800, "max_resident_mib": 6144},
+              "chain_rule": {"max_abs_log_moneyness": .2,
+                             "min_wing_width": 5., "max_wing_width": 10.,
+                             "max_candidates": 100, "fee_per_leg": 0.,
+                             "multiplier": 100}}
+    panel = pd.DataFrame({"symbol": ["SPY"], "quote_date": ["2020-01-02"],
+                          "expiry": ["2020-02-21"], "spot": [100.],
+                          "reference_scale": [.2]})
+    builder = DecisionRegionContextBuilder(config)
+    context = builder.build(panel)[0]
+    assert resource.getrlimit(resource.RLIMIT_AS) == before_limit
+    assert signal.getitimer(signal.ITIMER_REAL) == before_timer
+    expected = sorted({strike for item in builder.rule.candidates(rows, 100.)
+                       for strike in item["strikes"]})
+    np.testing.assert_allclose(context["thresholds"],
+                               np.log(np.array(expected)/100.)/.2)
+    assert context["status"] == "eligible"
+    assert sum(context["weights"]) == pytest.approx(1.)
+    assert len(context["provenance_sha256"]) == 64
+    assert builder.provenance["matching_chain_rows"] == 6
+
+    bounded = dict(config, panel_years=[2019, 2020])
+    DecisionRegionContextBuilder(bounded).build(panel)
+    with pytest.raises(ValueError, match="declared years"):
+        DecisionRegionContextBuilder(
+            dict(config, panel_years=[2019])).build(panel)
+
+    rows = pd.concat([rows, rows.iloc[[0]]], ignore_index=True)
+    rows.to_parquet(archive/"options_2020.parquet", index=False)
+    with pytest.raises(ValueError, match="duplicate|single-entry"):
+        DecisionRegionContextBuilder(config).build(panel)
 
 
 def test_decision_region_audit_uses_all_wings_and_checks_grid_error():

@@ -22,6 +22,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "SplineFlowCDF", "SetMixtureCDF", "MixtureMLPCDF", "StudentMixtureCurve",
            "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
+           "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid"]
 
@@ -908,6 +909,140 @@ class MonotoneCDF(CDFEstimator):
         grid = np.array([t[0]-self.tail_width, *t, t[-1]+self.tail_width])
         return GridCurve(np.broadcast_to(grid, (len(x), len(grid))),
                          np.column_stack([np.zeros(len(x)), p, np.ones(len(x))]))
+
+
+def _decision_threshold_inventory(context):
+    """Validate immutable identity-keyed, entry-known decision thresholds."""
+    import numpy as np
+
+    if not isinstance(context, (list, tuple)):
+        raise ValueError("decision context must be an ordered sequence")
+    inventories = []
+    identities = []
+    required = {"identity", "thresholds", "weights", "intervals", "status", "clock",
+                "provenance_sha256"}
+    for record in context:
+        if not isinstance(record, dict) or set(record) != required:
+            raise ValueError("invalid decision-context record")
+        identity = tuple(record["identity"])
+        if len(identity) != 3 or any(not isinstance(v, str) or not v for v in identity):
+            raise ValueError("invalid decision-context identity")
+        if record["clock"] != "after_date_close_indicative_not_executable":
+            raise ValueError("executable or unknown decision clock refused")
+        if (not isinstance(record["provenance_sha256"], str)
+                or len(record["provenance_sha256"]) != 64
+                or any(v not in "0123456789abcdef"
+                       for v in record["provenance_sha256"])):
+            raise ValueError("invalid decision-context provenance")
+        cutoffs = np.asarray(record["thresholds"], dtype=float)
+        weights = np.asarray(record["weights"], dtype=float)
+        if (not isinstance(record["intervals"], list)
+                or any(not isinstance(pair, list) or len(pair) != 2
+                       for pair in record["intervals"])):
+            raise ValueError("invalid decision-wing intervals")
+        intervals = np.asarray(record["intervals"], dtype=float).reshape(-1, 2)
+        if (cutoffs.ndim != 1 or weights.shape != cutoffs.shape
+                or not np.isfinite(cutoffs).all() or not np.isfinite(weights).all()
+                or (weights <= 0).any() or list(cutoffs) != sorted(set(cutoffs.tolist()))):
+            raise ValueError("decision thresholds must be finite, unique and weighted")
+        if (not np.isfinite(intervals).all()
+                or (len(intervals) and (intervals[:, 0] >= intervals[:, 1]).any())):
+            raise ValueError("invalid decision-wing intervals")
+        if len(cutoffs):
+            if record["status"] != "eligible" or not np.isclose(weights.sum(), 1.):
+                raise ValueError("invalid eligible decision context")
+        elif record["status"] != "no_eligible_condor":
+            raise ValueError("empty decision context lacks explicit refusal")
+        identities.append(identity)
+        inventories.append((cutoffs, weights))
+    if len(identities) != len(set(identities)):
+        raise ValueError("duplicate decision-context identity")
+    if len({record["provenance_sha256"] for record in context}) > 1:
+        raise ValueError("mixed decision-context provenance")
+    return inventories
+
+
+class DecisionWeightedMonotoneCDF(MonotoneCDF):
+    """Monotone LightGBM CDF trained at global and actual entry strikes.
+
+    LightGBM's scalar custom-objective API cannot soundly express a coupled
+    multi-parameter distribution. This model instead uses proper binary
+    threshold log loss on a global grid plus each row's listed strikes.
+    """
+
+    def __init__(self, thresholds, decision_weight=1., global_weight=1., **settings):
+        import math
+
+        super().__init__(thresholds=thresholds, **settings)
+        if any(isinstance(v, bool) or not math.isfinite(v) or v <= 0
+               for v in (decision_weight, global_weight)):
+            raise ValueError("invalid decision-weighted LightGBM parameters")
+        self.decision_weight = float(decision_weight)
+        self.global_weight = float(global_weight)
+
+    def fit_decision_context(self, fit_context, cal_context):
+        self._fit_decisions = _decision_threshold_inventory(fit_context)
+        _decision_threshold_inventory(cal_context)
+        return self
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit weighted threshold events defined before outcomes are observed."""
+        import numpy as np
+        from lightgbm import LGBMClassifier
+
+        if not hasattr(self, "_fit_decisions") or len(self._fit_decisions) != len(x):
+            raise ValueError("identity-keyed decision context was not attached")
+        inventory = self._fit_decisions
+        expanded, labels, weights = [], [], []
+        global_mass = self.global_weight/len(self.thresholds)
+        for row, outcome, (cutoffs, strike_weights) in zip(np.asarray(x), y, inventory):
+            for cutoff in self.thresholds:
+                expanded.append(np.r_[row, cutoff])
+                labels.append(outcome <= cutoff)
+                weights.append(global_mass)
+            for cutoff, weight in zip(cutoffs, strike_weights):
+                expanded.append(np.r_[row, cutoff])
+                labels.append(outcome <= cutoff)
+                weights.append(self.decision_weight*weight)
+        expanded = np.asarray(expanded, dtype=float)
+        self.model = LGBMClassifier(
+            **self.settings, monotone_constraints=[0]*np.asarray(x).shape[1]+[1])
+        self.model.fit(expanded, np.asarray(labels, dtype=int),
+                       sample_weight=np.asarray(weights, dtype=float))
+        return self
+
+    def curve_decision_context(self, x, context):
+        """Predict directly at every row's decision strikes, without interpolation."""
+        import numpy as np
+
+        inventory = _decision_threshold_inventory(context)
+        if len(inventory) != len(x):
+            raise ValueError("decision curve context length mismatch")
+        knots = [np.unique(np.r_[self.thresholds, cutoffs])
+                 for cutoffs, _ in inventory]
+        width = max(len(values) for values in knots)+2
+        values = np.empty((len(x), width), dtype=float)
+        probabilities = np.empty_like(values)
+        for row, (features, cutoffs) in enumerate(zip(np.asarray(x), knots)):
+            expanded = np.column_stack([
+                np.repeat(features[None, :], len(cutoffs), axis=0), cutoffs])
+            p = self.model.predict_proba(expanded)[:, 1]
+            if (np.diff(p) < -1e-10).any():
+                raise ValueError("monotone classifier returned crossing CDFs")
+            grid = np.r_[cutoffs[0]-self.tail_width, cutoffs,
+                         cutoffs[-1]+self.tail_width]
+            cdf = np.r_[0., p, 1.]
+            values[row, :len(grid)] = grid
+            probabilities[row, :len(grid)] = cdf
+            values[row, len(grid):] = grid[-1]
+            probabilities[row, len(grid):] = 1.
+        return GridCurve(values, probabilities)
+
+    def _research_state(self):
+        return {"objective": "weighted_binary_logloss",
+                "decision_weight": self.decision_weight,
+                "global_weight": self.global_weight,
+                "strike_weighting": "deduplicated_put_call_balanced"}
 
 
 class QuantileCDF(MonotoneCDF):
@@ -2093,6 +2228,14 @@ class MixtureMLPCDF(CDFEstimator):
         observed = (y <= grid[None, :]).to(cdf.dtype)
         return (cdf - observed).square().mean()
 
+    def _training_context(self, x):
+        """Return optional immutable tensors used by subclass penalties."""
+        return None
+
+    def _extra_training_loss(self, y, logw, mu, sigma, indices, context):
+        """Return an optional proper-score addend for one mini-batch."""
+        return None
+
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
 
@@ -2133,6 +2276,7 @@ class MixtureMLPCDF(CDFEstimator):
         self.scaler = StandardScaler().fit(features)
         xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
         yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+        training_context = self._training_context(x)
         self.models, self.losses = [], []
         for seed in self.seeds:
             torch.manual_seed(seed)
@@ -2151,6 +2295,10 @@ class MixtureMLPCDF(CDFEstimator):
                     if self.left_cdf_weight:
                         loss = loss + self.left_cdf_weight * self._left_cdf_score(
                             yy[ix], logw, mu, sigma)
+                    extra = self._extra_training_loss(
+                        yy[ix], logw, mu, sigma, ix, training_context)
+                    if extra is not None:
+                        loss = loss + extra
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite mixture likelihood")
                     optimizer.zero_grad()
@@ -2232,6 +2380,89 @@ class MixtureMLPCDF(CDFEstimator):
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         return result
+
+
+class DecisionWeightedMixtureMLPCDF(MixtureMLPCDF):
+    """Mixture MLP with global NLL plus proper entry-strike CDF scoring.
+
+    Actual entry-chain strikes receive a put/call-balanced Brier term. A fixed
+    symmetric grid receives a smaller Brier term, while negative log likelihood
+    remains the globally strict proper score. Region weights inspect no outcome.
+    """
+
+    def __init__(self, decision_weight=1., global_cdf_weight=.25,
+                 global_thresholds=(-4., -3., -2., -1., 0., 1., 2., 3., 4.),
+                 **settings):
+        import math
+
+        super().__init__(**settings)
+        if (any(isinstance(v, bool) or not math.isfinite(v) or v < 0
+                       for v in (decision_weight, global_cdf_weight))
+                or decision_weight == global_cdf_weight == 0
+                or not isinstance(global_thresholds, (list, tuple))
+                or len(global_thresholds) < 2
+                or any(not math.isfinite(v) for v in global_thresholds)
+                or any(a >= b for a, b in zip(global_thresholds,
+                                               global_thresholds[1:]))):
+            raise ValueError("invalid decision-weighted MLP parameters")
+        self.decision_weight = float(decision_weight)
+        self.global_cdf_weight = float(global_cdf_weight)
+        self.global_thresholds = tuple(float(v) for v in global_thresholds)
+
+    def fit_decision_context(self, fit_context, cal_context):
+        self._fit_decisions = _decision_threshold_inventory(fit_context)
+        _decision_threshold_inventory(cal_context)
+        return self
+
+    @staticmethod
+    def _cdf_brier(y, logw, mu, sigma, thresholds, weights):
+        import math
+        import torch
+
+        z = ((thresholds[:, None, :]-mu[:, :, None])
+             /(sigma[:, :, None]*math.sqrt(2.)))
+        cdf = (logw.exp()[:, :, None]*(.5*(1.+torch.erf(z)))).sum(1)
+        observed = (y <= thresholds).to(cdf.dtype)
+        return ((cdf-observed).square()*weights).sum(1).mean()
+
+    def _training_context(self, x):
+        import numpy as np
+        import torch
+
+        if not hasattr(self, "_fit_decisions") or len(self._fit_decisions) != len(x):
+            raise ValueError("identity-keyed decision context was not attached")
+        inventory = self._fit_decisions
+        width = max(1, max(len(values) for values, _ in inventory))
+        thresholds = np.zeros((len(inventory), width), dtype="float32")
+        weights = np.zeros_like(thresholds)
+        for row, (values, mass) in enumerate(inventory):
+            thresholds[row, :len(values)] = values
+            weights[row, :len(mass)] = mass
+        return (torch.tensor(thresholds, device=self.device),
+                torch.tensor(weights, device=self.device),
+                torch.tensor(self.global_thresholds, dtype=torch.float32,
+                             device=self.device))
+
+    def _extra_training_loss(self, y, logw, mu, sigma, indices, context):
+        import torch
+
+        thresholds, weights, global_thresholds = context
+        loss = torch.zeros((), dtype=mu.dtype, device=mu.device)
+        if self.decision_weight:
+            loss = loss + self.decision_weight*self._cdf_brier(
+                y, logw, mu, sigma, thresholds[indices], weights[indices])
+        if self.global_cdf_weight:
+            grid = global_thresholds[None, :].expand(len(y), -1)
+            mass = torch.full_like(grid, 1./grid.shape[1])
+            loss = loss + self.global_cdf_weight*self._cdf_brier(
+                y, logw, mu, sigma, grid, mass)
+        return loss
+
+    def _research_state(self):
+        return {"objective": "nll_plus_decision_and_global_cdf_brier",
+                "decision_weight": self.decision_weight,
+                "global_cdf_weight": self.global_cdf_weight,
+                "strike_weighting": "deduplicated_put_call_balanced"}
 
 
 class StudentMixtureMLPCDF(MixtureMLPCDF):
@@ -2719,11 +2950,11 @@ class ChronologicalCDFStudy:
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
-            "notes"}
+            "decision_context", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
-        missing = self.KEYS-{"notes", "tail_probabilities"}-set(config)
+        missing = self.KEYS-{"notes", "tail_probabilities", "decision_context"}-set(config)
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
         for spec in config["models"].values():
@@ -2743,6 +2974,21 @@ class ChronologicalCDFStudy:
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
         return self.config
+
+    def _decision_context_rows(self, frame):
+        """Return context only after binding every record to its frame identity."""
+        field = self.config.get("decision_context")
+        if not field or field not in frame:
+            raise ValueError("decision-aware model lacks frozen context")
+        context = frame[field].tolist()
+        expected = [tuple(row) for row in frame[self.config["identity"]].itertuples(
+            index=False, name=None)]
+        if len(context) != len(expected) or any(
+                not isinstance(record, dict)
+                or tuple(record.get("identity", ())) != identity
+                for record, identity in zip(context, expected)):
+            raise ValueError("decision context and forecast identity mismatch")
+        return context
 
     def summarize(self, scores, selected_variants=None):
         """Select calibration on development only; report paired later scores.
@@ -2768,11 +3014,17 @@ class ChronologicalCDFStudy:
         cells = [c["group"], c["horizon"]]
         dev = scores[scores.year <= c["development_end"]]
         later = scores[scores.year > c["development_end"]]
-        dev_means = dev.groupby(cells+["model", "variant"]).crps.mean().unstack(["model", "variant"])
+        selection_metric = ("decision_strike_brier"
+                            if "decision_strike_brier" in dev else "crps")
+        dev_means = dev.groupby(cells+["model", "variant"])[selection_metric].mean().unstack(["model", "variant"])
         # Equal-cell relative score uses a fixed raw horizon-empirical reference.
         baseline = c["reference_model"]
         base = dev_means[(baseline, "raw")]
         dev_rel = dev_means.div(base, axis=0).mean()
+        crps_means = dev.groupby(cells+["model", "variant"])["crps"].mean().unstack(
+            ["model", "variant"])
+        dev_crps_rel = crps_means.div(
+            crps_means[(baseline, "raw")], axis=0).mean()
         selected = {name: min(("raw", "calibrated"), key=lambda v: dev_rel[(name, v)])
                     for name in c["models"]}
         selected[baseline] = "raw"
@@ -2785,6 +3037,8 @@ class ChronologicalCDFStudy:
         metrics = ["crps", "tail_crps", "lower_tail_quantile_score",
                    "upper_tail_quantile_score", "raw_return_crps", "strike_brier", "condor_loss_mse",
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
+        if "decision_strike_brier" in scores:
+            metrics.insert(0, "decision_strike_brier")
         metrics.extend(name for name in scores.columns
                        if (name.startswith("below_") or name.startswith("above_"))
                        and name not in metrics)
@@ -2807,16 +3061,19 @@ class ChronologicalCDFStudy:
                                 "expiry_series": f[c["series_identity"]].drop_duplicates().shape[0],
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
-                                                     if metric in ("crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
+                    if metric in ("decision_strike_brier", "crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
         # paired denominators cancel in each cell's candidate/reference ratio.
-        for reference in c["comparison_references"]:
-            base_rows = picked[picked.model == reference].set_index(keys).crps
+        interval_metrics = ["crps"]+(["decision_strike_brier"]
+                                      if "decision_strike_brier" in picked else [])
+        for interval_metric in interval_metrics:
+          for reference in c["comparison_references"]:
+            base_rows = picked[picked.model == reference].set_index(keys)[interval_metric].dropna()
             for model in c["models"]:
                 model_rows = picked[picked.model == model].set_index(keys)
-                compare = model_rows.crps
+                compare = model_rows[interval_metric].dropna()
                 if not compare.index.is_unique or not base_rows.index.is_unique or set(compare.index) != set(base_rows.index):
                     raise ValueError("comparison rows are not exactly paired")
                 pair = pd.concat([compare.rename("candidate"), base_rows.rename("reference")], axis=1)
@@ -2833,15 +3090,30 @@ class ChronologicalCDFStudy:
                         start = rng.integers(0, len(a), size=int(np.ceil(len(a)/width)))
                         idx = ((start[:, None]+np.arange(width)) % len(a)).ravel()[:len(a)]
                         denom = b[idx].sum(0)
-                        if (denom <= 0).any():
+                        supported = denom > 0
+                        if not supported.any():
                             raise ValueError("bootstrap cell lacks observations")
-                        replicates.append(100*(1-np.mean(a[idx].sum(0)/denom)))
+                        # A date-block resample can legitimately omit every row
+                        # from a sparse exact-day cell. Recompute the statistic
+                        # on represented cells, as groupby does on the sample;
+                        # structural absence is not a zero-valued observation.
+                        replicates.append(100*(1-np.mean(
+                            a[idx].sum(0)[supported]/denom[supported])))
                     lo, hi = np.quantile(replicates, [.025, .975])
-                    intervals.append({"model": model, "reference": reference, "block_dates": width,
+                    intervals.append({"metric": interval_metric, "model": model, "reference": reference, "block_dates": width,
                                       "lo": float(lo), "hi": float(hi),
                                       "point": float(100*(1-np.mean(a.sum(0)/b.sum(0))))})
         summary = {"selected_variants_from_development": selected,
-                   "development_relative_crps": {f"{k[0]}:{k[1]}": float(v) for k, v in dev_rel.items()},
+                   "selection_metric": selection_metric,
+                   "promotion_status": "descriptive_only_no_promotion",
+                   "promotion_reason": "global and tail noninferiority are reported but not a preregistered gate",
+                   "decision_eligible_rows_by_model": (
+                       picked.dropna(subset=["decision_strike_brier"])
+                       .groupby("model").size().to_dict()
+                       if "decision_strike_brier" in picked else {}),
+                   "development_relative_primary": {f"{k[0]}:{k[1]}": float(v) for k, v in dev_rel.items()},
+                   "development_relative_crps": {f"{k[0]}:{k[1]}": float(v)
+                                                 for k, v in dev_crps_rel.items()},
                    "metrics": records, "paired_block_intervals": intervals,
                    "limits": "Pointwise research intervals, not multiplicity-adjusted selection guarantees; historical evaluation already inspected."}
         (output/"comparison.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
@@ -3015,6 +3287,10 @@ class ChronologicalCDFStudy:
                             model._validate_x(band[c["features"]].to_numpy())
                         imputer = SimpleImputer(strategy="median", keep_empty_features=True)
                         x = imputer.fit_transform(model_fit[c["features"]])
+                        if hasattr(model, "fit_decision_context"):
+                            model.fit_decision_context(
+                                self._decision_context_rows(model_fit),
+                                self._decision_context_rows(model_cal))
                         model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
                                   imputer.transform(model_cal[c["features"]]),
                                   (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
@@ -3043,12 +3319,20 @@ class ChronologicalCDFStudy:
                         model._validate_x(band[c["features"]].to_numpy())
                     xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
                     count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
-                    raw = (model.curve_context(
+                    if hasattr(model, "curve_decision_context"):
+                        raw = model.curve_decision_context(
+                            xv, self._decision_context_rows(val))
+                    else:
+                        raw = (model.curve_context(
                         xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
                         if hasattr(model, "curve_context") else model.curve(xv))
                     variants = {"raw": raw}
                     if spec["calibrate"]:
-                        pit = model.curve(xc).cdf(yc[:, None])[:, 0]
+                        calibration_curve = (model.curve_decision_context(
+                            xc, self._decision_context_rows(cal))
+                            if hasattr(model, "curve_decision_context")
+                            else model.curve(xc))
+                        pit = calibration_curve.cdf(yc[:, None])[:, 0]
                         variants["calibrated"] = CalibratedCurve(raw, pit, c["calibration_knots"])
                     else:
                         variants["calibrated"] = raw
