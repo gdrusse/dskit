@@ -1,5 +1,19 @@
 # Re-entry
 
+## QQQ decision-strike diagnosis completed (2026-10-01)
+
+- Frozen raw wide MLP versus horizon empirical; no retraining or reselection.
+  1,676 eligible QQQ forecasts, 90,795 listed thresholds, 251 dates in 2019.
+- Local Brier skill was -4.376% overall, -3.262% calls, and -7.373% puts;
+  both 30/60-date intervals crossed zero. Every dense distance band below
+  three scale units was negative.
+- The MLP amplified QQQ downside overprediction: observed put breach rate
+  6.786%, empirical 9.110%, MLP 10.010%. No promotion; no optimizer.
+- Next: pre-register a narrow QQQ side/DTE probability correction or
+  hierarchical index head while keeping the SPY guard frozen. Do not expand
+  the architecture zoo. Memo:
+  `children/index_options/docs/memos/2026-10-01-qqq-decision-strike-diagnosis.md`.
+
 ## SPY decision-region persistence completed (2026-10-01)
 
 - Frozen raw wide decision MLP versus horizon empirical; no HPO/reselection.

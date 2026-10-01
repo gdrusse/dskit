@@ -28685,3 +28685,25 @@ global, tail, and coverage constraint. Its 60-date local lower bound was
 +0.020%, but the 30-date lower bound was -0.223%; the frozen guard therefore
 failed. Do not weaken it post hoc. Diagnose QQQ by individual decision cutoff
 before considering any new model or robust optimizer input.
+
+## ADR-0210 — Frozen QQQ decision-strike diagnosis
+
+**Status:** completed 2026-10-01; descriptive only, no promotion.
+
+Restore the exact raw horizon-empirical and wide decision-weighted MLP curves
+from ADR-0208 without retraining or reselection. Score every identity-bound,
+entry-known listed cutoff in the 2019 QQQ validation fold. Stratify paired
+Brier skill and weighted calibration by put/call side, absolute standardized
+strike distance, exact calendar DTE, and year. Use circular 30/60 quote-date
+blocks, preserve all same-date pairs, and report zero-reference-score strata
+as undefined rather than manufacturing relative skill.
+
+Across 1,676 eligible identities, 90,795 thresholds, and 251 dates, the MLP
+worsened local Brier by 4.376%; both paired intervals crossed zero. Calls were
+-3.262% and puts -7.373%. Every dense distance band below three scale units was
+negative. The MLP raised predicted QQQ put-breach frequency from the empirical
+9.110% to 10.010% against 6.786% observed, identifying excess downside mass as
+the main failure. Far-cutoff gains have tiny reference error and do not support
+promotion. Keep the optimizer blocked. A next model study, if run, must be a
+pre-registered index-specific side/DTE correction or hierarchical head under
+the unchanged SPY local/global/tail guards, not a broader architecture zoo.

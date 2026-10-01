@@ -1110,3 +1110,59 @@ def test_future_unscheduled_closure_is_label_information_only(tmp_path, monkeypa
     np.testing.assert_allclose(out.life_fraction_sessions,
                                out.series_age_sessions/(out.series_age_sessions+[8, 9]))
     np.testing.assert_allclose(out.reference_scale, np.maximum(out.rv_22, .001)*np.sqrt([8, 9]))
+
+
+def test_decision_strike_diagnosis_is_paired_and_stratified(tmp_path):
+    root, output = tmp_path/"source", tmp_path/"out"
+    root.mkdir()
+    identities = np.array([["QQQ", "2019-01-02", "2019-01-11"],
+                           ["QQQ", "2019-01-03", "2019-02-01"]])
+    contexts = [{"identity": list(key), "thresholds": [-.5, .5],
+                 "weights": [.5, .5], "intervals": [[-.5, -.1], [.1, .5]],
+                 "status": "eligible",
+                 "clock": "after_date_close_indicative_not_executable",
+                 "provenance_sha256": "a"*64} for key in identities]
+    pd.DataFrame({"symbol": "QQQ", "quote_date": identities[:, 1],
+                  "expiry": identities[:, 2], "actual_calendar_dte": [9, 29],
+                  "terminal_return": [-.01, .01], "reference_scale": [.02, .02],
+                  "decision_region_context": contexts}).to_parquet(
+                      root/"input_panel.parquet", index=False)
+    (root/"protocol.json").write_text("{}")
+    values = np.tile([-2., 0., 2.], (2, 1))
+    for model, probabilities in {
+            "reference": [[0., .5, 1.], [0., .5, 1.]],
+            "candidate": [[0., .3, 1.], [0., .7, 1.]]}.items():
+        np.savez_compressed(root/f"QQQ-{model}-raw-curves.npz",
+                            kind="grid", values=values,
+                            probabilities=np.asarray(probabilities),
+                            identities=identities, row_index=np.arange(2))
+    settings = {"forecast_root": str(root),
+                "models": ["reference", "candidate"],
+                "reference_model": "reference", "symbol": "QQQ", "years": [2019],
+                "output": str(output), "distance_bins": [0, 1, 4],
+                "dte_bins": [0, 15, 46],
+                "groupings": [[], ["side"], ["dte_band"]],
+                "bootstrap": {"blocks": [1], "replicates": 20,
+                              "alpha": .05, "seed": 7},
+                "limits": {"max_seconds": 1800,
+                           "max_address_space_mib": 6144}, "notes": "fixture"}
+    result = cdf_study.DecisionStrikeDiagnosisStudy(settings).run()
+    detail = pd.read_parquet(output/"threshold_scores.parquet")
+    summary = pd.read_csv(output/"stratified_skill.csv")
+    assert result["forecast_identities"] == 2
+    assert result["threshold_rows"] == 8
+    assert set(detail.side) == {"put", "call"}
+    assert set(summary.view) == {"overall", "side", "dte_band"}
+    assert detail.groupby(["symbol", "quote_date", "expiry", "threshold"]).model.nunique().eq(2).all()
+
+
+def test_decision_strike_diagnosis_rejects_invalid_bins():
+    settings = {"forecast_root": "source", "models": ["a", "b"],
+                "reference_model": "a", "symbol": "QQQ", "years": [2019],
+                "output": "out", "distance_bins": [0], "dte_bins": [0, 46],
+                "groupings": [[]], "bootstrap": {"blocks": [1],
+                "replicates": 1, "alpha": .05, "seed": 1},
+                "limits": {"max_seconds": 1800,
+                "max_address_space_mib": 6144}, "notes": "fixture"}
+    with pytest.raises(ValueError, match="invalid decision-strike diagnosis"):
+        cdf_study.DecisionStrikeDiagnosisStudy(settings)

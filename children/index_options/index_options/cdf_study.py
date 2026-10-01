@@ -21,7 +21,7 @@ from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
 
 __all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
-           "DecisionRegionStudy",
+           "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
            "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
            "RobustCorrectionStudy"]
 
@@ -2501,66 +2501,333 @@ class CondorCDFDiagnostic:
         return result
 
     def __call__(self, frame, curve, draws):
-        """Return expected-loss error and CDF/payoff numerical agreement.
-
-        Parameters
-        ----------
-        frame : DataFrame
-            Spot, reference_scale and realized terminal_price columns.
-        curve : curve
-            Conditional standardized-return CDF.
-        draws : ndarray
-            Deterministic quantile quadrature nodes, not extra observations.
-
-        Returns
-        -------
-        dict
-            Per-row loss diagnostics, normalized by wider wing and in dollars/share.
-        """
+        """Return expected-loss error and CDF/payoff numerical agreement."""
         import numpy as np
 
         scale, spot = frame.reference_scale.to_numpy(), frame.spot.to_numpy()
         strikes = spot[:, None]*np.exp(scale[:, None]*self.strikes_z)
         width = np.maximum(strikes[:, 1]-strikes[:, 0], strikes[:, 3]-strikes[:, 2])
-        # Bounded wing payoff is constant outside the outer strikes. Avoid
-        # exponentiating unbounded Student tails; the CDF itself is unchanged.
         bounded = np.clip(draws, self.strikes_z[0], self.strikes_z[-1])
-        mean_loss = -self.payoff(spot[:, None]*np.exp(scale[:, None]*bounded), strikes).mean(1)
-        realized = -self.payoff(frame.terminal_price.to_numpy()[:, None], strikes)[:, 0]
+        mean_loss = -self.payoff(
+            spot[:, None]*np.exp(scale[:, None]*bounded), strikes).mean(1)
+        realized = -self.payoff(
+            frame.terminal_price.to_numpy()[:, None], strikes)[:, 0]
         integral = np.zeros(len(frame))
         for a, b, put in [(0, 1, True), (2, 3, False)]:
-            prices = strikes[:, a, None]+(strikes[:, b]-strikes[:, a])[:, None]*(np.arange(self.integration_points)+.5)/self.integration_points
+            prices = (strikes[:, a, None]
+                      +(strikes[:, b]-strikes[:, a])[:, None]
+                      *(np.arange(self.integration_points)+.5)
+                      / self.integration_points)
             p = curve.cdf(np.log(prices/spot[:, None])/scale[:, None])
-            integral += (p if put else 1-p).mean(1)*(strikes[:, b]-strikes[:, a])
+            integral += ((p if put else 1-p).mean(1)
+                         *(strikes[:, b]-strikes[:, a]))
         z = np.array(self.strikes_z)
         truth = np.log(frame.terminal_price.to_numpy()/spot)/scale
         brier = ((curve.cdf(z)-(truth[:, None] <= z))**2).mean(1)
         result = {"condor_loss_mse": ((integral-realized)/width)**2,
-                "condor_loss_bias": (integral-realized)/width,
-                "expected_loss_per_share": integral,
-                "realized_loss_per_share": realized,
-                "payoff_quadrature_gap": abs(integral-mean_loss),
-                "strike_brier": brier}
+                  "condor_loss_bias": (integral-realized)/width,
+                  "expected_loss_per_share": integral,
+                  "realized_loss_per_share": realized,
+                  "payoff_quadrature_gap": abs(integral-mean_loss),
+                  "strike_brier": brier}
         if "decision_region_context" in frame:
             from dskit.pipeline.libs.predictive_cdf import _decision_threshold_inventory
-            context = frame.decision_region_context.tolist()
-            inventory = _decision_threshold_inventory(context)
+            inventory = _decision_threshold_inventory(
+                frame.decision_region_context.tolist())
             count = max(1, max(len(values) for values, _ in inventory))
             thresholds = np.zeros((len(frame), count), dtype=float)
             weights = np.zeros_like(thresholds)
             for row, (values, mass) in enumerate(inventory):
                 thresholds[row, :len(values)] = values
                 weights[row, :len(mass)] = mass
-            truth = frame.terminal_return.to_numpy()/frame.reference_scale.to_numpy()
+            truth = (frame.terminal_return.to_numpy()
+                     / frame.reference_scale.to_numpy())
             probabilities = curve.cdf(thresholds)
-            local = (
-                weights*(probabilities-(truth[:, None] <= thresholds))**2).sum(1)
+            local = (weights*(probabilities
+                              -(truth[:, None] <= thresholds))**2).sum(1)
             counts = np.asarray([len(values) for values, _ in inventory], dtype=int)
             local[counts == 0] = np.nan
             result["decision_strike_brier"] = local
             result["decision_strike_count"] = counts
         return result
 
+
+class DecisionStrikeDiagnosisStudy:
+    """JSON-driven paired diagnosis at every saved listed decision strike."""
+
+    KEYS = {"forecast_root", "models", "reference_model", "symbol", "years",
+            "output", "distance_bins", "dte_bins", "groupings", "bootstrap",
+            "limits", "notes"}
+    GROUP_FIELDS = {"side", "distance_band", "dte_band", "year"}
+
+    def __init__(self, config):
+        import math
+
+        if (set(config) != self.KEYS
+                or not isinstance(config["models"], list) or len(config["models"]) < 2
+                or len(set(config["models"])) != len(config["models"])
+                or config["reference_model"] not in config["models"]
+                or not isinstance(config["symbol"], str) or not config["symbol"]
+                or not isinstance(config["years"], list) or not config["years"]
+                or any(type(v) is not int for v in config["years"])
+                or config["years"] != sorted(set(config["years"]))
+                or any(not isinstance(v, (int, float)) or isinstance(v, bool)
+                       or not math.isfinite(v) for name in ("distance_bins", "dte_bins")
+                       for v in config[name])
+                or any(config[name][0] != 0
+                       or len(config[name]) < 2
+                       or any(a >= b for a, b in zip(config[name], config[name][1:]))
+                       for name in ("distance_bins", "dte_bins"))
+                or not isinstance(config["groupings"], list)
+                or not config["groupings"]
+                or any(not isinstance(grouping, list)
+                       or len(grouping) != len(set(grouping))
+                       or not set(grouping).issubset(self.GROUP_FIELDS)
+                       for grouping in config["groupings"])
+                or set(config["bootstrap"]) != {"blocks", "replicates", "alpha", "seed"}
+                or any(type(v) is not int or v < 1
+                       for v in [*config["bootstrap"]["blocks"],
+                                 config["bootstrap"]["replicates"],
+                                 config["bootstrap"]["seed"]])
+                or not 0 < config["bootstrap"]["alpha"] < 1
+                or set(config["limits"]) != {"max_seconds", "max_address_space_mib"}
+                or config["limits"]["max_seconds"] > 1800
+                or config["limits"]["max_address_space_mib"] > 6144):
+            raise ValueError("invalid decision-strike diagnosis JSON")
+        self.config = config
+
+    def _enforce_limits(self):
+        import resource
+        import signal
+
+        limit = self.config["limits"]
+        requested = limit["max_address_space_mib"]*1024*1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS,
+                           (min(requested, soft) if soft != resource.RLIM_INFINITY
+                            else requested, hard))
+        signal.signal(signal.SIGALRM,
+                      lambda _signal, _frame: (_ for _ in ()).throw(
+                          TimeoutError("decision-strike diagnosis exceeded time limit")))
+        signal.alarm(limit["max_seconds"])
+
+    @staticmethod
+    def _band(value, edges):
+        import numpy as np
+
+        position = int(np.searchsorted(edges, value, side="right")-1)
+        if position < 0 or position >= len(edges)-1:
+            raise ValueError("diagnostic value outside declared bins")
+        return f"[{edges[position]},{edges[position+1]})"
+
+    @staticmethod
+    def _sha256(path):
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as stream:
+            for block in iter(lambda: stream.read(8*1024*1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def run(self):
+        """Score exact frozen curves at their identity-bound listed cutoffs."""
+        import math
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.predictive_cdf import _decision_threshold_inventory
+
+        c = self.config
+        root, output = Path(c["forecast_root"]), Path(c["output"])
+        if output.exists():
+            raise FileExistsError(output)
+        panel_path = root/"input_panel.parquet"
+        protocol_path = root/"protocol.json"
+        if not panel_path.exists() or not protocol_path.exists():
+            raise ValueError("diagnosis source lacks frozen panel or protocol")
+        panel = pd.read_parquet(panel_path)
+        identity = ["symbol", "quote_date", "expiry"]
+        panel["year"] = panel.quote_date.str[:4].astype(int)
+        panel = panel.loc[(panel.symbol == c["symbol"])
+                          & panel.year.isin(c["years"])].copy()
+        if (panel.empty or panel.duplicated(identity).any()
+                or panel[identity].isna().any().any()
+                or "decision_region_context" not in panel):
+            raise ValueError("invalid diagnosis panel identities")
+        context = []
+        for record in panel.decision_region_context.tolist():
+            context.append({**record,
+                            "identity": [str(v) for v in record["identity"]],
+                            "thresholds": [float(v) for v in record["thresholds"]],
+                            "weights": [float(v) for v in record["weights"]],
+                            "intervals": [[float(v) for v in pair]
+                                          for pair in record["intervals"]]})
+        inventory = _decision_threshold_inventory(context)
+        expected = [tuple(row) for row in panel[identity].itertuples(index=False,
+                                                                      name=None)]
+        if any(tuple(record["identity"]) != key for record, key in
+               zip(context, expected)):
+            raise ValueError("diagnosis context identity mismatch")
+        source_hashes = {str(panel_path): self._sha256(panel_path),
+                         str(protocol_path): self._sha256(protocol_path)}
+        records = []
+        for model in c["models"]:
+            path = root/f"{c['symbol']}-{model}-raw-curves.npz"
+            if not path.exists():
+                raise ValueError("missing frozen raw curve archive")
+            source_hashes[str(path)] = self._sha256(path)
+            with np.load(path, allow_pickle=False) as archive:
+                archive_ids = [tuple(row) for row in archive["identities"]]
+                lookup = {key: i for i, key in enumerate(archive_ids)}
+                if len(lookup) != len(archive_ids) or not set(expected).issubset(lookup):
+                    raise ValueError("curve archive lacks unique paired identities")
+                indices = [lookup[key] for key in expected]
+                curve = CDFHyperparameterStudy.restore_curve(archive, indices)
+                max_nodes = max((len(nodes) for nodes, _ in inventory), default=0)
+                thresholds = np.zeros((len(panel), max(1, max_nodes)))
+                weights = np.zeros_like(thresholds)
+                for row, (nodes, mass) in enumerate(inventory):
+                    thresholds[row, :len(nodes)] = nodes
+                    weights[row, :len(mass)] = mass
+                probabilities = curve.cdf(thresholds)
+                outcomes = (panel.terminal_return.to_numpy()
+                            / panel.reference_scale.to_numpy())
+                for row, (key, nodes_mass) in enumerate(zip(expected, inventory)):
+                    nodes, mass = nodes_mass
+                    for column, (threshold, weight) in enumerate(zip(nodes, mass)):
+                        probability = float(probabilities[row, column])
+                        event = float(outcomes[row] <= threshold)
+                        if not 0 <= probability <= 1 or not math.isfinite(probability):
+                            raise ValueError("invalid archived decision probability")
+                        dte = int(panel.iloc[row].actual_calendar_dte)
+                        records.append({
+                            **dict(zip(identity, key)), "year": int(panel.iloc[row].year),
+                            "model": model, "threshold": float(threshold),
+                            "weight": float(weight), "probability": probability,
+                            "event": event, "brier": (probability-event)**2,
+                            "side": "put" if threshold < 0 else "call",
+                            "distance_band": self._band(abs(float(threshold)),
+                                                        c["distance_bins"]),
+                            "dte_band": self._band(dte, c["dte_bins"]),
+                            "actual_calendar_dte": dte})
+        detail = pd.DataFrame(records)
+        if detail.empty:
+            raise ValueError("diagnosis produced no eligible strikes")
+        keys = identity+["threshold"]
+        counts = detail.groupby(keys).model.nunique()
+        if len(counts) != detail[keys].drop_duplicates().shape[0] or not (
+                counts == len(c["models"])).all():
+            raise ValueError("diagnosis model rows are not exactly paired")
+        detail["weighted_error"] = detail.weight*detail.brier
+        detail["weighted_probability"] = detail.weight*detail.probability
+        detail["weighted_event"] = detail.weight*detail.event
+        summary, intervals = [], []
+        dates = sorted(detail.quote_date.unique())
+        alpha = c["bootstrap"]["alpha"]
+        for grouping in c["groupings"]:
+            fields = list(grouping)
+            work = detail.copy()
+            if not fields:
+                work["_all"] = "all"
+                fields = ["_all"]
+            aggregates = (work.groupby(fields+["model"], dropna=False)
+                          .agg(weighted_error=("weighted_error", "sum"),
+                               weighted_probability=("weighted_probability", "sum"),
+                               weighted_event=("weighted_event", "sum"),
+                               weight=("weight", "sum"),
+                               thresholds=("brier", "size"),
+                               identities=("quote_date", "size"),
+                               dates=("quote_date", "nunique")).reset_index())
+            aggregates["score"] = aggregates.weighted_error/aggregates.weight
+            for values, block in aggregates.groupby(fields, dropna=False):
+                values = values if isinstance(values, tuple) else (values,)
+                labels = dict(zip(fields, values))
+                scores = dict(zip(block.model, block.score))
+                if set(scores) != set(c["models"]):
+                    raise ValueError("diagnosis stratum lacks paired models")
+                reference_score = scores[c["reference_model"]]
+                for model in c["models"]:
+                    row = block.loc[block.model == model].iloc[0]
+                    skill = (100*(1-scores[model]/reference_score)
+                             if reference_score > 0 else None)
+                    summary.append({"view": "+".join(grouping) or "overall",
+                                    **{k: v for k, v in labels.items() if k != "_all"},
+                                    "model": model, "score": float(scores[model]),
+                                    "reference_score": float(reference_score),
+                                    "score_delta": float(scores[model]-reference_score),
+                                    "skill": float(skill) if skill is not None else None,
+                                    "predicted_event_rate": float(
+                                        row.weighted_probability/row.weight),
+                                    "observed_event_rate": float(
+                                        row.weighted_event/row.weight),
+                                    "calibration_gap": float(
+                                        (row.weighted_probability-row.weighted_event)
+                                        / row.weight),
+                                    "thresholds": int(row.thresholds),
+                                    "dates": int(row.dates)})
+            daily = (work.groupby(["quote_date", *fields, "model"], dropna=False)
+                     .agg(weighted_error=("weighted_error", "sum"),
+                          weight=("weight", "sum")).reset_index())
+            for values, block in daily.groupby(fields, dropna=False):
+                values = values if isinstance(values, tuple) else (values,)
+                labels = dict(zip(fields, values))
+                for model in c["models"]:
+                    if model == c["reference_model"]:
+                        continue
+                    table = block.pivot(index="quote_date", columns="model",
+                                        values=["weighted_error", "weight"]).reindex(
+                                            dates).fillna(0.)
+                    required = [("weighted_error", model),
+                                ("weighted_error", c["reference_model"]),
+                                ("weight", model), ("weight", c["reference_model"])]
+                    if any(column not in table for column in required):
+                        raise ValueError("diagnosis bootstrap lacks paired model")
+                    candidate_num = table[("weighted_error", model)].to_numpy()
+                    reference_num = table[("weighted_error", c["reference_model"])].to_numpy()
+                    candidate_weight = table[("weight", model)].to_numpy()
+                    reference_weight = table[("weight", c["reference_model"])].to_numpy()
+                    if not np.allclose(candidate_weight, reference_weight):
+                        raise ValueError("diagnosis bootstrap weights differ by model")
+                    for width in c["bootstrap"]["blocks"]:
+                        rng = np.random.default_rng(c["bootstrap"]["seed"])
+                        draws = []
+                        for _ in range(c["bootstrap"]["replicates"]):
+                            starts = rng.integers(0, len(dates),
+                                                  size=int(np.ceil(len(dates)/width)))
+                            ix = ((starts[:, None]+np.arange(width)) % len(dates)).ravel()[:len(dates)]
+                            weight = reference_weight[ix].sum()
+                            if weight > 0:
+                                candidate_score = candidate_num[ix].sum()/weight
+                                reference_score = reference_num[ix].sum()/weight
+                                if reference_score > 0:
+                                    draws.append(100*(1-candidate_score/reference_score))
+                        if draws:
+                            lo, hi = np.quantile(draws, [alpha/2, 1-alpha/2])
+                        else:
+                            lo = hi = None
+                        intervals.append({"view": "+".join(grouping) or "overall",
+                                          **{k: v for k, v in labels.items() if k != "_all"},
+                                          "model": model,
+                                          "reference": c["reference_model"],
+                                          "block_dates": width,
+                                          "lo": float(lo) if lo is not None else None,
+                                          "hi": float(hi) if hi is not None else None,
+                                          "replicates": len(draws),
+                                          "status": ("estimated" if draws else
+                                                     "undefined_zero_reference")})
+        output.mkdir(parents=True)
+        detail.to_parquet(output/"threshold_scores.parquet", index=False)
+        pd.DataFrame(summary).to_csv(output/"stratified_skill.csv", index=False)
+        (output/"paired_intervals.json").write_text(json.dumps(intervals, indent=2))
+        evidence = {"symbol": c["symbol"], "years": c["years"],
+                    "forecast_identities": len(panel),
+                    "eligible_identities": int(sum(len(nodes) > 0
+                                                   for nodes, _ in inventory)),
+                    "threshold_rows": len(detail), "dates": len(dates),
+                    "models": c["models"], "reference_model": c["reference_model"],
+                    "source_sha256": source_hashes,
+                    "implementation_sha256": self._sha256(Path(__file__)),
+                    "config": c, "intervals": intervals}
+        (output/"summary.json").write_text(json.dumps(evidence, indent=2))
+        return evidence
 
 def _main():
     parser = argparse.ArgumentParser()
@@ -2571,6 +2838,13 @@ def _main():
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if set(config) == {"decision_strike_diagnosis"}:
+        if args.stage or args.partition or args.decision_stage or args.robust_stage:
+            parser.error("decision-strike diagnosis does not accept stage flags")
+        study = DecisionStrikeDiagnosisStudy(config["decision_strike_diagnosis"])
+        study._enforce_limits()
+        print(json.dumps(study.run(), indent=2), flush=True)
+        return
     if config.get("data", {}).get("decision_regions"):
         # The CLI is a one-study worker. Apply limits before loading/scanning
         # archive data and deliberately let process exit restore OS state.

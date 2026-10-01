@@ -1,0 +1,35 @@
+{
+  "decision_strike_diagnosis": {
+    "forecast_root": "/home/russell/dskit/children/index_options/pipeline_runs/predictive_cdf_decision_loss_zoo_r5_20260930",
+    "models": [
+      "horizon_empirical",
+      "decision_mlp_wide"
+    ],
+    "reference_model": "horizon_empirical",
+    "symbol": "QQQ",
+    "years": [2019],
+    "output": "/home/russell/dskit/children/index_options/pipeline_runs/decision_strike_qqq_diagnosis_20261001",
+    "distance_bins": [0, 0.5, 1, 1.5, 2, 3, 5, 10, 25],
+    "dte_bins": [0, 8, 15, 22, 31, 46],
+    "groupings": [
+      [],
+      ["side"],
+      ["distance_band"],
+      ["dte_band"],
+      ["year"],
+      ["side", "distance_band"],
+      ["side", "dte_band"]
+    ],
+    "bootstrap": {
+      "blocks": [30, 60],
+      "replicates": 2000,
+      "alpha": 0.05,
+      "seed": 1872019
+    },
+    "limits": {
+      "max_seconds": 1800,
+      "max_address_space_mib": 6144
+    },
+    "notes": "Frozen 2019 QQQ diagnosis only; no HPO, model reselection, optimizer tuning, or promotion authority. Scores every entry-known listed decision threshold by side, standardized strike distance, exact calendar DTE, and year."
+  }
+}
