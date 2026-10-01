@@ -9,7 +9,7 @@ option trade bars; historical bid/ask quotes and a strategy backtest remain abse
 ## Execution contract
 
 This source and symbol audit ran on 2026-09-30 from branch
-`codex/amzn-stock-options`, series base `f7736173`. Scope was long stock-price history,
+`codex/amzn-stock-options`, series base `4b278f17`. Scope was long stock-price history,
 free option coverage, a starting stock, and explicit stock-specific caveats.
 No new child, strategy run, paper/live order or paid-data purchase was approved.
 
