@@ -147,6 +147,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
+                            # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes

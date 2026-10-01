@@ -1,6 +1,7 @@
 # Simple Formulation with Robustification
 
 **Status:** research proposal, 2026-09-30. **Scope:** one intact, one-lot iron condor for one underlying and expiry, held to settlement. This extends the [basic formulation](basic-iron-condor-optimization.md); it is not a trading rule.
+A [worked example](../../explanations/robust-condor-selection.md) walks through §3–§4 by hand.
 
 ## 1. Forecast and decision regions
 
