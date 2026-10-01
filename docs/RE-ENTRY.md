@@ -18,8 +18,10 @@
 - Current runbook/source contract/results: final section of
   `children/index_options/docs/plans/README.md`. A new raw-chain source still
   requires upstream CDF preparation; these are coverage distributions, not
-  model skill or fitted return CDFs. Next: feature-family/PCA planning on the
-  selected seven-day horizon with chronological, region-specific evaluation.
+  model skill or fitted return CDFs. Next: audit each proposed feature/family
+  on those exact seven-day observations: finite/missing counts, date windows,
+  causal lookbacks, entry-time availability and complete-case sample losses.
+  Inventory Torch and earlier non-Torch features before selection/PCA/training.
 
 ## QQQ exact-horizon CDF coverage selector completed (2026-10-01)
 

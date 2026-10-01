@@ -496,10 +496,19 @@ probes passed distinct-date/tie/exclusion behavior, singleton ticker substitutio
 and empty-cohort refusal. Prior filter/derive/groupby/keyby checks remain 78
 passed; those implementations are unchanged. No full suite ran.
 
-Next: use the selected exact seven-day horizon for the feature-family/PCA plan,
-then establish chronological training/validation/test admission and paired
-out-of-sample decision-region skill. Coverage maximization is not model skill
-and this census does not prove which horizon will predict best.
+Next (owner direction): audit feature availability on the selected exact
+seven-day CDF-eligible observations before feature selection/PCA or training.
+Use the same ticker/source inputs and preserve the baseline identities and
+counts: QQQ 1,497, SPY 1,879, IWM 1,377. Inventory the proposed feature families
+against the existing Torch MLP/GRU and earlier non-Torch studies. For each
+feature and family, report present/finite/missing counts, date windows, required
+lookback and entry-time availability; report complete-case intersections and
+the exact observations lost. Distinguish genuinely missing source data from
+features that can be derived causally from existing history. Do not silently
+impute, remove observations or change the selected horizon to improve coverage.
+Then choose feature-family experiments and chronological split admission;
+fit selection/PCA only on training data. Coverage maximization is not model
+skill and this census does not prove which horizon will predict best.
 
 Review lock: candidate `96371511` passed two fresh sequential independent lenses,
 `/root/coverage_multi_correctness` and `/root/coverage_multi_integration`, both
