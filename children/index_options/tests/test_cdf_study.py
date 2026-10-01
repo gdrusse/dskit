@@ -10,8 +10,232 @@ import pandas as pd
 import pytest
 
 from index_options.cdf_study import CondorCDFDiagnostic, ExactExpiryCDFPanel, RawChainFeatureBuilder
+from index_options import cdf_study
 from index_options.distribution import condor_payoff
-from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, MixtureCurve
+from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
+
+
+def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execution():
+    strikes = [85., 90., 95., 105., 110., 115.]
+    rows = pd.DataFrame({
+        "symbol": ["SPY"] * 6, "date": ["2020-01-02"] * 6,
+        "expiration": ["2020-02-21"] * 6, "strike": strikes,
+        "type": ["put"] * 3 + ["call"] * 3,
+        "bid": [1., 2., 3., 3., 2., 1.],
+        "ask": [1.2, 2.2, 3.2, 3.2, 2.2, 1.2],
+        "bid_size": [3] * 6, "ask_size": [3] * 6,
+    })
+    rule = cdf_study.EligibleCondorChain(
+        max_abs_log_moneyness=.2, min_wing_width=5., max_wing_width=10.,
+        max_candidates=100, fee_per_leg=0., multiplier=100)
+    first = rule.candidates(rows, spot=100.)
+    second = rule.candidates(rows.sample(frac=1, random_state=9), spot=100.)
+    assert first == second
+    assert (90., 95., 105., 110.) in [tuple(x["strikes"]) for x in first]
+    assert all(x["net_credit"] > 0 for x in first)
+    assert all(x["strikes"][0] < x["strikes"][1] < x["strikes"][2]
+               < x["strikes"][3] for x in first)
+    rows.loc[rows.strike.eq(95.), "bid_size"] = 0
+    assert all(x["strikes"][1] != 95. for x in rule.candidates(rows, spot=100.))
+    with pytest.raises(ValueError, match="timestamp"):
+        rule.candidates(rows, spot=100., executable=True)
+
+
+def test_decision_region_audit_uses_all_wings_and_checks_grid_error():
+    grid = np.linspace(80., 120., 401)
+    forecast = (grid-80.)/40.
+    candidate = {"id": "one", "strikes": (90., 95., 105., 110.),
+                 "net_credit": 4.}
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1).evaluate(
+        grid, forecast, terminal=100., spot=100., candidates=[candidate], radius=0.)
+    assert result["nominal"]["id"] == "one"
+    assert result["robust"]["id"] == "one"
+    assert result["weighted_crps"] > 0
+    assert result["strike_brier"] == pytest.approx(np.mean([.25**2, .375**2,
+                                                             .375**2, .25**2]))
+    assert result["candidates"][0]["expected_loss"] == pytest.approx(3.125)
+    assert result["candidates"][0]["put_expected_loss"] == pytest.approx(1.5625)
+    assert result["candidates"][0]["call_expected_loss"] == pytest.approx(1.5625)
+    assert result["candidates"][0]["realized_loss"] == 0
+    stressed = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1).evaluate(
+        grid, forecast, terminal=100., spot=100., candidates=[candidate], radius=.1)
+    assert stressed["robust"]["id"] is None
+    with pytest.raises(ValueError, match="mesh"):
+        cdf_study.CondorDecisionAudit(mesh_tolerance=.001, floor=.1).evaluate(
+            grid[::40], forecast[::40], terminal=100., spot=100.,
+            candidates=[candidate], radius=0.)
+
+
+def test_causal_strike_correction_is_monotone_shrunk_and_requires_history():
+    owner = cdf_study.CausalStrikeCDFCorrection(
+        prior_strength=20., knots=11, min_events=4, min_dates=2)
+    with pytest.raises(ValueError, match="insufficient"):
+        owner.fit([.2, .8], [0., 1.], ["2020-01-01", "2020-01-02"])
+    owner.fit([.1, .2, .8, .9], [0., 1., 0., 1.],
+              ["2020-01-01"]*2+["2020-01-02"]*2,
+              weights=[.5, .5, .5, .5])
+    mapped = owner.transform(np.linspace(0, 1, 101))
+    assert mapped[0] == 0 and mapped[-1] == 1
+    assert (np.diff(mapped) >= 0).all()
+    curve = owner.curve(GridCurve([[0., 1., 2.]], [[0., .5, 1.]]))
+    assert curve.probabilities[0, 0] == 0
+    assert curve.probabilities[0, -1] == 1
+
+
+def test_adaptive_wasserstein_radius_uses_date_blocks_and_abstains():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=4, block_dates=2,
+        replicates=100, alpha=.1, seed=7)
+    short = pd.DataFrame({"quote_date": ["2020-01-01"], "radius": [0.],
+                          "residual": [.1]})
+    assert owner.select(short)["radius"] is None
+    rows = []
+    for day in range(1, 7):
+        date = f"2020-01-{day:02d}"
+        rows.extend([{"quote_date": date, "radius": 0., "residual": .2},
+                     {"quote_date": date, "radius": .01, "residual": -.2}])
+    result = owner.select(pd.DataFrame(rows))
+    assert result["radius"] == .01
+    assert result == owner.select(pd.DataFrame(rows))
+
+
+def test_correction_and_radius_histories_respect_all_temporal_boundaries():
+    events = [
+        {"quote_date": "2020-01-01", "settlement_date": "2020-01-02",
+         "tenor_band": "short"},
+        {"quote_date": "2020-01-03", "settlement_date": "2020-01-06",
+         "tenor_band": "short"},
+        {"quote_date": "2020-01-02", "settlement_date": "2020-01-02",
+         "tenor_band": "long"},
+    ]
+    settled = cdf_study.RobustCorrectionStudy._settled_events(
+        events, "2020-01-03", "short")
+    assert settled == events[:1]
+    # A same-date forecast is never admitted, even if its synthetic settlement
+    # field is malformed as already available.
+    same_date = [{"quote_date": "2020-01-03", "settlement_date": "2020-01-02",
+                  "tenor_band": "short"}]
+    assert not cdf_study.RobustCorrectionStudy._settled_events(
+        same_date, "2020-01-03", "short")
+
+    policies = [
+        {"quote_date": "2020-01-01", "settlement_date": "2020-01-02",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+        {"quote_date": "2020-01-05", "settlement_date": "2020-01-05",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+        {"quote_date": "2020-01-06", "settlement_date": "2020-01-06",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+    ]
+    history = cdf_study.RobustCorrectionStudy._radius_history(
+        policies, "2020-01-06", "SPY", "short", "2020-01-04")
+    assert history.quote_date.tolist() == ["2020-01-05"]
+
+
+def test_nominal_decision_uses_direct_cdf_when_grid_ranking_differs():
+    grid = np.arange(9., 18.)
+    cdf = [0., 0., .1, .7, .75, .9, .95, 1., 1.]
+    candidates = [
+        {"id": "A", "strikes": (10., 11., 13., 14.), "net_credit": .5},
+        {"id": "B", "strikes": (11., 12., 14., 15.), "net_credit": .5},
+    ]
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.5, floor=.1).evaluate(
+        grid, cdf, terminal=12.5, spot=12.5, candidates=candidates, radius=0.)
+    assert result["nominal"]["id"] == "A"
+    assert result["robust"]["id"] == "A"
+
+
+def test_atom_aware_nominal_decision_uses_frozen_gridcurve():
+    grid = np.arange(9., 17.5, .5)
+    curve = GridCurve(np.log(np.array([[9., 10., 11., 11., 16., 17.]])/13.),
+                      [[0., 0., 0., .5, 1., 1.]])
+    cdf = curve.cdf(np.log(grid/13.))[0]
+    candidate = {"id": "atom", "strikes": (10., 12., 14., 15.),
+                 "net_credit": .75}
+    result = cdf_study.CondorDecisionAudit(mesh_tolerance=.5, floor=.1).evaluate(
+        grid, cdf, terminal=13., spot=13., candidates=[candidate], radius=0.,
+        curve=curve, reference_scale=1.)
+    assert result["nominal"]["id"] == "atom"
+
+
+def test_american_charge_is_separate_and_missing_charge_withholds_regret():
+    grid = np.linspace(80., 120., 401)
+    candidate = {"id": "one", "strikes": (90., 95., 105., 110.),
+                 "net_credit": 4.}
+    audit = cdf_study.CondorDecisionAudit(mesh_tolerance=.1, floor=.1)
+    uncharged = audit.evaluate(grid, (grid-80.)/40., terminal=100., spot=100.,
+                               candidates=[candidate], radius=0.)
+    assert uncharged["nominal"]["regret"] is None
+    charged = audit.evaluate(grid, (grid-80.)/40., terminal=100., spot=100.,
+                             candidates=[candidate], radius=0.,
+                             american_charges={"one": 1.25})
+    assert charged["candidates"][0]["american_charge"] == pytest.approx(1.25)
+    assert charged["nominal"]["realized_pnl"] == pytest.approx(2.75)
+
+
+def test_decision_region_source_refuses_unbound_marker_and_wrong_settlement(tmp_path):
+    root = tmp_path/"frozen"
+    partition = root/"evaluate"/"late"
+    partition.mkdir(parents=True)
+    (partition/"complete.json").write_text("{}")
+    settings = {
+        "forecast_root": str(root), "partition": "late",
+        "models": {"base": "raw"}, "symbols": ["SPY"],
+        "archive_root": str(tmp_path), "output": str(tmp_path/"out"),
+        "max_rows_per_symbol": 1,
+        "underlying": {"root": str(tmp_path), "source": "fixture",
+                       "since_ms": 0, "carry_rate": .055},
+        "strata": {"tenor_days": [7, 21], "iv": [20, 30],
+                   "wing_log_moneyness": [.02, .05]},
+        "chain_rule": {"max_abs_log_moneyness": .1,
+                       "min_wing_width": 5., "max_wing_width": 5.,
+                       "max_candidates": 10, "fee_per_leg": 0., "multiplier": 100},
+        "audit": {"price_step": .5, "support_margin_fraction": .02,
+                  "mesh_tolerance": .5, "floor": .1, "radius": 0.,
+                  "score_refinement_factor": 2, "score_tolerance": .01},
+        "limits": {"max_seconds": 1800, "max_address_space_mib": 6144,
+                   "max_chain_rows": 100000, "max_grid_nodes": 4001},
+    }
+    with pytest.raises(ValueError, match="decision-region JSON"):
+        cdf_study.DecisionRegionStudy({**settings, "symbols": ["SPY", "SPY"]})
+    with pytest.raises(ValueError, match="decision-region limits"):
+        cdf_study.DecisionRegionStudy({**settings, "limits": {
+            **settings["limits"], "max_seconds": 1801}})
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy({**settings, "models": {"base": "calibrated"}})
+    with pytest.raises(ValueError, match="completion"):
+        cdf_study.DecisionRegionStudy(settings).prepare()
+    frame = pd.DataFrame({
+        "quote_date": ["2025-01-02"], "expiry": ["2025-01-10"],
+        "settlement_date": ["2025-01-09"], "actual_calendar_dte": [7],
+        "spot": [100.], "terminal_price": [101.], "reference_scale": [.02],
+    })
+    with pytest.raises(ValueError, match="settlement"):
+        cdf_study.DecisionRegionStudy.validate_panel_temporal(frame)
+
+
+def test_decision_region_rejects_unsupported_archived_curve_family(tmp_path):
+    source = tmp_path/"convex.npz"
+    np.savez_compressed(source, kind="convex")
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy._check_curve_archive(source)
+    np.savez_compressed(source, kind="grid", calibration_x=np.array([[0., 1.]]))
+    with pytest.raises(ValueError, match="raw GridCurve"):
+        cdf_study.DecisionRegionStudy._check_curve_archive(source)
+
+
+def test_decision_region_refinement_requires_small_error_and_stable_rank():
+    rows = pd.DataFrame({
+        "model": ["base", "base", "candidate", "candidate"],
+        "weighted_crps": [.20, .20, .19, .19],
+        "weighted_crps_refined": [.20001, .20001, .19001, .19001],
+    })
+    cdf_study.DecisionRegionStudy.check_weighted_score_refinement(rows, 1e-3)
+    with pytest.raises(ValueError, match="quadrature"):
+        cdf_study.DecisionRegionStudy.check_weighted_score_refinement(rows, 1e-6)
+    unstable = rows.copy()
+    unstable.loc[unstable.model.eq("candidate"), "weighted_crps_refined"] = .21
+    with pytest.raises(ValueError, match="ranking"):
+        cdf_study.DecisionRegionStudy.check_weighted_score_refinement(unstable, .1)
 
 
 def test_option_surface_features_are_scale_stable_and_preserve_missingness():
@@ -86,6 +310,101 @@ def test_fred_age_and_staleness_use_observation_date(monkeypatch):
     assert out.rate_age_days.tolist() == [5, 6]
     assert out.rate.iloc[0] == pytest.approx(7.)
     assert np.isnan(out.rate.iloc[1])
+
+
+def test_ohlc_features_use_only_current_and_prior_prices():
+    prices = pd.DataFrame({
+        'date': pd.bdate_range('2020-01-02', periods=6).strftime('%Y-%m-%d'),
+        'open': [100., 102., 101., 104., 103., 106.],
+        'high': [102., 103., 105., 105., 107., 108.],
+        'low': [99., 100., 100., 102., 102., 104.],
+        'close': [101., 101., 104., 103., 106., 105.],
+    })
+    first = ExactExpiryCDFPanel.ohlc_features(prices.iloc[:5], [3])
+    extended = ExactExpiryCDFPanel.ohlc_features(prices, [3]).iloc[:5]
+    pd.testing.assert_frame_equal(first.reset_index(drop=True), extended.reset_index(drop=True))
+    row = first.iloc[1]
+    assert row.overnight_return == pytest.approx(np.log(102/101))
+    assert row.intraday_return == pytest.approx(np.log(101/102))
+    assert row.log_high_low_range == pytest.approx(np.log(103/100))
+    assert row.parkinson_variance == pytest.approx(np.log(103/100)**2/(4*np.log(2)))
+    assert np.isnan(first.range_variance_3.iloc[1])
+    assert np.isfinite(first.range_variance_3.iloc[-1])
+
+
+def test_matched_dte_vrp_uses_requested_sessions_not_actual_dte():
+    frame = pd.DataFrame({
+        'chain_atm_iv': [.20], 'rv_22': [.01], 'sessions_to_expiry': [10],
+        'actual_calendar_dte': [99],
+    })
+    out = ExactExpiryCDFPanel.add_matched_dte_vrp(frame.copy(), 1e-3)
+    implied = .20**2*10/252
+    realized = .01**2*10
+    assert out.matched_implied_variance.iloc[0] == pytest.approx(implied)
+    assert out.matched_trailing_variance.iloc[0] == pytest.approx(realized)
+    assert out.matched_vrp.iloc[0] == pytest.approx(implied-realized)
+    changed = frame.copy()
+    changed.actual_calendar_dte = 2
+    other = ExactExpiryCDFPanel.add_matched_dte_vrp(changed, 1e-3)
+    columns = ['matched_implied_variance', 'matched_trailing_variance',
+               'matched_vrp', 'matched_vrp_ratio']
+    pd.testing.assert_frame_equal(out[columns], other[columns])
+
+
+def test_macro_event_windows_require_entry_known_schedule_records():
+    frame = pd.DataFrame({
+        'quote_date': ['2020-01-02', '2020-01-10'],
+        'planned_settlement_date': ['2020-01-31', '2020-01-31'],
+    })
+    records = {'fomc': [
+        {'event_date': '2020-01-15', 'known_at': '2019-12-01'},
+        {'event_date': '2020-01-20', 'known_at': '2020-01-05'},
+        {'event_date': '2020-02-01', 'known_at': '2019-12-01'},
+    ]}
+    out, status = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), records)
+    assert out.macro_fomc_count.tolist() == [1, 2]
+    assert out.macro_any_event.tolist() == [1, 1]
+    assert status == {'available': True, 'families': ['fomc']}
+    unchanged, missing = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), None)
+    pd.testing.assert_frame_equal(unchanged, frame)
+    assert missing['available'] is False and 'point-in-time' in missing['reason']
+
+
+def test_dividend_path_missing_marks_optimizer_ineligible_without_imputation():
+    dividends = pd.Series([np.nan, np.nan, np.nan])
+    eligible = ExactExpiryCDFPanel.dividend_window_eligibility(dividends, [0], [2])
+    assert eligible.tolist() == [False]
+    assert dividends.isna().all()
+
+
+def test_raw_chain_flow_and_greek_aggregates_are_order_invariant_and_lag_oi():
+    dates = ['2020-01-02']*2+['2020-01-03']*2+['2020-01-06']*2
+    chain = pd.DataFrame({
+        'symbol': ['SPY']*6, 'date': dates, 'expiration': ['2020-02-21']*6,
+        'strike': [95.,105.]*3, 'type': ['put','call']*3,
+        'mark': [2.,2.]*3, 'bid': [1.9]*6, 'ask': [2.1]*6,
+        'bid_size': [10]*6, 'ask_size': [12]*6,
+        'open_interest': [100,200,110,220,130,240],
+        'volume': [10,20,15,25,18,30],
+        'implied_volatility': [.2]*6, 'delta': [-.3,.3]*3,
+        'gamma': [.01]*6, 'vega': [.1]*6,
+    })
+    meta = pd.DataFrame({
+        'symbol': ['SPY']*3, 'quote_date': ['2020-01-02','2020-01-03','2020-01-06'],
+        'expiry': ['2020-02-21']*3, 'chain_underlying_price': [100.]*3,
+    })
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1,.1],
+        max_node_gap=.1, proxy_probabilities=[.1,.5,.9], min_wing_nodes=1,
+        max_inner_gap=.1, max_outer_gap=.2)
+    first = builder.transform(chain, meta)
+    shuffled = builder.transform(chain.sample(frac=1, random_state=8), meta)
+    pd.testing.assert_frame_equal(first, shuffled)
+    assert first.chain_log_volume.iloc[-1] == pytest.approx(np.log1p(48))
+    assert first.chain_put_call_volume_imbalance.iloc[-1] == pytest.approx((18-30)/48)
+    assert np.isnan(first.chain_log_lag_open_interest.iloc[0])
+    assert first.chain_log_lag_open_interest.iloc[1] == pytest.approx(np.log1p(300))
+    assert first.chain_log_lag_oi_change.iloc[2] == pytest.approx(np.log1p(330)-np.log1p(300))
+    assert first.chain_log_gamma_oi.iloc[-1] == pytest.approx(np.log1p(.01*(130+240)))
 
 
 def test_raw_chain_builder_is_order_invariant_and_emits_valid_proxy_quantiles():
@@ -386,6 +705,32 @@ def test_predictive_cdf_downside_config_pins_bounded_grouped_inventory():
         assert {key: value for key, value in study['models'][name].items() if key != 'equivalence'} == {
             key: value for key, value in previous['study']['models'][name].items()
             if key != 'equivalence'}
+
+
+def test_tail_data_config_pins_causal_family_ablation_and_dividend_policy():
+    path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-tail-data.json'
+    config = json.loads(path.read_text())
+    study, experiment = config['study'], config['experiment']
+    assert config['data']['ohlc_windows'] == [5, 22]
+    assert config['data']['matched_dte_vrp'] is True
+    assert 'macro_event_calendars' not in config['data']
+    assert list(experiment['candidates']) == [
+        'ohlc_only', 'vrp_only', 'flow_only', 'cboe_only', 'all_local']
+    assert experiment['candidate_groups'] == experiment['search_partitions'] == {
+        'tail_data': list(experiment['candidates'])}
+    assert experiment['selection_guard']['reference'] == 'research_incumbent'
+    assert study['features'][52] == 'actual_calendar_dte'
+    assert study['features'][199:204] == [
+        'overnight_return', 'intraday_return', 'log_high_low_range',
+        'parkinson_variance', 'jump_variance_proxy']
+    assert study['features'][212:216] == [
+        'matched_implied_variance', 'matched_trailing_variance',
+        'matched_vrp', 'matched_vrp_ratio']
+    for spec in experiment['candidates'].values():
+        selected = spec['params']['incumbent_params']['mlp']['feature_indices']
+        assert 52 not in selected
+    assert 'strategy_dividend_eligible' not in study['features']
+    CDFHyperparameterStudy(config)
 
 
 def test_predictive_cdf_refinement_config_pins_bounded_grouped_inventory():

@@ -22,7 +22,230 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "SplineFlowCDF", "SetMixtureCDF", "MixtureMLPCDF", "StudentMixtureCurve",
            "StudentMixtureMLPCDF", "QuantileForestCDF", "NGBoostCDF",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
-           "ChronologicalCDFStudy", "CDFHyperparameterStudy"]
+           "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
+           "DiscreteCDFGrid"]
+
+
+class CDFThresholdAudit:
+    """Score one coherent CDF on thresholds fixed before the forecast is ranked.
+
+    ``intervals`` is the complete entry-known decision-region inventory, not a
+    selected position. The positive floor keeps the whole declared support in
+    the proper threshold score. All values use the caller's outcome units.
+    """
+
+    def __init__(self, grid, intervals, floor):
+        import numpy as np
+
+        self.grid = np.asarray(grid, dtype=float)
+        if (self.grid.ndim != 1 or len(self.grid) < 2
+                or not np.isfinite(self.grid).all()
+                or not (np.diff(self.grid) > 0).all()
+                or not np.isfinite(floor) or floor <= 0):
+            raise ValueError("invalid threshold grid or positive floor")
+        self.midpoints = (self.grid[:-1] + self.grid[1:]) / 2
+        self.widths = np.diff(self.grid)
+        coverage = np.zeros(len(self.midpoints))
+        for bounds in intervals:
+            if (len(bounds) != 2 or not np.isfinite(bounds).all()
+                    or not self.grid[0] <= bounds[0] < bounds[1] <= self.grid[-1]):
+                raise ValueError("interval outside threshold grid")
+            coverage += ((self.midpoints >= bounds[0])
+                         & (self.midpoints < bounds[1]))
+        self.weights = floor + coverage / max(1., coverage.max(initial=0.))
+
+    def _cdf(self, cdf):
+        import numpy as np
+
+        values = np.asarray(cdf, dtype=float)
+        if (values.shape != self.grid.shape or not np.isfinite(values).all()
+                or (values < 0).any() or (values > 1).any()
+                or (np.diff(values) < -1e-12).any()):
+            raise ValueError("invalid coherent CDF on threshold grid")
+        return values
+
+    def strike_brier(self, cdf, strike, outcome):
+        """Brier loss for the inclusive expiry event at one declared strike."""
+        import numpy as np
+
+        values = self._cdf(cdf)
+        if (not np.isfinite([strike, outcome]).all()
+                or not self.grid[0] <= strike <= self.grid[-1]):
+            raise ValueError("strike outside threshold grid")
+        return float((np.interp(strike, self.grid, values)
+                      - float(outcome <= strike)) ** 2)
+
+    def weighted_crps(self, cdf, outcome, *, midpoint_cdf=None):
+        """Positive fixed-weight discrete approximation to threshold CRPS."""
+        import numpy as np
+
+        values = self._cdf(cdf)
+        if not np.isfinite(outcome):
+            raise ValueError("invalid outcome")
+        probabilities = (np.interp(self.midpoints, self.grid, values)
+                         if midpoint_cdf is None else np.asarray(midpoint_cdf, dtype=float))
+        if (probabilities.shape != self.midpoints.shape
+                or not np.isfinite(probabilities).all()
+                or (probabilities < 0).any() or (probabilities > 1).any()
+                or (np.diff(probabilities) < -1e-12).any()):
+            raise ValueError("invalid midpoint CDF")
+        truth = (outcome <= self.midpoints).astype(float)
+        mass = self.weights * self.widths
+        return float(np.dot(mass, (probabilities - truth) ** 2) / mass.sum())
+
+    def expected_spread_loss(self, cdf, low, high, right):
+        """Integrate put CDF or call survival over a capped spread wing."""
+        import numpy as np
+
+        values = self._cdf(cdf)
+        if (right not in ("put", "call") or not np.isfinite([low, high]).all()
+                or not self.grid[0] <= low < high <= self.grid[-1]):
+            raise ValueError("invalid spread interval or right")
+        interior = self.grid[(self.grid > low) & (self.grid < high)]
+        points = np.r_[low, interior, high]
+        probabilities = np.interp(points, self.grid, values)
+        return float(np.trapezoid(probabilities if right == "put" else
+                                  1 - probabilities, points))
+
+    @staticmethod
+    def gridcurve_log_spread_loss(curve, row, low, high, right, spot, scale):
+        """Integrate an archived piecewise CDF exactly in log-price space.
+
+        Equal curve abscissae are atoms. Splitting at each distinct knot and
+        integrating the open segments prevents a jump from being smeared over
+        the preceding price-grid cell.
+        """
+        import numpy as np
+
+        if (not isinstance(curve, GridCurve) or type(row) is not int
+                or not 0 <= row < len(curve.values)
+                or right not in ("put", "call")
+                or not np.isfinite([low, high, spot, scale]).all()
+                or not 0 < low < high or spot <= 0 or scale <= 0):
+            raise ValueError("invalid GridCurve spread integral")
+        values, probabilities = curve.values[row], curve.probabilities[row]
+        z_low, z_high = np.log(low/spot)/scale, np.log(high/spot)/scale
+        inner = values[(values > z_low) & (values < z_high)]
+        points = np.r_[low, spot*np.exp(scale*np.unique(inner)), high]
+        integral = 0.
+        for left, upper in zip(points[:-1], points[1:]):
+            if upper <= left:
+                continue
+            midpoint = (left+upper)/2
+            index = int(np.searchsorted(values, np.log(midpoint/spot)/scale,
+                                        side="right")-1)
+            if index < 0:
+                continue
+            if index >= len(values)-1:
+                integral += upper-left
+                continue
+            slope = ((probabilities[index+1]-probabilities[index]) /
+                     (values[index+1]-values[index]))
+            intercept = probabilities[index]-slope*values[index]
+            log_area = (upper*np.log(upper/spot)-upper
+                        -left*np.log(left/spot)+left)
+            integral += intercept*(upper-left)+(slope/scale)*log_area
+        return float(integral if right == "put" else high-low-integral)
+
+
+class DiscreteCDFGrid:
+    """Clip a coherent CDF to one shared support and stress it by 1D W1.
+
+    The rightmost mass absorbs the upper tail. On a grid containing every
+    payoff kink, clipping does not change bounded payoffs outside the support.
+    Transport budgets use price distance divided by entry spot.
+    """
+
+    def __init__(self, grid, cdf):
+        import numpy as np
+
+        self.grid = np.asarray(grid, dtype=float)
+        values = np.asarray(cdf, dtype=float)
+        if (self.grid.ndim != 1 or len(self.grid) < 2
+                or values.shape != self.grid.shape
+                or not np.isfinite(self.grid).all()
+                or not (np.diff(self.grid) > 0).all()
+                or not np.isfinite(values).all()
+                or (values < 0).any() or (values > 1).any()
+                or (np.diff(values) < -1e-12).any()):
+            raise ValueError("invalid grid or coherent CDF")
+        self.masses = np.diff(np.r_[0., values[:-1], 1.])
+        if (self.masses < -1e-12).any():
+            raise ValueError("invalid CDF masses")
+        self.masses = np.maximum(self.masses, 0.)
+        self.masses /= self.masses.sum()
+        self._matrix = None
+        self._spot = None
+
+    def _constraints(self, spot):
+        import numpy as np
+        from scipy.sparse import csr_matrix, hstack, vstack
+
+        if self._matrix is not None and self._spot == spot:
+            return self._matrix
+        n = len(self.grid)
+        cumulative = csr_matrix(np.tril(np.ones((n - 1, n))))
+        identity = csr_matrix(np.eye(n - 1))
+        zeros = csr_matrix((1, n))
+        transport = csr_matrix(((np.diff(self.grid) / spot),
+                                (np.zeros(n - 1, dtype=int), np.arange(n - 1))),
+                               shape=(1, n - 1))
+        constraints = vstack((hstack((cumulative, -identity)),
+                              hstack((-cumulative, -identity)),
+                              hstack((zeros, transport))), format="csr")
+        cumulative_nominal = np.cumsum(self.masses)[:-1]
+        self._matrix = constraints, cumulative_nominal
+        self._spot = spot
+        return self._matrix
+
+    def worst_expected_loss(self, loss, radius, spot):
+        """Maximize a fixed bounded payoff over the shared discrete W1 ball."""
+        import numpy as np
+        from scipy.optimize import linprog
+
+        values = np.asarray(loss, dtype=float)
+        if (values.shape != self.masses.shape or not np.isfinite(values).all()
+                or not np.isfinite(radius) or radius < 0
+                or not np.isfinite(spot) or spot <= 0):
+            raise ValueError("invalid loss, radius or spot")
+        nominal = float(self.masses @ values)
+        if radius == 0:
+            return nominal
+        matrix, cumulative = self._constraints(spot)
+        n = len(self.grid)
+        rhs = np.r_[cumulative, -cumulative, radius]
+        objective = np.r_[-values, np.zeros(n - 1)]
+        equality = np.r_[np.ones(n), np.zeros(n - 1)][None, :]
+        result = linprog(objective, A_ub=matrix, b_ub=rhs,
+                         A_eq=equality, b_eq=[1.], bounds=(0, None), method="highs")
+        if not result.success or not np.isfinite(result.fun):
+            raise ValueError(f"W1 worst-loss program failed: {result.message}")
+        return max(nominal, float(-result.fun))
+
+    def choose(self, candidates, radius, spot):
+        """Select the maximum positive robust value; ties favor no trade."""
+        import numpy as np
+
+        if not isinstance(candidates, (list, tuple)):
+            raise ValueError("candidates must be a finite declared sequence")
+        seen = set()
+        for item in candidates:
+            if (not isinstance(item, dict) or set(item) != {"id", "net_credit", "loss"}
+                    or not isinstance(item["id"], str) or not item["id"]
+                    or item["id"] in seen or not np.isfinite(item["net_credit"])
+                    or np.asarray(item["loss"]).shape != self.masses.shape
+                    or not np.isfinite(item["loss"]).all()
+                    or (np.asarray(item["loss"]) < 0).any()):
+                raise ValueError("invalid or duplicate candidate")
+            seen.add(item["id"])
+        best = {"id": None, "robust_value": 0., "worst_loss": 0.}
+        for item in sorted(candidates, key=lambda value: value["id"]):
+            worst = self.worst_expected_loss(item["loss"], radius, spot)
+            value = float(item["net_credit"] - worst)
+            if value > best["robust_value"]:
+                best = {"id": item["id"], "robust_value": value,
+                        "worst_loss": worst}
+        return best
 
 
 def _validate_temporal_frame(frame, date_field, end_field):
@@ -3241,32 +3464,13 @@ class CDFHyperparameterStudy:
         c, r = self.base, self.experiment["resolutions"]
         identity_index = pd.MultiIndex.from_frame(frame[c["identity"]].astype(str))
 
-        def restore(a, ix, prefix=""):
-            kind = str(a[prefix+"kind"])
-            if kind == "convex":
-                weight = a[prefix+"weight"]
-                weight = float(weight) if weight.ndim == 0 else weight[ix]
-                return ConvexCurve(restore(a, ix, prefix+"left_"),
-                                   restore(a, ix, prefix+"right_"),
-                                   weight)
-            if kind == "grid":
-                return GridCurve(a[prefix+"values"][ix], a[prefix+"probabilities"][ix])
-            args = [a[prefix+k][ix] for k in ("weights", "means", "scales")]
-            if kind == "student_mixture":
-                return StudentMixtureCurve(*args, degrees=float(a[prefix+"degrees"]))
-            return MixtureCurve(*args)
-
         records = []
         for path in paths:
             for file in sorted(path.glob("*-curves.npz")):
                 with np.load(file, allow_pickle=False) as a:
                     n = len(a["row_index"])
                     ix = np.linspace(0, n-1, min(n, r["audit_rows"]), dtype=int)
-                    curve = restore(a, ix)
-                    if "calibration_x" in a:
-                        calibrated = object.__new__(CalibratedCurve)
-                        calibrated.base, calibrated.map = curve, GridCurve(a["calibration_x"], a["calibration_p"])
-                        curve = calibrated
+                    curve = self.restore_curve(a, ix)
                     identities = np.asarray(a["identities"])[ix]
                     keys = pd.MultiIndex.from_arrays(
                         [identities[:, column] for column in range(identities.shape[1])])
@@ -3285,6 +3489,41 @@ class CDFHyperparameterStudy:
                                        "max_payoff_gap": float(np.max(metrics.get("payoff_quadrature_gap", [0])))})
                     records.append({"file": str(file), "rows": len(ix), "resolutions": values})
         return records
+
+    @staticmethod
+    def restore_curve(archive, indices):
+        """Reconstruct exact archived forecasts for specified saved row indices."""
+        import numpy as np
+
+        ix = np.asarray(indices, dtype=int)
+        if (ix.ndim != 1 or not len(ix) or (ix < 0).any()
+                or (ix >= len(archive["row_index"])).any()):
+            raise ValueError("invalid frozen curve indices")
+
+        def restore(prefix=""):
+            kind = str(archive[prefix+"kind"])
+            if kind == "convex":
+                weight = archive[prefix+"weight"]
+                weight = float(weight) if weight.ndim == 0 else weight[ix]
+                return ConvexCurve(restore(prefix+"left_"),
+                                   restore(prefix+"right_"), weight)
+            if kind == "grid":
+                return GridCurve(archive[prefix+"values"][ix],
+                                 archive[prefix+"probabilities"][ix])
+            if kind not in ("mixture", "student_mixture"):
+                raise ValueError(f"unknown frozen curve kind {kind!r}")
+            args = [archive[prefix+k][ix] for k in ("weights", "means", "scales")]
+            if kind == "student_mixture":
+                return StudentMixtureCurve(*args, degrees=float(archive[prefix+"degrees"]))
+            return MixtureCurve(*args)
+
+        curve = restore()
+        if "calibration_x" in archive:
+            calibrated = object.__new__(CalibratedCurve)
+            calibrated.base = curve
+            calibrated.map = GridCurve(archive["calibration_x"], archive["calibration_p"])
+            curve = calibrated
+        return curve
 
     def run(self, frame, diagnostic=None, *, stage, partition=None, provenance):
         """Execute a declared stage; incomplete or unpaired inputs always refuse.

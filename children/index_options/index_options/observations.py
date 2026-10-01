@@ -429,6 +429,23 @@ class IndexCloseRows(ObservationRows):
             row = {"instrument": symbol, "contract": symbol, "group": symbol,
                    "close": float(close), "asof_ms": record["asof_ms"],
                    "date": record["date"]}
+            ohlc = ("open", "high", "low")
+            present = [name for name in ohlc if record.get(name) is not None]
+            if present:
+                if len(present) != len(ohlc):
+                    raise ValueError(f"{self.key}: {symbol} {record.get('date')!r} carries "
+                                     "an incomplete OHLC tuple")
+                for name in ohlc:
+                    if not price_ok(record[name]):
+                        raise ValueError(f"{self.key}: {symbol} {record.get('date')!r} "
+                                         f"{name} must be a positive number")
+                    row[name] = float(record[name])
+            if record.get("volume") is not None:
+                volume = record["volume"]
+                if not number_ok(volume) or volume < 0:
+                    raise ValueError(f"{self.key}: {symbol} {record.get('date')!r} "
+                                     "volume must be a number >= 0")
+                row["volume"] = float(volume)
             if "dividend_amount" in record:
                 dividend = record["dividend_amount"]
                 if dividend is not None and (not number_ok(dividend) or dividend < 0):

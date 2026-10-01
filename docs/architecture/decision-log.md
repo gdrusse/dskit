@@ -28304,3 +28304,230 @@ zero. Proper lower/upper tail scores improve, but 5% lower hit frequency remains
 incumbent and optimizer-prototype CDF input, not as production-good calibration
 or trading authority. Phase F stages remain below 4:03 and 3.63 GiB. Superseded
 Phase B–E artifacts are retained but invalid for claims.
+
+## ADR-0203 — Point-in-time tail data feature ablation
+
+2026-09-30. Status: approved by owner in chat; implementation authorized.
+Owner: index_options. Parent: ADR-0201. Base commit:
+`9248d9e77c706c4bb341160cc8bbb31b8549da02`. Worktree:
+`/home/russell/dskit-cdf-tail-data`.
+
+### Scope and estimand
+
+Improve the physical terminal-return CDF at each exact listed ETF expiry using
+only entry-known information already present in the pinned local archives.
+Strategy optimization, execution, trading, new vendor acquisition and use of
+future realized values as predictors remain out of scope.
+
+### Data contract
+
+The panel may add five JSON-declared feature families:
+
+1. daily OHLC state: prior-close-to-open and open-to-close returns, log range,
+   Parkinson range variance, a close-to-close gap proxy, and backward-only
+   rolling range/jump summaries;
+2. exact-requested-DTE variance-risk-premium proxies: entry ATM implied
+   variance over the requested session fraction less backward-looking realized
+   variance scaled to the same requested sessions;
+3. raw-chain flow, Greek and liquidity aggregates from valid entry-snapshot
+   rows only, including put/call volume, open interest, quote depth, spread and
+   unsigned Greek-weighted exposure proxies; open-interest changes use a
+   one-observation lag within the listed expiry and no dealer-sign claim;
+4. additional local Cboe closes joined strictly from a prior calendar date,
+   with explicit age and missingness; and
+5. configured macro-event dates summarized only by whether/count of known
+   scheduled events inside the entry-to-requested-expiry window. Event dates
+   are data, not inferred from future releases. If no point-in-time local event
+   calendar exists, that family is retained as an explicit unavailable result,
+   not synthesized.
+
+Same-session OHLC is valid only for the existing after-close research
+estimand. It is not a claim that a 15:45 order knew the 16:00 close. Actual
+settlement DTE, terminal outcomes and future dividends remain excluded from
+predictors. Every rolling statistic uses rows no later than the entry date.
+
+SPY/QQQ dividend paths remain checked as before. The all-null IWM dividend
+history must never be filled with zero: IWM rows remain eligible for modeling
+the raw terminal close but are explicitly ineligible for any downstream
+strategy P&L or early-exercise calculation until a point-in-time dividend
+source is acquired. Persist per-index eligibility counts in provenance.
+
+### Experiment and stopping rule
+
+One standard JSON drives a fresh prepared cache, bounded development searches,
+selection, development/early/middle/late evaluations and reporting. Compare
+the unchanged ADR-0201 research incumbent with cumulative and family ablations
+that alter only the incumbent MLP feature set inside the unchanged guarded
+tail blend. Search 2016–2018, apply the ADR-0195 six-tail guard versus the
+unchanged reference, and freeze before opening reused 2019–2025 history.
+
+Promote only when a candidate strictly improves development equal-index/
+actual-DTE-cell CRPS, passes every per-index 5%/95% tail guard, preserves paired
+coverage and has no point-in-time violation. Later history is descriptive and
+cannot reverse selection. Every stage stays below 30 minutes and 6 GiB, with
+at most two CPU threads and one CUDA job. No one-off execution script is
+authorized.
+
+### Tests and exit
+
+Focused RED/GREEN tests must cover OHLC formulae and past-only windows,
+requested-DTE VRP scaling, order-invariant flow/Greek aggregation, lagged OI,
+prior-date Cboe joins, event-window boundaries, absent-calendar refusal/status,
+all-null dividend non-imputation and optimizer ineligibility, config identity
+and exclusion of actual DTE/labels. Exit requires complete bounded stages or
+explicit retained family failures, a standalone memo, review evidence,
+RE-ENTRY and action journal, plus two independent final lenses with no
+unresolved Critical/Major findings. Generated artifacts remain ignored.
+
+### Outcome (2026-09-30)
+
+Completed as a governed negative result. The standardized preparation and
+development search completed within the declared caps, but the selector
+refused all five feature-family candidates because none preserved all six
+per-index tail deviations. The best average candidate, exact-requested-DTE
+VRP, improved development equal-cell CRPS by 0.270% versus the frozen research
+incumbent, but worsened the QQQ and SPY upper-tail deviations. Per protocol,
+selection stopped and no 2019--2025 partition was opened.
+
+Macro-event flags remain explicitly unavailable because the local archive has
+no point-in-time event schedule. IWM's all-null dividend series remains null:
+all 31,946 retained IWM modeling rows are marked strategy-ineligible, while
+SPY and QQQ have 44,770 and 32,639 eligible rows. Retain ADR-0201 as the
+offline research incumbent; no trading or deployment authority follows. See
+`children/index_options/docs/memos/2026-09-30-tail-data-feature-ablation.md`.
+
+## ADR-0205 — Guarded forward selection for option decision regions
+
+2026-09-30. Status: approved by owner in this chat; implementation and
+publication authorized. Owner: index_options. Parent: ADR-0203. Base commit:
+`b9a6920f`. Worktree:
+`/home/russell/dskit-cdf-feature-forward-selection`.
+
+### Scope and decision rule
+
+Improve the offline physical terminal-return CDF at exact ETF expiries using
+the entry-known feature families already prepared by ADR-0203. The primary
+development comparison is the proper, actual eligible strike/wing decision
+region score from the frozen archive diagnostic; full-CDF equal-cell CRPS is
+retained as a paired descriptive score. Tail deviations versus the frozen
+ADR-0201 center-only research incumbent are model-acceptance constraints, not
+evidence that a feature family is uninformative. No contract selection,
+execution, trading, new acquisition, or deployment is authorized.
+
+### Protocol
+
+Start with incumbent features. Test each available ADR-0203 family separately,
+retuning only JSON-declared MLP regularization/model hyperparameters. Retain a
+family only when it strictly improves the development decision-region proper
+score and has no material guarded-tail harm; record rejected improvement as a
+failed acceptance constraint rather than a negative feature conclusion. Then
+run a frozen forward-selection order, declared pairwise interactions, and a
+backward ablation of the retained set. If the existing center-only transport
+seam can route the winning features without changing its 5%/95% maps, compare
+that route separately; otherwise record it unsupported without adding a local
+mechanism.
+
+Each phase is a standard JSON document/stage with a fresh immutable root. Fit,
+selection and later 2019--2025 evaluation remain separated chronologically;
+later results cannot replace a frozen development choice. Use the actual
+archive strike/wing inventory, not synthetic strike proxies. Each process is
+bounded below 30 minutes and 6 GiB, with no one-off execution script.
+
+### Exit
+
+Require focused RED/GREEN coverage for grouped feature inventories, candidate
+identity, guard-versus-evidence semantics, decision-region pairing and
+center-only endpoint preservation. Require a standalone memo with feature,
+row/cell and train/validation counts, every phase result, limitations, an
+action journal and RE-ENTRY update. Before publication, Luna skeptic review(s)
+must resolve every Critical/Major finding. Generated artifacts remain ignored.
+
+### Phase-0 resolution and frozen screen (2026-09-30)
+
+The archive has only quote dates, not source timestamps. Every decision-region
+result is therefore an after-date-close, complete-snapshot diagnostic; it is
+not evidence that a historical intraday quote was known or executable. The
+current atom-aware audit admits only raw `GridCurve` archives. It rejects a
+calibrated archive or a composite archive rather than silently substituting a
+mesh approximation for the spread-loss diagnostic.
+
+The first admissible screen is
+`configs/run-cdf-gpd-decision-regions-screen-r4.json`: 20 lexicographically
+evenly spaced development identities per SPY/QQQ/IWM, weight `1/20` each,
+selected before scores, versus the frozen `horizon_empirical`,
+`center_incumbent`, and `center_gpd_05_prior25` raw curves. It is explicitly
+screen-only: the complete 18,616-row development panel exceeds its 100,000
+chain-row/30-minute/6-GiB bound, so it cannot select a model or feature. Its
+0.50-dollar proper-score grid is compared with a 0.125-dollar refinement;
+per-row error is at most 0.05 and the model rank must be identical. Positive
+floor weights deduplicate wing intervals within each forecast. A fresh root
+replaced the initial 2x-refinement screen after it refused its 0.002 error
+bound; that refusal is retained, not overwritten.
+
+If a raw-grid feature forecast becomes available, its only permitted protocol
+is frozen as follows: incumbent indices `0..41`; family additions in order
+`ohlc=199..211`, `vrp=212..215`, `flow=216..223`, then `cboe=224..247`; pair
+interactions `[ohlc,vrp]`, `[vrp,flow]`, `[flow,cboe]`; then backward ablation
+of every retained family. Each family has the same eight MLP trials: hidden
+width `{8,16}`, dropout `{0,0.1}`, weight decay `{0.03,0.1}`, seed `11`,
+with all other ADR-0203 settings fixed. Development only (2016--2018), raw
+weighted-wing score rank, unchanged six-tail acceptance guard, exact paired
+identities, and the declared screen sample are mandatory. A center-only route
+is eligible only when its saved 5%/95% quantiles equal the incumbent to
+`1e-12`. The current ADR-0203 feature candidates are composite, not raw-grid,
+so this protocol intentionally cannot execute yet; no feature result is
+claimed.
+
+## ADR-0206 — Causal decision-region calibration and adaptive robust selection
+
+2026-09-30. Status: approved by owner in chat; implementation, bounded model
+training, robust optimization, review and publication authorized. Owner:
+index_options. Parent: ADR-0205. Worktree:
+`/home/russell/dskit-cdf-feature-forward-selection`.
+
+### Scope
+
+Train a new offline physical terminal-price CDF by applying a coherent,
+monotone correction to the frozen raw-grid research incumbent using only
+strictly settled earlier strike events. Score and select the correction on the
+complete entry-known eligible strike/wing inventory. Then run the existing
+one-lot iron-condor optimizer with no trade and an adaptively calibrated
+spot-scaled Wasserstein radius. This is after-close historical research, not
+an executable or trading model.
+
+### Frozen protocol
+
+One standard JSON owns preparation, correction candidates, selection, robust
+optimization and reporting. Correction selection owns the early period; radius
+history begins only after that cutoff, and final decisions begin after a second
+cutoff. Earlier final-period outcomes may update later radius choices only after
+strict settlement. No correction-selection residual can enter radius history.
+Correction candidates use isotonic probability
+maps pooled within index and requested-tenor band, shrunk toward the identity
+map with prior strengths `{0,25,100,400}`. A forecast may use an outcome only
+when its settlement date is strictly before the forecast quote date; same-date
+forecasts are batched. Sparse groups refuse correction rather than borrowing a
+future label. The selected correction must improve the positive-floor unique-
+wing score, while full CRPS and the existing per-index 5%/95% tail diagnostics
+remain non-inferiority constraints.
+
+Robust candidates use radii `{0,0.001,0.0025,0.005,0.01}` in spot units. For
+each forecast, the radius is chosen only from strictly settled earlier policy
+residuals using a one-sided moving-date-block upper bound. Choose the smallest
+radius whose bound is nonpositive; refuse to trade when history is insufficient
+or no radius passes. Candidate eligibility, costs, weights, tie-to-no-trade and
+the correction winner are frozen before optimization results are summarized.
+
+Every process must remain below 30 minutes and 6 GiB. Persist row/date/expiry,
+strike-event, unique-wing, candidate and abstention counts. Reused 2019--2025
+history is descriptive and cannot establish deployment readiness. IWM remains
+strategy-ineligible while its dividend window is unknown. No one-off execution
+script, intraday executability claim, deployment or live trade is authorized.
+
+### Exit
+
+Focused tests must cover strict settlement availability, same-date batching,
+monotonic endpoints, shrinkage, sparse-history refusal, radius selection,
+block-bound determinism, no-trade ties and immutable JSON identity. A
+standalone memo, action journal and RE-ENTRY update are required. Luna review
+must resolve all Critical/Major findings before push.

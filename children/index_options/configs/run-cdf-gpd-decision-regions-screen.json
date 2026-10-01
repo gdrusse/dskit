@@ -1,0 +1,50 @@
+{
+  "decision_study": {
+    "forecast_root": "/home/russell/dskit-cdf-tail-calibration/children/index_options/pipeline_runs/predictive_cdf_tail_calibration_center_gpd_phase_f_20260930",
+    "partition": "development",
+    "models": {
+      "horizon_empirical": "raw",
+      "center_incumbent": "raw",
+      "center_gpd_05_prior25": "raw"
+    },
+    "symbols": ["SPY", "QQQ", "IWM"],
+    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+    "output": "/home/russell/dskit-cdf-feature-forward-selection/children/index_options/pipeline_runs/cdf_gpd_decision_regions_screen_20260930",
+    "max_rows_per_symbol": 20,
+    "limits": {
+      "max_seconds": 1800,
+      "max_address_space_mib": 6144,
+      "max_chain_rows": 100000,
+      "max_grid_nodes": 4001
+    },
+    "underlying": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "optionshist-chain",
+      "since_ms": 1451606400000,
+      "carry_rate": 0.055
+    },
+    "strata": {
+      "tenor_days": [7, 21],
+      "iv": [20, 30],
+      "wing_log_moneyness": [0.02, 0.05]
+    },
+    "chain_rule": {
+      "max_abs_log_moneyness": 0.1,
+      "min_wing_width": 5.0,
+      "max_wing_width": 5.0,
+      "max_candidates": 5000,
+      "fee_per_leg": 0.5,
+      "multiplier": 100
+    },
+    "audit": {
+      "price_step": 0.5,
+      "support_margin_fraction": 0.02,
+      "mesh_tolerance": 0.5,
+      "floor": 0.1,
+      "radius": 0.0,
+      "score_refinement_factor": 2,
+      "score_tolerance": 0.002
+    },
+    "notes": "ADR-0205 development screen only. Select exactly 20 evenly spaced identities after lexicographic symbol/quote-date/expiry ordering per symbol; every selected identity has weight 1/20, and no result selects a feature or model. The full 18,616-row archive would exceed the declared 100,000-chain-row bound, so this fixed 60-entry diagnostic records local-score counts only. Date-only ETF quotes define an after-date-close, indicative and non-executable clock. Raw GridCurve archives are required for atom-aware spread diagnostics. Coarse and half-step weighted scores must meet the declared tolerance and retain the identical model ranking."
+  }
+}

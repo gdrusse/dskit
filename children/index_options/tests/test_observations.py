@@ -406,3 +406,17 @@ def test_one_expiry_quoted_on_two_dates_stamps_each_row_with_its_own_date(store_
 def test_the_index_reader_refuses_an_empty_symbol(tmp_path):
     with pytest.raises(ConfigError, match="symbol"):
         IndexCloseRows("u", {"root": str(tmp_path), "source": "optionshist-chain", "symbol": ""})
+
+
+def test_index_reader_preserves_complete_valid_ohlcv_and_refuses_partial_ohlc(tmp_path):
+    reader = IndexCloseRows("u", {
+        "root": str(tmp_path), "source": "optionshist-chain", "symbol": "SPY"})
+    row = {"symbol": "SPY", "date": "2025-01-02", "asof_ms": 1,
+           "open": 100, "high": 103, "low": 99, "close": 102, "volume": 12}
+    assert reader.project([row])[0] == {
+        "instrument": "SPY", "contract": "SPY", "group": "SPY",
+        "date": "2025-01-02", "asof_ms": 1, "open": 100., "high": 103.,
+        "low": 99., "close": 102., "volume": 12.,
+    }
+    with pytest.raises(ValueError, match="incomplete OHLC"):
+        reader.project([{k: v for k, v in row.items() if k != "low"}])
