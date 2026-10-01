@@ -29106,9 +29106,10 @@ holidays, any run.
 
 ## ADR-0217 — Feature-engineering step: exact-expiry panel features as a pipeline node
 
-**Status:** proposed 2026-10-01; awaiting owner approval (option (a), a thin
-child wrapper, approved in direction). Base: 46f3574. No Python until approved;
-the JSON pipeline (Phase A) is not gated, the node (Phase B) is.
+**Status:** proposed 2026-10-01, revised after review round 1; awaiting owner
+approval (option (a), a thin child wrapper, approved in direction). Base:
+46f3574. No Python until approved; the JSON pipeline (Phase A) is not gated,
+the node (Phase B) is.
 
 A step between step 1 (tradable dates) and step 2 (feature availability): a JSON
 pipeline whose output is a per-date panel, one row per ticker/quote_date/expiry
@@ -29124,58 +29125,109 @@ fit; the HPO search stage passes just the 2016-2018 development slice, hence the
 ablation's years); `prepare` builds only the raw-chain cache. dskit has no
 arithmetic node, strictly-prior as-of join or OHLC-shape node.
 
-**Pipeline (Phase A).** `configs/run-step1b-feature-engineering.json` takes the
+**Pipeline (Phase A).** `configs/run-step1b-feature-engineering.json` reads the
+prepared panel through a source block with **no `ts_field`/`ts_out`**: rows keep
+only the panel's own columns, because `ObservationRows` stamps `ts_out`
+(`quote_date_ms` in steps 1-2) in place and refuses a record already carrying it
+(`dskit/onboarding/observations.py:536`), and step 2 stamps its own. It takes the
 selected DTE from step 1's `selection/selected.jsonl` (never typed), keeps step
-1's settled rows, adds engineered fields (always present; `fe_<family>_status`
-says why one is null) and pins its row count to step 1's `listed_forecasts`.
-Expiry density uses existing groupby/join nodes; weekday stays pending until
-ADR-0214 merges. Output `pipeline_runs/feature-engineering/panel/input_panel.jsonl`
-is onboarded as `cdf-horizon-panel`/`input_panel` under a new root, so step 2
-changes one line, `source.params.root`.
+1's settled rows, adds the node's fields and pins its row count to step 1's
+`listed_forecasts`. Expiry density uses existing groupby/join nodes; weekday
+stays pending until ADR-0214 merges. Output
+`pipeline_runs/feature-engineering/panel/input_panel.jsonl` is onboarded by the
+new `configs/source-feature-panel.json` (localtables, `effective_field`
+`quote_date`, `iso`) as `cdf-horizon-panel`/`input_panel` under root
+`./pipeline_runs/feature-panel-source`. Step 2 then changes one line,
+`source.params.root` (from `./pipeline_runs/cdf-horizon-source`); until the
+handoff pin passes that is a prediction. The FE config merges after the step-1/2
+rebuild.
 
 1. **Home.** `index_options.cdf_study:ExactExpiryPanelFeatures(Node)`, role
    `transform`, beside its only owner. Tier 3 (exact-expiry semantics are the
-   child's; project-specific). Calls `read()` unchanged, restates no formula.
+   child's; project-specific). One node for all families: one `read()` per run,
+   one `data` block. Calls `read()` unchanged, restates no formula.
 2. **Params** (default-deny): the tail-data `read()` keys minus `archive_root`
    (`prepare` only). Required `root surface lifecycle symbols price_source
    iv_source since max_dte lags windows feature_gap_days reference_floor
    spot_tolerance`; optional `chain_features raw_chain market_symbols
-   fred_market_symbols surface_features ohlc_windows matched_dte_vrp`; plus
-   `fields` and `status_field`. `decision_regions`, `macro_event_calendars`
-   refused. One instance per family; `fields` is its contract columns plus those
-   its quality checks name (`market_*_age_days`, `market_*_missing`).
+   fred_market_symbols surface_features ohlc_windows matched_dte_vrp`;
+   `decision_regions`, `macro_event_calendars` refused. Also required:
+   `column_prefix` (columns `<prefix><family>_status`, `_reasons`);
+   `agree_fields` (non-empty list); `max_absent_fraction` (float in [0, 1], no
+   default); `families` = `{family: {fields, withheld_fields, clock_note}}`.
+   `fields` is the family's contract columns plus those its quality checks name
+   (`market_*_age_days`, `market_*_missing`); `withheld_fields` is
+   `{field: reason}` (may be `{}`), a subset of `fields`; `clock_note` is a
+   non-empty string, hashed on purpose (a changed clock claim is a changed run).
+   A field in two families refuses.
 3. **Run.** Narrow `symbols` to the input tickers (unknown refuses); call
-   `read()`; index by (symbol, quote_date, expiry); attach exactly `fields` in
-   input order, NaN/inf as null. A row `read()` did not produce gets all fields
-   null and status `identity_absent_from_engineered_panel`, else `computed`.
-   Refuses an input field collision, a column `read()` lacks, a duplicate
-   identity.
-4. **Outputs.** `records`; `summary` (rows, computed/absent, non-null per field,
-   refused counts); `provenance` (source sha256, reader fingerprints, market
-   coverage, adapter hash), moved to `ExactExpiryCDFPanel.provenance()` which
-   `cdf_study._main` then calls: one owner, identical dict (HPO hashes it).
+   `read()`; index by (symbol, quote_date, expiry). **Refuses:** an input field
+   collision; a `fields` column `read()` lacks (withheld too); a duplicate
+   identity; an `agree_fields` column missing on either side; a matched identity
+   whose `agree_fields` differ (exact, null equals null, no tolerance knob until
+   a lossless round trip disagrees); absent identities above
+   `max_absent_fraction` (fraction of input rows). Then attach every family's
+   `fields` in input order, every key on every row, NaN/inf as null; a withheld
+   field is dropped after `read()` and emitted null, never omitted. Per family,
+   status is `computed` or `identity_absent_from_engineered_panel`; `_reasons`
+   is a JSON object string `{field: reason}` over the row's null fields (the
+   withheld reason, else the absent literal, else `not_computable`), `{}` when
+   none.
+4. **Outputs.** `records`; `summary` per family (rows, computed/absent, non-null
+   per field, refused counts, `withheld_fields`, `clock_note`); `provenance`
+   (`input_sha256` over canonical identity + `agree_fields` values as received,
+   `read()`'s source sha256, reader fingerprints, market coverage, adapter hash,
+   each family's `clock_note`/`withheld_fields`). The `read()` part moves to
+   `ExactExpiryCDFPanel.provenance()`, which `cdf_study._main` then calls: one
+   owner, identical dict (HPO hashes it). Summary and provenance are the
+   run-local record; the rows carry status and reasons.
 5. **Clock rules** (pipeline and `family_contracts`). VRP: entry-chain ATM IV
    against backward 22-session realized vol, planned sessions. OHLC: entry bar
    plus backward windows; after-close estimand only. Positioning: entry-snapshot
-   volume/spread and prior-observation OI kept; current-snapshot OI x greek
-   (`chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`) not attached, emitted null,
-   reason `oi_publication_clock_unverified`, until an audit shows archive
-   `open_interest` excludes the entry day's trades (step 2 then shows
-   positioning unavailable). Expanded Cboe: last close strictly before entry,
-   at most 7 days old, else null with `_missing`; download vintage not
-   certified. Nothing is imputed.
+   volume/spread and prior-observation OI computed; current-snapshot OI x greek
+   (`chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`) **withheld**: null on every
+   row, reason `oi_publication_clock_unverified` (config data, not a code
+   vocabulary), until an audit shows archive `open_interest` excludes the entry
+   day's trades; lifting it is a JSON edit citing the audit. Expanded Cboe: last
+   close strictly before entry, at most 7 days old, else null with `_missing`;
+   only the download vintage is uncertified (a `clock_note`, not a withhold).
+   Nothing is imputed. Step 2's flags are yes/no: a withheld and an absent field
+   both read `no`; the reason lives in the panel and the summary.
 
-**Pins.** Node values equal `read()` for the same identities; FE `data` block
-equals the tail-data block key by key over the node's keys; FE fields equal
-step 2's four family contracts; writer path and stream agree with the source
-config; status literals equal the class constants; `provenance()` equals
-today's `_main` dict. **Touched.** `cdf_study.py`, `tests/test_cdf_study.py`,
-the plan README runbook, the pipeline JSON.
+**Pins.** Node values equal `read()` for the same identities, every non-withheld
+field. Every withheld field is null on every row, its reason in `_reasons` and
+`summary`; the shipped JSON withholds exactly the three OI x greek fields with
+that reason; `summary`/`provenance` echo each `clock_note` and `withheld_fields`
+as declared. Agreement: a fixture differing on one identity's `agree_fields`
+refuses, so does an absent fraction over the bound, and `input_sha256` moves
+with any `agree_fields` value; the shipped `agree_fields` include
+`terminal_return`, `actual_calendar_dte`, `chain_atm_iv`, `rv_22` and `rn_q_*`.
+FE `data` block equals the tail-data block key by key over the node's keys; FE's
+four families equal step 2's same-named `family_contracts`, key by key.
+**Handoff:** a fixture panel written by the node (nulls and reasons included) is
+onboarded through `source-feature-panel.json` and read with step 2's committed
+`source.params`, only `root` replaced: every identity returns, nulls stay null,
+no `quote_date_ms` in the FE rows, and step 2's `available_*` derive reads `no`
+for a family with a null field. Writer path and stream agree with the source
+config; status and `not_computable` literals equal the class constants;
+`provenance()` equals today's `_main` dict. **Touched.** `cdf_study.py`,
+`tests/test_cdf_study.py`, `tests/test_configs.py`, the plan README runbook, the
+pipeline JSON, `configs/source-feature-panel.json`.
 
 **Rejected.** Graduating generic kinds first (re-implements tested formulas,
 byte-parity risk); a panel-only `cdf_study` CLI stage (computation outside a
-pipeline). **Non-goals:** formula changes, macro, 21/41 quantiles, AMZN,
-training, selection.
+pipeline); one node instance per family (a `read()` and a `data` block each);
+pass-through columns taken from `read()` (one vintage, but FE becomes a second
+panel builder and step 1's rows stop passing through); withhold reasons as code
+constants (a new audit would edit code). **Non-goals:** formula changes, macro,
+21/41 quantiles, AMZN, training, selection.
 
-**Owner question.** The three OI x greek fields: null until the clock audit
-(proposed), or attached labelled unverified?
+**Owner question 1.** The three OI x greek fields: withheld as null (proposed)
+or attached labelled unverified?
+**Owner question 2.** Positioning at step 2: (a) split into `positioning_verified`
+(5 fields) and `positioning_oi_exposure` (the 3 withheld) in both FE and step 2,
+so the trio cannot zero the 5 verifiable fields (14 families, 16,384
+combinations per ticker; recommended; edits the concurrent step-2 contract,
+untouched here), or (b) one `positioning_changes` family that reads `no` on
+every date until the audit? Phase A ships (b), which matches step 2 today; (a)
+is a JSON-only change on both sides.
