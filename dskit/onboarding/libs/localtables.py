@@ -66,6 +66,7 @@ Import cost: stdlib. pyarrow is imported inside the verbs.
 
 from __future__ import annotations
 
+from abc import abstractmethod
 import codecs
 import gzip
 import json
@@ -77,7 +78,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from ..base import AssetError, _check_dict, _raise_if, parse_utc
 from ..connector import PROTOCOL, Connector
 
-__all__ = ["EFFECTIVE_UNITS", "FORMATS", "LAYOUTS", "LocalTablesConnector"]
+__all__ = ["EFFECTIVE_UNITS", "FORMATS", "LAYOUTS", "LocalTablesConnector", "PinnedArchiveConnector"]
 
 _DIRECTORY_LAYOUT = "directory"
 
@@ -656,3 +657,158 @@ class LocalTablesConnector(Connector):
             new_state.setdefault(stream, {})["cursor"] = emitted_max
 
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+
+class PinnedArchiveConnector(LocalTablesConnector):
+    """Normalize pinned provider files through the local-table lifecycle.
+
+    Parameters
+    ----------
+    None
+        Subclasses declare streams and implement normalize.
+
+    Examples
+    --------
+    Instantiate a concrete member::
+
+        from dskit.onboarding.libs.yahoo import YahooChartArchiveConnector
+        reader = YahooChartArchiveConnector()
+    """
+
+    STREAM_KEYS = {}
+    EXTRA_PARAMS = ()
+
+    def spec(self):
+        """Return archive knobs.
+
+        Returns
+        -------
+        dict
+            File pins and capture/session metadata.
+        """
+        names = ("files", "archive_observed_at", "session_timezone") + self.EXTRA_PARAMS
+        return {"params": {k: {"required": True} for k in names}}
+
+    def _knobs(self, config):
+        from zoneinfo import ZoneInfo
+        from ..connector import check_config
+        check_config(self, config)
+        files = config["files"]
+        if not isinstance(files, dict) or not files or set(files)-set(self.STREAM_KEYS):
+            raise AssetError(["files must name declared archive streams"])
+        parse_utc(config["archive_observed_at"])
+        ZoneInfo(config["session_timezone"])
+        for name, item in files.items():
+            if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                    or not isinstance(item["path"], str)
+                    or not isinstance(item["sha256"], str)
+                    or len(item["sha256"]) != 64
+                    or any(c not in "0123456789abcdef" for c in item["sha256"])):
+                raise AssetError([f"invalid path/sha256 for {name}"])
+        self._archive_config = dict(config)
+        self._archive_cache = {}
+        return {"field": "effective_at", "unit": "iso", "stamp": None,
+                "encoding": "utf-8", "formats": tuple(files), "streams": None}
+
+    def _shards(self, knobs):
+        return {k: [(k, v["path"], k)]
+                for k, v in self._archive_config["files"].items()}
+
+    def archive_bytes(self, stream):
+        """Read the exact pinned bytes.
+
+        Parameters
+        ----------
+        stream : str
+            Declared archive stream.
+
+        Returns
+        -------
+        bytes
+            Decompressed verified content.
+
+        Raises
+        ------
+        AssetError
+            A file pin differs.
+        """
+        import hashlib
+        from pathlib import Path
+        item = self._archive_config["files"][stream]
+        raw = Path(item["path"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+            raise AssetError([f"{stream}: sha256 mismatch"])
+        return gzip.decompress(raw) if item["path"].endswith(".gz") else raw
+
+    @staticmethod
+    def decode(raw):
+        """Decode finite JSON.
+
+        Parameters
+        ----------
+        raw : bytes or str
+            JSON content.
+
+        Returns
+        -------
+        object
+            Parsed JSON.
+        """
+        return json.loads(raw, parse_constant=_json_constant)
+
+    @abstractmethod
+    def normalize(self, stream, raw):
+        """Normalize an archive; concrete providers implement this hook.
+
+        Parameters
+        ----------
+        stream : str
+            Provider stream.
+        raw : bytes
+            Verified content.
+
+        Returns
+        -------
+        iterable
+            Flat records.
+        """
+        raise NotImplementedError
+
+    def _rows(self, path, fmt, encoding):
+        seen = {}
+        for row in self.normalize(fmt, self.archive_bytes(fmt)):
+            key = tuple(row[k] for k in self.STREAM_KEYS[fmt])
+            spelling = json.dumps(row, sort_keys=True, allow_nan=False)
+            if key in seen:
+                if seen[key] != spelling:
+                    raise AssetError([f"{fmt}: conflicting duplicate {key}"])
+                continue
+            seen[key] = spelling
+            row = {**row, "source_sha256": self._archive_config["files"][fmt]["sha256"],
+                   "archive_observed_at": self._archive_config["archive_observed_at"],
+                   "historical_available_at": None}
+            yield len(seen), row
+
+    def _fields(self, files, knobs):
+        stem, path, fmt = files[0]
+        for _n, row in self._rows(path, fmt, knobs["encoding"]):
+            return sorted(row)
+        return sorted(set(self.STREAM_KEYS[fmt]) | {"effective_at"})
+
+    def discover(self, config):
+        """Describe normalized streams and identities.
+
+        Parameters
+        ----------
+        config : dict
+            Archive configuration.
+
+        Returns
+        -------
+        list
+            Stream declarations.
+        """
+        result = super().discover(config)
+        for item in result:
+            item["primary_key"] = list(self.STREAM_KEYS[item["stream"]])
+        return result

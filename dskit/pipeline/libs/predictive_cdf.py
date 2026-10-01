@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
+
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "BetaTransformedCurve", "CDFEstimator",
            "HorizonEmpiricalCDF", "ScaledEmpiricalCDF", "MonotoneCDF",
@@ -24,7 +26,8 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
-           "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores"]
+           "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores",
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
 
 
 class CDFThresholdAudit:
@@ -4414,3 +4417,356 @@ class CDFHyperparameterStudy:
         self._write(path/"data_provenance.json", provenance)
         self._complete(path, identity, stage, partition, selection_hash=selection_hash)
         return scores
+
+
+class OptionPriceCDF:
+    """Undiscounted parity/isotonic option-price CDF proxy (ADR-0213).
+
+    Parameters
+    ----------
+    probabilities : sequence
+        Quantiles to evaluate on the exported canonical inverse grid.
+    min_forward_pairs, min_wing_nodes : int
+        Minimum positive parity pairs and strikes on each forward wing.
+    max_inner_gap, max_outer_gap : float
+        Maximum gaps in log strike divided by parity forward.
+    max_projection_distance, max_forward_dispersion : float or None
+        Optional guards in spot-normalized price units.
+    """
+
+    def __init__(self, probabilities, min_forward_pairs, min_wing_nodes,
+                 max_inner_gap, max_outer_gap, max_projection_distance=None,
+                 max_forward_dispersion=None):
+        import numpy as np
+        self.proxy_probabilities = np.asarray(probabilities, dtype=float)
+        if (self.proxy_probabilities.ndim != 1 or not len(self.proxy_probabilities)
+                or not np.isfinite(self.proxy_probabilities).all()
+                or not (np.diff(self.proxy_probabilities) > 0).all()
+                or not ((self.proxy_probabilities > 0) & (self.proxy_probabilities < 1)).all()):
+            raise ValueError("probabilities must increase strictly inside (0, 1)")
+        for name, value in (("min_forward_pairs", min_forward_pairs),
+                            ("min_wing_nodes", min_wing_nodes)):
+            if type(value) is not int or value < 1:
+                raise ValueError(name+" must be a positive integer")
+            setattr(self, name, value)
+        for name, value in (("max_inner_gap", max_inner_gap),
+                            ("max_outer_gap", max_outer_gap),
+                            ("max_projection_distance", max_projection_distance),
+                            ("max_forward_dispersion", max_forward_dispersion)):
+            if ((value is None and name in ("max_inner_gap", "max_outer_gap"))
+                    or (value is not None and (isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not np.isfinite(value) or value < 0))):
+                raise ValueError(name+" must be finite and nonnegative")
+            setattr(self, name, value)
+    def estimate(self, rows, spot):
+        """Return an eligible curve and diagnostics, or explicit rejection reasons."""
+        import numpy as np
+        clean = rows.copy()
+        if (not {"strike", "type", "mark"}.issubset(clean.columns)
+                or not len(clean)):
+            return {"eligible": False, "reasons": ["missing_price_rows"]}
+        if (not np.isfinite(clean[["strike", "mark"]].to_numpy(dtype=float)).all()
+                or not (clean[["strike", "mark"]] > 0).all().all()
+                or not clean.type.isin(["call", "put"]).all()
+                or clean.duplicated(["strike", "type"]).any()):
+            return {"eligible": False, "reasons": ["invalid_or_duplicate_prices"]}
+        if not np.isfinite(spot) or spot <= 0:
+            return {"eligible": False, "reasons": ["invalid_spot"]}
+        paired = clean.pivot_table(index="strike", columns="type", values="mark",
+                                   aggfunc="median").dropna()
+        if paired.empty or not {"call", "put"}.issubset(paired.columns):
+            return {"eligible": False, "reasons": ["missing_forward_pairs"]}
+        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
+        forwards = forwards[np.isfinite(forwards) & (forwards > 0)]
+        if len(forwards) < self.min_forward_pairs:
+            return {"eligible": False, "reasons": ["insufficient_forward_pairs"]}
+        forward = float(np.median(forwards))
+        dispersion = float(np.subtract(*np.percentile(forwards, [75, 25]))/spot)
+        clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
+                                             clean.mark+forward-clean.strike)
+        otm = clean[((clean.type == "put") & (clean.strike <= forward))
+                    | ((clean.type == "call") & (clean.strike >= forward))]
+        calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
+        strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
+        if len(strike) < 2*self.min_wing_nodes+1:
+            return {"eligible": False, "reasons": ["insufficient_strikes"]}
+        left, right = strike < forward, strike > forward
+        logk = np.log(strike/forward)
+        if (left.sum() < self.min_wing_nodes or right.sum() < self.min_wing_nodes
+                or -logk[left].max() > self.max_inner_gap
+                or logk[right].min() > self.max_inner_gap
+                or (np.diff(logk) > self.max_outer_gap).any()):
+            return {"eligible": False, "reasons": ["inadequate_wing_support"]}
+        raw_slope = np.diff(price)/np.diff(strike)
+        from sklearn.isotonic import IsotonicRegression
+        slope = IsotonicRegression(increasing=True, y_min=-1., y_max=0.,
+                                   out_of_bounds="clip").fit_transform(
+                                       (strike[:-1]+strike[1:])/2, raw_slope,
+                                       sample_weight=np.diff(strike))
+        cdf = np.clip(1+slope, 0, 1)
+        if not (np.isfinite(cdf).all() and (np.diff(cdf) >= -1e-12).all()):
+            return {"eligible": False, "reasons": ["invalid_cdf"]}
+        informative = np.flatnonzero((cdf > 1e-4) & (cdf < 1-1e-4))
+        if len(informative) < 3:
+            return {"eligible": False, "reasons": ["insufficient_interior_knots"]}
+        first, last = informative[0], informative[-1]
+        cdf = cdf[first:last+1]
+        midpoint = (strike[:-1]+strike[1:])/2
+        midpoint = midpoint[first:last+1]
+        p = np.r_[0., cdf, 1.]
+        values = np.r_[np.log(strike[first]/spot), np.log(midpoint/spot),
+                       np.log(strike[last+1]/spot)]
+        # Flat probability stretches are atoms; np.interp requires a stable
+        # increasing inverse grid, so retain the first occurrence explicitly.
+        keep = np.r_[True, np.diff(p) > 1e-12]
+        p, values = p[keep], values[keep]
+        if p[-1] < 1:
+            p, values = np.r_[p, 1.], np.r_[values, np.log(strike[-1]/spot)]
+        quantiles = np.interp(self.proxy_probabilities, p, values)
+        projected = price[0]+np.r_[0., np.cumsum(slope*np.diff(strike))]
+        distance = float(np.sqrt(np.mean((projected-price)**2))/spot)
+        reasons = []
+        for name, value, limit in (
+                ("projection_distance", distance, self.max_projection_distance),
+                ("forward_dispersion", dispersion, self.max_forward_dispersion)):
+            if limit is not None and value > limit:
+                reasons.append(name+"_exceeded")
+        return {"eligible": not reasons, "reasons": reasons,
+                "forward_ratio": forward/spot, "projection_distance": distance,
+                "forward_dispersion": dispersion, "forward_pairs": len(forwards),
+                "mass": float(cdf[-1]-cdf[0]), "quantiles": quantiles.tolist(),
+                "probabilities": p.tolist(), "log_returns": values.tolist(),
+                "raw_projected_probabilities": (1+slope).tolist(),
+                "raw_midpoint_log_returns": np.log(
+                    (strike[:-1]+strike[1:])/2/spot).tolist(),
+                "tail_completion": "finite_support_endpoint_completion"}
+
+
+
+class ExpiryCloseLabels(Node):
+    """Join option session/expiry keys to verified exchange closes.
+
+    Parameters
+    ----------
+    params : dict
+        calendar and asof declare the exchange and latest allowed close.
+    """
+
+    role = "labels"
+    outputs = ("records", "labels", "summary")
+    _PARAMS = ("calendar", "asof")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return unknown or missing parameter problems."""
+        errors = []
+        reject_unknown_params(errors, params, cls._PARAMS)
+        for name in cls._PARAMS:
+            if not isinstance(params.get(name), str) or not params[name]:
+                errors.append(name+" must be a nonempty string")
+        return errors
+
+    @staticmethod
+    def _prices(rows):
+        prices = {}
+        for row in rows:
+            key = (row["symbol"], row["quote_date"])
+            if key in prices:
+                raise ValueError("duplicate underlying session")
+            prices[key] = row
+        return prices
+
+    @staticmethod
+    def _close(row):
+        import math
+        value = row.get("close") if row else None
+        return (value if row and row.get("close_complete") is True
+                and row.get("post_session_split") is False
+                and isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value > 0 else None)
+
+    def run(self, ctx, inputs):
+        """Return nullable terminal-close labels and durable full evidence."""
+        import math
+        import pandas as pd
+        import exchange_calendars as xc
+        from collections import Counter
+        options = inputs["bars"]+inputs["snapshots"]
+        prices = self._prices(inputs["prices"])
+        keys = sorted({(r["symbol"], r["quote_date"], r["expiry"], r["price_basis"])
+                       for r in options if r.get("quote_date") is not None})
+        asof = pd.Timestamp(self.params["asof"])
+        if asof.tzinfo is None:
+            raise ValueError("asof requires an explicit timezone")
+        dates = [k[1] for k in keys]+[k[2] for k in keys]
+        calendar = xc.get_calendar(self.params["calendar"],
+                                   start=min(dates), end=max(dates)) if dates else None
+        records = []
+        for symbol, day, expiry, basis in keys:
+            row = {"symbol": symbol, "quote_date": day, "expiry": expiry,
+                   "price_basis": basis, "terminal_return": None, "spot": None,
+                   "terminal_price": None, "settlement_date": None,
+                   "actual_calendar_dte": None, "entry_close_at": None, "decision_at": None,
+                   "label_kind": "underlying_expiry_close", "label_reasons": []}
+            if not calendar.is_session(day):
+                row["label_reasons"].append("non_session_entry")
+                records.append(row)
+                continue
+            terminal = calendar.date_to_session(expiry, direction="previous")
+            row["settlement_date"] = terminal.date().isoformat()
+            row["actual_calendar_dte"] = (terminal.date()-pd.Timestamp(day).date()).days
+            entry_close = calendar.session_close(day)
+            row["entry_close_at"] = entry_close.isoformat()
+            row["decision_at"] = entry_close.isoformat()
+            entry_source = prices.get((symbol, day)) or {}
+            terminal_source = prices.get((symbol, row["settlement_date"])) or {}
+            row["entry_price_source_sha256"] = entry_source.get("source_sha256")
+            row["terminal_price_source_sha256"] = terminal_source.get("source_sha256")
+            row["unit_check"] = "no_subsequent_split_in_source_inventory"
+            row["outcome_asof"] = asof.isoformat()
+            spot = self._close(prices.get((symbol, day)))
+            if spot is None or entry_close > asof:
+                row["label_reasons"].append("unverified_entry_close")
+            else:
+                row["spot"] = spot
+            terminal_price = self._close(prices.get((symbol, row["settlement_date"])))
+            if row["actual_calendar_dte"] <= 0:
+                row["label_reasons"].append("nonpositive_horizon")
+            elif calendar.session_close(terminal) > asof or terminal_price is None:
+                row["label_reasons"].append("pending_or_missing_terminal_close")
+            elif row["spot"] is not None:
+                row["terminal_price"] = terminal_price
+                row["terminal_return"] = math.log(terminal_price/spot)
+            records.append(row)
+        reasons = Counter(reason for r in records for reason in r["label_reasons"])
+        return {"records": records, "labels": JsonArtifact(records),
+                "summary": {"rows": len(records),
+                            "settled": sum(r["terminal_return"] is not None for r in records),
+                            "reasons": dict(reasons)}}
+
+
+class OptionCDFPanel(Node):
+    """Build source-labelled option CDF proxies and a shared coverage panel.
+
+    Parameters
+    ----------
+    params : dict
+        Numerical admission, standard-contract terms and quote-age policy.
+        Full evidence is emitted through JsonArtifact; records feed the graph.
+    """
+
+    role = "transform"
+    outputs = ("records", "panel", "options", "cdfs", "summary")
+    _CURVE_PARAMS = ("probabilities", "min_forward_pairs", "min_wing_nodes",
+                     "max_inner_gap", "max_outer_gap", "max_projection_distance",
+                     "max_forward_dispersion")
+    _PARAMS = _CURVE_PARAMS+("required_multiplier", "required_style", "max_quote_age_seconds")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return missing, unknown and invalid policy problems."""
+        import math
+        errors = []
+        reject_unknown_params(errors, params, cls._PARAMS)
+        missing = set(cls._PARAMS)-set(params)
+        if missing:
+            return errors+["missing parameters: "+str(sorted(missing))]
+        try:
+            OptionPriceCDF(**{k: params[k] for k in cls._CURVE_PARAMS})
+        except (TypeError, ValueError) as exc:
+            errors.append(str(exc))
+        for key in ("required_multiplier", "max_quote_age_seconds"):
+            value = params[key]
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(key+" must be finite and positive")
+        if not isinstance(params["required_style"], str) or not params["required_style"]:
+            errors.append("required_style must be a nonempty string")
+        return errors
+
+    def _admission(self, row, label):
+        import math
+        import pandas as pd
+        reasons = list(row.get("observation_reasons", []))
+        if row.get("contract_terms_status") != "metadata_present":
+            reasons.append("unverified_contract_terms")
+        elif (row.get("root_symbol") != row.get("symbol")
+              or row.get("multiplier") != self.params["required_multiplier"]
+              or row.get("contract_size") != self.params["required_multiplier"]
+              or row.get("style") != self.params["required_style"]):
+            reasons.append("nonstandard_contract_terms")
+        mark, strike = row.get("mark"), row.get("strike")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float))
+               or not math.isfinite(v) or v <= 0 for v in (mark, strike)):
+            reasons.append("invalid_price")
+        if label is None or label["spot"] is None:
+            reasons.append("unverified_entry_close")
+        if row["price_basis"] == "indicative_quote":
+            stamp = row.get("quote_timestamp")
+            if not stamp:
+                reasons.append("missing_quote_timestamp")
+            elif label and label["entry_close_at"]:
+                age = (pd.Timestamp(label["entry_close_at"])-pd.Timestamp(stamp)).total_seconds()
+                if age < 0 or age > self.params["max_quote_age_seconds"]:
+                    reasons.append("quote_outside_close_window")
+        elif row["price_basis"] != "trade_close":
+            reasons.append("unsupported_price_basis")
+        return sorted(set(reasons))
+
+    def run(self, ctx, inputs):
+        """Return full canonical observations, proxy curves and coverage records."""
+        from collections import Counter, defaultdict
+        import pandas as pd
+        keys = ("symbol", "quote_date", "expiry", "price_basis")
+        labels = {tuple(r[k] for k in keys): r for r in inputs["labels"]}
+        if len(labels) != len(inputs["labels"]):
+            raise ValueError("duplicate label key")
+        observations, groups = [], defaultdict(list)
+        seen = set()
+        for source in inputs["bars"]+inputs["snapshots"]:
+            row = dict(source)
+            key = tuple(row[k] for k in keys)
+            identity = (key, row["contract"])
+            if identity in seen:
+                raise ValueError("duplicate option observation")
+            seen.add(identity)
+            row["admission_reasons"] = self._admission(row, labels.get(key))
+            row["available_after"] = (labels.get(key) or {}).get("entry_close_at")
+            row["spot_basis"] = "completed_close"
+            row["decision_at"] = row["available_after"]
+            observations.append(row)
+            groups[key].append(row)
+        helper = OptionPriceCDF(**{k: self.params[k] for k in self._CURVE_PARAMS})
+        records, curves = [], []
+        for key, label in sorted(labels.items()):
+            rows = groups[key]
+            usable = [r for r in rows if not r["admission_reasons"]]
+            proxy = {"eligible": False, "reasons": ["no_admissible_options"]}
+            if usable and label["spot"] is not None:
+                frame = pd.DataFrame(usable)
+                duplicates = frame.duplicated(["strike", "type"], keep=False)
+                proxy = helper.estimate(frame.loc[~duplicates], label["spot"])
+            record = {**label, "rn_proxy_eligible": int(proxy["eligible"]),
+                      "option_rows": len(rows), "admissible_option_rows": len(usable),
+                      "cdf_reasons": proxy["reasons"],
+                      "cdf_kind": "american_option_price_proxy",
+                      "spot_basis": "completed_close"}
+            for i, probability in enumerate(self.params["probabilities"]):
+                record[f"rn_q_{round(probability*10000):04d}"] = (
+                    proxy["quantiles"][i] if proxy["eligible"] else None)
+            records.append(record)
+            curves.append({**dict(zip(keys, key)), **proxy,
+                           "cdf_kind": record["cdf_kind"],
+                           "probability_interpretation": "option_price_proxy_not_physical_probability"})
+        reasons = Counter(r for row in observations for r in row["admission_reasons"])
+        cdf_reasons = Counter(r for curve in curves for r in curve["reasons"])
+        summary = {"options": len(observations), "contracts": len(inputs["contracts"]),
+                   "panel_rows": len(records), "eligible_cdfs": sum(r["rn_proxy_eligible"] for r in records),
+                   "settled_eligible_cdfs": sum(r["rn_proxy_eligible"] and r["terminal_return"] is not None
+                                               for r in records),
+                   "option_reasons": dict(reasons), "cdf_reasons": dict(cdf_reasons)}
+        return {"records": records, "panel": JsonArtifact(records),
+                "options": JsonArtifact({"contracts": inputs["contracts"],
+                                         "observations": observations}),
+                "cdfs": JsonArtifact(curves), "summary": summary}

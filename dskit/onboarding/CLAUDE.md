@@ -139,17 +139,18 @@ dskit/onboarding/
 ├── certify.py         certify — decisions; block-cannot-certify gate
 ├── publish.py         publish_version — outbox manifests, certification-keyed
 ├── libs/
-│   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── alpaca.py      Alpaca stock bars + pinned saved option archives
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
-│   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)
+│   ├── localtables.py parquet / newline-JSON tables + abstract PinnedArchiveConnector
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)
 │   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
+│   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        CLI
@@ -158,3 +159,7 @@ dskit/onboarding/
 ```
 
 Keep both trees (here and in README.md) current when files change.
+ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
+SHA-256-pinned local files through PinnedArchiveConnector. No provider access.
+Contracts, daily trade bars and indicative snapshots remain separate streams.
+See children/stock_options/docs/plans/README.md for the tested JSON workflow.

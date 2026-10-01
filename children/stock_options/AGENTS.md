@@ -25,8 +25,9 @@ configuration, constraints and evidence. It must never import a sibling child.
   share assignment and adjusted deliverables differ from index options.
 - AMZN is the first baseline and MSFT is the immediate liquidity replication.
   Neither choice is evidence of profitability.
-- The bootstrap has no connector, strategy config, optimizer, accounting or
-  execution path. Add reusable machinery upstream under its own approved ADR.
+- ADR-0213 adds four JSON configs for offline archive conversion. Connectors
+  and CDF/label nodes live upstream in dskit; no child mechanism or strategy
+  execution path is authorized. Follow docs/plans/README.md.
 - `dskit` is the only project dependency. Keep this child position-independent.
 - `journal.json` marks the child. Research must use `dskit.journal`; only the
   owner changes Path to Production.

@@ -344,7 +344,7 @@ dskit/onboarding/
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
-│   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── alpaca.py      Alpaca stock bars + pinned saved option archives
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
@@ -355,6 +355,7 @@ dskit/onboarding/
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
+│   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding
@@ -365,3 +366,8 @@ dskit/onboarding/
 Tests: `python -m pytest tests/onboarding -q` (purity gate, model-hash
 parity with the architecture doc, connector conformance, CLI e2e through
 `sync-published`).
+
+ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
+SHA-256-pinned local files through PinnedArchiveConnector. No provider access.
+Contracts, daily trade bars and indicative snapshots remain separate streams.
+See children/stock_options/docs/plans/README.md for the tested JSON workflow.

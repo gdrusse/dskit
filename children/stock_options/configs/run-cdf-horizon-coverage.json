@@ -1,0 +1,376 @@
+{
+  "name": "stock-cdf-horizon-coverage",
+  "notes": "Convert pinned stock archives and select exact expiry by maximum distinct settled eligible-CDF entry dates, ties to shortest DTE. Search 1\u201345 actual exchange-close calendar days; raw historical source requested 30\u201345 only. Absence is not proof other strikes never existed.",
+  "pipeline": {
+    "contracts": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "contracts",
+        "key_fields": [
+          "contract"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "bars": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "bars",
+        "key_fields": [
+          "contract",
+          "quote_date"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "snapshots": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "snapshots",
+        "key_fields": [
+          "contract",
+          "quote_timestamp"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "prices": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "underlying",
+        "stream": "prices",
+        "key_fields": [
+          "symbol",
+          "quote_date"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "labels": {
+      "uses": "dskit.pipeline.libs.predictive_cdf:ExpiryCloseLabels",
+      "inputs": {
+        "bars": "$bars.records",
+        "snapshots": "$snapshots.records",
+        "prices": "$prices.records"
+      },
+      "params": {
+        "calendar": "XNYS",
+        "asof": "2026-10-01T18:11:05.443952+00:00"
+      },
+      "notes": "Underlying expiry-close labels, not exercise or cash settlement. Future and unverified closes remain null."
+    },
+    "panel": {
+      "uses": "dskit.pipeline.libs.predictive_cdf:OptionCDFPanel",
+      "inputs": {
+        "bars": "$bars.records",
+        "snapshots": "$snapshots.records",
+        "contracts": "$contracts.records",
+        "labels": "$labels.records"
+      },
+      "params": {
+        "probabilities": [
+          0.01,
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          0.9,
+          0.95,
+          0.99
+        ],
+        "min_forward_pairs": 3,
+        "min_wing_nodes": 3,
+        "max_inner_gap": 0.08,
+        "max_outer_gap": 0.12,
+        "max_projection_distance": null,
+        "max_forward_dispersion": null,
+        "required_multiplier": 100,
+        "required_style": "american",
+        "max_quote_age_seconds": 900
+      },
+      "notes": "Historical trade-close American-option proxy; finite-support completed tails are not observed. Current orphan metadata stays visible but ineligible. Numerical projection/forward diagnostics are ungated unless JSON supplies limits."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "foreach": {
+    "keys": [
+      "AMZN"
+    ],
+    "notes": "The only ticker setting: one or several supported symbols in the prepared source. One shared acquisition is read once; each ticker gets an independent argmax and full coverage distribution.",
+    "pipeline": {
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$panel.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": ">=",
+              "value": 1
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": "<=",
+              "value": 45
+            }
+          ]
+        }
+      },
+      "listed_counts": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$cohort.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "listed_dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "listed_forecasts": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "Counts from converted archive panels including pending outcomes and failed CDFs; complete_cdf separately requires observed terminal return and all quantiles."
+      },
+      "complete_cdf": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$cohort.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "rn_proxy_eligible",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_0100",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_0500",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_1000",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_2500",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_5000",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_7500",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_9000",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_9500",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "rn_q_9900",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "The localtables importer converts NaN to null and refuses infinity. Proxy eligibility and finite ordered quantiles were verified in the canonical upstream preparation."
+      },
+      "coverage": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$complete_cdf.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "eligible_dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "eligible_forecasts": {
+              "op": "count"
+            },
+            "expiry_series": {
+              "op": "nunique",
+              "field": "expiry"
+            }
+          }
+        },
+        "notes": "Full per-horizon records are retained in the standard runner carry.json under coverage__<ticker>.records (at most 45 small rows per ticker). Horizons with no eligible dates are absent, not fabricated; absence means zero within this source cohort."
+      },
+      "selection_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$coverage.records"
+        },
+        "params": {
+          "field": "selection_group",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "maximum": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "keys": [
+            "selection_group"
+          ],
+          "aggregates": {
+            "eligible_dates": {
+              "op": "max",
+              "field": "eligible_dates"
+            }
+          }
+        }
+      },
+      "maximum_value": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$maximum.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "eligible_dates"
+        }
+      },
+      "maximizers": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "eligible_dates",
+              "op": "==",
+              "value": "$maximum_value.table.all"
+            }
+          ]
+        }
+      },
+      "tie_break": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$maximizers.records"
+        },
+        "params": {
+          "keys": [
+            "selection_group"
+          ],
+          "aggregates": {
+            "days_to_expiry": {
+              "op": "min",
+              "field": "actual_calendar_dte"
+            }
+          }
+        },
+        "notes": "Deterministic argmax: choose the shortest exact DTE among equal largest date counts. An empty cohort refuses through the missing maximum reference."
+      },
+      "selected_dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$tie_break.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "days_to_expiry"
+        }
+      },
+      "winner": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$coverage.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$selected_dte.table.all"
+            }
+          ]
+        }
+      },
+      "coverage_figure": {
+        "uses": "dskit.pipeline.libs.matplotlib:DeclaredFigure",
+        "inputs": {
+          "rows": "$coverage.records"
+        },
+        "params": {
+          "title": "$each",
+          "xlabel": "Exact days to historical settlement close",
+          "ylabel": "Distinct eligible entry dates",
+          "filename": "coverage.png",
+          "marks": [
+            {
+              "kind": "line",
+              "x": "actual_calendar_dte",
+              "y": "eligible_dates"
+            }
+          ]
+        },
+        "notes": "Run-local chart of the entire eligible-date coverage distribution, not a fitted return CDF. Node artifact directories isolate tickers and runs; no static report paths."
+      }
+    }
+  }
+}

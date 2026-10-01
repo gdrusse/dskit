@@ -24,6 +24,10 @@ EXPECTED_FILES = {
     "stock_options/__init__.py",
     "tests/conftest.py",
     "tests/test_package_boundary.py",
+    "configs/source-option-archives.json",
+    "configs/source-underlying-history.json",
+    "configs/run-prepare-option-panel.json",
+    "configs/run-cdf-horizon-coverage.json",
 }
 
 
@@ -32,13 +36,15 @@ def _files() -> set[str]:
         path.relative_to(CHILD_ROOT).as_posix()
         for path in CHILD_ROOT.rglob("*")
         if path.is_file()
+        and "pipeline_runs" not in path.parts
         and "__pycache__" not in path.parts
         and ".pytest_cache" not in path.parts
+        and path.name != ".journal.lock"
         and path.suffix != ".pyc"
     }
 
 
-def test_exact_approved_bootstrap_manifest():
+def test_exact_approved_bootstrap_and_conversion_manifest():
     assert _files() == EXPECTED_FILES
 
 
@@ -94,3 +100,21 @@ def test_scope_documents_name_the_prediction_action_split():
     assert "stock-specific" in text
     assert "option action set" in text
     assert "split-adjusted" in text
+
+
+def test_stock_conversion_configs_use_shared_nodes_and_same_preparation():
+    import json
+    from dskit.pipeline.document import load_document
+
+    prepared = json.loads((CHILD_ROOT/"configs/run-prepare-option-panel.json").read_text())
+    selected = json.loads((CHILD_ROOT/"configs/run-cdf-horizon-coverage.json").read_text())
+    assert prepared["pipeline"] == selected["pipeline"]
+    assert selected["foreach"]["keys"] == ["AMZN"]
+    assert selected["foreach"]["pipeline"]["cohort"]["inputs"]["records"] == "$panel.records"
+    for filename in ("run-prepare-option-panel.json", "run-cdf-horizon-coverage.json"):
+        document = load_document(CHILD_ROOT/"configs"/filename)
+        assert document.name
+    from dskit.pipeline.libs.predictive_cdf import ExpiryCloseLabels, OptionCDFPanel
+    for name, cls in (("labels", ExpiryCloseLabels), ("panel", OptionCDFPanel)):
+        assert cls.validate_params(prepared["pipeline"][name]["params"]) == []
+        assert cls.validate_params(dict(prepared["pipeline"][name]["params"], typo=True))

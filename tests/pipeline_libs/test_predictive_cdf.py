@@ -1977,3 +1977,120 @@ def test_torch_loss_report_refuses_unpaired_feature_rows_before_prediction():
     context = [{"identity": [str(i)], "thresholds": [0.], "weights": [1.]} for i in range(2)]
     with pytest.raises(ValueError, match="paired"):
         model.loss_report(np.zeros((3, 1)), np.zeros(2), context)
+
+
+
+def test_option_conversion_nodes_exist():
+    for name in ("OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"):
+        assert hasattr(predictive_cdf, name), (
+            "raw options cannot yet produce the standard CDF panel: "+name)
+
+
+def _option_curve_params():
+    return {"probabilities": [.01, .05, .1, .25, .5, .75, .9, .95, .99],
+            "min_forward_pairs": 3, "min_wing_nodes": 3, "max_inner_gap": .08,
+            "max_outer_gap": .12, "max_projection_distance": None,
+            "max_forward_dispersion": None}
+
+
+def _priced_options():
+    from scipy.stats import norm
+    rows = []
+    for strike in np.arange(70., 131., 5.):
+        d1 = (np.log(100/strike)+.02)/.2
+        call = 100*norm.cdf(d1)-strike*norm.cdf(d1-.2)
+        for right, mark in (("call", call), ("put", call-100+strike)):
+            rows.append({"strike": strike, "type": right, "mark": mark})
+    return pd.DataFrame(rows)
+
+
+def test_option_price_cdf_exports_exact_inverse_grid_and_known_distribution():
+    proxy = predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(_priced_options(), 100)
+    assert proxy["eligible"]
+    assert proxy["forward_ratio"] == pytest.approx(1)
+    assert proxy["forward_dispersion"] < 1e-14
+    np.testing.assert_array_equal(proxy["quantiles"], np.interp(
+        _option_curve_params()["probabilities"], proxy["probabilities"], proxy["log_returns"]))
+    assert np.all(np.diff(proxy["probabilities"]) > 0)
+    assert proxy["probabilities"][0] == 0 and proxy["probabilities"][-1] == 1
+    assert proxy["quantiles"][4] == pytest.approx(-.02, abs=.004)
+
+
+def test_option_price_cdf_admission_and_optional_guards():
+    frame = _priced_options()
+    helper = predictive_cdf.OptionPriceCDF(**_option_curve_params())
+    assert not helper.estimate(frame[frame.type == "call"], 100)["eligible"]
+    assert not helper.estimate(frame[frame.strike > 95], 100)["eligible"]
+    frame.loc[(frame.type == "call") & (frame.strike == 100), "mark"] += 5
+    proxy = predictive_cdf.OptionPriceCDF(
+        **dict(_option_curve_params(), max_projection_distance=0)).estimate(frame, 100)
+    assert "projection_distance_exceeded" in proxy["reasons"]
+
+
+def test_expiry_close_labels_holiday_pending_and_unit_guards():
+    bars = [{"symbol": "XYZ", "quote_date": "2024-03-22", "expiry": expiry,
+             "price_basis": "trade_close"} for expiry in ("2024-03-29", "2024-05-03")]
+    prices = [{"symbol": "XYZ", "quote_date": day, "close": close, "adjusted_close": close/2,
+               "close_complete": True, "post_session_split": False}
+              for day, close in (("2024-03-22", 100), ("2024-03-28", 110))]
+    node = predictive_cdf.ExpiryCloseLabels("labels", {"calendar": "XNYS", "asof": "2024-04-01T20:00:00Z"})
+    inputs = {"bars": bars, "snapshots": [], "prices": prices}
+    records = node.run(None, inputs)["records"]
+    assert records[0]["settlement_date"] == "2024-03-28"
+    assert records[0]["actual_calendar_dte"] == 6
+    assert records[0]["terminal_return"] == pytest.approx(np.log(1.1))
+    assert records[1]["terminal_return"] is None
+    prices[0]["post_session_split"] = True
+    assert node.run(None, inputs)["records"][0]["spot"] is None
+    prices[0]["post_session_split"] = False
+    prices[0]["close_complete"] = False
+    assert node.run(None, inputs)["records"][0]["spot"] is None
+
+
+def test_option_panel_retains_rejected_observations_and_current_clock():
+    params = {**_option_curve_params(), "required_multiplier": 100,
+              "required_style": "american", "max_quote_age_seconds": 900}
+    node = predictive_cdf.OptionCDFPanel("panel", params)
+    base = {"symbol": "XYZ", "root_symbol": "XYZ", "quote_date": "2024-03-22",
+            "expiry": "2024-05-03", "price_basis": "indicative_quote",
+            "multiplier": 100, "contract_size": 100, "style": "american",
+            "contract_terms_status": "metadata_present", "observation_reasons": [],
+            "quote_timestamp": "2024-03-22T19:59:00Z"}
+    rows = [dict(base, **r, contract=str(i)) for i, r in enumerate(_priced_options().to_dict("records"))]
+    label = {"symbol": "XYZ", "quote_date": base["quote_date"], "expiry": base["expiry"],
+             "price_basis": base["price_basis"], "spot": 100, "entry_close_at": "2024-03-22T20:00:00Z",
+             "terminal_return": .02, "actual_calendar_dte": 42}
+    inputs = {"bars": [], "snapshots": rows, "labels": [label], "contracts": []}
+    out = node.run(None, inputs)
+    assert out["records"][0]["rn_proxy_eligible"] == 1
+    rows[0]["quote_timestamp"] = "2024-03-22T20:01:00Z"
+    rows[1]["quote_timestamp"] = "2024-03-22T19:00:00Z"
+    rows[2]["contract_terms_status"] = "unverified_contract_terms"
+    out = node.run(None, inputs)
+    observed = out["options"].value["observations"]
+    assert len(observed) == len(rows)
+    assert "quote_outside_close_window" in observed[0]["admission_reasons"]
+    assert "quote_outside_close_window" in observed[1]["admission_reasons"]
+    assert "unverified_contract_terms" in observed[2]["admission_reasons"]
+    label["spot"] = None
+    assert node.run(None, inputs)["summary"]["eligible_cdfs"] == 0
+
+
+def test_option_cdf_flat_projection_has_canonical_deduplicated_grid():
+    frame = _priced_options()
+    frame.loc[(frame.type == "call") & (frame.strike == 105), "mark"] += 3
+    proxy = predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(frame, 100)
+    assert proxy["eligible"]
+    assert (np.diff(proxy["raw_projected_probabilities"]) == 0).any()
+    assert (np.diff(proxy["probabilities"]) > 0).all()
+    np.testing.assert_array_equal(proxy["quantiles"], np.interp(
+        _option_curve_params()["probabilities"], proxy["probabilities"], proxy["log_returns"]))
+
+
+@pytest.mark.parametrize("knob,value", [
+    ("min_forward_pairs", 0), ("min_wing_nodes", True),
+    ("max_inner_gap", None), ("max_outer_gap", float("nan")),
+    ("max_projection_distance", -1), ("probabilities", [.5, .5])])
+def test_option_cdf_refuses_invalid_admission_policy(knob, value):
+    with pytest.raises(ValueError):
+        predictive_cdf.OptionPriceCDF(**dict(_option_curve_params(), **{knob: value}))

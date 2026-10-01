@@ -1,0 +1,19 @@
+{
+  "files": {
+    "contracts": {
+      "path": "/home/russell/data/stock_options/amzn/alpaca_free_history/contracts-inactive-2024-02-01_2026-09-30.json.gz",
+      "sha256": "7dc73b1466d34243b9e72c045223af5f32486acf4369168dcda53d79c3ee23dc"
+    },
+    "bars": {
+      "path": "/home/russell/data/stock_options/amzn/alpaca_free_history/daily-bars-standard-dte30-45-2024-02-01_2026-09-30.jsonl.gz",
+      "sha256": "49d7b4f5da463b8b551c1673fc667e0a8bb3baebb4313e3b6b1ef0e1c52ff9c8"
+    },
+    "snapshots": {
+      "path": "/home/russell/data/stock_options/amzn/alpaca_indicative/2026-10-01-chain-dte30-45-asof-2026-09-30.json",
+      "sha256": "473f1e461fe85b33121895304a05d39385b3510e9f07bf76a88d1e6313896129"
+    }
+  },
+  "archive_observed_at": "2026-10-01T18:11:05.443952+00:00",
+  "session_timezone": "America/New_York",
+  "notes": "Pinned saved provider bytes. Capture is import observation time, never historical known-at. Use a fresh onboarding root if bytes change."
+}

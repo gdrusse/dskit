@@ -862,3 +862,8 @@ dskit/pipeline/
 
 Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
+
+ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
+ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
+content-addressed options, labels, curves and panel artifacts. Provider trade
+closes never masquerade as quotes; future/unverified outcomes remain null.

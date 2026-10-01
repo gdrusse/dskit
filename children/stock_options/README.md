@@ -6,8 +6,9 @@ splits and adjusted deliverables must be handled explicitly.
 
 ## Current status
 
-ADR-0212 approved this bootstrap. It contains no runnable strategy, connector,
-optimizer, accounting or execution code. AMZN is the initial baseline and MSFT
+ADR-0212 approved the bootstrap; ADR-0213 adds JSON-driven offline archive
+conversion using shared dskit connectors and nodes. It contains no runnable
+strategy, optimizer, accounting or execution code. AMZN is the initial baseline and MSFT
 is the immediate liquidity replication. Results cannot be read as evidence of
 profitability.
 
@@ -39,3 +40,5 @@ This child owns stock-specific configs, gates and evidence and never imports
 
 See the repository memo
 `docs/memos/2026-09-30-stock-options-source-and-starting-symbol.md` and ADR-0212.
+
+Run the approved archive-to-CDF workflow from [the runbook](docs/plans/README.md).

@@ -803,3 +803,8 @@ dskit/pipeline/
 ```
 
 Keep both trees (here and in README.md) current when files change.
+
+ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
+ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
+content-addressed options, labels, curves and panel artifacts. Provider trade
+closes never masquerade as quotes; future/unverified outcomes remain null.

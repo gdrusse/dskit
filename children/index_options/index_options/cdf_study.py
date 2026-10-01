@@ -1728,63 +1728,15 @@ class RawChainFeatureBuilder:
         return rows.loc[valid].sort_values(["strike", "type"], kind="mergesort").copy()
 
     def _proxy(self, rows, spot):
+        from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
+        proxy = OptionPriceCDF(
+            self.proxy_probabilities, 1, self.min_wing_nodes,
+            self.max_inner_gap, self.max_outer_gap).estimate(self._usable_quotes(rows), spot)
+        if not proxy["eligible"]:
+            return None
         import numpy as np
-        import pandas as pd
-        clean = self._usable_quotes(rows)
-        paired = clean.pivot_table(index="strike", columns="type", values="mark",
-                                   aggfunc="median").dropna()
-        if paired.empty or not {"call", "put"}.issubset(paired.columns):
-            return None
-        forwards = paired.index.to_numpy()+paired.call.to_numpy()-paired.put.to_numpy()
-        forwards = forwards[np.isfinite(forwards) & (forwards > 0)]
-        if not len(forwards):
-            return None
-        forward = float(np.median(forwards))
-        clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
-                                             clean.mark+forward-clean.strike)
-        otm = clean[((clean.type == "put") & (clean.strike <= forward))
-                    | ((clean.type == "call") & (clean.strike >= forward))]
-        calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
-        strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
-        if len(strike) < 2*self.min_wing_nodes+1:
-            return None
-        left, right = strike < forward, strike > forward
-        logk = np.log(strike/forward)
-        if (left.sum() < self.min_wing_nodes or right.sum() < self.min_wing_nodes
-                or -logk[left].max() > self.max_inner_gap
-                or logk[right].min() > self.max_inner_gap
-                or (np.diff(logk) > self.max_outer_gap).any()):
-            return None
-        raw_slope = np.diff(price)/np.diff(strike)
-        from sklearn.isotonic import IsotonicRegression
-        slope = IsotonicRegression(increasing=True, y_min=-1., y_max=0.,
-                                   out_of_bounds="clip").fit_transform(
-                                       (strike[:-1]+strike[1:])/2, raw_slope,
-                                       sample_weight=np.diff(strike))
-        cdf = np.clip(1+slope, 0, 1)
-        if not (np.isfinite(cdf).all() and (np.diff(cdf) >= -1e-12).all()):
-            return None
-        informative = np.flatnonzero((cdf > 1e-4) & (cdf < 1-1e-4))
-        if len(informative) < 3:
-            return None
-        first, last = informative[0], informative[-1]
-        cdf = cdf[first:last+1]
-        midpoint = (strike[:-1]+strike[1:])/2
-        midpoint = midpoint[first:last+1]
-        p = np.r_[0., cdf, 1.]
-        values = np.r_[np.log(strike[first]/spot), np.log(midpoint/spot),
-                       np.log(strike[last+1]/spot)]
-        # Flat probability stretches are atoms; np.interp requires a stable
-        # increasing inverse grid, so retain the first occurrence explicitly.
-        keep = np.r_[True, np.diff(p) > 1e-12]
-        p, values = p[keep], values[keep]
-        if p[-1] < 1:
-            p, values = np.r_[p, 1.], np.r_[values, np.log(strike[-1]/spot)]
-        quantiles = np.interp(self.proxy_probabilities, p, values)
-        projected = price[0]+np.r_[0., np.cumsum(slope*np.diff(strike))]
-        return {"forward_ratio": forward/spot, "projection_distance": float(
-                    np.sqrt(np.mean((projected-price)**2))/spot),
-                "mass": float(cdf[-1]-cdf[0]), "quantiles": quantiles}
+        return {k: np.asarray(proxy[k]) if k == "quantiles" else proxy[k]
+                for k in ("forward_ratio", "projection_distance", "mass", "quantiles")}
 
     def transform(self, chain, meta):
         """Return one fixed tensor/proxy row for every requested chain key."""

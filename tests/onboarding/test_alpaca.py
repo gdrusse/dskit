@@ -207,3 +207,82 @@ def test_acquisition_commits_one_alpaca_snapshot(root, registry):
     caught_up = run_acquisition(root, registry, "alpaca", "bars", "backfill")
     assert caught_up["records"] == 0
     assert caught_up["snapshot"] is None
+
+
+
+def test_option_archive_connector_exists():
+    assert hasattr(alpaca, "AlpacaOptionArchiveConnector"), (
+        "saved option archives cannot yet use standard acquisition")
+
+
+def _archive_config(tmp_path, payloads):
+    import gzip
+    import hashlib
+    import json
+    files = {}
+    for name, payload in payloads.items():
+        raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        path = tmp_path/(name+".json.gz")
+        path.write_bytes(gzip.compress(raw))
+        files[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {"files": files, "archive_observed_at": "2026-10-01T12:00:00Z",
+            "session_timezone": "America/New_York"}
+
+
+def _contract(multiplier="100"):
+    return {"symbol": "ABC240503C00100000", "underlying_symbol": "ABC",
+            "root_symbol": "ABC", "expiration_date": "2024-05-03",
+            "type": "call", "strike_price": "100", "multiplier": multiplier,
+            "size": "100", "style": "american"}
+
+
+def test_option_archive_preserves_terms_and_trade_provenance(tmp_path):
+    import json
+    contract = _contract("0")
+    bar = {"t": "2024-03-22T04:00:00Z", "o": 2, "h": 3, "l": 1, "c": 2.5, "v": 10}
+    page = {"expiry": "2024-05-03", "bars": {contract["symbol"]: [bar, bar]}}
+    config = _archive_config(tmp_path, {"contracts": {"contracts": [contract]},
+                                       "bars": json.dumps(page).encode()})
+    rows, messages = _records(alpaca.AlpacaOptionArchiveConnector(), config)
+    assert len(rows) == 1
+    row = rows[0]["data"]
+    assert row["mark"] == 2.5 and row["multiplier"] == 0
+    assert row["quote_date"] == "2024-03-22" and row["quote_timestamp"] is None
+    assert row["implied_volatility"] is None and row["bid"] is None
+    assert row["timestamp_basis"] == "session_label"
+    assert row["historical_available_at"] is None
+    resumed, _ = _records(alpaca.AlpacaOptionArchiveConnector(), config, messages[-1]["state"])
+    assert resumed == []
+
+
+def test_option_archive_refuses_changed_bytes_and_conflicting_duplicate(tmp_path):
+    import json
+    contract = _contract()
+    bars = [{"t": "2024-03-22T04:00:00Z", "o": 2, "h": 3, "l": 1, "c": c, "v": 10}
+            for c in (2, 2.5)]
+    page = {"bars": {contract["symbol"]: bars}}
+    config = _archive_config(tmp_path, {"contracts": {"contracts": [contract]},
+                                       "bars": json.dumps(page).encode()})
+    with pytest.raises(AssetError, match="conflicting duplicate"):
+        _records(alpaca.AlpacaOptionArchiveConnector(), config)
+    config["files"]["bars"]["sha256"] = "0"*64
+    with pytest.raises(AssetError, match="sha256 mismatch"):
+        _records(alpaca.AlpacaOptionArchiveConnector(), config)
+
+
+def test_option_archive_retains_orphan_snapshot_and_does_not_backfill_terms(tmp_path):
+    config = _archive_config(tmp_path, {"snapshots": {"pages": [{"snapshots": {
+        "ABC261030C00100000": {"latestQuote": {"t": "2026-09-30T19:59:00Z",
+                                             "bp": 2, "ap": 3}}}}]}})
+    rows = [m["data"] for m in alpaca.AlpacaOptionArchiveConnector().read(
+        config, ["snapshots"], {}, "backfill") if m["type"] == "RECORD"]
+    assert len(rows) == 1 and rows[0]["mark"] == 2.5
+    assert rows[0]["contract_terms_status"] == "unverified_contract_terms"
+    assert rows[0]["multiplier"] is None and rows[0]["style"] is None
+
+
+def test_option_archive_refuses_metadata_identity_contradiction(tmp_path):
+    item = dict(_contract(), strike_price="101")
+    config = _archive_config(tmp_path, {"contracts": {"contracts": [item]}})
+    with pytest.raises(AssetError, match="disagrees"):
+        list(alpaca.AlpacaOptionArchiveConnector().read(config, ["contracts"], {}, "backfill"))

@@ -12,27 +12,114 @@ split rows and genuine shocks; exclude only predeclared data-quality or
 contract-identity failures. Apply the earnings, dividend, assignment and
 adjusted-deliverable gates documented in ADR-0212.
 
-No runnable config is approved here. First inventory the generic forecast,
+ADR-0213 separately approves offline archive preparation. First inventory the generic forecast,
 walk-forward, chain and optimizer seams. Any missing reusable mechanism belongs
 in `dskit` under a separate ADR and focused tests.
 
-## Horizon-coverage process check
+## Offline AMZN conversion runbook (ADR-0213)
 
-The generic JSON horizon selector was reproduced independently on the existing
-QQQ/SPY/IWM prepared panel; see the current runbook and AMZN source audit in
-[the coverage plan](../../../index_options/docs/plans/README.md).
-AMZN's supplied historical bars, contract metadata and current indicative chain
-are raw inputs, not a historical prepared CDF/target panel. The automated
-selector cannot produce genuine stock CDF-coverage counts from these files by
-changing ticker alone. Upstream preparation and a validated source contract
-remain prerequisites; no stock CDF result or raw-chain preparation code exists
-in this bootstrap. This diagnostic does not change the stock/market-only
-predictor contract above.
+Owner approved 2026-10-01. This builds canonical options, underlying expiry-close
+labels, full option-price CDF proxies and the same prepared-panel vocabulary and
+argmax outputs used by the indices. It does not train or execute a strategy.
 
-The owner subsequently requested the missing conversion layer. Proposed
-ADR-0213 defines reusable archive normalization, expiry-close outcome labels,
-and the index method's extracted price-slope CDF proxy behind standard JSON
-nodes. Historical trade-price and current indicative-quote inputs retain
-separate quality labels. Implementation awaits the repository's required ADR
-approval; do not treat the preceding schema diagnosis as a permanent refusal
-to support this source.
+Run in WSL2, from this child, using the shared project environment:
+
+    cd /home/russell/dskit-torch-decision-cdf/children/stock_options
+    export PYTHONPATH="$(realpath ../..)"
+    export PATH="/home/russell/dskit/.venv/bin:$PATH"
+    python -m dskit.onboarding init --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding register-source options --catalog-source options --connector dskit.onboarding.libs.alpaca:AlpacaOptionArchiveConnector --config @configs/source-option-archives.json --activate --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding acquire --source options --stream contracts --mode backfill --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding acquire --source options --stream bars --mode backfill --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding acquire --source options --stream snapshots --mode backfill --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding register-source underlying --catalog-source underlying --connector dskit.onboarding.libs.yahoo:YahooChartArchiveConnector --config @configs/source-underlying-history.json --activate --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding acquire --source underlying --stream prices --mode backfill --root ./pipeline_runs/option-archive-source
+    systemd-run --user --wait --pipe --collect --unit=stock-cdf-coverage \
+      -p MemoryMax=6G -p MemorySwapMax=0 -p RuntimeMaxSec=1740 \
+      -p WorkingDirectory="$PWD" -E PYTHONPATH="$PYTHONPATH" \
+      /usr/bin/time -v /home/russell/dskit/.venv/bin/python \
+      -m dskit.pipeline run configs/run-cdf-horizon-coverage.json --asof 2026-10-01
+
+Apply the same systemd resource prefix to each import for hard per-command
+caps. All are offline CPU tasks. Already acquired immutable data can be reused;
+do not repeat init. For an independent reproduction, use a fresh onboarding root
+in the commands and in all four ObservationRows nodes, and set outputs.run_root
+to a fresh directory in a copy of the runner JSON. No custom Python runner is
+needed. Changed source bytes require fresh roots and updated SHA-256 pins.
+A rerun at the same identity refuses to overwrite existing evidence.
+
+The source configs name the three supplied Alpaca files and Yahoo history.
+Each path is pinned. archive_observed_at records inspection/import observation,
+not a fabricated historical availability time. complete_through conservatively
+stops at 2026-09-29: the supplied final daily candle is not independently verified
+as complete. Split-adjusted and dividend-adjusted closes remain separate; raw
+strike units are admitted only when the source lists no subsequent split.
+Original archive files must remain available to repeat onboarding.
+
+For another ticker, change foreach.keys, the provider files/pins, completion
+boundary, and asof after verifying source coverage. Generic code has no ticker
+literal. A ticker and a prepared source suffice for the existing index
+selector; a raw source also needs its contracts, underlying closes and explicit
+clock/unit policy. Those inputs cannot be inferred from the ticker.
+
+The coverage runner includes preparation. The alternative
+configs/run-prepare-option-panel.json ends after preparation, useful when no
+horizon qualifies. Both graphs share identical source, label and panel nodes.
+Their carry.json contains:
+
+- labels.labels: content-addressed JSON of every underlying expiry-close label.
+- panel.options: contract metadata plus every dated trade/quote observation.
+- panel.cdfs: all curve/rejection records, canonical probability/log-return
+  inverse grids, configured quantiles, raw projected knots and diagnostics.
+- panel.panel: prepared coverage rows, including rejected and pending cases.
+- panel.summary and labels.summary: observation counts and rejection reasons.
+- coverage__amzn.records, listed_counts__amzn.records, winner__amzn.records:
+  the existing selector schema. Counts are distinct entry dates. Only populated
+  horizons appear; absent DTEs have zero coverage in this supplied source.
+- artifacts/coverage_figure__amzn/coverage.png: date-count coverage by DTE.
+
+Artifact references have path, SHA-256, bytes and media_type. Paths are relative
+to the run directory; read the referenced JSON, not a truncated ordinary node
+preview. Quantiles interpolate the exported canonical inverse grid exactly.
+Tail endpoints are finite-support completion, not observed distribution tails.
+
+Initial execution: 65,372 historical bars, 23,254 metadata records, 168 current
+snapshots and 7,390 prices. The prepared output contains 1,362 date/expiry/basis
+rows, 1,358 settled labels and 915 eligible settled CDF proxies across 549
+distinct dates (2024-03-21 through 2026-08-26). Exact-DTE argmax is 42 days:
+90 eligible dates from 118 available panels; 30 days has 89 from 124.
+All 168 current snapshots lack matching contract metadata and remain visible
+but ineligible. Two historical non-session keys contain five option rows.
+443 historical surfaces fail wing support; no threshold was relaxed to improve
+these counts. The requested historical archive covers only nominal 30–45 DTE,
+so this says nothing about uncollected 1–29-day options.
+
+Trade closes are asynchronous American-option price proxies, not contemporaneous
+quotes or exact risk-neutral/physical probabilities. Labels are underlying
+closes, not actual settlement cashflows or share assignment. Null current-close
+completion and missing terms cannot be repaired by copying historical fields.
+
+Next: audit feature availability before feature selection or training. A fixed
+42-day sample of 90 dates is small. Pooling DTEs offers 915 observations over
+549 dates, but would be a separately declared modeling experiment with DTE as
+an input and expiry-aware chronological purging. These observations are
+correlated; 915 is not 915 independent trials. Do not silently change the
+approved exact-DTE selector or loosen CDF admission.
+
+## Candidate acceptance matrix
+
+Implementation base eb08ed8 (approved contract ADR-0213, base c218de6d).
+Allowed paths: shared onboarding readers, predictive_cdf, index proxy delegate,
+four stock configs, focused tests and associated package/child documentation.
+Inputs are untrusted saved provider data, pins/config are operator declarations.
+No provider requests, training, execution or claim of executable prices.
+
+Required invariants and checks: source pin drift/default-deny/duplicate refusal;
+OCC versus metadata consistency and orphan retention; separate trade/quote
+prices and clocks; exchange holiday labels and pending outcomes; raw-unit
+split guards; coherent inverse grids including flat projections; configurable
+pair/wing/projection gates; legacy index numerical fixture; schema-compatible
+stock JSON graph; actual bounded run and independent runbook reproduction.
+Focused checks currently 72 pass: onboarding48, CDF12, index6, stock6.
+Changed-code lint has no new findings versus the base; legacy findings remain.
+Two independent final code-review lenses are required before merge.

@@ -530,6 +530,9 @@ def test_raw_chain_builder_is_order_invariant_and_emits_valid_proxy_quantiles():
     q = a.filter(regex='^rn_q_').to_numpy()[0]
     assert np.isfinite(q).all() and (np.diff(q) >= 0).all()
     assert a.rn_proxy_eligible.iloc[0] == 1
+    # Frozen from the pre-extraction index implementation at eb08ed8.
+    np.testing.assert_allclose(q, [-.09166103, -.06480061, -.00031260,
+                                  .06041365, .08381542], atol=5e-9, rtol=0)
     assert a.filter(regex='^chain_node_').shape[1] == 5*(5+1)
 
 

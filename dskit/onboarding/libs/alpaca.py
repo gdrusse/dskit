@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from ..base import AssetError, MODES, parse_utc
 from ..connector import PROTOCOL, Connector
 
+from .localtables import PinnedArchiveConnector
+
 __all__ = [
     "BACKFILL_MODE",
     "BAR_FIELDS",
@@ -31,6 +33,7 @@ __all__ = [
     "LIVE_MODE",
     "TIMEFRAME_UNITS",
     "AlpacaBarsConnector",
+    "AlpacaOptionArchiveConnector",
     "bar_timeframe",
     "resolve_credentials",
 ]
@@ -531,3 +534,169 @@ class AlpacaBarsConnector(Connector):
                     ) from exc
             new_state.setdefault(stream, {})["cursor"] = emitted
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+
+
+
+class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
+    """Normalize saved Alpaca option archives without provider requests.
+
+    Parameters
+    ----------
+    None
+        Paths, pins and observation clock are declared in source JSON.
+
+    Examples
+    --------
+    Build the standard connector::
+
+        reader = AlpacaOptionArchiveConnector()
+    """
+
+    STREAM_KEYS = {"contracts": ("contract",), "bars": ("contract", "quote_date"),
+                   "snapshots": ("contract", "quote_timestamp")}
+
+    @staticmethod
+    def _number(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            result = float(value)
+            return result if math.isfinite(result) else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _identity(contract):
+        import re
+        from datetime import date
+        found = re.fullmatch(r"([A-Z0-9.]+)([0-9]{6})([CP])([0-9]{8})", contract)
+        if found is None:
+            raise AssetError([f"invalid OCC identity: {contract}"])
+        root, expiry, right, strike = found.groups()
+        expiry = date(2000+int(expiry[:2]), int(expiry[2:4]), int(expiry[4:])).isoformat()
+        return {"contract": contract, "symbol": root, "root_symbol": root,
+                "expiry": expiry, "type": {"C": "call", "P": "put"}[right],
+                "strike": int(strike)/1000.}
+
+    def _terms(self):
+        cached = self._archive_cache.get("contracts")
+        if cached is not None:
+            return cached
+        rows = (self.decode(self.archive_bytes("contracts")).get("contracts", [])
+                if "contracts" in self._archive_config["files"] else [])
+        result = {}
+        for raw in rows:
+            item = self._identity(raw["symbol"])
+            number = self._number
+            matches = (item["expiry"] == raw.get("expiration_date")
+                       and item["type"] == raw.get("type")
+                       and item["strike"] == number(raw.get("strike_price"))
+                       and item["root_symbol"] == raw.get("root_symbol"))
+            if not matches:
+                raise AssetError([f"contract metadata disagrees with OCC: {raw['symbol']}"])
+            item.update(symbol=raw.get("underlying_symbol"), multiplier=number(
+                raw.get("multiplier")), contract_size=number(raw.get("size")),
+                style=raw.get("style"), contract_terms_status="metadata_present",
+                metadata_asof=self._archive_config["archive_observed_at"],
+                contract_source_sha256=self._archive_config["files"]["contracts"]["sha256"],
+                effective_at=self._archive_config["archive_observed_at"])
+            if not item["symbol"]:
+                raise AssetError(["contract has no underlying_symbol"])
+            prior = result.get(item["contract"])
+            if prior is not None and prior != item:
+                raise AssetError(["conflicting duplicate contract metadata"])
+            result[item["contract"]] = item
+        self._archive_cache["contracts"] = result
+        return result
+
+    def _base(self, contract):
+        terms = self._terms().get(contract)
+        if terms is not None:
+            return dict(terms)
+        return {**self._identity(contract), "multiplier": None, "contract_size": None,
+                "style": None, "contract_terms_status": "unverified_contract_terms",
+                "metadata_asof": None, "contract_source_sha256": None}
+
+    def _session(self, stamp):
+        from zoneinfo import ZoneInfo
+        return parse_utc(stamp).astimezone(
+            ZoneInfo(self._archive_config["session_timezone"])).date().isoformat()
+
+    def _contracts(self, raw):
+        yield from self._terms().values()
+
+    def _bars(self, raw):
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            page = self.decode(line)
+            if "meta" in page:
+                continue
+            for contract, bars in page["bars"].items():
+                for bar in bars:
+                    row = self._base(contract)
+                    if page.get("expiry", row["expiry"]) != row["expiry"]:
+                        raise AssetError(["bar-page expiry disagrees with contract"])
+                    stamp = bar["t"]
+                    row.update(effective_at=stamp, source_timestamp=stamp,
+                               quote_date=self._session(stamp), quote_timestamp=None,
+                               price_basis="trade_close", timestamp_basis="session_label",
+                               bid=None, ask=None, bid_size=None, ask_size=None,
+                               implied_volatility=None, open_interest=None)
+                    for target, source in (("open","o"),("high","h"),("low","l"),
+                                           ("close","c"),("volume","v"),
+                                           ("trade_count","n"),("vwap","vw")):
+                        row[target] = self._number(bar.get(source))
+                    valid = (all(row[k] is not None for k in
+                                 ("open","high","low","close","volume"))
+                             and 0 < row["low"] <= min(row["open"],row["close"])
+                             <= max(row["open"],row["close"]) <= row["high"]
+                             and row["volume"] >= 0)
+                    row["mark"] = row["close"] if valid else None
+                    row["observation_reasons"] = [] if valid else ["invalid_trade_bar"]
+                    yield row
+
+    def _snapshots(self, raw):
+        doc = self.decode(raw)
+        for page in doc.get("pages", [doc]):
+            for contract, snap in page.get("snapshots", {}).items():
+                row = self._base(contract)
+                quote = snap.get("latestQuote") or {}
+                stamp = quote.get("t")
+                row.update(effective_at=stamp or self._archive_config["archive_observed_at"],
+                           source_timestamp=stamp, quote_timestamp=stamp,
+                           quote_date=self._session(stamp) if stamp else None,
+                           price_basis="indicative_quote", timestamp_basis="quote_time",
+                           bid=self._number(quote.get("bp")), ask=self._number(quote.get("ap")),
+                           bid_size=self._number(quote.get("bs")),
+                           ask_size=self._number(quote.get("as")),
+                           implied_volatility=self._number(snap.get("impliedVolatility")),
+                           open_interest=None, observation_reasons=[])
+                bid, ask = row["bid"], row["ask"]
+                valid = bid is not None and ask is not None and 0 <= bid <= ask and ask > 0
+                row["mark"] = (bid+ask)/2 if valid else None
+                if not valid:
+                    row["observation_reasons"].append("invalid_quote")
+                if stamp is None:
+                    row["observation_reasons"].append("missing_quote_timestamp")
+                yield row
+
+    def normalize(self, stream, raw):
+        """Decode a provider stream into canonical option observations.
+
+        Parameters
+        ----------
+        stream : str
+            contracts, bars or snapshots.
+        raw : bytes
+            Verified decompressed archive.
+
+        Returns
+        -------
+        iterable
+            Flat, source-labelled records.
+        """
+        readers = {"contracts": self._contracts, "bars": self._bars,
+                   "snapshots": self._snapshots}
+        return readers[stream](raw)

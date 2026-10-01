@@ -28878,9 +28878,9 @@ strategy control and refusal gates are accepted. No strategy run, paper order
 or live order path is in scope.
 
 
-## ADR-0213 — Shared option-archive conversion and CDF panels (proposed, 2026-10-01)
+## ADR-0213 — Shared option-archive conversion and CDF panels (accepted, 2026-10-01)
 
-**Status: proposed; implementation awaits owner approval.** The owner requested
+**Status: accepted by the owner on 2026-10-01.** The owner requested
 conversion of the supplied AMZN historical bars, contracts and current chain
 into the option, expiry-outcome and implied-CDF information available for the
 index study. This is an offline data-preparation slice, not training or a
@@ -28900,7 +28900,7 @@ requires quote/IV/depth fields. Extract that numerical owner upstream, preserve
 the index caller's existing screening and results, and supply distinct honest
 quote/trade admission policies. Do not copy a sibling child's implementation.
 
-Proposed file/API manifest (no new package):
+Approved file/API manifest (no new package):
 
 - Extend `dskit/onboarding/libs/alpaca.py` with `AlpacaOptionArchiveConnector`:
   separate stream normalization for saved contract, bar and snapshot archives.
@@ -29034,5 +29034,8 @@ before delivery, following implementation-workflow.md.
 C0/M1/m3/n0: current-chain metadata orphans, the current-quote/underlying clock,
 explicit admission policy, and the quantile/inverse-grid convention. All four
 were corrected together above. The bounded independent recheck returned
-C0/M0/m0/n0. Reports are retained in this conversation; no implementation or
-new tests ran. Owner approval remains required before the shared-code changes.
+C0/M0/m0/n0. Reports are retained in this conversation. Owner approved
+implementation on 2026-10-01. Provider readers share PinnedArchiveConnector
+in the existing localtables pack: one hash/dedup/cursor lifecycle, specialized
+normalization hooks. This is an implementation refinement within the approved
+archive boundary; no new package or CLI.

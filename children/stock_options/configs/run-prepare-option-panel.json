@@ -1,0 +1,109 @@
+{
+  "name": "prepare-option-panel",
+  "notes": "Offline source conversion, no model training. Same panel vocabulary and CDF inverse-grid method as indices; source quality remains explicit.",
+  "pipeline": {
+    "contracts": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "contracts",
+        "key_fields": [
+          "contract"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "bars": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "bars",
+        "key_fields": [
+          "contract",
+          "quote_date"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "snapshots": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "options",
+        "stream": "snapshots",
+        "key_fields": [
+          "contract",
+          "quote_timestamp"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "prices": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/option-archive-source",
+        "source": "underlying",
+        "stream": "prices",
+        "key_fields": [
+          "symbol",
+          "quote_date"
+        ],
+        "ts_field": "effective_at",
+        "ts_unit": "iso"
+      }
+    },
+    "labels": {
+      "uses": "dskit.pipeline.libs.predictive_cdf:ExpiryCloseLabels",
+      "inputs": {
+        "bars": "$bars.records",
+        "snapshots": "$snapshots.records",
+        "prices": "$prices.records"
+      },
+      "params": {
+        "calendar": "XNYS",
+        "asof": "2026-10-01T18:11:05.443952+00:00"
+      },
+      "notes": "Underlying expiry-close labels, not exercise or cash settlement. Future and unverified closes remain null."
+    },
+    "panel": {
+      "uses": "dskit.pipeline.libs.predictive_cdf:OptionCDFPanel",
+      "inputs": {
+        "bars": "$bars.records",
+        "snapshots": "$snapshots.records",
+        "contracts": "$contracts.records",
+        "labels": "$labels.records"
+      },
+      "params": {
+        "probabilities": [
+          0.01,
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          0.9,
+          0.95,
+          0.99
+        ],
+        "min_forward_pairs": 3,
+        "min_wing_nodes": 3,
+        "max_inner_gap": 0.08,
+        "max_outer_gap": 0.12,
+        "max_projection_distance": null,
+        "max_forward_dispersion": null,
+        "required_multiplier": 100,
+        "required_style": "american",
+        "max_quote_age_seconds": 900
+      },
+      "notes": "Historical trade-close American-option proxy; finite-support completed tails are not observed. Current orphan metadata stays visible but ineligible. Numerical projection/forward diagnostics are ungated unless JSON supplies limits."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  }
+}

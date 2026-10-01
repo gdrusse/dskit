@@ -1,0 +1,12 @@
+{
+  "files": {
+    "prices": {
+      "path": "/home/russell/data/stock_options/long_history_audit/AMZN-yahoo-chart-1997-2026.json",
+      "sha256": "982acac92f17e808bdca33d4361069cd98646bfd272b06fb4b735cadef26ff66"
+    }
+  },
+  "archive_observed_at": "2026-10-01T18:11:05.443952+00:00",
+  "session_timezone": "America/New_York",
+  "complete_through": "2026-09-29",
+  "notes": "Pinned saved provider bytes. Capture is import observation time, never historical known-at. Use a fresh onboarding root if bytes change."
+}
