@@ -28707,6 +28707,7 @@ the main failure. Far-cutoff gains have tiny reference error and do not support
 promotion. Keep the optimizer blocked. A next model study, if run, must be a
 pre-registered index-specific side/DTE correction or hierarchical head under
 the unchanged SPY local/global/tail guards, not a broader architecture zoo.
+
 ## ADR-0211 — Single-stock option research extension
 
 **Status:** proposed 2026-09-30; owner approval required before code.
@@ -28724,13 +28725,16 @@ The exact proposed initial structure is:
 - `README.md` and `pyproject.toml`: scope, commands and package metadata;
 - `journal.json`, `docs/decisioning/{actions.csv,path.csv,README.md}`: journal;
 - `docs/{plans,memos,research}/README.md` plus their `.gitkeep` files: evidence;
-- `configs/{msft,amzn}-iron-condor.json`: symbol-specific control configs;
 - `stock_options/__init__.py`: a deliberately empty public package seam; and
-- `tests/conftest.py` and `tests/test_configs.py`: config validation only.
+- `tests/conftest.py` and `tests/test_package_boundary.py`: import and
+  no-cross-child dependency checks.
 
 No connector, node, accounting or execution module enters the child. Inventory
 the existing generic seams first; any missing reusable behavior graduates to
 `dskit/` under a separately approved ADR and focused tests.
+This bootstrap has no runnable strategy config. Only after the generic chain
+reader and condor seam exist in `dskit/` may a separately approved child slice
+add `configs/{amzn,msft}-iron-condor.json` and its config validation tests.
 
 The first strategy candidate is one defined-risk short iron condor on AMZN:
 one expiry 30–45 calendar days out, one contract per leg, with the existing
@@ -28774,18 +28778,25 @@ AMZN records from 1997-05-15 and 5,934 field-complete MSFT records from
 return/regime features only; pre-split values cannot pair with raw strikes.
 
 The free Alpaca pull enumerated 23,254 inactive AMZN contracts since February
-2024. Two adjusted-deliverable symbols were refused. The remaining standard
-contracts yielded 69,043 unique, valid daily trade bars for 9,459 symbols and
-136 expiries in the 30-45 DTE window. These bars contain no historical bid/ask.
-Comparable current indicative chains for the same 10 expiries held 972 AMZN
-and 1,413 MSFT contracts; both had fresh positive quotes sufficient for four
-legs in every expiry. AMZN had lower median relative spread (10.87% versus
-11.05%) and higher daily volume (414,505 versus 238,983); MSFT had more rows.
-These modified quotes are discovery evidence only.
+2024. Require the OCC `AMZN` root and source multiplier 100: 1,386 contracts
+failed that multiplier gate, including both `1AMZN` deliverables. The retained
+artifact has 65,372 unique, valid daily trade bars for 8,892 symbols and 126
+expiries in the 30-45 DTE window. It contains no historical bid/ask, and the
+bars endpoint did not identify its feed in the response.
 
-AMZN is the preferred first study because the accessible option history is
-post-split, it has paid no dividends, and the free pull shows adequate current
-breadth. MSFT is the immediate comparator. A one-day ORATS sample contained
+In the two available target expiries, current indicative chains held 168 AMZN
+and 276 MSFT contracts. Fresh positive sized quotes covered 163 and 237 rows;
+median relative spreads were 8.75% and 7.14%, and daily volumes 21,590 and
+44,839. Both expiries supported four legs. Active 44-DTE contracts existed for
+both stocks, but the free snapshot endpoint returned none, so the upper target
+window is unobserved. MSFT therefore has stronger observed target-window
+liquidity; these modified quotes are discovery evidence only.
+
+AMZN remains the preferred first study because the accessible option history is
+post-split and it has paid no dividends, which removes the first study's main
+early-assignment event. This favors operational simplicity despite MSFT's
+stronger observed target-window liquidity. MSFT is the immediate comparator.
+A one-day ORATS sample contained
 1,449 MSFT
 and 883 AMZN option rows. In the 30-45 DTE slice, valid-quote breadth was
 178/205 MSFT rows (86.83%) and 113/120 AMZN rows (94.17%). This sample proves

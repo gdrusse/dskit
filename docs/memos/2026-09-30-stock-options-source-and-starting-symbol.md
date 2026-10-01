@@ -3,13 +3,13 @@
 ## TL;DR
 
 Start a separate thin `stock_options` child with AMZN as the baseline and MSFT
-as the second-symbol check. We pulled long price histories and 69,043 AMZN daily
+as the second-symbol check. We pulled long price histories and 65,372 AMZN daily
 option trade bars; historical bid/ask quotes and a strategy backtest remain absent.
 
 ## Execution contract
 
 This source and symbol audit ran on 2026-09-30 from branch
-`codex/amzn-stock-options`, rebased base `c001450d`. Scope was long stock-price history,
+`codex/amzn-stock-options`, candidate parent `f7736173`. Scope was long stock-price history,
 free option coverage, a starting stock, and explicit stock-specific caveats.
 No new child, strategy run, paper/live order or paid-data purchase was approved.
 
@@ -32,6 +32,9 @@ The calendar package did not cover earlier dates. Across 1,553 overlapping IEX
 sessions, adjusted closes were within 1%: median absolute relative difference
 was 0.0199% for AMZN and 0.0208% for MSFT, with maxima 0.925% and 0.363%.
 IEX is a single-exchange sanity check, not official-close reconciliation.
+The retained AMZN and MSFT IEX files hash to
+`517919ac74fdd6bab4719036726c9a3032909ddeadc14a92bb3d386a13d9fd8b`
+and `374b9bffd2d42421e1f49f43e2d141fd6a3c36c7ee7eb984914cadd628d55a7a`.
 
 The request shapes were Yahoo chart `GET /v8/finance/chart/{symbol}` with
 `interval=1d`, `events=div,splits`, AMZN period 1997-05-01 to 2026-10-01 and
@@ -40,14 +43,16 @@ checked timestamp order/uniqueness and null OHLCV fields, then computed SHA-256.
 
 ## Free option evidence
 
-Comparable Alpaca indicative pulls for 2026-10-02 through 2026-11-06 returned
-972 AMZN snapshots in one page and 1,413 MSFT snapshots in two pages. SHA-256
-values are `c154653859d05cebd3c7fac4a86cf6b1cd666e82b8029a495296c2ccae0ab115`
-and `cc643411436e9b9d6f6e1cba78eb1355f4887745dcf9e5eba9ed5197ddbd715d`.
-Both had fresh, positive, sized quotes sufficient for a four-leg candidate in
-all 10 expiries. AMZN's median relative spread was 10.87% versus MSFT's 11.05%,
-and daily option volume summed to 414,505 versus 238,983. These modified
-indicative quotes show current source suitability, not executable fills.
+Target-window Alpaca indicative pulls used a 2026-09-30 20:00Z decision time.
+The two expiries with snapshots were 30 and 37 DTE: AMZN had 163/168 fresh,
+positive, sized quotes, 8.754% median relative spread and 21,590 daily volume;
+MSFT had 237/276, 7.138% and 44,839. Both supported four legs in both expiries.
+Active 44-DTE contracts existed, but the endpoint returned zero snapshots for
+either stock. The AMZN/MSFT files hash to
+`473f1e461fe85b33121895304a05d39385b3510e9f07bf76a88d1e6313896129`
+and `c2d76d35bea7fa7c5409f8329499f9973b068cf2a9b92aa204fad86446132c0b`.
+MSFT has stronger observed target-window liquidity; the upper window remains
+unobserved. Modified indicative quotes are not executable fills.
 
 Alpaca's attempted 2016-2026 IEX pull returned 1,553 daily stock bars per symbol
 from 2020-07-27 onward; SIP was denied. The free option tier does allow bars
@@ -57,12 +62,17 @@ future end time and did not prove that historical option bars were unavailable.
 The retained inactive-contract pull contains 23,254 AMZN contracts across 207
 expiries, SHA-256
 `7dc73b1466d34243b9e72c045223af5f32486acf4369168dcda53d79c3ee23dc`.
-Two nonstandard `1AMZN` deliverables were excluded. The final gzip contains
-69,043 unique daily OHLCV trade bars for 9,459 standard contracts and 136
-expiries, all exactly 30-45 DTE with valid OHLCV and no duplicate symbol/time
-keys. Its SHA-256 is
-`66a19de363de7c3ea8ef1b5ea524d5d85c3e446434d16e50df2222316dce9651`.
-It spans trade dates 2024-01-18 through 2026-08-27 and has no bid/ask quotes.
+The contract endpoint was called with `underlying_symbols=AMZN`,
+`status=inactive`, 2024-02-01 through 2026-09-30 and 1,000 rows per page. Bars
+used `/v1beta1/options/bars`, at most 100 symbols per request, `timeframe=1Day`,
+`start=expiry-45d`, `end=expiry-29d`, `limit=10000`, ascending pagination.
+Post-processing retained DTE 30-45, OCC root `AMZN`, and source multiplier 100.
+That multiplier gate removed 3,671 bars from 567 multiplier-0 symbols. The final
+gzip contains 65,372 unique valid OHLCV bars for 8,892 contracts and 126
+expiries, SHA-256
+`fb7ebaa4b8522d6c054c9365bb0e8f1939b8c82dccc5810c5409224627a033d0`.
+It spans 2024-03-21 through 2026-08-26. The response does not identify its feed
+and contains no bid/ask quotes, so it is activity/coverage evidence only.
 
 ## Source audit
 
@@ -82,12 +92,12 @@ returns or risk because historical quotes are unavailable.
 
 ## Starting point
 
-AMZN is the better baseline for the clarified free-tier scope. Its accessible
-option history begins after the June 2022 split, it has no dividend history,
-and the comparable current chain has enough fresh breadth with slightly tighter
-relative spreads and greater daily volume. MSFT remains a useful comparator
-with more listed rows, but its quarterly dividends add an assignment dependency.
-These are data-operability reasons, not evidence of strategy profitability.
+AMZN is the simpler baseline for the clarified free-tier scope. Its accessible
+option history begins after the June 2022 split and it has no dividend history,
+avoiding the first study's main early-assignment event. MSFT has stronger
+observed target-window liquidity and remains the immediate benchmark. Choosing
+AMZN prioritizes assignment simplicity over liquidity; it is not evidence of
+strategy profitability.
 
 The proposed first diagnostic is a nonoverlapping, defined-risk iron condor,
 reviewed weekly with 30-45 days to expiry. A run must refuse earnings and
@@ -108,12 +118,18 @@ licensing, or future provider-availability claim is supported.
 
 - [Amazon split history](https://ir.aboutamazon.com/faqs/)
 - [Microsoft split history](https://www.microsoft.com/en-us/investor/faq)
+- [Yahoo Finance AMZN history](https://finance.yahoo.com/quote/AMZN/history/)
 - [ORATS near-end-of-day history](https://orats.com/near-eod-data)
 - [ORATS historical API fields](https://orats.com/docs/historical-data-api)
 - [Alpaca historical options data](https://docs.alpaca.markets/docs/historical-option-data)
+- [Alpaca historical option bars](https://docs.alpaca.markets/reference/optionbars)
 
 ## Reproducibility and handoff
 
 ADR-0211 now proposes the exact initial `stock_options` child structure and
-keeps generic mechanisms upstream. Approval is required before creating it.
+keeps generic mechanisms upstream. The initial bootstrap contains no runnable
+strategy config; those wait for an approved generic chain/condor seam in
+`dskit/`. Approval is required before creating the child.
 A point-in-time earnings/ex-dividend source remains a pre-run dependency.
+The reuse research is temporarily journaled as index_options A0626 because the
+separate child cannot exist before ADR approval.

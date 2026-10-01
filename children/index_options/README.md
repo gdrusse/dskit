@@ -566,4 +566,5 @@ current generated grid still names only SPY/QQQ/IWM; its VIX feature and split
 rules are not ready for stocks. Every stock document must label stock-specific
 assumptions and state that the existing American charge does not simulate share
 assignment. This child remains index-only; the source and reuse audit is in
-docs/plans/README.md.
+docs/plans/README.md. Because the proposed child does not exist before approval,
+A0626 temporarily journals this cross-child reuse audit here.

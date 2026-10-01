@@ -4,7 +4,7 @@
 
 - ADR-0211 proposes a separate thin `children/stock_options`; no child, code or
   backtest exists. AMZN is the baseline and MSFT the replication candidate.
-- Pulled 7,390 AMZN price rows and 69,043 valid AMZN daily option trade bars in
+- Pulled 7,390 AMZN price rows and 65,372 multiplier-100 daily option trade bars in
   the 30-45 DTE window. Historical bid/ask quotes remain unavailable for free.
 - Memo: `docs/memos/2026-09-30-stock-options-source-and-starting-symbol.md`.
 - Next: approve ADR-0211's exact structure and refusal gates, then select
