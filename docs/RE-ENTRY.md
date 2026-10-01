@@ -16,6 +16,8 @@
   257.2 MiB peak Torch GPU allocation; hard 29m/6GiB/no-swap per invocation.
   Focused tests 233; two fresh final lenses C0/M0/m0/n0 on d2bbdd96.
 - Memo: children/index_options/docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md.
+  Expanded with encoder/loss explanations and a graph of selected-region skill
+  by model/loss/rate, separating 2018 selection from frozen 2019 evaluation.
   Run: isolated WSL worktree's pipeline_runs/qqq_torch_cdf_20261001_r2.
   Next: retain empirical; any further tuning/new-period test is a separately
   declared study. Historical inspected data do not establish trading authority.
