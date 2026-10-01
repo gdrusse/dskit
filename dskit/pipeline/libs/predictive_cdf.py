@@ -2435,7 +2435,10 @@ class DecisionRegionScores:
         """Return local Brier, calibration residual and eligible strike counts."""
         import numpy as np
         thresholds, weights, counts = self.arrays()
-        error = curve.cdf(thresholds) - (np.asarray(y)[:, None] <= thresholds)
+        y = np.asarray(y, dtype=float)
+        if y.ndim != 1 or len(y) != len(counts) or not np.isfinite(y).all():
+            raise ValueError("outcomes must be finite and paired with decision inventories")
+        error = curve.cdf(thresholds) - (y[:, None] <= thresholds)
         brier, bias = (weights * error**2).sum(1), (weights * error).sum(1)
         brier[counts == 0] = np.nan
         bias[counts == 0] = np.nan
@@ -2495,6 +2498,10 @@ class _CDFGRUEncoder:
 
 class _CDFNLL:
     @staticmethod
+    def population_count(context):
+        return len(context[0])
+
+    @staticmethod
     def values(y, logw, mu, sigma, context):
         import math
         import torch
@@ -2505,6 +2512,10 @@ class _CDFNLL:
 
 class _CDFDecisionBrier:
     @staticmethod
+    def population_count(context):
+        return (context[1].sum(1) > 0).sum().clamp_min(1)
+
+    @staticmethod
     def values(y, logw, mu, sigma, context):
         import torch
         thresholds, weights = context
@@ -2514,7 +2525,7 @@ class _CDFDecisionBrier:
         return ((p-truth)**2*weights).sum(1), weights.sum(1) > 0
 
 
-class _CDFDecisionLog:
+class _CDFDecisionLog(_CDFDecisionBrier):
     @staticmethod
     def values(y, logw, mu, sigma, context):
         import torch
@@ -2600,9 +2611,12 @@ class TorchCDF(MixtureMLPCDF):
         local = tuple(a[indices] for a in context)
         total = mu.sum()*0.
         for term in self.loss_config:
-            values, eligible = self._LOSSES[term["kind"]].values(y, logw, mu, sigma, local)
-            if eligible.any():
-                total = total + term["weight"]*values[eligible].mean()
+            strategy = self._LOSSES[term["kind"]]
+            values, eligible = strategy.values(y, logw, mu, sigma, local)
+            # Uniform minibatches estimate the full-population objective,
+            # including batches with no locally eligible observations.
+            normalization = len(context[0])/strategy.population_count(context)
+            total = total + term["weight"]*values[eligible].sum()/len(y)*normalization
         return total
 
     def loss_report(self, x, y, context):
@@ -2611,8 +2625,10 @@ class TorchCDF(MixtureMLPCDF):
         import torch
         scorer = DecisionRegionScores(context)
         thresholds, weights, counts = scorer.arrays()
-        if len(counts) != len(y):
-            raise ValueError("loss report context length mismatch")
+        y = np.asarray(y, dtype=float)
+        if (y.ndim != 1 or len(counts) != len(y) or len(x) != len(y)
+                or not np.isfinite(y).all()):
+            raise ValueError("loss report outcomes, features and context must be paired")
         curve = self.curve(x)
         total, terms = 0., {}
         # CPU float64 evaluation is bounded by the same configured mini-batch.

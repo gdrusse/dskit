@@ -1,5 +1,5 @@
 {
-  "notes": "ADR-0211. Bounded QQQ Torch CDF screen: 12 fixed candidates; entry-known listed wing endpoints; purged 2018 development, frozen 2019 evaluation. Historical descriptive evidence only. Tail/global metrics cannot veto local acceptance. Entry-metadata census: purged 2018 contains no 26-calendar-day QQQ cell; declare the observed 44 cells, with all 45 in 2019. No outcome or score informed this correction.",
+  "notes": "ADR-0211. Bounded QQQ Torch CDF screen: 12 fixed candidates; entry-known listed wing endpoints; purged 2018 development, frozen 2019 evaluation. Historical descriptive evidence only. Tail/global metrics cannot veto local acceptance. Entry-metadata census: purged 2018 contains no 26-calendar-day QQQ cell; declare the observed 44 cells, with all 45 in 2019. No outcome or score informed this correction. Corrected full-population local-loss normalization; prior search-only artifacts preserved, never selected or evaluated.",
   "data": {
     "root": "/home/russell/data/index_options/ob",
     "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
@@ -122,7 +122,7 @@
       2018,
       2019
     ],
-    "output": "pipeline_runs/qqq_torch_cdf_20261001/unused",
+    "output": "pipeline_runs/qqq_torch_cdf_20261001_r2/unused",
     "samples": 201,
     "tail_intervals": [
       [
@@ -170,7 +170,7 @@
     }
   },
   "experiment": {
-    "output": "pipeline_runs/qqq_torch_cdf_20261001",
+    "output": "pipeline_runs/qqq_torch_cdf_20261001_r2",
     "development_years": [
       2018
     ],

@@ -1938,3 +1938,42 @@ def test_torch_gru_refuses_invalid_feature_partitions(defect):
             {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}],
             device="cpu")
         model._build_module(4)
+
+@pytest.mark.parametrize("local_kind", ["decision_brier", "decision_log"])
+def test_torch_composite_gradient_is_invariant_to_batch_eligibility(local_kind):
+    import torch
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=[
+        {"kind": "nll", "weight": .1}, {"kind": local_kind, "weight": 1.}],
+        device="cpu")
+    context = (torch.zeros((4, 1), dtype=torch.float64),
+               torch.tensor([[1.], [0.], [0.], [0.]], dtype=torch.float64))
+    def evaluate(partitions):
+        mean = torch.tensor(0., requires_grad=True)
+        total = mean*0
+        for indices in partitions:
+            ix = torch.tensor(indices)
+            y = torch.zeros((len(ix), 1), dtype=torch.float64)
+            logw, mu, sigma = torch.zeros_like(y), mean.expand_as(y), torch.ones_like(y)
+            total = total + len(ix)/4*model._objective_loss(y, logw, mu, sigma, ix, context)
+        total.backward()
+        return total.item(), mean.grad.item()
+    expected = evaluate([[0,1,2,3]])
+    assert evaluate([[0],[1],[2],[3]]) == pytest.approx(expected)
+    assert evaluate([[0,1],[2,3]]) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("outcomes", [[0.], [[0.], [1.]], [0., float("nan")]])
+def test_generic_decision_scorer_refuses_unpaired_outcomes(outcomes):
+    scorer = predictive_cdf.DecisionRegionScores([
+        {"identity": [str(i)], "thresholds": [0.], "weights": [1.]} for i in range(2)])
+    with pytest.raises(ValueError, match="outcome"):
+        scorer.score(MixtureCurve([[1],[1]], [[0],[0]], [[1],[1]]), outcomes)
+
+
+def test_torch_loss_report_refuses_unpaired_feature_rows_before_prediction():
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=[
+        {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}],
+        device="cpu")
+    context = [{"identity": [str(i)], "thresholds": [0.], "weights": [1.]} for i in range(2)]
+    with pytest.raises(ValueError, match="paired"):
+        model.loss_report(np.zeros((3, 1)), np.zeros(2), context)

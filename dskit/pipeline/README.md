@@ -311,7 +311,9 @@ groups and `context_indices` partitions the remaining input columns.
 required. No instrument or index is encoded in this estimator.
 `DecisionRegionScores` consumes caller-bound threshold/weight inventories;
 the domain adapter owns the source clock and listed-wing eligibility.
-Local loss means divide by eligible rows, while NLL uses all rows.
+Local loss means divide by eligible rows, while NLL uses all rows. Minibatch
+local sums use the full training eligibility fraction, so sparse or empty
+eligible batches cannot silently dilute the configured local weights.
 
 For decision HPO, set `experiment.selection_metric=decision_strike_brier`.
 The standard search/select/evaluate/report CLI freezes development selection
