@@ -666,3 +666,12 @@ all 71,880 feature-gap reason/identity tuples, and all 9,812 family-gap tuples.
 SHA-256: feature-gaps 8bafb07bb64c1aa29fa22b72fb93c8fb8974113560741ee5c99f1d6ae179bd01;
 family-gaps 0e09df69dffb505e66d041154dc7ceef2e2b6aa3c3f9e3eb91f187abe61fbf41;
 full rows e12fa2ca0f5f5e4c11b26e6101aa8cc8040e279548ad2a35a005d17e1413aac9.
+
+
+Delivery lock: QQQ runtime/config/tests/output bytes remain unchanged from the
+reviewed 83dcba51/aeea072a evidence. Both original lenses verified all 1,497
+identities and gap sets; final a0128bf3 integration reran its three audit tests.
+AMZN now uses the same audit definitions and output schema on its 42-day/90-date
+cohort; see the stock plan runbook. Both evidence folders are tracked for the
+owner-requested agent handoff. Next: prepare missing families without dropping
+dates, audit source clocks, rerun gaps, then plan selection/PCA on training only.

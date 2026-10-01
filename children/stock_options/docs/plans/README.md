@@ -221,3 +221,35 @@ The same seven audit evidence files as QQQ are retained for agent handoff.
 Focused extension checks: seven stock tests and eleven CDF/panel/label tests
 pass; previous 87-test run and both 83dcba51 lenses remain historical evidence.
 Fresh final reviews assess this changed candidate before main integration.
+
+
+Final extension correctness lens /root/amzn_gap_correctness_lock on a0128bf3:
+C0/M0/m0/N1. Fresh standard runner reproduction under
+pipeline_runs/amzn-gap-independent-20261001/ (run bbcfc0c2) byte-matches all
+three committed JSONL outputs. 19.72 seconds, 658,756 KiB peak RSS, zero swaps,
+hard 6-GiB/no-swap/1,740-second limits. Exact cohort, every gap reason/key,
+date coordinates and unchanged CDF/options/labels independently confirmed.
+Prior standalone clock Minor is closed. Deferred Nit: feature writer provenance
+description contains copied QQQ wording; actual data, keys, filters and files
+identify AMZN correctly. No numerical or admission effect.
+
+
+Final lock a0128bf3b8e198b4c5a7799ef46d42abe5207796:
+correctness /root/amzn_gap_correctness_lock and integration/test-quality
+/root/amzn_gap_integration_lock each C0/M0/m0/N1, same disclosed wording Nit.
+Second lens independently ran 30 focused tests (seven stock,20 shared CDF,
+three QQQ), verified all seven committed evidence files against Git, and
+recomputed every gap from the full rows. No unresolved Critical/Major/Minor.
+Actual reports are retained by these task agent IDs. No new lint findings
+versus implementation base eb08ed818; no full suite or provider requests.
+
+Frozen blobs: shared predictive_cdf 8ab9da3f3f8e96f94babb801bf34a983c7e34177;
+AMZN config d3220688552e1e3352b7233b6a37a7060440158c;
+stock tests 9d3d901aa4ece9f5ff73d2c0afa2f84f4b8ee014;
+shared tests 3c7081465888a67b5bfcbd042d444337ece68bb4.
+ADR-0213 and unchanged dependencies retain their reviewed identities; remote
+main c218de6d did not advance during review. Subsequent closure edits only
+append evidence, update the re-entry summary and retain automatic journals.
+All 18 changed code/config/test/output paths byte-match the locked candidate.
+Next preparation work: materialize causally derivable families, then repeat
+the fixed-cohort audit. Do not infer model readiness from completed conversion.
