@@ -21,6 +21,11 @@
   `*_residual_t`, `*_gate_*_closed_*`, select minus empirical-select,
   `*_size_*_pnl_per_weight`. Research/lockbox note: 2019-2025 is already
   inspected; the recorder's SPX/XSP chains (Sep 2026→) are the only unseen data.
+- **Owner action (blocked here):** the cloud session's git proxy returns HTTP
+  403 on branch deletion. Delete the merged task branches from your machine:
+  `git push origin --delete claude/index-options-strategies
+  claude/index-options-strategy-research` (both contained in main;
+  `claude/index-options-quote-backtest` is not this work).
 
 ## index_options: ADR-0197 landed (debit structures, hedge study) (2026-09-30)
 
