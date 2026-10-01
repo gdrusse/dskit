@@ -532,8 +532,9 @@ dskit/pipeline/
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby —
-│                      flow verbs (keyby: records -> the keyed side table join reads)
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
+│                      weekday-onehot — flow verbs (keyby: records -> the keyed side
+│                      table join reads; weekday-onehot: ISO date -> 0/1 weekday columns)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
@@ -565,7 +566,7 @@ dskit/pipeline/
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement)
-├── records.py         MarketRecord + accounting seams
+├── records.py         MarketRecord + accounting seams + WEEKDAY_TAGS / weekday_flags
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
 ├── testing.py         SyntheticBackend, MemoryTracker, register_synthetic

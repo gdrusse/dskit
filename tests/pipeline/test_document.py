@@ -1,9 +1,11 @@
 """The node-map document grammar (docs/24 §2–§4, §6): shape, refs, hash."""
 
+import datetime
 from types import SimpleNamespace
 
 import pytest
 
+from dskit.pipeline import document
 from dskit.pipeline.base import ConfigError, TimeSplitConfig
 from dskit.pipeline.document import (
     MODES,
@@ -14,6 +16,7 @@ from dskit.pipeline.document import (
     RandomSplitSpec,
     ScheduleConfig,
     TrailingSplitSpec,
+    date_problem,
     doc_split_from_obj,
     flatten_param_paths,
     is_node_ref,
@@ -788,3 +791,49 @@ def test_duplicate_json_object_keys_refuse_at_any_depth(tmp_path, payload, key):
         match=rf"duplicate.json: duplicate JSON object key {key!r}",
     ):
         load_document(path)
+
+
+class TestDateProblem:
+    """The one public ISO-date rule (ADR-0214): True means "not a real date"."""
+
+    @pytest.mark.parametrize("value", ["2026-01-05", "2024-02-29", "0001-01-01", "9999-12-31"])
+    def test_a_real_iso_calendar_date_has_no_problem(self, value):
+        assert date_problem(value) is False
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "2026-02-30",  # shaped like a date, not on the calendar
+            "2025-02-29",  # not a leap year
+            "2026-13-01",
+            "20260105",  # compact form fromisoformat accepts on 3.11
+            "2026-01-05\n",  # `$` in the shape regex tolerates a trailing newline
+            "2026-1-5",
+            " 2026-01-05",
+            "2026-01-05T00:00:00",
+            "",
+        ],
+    )
+    def test_a_string_that_is_not_a_real_date_is_a_problem(self, value):
+        assert date_problem(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            5,
+            5.0,
+            True,
+            b"2026-01-05",
+            ["2026-01-05"],
+            datetime.date(2026, 1, 5),
+            datetime.datetime(2026, 1, 5),
+        ],
+    )
+    def test_a_non_string_is_a_problem_not_a_crash(self, value):
+        # The pre-ADR-0214 private rule raised a bare TypeError on these.
+        assert date_problem(value) is True
+
+    def test_the_rule_is_public_and_the_private_name_is_gone(self):
+        assert "date_problem" in document.__all__
+        assert not hasattr(document, "_date_problem")

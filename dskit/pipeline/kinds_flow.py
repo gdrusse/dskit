@@ -1,7 +1,9 @@
-"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby.
+"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby, weekday-onehot.
 
 Two verbs read a single stream; the RELATIONAL four combine, project or
-reduce streams instead of reading one.
+reduce streams instead of reading one. ``weekday-onehot`` (ADR-0214) is
+a pure per-row projection beside ``derive``: it adds the 0/1 weekday
+columns of one ISO date field, and refuses like it.
 
 These are toolkit's plain, un-owned kinds, registered with
 ``owned=False`` (any project may shadow them with its own class via an
@@ -66,11 +68,12 @@ import math
 import re
 import statistics
 from dataclasses import dataclass
+from datetime import date
 
-from dskit.pipeline.document import is_node_ref
+from dskit.pipeline.document import date_problem, is_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.records import WEEKDAY_TAGS, number_ok, weekday_flags
 
 __all__ = [
     "CLAUSE_OPS",
@@ -81,6 +84,7 @@ __all__ = [
     "GroupBy",
     "Join",
     "KeyBy",
+    "WeekdayOneHot",
     "clause_holds",
     "clause_problems",
     "register",
@@ -2442,13 +2446,256 @@ class KeyBy(Node):
         )
         return {"table": table, "metrics": {"rows_in": len(records), "keys": len(table)}}
 
+
+# ---------------------------------------------------------------------------
+# weekday-onehot — a pure date projection (role: transform; ADR-0214)
+# ---------------------------------------------------------------------------
+
+#: What an omitted ``weekdays`` means: a column for EVERY tag. One name,
+#: read by ``validate_params`` and ``run`` alike, so validation can never
+#: approve a value the run does not use. It IS the vocabulary tuple, and
+#: a test pins its literal value, because a silent edit would move every
+#: document that leaves the knob out without moving its identity hash.
+_DEFAULT_WEEKDAYS = WEEKDAY_TAGS
+
+#: What an omitted ``baseline`` means: no reference level. Seven columns
+#: sum to one per row (collinear with an intercept); name a baseline to
+#: drop that column, or narrow ``weekdays`` yourself.
+_DEFAULT_BASELINE = ()
+
+
+class WeekdayOneHot(Node):
+    """Add one 0/1 column per weekday from an ISO date field — the ``weekday-onehot`` kind.
+
+    Role ``transform``. A pure per-row projection: the columns a row
+    gets depend on that row's own date and nothing else, so serving
+    (``"pure"``) may replay it on a single record.
+
+    The date is a calendar DAY, read as ``YYYY-MM-DD`` and checked by the
+    one public :func:`~dskit.pipeline.document.date_problem`. There is no
+    timezone knob, deliberately: a number, a date-time or ``YYYYMMDD``
+    is refused, and a caller holding an instant derives its date first
+    (the timezone question belongs to whoever owns the instant).
+
+    Fail-closed, like :class:`Derive`. A weekday the document declared in
+    NEITHER ``weekdays`` nor ``baseline``, a missing or malformed date, a
+    row that is not a mapping and a row already carrying one of the
+    columns all RAISE naming the node, the row index and the field.
+    ``baseline`` tags are lawful but get no column, so their rows are
+    all-zero: the dummy coding's reference level.
+
+    Outputs: ``records`` (the projected rows, input order, input rows
+    untouched) and ``counts`` (rows per weekday, over ALL seven tags in
+    Monday-first order, zero where no row fell). A weekday that never
+    occurs in the cohort is therefore visible, not absent.
+
+    Parameters
+    ----------
+    params : dict
+        ``date_field`` (str, REQUIRED) — the row field holding the ISO
+        date; ``prefix`` (non-empty str, REQUIRED) — prepended to a tag to
+        name its column (``"dow_"`` gives ``dow_mon``); ``weekdays`` (list
+        of tags, default all seven in Monday-first order) — the tags that
+        get a column, in output order; ``baseline`` (list of tags, default
+        none) — tags that get no column. Tags are
+        :data:`~dskit.pipeline.records.WEEKDAY_TAGS`; ``weekdays`` must
+        not be empty, repeat a tag or share one with ``baseline``.
+
+    Examples
+    --------
+    Monday-to-Friday columns, with the weekend as the baseline::
+
+        node = WeekdayOneHot(
+            "weekday",
+            {
+                "date_field": "quote_date",
+                "prefix": "dow_",
+                "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+                "baseline": ["sat", "sun"],
+            },
+        )
+        out = node.run(ctx, {"records": [{"quote_date": "2026-01-05"}]})
+        # -> out["records"][0] carries dow_mon=1 and dow_tue..dow_fri=0
+    """
+
+    role = "transform"
+    outputs = ("records", "counts")
+
+    #: The class's own knobs — anything else is refused by name.
+    _PARAMS = ("baseline", "date_field", "prefix", "weekdays")
+
+    #: The container-shape check IS derive's: same port, same rule, one copy.
+    validate_inputs = Derive.validate_inputs
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a row's columns are a function of its own date (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
+    def _name_problems(cls, problems, params, name):
+        """Append the problems with a required, non-empty string knob."""
+        value = params.get(name)
+        if value is None:
+            problems.append(f"{name} is required")
+        elif not is_node_ref(value) and (not isinstance(value, str) or not value):
+            problems.append(f"{name} must be a non-empty string, got {value!r}")
+
+    @classmethod
+    def _tag_list_problems(cls, problems, params, name, default):
+        """Append one tag list's problems; return it when usable, else ``None``."""
+        value = params.get(name, default)
+        if is_node_ref(value):
+            return None
+        if not isinstance(value, (list, tuple)):
+            problems.append(f"{name} must be a list of weekday tags, got {value!r}")
+            return None
+        tags = [tag for tag in value if isinstance(tag, str)]
+        if len(tags) != len(value):
+            problems.append(f"{name} must hold only strings, got {list(value)!r}")
+            return None
+        unknown = sorted({tag for tag in tags if tag not in WEEKDAY_TAGS})
+        if unknown:
+            problems.append(
+                f"{name} has unknown tag(s) {unknown!r}; the tags are {list(WEEKDAY_TAGS)}"
+            )
+        repeated = sorted({tag for tag in tags if tags.count(tag) > 1})
+        if repeated:
+            problems.append(f"{name} repeats {repeated!r} — one column per tag")
+        return tags
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+            ``weekdays`` and ``baseline`` overlapping, a repeated or
+            unknown tag, an empty ``weekdays`` and an empty ``prefix`` are
+            each named.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        cls._name_problems(problems, params, "date_field")
+        cls._name_problems(problems, params, "prefix")
+        weekdays = cls._tag_list_problems(problems, params, "weekdays", _DEFAULT_WEEKDAYS)
+        baseline = cls._tag_list_problems(problems, params, "baseline", _DEFAULT_BASELINE)
+        if weekdays is not None and not weekdays:
+            problems.append(
+                "weekdays must not be empty — with no column the node adds nothing"
+            )
+        if weekdays is not None and baseline is not None:
+            shared = sorted(set(weekdays) & set(baseline))
+            if shared:
+                problems.append(
+                    f"weekdays and baseline overlap on {shared!r} — a tag is "
+                    "either a column or the baseline, never both"
+                )
+        return problems
+
+    def _read_day(self, row, index):
+        """Read the row's calendar day, or refuse naming node, row and field."""
+        field = self.params["date_field"]
+        if field not in row:
+            raise ValueError(f"{self.key}: row {index} carries no {field!r} field")
+        value = row[field]
+        if date_problem(value):
+            raise ValueError(
+                f"{self.key}: row {index} field {field!r} is {value!r}, not a real "
+                "ISO YYYY-MM-DD date (a number, a date-time or YYYYMMDD is "
+                "refused — derive the date first)"
+            )
+        return date.fromisoformat(value)
+
+    def _project(self, row, index, weekdays, columns, baseline):
+        """Return the row plus its flag columns, and the weekday tag it fell on."""
+        day = self._read_day(row, index)
+        taken = [column for column in columns if column in row]
+        if taken:
+            raise ValueError(
+                f"{self.key}: row {index} already carries {taken[0]!r} — "
+                "weekday-onehot never overwrites a row's own field"
+            )
+        try:
+            flags = weekday_flags(day, weekdays, baseline)
+        except ValueError as exc:
+            raise ValueError(
+                f"{self.key}: row {index} field {self.params['date_field']!r}: {exc}"
+            ) from exc
+        return {**row, **dict(zip(columns, flags))}, WEEKDAY_TAGS[day.weekday()]
+
+    def run(self, ctx, inputs):
+        """Project every row onto its weekday columns.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            ``records`` — the rows to project (list or tuple of mappings).
+
+        Returns
+        -------
+        dict
+            ``records`` — the projected rows (list), in input order, each
+            a new dict; ``counts`` — rows per weekday over all seven
+            :data:`~dskit.pipeline.records.WEEKDAY_TAGS` (dict of int).
+
+        Raises
+        ------
+        ValueError
+            On a non-mapping row, a missing or malformed date, a row that
+            already carries a column, or a weekday declared in neither
+            ``weekdays`` nor ``baseline``; each names node, row and field.
+        """
+        weekdays = tuple(self.params.get("weekdays", _DEFAULT_WEEKDAYS))
+        baseline = tuple(self.params.get("baseline", _DEFAULT_BASELINE))
+        columns = [self.params["prefix"] + tag for tag in weekdays]
+        counts = dict.fromkeys(WEEKDAY_TAGS, 0)
+        out = []
+        for index, row in enumerate(inputs["records"]):
+            _mapping_row(self.key, "derive", row, index)
+            projected, tag = self._project(row, index, weekdays, columns, baseline)
+            counts[tag] += 1
+            out.append(projected)
+        self.log.info(
+            "weekday-onehot added %d column(s) to %d row(s); per weekday %s",
+            len(columns),
+            len(out),
+            counts,
+        )
+        return {"records": out, "counts": counts}
+
+
 # ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------
 
 #: The kinds this module ships, in registration order — the
-#: single-stream verbs, then the five relational ones. The banking chain
-#: registers separately, from :mod:`dskit.pipeline.kinds_banking`.
+#: single-stream verbs, then the five relational ones, then the weekday
+#: projection. The banking chain registers separately, from
+#: :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
     ("filter", Filter),
     ("event-grid", EventGrid),
@@ -2457,11 +2704,12 @@ _KINDS = (
     ("derive", Derive),
     ("groupby", GroupBy),
     ("keyby", KeyBy),
+    ("weekday-onehot", WeekdayOneHot),
 )
 
 
 def register(registry=None):
-    """Register the seven record-flow kinds, ``owned=False``.
+    """Register the eight record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the

@@ -41,12 +41,13 @@ from dskit.pipeline.kinds_flow import (
     GroupBy,
     Join,
     KeyBy,
+    WeekdayOneHot,
     clause_holds,
     clause_problems,
     register,
 )
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
-from dskit.pipeline.records import MarketRecord
+from dskit.pipeline.records import WEEKDAY_TAGS, MarketRecord
 from dskit.pipeline.synthetic_nodes import SynthClip, SynthEvents, SynthLabels
 
 DAY = 24 * 60 * 60 * 1000
@@ -1349,11 +1350,272 @@ class TestKeyBy:
         assert KeyBy.serving_effect({}, {}) == "pure"
 
 
+class TestWeekdayOneHot:
+    """ADR-0214: weekday as 0/1 columns from one ISO date field, fail-closed."""
+
+    WORKDAYS = ["mon", "tue", "wed", "thu", "fri"]
+    # Calendar facts the rule under test is never asked about: 2026-01-05 is a
+    # Monday, so the 9th is a Friday, the 10th a Saturday, the 11th a Sunday.
+    MON, WED, FRI, SAT, SUN = (f"2026-01-{d:02d}" for d in (5, 7, 9, 10, 11))
+
+    def node(self, **params):
+        params.setdefault("date_field", "quote_date")
+        params.setdefault("prefix", "dow_")
+        return WeekdayOneHot("wd", params)
+
+    @staticmethod
+    def day(iso):
+        return {"quote_date": iso, "x": 1.5}
+
+    def test_one_hot_columns_follow_the_declared_order_and_prefix(self, ctx):
+        node = self.node(weekdays=self.WORKDAYS, baseline=["sat", "sun"])
+        out = node.run(ctx, {"records": [self.day(self.MON), self.day(self.FRI)]})
+        assert out["records"] == [
+            {"quote_date": self.MON, "x": 1.5, "dow_mon": 1, "dow_tue": 0,
+             "dow_wed": 0, "dow_thu": 0, "dow_fri": 0},
+            {"quote_date": self.FRI, "x": 1.5, "dow_mon": 0, "dow_tue": 0,
+             "dow_wed": 0, "dow_thu": 0, "dow_fri": 1},
+        ]
+        assert {type(out["records"][0][f"dow_{t}"]) for t in self.WORKDAYS} == {int}
+
+    def test_a_subset_and_a_custom_order_are_honoured(self, ctx):
+        node = self.node(weekdays=["fri", "mon"], baseline=["tue", "wed", "thu", "sat", "sun"])
+        out = node.run(ctx, {"records": [self.day(self.FRI)]})["records"][0]
+        assert [k for k in out if k.startswith("dow_")] == ["dow_fri", "dow_mon"]
+        assert (out["dow_fri"], out["dow_mon"]) == (1, 0)
+
+    def test_baseline_weekdays_are_all_zero_and_still_counted(self, ctx):
+        node = self.node(weekdays=self.WORKDAYS, baseline=["sat", "sun"])
+        out = node.run(ctx, {"records": [self.day(self.SAT), self.day(self.SUN)]})
+        for row in out["records"]:
+            assert [row[f"dow_{t}"] for t in self.WORKDAYS] == [0] * 5
+        assert out["counts"]["sat"] == 1 and out["counts"]["sun"] == 1
+
+    def test_the_defaults_are_pinned_to_their_literals(self):
+        # Defaults live under ONE name each; this pins the VALUE so a silent
+        # edit to the vocabulary cannot move every document that omits them.
+        assert kinds_flow._DEFAULT_WEEKDAYS == (
+            "mon", "tue", "wed", "thu", "fri", "sat", "sun")
+        assert kinds_flow._DEFAULT_BASELINE == ()
+        assert kinds_flow._DEFAULT_WEEKDAYS is WEEKDAY_TAGS
+
+    def test_omitted_weekdays_and_baseline_equal_the_spelled_out_defaults(self, ctx):
+        rows = {"records": [self.day(d) for d in (self.MON, self.WED, self.SAT, self.SUN)]}
+        omitted = self.node().run(ctx, rows)
+        spelled = self.node(
+            weekdays=["mon", "tue", "wed", "thu", "fri", "sat", "sun"], baseline=[]
+        ).run(ctx, rows)
+        assert omitted == spelled
+        assert [k for k in omitted["records"][0] if k.startswith("dow_")] == [
+            f"dow_{t}" for t in WEEKDAY_TAGS]
+
+    def test_an_omitted_baseline_runs_like_an_empty_one(self, ctx):
+        # Only the baseline is omitted, over a non-default ``weekdays``: a
+        # covered day projects identically and an uncovered one is refused
+        # identically, so run and validate_params share the one default.
+        covered = {"records": [self.day(self.MON), self.day(self.FRI)]}
+        assert self.node(weekdays=self.WORKDAYS).run(ctx, covered) == self.node(
+            weekdays=self.WORKDAYS, baseline=[]).run(ctx, covered)
+        uncovered = {"records": [self.day(self.SAT)]}
+        for node in (self.node(weekdays=self.WORKDAYS),
+                     self.node(weekdays=self.WORKDAYS, baseline=[])):
+            with pytest.raises(ValueError, match="sat"):
+                node.run(ctx, uncovered)
+
+    def test_seven_default_columns_sum_to_one_per_row(self, ctx):
+        rows = [self.day(f"2026-01-{d:02d}") for d in range(5, 19)]
+        for row in self.node().run(ctx, {"records": rows})["records"]:
+            assert sum(row[f"dow_{t}"] for t in WEEKDAY_TAGS) == 1
+
+    def test_counts_are_rows_per_weekday_over_all_seven_tags(self, ctx):
+        dates = [self.MON, self.MON, self.WED, self.FRI, self.FRI, self.FRI]
+        out = self.node().run(ctx, {"records": [self.day(d) for d in dates]})
+        assert out["counts"] == {"mon": 2, "tue": 0, "wed": 1, "thu": 0,
+                                 "fri": 3, "sat": 0, "sun": 0}
+        assert list(out["counts"]) == list(WEEKDAY_TAGS)
+        assert sum(out["counts"].values()) == len(out["records"]) == 6
+
+    def test_an_empty_stream_is_all_zero_counts_not_an_error(self, ctx):
+        out = self.node().run(ctx, {"records": []})
+        assert out["records"] == []
+        assert out["counts"] == dict.fromkeys(WEEKDAY_TAGS, 0)
+
+    def test_each_row_depends_only_on_its_own_date(self, ctx):
+        node = self.node()
+        rows = [self.day(d) for d in (self.MON, self.WED, self.FRI, self.WED)]
+        forward = node.run(ctx, {"records": rows})["records"]
+        backward = node.run(ctx, {"records": list(reversed(rows))})["records"]
+        assert backward == list(reversed(forward))
+        alone = node.run(ctx, {"records": [rows[2]]})["records"][0]
+        assert alone == forward[2]
+
+    def test_input_rows_are_never_mutated(self, ctx):
+        rows = [self.day(self.MON)]
+        out = self.node().run(ctx, {"records": rows})["records"]
+        assert rows == [{"quote_date": self.MON, "x": 1.5}]
+        assert out[0] is not rows[0]
+
+    @pytest.mark.parametrize("row, match", [
+        ({"x": 1.0}, "carries no 'quote_date'"),
+        ({"quote_date": None}, "None"),
+        ({"quote_date": 20260105}, "20260105"),
+        ({"quote_date": 1767571200000}, "1767571200000"),
+        ({"quote_date": "20260105"}, "20260105"),
+        ({"quote_date": "2026-02-30"}, "2026-02-30"),
+        ({"quote_date": "2026-01-05T09:30:00"}, "2026-01-05T09:30:00"),
+        ({"quote_date": "2026-01-05\n"}, "2026-01-05"),
+        ({"quote_date": ""}, "quote_date"),
+    ])
+    def test_a_missing_or_bad_date_raises_naming_node_row_and_field(self, ctx, row, match):
+        rows = [self.day(self.MON), row]
+        with pytest.raises(ValueError, match=match) as raised:
+            self.node().run(ctx, {"records": rows})
+        assert "wd" in str(raised.value)
+        assert "row 1" in str(raised.value)
+        assert "quote_date" in str(raised.value)
+
+    def test_a_weekday_in_neither_set_raises_naming_node_row_and_field(self, ctx):
+        node = self.node(weekdays=self.WORKDAYS)
+        with pytest.raises(ValueError, match="sat") as raised:
+            node.run(ctx, {"records": [self.day(self.MON), self.day(self.SAT)]})
+        assert "wd" in str(raised.value) and "row 1" in str(raised.value)
+        assert "quote_date" in str(raised.value)
+
+    def test_an_existing_column_raises_and_is_never_overwritten(self, ctx):
+        row = {"quote_date": self.MON, "dow_mon": 9}
+        with pytest.raises(ValueError, match="already carries 'dow_mon'") as raised:
+            self.node().run(ctx, {"records": [row]})
+        assert "wd" in str(raised.value) and "row 0" in str(raised.value)
+        assert row == {"quote_date": self.MON, "dow_mon": 9}
+
+    def test_a_non_mapping_row_is_refused_by_name(self, ctx):
+        with pytest.raises(ValueError, match="drop the native record"):
+            self.node().run(ctx, {"records": [mrec("A", "A-1", 1)]})
+
+    def test_params_are_default_deny_and_two_are_required(self):
+        problems = WeekdayOneHot.validate_params({})
+        assert any("date_field is required" in p for p in problems)
+        assert any("prefix is required" in p for p in problems)
+        assert WeekdayOneHot._PARAMS == ("baseline", "date_field", "prefix", "weekdays")
+        assert any("tz" in p for p in WeekdayOneHot.validate_params(
+            {"date_field": "d", "prefix": "p", "tz": "UTC"}))
+
+    def test_a_minimal_document_validates_clean(self):
+        assert WeekdayOneHot.validate_params({"date_field": "d", "prefix": "p"}) == []
+
+    def test_an_overlap_between_weekdays_and_baseline_is_refused(self):
+        problems = WeekdayOneHot.validate_params(
+            {"date_field": "d", "prefix": "p", "weekdays": ["mon", "sat"],
+             "baseline": ["sat", "sun"]})
+        assert any("overlap" in p and "sat" in p for p in problems), problems
+
+    def test_a_baseline_alone_overlaps_the_all_seven_default_weekdays(self):
+        # ``weekdays`` is OMITTED: validation must judge the overlap against
+        # the default the run will use (all seven), not against nothing.
+        problems = WeekdayOneHot.validate_params(
+            {"date_field": "d", "prefix": "p", "baseline": ["sat", "sun"]})
+        assert any("overlap" in p and "sat" in p and "sun" in p for p in problems), problems
+
+    def test_a_baseline_alone_fails_construction_like_the_spelled_out_overlap(self):
+        for params in (
+            {"baseline": ["sat", "sun"]},
+            {"weekdays": list(WEEKDAY_TAGS), "baseline": ["sat", "sun"]},
+        ):
+            with pytest.raises(ConfigError, match="overlap"):
+                WeekdayOneHot("wd", {"date_field": "d", "prefix": "p", **params})
+
+    @pytest.mark.parametrize("baseline", [
+        [], ["sat", "sun"], ["mon"], ["Monday"], ["sat", "sat"], "sat", None,
+    ])
+    def test_omitted_weekdays_validate_like_the_spelled_out_default(self, baseline):
+        base = {"date_field": "d", "prefix": "p", "baseline": baseline}
+        spelled = {**base, "weekdays": list(WEEKDAY_TAGS)}
+        assert WeekdayOneHot.validate_params(base) == WeekdayOneHot.validate_params(spelled)
+
+    @pytest.mark.parametrize("weekdays", [
+        ["mon"], ["sat", "sun"], list(WEEKDAY_TAGS), ["Monday"], ["mon", "mon"], "mon", None,
+    ])
+    def test_omitted_baseline_validates_like_the_spelled_out_default(self, weekdays):
+        base = {"date_field": "d", "prefix": "p", "weekdays": weekdays}
+        assert WeekdayOneHot.validate_params(base) == WeekdayOneHot.validate_params(
+            {**base, "baseline": []})
+
+    @pytest.mark.parametrize("which", ["weekdays", "baseline"])
+    def test_a_duplicate_tag_is_refused(self, which):
+        params = {"date_field": "d", "prefix": "p", which: ["mon", "mon"]}
+        problems = WeekdayOneHot.validate_params(params)
+        assert any(which in p and "repeats" in p and "mon" in p for p in problems), problems
+
+    @pytest.mark.parametrize("which", ["weekdays", "baseline"])
+    def test_an_unknown_tag_is_refused_naming_the_vocabulary(self, which):
+        params = {"date_field": "d", "prefix": "p", which: ["mon", "Monday"]}
+        problems = WeekdayOneHot.validate_params(params)
+        assert any(which in p and "unknown" in p and "Monday" in p and "mon" in p
+                   for p in problems), problems
+
+    def test_empty_weekdays_is_refused(self):
+        problems = WeekdayOneHot.validate_params(
+            {"date_field": "d", "prefix": "p", "weekdays": []})
+        assert any("weekdays" in p and "empty" in p for p in problems), problems
+
+    @pytest.mark.parametrize("prefix", ["", None, 5, ["dow_"]])
+    def test_an_empty_or_non_string_prefix_is_refused(self, prefix):
+        problems = WeekdayOneHot.validate_params({"date_field": "d", "prefix": prefix})
+        assert any("prefix" in p for p in problems), problems
+
+    @pytest.mark.parametrize("date_field", ["", None, 5, ["d"]])
+    def test_an_empty_or_non_string_date_field_is_refused(self, date_field):
+        problems = WeekdayOneHot.validate_params({"date_field": date_field, "prefix": "p"})
+        assert any("date_field" in p for p in problems), problems
+
+    @pytest.mark.parametrize("which, value", [
+        ("weekdays", "mon"), ("weekdays", {"mon": 1}), ("weekdays", None),
+        ("weekdays", [1]), ("baseline", "sat"), ("baseline", None), ("baseline", [None]),
+    ])
+    def test_a_malformed_tag_list_is_a_problem_not_a_crash(self, which, value):
+        params = {"date_field": "d", "prefix": "p", which: value}
+        assert WeekdayOneHot.validate_params(params), params
+
+    def test_references_wait_for_materialization(self):
+        assert WeekdayOneHot.validate_params(
+            {"date_field": "$a.f", "prefix": "$a.p", "weekdays": "$a.w",
+             "baseline": "$a.b"}) == []
+
+    def test_a_bad_declaration_fails_construction(self):
+        with pytest.raises(ConfigError):
+            WeekdayOneHot("wd", {"date_field": "d", "prefix": "p", "weekdays": ["mon", "mon"]})
+
+    def test_container_shape_matches_derive_and_serving_is_pure(self):
+        node = self.node()
+        assert node.validate_inputs({"records": []}) == []
+        assert node.validate_inputs({"records": {}}) != []
+        assert "one-shot" in node.validate_inputs({"records": iter(())})[0]
+        assert node.validate_inputs({"records": []}) == Derive(
+            "d", {"field": "f", "cases": [{"when": [], "value": 1}]}
+        ).validate_inputs({"records": []})
+        assert WeekdayOneHot.serving_effect({}, {}) == "pure"
+        assert (WeekdayOneHot.role, WeekdayOneHot.outputs) == (
+            "transform", ("records", "counts"))
+
+    def test_notes_never_move_the_document_hash(self):
+        node = {"uses": "weekday-onehot",
+                "params": {"date_field": "quote_date", "prefix": "dow_"}}
+        bare = PipelineDocument.from_obj({"name": "wd-doc", "pipeline": {"wd": node}})
+        noted = PipelineDocument.from_obj(
+            {"name": "wd-doc", "pipeline": {"wd": {**node, "notes": "why this exists"}}})
+        assert bare.hash == noted.hash
+        moved = PipelineDocument.from_obj(
+            {"name": "wd-doc", "pipeline": {"wd": {
+                **node, "params": {**node["params"], "prefix": "weekday_"}}}})
+        assert moved.hash != bare.hash
+
+
 class TestRegister:
-    def test_registers_all_seven_unowned(self):
+    def test_registers_all_eight_unowned(self):
         reg = register(NodeKindRegistry())
         assert {"filter", "concat", "join", "derive", "event-grid", "groupby",
-                "keyby"} <= set(reg.kinds())
+                "keyby", "weekday-onehot"} <= set(reg.kinds())
+        assert reg.get("weekday-onehot") == (WeekdayOneHot, False)
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)
