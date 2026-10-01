@@ -29106,27 +29106,31 @@ holidays, any run.
 
 ## ADR-0215 — Data-driven holdout and count-sized rolling folds
 
-**Status:** proposed 2026-10-01; revised after skeptic review; awaiting owner
-approval (direction ruled 2026-10-01; config values delegated to us). Base:
-1968283. **Depends on ADR-0214** (public `document.date_problem`): land after
-it, or publish `date_problem` here and amend 0214. No code until approved.
+**Status:** proposed 2026-10-01; revised after skeptic review; owner
+approved 2026-10-01, conditional on a clean skeptic review (direction, handoff
+and module home ruled; config values delegated to us). Base: 1968283.
+**Depends on ADR-0214** (public `document.date_problem`): land after it, or
+publish `date_problem` here and amend 0214. No code until that review is clean.
 
 Step 3 takes data from steps 1-2 (the `selected_dte` cohort with its
 `available_<family>` flags); nothing derivable is typed. **Sweep** (`holdout
-lockbox count_folds rolling_origin embargo purge`): no near-name hit.
+lockbox count_folds rolling_origin embargo purge kinds_split TimeSeriesSplit
+holdout-cut rolling-origin-plan`): no near-name hit.
 `WalkForwardSpec` cutoffs are literal and `$ref` resolves only in one run's
 node inputs/params (`document.py:26-37`), never across runs; `SPLIT_KINDS`
 (`base.py:646`) cuts per record and cannot count dates;
 `release_rotation.py:216` is duration-based; ADR-0081 `stages` order one
 document's stages, not fold geometry or separate pipelines;
-`predictive_cdf.py:3626` is the one purge.
+`predictive_cdf.py:3626` is the one purge. scikit-learn `TimeSeriesSplit` was
+considered and not chosen: its gap counts rows, not calendar days, and dskit
+does not wrap it.
 
-**Handoff, not re-declaration** (owner's model: three chained JSON pipelines).
-Step 3 reads step 2's persisted `rows.jsonl` through `localtables` +
-`ObservationRows`; the acquisition fingerprint is the sha256 pin, as for step
+**Handoff, not re-declaration** (owner ruling 2026-10-01: three chained JSON
+pipelines). Step 3 reads step 2's persisted `rows.jsonl` through `localtables`
++ `ObservationRows`; the acquisition fingerprint is the sha256 pin, as for step
 2's own panel. Re-declaring ~2,900 lines of step-1/2 nodes was rejected: its
 equality pin breaks under the concurrent rebuild, and step 2's cohort types DTE
-`7`. The kinds below do not depend on this choice; the owner may override.
+`7`. The kinds below do not depend on this choice.
 
 **Flow** (config; existing nodes except 1 and 3).
 1. **Holdout first** (`holdout-cut`) on the FULL cohort: lock the last
@@ -29150,14 +29154,18 @@ equality pin breaks under the concurrent rebuild, and step 2's cohort types DTE
    literal. `end_field` = `settlement_date` (7 days on all QQQ rows; `expiry`
    is 8-9 on 42 and would refuse).
 
-**Kinds** `holdout-cut`, `rolling-origin-plan` (named in hashed `uses`): tier-1
-stdlib, `owned=False`, `role="transform"`, `serving_effect` `"forbidden"`
-(whole-cohort planners, cf. `hpo-grid`). An abstract `_DatedCohort` base owns
-the shared rules: mapping rows (`kinds_flow._mapping_row`), ISO dates
-(`date_problem`), `end > date`, the purge predicate, params
-(`node.reject_unknown_params`, `node.check_int_param`: `7.0` is coerced to int;
-a `$`-form passes plan time and the materialized value is re-validated). All
-params required, none defaulted in code. Refusals name node, row and field.
+**Kinds** `holdout-cut`, `rolling-origin-plan` (named in hashed `uses`), in
+**new `dskit/pipeline/kinds_split.py`** (owner ruling 2026-10-01; own
+`register()`, banking precedent): tier-1 stdlib, `owned=False`,
+`role="transform"`, `serving_effect` `"forbidden"` (whole-cohort planners, cf.
+`hpo-grid`). An abstract `_DatedCohort` base owns the shared rules: mapping
+rows (its own refusal: these kinds read rows, so `kinds_flow._mapping_row`'s
+join/derive wording does not fit; field reads via `kinds_flow._field`, the
+banking import), ISO dates (`date_problem`), `end > date`, the purge predicate,
+params (`node.reject_unknown_params`, `node.check_int_param`: `7.0` is coerced
+to int; a `$`-form passes plan time and the materialized value is
+re-validated). All params required, none defaulted in code. Refusals name node,
+row and field.
 - `holdout-cut`: `date_field`, `end_field`, `fraction` (0 < f < 1). Size =
   `ceil(Fraction(repr(fraction)) * n_dates)`, the decimal never the binary
   float (0.1 x 30 = 3, not 4), under `n_dates`. Outputs `records` (dev, stable
@@ -29200,24 +29208,26 @@ declared counts, the last val window ends at the last date, windows `step_n`
 apart, a date at `val_start - embargo_days` excluded and the day before kept
 (equal to `_fold_splits` on a daily panel), `max(train end) < min(val date)`,
 roles for `warmup_folds` 0/1/n, `end - date` = embargo accepted and +1 refused,
-raw records with holdout rows refused; an e2e cut -> groupby -> derive -> keyby
--> filter -> plan -> `records-write` on ~200 rows under `run_document`.
+raw records with holdout rows refused; `import dskit.pipeline` registers both
+kinds from `kinds_split` (a missing `register()` call there passes every unit
+test), `kinds_split.__all__` is exact, and the kind sets of `kinds_flow` and
+`kinds_banking` are unchanged; an e2e cut -> groupby -> derive -> keyby ->
+filter -> plan -> `records-write` on ~200 rows under `run_document`.
 **Pins, child** (config slice, after the step-1/2 rebuilds land;
 `index_options`): row count and `rows.jsonl` sha equal step 2's
 `verification.json`; one distinct DTE, no literal embargo; every node after the
 cut reads `$cut.records`; C1-C4 (not fold counts) on the committed rows; the
 AMZN refusal sits in `stock_options` on its own rows (no cross-child read).
 
-**Touched.** Owner question, home: **A** `kinds_flow.py` (docstring, `__all__`,
-`_KINDS` :2452, count words :2464; `test_kinds_flow:1353`,
-`test_kinds_banking:45,76`) or **B** (proposed) new `kinds_split.py` with its
-own `register()` and `test_kinds_split.py` (banking precedent; `kinds_flow` is
-2,486 lines of record verbs and 0214 edits it). Either way
-`pipeline/__init__.py` (:139, `__all__`, :203), `test_toolkit_conformance`
-(:44, :53, :79, a probe each), `test_serving_effect:73` (its set-equality :415
-fails until both are classified), the pipeline README kind table and the
-README/CLAUDE/AGENTS trees; 0214 edits the same lists additively (8 kinds after
-it, 10 after both). Later: `index_options/tests/test_configs.py:38`,
+**Touched.** New `dskit/pipeline/kinds_split.py` (`__all__` exact) and
+`tests/pipeline/test_kinds_split.py`; `kinds_flow.py` is 2,486 lines of record
+verbs and 0214 edits it, so neither it nor its tests change here. Also
+`pipeline/__init__.py` (:139 import, `__all__`, :203 `_register_*` block),
+`test_toolkit_conformance` (:44, :53, :79, a probe each),
+`test_serving_effect:73` (its set-equality :415 fails until both are
+classified), the pipeline README kind table and the README/CLAUDE/AGENTS trees
+(README:772); 0214 edits the same lists additively (8 kinds after it, 10 after
+both). Later: `index_options/tests/test_configs.py:38`,
 `stock_options/tests/test_package_boundary.py:9,48` (ADR-0212 exact manifest;
 new files need owner approval). **Caveat:** labels overlap inside a window, so
 effective n < dates. **Non-goals:** HPO consumer, final test.
