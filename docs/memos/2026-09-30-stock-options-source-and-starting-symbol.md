@@ -93,6 +93,34 @@ The free option source supports current indicative chains and historical trade
 bars since February 2024. It cannot estimate bid/ask-side iron-condor fills,
 returns or risk because historical quotes are unavailable.
 
+## Prediction and option action set
+
+Predict the physical distribution of future AMZN returns from point-in-time
+stock and market features. Do not use option strikes, premiums, implied
+volatility, open interest or chosen legs as predictors in the first study.
+Chronologically divide the adjusted stock history into training and
+development before the first scored option date. Every development label must
+settle before that date; apply an embargo at least as long as the maximum
+45-calendar-day forecast horizon. Freeze features, training-window and recency
+rules, model, hyperparameters, and optimizer objective and constraints there.
+
+After the cutoff, option data supply the decision-time action set and economics:
+eligible standard contracts, expiries, strikes, quotes or observed trades, size
+and costs. The mixed-integer optimizer consumes the frozen predictive
+distribution and that contemporaneous feasible set. A predeclared rolling refit
+may use only stock outcomes known before each decision; test-period option
+outcomes never select the model or optimizer. The retained free trade bars omit
+untraded strikes and bid/ask quotes, so they support selection-mechanics and
+terminal-payoff diagnostics, not complete-action-set or executable-P&L claims.
+
+Use corporate-action-adjusted prices and scale-free returns or features for
+prediction. A correctly adjusted split is not a market loss and is not deleted.
+Never pair an adjusted pre-split price level with an unadjusted historical
+strike. Exclude a row only for a documented point-in-time data or contract-
+identity failure, using a rule frozen before option-period testing. Keep genuine
+market shocks; choose any recency window or regime weighting only in the
+pre-option development period rather than deleting difficult test observations.
+
 ## Starting point
 
 AMZN is the simpler baseline for the clarified free-tier scope. Its accessible
@@ -129,10 +157,9 @@ licensing, or future provider-availability claim is supported.
 
 ## Reproducibility and handoff
 
-ADR-0211 now proposes the exact initial `stock_options` child structure and
-keeps generic mechanisms upstream. The initial bootstrap contains no runnable
-strategy config; those wait for an approved generic chain/condor seam in
-`dskit/`. Approval is required before creating the child.
+ADR-0212 is accepted and the exact initial `stock_options` child now exists.
+Generic mechanisms remain upstream. The bootstrap contains no runnable strategy
+config; those wait for an approved generic chain/condor seam in `dskit/`.
 A point-in-time earnings/ex-dividend source remains a pre-run dependency.
 The reuse research is temporarily journaled as index_options A0626 because the
 separate child cannot exist before ADR approval.

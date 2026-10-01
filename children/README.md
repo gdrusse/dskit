@@ -138,10 +138,11 @@ When a child earns its own repo: copy `children/<project>/` out as the new
 repo's root, `pip install -e .` there, run its tests, delete the directory
 here. Nothing inside changes — that was the point.
 
-Incubating today: `index_options` (offline, synthetic-only cash-index option
-diagnostics; no trading or real-data adapter), `intraday_equities` (US-equity intraday bars),
-`intraday_poc`, and `pmquant` (prediction-market ladders — Kalshi and
-Polymarket; its `configs/run-e2e.json` runs the stat test, the
-transformer and the Kelly MIO in one document). Worked sketches of the
+Incubating today: `index_options` (offline cash-index and ETF-option research),
+`stock_options` (stock/market forecasts with listed-stock option action sets; no
+trading), `intraday_equities` (US-equity intraday bars), `intraday_poc`, and
+`pmquant` (prediction-market ladders — Kalshi and Polymarket; its
+`configs/run-e2e.json` runs the stat test, the transformer and the Kelly MIO
+in one document). Worked sketches of the
 gap analyses that preceded them: `docs/architecture/child-gap-pmquant.md`,
 `docs/architecture/child-gap-rl-stocks.md`.

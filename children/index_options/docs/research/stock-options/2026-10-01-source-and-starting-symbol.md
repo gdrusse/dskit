@@ -12,8 +12,12 @@ bid/ask quotes. In the two available 30/37-DTE current chains, MSFT had tighter
 spreads and more volume; the 44-DTE request returned no free
 snapshots. AMZN avoids
 MSFT's dividend assignment dependency and its accessible options are post-split. No
-historical option-performance claim is supported. Keep the new project in a
-thin `stock_options` child, keep generic
+historical option-performance claim is supported. Train and select the physical
+forecast on adjusted stock/market history before the option-era test, then use
+options only as the mixed-integer optimizer's point-in-time action set and
+economics. Retain correctly adjusted split rows and genuine shocks; exclude only
+predeclared data or contract-identity failures. Keep the new project in a thin
+`stock_options` child, keep generic
 mechanisms upstream, and refuse strategy runs until point-in-time earnings and
 ex-dividend sources and assignment accounting are approved.
 

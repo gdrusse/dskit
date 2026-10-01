@@ -28708,9 +28708,9 @@ promotion. Keep the optimizer blocked. A next model study, if run, must be a
 pre-registered index-specific side/DTE correction or hierarchical head under
 the unchanged SPY local/global/tail guards, not a broader architecture zoo.
 
-## ADR-0211 — Single-stock option research extension
+## ADR-0212 — Single-stock option research extension
 
-**Status:** proposed 2026-09-30; owner approval required before code.
+**Status:** accepted 2026-10-01; owner approved the exact bootstrap and study direction.
 
 The existing index_options child already studies physically settled,
 American-style SPY/QQQ ETF options. Its four-leg quote and payoff research can
@@ -28719,7 +28719,7 @@ thin `children/stock_options` child. Generic mechanisms remain in `dskit/`;
 the new child owns only stock-specific configuration, constraints and evidence.
 Keep stock-only assumptions visible in every run document and explanatory note.
 
-The exact proposed initial structure is:
+The exact approved initial structure is:
 
 - `AGENTS.md` and `CLAUDE.md`: aligned child execution rules;
 - `README.md` and `pyproject.toml`: scope, commands and package metadata;
@@ -28735,6 +28735,27 @@ the existing generic seams first; any missing reusable behavior graduates to
 This bootstrap has no runnable strategy config. Only after the generic chain
 reader and condor seam exist in `dskit/` may a separately approved child slice
 add `configs/{amzn,msft}-iron-condor.json` and its config validation tests.
+
+**Prediction/action separation:** predict the physical terminal-return
+distribution from point-in-time stock and market features only. Option strikes,
+premiums, implied volatility, open interest and selected legs are excluded from
+the first model's predictors. Before the first scored option date, split the
+adjusted stock history chronologically into training and development. Require
+every development label to settle before that date and embargo at least the
+maximum 45-calendar-day target horizon. Development freezes features, candidate
+training-window and recency rules, model, hyperparameters, optimizer objective
+and constraints.
+
+At each later decision timestamp, the option data define only the feasible action
+set and its contemporaneous economics: standard contract identity, expiry,
+strike, quote or observed trade, size and costs. The mixed-integer optimizer
+combines the frozen predictive distribution with that action set. A rolling or
+expanding refit is allowed only if declared before testing and may use stock
+outcomes known before that decision. Option-period outcomes cannot select the
+forecast or tune the optimizer. Free trade bars omit untraded strikes and
+bid/ask quotes, so they can support a selection-mechanics or terminal-payoff
+diagnostic but cannot establish complete historical feasibility or executable
+P&L.
 
 The first strategy candidate is one defined-risk short iron condor on AMZN:
 one expiry 30–45 calendar days out, one contract per leg, with the existing
@@ -28774,8 +28795,13 @@ The existing optionshist archive covers SPY/QQQ/IWM, not individual stocks.
 Free daily-price pulls contain 7,390 field-complete
 AMZN records from 1997-05-15 and 5,934 field-complete MSFT records from
 2003-03-03, both through 2026-09-30. All 5,030 expected sessions from
-2006-10-02 onward are present. The AMZN file is split-adjusted and may feed
-return/regime features only; pre-split values cannot pair with raw strikes.
+2006-10-02 onward are present. Use split/dividend-adjusted prices and
+scale-free returns or features for prediction. A correctly adjusted split is
+not a loss and its row is retained. Raw pre-split price levels cannot pair with
+raw later option strikes. Exclude rows only for documented data or contract-
+identity failures under a rule frozen before option testing. Retain genuine
+market shocks; present-day relevance comes from a recency window or regime
+weighting selected in pre-option development, not post-hoc deletion.
 
 The free Alpaca pull enumerated 23,254 inactive AMZN contracts since February
 2024. Require the OCC `AMZN` root and source multiplier 100: 1,386 contracts
@@ -28804,7 +28830,7 @@ and 883 AMZN option rows. In the 30-45 DTE slice, valid-quote breadth was
 schema and breadth for one date, not historical liquidity. No strategy run has
 been performed.
 
-Next approval: accept the exact thin-child structure, AMZN as the baseline,
-MSFT as the second-symbol check, and the strategy control and refusal gates.
-Historical quote data and calendar-source selection are deferred; no strategy
-run, paper order or live order path is in scope.
+Next bounded work: inventory the generic forecast, chain and optimizer seams,
+then select and validate point-in-time earnings and ex-dividend sources. The
+strategy control and refusal gates are accepted. No strategy run, paper order
+or live order path is in scope.

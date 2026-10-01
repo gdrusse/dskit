@@ -23,9 +23,9 @@ risk limits, monitoring and authority contracts, with paper evidence before
 live approval. RL hedging and deep models are optional later questions.
 Neither model sophistication nor backtest profit guarantees an edge.
 
-## Stock-options reuse audit (ADR-0211, proposed)
+## Stock-options reuse audit (ADR-0212, accepted)
 
-**Stock-specific:** the proposed work belongs in a separate thin
+**Stock-specific:** the approved work now has a separate thin
 `children/stock_options` child. Stock options, earnings windows, contract
 adjustments and
 share assignment need separate checks. The existing ETF mechanics are reusable,
@@ -64,11 +64,17 @@ The free Alpaca tier enumerated 23,254 inactive AMZN contracts from February
 the 30-45 DTE window, SHA-256
 49d7b4f5da463b8b551c1673fc667e0a8bb3baebb4313e3b6b1ef0e1c52ff9c8.
 These bars have no bid/ask. Historical executable-price work still requires an
-entitled quote source. Proposed first cadence:
+entitled quote source. The first predictive model uses adjusted stock and market
+history only. Training and development end before the first scored option date,
+with every label settled and a 45-calendar-day embargo. Option-period data define
+the mixed-integer optimizer's contemporaneous action set; they do not tune the
+forecast. Split rows stay after correct adjustment, genuine market shocks stay,
+and only predeclared data/contract-identity failures are excluded. Proposed first
+cadence:
 daily end-of-day chain and stock closes, weekly entry review, 30–45-day
 same-expiry condors with nonoverlapping positions. Minute bars and faster
-sampling wait for an execution question and suitable data access. No code or
-strategy run follows until ADR-0211 is approved.
+sampling wait for an execution question and suitable data access. ADR-0212
+authorizes only the thin child bootstrap; no strategy run is authorized.
 
 Use AMZN first and MSFT as the immediate comparator. All accessible AMZN option
 history is post-split and Amazon has paid no dividends, simplifying the first
