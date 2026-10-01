@@ -33,6 +33,16 @@ python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage ev
 python -m index_options.cdf_study configs/run-predictive-cdf-hpo.json --stage report
 ```
 
+ADR-0211 supplies configs/run-predictive-cdf-qqq-torch-zoo.json (12 candidates)
+and configs/run-predictive-cdf-qqq-torch-smoke.json (two candidates, two epochs).
+Use the same CLI with search partitions mlp/gru, select, evaluate partitions
+development/later, then report. JSON chooses generic TorchCDF encoders and
+composite decision-focused losses; paired listed-strike skill is primary and
+guards apply only at decision regions. Each process needs the hard 1740s/6GiB/
+no-swap systemd envelope documented in
+[the standalone memo](docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md).
+Both completed finalists failed acceptance; the smoke config was not executed.
+
 ADR-0191 compares QRF, Normal-CRP NGBoost and empirical–MLP blends with the
 same CLI and `configs/run-predictive-cdf-methods.json`. Search partitions are
 `forest`, `ngboost` and `blend`; evaluation partitions remain `development`,
@@ -542,6 +552,7 @@ configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bu
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
+                            # robust-condor-selection.md (+ .svg): robust selection by hand
 docs/plans/README.md        # gated research stages
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes

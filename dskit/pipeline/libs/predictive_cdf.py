@@ -24,7 +24,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
-           "DiscreteCDFGrid"]
+           "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores"]
 
 
 class CDFThresholdAudit:
@@ -2236,6 +2236,14 @@ class MixtureMLPCDF(CDFEstimator):
         """Return an optional proper-score addend for one mini-batch."""
         return None
 
+    def _objective_loss(self, y, logw, mu, sigma, indices, context):
+        import torch
+        loss = -torch.logsumexp(logw+self._logp(y, mu, sigma), dim=1).mean()
+        if self.left_cdf_weight:
+            loss = loss + self.left_cdf_weight*self._left_cdf_score(y, logw, mu, sigma)
+        extra = self._extra_training_loss(y, logw, mu, sigma, indices, context)
+        return loss if extra is None else loss + extra
+
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
 
@@ -2262,6 +2270,10 @@ class MixtureMLPCDF(CDFEstimator):
         with self._deterministic_context():
             return self._fit(x, y, cal_x, cal_y)
 
+    def _target_tensor(self, y):
+        import torch
+        return torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+
     def _fit(self, x, y, cal_x, cal_y):
         import gc
         import torch
@@ -2275,7 +2287,7 @@ class MixtureMLPCDF(CDFEstimator):
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         self.scaler = StandardScaler().fit(features)
         xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
-        yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+        yy = self._target_tensor(y)
         training_context = self._training_context(x)
         self.models, self.losses = [], []
         for seed in self.seeds:
@@ -2290,15 +2302,8 @@ class MixtureMLPCDF(CDFEstimator):
                 for start in range(0, len(xx), self.batch_size):
                     ix = order[start:start+self.batch_size]
                     logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
-                    logp = self._logp(yy[ix], mu, sigma)
-                    loss = -torch.logsumexp(logw+logp, dim=1).mean()
-                    if self.left_cdf_weight:
-                        loss = loss + self.left_cdf_weight * self._left_cdf_score(
-                            yy[ix], logw, mu, sigma)
-                    extra = self._extra_training_loss(
+                    loss = self._objective_loss(
                         yy[ix], logw, mu, sigma, ix, training_context)
-                    if extra is not None:
-                        loss = loss + extra
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite mixture likelihood")
                     optimizer.zero_grad()
@@ -2310,7 +2315,7 @@ class MixtureMLPCDF(CDFEstimator):
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
-        del xx, yy, hh, optimizer, order, logw, mu, sigma, logp, loss, ix
+        del xx, yy, hh, optimizer, order, logw, mu, sigma, loss, ix
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
@@ -2380,6 +2385,278 @@ class MixtureMLPCDF(CDFEstimator):
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         return result
+
+
+class DecisionRegionScores:
+    """Proper scores at immutable caller-supplied decision thresholds.
+
+    Parameters
+    ----------
+    context : list of dict
+        Source-hashed threshold inventories, bound to caller identities.
+
+    Examples
+    --------
+    Score a forecast against its entry-known threshold inventory::
+
+        scorer = DecisionRegionScores(context)
+        scores = scorer.score(curve, outcomes)
+    """
+
+    def __init__(self, context):
+        import numpy as np
+        self.inventory, identities = [], set()
+        for record in context:
+            identity = tuple(record["identity"])
+            values = np.asarray(record["thresholds"], dtype=float)
+            weights = np.asarray(record["weights"], dtype=float)
+            if (not identity or any(not isinstance(v, str) or not v for v in identity)
+                    or identity in identities or values.ndim != 1
+                    or weights.shape != values.shape or not np.isfinite(values).all()
+                    or not np.isfinite(weights).all() or (weights <= 0).any()
+                    or list(values) != sorted(set(values.tolist()))
+                    or (len(values) and not np.isclose(weights.sum(), 1.))):
+                raise ValueError("invalid generic decision inventory")
+            identities.add(identity)
+            self.inventory.append((values, weights))
+
+    def arrays(self):
+        """Return padded thresholds, normalized masses and observation counts."""
+        import numpy as np
+        width = max(1, max((len(v) for v, _ in self.inventory), default=0))
+        thresholds = np.zeros((len(self.inventory), width), dtype="float64")
+        weights = np.zeros_like(thresholds)
+        for row, (values, mass) in enumerate(self.inventory):
+            thresholds[row, :len(values)] = values
+            weights[row, :len(mass)] = mass
+        return thresholds, weights, np.asarray([len(v) for v, _ in self.inventory])
+
+    def score(self, curve, y):
+        """Return local Brier, calibration residual and eligible strike counts."""
+        import numpy as np
+        thresholds, weights, counts = self.arrays()
+        y = np.asarray(y, dtype=float)
+        if y.ndim != 1 or len(y) != len(counts) or not np.isfinite(y).all():
+            raise ValueError("outcomes must be finite and paired with decision inventories")
+        error = curve.cdf(thresholds) - (y[:, None] <= thresholds)
+        brier, bias = (weights * error**2).sum(1), (weights * error).sum(1)
+        brier[counts == 0] = np.nan
+        bias[counts == 0] = np.nan
+        return {"decision_strike_brier": brier, "decision_bias": bias,
+                "decision_strike_count": counts}
+
+
+class _CDFMLPEncoder:
+    def __init__(self, config):
+        if set(config) != {"kind"}:
+            raise ValueError("unknown MLP encoder settings")
+
+    def build(self, owner, features):
+        return MixtureMLPCDF._build_module(owner, features)
+
+
+class _CDFGRUEncoder:
+    def __init__(self, config):
+        required = {"kind", "sequence_indices", "context_indices", "hidden_size", "num_layers"}
+        if set(config) != required:
+            raise ValueError("invalid GRU encoder settings")
+        sequence, context = config["sequence_indices"], config["context_indices"]
+        if (not isinstance(sequence, list) or not sequence
+                or any(not isinstance(row, list) or not row for row in sequence)
+                or len({len(row) for row in sequence}) != 1
+                or not isinstance(context, list)):
+            raise ValueError("invalid GRU sequence/context indices")
+        flat = [v for row in sequence for v in row] + context
+        if (any(type(v) is not int or v < 0 for v in flat)
+                or len(set(flat)) != len(flat)
+                or any(type(config[k]) is not int or config[k] < 1
+                       for k in ("hidden_size", "num_layers"))):
+            raise ValueError("invalid GRU dimensions or duplicate indices")
+        self.config = config
+
+    def build(self, owner, features):
+        import torch
+        config = self.config
+        sequence, context = config["sequence_indices"], config["context_indices"]
+        flat = [v for row in sequence for v in row] + context
+        if set(flat) != set(range(features)):
+            raise ValueError("GRU indices must partition all input features")
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.rnn = torch.nn.GRU(len(sequence[0]), config["hidden_size"],
+                                        config["num_layers"], batch_first=True)
+                self.head = MixtureMLPCDF._build_module(
+                    owner, config["hidden_size"] + len(context))
+
+            def forward(self, x):
+                sequence_output, _ = self.rnn(x[:, sequence])
+                return self.head(torch.cat(
+                    [sequence_output[:, -1], x[:, context]], dim=1))
+        return Module().to(owner.device)
+
+
+class _CDFNLL:
+    @staticmethod
+    def population_count(context):
+        return len(context[0])
+
+    @staticmethod
+    def values(y, logw, mu, sigma, context):
+        import math
+        import torch
+        logp = -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
+        return -torch.logsumexp(logw+logp, dim=1), torch.ones(
+            len(y), dtype=torch.bool, device=y.device)
+
+
+class _CDFDecisionBrier:
+    @staticmethod
+    def population_count(context):
+        return (context[1].sum(1) > 0).sum().clamp_min(1)
+
+    @staticmethod
+    def values(y, logw, mu, sigma, context):
+        import torch
+        thresholds, weights = context
+        z = (thresholds[:, None, :]-mu[:, :, None])/sigma[:, :, None]
+        p = (logw.exp()[:, :, None]*torch.special.ndtr(z)).sum(1)
+        truth = (y <= thresholds).to(p.dtype)
+        return ((p-truth)**2*weights).sum(1), weights.sum(1) > 0
+
+
+class _CDFDecisionLog(_CDFDecisionBrier):
+    @staticmethod
+    def values(y, logw, mu, sigma, context):
+        import torch
+        thresholds, weights = context
+        z = (thresholds[:, None, :]-mu[:, :, None])/sigma[:, :, None]
+        logp = torch.logsumexp(logw[:, :, None]+torch.special.log_ndtr(z), dim=1)
+        logq = torch.logsumexp(logw[:, :, None]+torch.special.log_ndtr(-z), dim=1)
+        return -(torch.where(y <= thresholds, logp, logq)*weights).sum(1), weights.sum(1) > 0
+
+
+class TorchCDF(MixtureMLPCDF):
+    """Configurable encoder and composite proper scores for scalar CDFs.
+
+    Parameters
+    ----------
+    encoder : dict
+        kind=mlp, or kind=gru with explicit oldest-to-newest sequence_indices,
+        disjoint context_indices, hidden_size and num_layers.
+    losses : list of dict
+        Unique kind/weight terms: nll, decision_brier, decision_log.
+        NLL and at least one decision term must have positive weights.
+    settings : dict
+        Existing mixture training and output-head settings. Column selection,
+        task heads and the legacy left-tail penalty are deliberately refused.
+
+    Examples
+    --------
+    Use a plain encoder and two proper scoring terms::
+
+        model = TorchCDF(encoder={"kind": "mlp"}, losses=[
+            {"kind": "nll", "weight": 0.1},
+            {"kind": "decision_brier", "weight": 1.0}], device="cpu")
+    """
+
+    _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder}
+    _LOSSES = {"nll": _CDFNLL, "decision_brier": _CDFDecisionBrier,
+               "decision_log": _CDFDecisionLog}
+
+    def __init__(self, encoder, losses, **settings):
+        import copy
+        import math
+        super().__init__(**settings)
+        if self.feature_indices is not None or self.head_features or self.left_cdf_weight:
+            raise ValueError("TorchCDF uses explicit encoder columns and composite losses")
+        if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
+            raise ValueError("unknown CDF encoder")
+        if (not isinstance(losses, list) or not losses
+                or any(not isinstance(term, dict) or set(term) != {"kind", "weight"}
+                       or term["kind"] not in self._LOSSES
+                       or type(term["weight"]) not in (int, float)
+                       or not math.isfinite(term["weight"]) or term["weight"] <= 0
+                       for term in losses)
+                or len({term["kind"] for term in losses}) != len(losses)
+                or "nll" not in {term["kind"] for term in losses}
+                or not any(term["kind"].startswith("decision_") for term in losses)):
+            raise ValueError("invalid composite loss terms")
+        self.encoder_config, self.loss_config = copy.deepcopy(encoder), copy.deepcopy(losses)
+        self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
+
+    def fit_decision_context(self, fit_context, cal_context):
+        """Validate and attach entry-known inventories without using outcomes."""
+        self._fit_context = DecisionRegionScores(fit_context)
+        DecisionRegionScores(cal_context)
+        return self
+
+    def _target_tensor(self, y):
+        import torch
+        return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
+
+    def _build_module(self, features):
+        return self.encoder.build(self, features)
+
+    def _training_context(self, x):
+        import torch
+        if not hasattr(self, "_fit_context") or len(self._fit_context.inventory) != len(x):
+            raise ValueError("identity-keyed decision context was not attached")
+        thresholds, weights, counts = self._fit_context.arrays()
+        if not (counts > 0).any():
+            raise ValueError("no eligible training decision regions")
+        return tuple(torch.as_tensor(a, device=self.device) for a in (thresholds, weights))
+
+    def _objective_loss(self, y, logw, mu, sigma, indices, context):
+        local = tuple(a[indices] for a in context)
+        total = mu.sum()*0.
+        for term in self.loss_config:
+            strategy = self._LOSSES[term["kind"]]
+            values, eligible = strategy.values(y, logw, mu, sigma, local)
+            # Uniform minibatches estimate the full-population objective,
+            # including batches with no locally eligible observations.
+            normalization = len(context[0])/strategy.population_count(context)
+            total = total + term["weight"]*values[eligible].sum()/len(y)*normalization
+        return total
+
+    def loss_report(self, x, y, context):
+        """Measure final ensemble losses, counts and local errors in eval mode."""
+        import numpy as np
+        import torch
+        scorer = DecisionRegionScores(context)
+        thresholds, weights, counts = scorer.arrays()
+        y = np.asarray(y, dtype=float)
+        if (y.ndim != 1 or len(counts) != len(y) or len(x) != len(y)
+                or not np.isfinite(y).all()):
+            raise ValueError("loss report outcomes, features and context must be paired")
+        curve = self.curve(x)
+        total, terms = 0., {}
+        # CPU float64 evaluation is bounded by the same configured mini-batch.
+        for term in self.loss_config:
+            sums, n = 0., 0
+            for start in range(0, len(y), self.batch_size):
+                sl = slice(start, start+self.batch_size)
+                args = [torch.as_tensor(a[sl], dtype=torch.float64) for a in
+                        (np.asarray(y)[:, None], np.log(curve.weights), curve.means,
+                         curve.scales, thresholds, weights)]
+                values, eligible = self._LOSSES[term["kind"]].values(
+                    *args[:4], tuple(args[4:]))
+                sums += values[eligible].sum().item()
+                n += int(eligible.sum())
+            mean = sums/n if n else None
+            terms[term["kind"]] = {"mean": mean, "n": n, "weight": term["weight"]}
+            if mean is not None:
+                total += term["weight"]*mean
+        return {"composite": total if all(t["n"] for t in terms.values()) else None,
+                "terms": terms, "n": len(y), "eligible_n": int((counts > 0).sum()),
+                "threshold_n": int(counts.sum())}
+
+    def _research_state(self):
+        import torch
+        return {"encoder": self.encoder_config, "losses": self.loss_config,
+                "training_composite_by_seed": self.losses,
+                "peak_cuda_allocated_bytes": (torch.cuda.max_memory_allocated(self.device)
+                                               if self.device.startswith("cuda") else 0)}
 
 
 class DecisionWeightedMixtureMLPCDF(MixtureMLPCDF):
@@ -2950,12 +3227,12 @@ class ChronologicalCDFStudy:
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
-            "decision_context", "frozen_variants", "promotion_guard", "notes"}
+            "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
-                    "frozen_variants", "promotion_guard"}
+                    "frozen_variants", "promotion_guard", "decision_acceptance"}
         missing = self.KEYS-optional-set(config)
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
@@ -3005,6 +3282,19 @@ class ChronologicalCDFStudy:
                     or guard["max_coverage_deviation_increase"] < 0
                     or guard["authority"] != "descriptive_only"):
                 raise ValueError("invalid descriptive promotion guard")
+        acceptance = config.get("decision_acceptance")
+        if acceptance is not None:
+            import math
+            if (set(acceptance) != {"blocks", "min_lower_bound", "max_bias_increase"}
+                    or not config.get("decision_context")
+                    or config.get("promotion_guard") is not None
+                    or not acceptance["blocks"]
+                    or not set(acceptance["blocks"]).issubset(config["bootstrap"]["blocks"])
+                    or any(type(acceptance[k]) not in (int, float)
+                           or not math.isfinite(acceptance[k])
+                           for k in ("min_lower_bound", "max_bias_increase"))
+                    or acceptance["max_bias_increase"] < 0):
+                raise ValueError("invalid decision-only acceptance guard")
         self.config = config
 
     def to_obj(self):
@@ -3026,6 +3316,63 @@ class ChronologicalCDFStudy:
             raise ValueError("decision context and forecast identity mismatch")
         return context
 
+    def _validate_decision_scores(self, scores):
+        import numpy as np
+        if "decision_strike_brier" not in scores:
+            if self.config.get("decision_context"):
+                raise ValueError("decision scores missing")
+            return
+        keys = self.config["identity"]
+        reference = None
+        for _, rows in scores.groupby(["model", "variant"]):
+            if rows.duplicated(keys).any():
+                raise ValueError("duplicate decision score identity")
+            rows = rows.sort_values(keys).reset_index(drop=True)
+            if "decision_strike_count" not in rows:
+                raise ValueError("decision observation counts missing")
+            counts = rows.decision_strike_count
+            if (not np.isfinite(counts).all() or (counts < 0).any()
+                    or (counts != counts.astype(int)).any()):
+                raise ValueError("invalid decision counts")
+            eligible = counts > 0
+            for metric in ("decision_strike_brier", "decision_bias"):
+                if metric in rows:
+                    values = rows[metric]
+                    if (not np.isfinite(values[eligible]).all()
+                            or not values[~eligible].isna().all()):
+                        raise ValueError("decision score eligibility mismatch")
+            shape = rows[keys + ["decision_strike_count"]]
+            if reference is not None and not shape.equals(reference):
+                raise ValueError("unpaired decision eligibility or identities")
+            reference = shape
+
+    def _loss_telemetry(self, model, imputer, baseline, baseline_imputer, fit, cal, val):
+        import numpy as np
+        c = self.config
+        result = {}
+        for label, band in (("training", fit), ("calibration", cal), ("validation", val)):
+            bx = imputer.transform(band[c["features"]])
+            by = (band[c["target"]]/band[c["reference"]]).to_numpy()
+            context = self._decision_context_rows(band)
+            report = model.loss_report(bx, by, context)
+            scorer = DecisionRegionScores(context)
+            candidate = scorer.score(model.curve(bx), by)["decision_strike_brier"]
+            reference = scorer.score(baseline.curve(
+                baseline_imputer.transform(band[c["features"]])), by)["decision_strike_brier"]
+            paired = band[[c["group"], c["horizon"]]].copy()
+            paired["candidate"], paired["reference"] = candidate, reference
+            means = paired.groupby([c["group"], c["horizon"]])[["candidate", "reference"]].mean().dropna()
+            report["decision_skill_pct"] = (float(100*(1-(means.candidate/means.reference).mean()))
+                                            if len(means) and (means.reference > 0).all() else None)
+            report["decision_brier"] = float(np.nanmean(candidate)) if report["eligible_n"] else None
+            report["reference_decision_brier"] = float(np.nanmean(reference)) if report["eligible_n"] else None
+            report["scope"] = "reported_group_slice"
+            report["dates"] = int(band[c["date"]].nunique())
+            report["eligible_dates"] = int(band.loc[np.isfinite(candidate), c["date"]].nunique())
+            report["excluded_n"] = report["n"]-report["eligible_n"]
+            result[label] = report
+        return result
+
     def summarize(self, scores, selected_variants=None):
         """Select calibration on development only; report paired later scores.
 
@@ -3046,6 +3393,8 @@ class ChronologicalCDFStudy:
         import pandas as pd
 
         c = self.config
+        if c.get("decision_acceptance"):
+            self._validate_decision_scores(scores)
         output = Path(c["output"])
         cells = [c["group"], c["horizon"]]
         dev = scores[scores.year <= c["development_end"]]
@@ -3077,6 +3426,8 @@ class ChronologicalCDFStudy:
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
         if "decision_strike_brier" in scores:
             metrics.insert(0, "decision_strike_brier")
+            if "decision_bias" in scores:
+                metrics.append("decision_bias")
         metrics.extend(name for name in scores.columns
                        if (name.startswith("below_") or name.startswith("above_"))
                        and name not in metrics)
@@ -3086,29 +3437,35 @@ class ChronologicalCDFStudy:
         for metric in metrics:
             mean = picked.groupby(cells+["model"])[metric].mean().unstack("model")
             ratio = mean.div(mean[baseline], axis=0)
-            if metric not in ("condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"):
+            if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"):
                 for model in c["models"]:
                     r = (100*(1-ratio[model])).rename("skill").reset_index()
                     r["metric"], r["model"] = metric, model
-                    n = picked[picked.model == model].groupby(cells).size().rename("n").reset_index()
+                    n = picked[picked.model == model].dropna(subset=[metric]).groupby(cells).size().rename("n").reset_index()
                     grids.append(r.merge(n, on=cells, validate="one_to_one"))
             for model in c["models"]:
                 f = picked[picked.model == model]
+                total_n = len(f)
+                f = f.dropna(subset=[metric])
                 records.append({"model": model, "variant": selected[model], "metric": metric,
-                                "n": len(f), "dates": f[c["date"]].nunique(),
+                                "n": len(f), "total_n": total_n, "excluded_n": total_n-len(f),
+                                "threshold_n": (int(f.decision_strike_count.sum())
+                                                if metric.startswith("decision_")
+                                                and "decision_strike_count" in f else None),
+                                "dates": f[c["date"]].nunique(),
                                 "expiry_series": f[c["series_identity"]].drop_duplicates().shape[0],
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
                     if metric in ("decision_strike_brier", "crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
-            if metric not in ("condor_loss_bias", "below_05", "above_95",
+            if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95",
                               "payoff_quadrature_gap"):
                 annual = picked.groupby([c["group"], "year", "model"])[metric].mean().unstack("model")
                 annual_ratio = annual.div(annual[baseline], axis=0)
                 for model in c["models"]:
                     row = (100*(1-annual_ratio[model])).rename("skill").reset_index()
                     row["metric"], row["model"] = metric, model
-                    n = (picked[picked.model == model]
+                    n = (picked[picked.model == model].dropna(subset=[metric])
                          .groupby([c["group"], "year"]).size().rename("n").reset_index())
                     yearly_grids.append(row.merge(n, on=[c["group"], "year"],
                                                   validate="one_to_one"))
@@ -3150,6 +3507,7 @@ class ChronologicalCDFStudy:
                             a[idx].sum(0)[supported]/denom[supported])))
                     lo, hi = np.quantile(replicates, [.025, .975])
                     intervals.append({"metric": interval_metric, "model": model, "reference": reference, "block_dates": width,
+                                      "n": len(pair), "dates": len(a),
                                       "lo": float(lo), "hi": float(hi),
                                       "point": float(100*(1-np.mean(a.sum(0)/b.sum(0))))})
         guard_result = None
@@ -3195,7 +3553,26 @@ class ChronologicalCDFStudy:
                             "local_intervals": local_checks,
                             "noninferiority": noninferiority,
                             "coverage": coverage}
-        summary = {"selected_variants_from_development": selected,
+        decision_acceptance = {}
+        if c.get("decision_acceptance"):
+            rule = c["decision_acceptance"]
+            means = picked.groupby(cells+["model"]).decision_bias.mean().unstack("model")
+            for model in c["models"]:
+                if model == baseline:
+                    continue
+                local = [row for row in intervals if row["metric"] == "decision_strike_brier"
+                         and row["model"] == model and row["reference"] == baseline
+                         and row["block_dates"] in rule["blocks"]]
+                if len(local) != len(rule["blocks"]) or means[[model, baseline]].isna().any().any():
+                    raise ValueError("incomplete decision acceptance evidence")
+                increase = float(means[model].abs().mean()-means[baseline].abs().mean())
+                decision_acceptance[model] = {
+                    "passed": bool(all(row["lo"] > rule["min_lower_bound"] for row in local)
+                                   and increase <= rule["max_bias_increase"]),
+                    "bias_abs_increase": increase, "intervals": local,
+                    "authority": "descriptive_only", "rule": rule}
+        summary = {"decision_acceptance": decision_acceptance,
+                   "selected_variants_from_development": selected,
                    "selection_metric": selection_metric,
                    "promotion_status": ("descriptive_only_no_promotion" if guard_result is None
                                         else ("descriptive_guard_pass_no_promotion"
@@ -3373,7 +3750,9 @@ class ChronologicalCDFStudy:
                                    "first": band[c["date"]].min(), "last": band[c["date"]].max(),
                                    "latest_label": band[c["end"]].max()}
                 yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
-                for name, spec in c["models"].items():
+                model_items = sorted(c["models"].items(),
+                                     key=lambda item: item[0] != c["reference_model"])
+                for name, spec in model_items:
                     start = time.monotonic()
                     key = (year, name, json.dumps(spec, sort_keys=True))
                     pooled = spec.get("pooled", False)
@@ -3450,6 +3829,10 @@ class ChronologicalCDFStudy:
                         if diagnostic:
                             for metric, values in diagnostic(val, curve, draws).items():
                                 part[metric] = values
+                        if c.get("decision_context"):
+                            for metric, values in DecisionRegionScores(
+                                    self._decision_context_rows(val)).score(curve, yv).items():
+                                part[metric] = values
                         results.append(part)
                         # Retain both exact grids/maps/mixtures and quadrature draws.
                         # This is numerical research evidence, not a serving artifact.
@@ -3462,7 +3845,12 @@ class ChronologicalCDFStudy:
                     count[name+"_seconds"] = time.monotonic()-start
                     if hasattr(model, "_research_state"):
                         count[name+"_research_state"] = model._research_state()
-                    if isinstance(model, MixtureMLPCDF):
+                    if name == c["reference_model"]:
+                        reference_model, reference_imputer = model, imputer
+                    if isinstance(model, TorchCDF):
+                        count[name+"_losses"] = self._loss_telemetry(
+                            model, imputer, reference_model, reference_imputer, fit, cal, val)
+                    elif isinstance(model, MixtureMLPCDF):
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
                     print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
                 counts.append(count)
@@ -3516,9 +3904,19 @@ class CDFHyperparameterStudy:
         self.grouped = "candidate_groups" in e
         required = self._COMMON_KEYS | ({"candidate_groups"} if self.grouped else
                                         {"final_seeds", "screen_seed", "candidate_labels", "axes"})
-        if set(e)-required-{"notes", "public_probes", "selection_guard"} or required-set(e):
+        if set(e)-required-{"notes", "public_probes", "selection_guard", "selection_metric"} or required-set(e):
             raise ValueError("unknown or missing experiment keys")
+        metric = e.get("selection_metric", "crps")
+        if metric not in ("crps", "decision_strike_brier") or (
+                metric == "decision_strike_brier" and not c.get("decision_context")):
+            raise ValueError("invalid primary selection metric")
         guard = e.get("selection_guard")
+        if metric == "decision_strike_brier" and guard is not None:
+            guarded = [*guard.get("metrics", []), *guard.get("cell_improvement_metrics", []),
+                       *guard.get("cell_noninferiority_metrics", [])]
+            if any(name not in ("decision_bias", "decision_strike_brier") for name in guarded):
+                raise ValueError("decision selection guards must apply at decision regions")
+
         if guard is not None:
             import math
             guard_keys = {"reference", "variant", "metrics", "target", "tolerance"}
@@ -3658,6 +4056,11 @@ class CDFHyperparameterStudy:
         import pandas as pd
         f = frame.sort_values(keys).reindex(sorted(frame.columns), axis=1)
         schema = self._digest({k: str(v) for k, v in f.dtypes.items()})
+        field = self.base.get("decision_context")
+        if field and field in f:
+            f = f.copy()
+            f[field] = f[field].map(lambda value: json.dumps(value, sort_keys=True, allow_nan=False))
+
         return hashlib.sha256(schema.encode()+pd.util.hash_pandas_object(f, index=False).values.tobytes()).hexdigest()
 
     @staticmethod
@@ -3706,7 +4109,12 @@ class CDFHyperparameterStudy:
             raise ValueError("score model or variant inventory mismatch")
         if scores.duplicated([*c["identity"], "model", "variant"]).any():
             raise ValueError("duplicate score identity")
+        if self.experiment.get("selection_metric") == "decision_strike_brier":
+            ChronologicalCDFStudy(c)._validate_decision_scores(scores)
         numeric = scores.select_dtypes(include="number")
+        if self.experiment.get("selection_metric") == "decision_strike_brier":
+            numeric = numeric.drop(columns=["decision_strike_brier", "decision_bias"], errors="ignore")
+
         if not np.isfinite(numeric.to_numpy()).all():
             raise ValueError("nonfinite score; cells cannot be silently dropped")
         for name in models:
@@ -3718,9 +4126,10 @@ class CDFHyperparameterStudy:
 
     def _rank(self, scores):
         c = self.base
-        means = scores.groupby([c["group"], c["horizon"], "model", "variant"]).crps.mean().unstack(["model", "variant"])
+        metric = self.experiment.get("selection_metric", "crps")
+        means = scores.groupby([c["group"], c["horizon"], "model", "variant"])[metric].mean().unstack(["model", "variant"])
         if means.isna().any().any() or (means[(c["reference_model"], "raw")] <= 0).any():
-            raise ValueError("incomplete cells or nonpositive reference CRPS")
+            raise ValueError("incomplete cells or nonpositive reference primary score")
         return means.div(means[(c["reference_model"], "raw")], axis=0).mean()
 
     def _guard(self, scores, candidates):
@@ -3824,6 +4233,8 @@ class CDFHyperparameterStudy:
             variants[name] = min(("raw", "calibrated"), key=lambda v: rank[(name, v)])
         variants[c["reference_model"]] = "raw"
         payload = {"models": selected, "variants": variants, "ranking": rankings,
+                   "selection_metric": e.get("selection_metric", "crps"),
+                   "skill_pct": {key: 100*(1-value) for key, value in rankings.items()},
                    "selection_guard": self.experiment.get("selection_guard"),
                    "selection_guard_evidence": guard_evidence,
                    "screen_spec_hash": self._digest(screen_specs), "final_spec_hash": self._digest(selected),

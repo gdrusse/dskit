@@ -256,13 +256,18 @@ Keep both trees current when files are added or removed.
 
 ## Math in Markdown (must render on GitHub)
 
-Two commits (`d85a377`, `8c269a4`) fixed this same mistake. For any `.md`:
+Fixed repeatedly (`d85a377`, `8c269a4`, the `\tag` sweep). For any `.md`:
 
 - **Display math: a ```` ```math ```` fence** — never `$$…$$` or `\[…\]`.
   GitHub applies markdown escapes inside `$$`, so `\{ \} \; \, \\` lose
   their backslash and `aligned`/`cases` blocks break.
 - **Inline math: `$…$`** — never `\(…\)` or bare `(…)`. No backslash before
   punctuation inside it: write `\lbrace`/`\rbrace`, or use `` $`…`$ ``.
+  Never put `_` right after `}` or `)`; GitHub reads it as italics: write
+  `Q_j^{\text{hi}}`, not `Q^{\text{hi}}_j`.
+- **No `\tag{n}`.** GitHub serves math as native MathML, where a tag becomes
+  `<mlabeledtr>`, which browsers do not draw: every symbol stacks on its own
+  line. Number an equation as `\qquad\text{(n)}`.
 
 ## Configuration standards
 
