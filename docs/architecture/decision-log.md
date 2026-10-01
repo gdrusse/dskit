@@ -28531,3 +28531,75 @@ monotonic endpoints, shrinkage, sparse-history refusal, radius selection,
 block-bound determinism, no-trade ties and immutable JSON identity. A
 standalone memo, action journal and RE-ENTRY update are required. Luna review
 must resolve all Critical/Major findings before push.
+
+## ADR-0204 — Decision-region CDF audit and robust condor research
+
+**Owner approval:** the 2026-09-30 request to launch the robustification
+workflow and implement the idea authorizes this bounded offline design. Base
+`13b3cfc8`; worktree `codex/condor-robustification`. No trading, serving,
+paper execution, production promotion, or merge is authorized.
+
+The frozen physical CDF is currently ranked primarily by equal-cell CRPS and
+diagnosed at synthetic standardized strikes. That cannot establish accuracy
+at the strikes and wing intervals available in an entry-time chain. Audit
+frozen candidates on identical purged out-of-fold rows, using a chain snapshot
+available by the declared decision clock. The present annual options archive
+contains a quote **date**, not a source timestamp. For that archive, define the
+research clock after both the date's close and complete chain snapshot; use
+strikes only as diagnostic thresholds, and treat bid/ask selection as indicative
+and nonexecutability-qualified. A true executable-choice study requires
+timestamped source quotes at or before the decision time, a predeclared maximum
+quote age, bid/ask/size checks and matching expiry/settlement identity; refuse
+its execution claim if any are absent. Construct the entire feasible
+one-lot condor set before scoring any model or observing settlement. Fix a
+common nonnegative threshold weight from all eligible wing intervals, with a
+positive global floor. Report strike Brier, proper weighted CRPS, full CRPS,
+capped spread/condor loss bias and error, and no-trade-aware selection regret.
+Group by index, requested tenor, wing region and predeclared regime; actual
+DTE remains evaluation metadata and never a predictor. Development decides
+any model change; already inspected 2019–2025 results are descriptive.
+The first pilot is explicitly restricted to raw `GridCurve` archives; other
+curve families must receive their own exact/atom-aware integral before joining
+the decision audit. Tied knots are probability atoms and must not be smeared
+by price-grid trapezoids.
+
+The numerical owner is a generic distribution-grid and one-dimensional
+transport-loss optimizer in `dskit.pipeline.libs`; index-option quote and
+four-leg eligibility remain in the child. Clip support outside every eligible
+strike, include all payoff kinks, create nonnegative masses summing to one, and
+audit direct-CDF versus grid expected loss and candidate ranking at declared
+mesh tolerances. On one shared entry-date grid, maximize each candidate's
+expected bounded loss over nonnegative masses within a dimensionless
+spot-scaled $W_1$ radius of the nominal masses. Enumerate candidates and choose
+the highest positive worst-case net value, otherwise no trade. Quote-side
+credit, fees, wing/capital limits and exercise/settlement restrictions are
+part of entry eligibility; if the available historical ETF archive is used,
+its American exercise charge is reported separately and it is never called an
+index-option replay.
+
+Calibrate a fixed radius rule from previously settled OOF errors only. Freeze
+the candidate radius grid, calibration lookback, minimum independent date
+blocks, loss-bound coverage target, and opportunity-cost tie break in JSON.
+Choose the smallest radius whose aggregate robust expected-loss bound covers
+the corresponding average realized capped loss under a declared one-sided
+date-block uncertainty check across the full predeclared candidate set; use
+coarser fixed blocks longer than maximum holding tenor, keep all same-date
+indexes together, and disclose residual cross-block expiry dependence. Freeze
+the chosen radius before evaluating the next entry date; sparse history means
+no trade. Zero radius must reproduce nominal selection. Refuse stale,
+incomplete, duplicate, invalid or look-ahead calibration records. Add local
+CDF bands only in a separate jointly calibrated ablation, after $W_1$ alone,
+without counting the same calibration error twice. The ambiguity set is a
+calibrated stress family, not conditional-CDF coverage or a realized-profit
+guarantee. Every stage is driven by standardized JSON and capped at 30 minutes
+and 6 GiB; no one-off execution script or full suite is required. Require
+focused RED/GREEN and two independent final review lenses with zero unresolved
+Critical/Major before publication; do not merge.
+
+Acceptance matrix: identical entry identities and eligibility for every CDF;
+valid ordered/quoted four-leg candidates and no-trade; positive fixed weights
+and true Bernoulli strike events; direct-CDF/grid loss agreement at a declared
+mesh tolerance; nonnegative unit-sum mass and a nonempty shared $W_1$ set;
+zero-radius nominal parity and nondecreasing worst loss as radius grows;
+causal settlement cutoffs and a refusal for undated executable quotes. Each
+boundary gets a focused valid case and a malformed/look-ahead refusal.

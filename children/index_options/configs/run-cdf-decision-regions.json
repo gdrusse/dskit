@@ -1,0 +1,48 @@
+{
+  "decision_study": {
+    "forecast_root": "/home/russell/dskit-cdf-option-surface/children/index_options/pipeline_runs/predictive_cdf_center_transport_20260930",
+    "partition": "late",
+    "models": {
+      "horizon_empirical": "raw",
+      "research_incumbent": "raw",
+      "center_index_horizon_transport_prior50": "raw"
+    },
+    "symbols": ["SPY", "QQQ", "IWM"],
+    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+    "output": "/home/russell/dskit-condor-robustification/children/index_options/pipeline_runs/cdf_decision_regions_v5_20260930",
+    "max_rows_per_symbol": 20,
+    "limits": {
+      "max_seconds": 1800,
+      "max_address_space_mib": 6144,
+      "max_chain_rows": 100000,
+      "max_grid_nodes": 4001
+    },
+    "underlying": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "optionshist-chain",
+      "since_ms": 1167609600000,
+      "carry_rate": 0.055
+    },
+    "strata": {
+      "tenor_days": [7, 21],
+      "iv": [20, 30],
+      "wing_log_moneyness": [0.02, 0.05]
+    },
+    "chain_rule": {
+      "max_abs_log_moneyness": 0.1,
+      "min_wing_width": 5.0,
+      "max_wing_width": 5.0,
+      "max_candidates": 5000,
+      "fee_per_leg": 0.5,
+      "multiplier": 100
+    },
+    "audit": {
+      "price_step": 0.5,
+      "support_margin_fraction": 0.02,
+      "mesh_tolerance": 0.5,
+      "floor": 0.1,
+      "radius": 0.0
+    },
+    "notes": "Predeclared 2025 spaced-row pilot over frozen raw CDFs; prior 2019-2025 outcomes are already inspected. Annual archive has quote dates only, so credit and regret are indicative after-close diagnostics, not executable results. Radius zero isolates the nominal decision-region audit; a separate settled-OOF radius calibration gate is required before robust claims."
+  }
+}
