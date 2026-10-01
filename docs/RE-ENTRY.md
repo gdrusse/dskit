@@ -1,5 +1,23 @@
 # Re-entry
 
+## CDF branches consolidated; decision-region signal path frozen (2026-09-30)
+
+- Merged the risk-neutral, dynamic-tail, point-in-time feature, decision-region,
+  and robust-condor lines on `codex/cdf-session-consolidation`. Parallel strategy
+  history keeps ADR-0193--0197/A0611--A0612; the CDF continuation is renumbered
+  ADR-0198--0206/A0613--A0620 without overwriting either record.
+- The merged affected suites pass 225 tests with 26 dependency warnings.
+- Historical signal exists but is not yet deployment-grade: option transport
+  showed +4.38%/+4.70% SPY/QQQ strike-Brier skill and +8.29%/+8.34% bounded
+  condor-loss-MSE skill versus empirical, while failing development tail guards.
+  The 60-forecast actual-listed-wing screen showed only ~0.33% incumbent skill
+  versus empirical, and GPD/causal isotonic challengers did not improve it.
+- Next: one bounded actual-listed-wing comparison of empirical, governed
+  physical, option transport, and a tail-constrained blend. Require positive
+  block-supported local skill for both SPY and QQQ before more optimizer tuning.
+  Memo: `children/index_options/docs/memos/2026-09-30-decision-region-signal-synthesis.md`.
+
+
 ## ADR-0206 causal correction and robust condor completed (2026-09-30)
 
 - Implemented a JSON-driven strictly settled strike-event isotonic correction
