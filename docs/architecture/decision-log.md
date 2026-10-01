@@ -29184,23 +29184,33 @@ keeps its own strict CDF `end > date`; until then its copy and
   fold, oldest first (`fold`, `role`, ISO `train_start/end`, `val_start/end`,
   `train_dates`, `val_dates`, `train_weeks`, `val_weeks`, `purged` = cohort
   dates between train end and val start: the per-fold purge count) and
-  `metrics` {`folds`, `scored`, `warmup_weeks`}. `role` is `warmup` for the
-  oldest `warmup_folds` folds, else `scored`. ALL selection (feature selection,
-  model zoo, HPO: steps 4-6) runs ONLY on warm-up folds; scored folds refit
-  parameters per fold with every choice frozen and are the only evidence.
-  Every warm-up fold precedes every scored fold and the val windows are
-  disjoint (`step_n >= val_n`). `warmup_weeks` = distinct (ISO year, ISO week)
-  over the UNION of warm-up val windows, one owner (the per-fold `val_weeks`
-  sum overcounts weeks adjacent windows share); 0 at `warmup_folds` 0. Under
-  `warmup_folds + 1` folds refuses.
+  `metrics` {`folds`, `scored`, `warmup_weeks`, `scored_start`}. `role` is
+  `warmup` for the oldest `warmup_folds` folds, else `scored`. ALL selection
+  (feature selection, model zoo, HPO: steps 4-6) runs ONLY on warm-up folds;
+  scored folds refit parameters per fold with every choice frozen and are the
+  only evidence. Every warm-up fold precedes every scored fold and the val
+  windows are disjoint (`step_n >= val_n`). `warmup_weeks` = distinct (ISO
+  year, ISO week) over the UNION of warm-up val windows, one owner (the
+  per-fold `val_weeks` sum overcounts weeks adjacent windows share); 0 at
+  `warmup_folds` 0. `scored_start` = the first scored fold's `val_start` (ISO
+  date): the warm-up/scored seam, as `holdout_start` is the dev/holdout seam;
+  always defined, since fewer than `warmup_folds + 1` folds refuses.
 
-**Outputs.** Holdout metrics -> `table-write`; admitted families, training
-dates and the fold table -> `records-write`. A consumer pins the table file by
-`provenance.sha256` (records files: `metrics.sha256`) and `holdout_start` AND
-`holdout_end` by VALUE, never re-cutting: appended rows would grow the "frozen"
-final test, and a fraction cut and an end-anchored grid both move when dates
-are added. Steps 4-6 pin the warm-up set by `role == warmup`, never by fold
-count, and choose nothing from a scored val window. Steps 1-2 used
+**Outputs.** Holdout and plan metrics -> `table-write`; admitted families,
+training dates and the fold table -> `records-write`. A consumer pins the table
+file by `provenance.sha256` (records files: `metrics.sha256`) and
+`holdout_start` AND `holdout_end` by VALUE, never re-cutting: appended rows
+would grow the "frozen" final test, and a fraction cut and an end-anchored grid
+both move when dates are added. Steps 4-6 pin the warm-up set by `role ==
+warmup`, never by fold count, choose nothing from a scored val window, and
+consume `scored_start` by VALUE from the persisted plan metrics. **Seam rule
+(decided here, binding on steps 4-6):** a selection step MUST drop every
+warm-up val row with `label_reaches(end, scored_start)` (the holdout purge's
+one owner and rule), so no choice was made on a label that settles inside
+scored evidence. Warm-up train rows cannot reach it (their ends precede their
+fold's val start, by the embargo). Each steps 4-6 ADR MUST pin the drop (end ==
+`scored_start` dropped, a day earlier kept; no selection input reaches
+`scored_start`). Steps 1-2 used
 whole-history availability (no target values); only admission and folds are
 pre-holdout.
 
@@ -29220,9 +29230,12 @@ still leaves C1, swept on these rows (the sweep goes in the notes): k=3 41
 weeks, 13 scored (fails C5); **k=4 56 weeks over 160 dates, 12 scored**; k=5
 70, 11; k=6 80, 10; k>=7 fails C1. So `warmup_folds` 4, and `train_n`, `val_n`,
 `step_n` need no re-derivation; C4 needs 450 + 14 x 40 = 1,010 of 1,096. C1-C5
-hold. AMZN (90 dates) fails; the plan refuses. PROVISIONAL: step 2's rebuild
-drops its CDF filter, so the values, `warmup_folds` included, are re-derived,
-not merely re-tested, on the rebuilt rows.
+hold, C5 also after the seam drop: `scored_start` is 2022-07-22 (fold 5), and
+the 3 warm-up val rows 2022-07-15, -18, -20 settle 07-22, -25, -27 and are
+dropped, which costs 2022-W29 only: 55 weeks remain. AMZN (90 dates) fails;
+the plan refuses. PROVISIONAL: step 2's rebuild drops its CDF filter, so the
+values, `warmup_folds` included, are re-derived, not merely re-tested, on the
+rebuilt rows.
 
 **Pins, toolkit** (synthetic rows): contract, `KIND_EFFECTS`, `__all__` exact,
 every refusal above (incl. empty dev set: 2 dates, fraction 0.5, date 1's end
@@ -29244,7 +29257,10 @@ warm-up fold and val date precedes every scored one, val sets disjoint (also at
 date` accepted at embargo 0; `embargo_days` materialized as 7.0 is int 7, and
 `"x"`, `True`, a negative refuse; one literal golden fold table with `role` and
 `warmup_weeks` (30 daily dates, `val_n` 5, `step_n` 5, `train_n` 10, embargo 2,
-warmup 2: 3 folds, roles warmup, warmup, scored).
+warmup 2: 3 folds, roles warmup, warmup, scored; `scored_start` = fold 3's
+`val_start`). `scored_start` equals the `val_start` of the first `scored` row,
+and exceeds every warm-up `val_end`, at `warmup_folds` 0 (fold 1's), 1, n and
+at `step_n = 2 x val_n`.
 `import dskit.pipeline` registers both kinds (cf.
 `TestBothRegistersReachableFromThePackage`); `register()` adds exactly the two,
 `owned=False`, idempotent, never shadows. E2e under
@@ -29261,8 +29277,12 @@ distinct DTE, no literal embargo; every node after the cut reads `$cut.records`;
 C1-C5 on the committed rows (`warmup_folds` is 4, `warmup_weeks` >= 52, scored
 >= 10); the `warmup_folds` notes quote the k = 3..6 sweep and the test
 recomputes each (k, weeks, scored) from the committed rows and finds it in the
-notes, so the note cannot drift; the AMZN refusal sits in `stock_options` on its
-own rows (no cross-child read).
+notes, so the note cannot drift; the persisted `scored_start` equals the first
+`scored` fold's `val_start`, and the notes quote it with the seam count (rows
+with `date` in a warm-up val window and `settlement_date >= scored_start`) and
+the post-drop weeks, both recomputed from the committed rows (C5 holds on the
+post-drop weeks); the AMZN refusal sits in `stock_options` on its own rows (no
+cross-child read).
 
 **Touched.** New `dskit/pipeline/kinds_split.py` and
 `tests/pipeline/test_kinds_split.py`; `kinds_flow.py` and its tests do not
@@ -29273,9 +29293,10 @@ fails until both kinds are classified), and the kind table and trees in
 `dskit/pipeline/README.md`, `CLAUDE.md` and `AGENTS.md`. Later:
 `index_options/tests/test_configs.py` and
 `stock_options/tests/test_package_boundary.py` (ADR-0212 manifest).
-**Caveat:** labels overlap inside a window, so effective n < dates; the last
-warm-up val labels also reach up to `embargo_days` into the first scored val
-window, so frozen choices saw them. Proposed: a selection consumer drops
-warm-up val rows with `label_reaches(end, first scored val_start)`. A consumer
-rule; nothing changes here. **Non-goals:** selection consumers (steps 4-6),
+**Caveat:** labels overlap inside a window, so effective n < dates. The last
+warm-up val labels reach up to `embargo_days` into the first scored val window;
+the plan emits `scored_start` and the seam rule above makes the consumer drop
+those rows, so scored folds stay a clean simulation. Scored train windows hold
+warm-up rows lawfully (parameters refit; their labels settled before `val_start`
+by the embargo). **Non-goals:** selection consumers (steps 4-6),
 final test.
