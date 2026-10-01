@@ -320,7 +320,9 @@ minimum local skill lower bound, and maximum equal-cell absolute local bias
 increase. This gate uses decision regions only; global/tail/constructed-wing
 metrics remain diagnostics. Counts retain total, eligible, excluded, threshold
 and date denominators. Final training/calibration/validation composite losses,
-components and local skill are recorded in `counts.json`; training mini-batch
+components and local skill are recorded in `counts.json` per reported group
+slice, using the actual reference model and its own fitted preprocessing. Full
+pooled fitting populations remain in each model's `_fit` counts. Training mini-batch
 curves are labelled composite, never NLL. All acceptance remains descriptive.
 
 The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the

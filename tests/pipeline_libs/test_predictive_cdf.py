@@ -1824,6 +1824,16 @@ def test_decision_hpo_end_to_end_keeps_exclusions_and_telemetry(tmp_path):
         assert values["n"] > values["eligible_n"] > 0
         assert values["decision_skill_pct"] is not None
     assert "candidate_training_nll_by_seed" not in counts[0]
+    scores = pd.read_parquet(tmp_path/"hpo/report/scores.parquet")
+    scores.loc[scores.model == "candidate", ["crps", "tail_crps"]] *= 1000
+    scores.loc[scores.model == "candidate", ["below_05", "above_95"]] = .99
+    destination = tmp_path/"perturbed"
+    destination.mkdir()
+    altered = ChronologicalCDFStudy({
+        **config["study"], "models": chosen["models"], "output": str(destination)})
+    second = altered.summarize(scores, chosen["variants"])
+    assert second["decision_acceptance"] == report["decision_acceptance"]
+
 
 
 @pytest.mark.parametrize("defect", ["eligibility", "missing", "zero_reference"])
@@ -1849,3 +1859,82 @@ def test_decision_pairing_and_denominator_refuse(tmp_path, defect):
     with pytest.raises(ValueError):
         study._check_scores(scores, expected, ["reference", "candidate"])
         study._rank(scores)
+
+
+@pytest.mark.parametrize("loss_kind", ["brier", "log"])
+@pytest.mark.parametrize("threshold", [.7, -.7, .1])
+@pytest.mark.parametrize("direction", [-1, 0, 1])
+def test_decision_threshold_precision_at_equality_and_neighbors(threshold, direction, loss_kind):
+    import torch
+    y = np.nextafter(threshold, -np.inf if direction < 0 else np.inf) if direction else threshold
+    scorer = predictive_cdf.DecisionRegionScores([
+        {"identity": ["row"], "thresholds": [threshold], "weights": [1.]}])
+    curve = MixtureCurve([[1]], [[threshold-1.2815515655446004]], [[1]])
+    truth = float(y <= threshold)
+    p = curve.cdf([[threshold]])[0, 0]
+    score = scorer.score(curve, [y])
+    assert score["decision_strike_brier"][0] == pytest.approx((p-truth)**2, abs=1e-12)
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=[
+        {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}],
+        device="cpu")
+    model.fit_decision_context([{"identity": ["row"], "thresholds": [threshold],
+                                 "weights": [1.]}], [])
+    target = model._target_tensor(np.array([y]))
+    context = model._training_context(np.zeros((1, 1)))
+    loss_class = predictive_cdf._CDFDecisionBrier if loss_kind == "brier" else predictive_cdf._CDFDecisionLog
+    values, eligible = loss_class.values(
+        target, torch.zeros((1,1)), torch.tensor([[threshold-1.2815515655446004]]),
+        torch.ones((1,1)), context)
+    assert eligible.item()
+    expected_loss = (p-truth)**2 if loss_kind == "brier" else -np.log(p if truth else 1-p)
+    assert values.item() == pytest.approx(expected_loss, abs=1e-7)
+
+
+@pytest.mark.parametrize("candidate_pooled,reference_pooled", [(True,False),(False,True)])
+def test_torch_telemetry_reuses_configured_reference_population(
+        tmp_path, candidate_pooled, reference_pooled):
+    import json
+    config, frame = _decision_hpo_fixture(tmp_path)
+    c = config["study"]
+    c["models"]["reference"]["pooled"] = reference_pooled
+    candidate = config["experiment"]["candidates"]["candidate"]
+    candidate["pooled"] = candidate_pooled
+    # Reference order must not be an undeclared dependency.
+    c["models"] = {"candidate": candidate, **c["models"]}
+    frame.loc[frame.unit == "B", "y"] += 5
+    study = ChronologicalCDFStudy(c)
+    scores = study.run(frame)
+    counts = json.loads((tmp_path/"unused/counts.json").read_text())
+    for row in counts:
+        actual = scores[(scores.unit==row["group"]) & (scores.year==row["year"])
+                        & (scores.model=="reference") & (scores.variant=="raw")]
+        report = row["candidate_losses"]["validation"]
+        assert report["reference_decision_brier"] == pytest.approx(actual.decision_strike_brier.mean())
+        if actual.decision_strike_brier.mean() == 0:
+            assert report["decision_skill_pct"] is None
+        else:
+            candidate_rows = scores[(scores.unit==row["group"]) & (scores.year==row["year"])
+                        & (scores.model=="candidate") & (scores.variant=="raw")]
+            assert report["decision_skill_pct"] == pytest.approx(
+                100*(1-candidate_rows.decision_strike_brier.mean()/actual.decision_strike_brier.mean()))
+
+
+@pytest.mark.parametrize("defect", ["duplicate", "missing", "negative", "ragged", "width"])
+def test_torch_gru_refuses_invalid_feature_partitions(defect):
+    encoder = {"kind": "gru", "sequence_indices": [[2], [1], [0]],
+               "context_indices": [3], "hidden_size": 4, "num_layers": 1}
+    if defect == "duplicate":
+        encoder["context_indices"] = [0, 3]
+    elif defect == "missing":
+        encoder["context_indices"] = []
+    elif defect == "negative":
+        encoder["sequence_indices"][0] = [-1]
+    elif defect == "ragged":
+        encoder["sequence_indices"][0] = [2, 4]
+    else:
+        encoder["hidden_size"] = 0
+    with pytest.raises(ValueError):
+        model = predictive_cdf.TorchCDF(encoder=encoder, losses=[
+            {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}],
+            device="cpu")
+        model._build_module(4)

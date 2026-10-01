@@ -2270,6 +2270,10 @@ class MixtureMLPCDF(CDFEstimator):
         with self._deterministic_context():
             return self._fit(x, y, cal_x, cal_y)
 
+    def _target_tensor(self, y):
+        import torch
+        return torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+
     def _fit(self, x, y, cal_x, cal_y):
         import gc
         import torch
@@ -2283,7 +2287,7 @@ class MixtureMLPCDF(CDFEstimator):
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         self.scaler = StandardScaler().fit(features)
         xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
-        yy = torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
+        yy = self._target_tensor(y)
         training_context = self._training_context(x)
         self.models, self.losses = [], []
         for seed in self.seeds:
@@ -2420,7 +2424,7 @@ class DecisionRegionScores:
         """Return padded thresholds, normalized masses and observation counts."""
         import numpy as np
         width = max(1, max((len(v) for v, _ in self.inventory), default=0))
-        thresholds = np.zeros((len(self.inventory), width), dtype="float32")
+        thresholds = np.zeros((len(self.inventory), width), dtype="float64")
         weights = np.zeros_like(thresholds)
         for row, (values, mass) in enumerate(self.inventory):
             thresholds[row, :len(values)] = values
@@ -2575,6 +2579,10 @@ class TorchCDF(MixtureMLPCDF):
         self._fit_context = DecisionRegionScores(fit_context)
         DecisionRegionScores(cal_context)
         return self
+
+    def _target_tensor(self, y):
+        import torch
+        return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
 
     def _build_module(self, features):
         return self.encoder.build(self, features)
@@ -3322,16 +3330,9 @@ class ChronologicalCDFStudy:
                 raise ValueError("unpaired decision eligibility or identities")
             reference = shape
 
-    def _loss_telemetry(self, model, imputer, fit, cal, val):
-        import importlib
+    def _loss_telemetry(self, model, imputer, baseline, baseline_imputer, fit, cal, val):
         import numpy as np
         c = self.config
-        spec = c["models"][c["reference_model"]]
-        module, name = spec["class"].split(":")
-        baseline = getattr(importlib.import_module(module), name)(**spec["params"])
-        x, xc = [imputer.transform(b[c["features"]]) for b in (fit, cal)]
-        y, yc = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (fit, cal)]
-        baseline.fit(x, y, xc, yc)
         result = {}
         for label, band in (("training", fit), ("calibration", cal), ("validation", val)):
             bx = imputer.transform(band[c["features"]])
@@ -3340,7 +3341,8 @@ class ChronologicalCDFStudy:
             report = model.loss_report(bx, by, context)
             scorer = DecisionRegionScores(context)
             candidate = scorer.score(model.curve(bx), by)["decision_strike_brier"]
-            reference = scorer.score(baseline.curve(bx), by)["decision_strike_brier"]
+            reference = scorer.score(baseline.curve(
+                baseline_imputer.transform(band[c["features"]])), by)["decision_strike_brier"]
             paired = band[[c["group"], c["horizon"]]].copy()
             paired["candidate"], paired["reference"] = candidate, reference
             means = paired.groupby([c["group"], c["horizon"]])[["candidate", "reference"]].mean().dropna()
@@ -3348,6 +3350,7 @@ class ChronologicalCDFStudy:
                                             if len(means) and (means.reference > 0).all() else None)
             report["decision_brier"] = float(np.nanmean(candidate)) if report["eligible_n"] else None
             report["reference_decision_brier"] = float(np.nanmean(reference)) if report["eligible_n"] else None
+            report["scope"] = "reported_group_slice"
             report["dates"] = int(band[c["date"]].nunique())
             report["eligible_dates"] = int(band.loc[np.isfinite(candidate), c["date"]].nunique())
             report["excluded_n"] = report["n"]-report["eligible_n"]
@@ -3731,7 +3734,9 @@ class ChronologicalCDFStudy:
                                    "first": band[c["date"]].min(), "last": band[c["date"]].max(),
                                    "latest_label": band[c["end"]].max()}
                 yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
-                for name, spec in c["models"].items():
+                model_items = sorted(c["models"].items(),
+                                     key=lambda item: item[0] != c["reference_model"])
+                for name, spec in model_items:
                     start = time.monotonic()
                     key = (year, name, json.dumps(spec, sort_keys=True))
                     pooled = spec.get("pooled", False)
@@ -3824,11 +3829,11 @@ class ChronologicalCDFStudy:
                     count[name+"_seconds"] = time.monotonic()-start
                     if hasattr(model, "_research_state"):
                         count[name+"_research_state"] = model._research_state()
+                    if name == c["reference_model"]:
+                        reference_model, reference_imputer = model, imputer
                     if isinstance(model, TorchCDF):
-                        telemetry_fit, telemetry_cal, _ = self._split_validated(
-                            frame if pooled else group_frame, year, c["date"], c["end"])
                         count[name+"_losses"] = self._loss_telemetry(
-                            model, imputer, telemetry_fit, telemetry_cal, val)
+                            model, imputer, reference_model, reference_imputer, fit, cal, val)
                     elif isinstance(model, MixtureMLPCDF):
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
                     print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
