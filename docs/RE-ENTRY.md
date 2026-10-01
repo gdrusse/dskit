@@ -1,5 +1,15 @@
 # Re-entry
 
+## Stock-options source audit proposed (2026-10-01)
+
+- ADR-0211 proposes a separate thin `children/stock_options`; no child, code or
+  backtest exists. AMZN is the baseline and MSFT the replication candidate.
+- Pulled 7,390 AMZN price rows and 69,043 valid AMZN daily option trade bars in
+  the 30-45 DTE window. Historical bid/ask quotes remain unavailable for free.
+- Memo: `docs/memos/2026-09-30-stock-options-source-and-starting-symbol.md`.
+- Next: approve ADR-0211's exact structure and refusal gates, then select
+  point-in-time earnings/ex-dividend sources before any strategy run.
+
 ## QQQ decision-strike diagnosis completed (2026-10-01)
 
 - Frozen raw wide MLP versus horizon empirical; no retraining or reselection.
