@@ -13,7 +13,15 @@ import json
 from pathlib import Path
 import time
 
-from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
+from dskit.pipeline.node import (
+    JsonArtifact,
+    Node,
+    TrainableNode,
+    check_int_param,
+    reject_unknown_params,
+)
+from dskit.pipeline.records import cluster_of, number_ok
+from dskit.pipeline.split_policy import SPLIT_NAMES, SplitFrame
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "BetaTransformedCurve", "CDFEstimator",
@@ -27,7 +35,8 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel",
+           "CDFEstimatorModel"]
 
 
 class CDFThresholdAudit:
@@ -4806,3 +4815,288 @@ class OptionCDFPanel(Node):
                 "options": JsonArtifact({"contracts": inputs["contracts"],
                                          "observations": observations}),
                 "cdfs": JsonArtifact(curves), "summary": summary}
+
+
+def _node_field(row, name):
+    """Read one row field attr-or-key (the kinds_flow convention)."""
+    if isinstance(row, dict):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def _node_number(value):
+    """``value`` as a float by the envelope's own number rule, else ``None``."""
+    return float(value) if number_ok(value) else None
+
+
+class CDFEstimatorModel(TrainableNode):
+    """Fit a predictive-CDF estimator on feature rows and emit draw forecasts.
+
+    The walk-forward fit seam for this pack's :class:`CDFEstimator` family. It
+    ingests the HPO phase's frozen winner — ``estimator`` (``"module:Class"``)
+    and ``estimator_params`` — fits it on the declared ``fit_split`` with the
+    study's own convention (standardized outcome = ``target`` / ``reference``,
+    features median-imputed, decision context attached before the fit when a
+    ``decision_context`` field is declared), and emits one row per input row
+    carrying midpoint-quantile draws (``samples_field``), the standardized
+    outcome (``outcome_field``) and the divisor (``reference_scale``), so
+    :class:`~dskit.pipeline.distribution_scores.ScoreDistributions` scores it on
+    the walk's val split. Consumes the records :class:`OptionCDFPanel` emits.
+
+    The fitted state is numpy/torch/lightgbm and is NOT JSON-persisted: a fold
+    fits fresh each time. ``mode="load"`` is refused by name — serving a CDF
+    from a pinned artifact is a separate seam this node does not grant.
+    Calibration (the study's ``CalibratedCurve``) is not applied here: it needs
+    a disjoint calibration band, which a walk-forward fold does not carve.
+
+    Parameters
+    ----------
+    params : dict
+        ``estimator`` (``"module:Class"``, required), ``estimator_params``
+        (dict, default ``{}``), ``features`` (non-empty list of distinct row
+        field names, required), ``target`` (raw outcome field, required),
+        ``reference`` (divisor field, required), ``fit_split`` (default
+        ``"train"``), ``n_samples`` (int >= 2, default 200), ``samples_field``
+        / ``outcome_field`` (default ``"samples"`` / ``"outcome"``),
+        ``decision_context`` (optional row field naming the per-row
+        ``{"identity", "thresholds", "weights"}`` inventory a decision-aware
+        estimator such as :class:`TorchCDF` reads).
+
+    Examples
+    --------
+    Fit the torch MLP on the walk's train split::
+
+        node = CDFEstimatorModel("model", {
+            "estimator": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+            "estimator_params": {"components": 1, "hidden": [16], "device": "cpu"},
+            "features": ["rn_q_0050", "rn_q_2500", "rn_q_5000", "rn_q_7500", "rn_q_9500"],
+            "target": "terminal_return", "reference": "reference_scale",
+        })
+    """
+
+    role = "train"
+    outputs = ("rows", "metrics")
+
+    _PARAMS = (
+        "estimator", "estimator_params", "features", "target", "reference",
+        "fit_split", "n_samples", "samples_field", "outcome_field",
+        "decision_context",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if "estimator" not in params:
+            problems.append("estimator is required — a 'module:Class' import path")
+        else:
+            est = params["estimator"]
+            if (not isinstance(est, str) or est.count(":") != 1
+                    or not all(est.split(":"))):
+                problems.append(
+                    f"estimator must be a 'module:Class' import path, got {est!r}"
+                )
+        est_params = params.get("estimator_params", {})
+        if not isinstance(est_params, dict):
+            problems.append(f"estimator_params must be a dict, got {est_params!r}")
+        if "features" not in params:
+            problems.append("features is required — the row keys the estimator reads")
+        else:
+            features = params["features"]
+            if (not isinstance(features, (list, tuple)) or not features
+                    or any(not isinstance(f, str) or not f for f in features)
+                    or len(set(features)) != len(features)):
+                problems.append(
+                    "features must be a non-empty list of distinct row field names"
+                )
+        for knob in ("target", "reference"):
+            if knob not in params:
+                problems.append(f"{knob} is required — the row key it reads")
+            elif not isinstance(params[knob], str) or not params[knob]:
+                problems.append(f"{knob} must be a non-empty row key")
+        split = params.get("fit_split", "train")
+        if split not in SPLIT_NAMES:
+            problems.append(
+                f"fit_split must name one of {list(SPLIT_NAMES)}, got {split!r}"
+            )
+        check_int_param(problems, "n_samples", params.get("n_samples", 200), ge=2)
+        for knob in ("samples_field", "outcome_field"):
+            value = params.get(knob, "x")
+            if not isinstance(value, str) or not value:
+                problems.append(f"{knob} must be a non-empty string")
+        context = params.get("decision_context")
+        if context is not None and (not isinstance(context, str) or not context):
+            problems.append("decision_context must be a non-empty row key, or absent")
+        return problems
+
+    def validate_common_inputs(self, inputs):
+        """Problems that hold in either mode, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``rows``, the stream the node fits on and emits from.
+
+        Returns
+        -------
+        list of str
+            One problem when ``rows`` is not a list.
+        """
+        if not isinstance(inputs.get("rows"), list):
+            return ["rows must be a list of forecast rows"]
+        return []
+
+    def run_train(self, ctx, inputs):
+        """Fit the estimator on ``fit_split`` and emit draw forecasts.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Its ``splits`` decide which rows are fit on.
+        inputs : dict
+            ``rows``, the whole stream.
+
+        Returns
+        -------
+        dict
+            ``rows`` (one forecast row per input row) and ``metrics``.
+
+        Raises
+        ------
+        ValueError
+            When ``fit_split`` matches no row, a fit row's standardized outcome
+            is not finite, or a decision-aware estimator lacks its context.
+        """
+        import numpy as np
+        from sklearn.impute import SimpleImputer
+
+        params = self.params
+        features = list(params["features"])
+        target, reference = params["target"], params["reference"]
+        fit_split = params.get("fit_split", "train")
+
+        rows = inputs["rows"]
+        fit_rows = self._fit_rows(ctx, rows, fit_split)
+
+        module, cls = params["estimator"].split(":")
+        est_cls = getattr(importlib.import_module(module), cls)
+        model = est_cls(**dict(params.get("estimator_params") or {}))
+
+        x = np.asarray(
+            [[_node_number(_node_field(r, f)) for f in features] for r in fit_rows],
+            dtype=float)
+        y = np.asarray(
+            [_node_number(_node_field(r, target))
+             / _node_number(_node_field(r, reference)) for r in fit_rows],
+            dtype=float)
+        if not np.isfinite(y).all():
+            raise ValueError(
+                f"{self.key}: a fit row has a non-finite standardized outcome "
+                f"({target}/{reference}); every fit row needs a finite nonzero "
+                f"{reference}"
+            )
+        imputer = SimpleImputer(strategy="median", keep_empty_features=True)
+        x = imputer.fit_transform(x)
+        if hasattr(model, "fit_decision_context"):
+            if not self.params.get("decision_context"):
+                raise ValueError(
+                    f"{self.key}: {params['estimator']} is decision-aware and "
+                    "needs the decision_context row field declared"
+                )
+            model.fit_decision_context(
+                self._context_rows(fit_rows), self._context_rows(fit_rows))
+        # The calibration band is the fit band here: the MLP family validates
+        # cal_x for shape and ignores cal_y, so no label leaks. An estimator
+        # that CONSUMES calibration labels needs a declared cal band, which a
+        # walk-forward fold does not carve.
+        model.fit(x, y, x, y)
+
+        emitted = self._emit(model, imputer, rows)
+        self.log.info(
+            "fitted %s on %d of %d row(s); emitted %d forecast row(s)",
+            params["estimator"], len(fit_rows), len(rows), len(emitted),
+        )
+        return {"rows": emitted, "metrics": {
+            "n_rows": float(len(emitted)),
+            "n_fit_rows": float(len(fit_rows)),
+            "n_features": float(len(features)),
+        }}
+
+    def run_load(self, ctx, inputs):
+        """Refuse a restore: this node fits fresh, never serves a pin."""
+        raise ValueError(
+            f"{self.key}: mode='load' is not supported — the fitted CDF state "
+            "is numpy/torch/lightgbm and a fold fits fresh; serving a CDF from "
+            "a pinned artifact is a separate seam this node does not grant"
+        )
+
+    def _fit_rows(self, ctx, rows, fit_split):
+        """Select the declared split's rows, or refuse by name."""
+        splits = getattr(ctx, "splits", None)
+        if splits is None:
+            raise ValueError(
+                f"{self.key}: fit_split={fit_split!r} but the run materialized "
+                "no splits — fitting on every row would leak the val split"
+            )
+        keep = [
+            row for row in rows
+            if splits.split_of(SplitFrame(
+                _node_number(_node_field(row, "asof_ms")), cluster_of(row))) == fit_split
+        ]
+        if not keep:
+            raise ValueError(f"{self.key}: fit_split={fit_split!r} matched no row")
+        return keep
+
+    def _context_rows(self, rows):
+        """Return the per-row decision inventories a decision-aware model reads."""
+        field = self.params.get("decision_context")
+        if not field:
+            return []
+        out = []
+        for row in rows:
+            record = _node_field(row, field)
+            if not isinstance(record, dict) or "identity" not in record:
+                raise ValueError(
+                    f"{self.key}: decision_context row field {field!r} must carry "
+                    "a {'identity', 'thresholds', 'weights'} inventory"
+                )
+            out.append(record)
+        return out
+
+    def _emit(self, model, imputer, rows):
+        """Project every row through the fitted estimator into draw forecasts."""
+        import numpy as np
+
+        params = self.params
+        features = list(params["features"])
+        target, reference = params["target"], params["reference"]
+        n = params.get("n_samples", 200)
+        samples_field = params.get("samples_field", "samples")
+        outcome_field = params.get("outcome_field", "outcome")
+        p = (np.arange(n) + 0.5) / n
+        emitted = []
+        for row in rows:
+            ref = _node_number(_node_field(row, reference))
+            tgt = _node_number(_node_field(row, target))
+            usable_ref = ref is not None and ref > 0
+            x = imputer.transform(np.asarray(
+                [[_node_number(_node_field(row, f)) for f in features]], dtype=float))
+            draws = None
+            if usable_ref and np.isfinite(x).all():
+                draws = [float(v) for v in model.curve(x).quantile(p)[0]]
+            outcome = None if (tgt is None or not usable_ref) else tgt / ref
+            emitted.append({**row, samples_field: draws,
+                            outcome_field: outcome, "reference_scale": ref})
+        return emitted

@@ -29117,3 +29117,48 @@ Q3: `DAY_NAMES` repointed in this slice.
 weekday; `counts` carries all seven tags, zero where no row fell; the defaults
 are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
 `_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.
+
+## ADR-0215 — Walk-forward fit node for predictive-CDF estimators (proposed, 2026-10-01)
+
+**Status: proposed.** The offline predictive-CDF estimators (`MixtureMLPCDF`,
+`TorchCDF`, `StudentMixtureMLPCDF`, and the empirical/lightgbm family) are fit
+only by `ChronologicalCDFStudy`/`CDFHyperparameterStudy`, whose annual folds are
+fixed in code. The walk-forward engine (ADR-0027) needs a fit node so those
+estimators can be validated for predictive validity — proper scores over the
+forecast, never a decision P&L — on a configurable fold/refresh/warm-up schedule
+and scored by `ScoreDistributions`. Base: `9a859fea`.
+
+### Smallest extension
+
+Add `CDFEstimatorModel` (role `train`, a `TrainableNode`) to
+`dskit/pipeline/libs/predictive_cdf.py`. It ingests the HPO winner's
+`estimator` (`"module:Class"`) and `estimator_params`, fits on the declared
+`fit_split` with the study's own convention (standardized outcome =
+`target`/`reference`, features median-imputed, decision context attached before
+the fit for decision-aware estimators), and emits one row per input row carrying
+midpoint-quantile draws (`samples_field`), the standardized outcome
+(`outcome_field`) and the divisor (`reference_scale`), so
+`ScoreDistributions` scores it on the val split. No new package, no serving
+authority, no decision policy in the loop.
+
+### Contracts
+
+- A fold fits fresh; the fitted state is numpy/torch/lightgbm and is not
+  JSON-persisted. `mode="load"` is refused by name — serving a CDF from a
+  pinned artifact is a separate seam this node does not grant.
+- Calibration (`CalibratedCurve`) is not applied: it needs a disjoint
+  calibration band a walk-forward fold does not carve (ADR-0043).
+- The calibration band the estimator fit receives is the fit band itself: the
+  MLP family validates `cal_x` for shape and ignores `cal_y`, so no label
+  leaks; an estimator that consumes calibration labels needs a cal band.
+- Predictive validity is a proper score over the forecast; the condor/MIO
+  policy stays out of this node and remains the separate decision lens.
+
+### Approved file/API manifest
+
+- Extend `dskit/pipeline/libs/predictive_cdf.py` with `CDFEstimatorModel`
+  (and its `_node_field`/`_node_number` helpers).
+- Extend `tests/pipeline_libs/test_predictive_cdf.py` with fit/emit and
+  default-deny/load-refusal tests.
+- Update the `dskit/pipeline` AGENTS.md/README.md inventory lines for
+  `libs/predictive_cdf.py`.

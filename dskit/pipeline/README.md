@@ -787,7 +787,8 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
-├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191)
+├── libs/predictive_cdf.py offline conditional curves, pooled heads and JSON HPO (ADR-0189/0190/0191),
+│                      walk-forward fit node CDFEstimatorModel (ADR-0215), panels (ADR-0213)
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,

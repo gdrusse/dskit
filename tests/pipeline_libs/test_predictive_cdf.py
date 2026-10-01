@@ -17,6 +17,7 @@ from dskit.pipeline.libs.predictive_cdf import (
     BetaTransformedPoolCDF, DynamicPITRecalibratedCDF, SemiparametricGPDTailCDF,
     TailConstrainedQuantileBlendCDF,
     DecisionWeightedMixtureMLPCDF, DecisionWeightedMonotoneCDF,
+    CDFEstimatorModel,
 )
 from dskit.pipeline.libs import predictive_cdf
 
@@ -2138,3 +2139,58 @@ def test_expiry_labels_retain_boundary_calendar_rejections(day, expiry, reason):
     out = node.run(None, {"bars": [{"symbol": "XYZ", "quote_date": day, "expiry": expiry,
                                    "price_basis": "trade_close"}], "snapshots": [], "prices": []})
     assert reason in out["records"][0]["label_reasons"]
+
+
+def _model_rows():
+    rng = np.random.default_rng(7)
+    rows = []
+    for i in range(60):
+        ref = 0.02 + 0.001 * (i % 3)
+        rows.append({
+            "contract": f"C{i}",
+            "asof_ms": (1 if i < 30 else 15) * 86400000 + i,
+            "x0": rng.normal(0.0, 0.01), "x1": rng.normal(0.0, 0.01),
+            "label": ref * rng.normal(0.0, 1.0),
+            "reference_scale": ref,
+        })
+    return rows
+
+
+def test_cdf_estimator_model_fits_mlp_and_emits_standardized_draws(tmp_path):
+    pytest.importorskip("torch")
+    from dskit.pipeline.base import TimeSplitConfig
+    from dskit.pipeline.node import NodeContext
+
+    day = 86400000
+    splits = TimeSplitConfig(train_end_ms=10 * day, val_end_ms=20 * day, test_end_ms=30 * day)
+    ctx = NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path),
+                      splits=splits, splits_info=splits.to_obj())
+    node = CDFEstimatorModel("model", {
+        "estimator": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "estimator_params": {"components": 1, "hidden": 4, "epochs": 2,
+                             "batch_size": 16, "seeds": [11], "device": "cpu"},
+        "features": ["x0", "x1"],
+        "target": "label", "reference": "reference_scale",
+        "n_samples": 50,
+    })
+    out = node.run(ctx, {"rows": _model_rows()})
+    rows = out["rows"]
+    assert len(rows) == 60
+    assert out["metrics"]["n_fit_rows"] == 30
+    assert out["metrics"]["n_features"] == 2
+    draws = rows[0]["samples"]
+    assert len(draws) == 50 and draws == sorted(draws)
+    assert rows[35]["outcome"] == pytest.approx(rows[35]["label"] / rows[35]["reference_scale"])
+    assert rows[35]["reference_scale"] == rows[35]["reference_scale"]
+
+
+def test_cdf_estimator_model_refuses_unknown_knobs_and_load(tmp_path):
+    with pytest.raises(Exception):
+        CDFEstimatorModel("model", {"typo": 1, "features": ["x"], "target": "y",
+                                    "reference": "r", "estimator": "m:C"})
+    node = CDFEstimatorModel("model", {
+        "estimator": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "features": ["x"], "target": "y", "reference": "r",
+    })
+    with pytest.raises(ValueError, match="mode='load'"):
+        node.run_load(None, {"rows": []})

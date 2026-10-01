@@ -575,7 +575,8 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
-├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190)
+├── libs/predictive_cdf.py offline conditional CDFs, pooled heads and JSON HPO (ADR-0189/0190),
+│                      walk-forward fit node CDFEstimatorModel (ADR-0215), panels (ADR-0213)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
 │                      transformers (+ the pretrained encode/classify/forecast
 │                      trio over an acquired snapshot, ADR-0083), kronos
