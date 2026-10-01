@@ -364,11 +364,11 @@ median spreads and greater volume. The 44-DTE request returned no free snapshot
 for either symbol; retained artifacts do not establish active-contract coverage.
 AMZN is the operationally simpler baseline; MSFT is the liquidity benchmark. This is not evidence of a profitable strategy.
 
-### Executed JSON-only coverage selector
+### Historical QQQ-only coverage selector (superseded runbook below)
 
 The owner requested an argmax over exact horizons 1-45, implemented entirely by
-existing nodes in `configs/run-cdf-horizon-coverage.json`. Input ticker is
-`cohort.params.where[0].value`; source settings are `source.params`. `groupby`
+existing nodes in `configs/run-cdf-horizon-coverage.json`. In that original version, input ticker was
+`cohort.params.where[0].value`; source settings were `source.params`. `groupby`
 counts distinct quote dates, `max` plus `filter` selects the largest count, and
 `min` breaks ties toward the shorter horizon. No Python implementation changed.
 
@@ -418,3 +418,85 @@ semantics and integration/test quality respectively. The second lens separately
 verified all 45 counts and source SHA-256 and confirmed all three report writers
 refuse overwrite without changing bytes. No implementation/config changes after
 review; this evidence append and re-entry update are editorial only.
+
+### Current runbook: all-index horizon coverage (2026-10-01)
+
+Scope: extend the existing JSON selector from base `7db30fa0` for the owner's
+three-ticker coverage request. Allowed edits: that config, this plan, re-entry
+and automatic journal evidence. Reuse foreach and DeclaredFigure; no Python
+implementation, training, HPO, raw-chain reconstruction or strategy execution.
+Acceptance: independent per-ticker argmax, every populated horizon retained,
+run-local charts, source-matched counts, bounded WSL2 run and focused checks.
+
+**Inputs are `foreach.keys` and the prepared data source.** In
+`configs/run-cdf-horizon-coverage.json`, set `foreach.keys` to `["QQQ"]` for one
+ticker, or `["QQQ", "SPY", "IWM"]` for the shipped combined run. No other ticker
+edits, custom scripts or per-symbol config copies are needed. The source is
+`pipeline.source.params`: onboarding root, source name and stream. Existing
+acquired data can be reused. For a new panel, change `path` in
+`configs/source-cdf-horizon-panel.json`, import into a fresh onboarding root
+using the init/register-source/acquire commands above, and point the runner
+at that root. Do not reacquire changed data into an old evidence root.
+
+The source must supply `symbol`, `quote_date`, `expiry`, `actual_calendar_dte`,
+`terminal_return`, `rn_proxy_eligible` and the nine finite, ordered `rn_q_*`
+fields listed in the config. Eligibility and historical settlement conventions
+must already have been validated upstream. This selects coverage from an
+options-derived panel; a ticker plus arbitrary raw option quotes is insufficient.
+Further feature selection or decision-region screening can reduce these counts.
+
+Run inside WSL2 from `children/index_options`, using the project venv and
+repository on PYTHONPATH (matplotlib is required). Standard command:
+
+```bash
+python -m dskit.pipeline run configs/run-cdf-horizon-coverage.json --asof 2026-10-01
+```
+
+The tested bounded equivalent, with paths changed only for your checkout:
+
+```bash
+systemd-run --user --wait --pipe --collect --unit=cdf-horizon-coverage \
+  -p MemoryMax=6G -p MemorySwapMax=0 -p RuntimeMaxSec=1740 \
+  -p WorkingDirectory="$PWD" -E PYTHONPATH="$(realpath ../..)" \
+  /usr/bin/time -v /home/russell/dskit/.venv/bin/python \
+  -m dskit.pipeline run configs/run-cdf-horizon-coverage.json --asof 2026-10-01
+```
+
+Each standard run directory contains `carry.json`: complete arrays at
+`coverage__qqq.records`, `listed_counts__qqq.records`, and `winner__qqq.records`
+(and `__spy`, `__iwm`). Coverage rows contain ticker, exact DTE, distinct eligible
+entry dates, eligible forecast rows and distinct expiries. These small arrays
+are retained in full, not summarized. `listed_counts` means prepared-panel
+coverage before CDF eligibility, not raw-chain coverage. Zero-eligible horizons
+are absent; absence means zero within this source. An entirely empty ticker
+refuses selection. Equal maxima choose the shorter DTE.
+
+Charts are `artifacts/coverage_figure__<ticker>/coverage.png` in the same run;
+`carry.json` also records their paths. They show date-count coverage over DTE,
+not the underlying return CDF. `report.md` records node completion. All reports
+are run-local; the old shared `cdf-horizon-*.jsonl` writers are retired. Identical
+config/source/asof resolves to the same run identity; preserve existing evidence
+and choose another `outputs.run_root` for a deliberate repeat.
+
+Final execution: `pipeline_runs/cdf-horizon-coverage-2026-10-01-6ae71aa4`,
+document hash `c90a04828d2103f1a4a3f27fd78a7746f8309375bb72baf2b0e3ac04c99f0402`.
+Same acquisition snapshot and source SHA-256 as the earlier QQQ run above.
+All three argmaxes are **7 calendar days**: **QQQ 1,497**, **SPY 1,879**,
+**IWM 1,377** distinct eligible dates. Each ticker has 45 populated horizons.
+All 135 eligible counts, 135 prepared-panel counts and three winners matched
+an independent pandas census requiring finite, ordered quantiles and targets.
+Each chart reports 45 points and zero skipped. A first bar-chart run was
+replaced by this line-chart run after visual inspection found crowded labels;
+all counts and winners match exactly across both runs.
+
+All 37 nodes completed in 16.55 seconds, peak RSS 1,374,220 KiB (1.31 GiB),
+CPU only, under hard 29-minute/6-GiB/no-swap limits. Focused foreach/matplotlib
+checks: 102 passed, 10 inapplicable conformance cases skipped. Three JSON-graph
+probes passed distinct-date/tie/exclusion behavior, singleton ticker substitution
+and empty-cohort refusal. Prior filter/derive/groupby/keyby checks remain 78
+passed; those implementations are unchanged. No full suite ran.
+
+Next: use the selected exact seven-day horizon for the feature-family/PCA plan,
+then establish chronological training/validation/test admission and paired
+out-of-sample decision-region skill. Coverage maximization is not model skill
+and this census does not prove which horizon will predict best.
