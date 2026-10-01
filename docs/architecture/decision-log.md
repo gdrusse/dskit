@@ -29050,16 +29050,16 @@ curves fail closed on missing clocks and invalid numerical geometry.
 
 ## ADR-0214 — Generic weekday one-hot node
 
-**Status:** proposed 2026-10-01; awaiting owner approval (direction ruled
-2026-10-01). Base: 1968283. No code until approved.
+**Status:** accepted 2026-10-01. Base: 1968283.
 
 The QQQ 7-day CDF cohort is nearly all Fridays through 2020; the owner wants
 weekday as a feature (`quote_date`, ISO). No dskit node computes it (`derive`
 has no expressions; `ArrayMap` writes only envelope price fields;
 `ArrayFeatures` emits separate rows). Copies: `production.sessions.DAY_NAMES`
-and intraday_equities `tod_columns` (`dow_mon..dow_fri`), which migrates.
-Staying: `children/intraday_equities/intraday_equities/replay.py:593`
-`_WEEKDAYS` (full names) and `nodes.py:1492` `dow_sin`/`dow_cos` (:1510).
+(repointed here) and intraday_equities `tod_columns` (`dow_mon..dow_fri`;
+migration deferred, see Owner rulings). Staying:
+`children/intraday_equities/intraday_equities/replay.py:593` `_WEEKDAYS` (full
+names) and `nodes.py:1492` `dow_sin`/`dow_cos` (:1510).
 
 1. **Home.** Tier-1 kind `WeekdayOneHot` (`weekday-onehot`, `owned=False`,
    `role="transform"`, `serving_effect` `"pure"`, outputs `records`/`counts`) in
@@ -29079,39 +29079,35 @@ Staying: `children/intraday_equities/intraday_equities/replay.py:593`
    `counts` is rows per weekday.
 4. **One owner.** `weekday_flags(day, weekdays, baseline)` takes a `date`
    (refuses `datetime`), returns an `int` tuple, raises on an uncovered weekday.
-   `tod_columns` calls it per distinct date, casts to float64 child-side, keeps
-   its own `dow_` and passes baseline `sat`/`sun`; `dow_*` stays byte-identical,
-   a mismatch fixed in the dskit rule, never a child fork.
+   `DAY_NAMES` in `production/sessions.py` is repointed to `WEEKDAY_TAGS`.
 5. **Params.** `_PARAMS = ("baseline", "date_field", "prefix", "weekdays")`;
-   `date_field`, `prefix` required; `weekdays`/`baseline` per Owner question 2.
-   `validate_params` refuses overlap, duplicates, an unknown tag, empty
-   `weekdays` and empty `prefix`; one named test each.
+   `date_field`, `prefix` required; `weekdays` defaults to all seven tags,
+   `baseline` to none. `validate_params` refuses overlap, duplicates, an
+   unknown tag, empty `weekdays` and empty `prefix`; one named test each.
 
 **Pins.** `date_problem` direct (`None`, `5`, a `datetime`, `2026-02-30`,
 `20260105`, `"2026-01-05\n"`); new `__all__` pins; refusals, baseline zeros,
-`counts` shape, row independence; under (a)/(c) literal defaults, omitted equals
+`counts` shape, row independence; literal defaults, omitted equals
 spelled-out, `notes` hash-excluded; `WEEKDAY_TAGS == DAY_NAMES`
-(`tests/production`). Child golden in
-`children/intraday_equities/tests/test_feature_blocks.py`: green on unmigrated
-code first, all 7 days, float64 `tobytes()` equal for the five `dow_*`. QQQ
-census in `children/index_options/tests` over committed `rows.jsonl`: 1,497
-rows, 508 pre-2021 (35 not Friday), no Sat/Sun, `counts` equal an independent
-`datetime` tally.
+(`tests/production`). QQQ census in `children/index_options/tests` over
+committed `rows.jsonl`: 1,497 rows, 508 pre-2021 (35 not Friday), no Sat/Sun,
+`counts` equal an independent `datetime` tally.
 **Touched.** `records.py` (+docstring), `document.py`, `kinds_flow.py` (class,
 `_KINDS`, "seven" docstrings), `pipeline/__init__.py`, pipeline README (:412,
 :772, :840), CLAUDE.md (:733, :783), AGENTS.md (:535, :568); `tests/pipeline`:
 `test_kinds_flow:1353`, `test_kinds_banking:45,76`,
 `test_serving_effect:73,415`, `test_toolkit_conformance` (:53, :80, probe :327
-with its own dated rows), `test_records`; intraday_equities `features.py`.
+with its own dated rows), `test_records`; `production/sessions.py`
+(`DAY_NAMES`).
 
 **Caveat.** 35 of 508 pre-2021 rows are not Fridays; 2021 is Mon/Wed/Fri heavy;
 all five days from 2023; no weekend rows: weekday is partly confounded with era.
 **Non-goals:** month-edge, time of day, cyclical, instants, holidays, any run;
 `carry_fields`/`scale_features` and config wiring are child-side.
 
-**Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
-**Owner question 2.** (a) `weekdays` all seven, `baseline` none; (b) both
-required, no defaults (drops `DEFAULT_*` and their pins); (c) Mon-Fri, baseline
-`sat`/`sun`. Seven columns sum to 1 (collinear with an intercept), and Sat/Sun
-are constant zero on business days.
-**Owner question 3.** Repoint `DAY_NAMES` in this slice (no cycle) or follow-up?
+**Owner rulings (2026-10-01).** Q1: migrating intraday_equities `tod_columns`
+is deferred to a named follow-up (it must call `weekday_flags`, baseline
+`sat`/`sun`, with a float64 `tobytes()` golden for the five `dow_*`). Q2:
+option (a), `weekdays` all seven, `baseline` none; seven columns sum to 1
+(collinear with an intercept) and Sat/Sun are constant zero on business days.
+Q3: `DAY_NAMES` repointed in this slice.
