@@ -1,5 +1,24 @@
 # Re-entry
 
+## Option conversion requested; runbook independently reproduced (2026-10-01)
+
+- Owner requests AMZN raw options/contracts/current-chain conversion to the
+  same canonical option, underlying expiry-close outcome and CDF-panel fields.
+  ADR-0213 is a concrete proposed shared-code/config manifest; approval pending.
+- Historical source: 65,372 option trade bars, 30-45 DTE; 23,254 metadata
+  contracts. Current target-chain file has 168 snapshots (150 finite positive
+  IV), quotes dated 2026-09-30. Preserve historical trade/current quote quality;
+  current metadata/IV must not leak backward. Underlying labels are not actual
+  American-option assignment or cash settlement.
+- Independent `/root/runbook_operator` reproduced the existing prepared ETF
+  process: 37 nodes, 135 complete coverage rows, unchanged three 7-day winners.
+  Durable output: children/index_options/pipeline_runs/runbook-reproduction-20261001/
+  runs/cdf-horizon-coverage-2026-10-01-6ae71aa4/carry.json (one continuous path).
+  WSL2 15.82s / 1.31 GiB; no application edits or one-off scripts.
+- Current next step: review/approve ADR-0213, implement focused conversion
+  seams with index-proxy parity tests, then have a fresh operator follow the
+  stock runbook through raw archives to output JSONs. No stock CDF run yet.
+
 ## Three-index exact-horizon coverage automated (2026-10-01)
 
 - `children/index_options/configs/run-cdf-horizon-coverage.json`: set only

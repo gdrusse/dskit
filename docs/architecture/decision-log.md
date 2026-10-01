@@ -28876,3 +28876,163 @@ Next bounded work: inventory the generic forecast, chain and optimizer seams,
 then select and validate point-in-time earnings and ex-dividend sources. The
 strategy control and refusal gates are accepted. No strategy run, paper order
 or live order path is in scope.
+
+
+## ADR-0213 — Shared option-archive conversion and CDF panels (proposed, 2026-10-01)
+
+**Status: proposed; implementation awaits owner approval.** The owner requested
+conversion of the supplied AMZN historical bars, contracts and current chain
+into the option, expiry-outcome and implied-CDF information available for the
+index study. This is an offline data-preparation slice, not training or a
+strategy run. Base: `c218de6d`. Existing acquisition, runner, artifacts and
+coverage selection remain the orchestration owners; no custom CLI or scripts.
+
+### Inventory and smallest extension
+
+`localtables` accepts flat records; the supplied Alpaca archive has nested
+pages and Yahoo has parallel arrays. `AlpacaBarsConnector` fetches stock bars,
+not these saved option files. `ObservationRows`, `JsonArtifact`, foreach,
+filter/groupby/keyby and DeclaredFigure already cover reading canonical
+observations, durable outputs and horizon selection. The generic numerical
+body of `index_options.RawChainFeatureBuilder._proxy` already derives an
+isotonic price-slope CDF proxy from call/put prices; its caller currently
+requires quote/IV/depth fields. Extract that numerical owner upstream, preserve
+the index caller's existing screening and results, and supply distinct honest
+quote/trade admission policies. Do not copy a sibling child's implementation.
+
+Proposed file/API manifest (no new package):
+
+- Extend `dskit/onboarding/libs/alpaca.py` with `AlpacaOptionArchiveConnector`:
+  separate stream normalization for saved contract, bar and snapshot archives.
+- Add `dskit/onboarding/libs/yahoo.py` with `YahooChartArchiveConnector` for the
+  existing saved stock-price/corporate-action JSON; no network pull.
+- Extend `dskit/pipeline/libs/predictive_cdf.py` with `OptionPriceCDF` (the
+  extracted numerical owner), `ExpiryCloseLabels` and `OptionCDFPanel` nodes.
+  Extend the index builder to delegate only its existing proxy calculation.
+- Add stock JSON configs `source-option-archives.json`,
+  `source-underlying-history.json`, `run-prepare-option-panel.json` and
+  `run-cdf-horizon-coverage.json`. Ticker(s), source paths, explicit source-price
+  policy, probabilities and output root are configuration. No AMZN literals in
+  generic code; the coverage config uses the already-shipped selection nodes.
+- Extend existing Alpaca/predictive-CDF/index-builder tests; add focused Yahoo
+  archive tests and stock config integration tests. Update relevant package
+  README/AGENTS/CLAUDE inventories together and the existing stock runbook.
+
+### Source and output contracts
+
+Pin all input files by SHA-256 and preserve original acquisition provenance.
+Use standard onboarding snapshots and ObservationRows; no private store scans.
+A fresh import reads complete immutable files. Stream keys/dedup semantics must
+be explicit; changed files require fresh source roots for this bounded workflow.
+Normalize nested bars into contract/session rows, validate OCC identity against
+metadata, reject conflicting duplicates and record exclusion counts. Contract
+status, current OI and current IV are never backfilled into historical rows.
+Metadata with unknown historical availability stays labelled as such. The
+historical action set is observed traded contracts, not every listed strike.
+Keep metadata-orphan snapshots in the canonical output with nullable, unverified
+multiplier/style/deliverable fields and reason `unverified_contract_terms`.
+Exclude them from term-dependent CDF/admission decisions. Never inner-join them
+away or infer standard terms from OCC spelling. The supplied 168 current-chain
+symbols have zero matches in the inactive-contract archive; no additional
+metadata acquisition is authorized by this slice.
+
+Three independently persisted JSON outputs, plus a compatible prepared panel:
+
+1. **Options:** contract identity, underlying, expiry, strike, right, multiplier,
+   exercise/delivery convention and source provenance; dated trades and quotes
+   remain separate measurements. Preserve null unavailable bid/ask/IV fields.
+2. **Expiry outcomes:** quote/session date, nominal expiry, actual exchange
+   session used for the terminal underlying close, raw-unit spot/terminal price,
+   exact actual DTE and terminal log return. These are underlying-close labels,
+   not actual cash settlement, exercise or share-assignment records. Future or
+   missing outcomes stay pending/missing; never synthesize settlement.
+3. **Implied CDF proxy:** strike/log-return support and monotone CDF knots, all
+   configured quantiles, source-price basis, eligibility/rejection reasons and
+   numerical/coverage diagnostics. Label artificial tail completion explicitly;
+   grid endpoints are not evidence that distribution tails were observed.
+   Export the retained, strictly increasing probability/inverse-return grid
+   used by the existing quantile interpolation as the canonical representation.
+   Export pre-deduplication projected CDF knots separately as diagnostics.
+   Quantiles must reproduce interpolation on the canonical inverse grid;
+   do not imply that inversion of the raw projected knots yields the same
+   values across flat probability stretches. Pin this convention in tests.
+
+The prepared rows expose the selector's existing `symbol`, `quote_date`,
+`expiry`, `actual_calendar_dte`, `terminal_return`, `rn_proxy_eligible` and
+`rn_q_*` fields, retaining source-price/quality labels and rejection evidence.
+Persist complete potentially large outputs through `JsonArtifact`, not the
+runner's size-limited ordinary carry arrays. All paths are run-local.
+
+### Price and clock policies
+
+Historical AMZN bars contain trade OHLCV, not contemporaneous two-sided quotes.
+The explicit `trade_close` policy may derive an **American-option trade-price
+CDF proxy** using the existing undiscounted call/put-parity and monotone-slope
+projection. It needs adequate observed call/put pairs and strike coverage;
+refuse insufficient/invalid surfaces. It never manufactures bid/ask, sizes or
+IV to pass a quote validator. This is a declared approximation, not identical
+quality to the quoted ETF inputs or an exact risk-neutral distribution.
+Keep quote-derived and trade-derived results separately identified.
+
+Declare admission knobs explicitly in JSON: `min_forward_pairs`,
+`min_wing_nodes`, `max_inner_gap`, `max_outer_gap`,
+`max_projection_distance`, and `max_forward_dispersion`. Pair count means
+distinct usable strikes with both call and put marks and a positive finite
+parity-implied forward. Dispersion is IQR of those forwards divided by spot.
+The initial stock config uses 3 pairs, 3 nodes per wing, inner log-gap 0.08
+and maximum adjacent log-gap 0.12; projection-distance and dispersion thresholds
+are null (diagnostic-only, not acceptance claims). Non-null thresholds reject
+exceedances; undefined diagnostics carry explicit reasons. The index wrapper
+keeps its existing one-pair admission and diagnostic-only projection behavior.
+No tightening of the stock policy may silently change index results.
+
+Current indicative quotes/IV remain current-snapshot observations, never a
+replacement for historical surfaces. This slice admits them only as an
+after-close diagnostic: use a verified completed daily close for the same
+exchange session, a decision instant at or after that session's close, and
+quotes timestamped at/before the decision and within configured `max_quote_age`
+(initially 900 seconds). Persist these clocks and `spot_basis=completed_close`.
+Reject provisional/unverified closes, quotes outside the declared window and
+missing stock prices. Intraday mode requires a separately supplied timestamped
+underlying source and is outside this slice; same-date matching alone is not
+sufficient. Metadata-orphan exclusions still apply independently. Bar timestamps label daily sessions;
+they are not the time of the last trade. Preserve source timestamp, session
+and actual acquired-at independently; flag unknown historical availability.
+No event before its session closes may consume that session's completed bar.
+Do not claim intraday synchronization or historical tradability from daily bars.
+
+Underlying prices come from the existing AMZN Yahoo archive. Explicitly check
+corporate-action events and unit agreement with strikes. Current AMZN option
+history is post-2022 split; prove unit compatibility over the covered range.
+For another ticker, refuse unknown/unsupported unit or deliverable changes
+rather than applying AMZN assumptions. Preserve adjusted predictor series
+separately from the raw-unit prices needed for strikes and terminal outcomes.
+Use the existing exchange-session convention for actual expiry-close labels;
+missing entry/terminal prices and unresolved corporate actions stay rejected.
+
+### Acceptance and limits
+
+RED/GREEN focused checks cover nesting, dates/timezones, duplicate identities,
+contract metadata mismatches, missing/nonfinite inputs, pending expiries,
+corporate-action/unit mismatches, source-price separation and no fabricated
+quotes/IV. Extraction must leave existing index proxy fixtures unchanged.
+Projection checks cover monotonicity, bounds, configurable quantiles, inadequate
+pairs/wings and diagnosed tail completion. Standard-runner tests verify hashes,
+complete JSON persistence, honest refusal records and unchanged downstream
+horizon semantics. An independent subagent must follow the final runbook from
+supplied paths through preparation and selection, without new scripts.
+
+Execute AMZN within 29 minutes/6 GiB per invocation in WSL2, CPU unless a
+library needs otherwise. Report actual retained/rejected counts by reason and
+exact DTE, including the raw source's 30-45-DTE restriction. Do not describe
+absent 1-29-DTE observations as evidence those option contracts never existed.
+No provider purchases/pulls, feature selection, training, optimizer or P&L.
+Require independent design review before implementation and two final lenses
+before delivery, following implementation-workflow.md.
+
+**Phase-0 design review:** `/root/option_conversion_design` first found
+C0/M1/m3/n0: current-chain metadata orphans, the current-quote/underlying clock,
+explicit admission policy, and the quantile/inverse-grid convention. All four
+were corrected together above. The bounded independent recheck returned
+C0/M0/m0/n0. Reports are retained in this conversation; no implementation or
+new tests ran. Owner approval remains required before the shared-code changes.

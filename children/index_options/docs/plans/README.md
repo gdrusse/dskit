@@ -519,3 +519,55 @@ Reviewed config blob: `383a3a5a0e247580969f3014750200374a13aa46` (unchanged).
 Reviewed plan blob: `ced3a145789bd837956ea5fd38ccf74c189ef19b`; subsequent changes
 only append this review evidence and the editorial re-entry summary. No pending
 in-scope findings. No implementation or behavioral contract changes after lock.
+
+### Supplied AMZN source: process precondition (2026-10-01)
+
+The owner confirmed the historical stock-option bar input is
+`/home/russell/data/stock_options/amzn/alpaca_free_history/daily-bars-standard-dte30-45-2024-02-01_2026-09-30.jsonl.gz`.
+SHA-256: `49d7b4f5da463b8b551c1673fc667e0a8bb3baebb4313e3b6b1ef0e1c52ff9c8`.
+It contains one metadata record and 343 nested response pages, totaling 65,372
+AMZN option OHLCV trade bars. The per-bar fields are `t,o,h,l,c,v,n,vw`, keyed
+by option symbol. The acquisition covers only 30-45 DTE, not a census of 1-45.
+
+This file is not the prepared input consumed by the horizon-selection JSON:
+it has no `rn_proxy_eligible`, nine `rn_q_*` values or underlying terminal-return
+targets. Changing the ticker/source path alone cannot produce valid implied-CDF
+coverage JSON from it. Flattening the pages would fix only the container shape.
+Trade-bar closes also do not establish contemporaneous two-sided option quotes.
+Do not substitute raw trade-bar counts for eligible-CDF date counts, fill missing
+quantiles, or interpret a missing prepared panel as zero available raw options.
+
+Before applying the selector to AMZN, supply an upstream validated CDF panel
+with the documented schema, point-in-time source/settlement conventions and
+matched underlying outcomes. Assess whether the trade-only source supports an
+explicit proxy study before implementing preparation; this runbook does not
+claim it already reconstructs such a panel. No new provider pull, CDF builder,
+model fit or stock-CDF coverage result was produced in this process audit.
+
+The associated `contracts-inactive-2024-02-01_2026-09-30.json.gz` contains
+23,254 contracts with strikes, expiries, type and multiplier metadata. The
+`alpaca_indicative/2026-10-01-chain-dte30-45-asof-2026-09-30.json` file contains
+168 unique snapshots, including 150 positive finite IV values and bid/ask quote
+timestamps all on 2026-09-30. These are useful contract and current-chain inputs,
+but do not supply historical daily IV/quote surfaces or settled outcomes for
+those future expiries. Their presence does not make the historical trade-bar
+file a prepared CDF panel. The parent inspected these additional files after
+the independent operator completed the historical-bar schema check.
+
+### Independent runbook reproduction (2026-10-01)
+
+Subagent `/root/runbook_operator` independently followed this runbook and ran
+all three ETF tickers through the standard CLI. Durable evidence is under
+`pipeline_runs/runbook-reproduction-20261001/`: config, `execution.log`, and
+`runs/cdf-horizon-coverage-2026-10-01-6ae71aa4/carry.json`. Only
+`outputs.run_root` changed. All 135 coverage rows, 135 listed-count rows and
+three winners matched the original run; all charts contain 45 points with no
+skips. Final execution: 37 nodes, 15.82s, peak RSS 1,373,928 KiB, zero swaps,
+under hard 29-minute/6-GiB/no-swap caps. Document hash stayed
+`c90a04828d2103f1a4a3f27fd78a7746f8309375bb72baf2b0e3ac04c99f0402`;
+carry SHA-256 `fe51e29782b1db400c58cdf70c3a1f75648fac26ec550aa1f5e37ff61a987032`.
+The initial subagent shell hit a Windows sandbox setup error before execution;
+the existing approved WSL Python entrypoint resolved it. No application change
+was needed. The AMZN source incompatibility above was inspected, not an
+executed stock-CLI refusal. The owner subsequently requested the conversion
+layer; proposed ADR-0213 covers that separate shared preparation slice.
