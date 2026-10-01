@@ -1,5 +1,26 @@
 # Re-entry
 
+## ADR-0200 causal correction and robust condor completed (2026-09-30)
+
+- Implemented a JSON-driven strictly settled strike-event isotonic correction
+  and causal moving-date-block adaptive W1 radius selector. The 180-forecast
+  calibration panel contains 27,896 chain rows, 41,061 eligible candidate rows
+  and 5,373 unique wings; 150 focused tests pass.
+- All four corrections failed the frozen decision-region selection rule. Retain
+  the unchanged `center_gpd_05_prior25` offline research model. On 40 paired
+  pre-cutoff identities its wing score was 0.075460; the closest correction was
+  0.077156 (tail-qualified but worse).
+- Luna found and the final r3 protocol fixed selection leakage by excluding
+  pre-July correction-selection outcomes from radius history. Radius history
+  begins in July, final decisions begin in October, and manifests bind the
+  implementation hash.
+- Exact robust optimization completed in 9m59s/361 MiB on 26 final SPY/QQQ
+  forecasts: 3 trades, 2 robust no-trades, 21 unsupported refusals, mean P&L
+  -$0.139661/share and mean oracle regret $2.253681/share. This is weak reused-history,
+  after-close evidence—not trading authority. IWM remains strategy-ineligible
+  because dividends are unknown. Memo:
+  `children/index_options/docs/memos/2026-09-30-causal-decision-region-calibration-and-robust-condor.md`.
+
 ## ADR-0199 GPD decision-region screen completed (2026-09-30)
 
 - The raw `center_gpd_05_prior25` development archive was audited on 60 fixed

@@ -1,0 +1,17 @@
+{
+  "robust_correction_study": {
+    "decision_root": "/home/russell/dskit-cdf-feature-forward-selection/children/index_options/pipeline_runs/cdf_gpd_decision_regions_calibration_r3_20260930",
+    "forecast_root": "/home/russell/dskit-cdf-tail-calibration/children/index_options/pipeline_runs/predictive_cdf_tail_calibration_center_gpd_phase_f_20260930",
+    "partition": "development",
+    "base_model": "center_gpd_05_prior25",
+    "base_variant": "raw",
+    "output": "/home/russell/dskit-cdf-feature-forward-selection/children/index_options/pipeline_runs/cdf_causal_robust_condor_calibration_r3_20260930",
+    "selection_cutoff": "2018-07-01",
+    "optimization_cutoff": "2018-10-01",
+    "correction": {"prior_strengths": [0, 25, 100, 400], "knots": 21, "min_events": 20, "min_dates": 5, "samples": 401, "tail_intervals": [[-2.5, -0.5], [0.5, 2.5]], "tail_tolerance": 0.01},
+    "radius_calibration": {"radii": [0, 0.001, 0.0025, 0.005, 0.01], "min_dates": 8, "block_dates": 4, "replicates": 500, "alpha": 0.05, "seed": 1900},
+    "audit": {"price_step": 0.5, "support_margin_fraction": 0.02, "mesh_tolerance": 0.5, "floor": 0.1, "max_grid_nodes": 4001},
+    "limits": {"max_seconds": 1800, "max_address_space_mib": 6144},
+    "notes": "ADR-0200 r2 after Luna causal review. Corrections use strictly settled earlier, equal-entry-weighted strike events within symbol/requested-tenor bands and are selected before 2018-07-01. Radius residuals begin only on 2018-07-01; final optimization starts 2018-10-01. Radius selection uses multiplicity-adjusted moving-date blocks and abstains when unsupported. Date-only quotes are not executable; reused 2018 is not fresh validation."
+  }
+}

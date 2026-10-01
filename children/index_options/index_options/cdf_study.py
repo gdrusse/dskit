@@ -20,7 +20,142 @@ from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic",
-           "EligibleCondorChain", "CondorDecisionAudit", "DecisionRegionStudy"]
+           "EligibleCondorChain", "CondorDecisionAudit", "DecisionRegionStudy",
+           "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
+           "RobustCorrectionStudy"]
+
+
+class CausalStrikeCDFCorrection:
+    """Monotone probability correction fitted to strictly settled strike events.
+
+    The caller owns temporal filtering.  This class deliberately accepts only
+    the already-eligible event inventory and adds an identity-map pseudo sample
+    whose total weight is the declared shrinkage strength.
+    """
+
+    def __init__(self, prior_strength, knots, min_events, min_dates):
+        import math
+
+        values = (prior_strength,)
+        if (any(isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) for v in values)
+                or prior_strength < 0 or type(knots) is not int or knots < 3
+                or type(min_events) is not int or min_events < 1
+                or type(min_dates) is not int or min_dates < 1):
+            raise ValueError("invalid strike correction settings")
+        self.prior_strength = float(prior_strength)
+        self.knots, self.min_events, self.min_dates = knots, min_events, min_dates
+        self.x = self.y = None
+
+    def fit(self, probabilities, events, dates, weights=None):
+        """Fit the weighted isotonic map after enforcing minimum history."""
+        import numpy as np
+        from sklearn.isotonic import IsotonicRegression
+
+        p = np.asarray(probabilities, dtype=float)
+        y = np.asarray(events, dtype=float)
+        d = np.asarray(dates)
+        w = np.ones(len(p)) if weights is None else np.asarray(weights, dtype=float)
+        if (p.ndim != 1 or y.shape != p.shape or d.shape != p.shape
+                or w.shape != p.shape or not np.isfinite(w).all() or (w <= 0).any()
+                or not np.isfinite(p).all() or not np.isfinite(y).all()
+                or (p < 0).any() or (p > 1).any()
+                or not np.isin(y, [0., 1.]).all()):
+            raise ValueError("invalid strike-event calibration sample")
+        if len(p) < self.min_events or len(np.unique(d)) < self.min_dates:
+            raise ValueError("insufficient settled strike-event history")
+        identity = np.linspace(0., 1., self.knots)
+        # Tiny endpoint observations make the map a complete CDF even when the
+        # shrinkage strength is zero.  They have no material interior weight.
+        endpoint_weight = max(1e-12, self.prior_strength/max(1, self.knots))
+        if self.prior_strength:
+            x = np.r_[p, identity]
+            target = np.r_[y, identity]
+            weight = np.r_[w,
+                           np.full(self.knots, self.prior_strength/self.knots)]
+        else:
+            x, target, weight = p, y, w
+        x = np.r_[x, 0., 1.]
+        target = np.r_[target, 0., 1.]
+        weight = np.r_[weight, endpoint_weight, endpoint_weight]
+        model = IsotonicRegression(y_min=0., y_max=1., out_of_bounds="clip")
+        model.fit(x, target, sample_weight=weight)
+        grid = np.unique(np.r_[0., identity, model.X_thresholds_, 1.])
+        mapped = np.asarray(model.predict(grid), dtype=float)
+        mapped[0], mapped[-1] = 0., 1.
+        self.x, self.y = grid, np.maximum.accumulate(np.clip(mapped, 0., 1.))
+        return self
+
+    def transform(self, probabilities):
+        """Map coherent base probabilities through the fitted correction."""
+        import numpy as np
+
+        if self.x is None:
+            raise ValueError("strike correction is not fitted")
+        p = np.asarray(probabilities, dtype=float)
+        if not np.isfinite(p).all() or (p < 0).any() or (p > 1).any():
+            raise ValueError("invalid CDF probabilities")
+        return np.interp(p, self.x, self.y)
+
+    def curve(self, base):
+        """Return a corrected GridCurve with unchanged support knots."""
+        if not isinstance(base, GridCurve):
+            raise ValueError("strike correction requires a raw GridCurve")
+        return GridCurve(base.values, self.transform(base.probabilities))
+
+
+class AdaptiveWassersteinRadius:
+    """Select the smallest W1 radius passing a causal date-block residual bound."""
+
+    def __init__(self, radii, min_dates, block_dates, replicates, alpha, seed):
+        import math
+
+        if (not isinstance(radii, list) or not radii
+                or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) or v < 0 for v in radii)
+                or radii != sorted(set(radii))
+                or type(min_dates) is not int or min_dates < 2
+                or type(block_dates) is not int or not 1 <= block_dates <= min_dates
+                or type(replicates) is not int or replicates < 20
+                or isinstance(alpha, bool) or not 0 < alpha < 0.5
+                or type(seed) is not int):
+            raise ValueError("invalid adaptive radius settings")
+        self.radii = tuple(float(v) for v in radii)
+        self.min_dates, self.block_dates = min_dates, block_dates
+        self.replicates, self.alpha, self.seed = replicates, float(alpha), seed
+
+    def select(self, history):
+        """Return a radius and multiplicity-adjusted upper bounds, or abstain."""
+        import numpy as np
+
+        required = {"quote_date", "radius", "residual"}
+        if required-set(history):
+            raise ValueError("radius history lacks required fields")
+        if len(history) and (not np.isfinite(history.residual).all()
+                             or not set(history.radius).issubset(self.radii)):
+            raise ValueError("invalid radius history")
+        bounds = {}
+        quantile = 1.-self.alpha/len(self.radii)
+        for offset, radius in enumerate(self.radii):
+            rows = history[history.radius == radius]
+            daily = rows.groupby("quote_date", sort=True).residual.mean().to_numpy()
+            if len(daily) < self.min_dates:
+                bounds[radius] = None
+                continue
+            rng = np.random.default_rng(self.seed+offset)
+            n, width = len(daily), self.block_dates
+            means = np.empty(self.replicates)
+            blocks = int(np.ceil(n/width))
+            for draw in range(self.replicates):
+                starts = rng.integers(0, n, size=blocks)
+                indices = ((starts[:, None]+np.arange(width)) % n).ravel()[:n]
+                means[draw] = daily[indices].mean()
+            bounds[radius] = float(np.quantile(means, quantile))
+        passing = [radius for radius in self.radii
+                   if bounds[radius] is not None and bounds[radius] <= 0.]
+        return {"radius": (passing[0] if passing else None),
+                "upper_bounds": bounds,
+                "reason": (None if passing else "insufficient_or_uncovered_history")}
 
 
 class EligibleCondorChain:
@@ -460,6 +595,7 @@ class DecisionRegionStudy:
         selected.to_parquet(stage/"panel.parquet", index=False)
         chain.to_parquet(stage/"chain.parquet", index=False)
         manifest = {"config_sha256": self._config_digest(), "sources": sources,
+                    "implementation_sha256": self._digest(__file__),
                     "selected_rows": len(selected), "chain_rows": len(chain),
                     "panel_sha256": self._digest(stage/"panel.parquet"),
                     "chain_sha256": self._digest(stage/"chain.parquet"),
@@ -509,7 +645,8 @@ class DecisionRegionStudy:
             raise FileExistsError(stage)
         prepared = self.output/"prepare"
         manifest = json.loads((prepared/"manifest.json").read_text())
-        if manifest["config_sha256"] != self._config_digest():
+        if (manifest["config_sha256"] != self._config_digest()
+                or manifest.get("implementation_sha256") != self._digest(__file__)):
             raise ValueError("decision-region JSON changed after preparation")
         for source, digest in manifest["sources"].items():
             if self._digest(source) != digest:
@@ -670,6 +807,7 @@ class DecisionRegionStudy:
         pd.DataFrame(candidate_records).to_parquet(stage/"candidate_scores.parquet",
                                                    index=False)
         result = {"config_sha256": self._config_digest(), "rows": len(records),
+                  "implementation_sha256": self._digest(__file__),
                   "scores_sha256": self._digest(stage/"scores.parquet"),
                   "candidate_scores_sha256": self._digest(stage/"candidate_scores.parquet"),
                   "underlying_fingerprints": close_fingerprints}
@@ -685,7 +823,8 @@ class DecisionRegionStudy:
             raise FileExistsError(stage)
         evaluated = self.output/"evaluate"
         manifest = json.loads((evaluated/"manifest.json").read_text())
-        if manifest["config_sha256"] != self._config_digest():
+        if (manifest["config_sha256"] != self._config_digest()
+                or manifest.get("implementation_sha256") != self._digest(__file__)):
             raise ValueError("decision-region JSON changed before report")
         for name in ("scores", "candidate_scores"):
             if self._digest(evaluated/f"{name}.parquet") != manifest[f"{name}_sha256"]:
@@ -719,6 +858,569 @@ class DecisionRegionStudy:
                    "by_wing_sha256": self._digest(stage/"by_wing.csv")}
         (stage/"summary.json").write_text(json.dumps(summary, indent=2)+"\n")
         return summary
+
+
+class RobustCorrectionStudy:
+    """JSON-driven causal strike correction and adaptive robust condor study."""
+
+    KEYS = {"decision_root", "forecast_root", "partition", "base_model",
+            "base_variant", "output", "selection_cutoff", "optimization_cutoff", "correction",
+            "radius_calibration", "audit", "limits", "notes"}
+    CORRECTION_KEYS = {"prior_strengths", "knots", "min_events", "min_dates",
+                       "samples", "tail_intervals", "tail_tolerance"}
+    RADIUS_KEYS = {"radii", "min_dates", "block_dates", "replicates", "alpha",
+                   "seed"}
+    AUDIT_KEYS = {"price_step", "support_margin_fraction", "mesh_tolerance",
+                  "floor", "max_grid_nodes"}
+    IDENTITY = ("symbol", "quote_date", "expiry")
+
+    def __init__(self, config):
+        import math
+
+        if (set(config) != self.KEYS or set(config["correction"]) != self.CORRECTION_KEYS
+                or set(config["radius_calibration"]) != self.RADIUS_KEYS
+                or set(config["audit"]) != self.AUDIT_KEYS
+                or config["base_variant"] != "raw"):
+            raise ValueError("invalid robust-correction JSON document")
+        correction, audit, limits = (config["correction"], config["audit"],
+                                     config["limits"])
+        strengths = correction["prior_strengths"]
+        if (not isinstance(strengths, list) or not strengths
+                or strengths != sorted(set(strengths))
+                or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) or v < 0 for v in strengths)
+                or type(correction["samples"]) is not int
+                or correction["samples"] < 101
+                or not isinstance(correction["tail_intervals"], list)
+                or not correction["tail_intervals"]
+                or any(len(v) != 2 or not v[0] < v[1]
+                       for v in correction["tail_intervals"])
+                or not math.isfinite(correction["tail_tolerance"])
+                or correction["tail_tolerance"] < 0):
+            raise ValueError("invalid correction inventory")
+        # Constructors provide the rest of the parameter validation.
+        for strength in strengths:
+            CausalStrikeCDFCorrection(strength, correction["knots"],
+                                      correction["min_events"],
+                                      correction["min_dates"])
+        self.radius_owner = AdaptiveWassersteinRadius(**config["radius_calibration"])
+        if (any(isinstance(audit[k], bool) or not isinstance(audit[k], (int, float))
+                or not math.isfinite(audit[k]) for k in
+                ("price_step", "support_margin_fraction", "mesh_tolerance", "floor"))
+                or audit["price_step"] <= 0 or audit["support_margin_fraction"] <= 0
+                or audit["mesh_tolerance"] < 0 or audit["floor"] <= 0
+                or type(audit["max_grid_nodes"]) is not int
+                or audit["max_grid_nodes"] < 2
+                or set(limits) != {"max_seconds", "max_address_space_mib"}
+                or any(type(v) is not int or v < 1 for v in limits.values())
+                or limits["max_seconds"] > 1800
+                or limits["max_address_space_mib"] > 6144):
+            raise ValueError("invalid correction audit or limits")
+        if (not isinstance(config["selection_cutoff"], str)
+                or not isinstance(config["optimization_cutoff"], str)
+                or config["selection_cutoff"] >= config["optimization_cutoff"]):
+            raise ValueError("correction and optimization cutoffs must be ordered")
+        self.config, self.output = config, Path(config["output"])
+
+    @staticmethod
+    def _digest(path):
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(8*1024*1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _config_digest(self):
+        return hashlib.sha256(json.dumps(self.config, sort_keys=True,
+                                         allow_nan=False).encode()).hexdigest()
+
+    def _enforce_limits(self):
+        import resource
+        import signal
+
+        limit = self.config["limits"]
+        requested = limit["max_address_space_mib"]*1024*1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS,
+                           (min(requested, soft) if soft != resource.RLIM_INFINITY
+                            else requested, hard))
+        signal.signal(signal.SIGALRM,
+                      lambda _signal, _frame: (_ for _ in ()).throw(
+                          TimeoutError("robust-correction stage exceeded JSON budget")))
+        signal.setitimer(signal.ITIMER_REAL, limit["max_seconds"])
+
+    def _inputs(self):
+        import pandas as pd
+
+        root = Path(self.config["decision_root"])
+        prepare, evaluated = root/"prepare", root/"evaluate"
+        p_manifest = json.loads((prepare/"manifest.json").read_text())
+        e_manifest = json.loads((evaluated/"manifest.json").read_text())
+        paths = {"panel": prepare/"panel.parquet", "chain": prepare/"chain.parquet",
+                 "scores": evaluated/"scores.parquet",
+                 "candidate_scores": evaluated/"candidate_scores.parquet"}
+        if (self._digest(paths["panel"]) != p_manifest["panel_sha256"]
+                or self._digest(paths["chain"]) != p_manifest["chain_sha256"]
+                or self._digest(paths["scores"]) != e_manifest["scores_sha256"]
+                or self._digest(paths["candidate_scores"])
+                != e_manifest["candidate_scores_sha256"]):
+            raise ValueError("decision-region source hash mismatch")
+        panel = pd.read_parquet(paths["panel"])
+        scores = pd.read_parquet(paths["scores"])
+        candidates = pd.read_parquet(paths["candidate_scores"])
+        DecisionRegionStudy.validate_panel_temporal(panel)
+        model = self.config["base_model"]
+        scores = scores[(scores.model == model) & scores.reason.isna()].copy()
+        candidates = candidates[candidates.model == model].copy()
+        if (scores.empty or candidates.empty
+                or scores.duplicated(list(self.IDENTITY)).any()
+                or candidates.duplicated([*self.IDENTITY, "id"]).any()):
+            raise ValueError("missing or duplicate base decision rows")
+        return panel, scores, candidates, {str(p): self._digest(p)
+                                           for p in paths.values()}
+
+    def _curve_path(self, symbol):
+        return (Path(self.config["forecast_root"])/"evaluate"/
+                self.config["partition"]/
+                f"{symbol}-{self.config['base_model']}-{self.config['base_variant']}-curves.npz")
+
+    def _price_grid(self, strikes, spot):
+        import numpy as np
+
+        audit = self.config["audit"]
+        lower = max(np.finfo(float).tiny,
+                    min(strikes)-audit["support_margin_fraction"]*spot)
+        upper = max(strikes)+audit["support_margin_fraction"]*spot
+        grid = np.unique(np.r_[np.linspace(
+            lower, upper,
+            max(2, int(np.ceil((upper-lower)/audit["price_step"]))+1)), strikes])
+        if len(grid) > audit["max_grid_nodes"]:
+            raise ValueError("correction grid exceeds declared cap")
+        return grid
+
+    @staticmethod
+    def _strikes(identifier):
+        try:
+            strikes = tuple(float(value) for value in str(identifier).split("-"))
+        except ValueError as exc:
+            raise ValueError("invalid frozen condor identifier") from exc
+        if len(strikes) != 4 or not all(a < b for a, b in zip(strikes, strikes[1:])):
+            raise ValueError("invalid frozen condor strikes")
+        return strikes
+
+    @staticmethod
+    def _label(strength):
+        return "prior_"+format(float(strength), ".12g").replace(".", "p")
+
+    @staticmethod
+    def _settled_events(history, quote_date, tenor_band):
+        """Return only prior-date observations settled before this batch."""
+        return [item for item in history
+                if item["quote_date"] < quote_date
+                and item["settlement_date"] < quote_date
+                and item["tenor_band"] == tenor_band]
+
+    @staticmethod
+    def _radius_history(policies, quote_date, symbol, tenor_band, start):
+        """Return the independent post-selection, pre-decision residual band."""
+        import pandas as pd
+
+        rows = [item for item in policies
+                if start <= item["quote_date"] < quote_date
+                and item["settlement_date"] < quote_date
+                and item["symbol"] == symbol
+                and item["tenor_band"] == tenor_band]
+        return pd.DataFrame(rows, columns=["quote_date", "settlement_date",
+                                           "symbol", "tenor_band", "radius",
+                                           "residual"])
+
+    def train(self):
+        """Fit causal rowwise maps and precompute every frozen radius policy."""
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+
+        stage = self.output/"train"
+        if stage.exists():
+            raise FileExistsError(stage)
+        panel, score_source, candidate_source, sources = self._inputs()
+        panel_lookup = panel.set_index(list(self.IDENTITY))
+        correction = self.config["correction"]
+        scorer = CondorDecisionAudit(self.config["audit"]["mesh_tolerance"],
+                                     self.config["audit"]["floor"])
+        score_rows, event_rows = [], []
+        labels = [("identity", None), *[(self._label(v), float(v))
+                                        for v in correction["prior_strengths"]]]
+        for symbol in sorted(score_source.symbol.unique()):
+            curve_path = self._curve_path(symbol)
+            sources[str(curve_path)] = self._digest(curve_path)
+            with np.load(curve_path, allow_pickle=False) as archive:
+                if str(archive["kind"]) != "grid" or "calibration_x" in archive:
+                    raise ValueError("robust correction requires raw GridCurve archive")
+                lookup = {tuple(row): i for i, row in enumerate(archive["identities"])}
+                symbol_scores = score_source[score_source.symbol == symbol].sort_values(
+                    ["quote_date", "expiry"])
+                history = []
+                for quote_date, dated in symbol_scores.groupby("quote_date", sort=True):
+                    pending = []
+                    for source_row in dated.itertuples(index=False):
+                        key = tuple(getattr(source_row, name) for name in self.IDENTITY)
+                        if key not in lookup or key not in panel_lookup.index:
+                            raise ValueError("source identity absent from raw curve or panel")
+                        row = panel_lookup.loc[key]
+                        selected = candidate_source
+                        for name, value in zip(self.IDENTITY, key):
+                            selected = selected[selected[name] == value]
+                        if selected.empty:
+                            raise ValueError("eligible decision row lacks candidates")
+                        candidates = [{"id": item.id,
+                                       "strikes": self._strikes(item.id),
+                                       "net_credit": float(item.net_credit)}
+                                      for item in selected.itertuples(index=False)]
+                        charges = {item.id: (None if pd.isna(item.american_charge)
+                                             else float(item.american_charge))
+                                   for item in selected.itertuples(index=False)}
+                        base = CDFHyperparameterStudy.restore_curve(
+                            archive, [lookup[key]])
+                        unique_strikes = sorted({strike for item in candidates
+                                                 for strike in item["strikes"]})
+                        strike_z = np.log(np.asarray(unique_strikes)/float(row.spot))/float(
+                            row.reference_scale)
+                        base_probability = base.cdf(strike_z)[0]
+                        event = (float(row.terminal_price) <= np.asarray(unique_strikes)).astype(float)
+                        eligible_history = self._settled_events(
+                            history, quote_date, source_row.tenor_band)
+                        history_frame = pd.DataFrame(eligible_history)
+                        grid = self._price_grid(unique_strikes, float(row.spot))
+                        y = float(row.terminal_return/row.reference_scale)
+                        for label, strength in labels:
+                            if strength is None:
+                                curve, training_events, training_dates = base, 0, 0
+                            else:
+                                try:
+                                    owner = CausalStrikeCDFCorrection(
+                                        strength, correction["knots"],
+                                        correction["min_events"], correction["min_dates"])
+                                    owner.fit(history_frame.probability.to_numpy(),
+                                              history_frame.event.to_numpy(),
+                                              history_frame.quote_date.to_numpy(),
+                                              history_frame.weight.to_numpy())
+                                    curve = owner.curve(base)
+                                    training_events = len(history_frame)
+                                    training_dates = history_frame.quote_date.nunique()
+                                except (AttributeError, ValueError):
+                                    score_rows.append({**dict(zip(self.IDENTITY, key)),
+                                                       "settlement_date": row.settlement_date,
+                                                       "tenor_band": source_row.tenor_band,
+                                                       "label": label, "available": False,
+                                                       "reason": "insufficient_settled_history"})
+                                    continue
+                            cdf = curve.cdf(np.log(grid/float(row.spot))/float(
+                                row.reference_scale))[0]
+                            result = scorer.evaluate(
+                                grid, cdf, terminal=float(row.terminal_price),
+                                spot=float(row.spot), candidates=candidates, radius=0.,
+                                american_charges=charges, curve=curve,
+                                reference_scale=float(row.reference_scale))
+                            metrics, _ = ChronologicalCDFStudy.scores(
+                                curve, np.asarray([y]), correction["samples"],
+                                correction["tail_intervals"], correction["samples"])
+                            score_rows.append({**dict(zip(self.IDENTITY, key)),
+                                               "settlement_date": row.settlement_date,
+                                               "tenor_band": source_row.tenor_band,
+                                               "label": label, "available": True,
+                                               "reason": None,
+                                               "training_events": training_events,
+                                               "training_dates": training_dates,
+                                               "weighted_crps": result["weighted_crps"],
+                                               "strike_brier": result["strike_brier"],
+                                               "full_crps": float(metrics["crps"][0]),
+                                               "below_05": float(metrics["below_05"][0]),
+                                               "above_95": float(metrics["above_95"][0]),
+                                               "unique_wing_templates": result[
+                                                   "unique_wing_templates"]})
+                        weight = 1./len(unique_strikes)
+                        pending.extend({"quote_date": quote_date,
+                                        "settlement_date": row.settlement_date,
+                                        "tenor_band": source_row.tenor_band,
+                                        "probability": float(probability),
+                                        "event": float(outcome), "weight": weight}
+                                       for probability, outcome in
+                                       zip(base_probability, event))
+                    # Same-date outcomes cannot calibrate another forecast on that date.
+                    history.extend(pending)
+                    event_rows.extend({"symbol": symbol, **item} for item in pending)
+            print("robust-correction train", symbol, len(symbol_scores), flush=True)
+        stage.mkdir(parents=True)
+        score_frame = pd.DataFrame(score_rows)
+        score_frame.to_parquet(stage/"scores.parquet", index=False)
+        pd.DataFrame(event_rows).to_parquet(stage/"events.parquet", index=False)
+        manifest = {"config_sha256": self._config_digest(), "sources": sources,
+                    "implementation_sha256": self._digest(__file__),
+                    "score_rows": len(score_frame),
+                    "event_rows": len(event_rows),
+                    "scores_sha256": self._digest(stage/"scores.parquet"),
+                    "events_sha256": self._digest(stage/"events.parquet")}
+        (stage/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
+        return manifest
+
+    def _verified_train(self):
+        import pandas as pd
+
+        stage = self.output/"train"
+        record = json.loads((stage/"manifest.json").read_text())
+        if record["config_sha256"] != self._config_digest():
+            raise ValueError("correction JSON changed after training")
+        if record.get("implementation_sha256") != self._digest(__file__):
+            raise ValueError("correction implementation changed after training")
+        for name in ("scores", "events"):
+            if self._digest(stage/f"{name}.parquet") != record[f"{name}_sha256"]:
+                raise ValueError("correction training artifact changed")
+        return pd.read_parquet(stage/"scores.parquet"), record
+
+    def select(self):
+        """Freeze the correction using only the predeclared selection period."""
+        stage = self.output/"selection"
+        if stage.exists():
+            raise FileExistsError(stage)
+        scores, train_record = self._verified_train()
+        scores = scores[(scores.available) &
+                        (scores.quote_date < self.config["selection_cutoff"])]
+        labels = [self._label(v) for v in self.config["correction"]["prior_strengths"]]
+        corrected = scores[scores.label.isin(labels)]
+        common = set.intersection(*[set(map(tuple, corrected[corrected.label == label][
+            list(self.IDENTITY)].to_numpy())) for label in labels])
+        common &= set(map(tuple, scores[scores.label == "identity"][
+            list(self.IDENTITY)].to_numpy()))
+        if not common:
+            raise ValueError("no paired correction-selection identities")
+        paired = scores[[tuple(row) in common for row in scores[list(self.IDENTITY)].to_numpy()]]
+        reference = paired[paired.label == "identity"]
+        tolerance = self.config["correction"]["tail_tolerance"]
+        evidence, feasible = [], []
+        for label in labels:
+            candidate = paired[paired.label == label]
+            passed, guards = True, []
+            for symbol in sorted(reference.symbol.unique()):
+                for metric in ("below_05", "above_95"):
+                    a = float(candidate[candidate.symbol == symbol][metric].mean())
+                    b = float(reference[reference.symbol == symbol][metric].mean())
+                    ok = abs(a-.05) <= abs(b-.05)+tolerance
+                    passed &= ok
+                    guards.append({"symbol": symbol, "metric": metric,
+                                   "candidate": a, "reference": b,
+                                   "passed": bool(ok)})
+            mean = float(candidate.weighted_crps.mean())
+            evidence.append({"label": label, "weighted_crps": mean,
+                             "tail_guard": bool(passed), "guards": guards})
+            if passed:
+                feasible.append((mean, label))
+        baseline = float(reference.weighted_crps.mean())
+        winner = min(feasible) if feasible else (baseline, "identity")
+        if winner[0] >= baseline:
+            winner = (baseline, "identity")
+        record = {"config_sha256": self._config_digest(),
+                  "train_manifest_sha256": self._digest(self.output/"train"/"manifest.json"),
+                  "selection_cutoff": self.config["selection_cutoff"],
+                  "paired_identities": len(common), "baseline_weighted_crps": baseline,
+                  "selected_label": winner[1], "selected_weighted_crps": winner[0],
+                  "evidence": evidence}
+        stage.mkdir(parents=True)
+        (stage/"selected.json").write_text(json.dumps(record, indent=2)+"\n")
+        return record
+
+    def optimize(self):
+        """Apply the frozen correction and causally selected W1 radius."""
+        import numpy as np
+        import pandas as pd
+
+        stage = self.output/"optimize"
+        if stage.exists():
+            raise FileExistsError(stage)
+        self._verified_train()
+        selected_path = self.output/"selection"/"selected.json"
+        selected = json.loads(selected_path.read_text())
+        if (selected["config_sha256"] != self._config_digest()
+                or selected["train_manifest_sha256"]
+                != self._digest(self.output/"train"/"manifest.json")):
+            raise ValueError("invalid frozen correction selection")
+        panel, score_source, candidate_source, _ = self._inputs()
+        panel_lookup = panel.set_index(list(self.IDENTITY))
+        label = selected["selected_label"]
+        strength_lookup = {self._label(v): float(v)
+                           for v in self.config["correction"]["prior_strengths"]}
+        if label != "identity" and label not in strength_lookup:
+            raise ValueError("selected correction absent from frozen inventory")
+        strength = strength_lookup.get(label)
+        scorer = CondorDecisionAudit(self.config["audit"]["mesh_tolerance"],
+                                     self.config["audit"]["floor"])
+        policies, decisions = [], []
+        for symbol in sorted(score_source.symbol.unique()):
+            with np.load(self._curve_path(symbol), allow_pickle=False) as archive:
+                lookup = {tuple(row): i for i, row in enumerate(archive["identities"])}
+                history_events = []
+                symbol_scores = score_source[score_source.symbol == symbol].sort_values(
+                    ["quote_date", "expiry"])
+                for quote_date, dated in symbol_scores.groupby("quote_date", sort=True):
+                    pending = []
+                    for source_row in dated.itertuples(index=False):
+                        key = tuple(getattr(source_row, name) for name in self.IDENTITY)
+                        row = panel_lookup.loc[key]
+                        selected_candidates = candidate_source
+                        for name, value in zip(self.IDENTITY, key):
+                            selected_candidates = selected_candidates[
+                                selected_candidates[name] == value]
+                        candidates = [{"id": item.id,
+                                       "strikes": self._strikes(item.id),
+                                       "net_credit": float(item.net_credit)}
+                                      for item in selected_candidates.itertuples(index=False)]
+                        charges = {item.id: (None if pd.isna(item.american_charge)
+                                             else float(item.american_charge))
+                                   for item in selected_candidates.itertuples(index=False)}
+                        base = CDFHyperparameterStudy.restore_curve(
+                            archive, [lookup[key]])
+                        strikes = sorted({strike for item in candidates
+                                          for strike in item["strikes"]})
+                        strike_z = np.log(np.asarray(strikes)/float(row.spot))/float(
+                            row.reference_scale)
+                        base_probability = base.cdf(strike_z)[0]
+                        events = (float(row.terminal_price)
+                                  <= np.asarray(strikes)).astype(float)
+                        if strength is None:
+                            curve = base
+                        else:
+                            settled = pd.DataFrame(self._settled_events(
+                                history_events, quote_date, source_row.tenor_band))
+                            try:
+                                owner = CausalStrikeCDFCorrection(
+                                    strength, self.config["correction"]["knots"],
+                                    self.config["correction"]["min_events"],
+                                    self.config["correction"]["min_dates"])
+                                owner.fit(settled.probability.to_numpy(),
+                                          settled.event.to_numpy(),
+                                          settled.quote_date.to_numpy(),
+                                          settled.weight.to_numpy())
+                                curve = owner.curve(base)
+                            except (AttributeError, ValueError):
+                                curve = None
+                        if (quote_date >= self.config["selection_cutoff"]
+                                and curve is not None and all(value is not None
+                                                     for value in charges.values())):
+                            grid = self._price_grid(strikes, float(row.spot))
+                            cdf = curve.cdf(np.log(grid/float(row.spot))/float(
+                                row.reference_scale))[0]
+                            nominal = scorer.evaluate(
+                                grid, cdf, terminal=float(row.terminal_price),
+                                spot=float(row.spot), candidates=candidates, radius=0.,
+                                american_charges=charges, curve=curve,
+                                reference_scale=float(row.reference_scale))
+                            distribution = DiscreteCDFGrid(grid, cdf)
+                            realized = {record["id"]: record["realized_loss"]
+                                        for record in nominal["candidates"]}
+                            realized_pnl = {item["id"]: item["net_credit"]
+                                            -realized[item["id"]]-charges[item["id"]]
+                                            for item in candidates}
+                            oracle = max([0., *realized_pnl.values()])
+                            choices = [{"id": item["id"],
+                                        "net_credit": item["net_credit"],
+                                        "loss": -CondorCDFDiagnostic.payoff(
+                                            grid[None, :],
+                                            np.asarray(item["strikes"])[None, :])[0]}
+                                       for item in candidates]
+                            current = []
+                            for radius in self.radius_owner.radii:
+                                choice = distribution.choose(
+                                    choices, radius=radius, spot=float(row.spot))
+                                actual_loss = (0. if choice["id"] is None
+                                               else realized[choice["id"]])
+                                pnl = (0. if choice["id"] is None
+                                       else realized_pnl[choice["id"]])
+                                item = {**dict(zip(self.IDENTITY, key)),
+                                        "settlement_date": row.settlement_date,
+                                        "tenor_band": source_row.tenor_band,
+                                        "label": label, "radius": radius,
+                                        "selection_id": choice["id"],
+                                        "robust_value": choice["robust_value"],
+                                        "worst_loss": choice["worst_loss"],
+                                        "realized_loss": actual_loss,
+                                        "residual": actual_loss-choice["worst_loss"],
+                                        "realized_pnl": pnl, "regret": oracle-pnl,
+                                        "oracle_pnl": oracle}
+                                policies.append(item)
+                                current.append(item)
+                            if quote_date >= self.config["optimization_cutoff"]:
+                                history = self._radius_history(
+                                    policies, quote_date, symbol,
+                                    source_row.tenor_band,
+                                    self.config["selection_cutoff"])
+                                radius_result = self.radius_owner.select(history)
+                                radius = radius_result["radius"]
+                                choice = next((item for item in current
+                                               if item["radius"] == radius), None)
+                                reason = (radius_result["reason"] if choice is None
+                                          else ("robust_no_trade"
+                                                if choice["selection_id"] is None else None))
+                                decisions.append({**dict(zip(self.IDENTITY, key)),
+                                                  "radius": radius,
+                                                  "selection_id": (None if choice is None
+                                                                   else choice["selection_id"]),
+                                                  "realized_pnl": (0. if choice is None
+                                                                   else choice["realized_pnl"]),
+                                                  "regret": (oracle if choice is None
+                                                             else choice["regret"]),
+                                                  "reason": reason,
+                                                  "upper_bounds": json.dumps(
+                                                      radius_result["upper_bounds"])})
+                        weight = 1./len(strikes)
+                        pending.extend({"quote_date": quote_date,
+                                        "settlement_date": row.settlement_date,
+                                        "tenor_band": source_row.tenor_band,
+                                        "probability": float(probability),
+                                        "event": float(event), "weight": weight}
+                                       for probability, event in
+                                       zip(base_probability, events))
+                    history_events.extend(pending)
+            print("robust-correction optimize", symbol, len(symbol_scores), flush=True)
+        frame = pd.DataFrame(decisions)
+        stage.mkdir(parents=True)
+        pd.DataFrame(policies).to_parquet(stage/"policies.parquet", index=False)
+        frame.to_parquet(stage/"decisions.parquet", index=False)
+        record = {"config_sha256": self._config_digest(),
+                  "implementation_sha256": self._digest(__file__),
+                  "selection_sha256": self._digest(selected_path),
+                  "rows": len(frame), "trades": int(frame.selection_id.notna().sum()),
+                  "robust_no_trades": int((frame.reason == "robust_no_trade").sum()),
+                  "unsupported": int((frame.reason ==
+                                      "insufficient_or_uncovered_history").sum()),
+                  "mean_realized_pnl": float(frame.realized_pnl.mean()) if len(frame) else None,
+                  "mean_regret": float(frame.regret.mean()) if len(frame) else None,
+                  "policies_sha256": self._digest(stage/"policies.parquet"),
+                  "decisions_sha256": self._digest(stage/"decisions.parquet")}
+        (stage/"summary.json").write_text(json.dumps(record, indent=2)+"\n")
+        return record
+
+    def report(self):
+        """Create one immutable machine-readable final summary."""
+        stage = self.output/"report"
+        if stage.exists():
+            raise FileExistsError(stage)
+        selected = json.loads((self.output/"selection"/"selected.json").read_text())
+        optimized = json.loads((self.output/"optimize"/"summary.json").read_text())
+        if optimized["selection_sha256"] != self._digest(
+                self.output/"selection"/"selected.json"):
+            raise ValueError("optimizer selection binding changed")
+        result = {"status": "offline_after_close_research_only",
+                  "selected_correction": selected["selected_label"],
+                  "baseline_weighted_crps": selected["baseline_weighted_crps"],
+                  "selected_weighted_crps": selected["selected_weighted_crps"],
+                  "paired_selection_identities": selected["paired_identities"],
+                  "optimization": optimized,
+                  "limitations": ["date-only chain quotes are not executable",
+                                  "reused historical sample is not a fresh holdout",
+                                  "IWM is excluded when dividend windows are unknown"]}
+        stage.mkdir(parents=True)
+        (stage/"summary.json").write_text(json.dumps(result, indent=2)+"\n")
+        return result
 
 
 class RawChainFeatureBuilder:
@@ -1574,10 +2276,19 @@ def _main():
     parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
     parser.add_argument("--partition")
     parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
+    parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if args.robust_stage:
+        if (args.stage or args.partition or args.decision_stage
+                or set(config) != {"robust_correction_study"}):
+            parser.error("robust stage needs a standalone robust_correction_study document")
+        study = RobustCorrectionStudy(config["robust_correction_study"])
+        study._enforce_limits()
+        print(json.dumps(getattr(study, args.robust_stage)(), indent=2), flush=True)
+        return
     if args.decision_stage:
-        if args.stage or args.partition or set(config) != {"decision_study"}:
+        if args.stage or args.partition or args.robust_stage or set(config) != {"decision_study"}:
             parser.error("decision stage needs a standalone decision_study document")
         study = DecisionRegionStudy(config["decision_study"])
         study._enforce_limits()

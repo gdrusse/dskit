@@ -66,6 +66,71 @@ def test_decision_region_audit_uses_all_wings_and_checks_grid_error():
             candidates=[candidate], radius=0.)
 
 
+def test_causal_strike_correction_is_monotone_shrunk_and_requires_history():
+    owner = cdf_study.CausalStrikeCDFCorrection(
+        prior_strength=20., knots=11, min_events=4, min_dates=2)
+    with pytest.raises(ValueError, match="insufficient"):
+        owner.fit([.2, .8], [0., 1.], ["2020-01-01", "2020-01-02"])
+    owner.fit([.1, .2, .8, .9], [0., 1., 0., 1.],
+              ["2020-01-01"]*2+["2020-01-02"]*2,
+              weights=[.5, .5, .5, .5])
+    mapped = owner.transform(np.linspace(0, 1, 101))
+    assert mapped[0] == 0 and mapped[-1] == 1
+    assert (np.diff(mapped) >= 0).all()
+    curve = owner.curve(GridCurve([[0., 1., 2.]], [[0., .5, 1.]]))
+    assert curve.probabilities[0, 0] == 0
+    assert curve.probabilities[0, -1] == 1
+
+
+def test_adaptive_wasserstein_radius_uses_date_blocks_and_abstains():
+    owner = cdf_study.AdaptiveWassersteinRadius(
+        radii=[0., .01], min_dates=4, block_dates=2,
+        replicates=100, alpha=.1, seed=7)
+    short = pd.DataFrame({"quote_date": ["2020-01-01"], "radius": [0.],
+                          "residual": [.1]})
+    assert owner.select(short)["radius"] is None
+    rows = []
+    for day in range(1, 7):
+        date = f"2020-01-{day:02d}"
+        rows.extend([{"quote_date": date, "radius": 0., "residual": .2},
+                     {"quote_date": date, "radius": .01, "residual": -.2}])
+    result = owner.select(pd.DataFrame(rows))
+    assert result["radius"] == .01
+    assert result == owner.select(pd.DataFrame(rows))
+
+
+def test_correction_and_radius_histories_respect_all_temporal_boundaries():
+    events = [
+        {"quote_date": "2020-01-01", "settlement_date": "2020-01-02",
+         "tenor_band": "short"},
+        {"quote_date": "2020-01-03", "settlement_date": "2020-01-06",
+         "tenor_band": "short"},
+        {"quote_date": "2020-01-02", "settlement_date": "2020-01-02",
+         "tenor_band": "long"},
+    ]
+    settled = cdf_study.RobustCorrectionStudy._settled_events(
+        events, "2020-01-03", "short")
+    assert settled == events[:1]
+    # A same-date forecast is never admitted, even if its synthetic settlement
+    # field is malformed as already available.
+    same_date = [{"quote_date": "2020-01-03", "settlement_date": "2020-01-02",
+                  "tenor_band": "short"}]
+    assert not cdf_study.RobustCorrectionStudy._settled_events(
+        same_date, "2020-01-03", "short")
+
+    policies = [
+        {"quote_date": "2020-01-01", "settlement_date": "2020-01-02",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+        {"quote_date": "2020-01-05", "settlement_date": "2020-01-05",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+        {"quote_date": "2020-01-06", "settlement_date": "2020-01-06",
+         "symbol": "SPY", "tenor_band": "short", "radius": 0., "residual": 0.},
+    ]
+    history = cdf_study.RobustCorrectionStudy._radius_history(
+        policies, "2020-01-06", "SPY", "short", "2020-01-04")
+    assert history.quote_date.tolist() == ["2020-01-05"]
+
+
 def test_nominal_decision_uses_direct_cdf_when_grid_ranking_differs():
     grid = np.arange(9., 18.)
     cdf = [0., 0., .1, .7, .75, .9, .95, 1., 1.]

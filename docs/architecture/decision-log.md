@@ -27937,3 +27937,57 @@ is eligible only when its saved 5%/95% quantiles equal the incumbent to
 `1e-12`. The current ADR-0197 feature candidates are composite, not raw-grid,
 so this protocol intentionally cannot execute yet; no feature result is
 claimed.
+
+## ADR-0200 — Causal decision-region calibration and adaptive robust selection
+
+2026-09-30. Status: approved by owner in chat; implementation, bounded model
+training, robust optimization, review and publication authorized. Owner:
+index_options. Parent: ADR-0199. Worktree:
+`/home/russell/dskit-cdf-feature-forward-selection`.
+
+### Scope
+
+Train a new offline physical terminal-price CDF by applying a coherent,
+monotone correction to the frozen raw-grid research incumbent using only
+strictly settled earlier strike events. Score and select the correction on the
+complete entry-known eligible strike/wing inventory. Then run the existing
+one-lot iron-condor optimizer with no trade and an adaptively calibrated
+spot-scaled Wasserstein radius. This is after-close historical research, not
+an executable or trading model.
+
+### Frozen protocol
+
+One standard JSON owns preparation, correction candidates, selection, robust
+optimization and reporting. Correction selection owns the early period; radius
+history begins only after that cutoff, and final decisions begin after a second
+cutoff. Earlier final-period outcomes may update later radius choices only after
+strict settlement. No correction-selection residual can enter radius history.
+Correction candidates use isotonic probability
+maps pooled within index and requested-tenor band, shrunk toward the identity
+map with prior strengths `{0,25,100,400}`. A forecast may use an outcome only
+when its settlement date is strictly before the forecast quote date; same-date
+forecasts are batched. Sparse groups refuse correction rather than borrowing a
+future label. The selected correction must improve the positive-floor unique-
+wing score, while full CRPS and the existing per-index 5%/95% tail diagnostics
+remain non-inferiority constraints.
+
+Robust candidates use radii `{0,0.001,0.0025,0.005,0.01}` in spot units. For
+each forecast, the radius is chosen only from strictly settled earlier policy
+residuals using a one-sided moving-date-block upper bound. Choose the smallest
+radius whose bound is nonpositive; refuse to trade when history is insufficient
+or no radius passes. Candidate eligibility, costs, weights, tie-to-no-trade and
+the correction winner are frozen before optimization results are summarized.
+
+Every process must remain below 30 minutes and 6 GiB. Persist row/date/expiry,
+strike-event, unique-wing, candidate and abstention counts. Reused 2019--2025
+history is descriptive and cannot establish deployment readiness. IWM remains
+strategy-ineligible while its dividend window is unknown. No one-off execution
+script, intraday executability claim, deployment or live trade is authorized.
+
+### Exit
+
+Focused tests must cover strict settlement availability, same-date batching,
+monotonic endpoints, shrinkage, sparse-history refusal, radius selection,
+block-bound determinism, no-trade ties and immutable JSON identity. A
+standalone memo, action journal and RE-ENTRY update are required. Luna review
+must resolve all Critical/Major findings before push.
