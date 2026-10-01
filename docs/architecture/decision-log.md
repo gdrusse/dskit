@@ -28779,7 +28779,8 @@ return/regime features only; pre-split values cannot pair with raw strikes.
 
 The free Alpaca pull enumerated 23,254 inactive AMZN contracts since February
 2024. Require the OCC `AMZN` root and source multiplier 100: 1,386 contracts
-failed that multiplier gate, including both `1AMZN` deliverables. The retained
+failed the multiplier gate and two additional `1AMZN` contracts failed the root
+gate, leaving 21,866 eligible contracts. The retained
 artifact has 65,372 unique, valid daily trade bars for 8,892 symbols and 126
 expiries in the 30-45 DTE window. It contains no historical bid/ask, and the
 bars endpoint did not identify its feed in the response.
@@ -28787,10 +28788,10 @@ bars endpoint did not identify its feed in the response.
 In the two available target expiries, current indicative chains held 168 AMZN
 and 276 MSFT contracts. Fresh positive sized quotes covered 163 and 237 rows;
 median relative spreads were 8.75% and 7.14%, and daily volumes 21,590 and
-44,839. Both expiries supported four legs. Active 44-DTE contracts existed for
-both stocks, but the free snapshot endpoint returned none, so the upper target
-window is unobserved. MSFT therefore has stronger observed target-window
-liquidity; these modified quotes are discovery evidence only.
+44,839. Both expiries supported four legs. The 44-DTE request returned no free
+snapshots for either stock; retained artifacts do not establish whether eligible
+contracts were active, so the upper target window is unobserved. MSFT
+therefore has stronger observed target-window liquidity; these modified quotes are discovery evidence only.
 
 AMZN remains the preferred first study because the accessible option history is
 post-split and it has paid no dividends, which removes the first study's main

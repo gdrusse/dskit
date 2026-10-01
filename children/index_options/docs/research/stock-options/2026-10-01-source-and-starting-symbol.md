@@ -9,7 +9,8 @@ files contain 7,390 split-adjusted AMZN rows and 5,934 MSFT rows, including all
 5,030 expected sessions since 2006-10-02. The free Alpaca tier yielded 65,372
 AMZN daily option trade bars after requiring multiplier 100, but no historical
 bid/ask quotes. In the two available 30/37-DTE current chains, MSFT had tighter
-spreads and more volume; 44-DTE contracts had no free snapshots. AMZN avoids
+spreads and more volume; the 44-DTE request returned no free
+snapshots. AMZN avoids
 MSFT's dividend assignment dependency and its accessible options are post-split. No
 historical option-performance claim is supported. Keep the new project in a
 thin `stock_options` child, keep generic

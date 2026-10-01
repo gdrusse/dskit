@@ -9,7 +9,7 @@ option trade bars; historical bid/ask quotes and a strategy backtest remain abse
 ## Execution contract
 
 This source and symbol audit ran on 2026-09-30 from branch
-`codex/amzn-stock-options`, candidate parent `f7736173`. Scope was long stock-price history,
+`codex/amzn-stock-options`, series base `f7736173`. Scope was long stock-price history,
 free option coverage, a starting stock, and explicit stock-specific caveats.
 No new child, strategy run, paper/live order or paid-data purchase was approved.
 
@@ -47,8 +47,9 @@ Target-window Alpaca indicative pulls used a 2026-09-30 20:00Z decision time.
 The two expiries with snapshots were 30 and 37 DTE: AMZN had 163/168 fresh,
 positive, sized quotes, 8.754% median relative spread and 21,590 daily volume;
 MSFT had 237/276, 7.138% and 44,839. Both supported four legs in both expiries.
-Active 44-DTE contracts existed, but the endpoint returned zero snapshots for
-either stock. The AMZN/MSFT files hash to
+The 44-DTE request returned zero snapshots for either stock; the retained
+snapshot artifacts do not establish whether eligible contracts were active.
+The AMZN/MSFT files hash to
 `473f1e461fe85b33121895304a05d39385b3510e9f07bf76a88d1e6313896129`
 and `c2d76d35bea7fa7c5409f8329499f9973b068cf2a9b92aa204fad86446132c0b`.
 MSFT has stronger observed target-window liquidity; the upper window remains
@@ -67,10 +68,12 @@ The contract endpoint was called with `underlying_symbols=AMZN`,
 used `/v1beta1/options/bars`, at most 100 symbols per request, `timeframe=1Day`,
 `start=expiry-45d`, `end=expiry-29d`, `limit=10000`, ascending pagination.
 Post-processing retained DTE 30-45, OCC root `AMZN`, and source multiplier 100.
-That multiplier gate removed 3,671 bars from 567 multiplier-0 symbols. The final
+Of 23,254 contracts, 1,386 failed the multiplier gate and two additional `1AMZN`
+contracts failed the root gate, leaving 21,866 eligible contracts. The
+multiplier gate removed 3,671 bars from 567 multiplier-0 symbols. The final
 gzip contains 65,372 unique valid OHLCV bars for 8,892 contracts and 126
 expiries, SHA-256
-`fb7ebaa4b8522d6c054c9365bb0e8f1939b8c82dccc5810c5409224627a033d0`.
+`49d7b4f5da463b8b551c1673fc667e0a8bb3baebb4313e3b6b1ef0e1c52ff9c8`.
 It spans 2024-03-21 through 2026-08-26. The response does not identify its feed
 and contains no bid/ask quotes, so it is activity/coverage evidence only.
 

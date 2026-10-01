@@ -62,7 +62,7 @@ The free Alpaca tier enumerated 23,254 inactive AMZN contracts from February
 2024 onward. Requiring the OCC `AMZN` root and source multiplier 100 retained
 65,372 unique, valid daily trade bars across 8,892 symbols and 126 expiries in
 the 30-45 DTE window, SHA-256
-fb7ebaa4b8522d6c054c9365bb0e8f1939b8c82dccc5810c5409224627a033d0.
+49d7b4f5da463b8b551c1673fc667e0a8bb3baebb4313e3b6b1ef0e1c52ff9c8.
 These bars have no bid/ask. Historical executable-price work still requires an
 entitled quote source. Proposed first cadence:
 daily end-of-day chain and stock closes, weekly entry review, 30–45-day
@@ -73,6 +73,6 @@ strategy run follows until ADR-0211 is approved.
 Use AMZN first and MSFT as the immediate comparator. All accessible AMZN option
 history is post-split and Amazon has paid no dividends, simplifying the first
 assignment study. In the two available 30/37-DTE expiries, MSFT had tighter
-median spreads and greater volume. Active 44-DTE contracts had no free snapshot
-for either symbol. AMZN is the operationally simpler baseline; MSFT is the
-liquidity benchmark. This is not evidence of a profitable strategy.
+median spreads and greater volume. The 44-DTE request returned no free snapshot
+for either symbol; retained artifacts do not establish active-contract coverage.
+AMZN is the operationally simpler baseline; MSFT is the liquidity benchmark. This is not evidence of a profitable strategy.
