@@ -28749,3 +28749,130 @@ Frozen later MLP/GRU skill was +2.043%/-1.944%; both 30/60-date intervals
 crossed zero. No promotion. Six bounded stages took 4m11s total, 2.434 GiB
 peak process RSS; 233 focused tests and two final C0/M0 reviews. Standalone
 memo: children/index_options/docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md.
+
+## ADR-0212 — Single-stock option research extension
+
+**Status:** accepted 2026-10-01; owner approved the exact bootstrap and study direction.
+
+The existing index_options child already studies physically settled,
+American-style SPY/QQQ ETF options. Its four-leg quote and payoff research can
+inform listed-stock work, but the requested project boundary is a separate,
+thin `children/stock_options` child. Generic mechanisms remain in `dskit/`;
+the new child owns only stock-specific configuration, constraints and evidence.
+Keep stock-only assumptions visible in every run document and explanatory note.
+
+The exact approved initial structure is:
+
+- `AGENTS.md` and `CLAUDE.md`: aligned child execution rules;
+- `README.md` and `pyproject.toml`: scope, commands and package metadata;
+- `journal.json`, `docs/decisioning/{actions.csv,path.csv,README.md}`: journal;
+- `docs/{plans,memos,research}/README.md` plus their `.gitkeep` files: evidence;
+- `stock_options/__init__.py`: a deliberately empty public package seam; and
+- `tests/conftest.py` and `tests/test_package_boundary.py`: import and
+  no-cross-child dependency checks.
+
+No connector, node, accounting or execution module enters the child. Inventory
+the existing generic seams first; any missing reusable behavior graduates to
+`dskit/` under a separately approved ADR and focused tests.
+This bootstrap has no runnable strategy config. Only after the generic chain
+reader and condor seam exist in `dskit/` may a separately approved child slice
+add `configs/{amzn,msft}-iron-condor.json` and its config validation tests.
+
+**Prediction/action separation:** predict the physical terminal-return
+distribution from point-in-time stock and market features only. Option strikes,
+premiums, implied volatility, open interest and selected legs are excluded from
+the first model's predictors. Before the first scored option date, split the
+adjusted stock history chronologically into training and development. Require
+every development label to settle before that date and embargo at least the
+maximum 45-calendar-day target horizon. Development freezes features, candidate
+training-window and recency rules, model, hyperparameters, optimizer objective
+and constraints.
+
+At each later decision timestamp, the option data define only the feasible action
+set and its contemporaneous economics: standard contract identity, expiry,
+strike, quote or observed trade, size and costs. The mixed-integer optimizer
+combines the frozen predictive distribution with that action set. A rolling or
+expanding refit is allowed only if declared before testing and may use stock
+outcomes known before that decision. Option-period outcomes cannot select the
+forecast or tune the optimizer. Free trade bars omit untraded strikes and
+bid/ask quotes, so they can support a selection-mechanics or terminal-payoff
+diagnostic but cannot establish complete historical feasibility or executable
+P&L.
+
+The first strategy candidate is one defined-risk short iron condor on AMZN:
+one expiry 30–45 calendar days out, one contract per leg, with the existing
+10% short-tail and 0.5 standardized wing-distance rule as an untuned control.
+Review entries weekly after the close, but admit no overlapping position; the
+next entry follows the prior expiry. Require positive bid/ask-side net credit,
+quotable size and standard deliverables. Hold to expiry in the first terminal
+payoff diagnostic. It cannot report realized strategy returns or risk. No edge,
+fill, assignment or executable-trading claim follows from it.
+
+**Stock-specific gates:** use the stock's closes and its own option chain, not
+VIX as an implied-volatility substitute. Refuse an entry without a point-in-time
+earnings calendar covering its holding window. Refuse any holding window that
+contains an earnings announcement or ex-dividend date until early exercise,
+assignment and share accounting are modeled. Refuse split or other adjusted
+deliverables until contract identity and share/cash settlement are modeled.
+The existing conservative charge is a proxy, not an assignment simulation.
+No entry generation or P&L run is permitted until validated point-in-time
+earnings and ex-dividend sources, including their known-at rule, are approved.
+Freeze one decision timestamp per chain. Refuse a selected leg whose quote is
+more than 15 minutes old, or whose bid/ask size is missing. Require the stock
+price used for strike selection to be timestamped within 60 seconds of that
+decision time; never mix each leg's latest observation from different clocks.
+
+**Frequency and data:** begin with one complete chain snapshot and one raw
+stock close per trading day, near the 16:00 ET close and in the same units as
+the option strikes. Weekly is the candidate
+entry review, 30–45 days is the option tenor, and roughly monthly is the
+nonoverlapping turnover. Minute option bars are an optional later execution
+study, not an input to the first end-of-day diagnostic. A bar is not a bid/ask
+quote. Require timestamped historical bid/ask quotes from OPRA or an equivalent
+source before any fill-quality historical backtest. Reuse the existing
+walk-forward and payoff methods only after their fixed ETF assumptions are
+inventoried and made explicit.
+
+The existing optionshist archive covers SPY/QQQ/IWM, not individual stocks.
+Free daily-price pulls contain 7,390 field-complete
+AMZN records from 1997-05-15 and 5,934 field-complete MSFT records from
+2003-03-03, both through 2026-09-30. All 5,030 expected sessions from
+2006-10-02 onward are present. Use split/dividend-adjusted prices and
+scale-free returns or features for prediction. A correctly adjusted split is
+not a loss and its row is retained. Raw pre-split price levels cannot pair with
+raw later option strikes. Exclude rows only for documented data or contract-
+identity failures under a rule frozen before option testing. Retain genuine
+market shocks; present-day relevance comes from a recency window or regime
+weighting selected in pre-option development, not post-hoc deletion.
+
+The free Alpaca pull enumerated 23,254 inactive AMZN contracts since February
+2024. Require the OCC `AMZN` root and source multiplier 100: 1,386 contracts
+failed the multiplier gate and two additional `1AMZN` contracts failed the root
+gate, leaving 21,866 eligible contracts. The retained
+artifact has 65,372 unique, valid daily trade bars for 8,892 symbols and 126
+expiries in the 30-45 DTE window. It contains no historical bid/ask, and the
+bars endpoint did not identify its feed in the response.
+
+In the two available target expiries, current indicative chains held 168 AMZN
+and 276 MSFT contracts. Fresh positive sized quotes covered 163 and 237 rows;
+median relative spreads were 8.75% and 7.14%, and daily volumes 21,590 and
+44,839. Both expiries supported four legs. The 44-DTE request returned no free
+snapshots for either stock; retained artifacts do not establish whether eligible
+contracts were active, so the upper target window is unobserved. MSFT
+therefore has stronger observed target-window liquidity; these modified quotes are discovery evidence only.
+
+AMZN remains the preferred first study because the accessible option history is
+post-split and it has paid no dividends, which removes the first study's main
+early-assignment event. This favors operational simplicity despite MSFT's
+stronger observed target-window liquidity. MSFT is the immediate comparator.
+A one-day ORATS sample contained
+1,449 MSFT
+and 883 AMZN option rows. In the 30-45 DTE slice, valid-quote breadth was
+178/205 MSFT rows (86.83%) and 113/120 AMZN rows (94.17%). This sample proves
+schema and breadth for one date, not historical liquidity. No strategy run has
+been performed.
+
+Next bounded work: inventory the generic forecast, chain and optimizer seams,
+then select and validate point-in-time earnings and ex-dividend sources. The
+strategy control and refusal gates are accepted. No strategy run, paper order
+or live order path is in scope.

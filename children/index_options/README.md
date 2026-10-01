@@ -566,3 +566,19 @@ Journal infrastructure starts empty. Only the human owner changes Path or
 Current Work. The generated decisioning README shows the full Path and latest
 10 Actions; actions.csv retains append-only history. Never hand-edit generated
 files. Tests and the demo journal in isolated temporary directories.
+
+## Stock options applicability — approved single-stock child
+
+The ETF quote, four-leg structure, distribution and walk-forward methods here
+can also inform listed stock options. For the proposed first stock study, the
+physical forecast is trained and selected only on pre-option adjusted stock and
+market history; option data later define the optimizer's feasible action set and
+decision-time economics. ADR-0212 approved a separate thin
+`stock_options` child with AMZN as the first research case and MSFT as the
+second-symbol check. The
+current generated grid still names only SPY/QQQ/IWM; its VIX feature and split
+rules are not ready for stocks. Every stock document must label stock-specific
+assumptions and state that the existing American charge does not simulate share
+assignment. This child remains index-only; the source and reuse audit is in
+docs/plans/README.md. A0626-A0629 retain the audit trail created here before the
+stock-options child existed.

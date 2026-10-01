@@ -1,5 +1,22 @@
 # Re-entry
 
+## Stock-options bootstrap accepted (2026-10-01)
+
+- ADR-0212 is accepted and the exact thin `children/stock_options` bootstrap
+  exists. It has no strategy code or backtest. AMZN is the baseline and MSFT
+  the replication candidate.
+- Pulled 7,390 AMZN price rows and 65,372 multiplier-100 daily option trade bars in
+  the 30-45 DTE window. Historical bid/ask quotes remain unavailable for free.
+- Memo: `docs/memos/2026-09-30-stock-options-source-and-starting-symbol.md`.
+- Design: freeze the stock/market-only forecast in pre-option development, then
+  use option-era data as the mixed-integer optimizer's point-in-time action set.
+- Review lock: 449700a7 passed two independent skeptic lenses at C0/M0 and
+  39 focused checks; later changes only merge current-main docs and record wrap.
+- Limit: free bars lack complete historical action sets and bid/ask quotes, so
+  executable P&L remains unsupported.
+- Next: pull additional stock histories, then inventory the generic forecast,
+  chain and optimizer seams before any strategy run.
+
 ## Generic Torch decision-region CDF zoo completed (2026-10-01)
 
 - ADR-0211: JSON MLP/GRU encoders and composite NLL/local-Brier/local-log
