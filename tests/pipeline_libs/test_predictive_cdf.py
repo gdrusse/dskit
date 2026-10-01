@@ -2031,7 +2031,7 @@ def test_expiry_close_labels_holiday_pending_and_unit_guards():
     bars = [{"symbol": "XYZ", "quote_date": "2024-03-22", "expiry": expiry,
              "price_basis": "trade_close"} for expiry in ("2024-03-29", "2024-05-03")]
     prices = [{"symbol": "XYZ", "quote_date": day, "close": close, "adjusted_close": close/2,
-               "close_complete": True, "post_session_split": False}
+               "close_complete": True, "post_session_split": False, "unit_history_verified": True}
               for day, close in (("2024-03-22", 100), ("2024-03-28", 110))]
     node = predictive_cdf.ExpiryCloseLabels("labels", {"calendar": "XNYS", "asof": "2024-04-01T20:00:00Z"})
     inputs = {"bars": bars, "snapshots": [], "prices": prices}
@@ -2045,6 +2045,10 @@ def test_expiry_close_labels_holiday_pending_and_unit_guards():
     prices[0]["post_session_split"] = False
     prices[0]["close_complete"] = False
     assert node.run(None, inputs)["records"][0]["spot"] is None
+    prices[0]["close_complete"] = True
+    prices[0]["unit_history_verified"] = False
+    rejected = node.run(None, inputs)["records"][0]
+    assert rejected["spot"] is None and rejected["unit_check"] == "unverified_or_changed_units"
 
 
 def test_option_panel_retains_rejected_observations_and_current_clock():
@@ -2094,3 +2098,37 @@ def test_option_cdf_flat_projection_has_canonical_deduplicated_grid():
 def test_option_cdf_refuses_invalid_admission_policy(knob, value):
     with pytest.raises(ValueError):
         predictive_cdf.OptionPriceCDF(**dict(_option_curve_params(), **{knob: value}))
+
+
+@pytest.mark.parametrize("spot", [None, "100", True, 1e-320])
+def test_option_price_cdf_refuses_invalid_or_nonfinite_result_spot(spot):
+    proxy = predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(_priced_options(), spot)
+    assert not proxy["eligible"]
+
+
+def test_option_price_cdf_refuses_nonnumeric_price_record():
+    frame = _priced_options().astype({"mark": object})
+    frame.loc[0, "mark"] = "invalid"
+    assert not predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(frame, 100)["eligible"]
+
+
+def test_option_panel_refuses_quantile_field_collisions_and_missing_close_clock():
+    params = {**_option_curve_params(), "required_multiplier": 100,
+              "required_style": "american", "max_quote_age_seconds": 900}
+    assert predictive_cdf.OptionCDFPanel.validate_params(dict(params, probabilities=[.5, .50001]))
+    row = {"contract": "XYZ", "symbol": "XYZ", "root_symbol": "XYZ",
+           "multiplier": 100, "contract_size": 100, "style": "american",
+           "contract_terms_status": "metadata_present", "mark": 2, "strike": 100,
+           "price_basis": "indicative_quote", "quote_timestamp": "2024-03-22T10:00:00Z"}
+    node = predictive_cdf.OptionCDFPanel("panel", params)
+    assert "unverified_entry_clock" in node._admission(row, {"spot": 100, "entry_close_at": None})
+
+
+@pytest.mark.parametrize("day,expiry,reason", [
+    ("2024-03-23", "2024-03-29", "non_session_entry"),
+    ("2024-03-22", "2024-03-22", "nonpositive_horizon")])
+def test_expiry_labels_retain_boundary_calendar_rejections(day, expiry, reason):
+    node = predictive_cdf.ExpiryCloseLabels("labels", {"calendar": "XNYS", "asof": "2024-06-01T20:00:00Z"})
+    out = node.run(None, {"bars": [{"symbol": "XYZ", "quote_date": day, "expiry": expiry,
+                                   "price_basis": "trade_close"}], "snapshots": [], "prices": []})
+    assert reason in out["records"][0]["label_reasons"]

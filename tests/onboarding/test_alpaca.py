@@ -286,3 +286,19 @@ def test_option_archive_refuses_metadata_identity_contradiction(tmp_path):
     config = _archive_config(tmp_path, {"contracts": {"contracts": [item]}})
     with pytest.raises(AssetError, match="disagrees"):
         list(alpaca.AlpacaOptionArchiveConnector().read(config, ["contracts"], {}, "backfill"))
+
+
+@pytest.mark.parametrize("stream", ["contracts", "snapshots"])
+def test_option_archive_refuses_provider_error_payload(tmp_path, stream):
+    config = _archive_config(tmp_path, {stream: {"message": "upstream error"}})
+    with pytest.raises(AssetError, match="container"):
+        list(alpaca.AlpacaOptionArchiveConnector().read(config, [stream], {}, "backfill"))
+
+
+def test_option_archive_refuses_multiple_snapshots_per_contract_session(tmp_path):
+    pages = [{"snapshots": {"ABC240503C00100000": {"latestQuote": {
+        "t": t, "bp": 2, "ap": 3}}}} for t in
+        ("2024-03-22T19:58:00Z", "2024-03-22T19:59:00Z")]
+    config = _archive_config(tmp_path, {"snapshots": {"pages": pages}})
+    with pytest.raises(AssetError, match="conflicting duplicate"):
+        list(alpaca.AlpacaOptionArchiveConnector().read(config, ["snapshots"], {}, "backfill"))

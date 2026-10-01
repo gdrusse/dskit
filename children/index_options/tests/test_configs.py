@@ -1567,3 +1567,79 @@ def test_the_cli_validates_and_plans_one_document_of_each_debit_kind(child_root)
             assert done.returncode == 0, (name, verb, done.stderr[-500:])
         planned = json.loads(done.stdout)       # the last one is the plan
         assert planned["nodes"]["backtest"]["class"] == cls
+
+
+def test_feature_availability_json_preserves_cohort_and_reports_missing_groups(child_root):
+    from dskit.pipeline.kinds_flow import Derive, Filter, GroupBy
+    document = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
+    graph = document["pipeline"]
+    families = graph["family_contracts"]["params"]["tables"]["families"]
+    required = {field for family in families.values() for field in family["fields"]}
+    row = {field: .1 for field in required}
+    row.update(symbol="QQQ", quote_date="2020-01-02", expiry="2020-01-09",
+               actual_calendar_dte=7, terminal_return=.1, rn_proxy_eligible=1, asof_ms=1577923200000)
+    for name in required:
+        if name.startswith("market_") or name in families["macro_context"]["fields"]:
+            row[name+"_missing"] = 0
+            row[name+"_age_days"] = 1
+    for i in range(9):
+        row[f"chain_node_{i:02d}_mask"] = 1
+    rows = [dict(row), dict(row, quote_date="2020-01-03", expiry="2020-01-10", asof_ms=1578009600000)]
+    rows[1].pop("ret_lag_0")
+    rows[1]["market_gvz_missing"] = 1
+    rows[1]["chain_node_00_mask"] = 0
+    excluded = dict(row, actual_calendar_dte=8)
+    selected = Filter("cohort", graph["cohort"]["params"]).run(None, {"records": rows+[excluded]})["records"]
+    assert len(selected) == 2
+    for key, spec in graph.items():
+        if key.startswith("check_"):
+            selected = Derive(key, spec["params"]).run(None, {"records": selected})["records"]
+    assert selected[0]["available_all_families"] == 1
+    assert selected[1]["available_return_history"] == 0
+    assert selected[1]["available_volatility_context"] == 0
+    assert selected[1]["available_chain_nodes"] == 0
+    assert selected[1]["available_implied_cdf"] == 1
+    summary = GroupBy("summary", graph["summary_return_history"]["params"]).run(
+        None, {"records": selected})["records"]
+    assert sum(r["observations"] for r in summary) == 2
+    assert {r["available_return_history"]: r["observations"] for r in summary} == {0: 1, 1: 1}
+    assert graph["row_evidence"]["params"]["expect"] == 1497
+    assert set(document["foreach"]["keys"]) == required
+    assert load_document(child_root/"configs/run-qqq-feature-availability.json").name
+
+
+def test_feature_availability_json_rejects_nonfinite_and_does_not_call_it_known_at(child_root):
+    from dskit.pipeline.kinds_flow import Derive
+    doc = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
+    params = doc["foreach"]["pipeline"]["finite_flag"]["params"]
+    params = json.loads(json.dumps(params).replace("$each", "test_feature"))
+    rows = [{}, {"test_feature": None}, {"test_feature": float("nan")},
+            {"test_feature": float("inf")}, {"test_feature": "3"}, {"test_feature": 0.}]
+    out = Derive("audit", params).run(None, {"records": rows})["records"]
+    assert [r["audit_finite"] for r in out] == [0, 0, 0, 0, 0, 1]
+    assert "historical known-at certification" in doc["notes"]
+    clock = doc["pipeline"]["family_contracts"]["params"]["tables"]["families"]["macro_context"]["clock"]
+    assert "not certified" in clock
+
+
+def test_feature_gap_output_names_reasons_and_exact_identities(child_root):
+    from dskit.pipeline.kinds_flow import Derive, Filter, GroupBy
+    d = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
+    graph = d["foreach"]["pipeline"]
+    cases = [{}, {"x": None}, {"x": float("nan")}, {"x": "bad"}, {"x": 1.}]
+    rows = [dict(r, symbol="QQQ", quote_date=f"2020-01-{i+2:02d}",
+                 expiry=f"2020-01-{i+9:02d}") for i, r in enumerate(cases)]
+    for name in ("present_flag", "finite_flag", "gap_reason"):
+        params = json.loads(json.dumps(graph[name]["params"]).replace("$each", "x"))
+        rows = Derive(name, params).run(None, {"records": rows})["records"]
+    assert [r["audit_gap"] for r in rows] == [
+        "field_absent", "null_value", "nonnumeric_or_nonfinite",
+        "nonnumeric_or_nonfinite", "none"]
+    gaps = Filter("gaps", graph["gap_rows"]["params"]).run(None, {"records": rows})["records"]
+    compact = GroupBy("compact", graph["gap_identities"]["params"]).run(
+        None, {"records": gaps})["records"]
+    assert len(compact) == 4
+    assert {r["quote_date"] for r in compact} == {r["quote_date"] for r in rows[:4]}
+    assert all(set(r) == {"symbol", "quote_date", "expiry", "audit_gap", "observations"} for r in compact)
+    assert d["pipeline"]["feature_gap_evidence"]["params"]["path"].endswith("feature-gaps.jsonl")
+    assert d["pipeline"]["family_gap_evidence"]["params"]["path"].endswith("family-gaps.jsonl")

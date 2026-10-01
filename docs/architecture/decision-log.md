@@ -29039,3 +29039,11 @@ implementation on 2026-10-01. Provider readers share PinnedArchiveConnector
 in the existing localtables pack: one hash/dedup/cursor lifecycle, specialized
 normalization hooks. This is an implementation refinement within the approved
 archive boundary; no new package or CLI.
+
+ADR-0213 implementation clarification: Yahoo inputs declare
+corporate_actions_complete and must contain a split-event inventory; missing
+inventory retains prices with unknown unit status, which label construction
+refuses. Snapshot identity is contract/session for this single-snapshot archive
+workflow; conflicting timestamps in one session refuse at onboarding. Prepared
+quantile field collisions refuse configuration. Public labels and numerical
+curves fail closed on missing clocks and invalid numerical geometry.

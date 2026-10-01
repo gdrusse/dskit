@@ -20,7 +20,8 @@ def test_chart_keeps_adjusted_close_separate_and_marks_split_units(tmp_path):
     config = {"files": {"prices": {"path": str(path),
                                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}},
               "archive_observed_at": "2024-03-23T12:00:00Z",
-              "session_timezone": "UTC", "complete_through": "2024-03-21"}
+              "session_timezone": "UTC", "complete_through": "2024-03-21",
+              "corporate_actions_complete": True}
     reader = YahooChartArchiveConnector()
     rows = [m["data"] for m in reader.read(config, ["prices"], {}, "backfill")
             if m["type"] == "RECORD"]
@@ -30,3 +31,21 @@ def test_chart_keeps_adjusted_close_separate_and_marks_split_units(tmp_path):
     path.write_text("{}")
     with pytest.raises(AssetError, match="sha256 mismatch"):
         list(reader.read(config, ["prices"], {}, "backfill"))
+
+
+def test_chart_unknown_corporate_actions_never_certifies_units(tmp_path):
+    result = {"meta": {"symbol": "XYZ"}, "timestamp": [1711036800],
+              "indicators": {"quote": [{"open": [99], "high": [101], "low": [98],
+                                        "close": [100], "volume": [10]}],
+                             "adjclose": [{"adjclose": [90]}]}}
+    path = tmp_path/"chart.json"
+    path.write_text(json.dumps({"chart": {"result": [result]}}))
+    config = {"files": {"prices": {"path": str(path),
+                                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}},
+              "archive_observed_at": "2024-03-23T12:00:00Z",
+              "session_timezone": "UTC", "complete_through": "2024-03-21",
+              "corporate_actions_complete": True}
+    rows = [m["data"] for m in YahooChartArchiveConnector().read(config, ["prices"], {}, "backfill")
+            if m["type"] == "RECORD"]
+    assert rows[0]["post_session_split"] is None
+    assert rows[0]["unit_history_verified"] is False

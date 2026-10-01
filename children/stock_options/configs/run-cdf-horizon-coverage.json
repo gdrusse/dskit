@@ -5,7 +5,7 @@
     "contracts": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/option-archive-source",
+        "root": "./pipeline_runs/option-archive-source-v2",
         "source": "options",
         "stream": "contracts",
         "key_fields": [
@@ -18,7 +18,7 @@
     "bars": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/option-archive-source",
+        "root": "./pipeline_runs/option-archive-source-v2",
         "source": "options",
         "stream": "bars",
         "key_fields": [
@@ -32,21 +32,22 @@
     "snapshots": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/option-archive-source",
+        "root": "./pipeline_runs/option-archive-source-v2",
         "source": "options",
         "stream": "snapshots",
         "key_fields": [
           "contract",
-          "quote_timestamp"
+          "quote_date"
         ],
         "ts_field": "effective_at",
         "ts_unit": "iso"
-      }
+      },
+      "notes": "One snapshot per contract/session per pinned archive. Conflicting same-session observations refuse during onboarding rather than choose silently."
     },
     "prices": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/option-archive-source",
+        "root": "./pipeline_runs/option-archive-source-v2",
         "source": "underlying",
         "stream": "prices",
         "key_fields": [

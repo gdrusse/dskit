@@ -571,3 +571,79 @@ the existing approved WSL Python entrypoint resolved it. No application change
 was needed. The AMZN source incompatibility above was inspected, not an
 executed stock-CLI refusal. The owner subsequently requested the conversion
 layer; proposed ADR-0213 covers that separate shared preparation slice.
+
+### QQQ seven-day feature-gap pipeline (2026-10-01)
+
+Owner requested a JSON pipeline to expose feature-family gaps before selection.
+The existing nodes suffice: run-qqq-feature-availability.json reads the same
+prepared source as the horizon selector, fixes QQQ and actual DTE=7, and retains
+all 1,497 eligible identities. No new Python capability, imputation, training,
+PCA or feature ranking. It checks 155 candidate numeric fields in 13 subgroups
+of the nine planned families, with explicit source masks and age limits.
+
+From this child in WSL2, with the project venv and repository PYTHONPATH, create
+the declared output directory then run the standard command under the same
+6-GiB/no-swap/1740-second systemd prefix used above:
+
+    mkdir -p pipeline_runs/qqq-feature-availability
+    python -m dskit.pipeline run configs/run-qqq-feature-availability.json --asof 2026-10-01
+
+The source must already be acquired by the existing horizon runbook. For another
+prepared source, edit pipeline.source.params. Ticker and fixed DTE are explicit
+in pipeline.cohort.params.where; the baseline row writer expect=1497 deliberately
+refuses a changed cohort count. If changing cohort intentionally, re-audit
+identity membership and update that expectation. A deliberate repeat uses a
+fresh outputs.run_root and fresh paths on the three records-write nodes.
+
+Outputs tell the gaps directly:
+
+- carry.json feature_profile__<feature>.records contains present/finite flags,
+  explicit gap reason, counts and date windows. Reasons are field_absent,
+  null_value, nonnumeric_or_nonfinite, or none. An absent column is a gap in the
+  prepared materialization, not proof raw data cannot supply it.
+- feature-gaps.jsonl names every affected symbol/date/expiry, feature and reason.
+- family-gaps.jsonl names every date/expiry failing each family's required-value,
+  age or mask checks. family_contracts.merged contains the exact field lists,
+  quality predicates, lookbacks and observation-clock caveats.
+- rows.jsonl retains all 1,497 source rows plus family/intersection flags so no
+  rejected date disappears. summary_<family>.records reports complete/gap counts.
+- deferred_representations.merged records why 21/41-quantile variants are not
+  materialized and why a historical known-at macro calendar is unavailable.
+
+Date-window outputs are UTC epoch milliseconds for the source quote date, not
+publication/decision timestamps. Finite coverage does not certify historical
+release time or vintage: macro fields need a vintage audit; OI needs publication
+semantics; cross-expiry slopes need reconstruction using entry-scheduled DTE
+before prospective use. These clock limitations are emitted in family_contracts,
+not just described in this document.
+
+Executed results: core implied-CDF/returns/realized-volatility/current volatility
+context each complete on 1,497 dates. Surface levels: 1,394; basic liquidity:
+1,495; full surface changes: 280; all nine detailed chain nodes: 200; complete
+macro family: 292. Core plus surface and liquidity: 1,394. Four newer subgroups
+(OHLC shape, expanded volatility context, matched variance gap, positioning
+changes) are absent from this particular materialization: 32 absent fields.
+Their shorter existing tail-data panel covers 403 of these identities, so do
+not inner-join it and silently lose 1,094 dates. Rebuild those feature families
+for this fixed cohort as the next preparation step.
+
+The standard run emitted 71,880 feature/date gap records: 47,904 field_absent
+and 23,976 null_value; 9,812 family/date gaps. These are gap cells, not distinct
+training observations. There are still exactly 1,497 dates. All-family complete
+intersection is zero because some families have not been materialized.
+The gap run used 30.11 seconds, peak RSS 2,104,308 KiB, zero swaps, hard caps.
+Earlier count-only validation independently matched every identity and all
+155 finite counts to the pinned source. Focused JSON tests cover fixed-cohort
+admission, masks/age rules, null/absent/invalid distinctions and exact gap keys.
+
+Next: materialize the deferred derivable families, verify release/vintage
+requirements, rerun the same gap pipeline, then freeze missingness/cohort rules
+before the planned nested group selection/PCA comparisons. No selected feature
+set or predictive-skill claim follows from this availability census.
+
+QQQ review scope: the new pipeline JSON, its three focused tests and this
+runbook. Fixed source and 1,497 unique baseline identities, hash-bound family
+definitions/quality predicates, finite versus entry-time distinction, complete
+gap persistence and refusal to overwrite are the acceptance invariants.
+Changing ticker/horizon/source is an explicit new cohort, not a silent fallback.
+No generic implementation change is needed for this audit.

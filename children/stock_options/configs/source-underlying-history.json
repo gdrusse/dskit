@@ -8,5 +8,6 @@
   "archive_observed_at": "2026-10-01T18:11:05.443952+00:00",
   "session_timezone": "America/New_York",
   "complete_through": "2026-09-29",
-  "notes": "Pinned saved provider bytes. Capture is import observation time, never historical known-at. Use a fresh onboarding root if bytes change."
+  "notes": "Pinned saved provider bytes. Capture is import observation time, never historical known-at. Use a fresh onboarding root if bytes change. Corporate-action completeness is explicitly declared after inspecting the full-history archive; split inventory must also be present. Missing inventory never certifies raw units.",
+  "corporate_actions_complete": true
 }

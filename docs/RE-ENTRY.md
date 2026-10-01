@@ -3,13 +3,14 @@
 ADR-0213 is owner-approved and implemented on cdf-runbook-reproduction.
 AMZN standard JSON runner produces options, expiry-close labels, full CDF
 proxies and compatible panel; 915 eligible rows / 549 dates, exact 42-DTE
-winner 90 dates. Focused tests pass; final independent review/closure pending.
+winner 90 dates. Focused tests pass; corrected final candidate awaiting independent review/closure.
 See children/stock_options/docs/plans/README.md for the complete runbook.
 
-Owner next requests a JSON-driven QQQ seven-day feature-family availability
-audit on the fixed 1,497-date cohort, before selecting feature methods.
-Report per-feature/family finite/missing/entry-known counts and intersections;
-no silent cohort change, imputation, PCA fit or model selection yet.
+QQQ JSON feature-gap audit is implemented and executed on the fixed 1,497-date
+cohort: 155 fields, 13 subgroups, explicit feature/family gap JSONL outputs.
+Core groups retain 1,497 dates; 32 newer fields need materialization. Source
+clock/vintage limits are emitted in the run outputs. No training/PCA/selection.
+Owner explicitly wants AMZN finished too; complete both final reviews and push.
 
 # Re-entry
 

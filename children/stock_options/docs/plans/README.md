@@ -27,13 +27,13 @@ Run in WSL2, from this child, using the shared project environment:
     cd /home/russell/dskit-torch-decision-cdf/children/stock_options
     export PYTHONPATH="$(realpath ../..)"
     export PATH="/home/russell/dskit/.venv/bin:$PATH"
-    python -m dskit.onboarding init --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding register-source options --catalog-source options --connector dskit.onboarding.libs.alpaca:AlpacaOptionArchiveConnector --config @configs/source-option-archives.json --activate --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding acquire --source options --stream contracts --mode backfill --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding acquire --source options --stream bars --mode backfill --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding acquire --source options --stream snapshots --mode backfill --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding register-source underlying --catalog-source underlying --connector dskit.onboarding.libs.yahoo:YahooChartArchiveConnector --config @configs/source-underlying-history.json --activate --root ./pipeline_runs/option-archive-source
-    python -m dskit.onboarding acquire --source underlying --stream prices --mode backfill --root ./pipeline_runs/option-archive-source
+    python -m dskit.onboarding init --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding register-source options --catalog-source options --connector dskit.onboarding.libs.alpaca:AlpacaOptionArchiveConnector --config @configs/source-option-archives.json --activate --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding acquire --source options --stream contracts --mode backfill --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding acquire --source options --stream bars --mode backfill --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding acquire --source options --stream snapshots --mode backfill --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding register-source underlying --catalog-source underlying --connector dskit.onboarding.libs.yahoo:YahooChartArchiveConnector --config @configs/source-underlying-history.json --activate --root ./pipeline_runs/option-archive-source-v2
+    python -m dskit.onboarding acquire --source underlying --stream prices --mode backfill --root ./pipeline_runs/option-archive-source-v2
     systemd-run --user --wait --pipe --collect --unit=stock-cdf-coverage \
       -p MemoryMax=6G -p MemorySwapMax=0 -p RuntimeMaxSec=1740 \
       -p WorkingDirectory="$PWD" -E PYTHONPATH="$PYTHONPATH" \
@@ -55,6 +55,10 @@ stops at 2026-09-29: the supplied final daily candle is not independently verifi
 as complete. Split-adjusted and dividend-adjusted closes remain separate; raw
 strike units are admitted only when the source lists no subsequent split.
 Original archive files must remain available to repeat onboarding.
+The Yahoo source additionally declares corporate_actions_complete=true after
+inspection; a missing split inventory still produces unknown units and cannot
+qualify prices. Snapshots permit one observation per contract/session;
+conflicting same-session snapshots refuse during import.
 
 For another ticker, change foreach.keys, the provider files/pins, completion
 boundary, and asof after verifying source coverage. Generic code has no ticker
@@ -123,3 +127,21 @@ stock JSON graph; actual bounded run and independent runbook reproduction.
 Focused checks currently 72 pass: onboarding48, CDF12, index6, stock6.
 Changed-code lint has no new findings versus the base; legacy findings remain.
 Two independent final code-review lenses are required before merge.
+
+
+Review candidate b1f2461f received two independent reports:
+amzn_correctness_v1 C0/M1/m4/N0; amzn_integration_v1 C0/M1/m6/N0.
+The shared Major was unknown corporate-action inventory treated as verified
+raw units. The union of minors was quantile-name collisions, calendar-edge
+rejections, missing standalone quote clocks, numeric input/output validation,
+snapshot identity disagreement, and provider error documents read as empty.
+All seven families were corrected together with twelve initially failing
+regressions. Full reports are retained under those agent IDs in this task.
+Fresh final lenses must assess the corrected candidate before delivery.
+
+Corrected execution: stock-cdf-horizon-coverage-2026-10-01-72b70805,
+11.59 seconds, peak RSS 652,608 KiB, zero swaps; counts remain 915 eligible
+curves and a 42-day/90-date winner. All imported inputs are freshly acquired in
+option-archive-source-v2. Final relevant checks now total 87 passes: 52 archive,
+20 CDF/label, six index extraction, six stock config, three QQQ JSON-gap tests.
+The final reviewer/operator will revalidate the exact locked candidate.

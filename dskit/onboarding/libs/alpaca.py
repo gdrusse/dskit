@@ -554,7 +554,7 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
     """
 
     STREAM_KEYS = {"contracts": ("contract",), "bars": ("contract", "quote_date"),
-                   "snapshots": ("contract", "quote_timestamp")}
+                   "snapshots": ("contract", "quote_date")}
 
     @staticmethod
     def _number(value):
@@ -583,8 +583,12 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
         cached = self._archive_cache.get("contracts")
         if cached is not None:
             return cached
-        rows = (self.decode(self.archive_bytes("contracts")).get("contracts", [])
-                if "contracts" in self._archive_config["files"] else [])
+        rows = []
+        if "contracts" in self._archive_config["files"]:
+            doc = self.decode(self.archive_bytes("contracts"))
+            if not isinstance(doc, dict) or not isinstance(doc.get("contracts"), list):
+                raise AssetError(["contracts archive requires a contracts list container"])
+            rows = doc["contracts"]
         result = {}
         for raw in rows:
             item = self._identity(raw["symbol"])
@@ -659,8 +663,15 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
 
     def _snapshots(self, raw):
         doc = self.decode(raw)
-        for page in doc.get("pages", [doc]):
-            for contract, snap in page.get("snapshots", {}).items():
+        if not isinstance(doc, dict) or not ("pages" in doc or "snapshots" in doc):
+            raise AssetError(["snapshot archive requires a pages or snapshots container"])
+        pages = doc.get("pages", [doc])
+        if not isinstance(pages, list):
+            raise AssetError(["snapshot pages container must be a list"])
+        for page in pages:
+            if not isinstance(page, dict) or not isinstance(page.get("snapshots"), dict):
+                raise AssetError(["snapshot page requires a snapshots mapping container"])
+            for contract, snap in page["snapshots"].items():
                 row = self._base(contract)
                 quote = snap.get("latestQuote") or {}
                 stamp = quote.get("t")

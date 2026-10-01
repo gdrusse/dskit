@@ -4466,13 +4466,22 @@ class OptionPriceCDF:
         if (not {"strike", "type", "mark"}.issubset(clean.columns)
                 or not len(clean)):
             return {"eligible": False, "reasons": ["missing_price_rows"]}
-        if (not np.isfinite(clean[["strike", "mark"]].to_numpy(dtype=float)).all()
-                or not (clean[["strike", "mark"]] > 0).all().all()
+        try:
+            numeric = clean[["strike", "mark"]].to_numpy(dtype=float)
+        except (TypeError, ValueError):
+            return {"eligible": False, "reasons": ["nonnumeric_prices"]}
+        if (not np.isfinite(numeric).all()
+                or not (numeric > 0).all()
                 or not clean.type.isin(["call", "put"]).all()
                 or clean.duplicated(["strike", "type"]).any()):
             return {"eligible": False, "reasons": ["invalid_or_duplicate_prices"]}
-        if not np.isfinite(spot) or spot <= 0:
+        from numbers import Real
+        if (isinstance(spot, (bool, np.bool_)) or not isinstance(spot, Real)
+                or not np.isfinite(spot) or spot <= 0):
             return {"eligible": False, "reasons": ["invalid_spot"]}
+        if np.max(numeric[:, 0]) > np.finfo(float).max*min(float(spot), 1.):
+            return {"eligible": False, "reasons": ["nonfinite_return_coordinates"]}
+        clean[["strike", "mark"]] = numeric
         paired = clean.pivot_table(index="strike", columns="type", values="mark",
                                    aggfunc="median").dropna()
         if paired.empty or not {"call", "put"}.issubset(paired.columns):
@@ -4482,6 +4491,8 @@ class OptionPriceCDF:
         if len(forwards) < self.min_forward_pairs:
             return {"eligible": False, "reasons": ["insufficient_forward_pairs"]}
         forward = float(np.median(forwards))
+        if not np.isfinite(forward):
+            return {"eligible": False, "reasons": ["nonfinite_forward"]}
         dispersion = float(np.subtract(*np.percentile(forwards, [75, 25]))/spot)
         clean["call_equivalent"] = np.where(clean.type.eq("call"), clean.mark,
                                              clean.mark+forward-clean.strike)
@@ -4489,20 +4500,26 @@ class OptionPriceCDF:
                     | ((clean.type == "call") & (clean.strike >= forward))]
         calls = otm.groupby("strike", as_index=False).call_equivalent.median().sort_values("strike")
         strike, price = calls.strike.to_numpy(), calls.call_equivalent.to_numpy()
+        if not np.isfinite(price).all():
+            return {"eligible": False, "reasons": ["nonfinite_call_equivalents"]}
         if len(strike) < 2*self.min_wing_nodes+1:
             return {"eligible": False, "reasons": ["insufficient_strikes"]}
         left, right = strike < forward, strike > forward
         logk = np.log(strike/forward)
+        if not np.isfinite(logk).all():
+            return {"eligible": False, "reasons": ["nonfinite_strike_geometry"]}
         if (left.sum() < self.min_wing_nodes or right.sum() < self.min_wing_nodes
                 or -logk[left].max() > self.max_inner_gap
                 or logk[right].min() > self.max_inner_gap
                 or (np.diff(logk) > self.max_outer_gap).any()):
             return {"eligible": False, "reasons": ["inadequate_wing_support"]}
         raw_slope = np.diff(price)/np.diff(strike)
+        if not np.isfinite(raw_slope).all():
+            return {"eligible": False, "reasons": ["nonfinite_price_slopes"]}
         from sklearn.isotonic import IsotonicRegression
         slope = IsotonicRegression(increasing=True, y_min=-1., y_max=0.,
                                    out_of_bounds="clip").fit_transform(
-                                       (strike[:-1]+strike[1:])/2, raw_slope,
+                                       (strike[:-1]/2+strike[1:]/2), raw_slope,
                                        sample_weight=np.diff(strike))
         cdf = np.clip(1+slope, 0, 1)
         if not (np.isfinite(cdf).all() and (np.diff(cdf) >= -1e-12).all()):
@@ -4512,7 +4529,7 @@ class OptionPriceCDF:
             return {"eligible": False, "reasons": ["insufficient_interior_knots"]}
         first, last = informative[0], informative[-1]
         cdf = cdf[first:last+1]
-        midpoint = (strike[:-1]+strike[1:])/2
+        midpoint = (strike[:-1]/2+strike[1:]/2)
         midpoint = midpoint[first:last+1]
         p = np.r_[0., cdf, 1.]
         values = np.r_[np.log(strike[first]/spot), np.log(midpoint/spot),
@@ -4526,6 +4543,9 @@ class OptionPriceCDF:
         quantiles = np.interp(self.proxy_probabilities, p, values)
         projected = price[0]+np.r_[0., np.cumsum(slope*np.diff(strike))]
         distance = float(np.sqrt(np.mean((projected-price)**2))/spot)
+        if (not np.isfinite([distance, dispersion, forward/spot]).all()
+                or not np.isfinite(values).all() or not np.isfinite(quantiles).all()):
+            return {"eligible": False, "reasons": ["nonfinite_curve_diagnostics"]}
         reasons = []
         for name, value, limit in (
                 ("projection_distance", distance, self.max_projection_distance),
@@ -4539,7 +4559,7 @@ class OptionPriceCDF:
                 "probabilities": p.tolist(), "log_returns": values.tolist(),
                 "raw_projected_probabilities": (1+slope).tolist(),
                 "raw_midpoint_log_returns": np.log(
-                    (strike[:-1]+strike[1:])/2/spot).tolist(),
+                    (strike[:-1]/2+strike[1:]/2)/spot).tolist(),
                 "tail_completion": "finite_support_endpoint_completion"}
 
 
@@ -4583,6 +4603,7 @@ class ExpiryCloseLabels(Node):
         value = row.get("close") if row else None
         return (value if row and row.get("close_complete") is True
                 and row.get("post_session_split") is False
+                and row.get("unit_history_verified") is True
                 and isinstance(value, (int, float)) and not isinstance(value, bool)
                 and math.isfinite(value) and value > 0 else None)
 
@@ -4600,8 +4621,9 @@ class ExpiryCloseLabels(Node):
         if asof.tzinfo is None:
             raise ValueError("asof requires an explicit timezone")
         dates = [k[1] for k in keys]+[k[2] for k in keys]
-        calendar = xc.get_calendar(self.params["calendar"],
-                                   start=min(dates), end=max(dates)) if dates else None
+        calendar = xc.get_calendar(
+            self.params["calendar"], start=pd.Timestamp(min(dates))-pd.Timedelta(days=7),
+            end=pd.Timestamp(max(dates))+pd.Timedelta(days=7)) if dates else None
         records = []
         for symbol, day, expiry, basis in keys:
             row = {"symbol": symbol, "quote_date": day, "expiry": expiry,
@@ -4623,7 +4645,10 @@ class ExpiryCloseLabels(Node):
             terminal_source = prices.get((symbol, row["settlement_date"])) or {}
             row["entry_price_source_sha256"] = entry_source.get("source_sha256")
             row["terminal_price_source_sha256"] = terminal_source.get("source_sha256")
-            row["unit_check"] = "no_subsequent_split_in_source_inventory"
+            row["unit_check"] = ("verified_no_subsequent_split"
+                                 if entry_source.get("unit_history_verified") is True
+                                 and entry_source.get("post_session_split") is False
+                                 else "unverified_or_changed_units")
             row["outcome_asof"] = asof.isoformat()
             spot = self._close(prices.get((symbol, day)))
             if spot is None or entry_close > asof:
@@ -4674,6 +4699,9 @@ class OptionCDFPanel(Node):
             return errors+["missing parameters: "+str(sorted(missing))]
         try:
             OptionPriceCDF(**{k: params[k] for k in cls._CURVE_PARAMS})
+            names = [f"rn_q_{round(p*10000):04d}" for p in params["probabilities"]]
+            if len(set(names)) != len(names):
+                errors.append("probabilities collide in prepared quantile field names")
         except (TypeError, ValueError) as exc:
             errors.append(str(exc))
         for key in ("required_multiplier", "max_quote_age_seconds"):
@@ -4702,6 +4730,8 @@ class OptionCDFPanel(Node):
             reasons.append("invalid_price")
         if label is None or label["spot"] is None:
             reasons.append("unverified_entry_close")
+        if label is None or not label.get("entry_close_at"):
+            reasons.append("unverified_entry_clock")
         if row["price_basis"] == "indicative_quote":
             stamp = row.get("quote_timestamp")
             if not stamp:
