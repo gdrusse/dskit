@@ -15,9 +15,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from dskit.pipeline.records import WEEKDAY_TAGS
 from dskit.production.base import ProductionError
 from dskit.production.sessions import (
     CALENDAR_KINDS,
+    DAY_NAMES,
     AlwaysOpen,
     Calendar,
     Composite,
@@ -521,3 +523,16 @@ def test_a_composite_refuses_an_empty_or_malformed_membership():
         Composite({"members": [{"uses": "always-open"}], "mode": "union"})
     with pytest.raises(ProductionError):
         Composite({"members": ["always-open"]})
+
+
+class TestDayNamesAreThePipelinesWeekdayVocabulary:
+    """ADR-0214: one weekday vocabulary, owned by ``dskit.pipeline.records``."""
+
+    def test_the_calendar_reads_the_pipeline_owned_tuple(self):
+        assert DAY_NAMES == WEEKDAY_TAGS
+        assert DAY_NAMES is WEEKDAY_TAGS  # repointed, not a second literal
+
+    def test_the_tags_are_the_calendars_own_spelling_monday_first(self):
+        # The oracle is stated here, not read from either module: a session
+        # document's ``days`` spelling is part of its identity hash.
+        assert DAY_NAMES == ("mon", "tue", "wed", "thu", "fri", "sat", "sun")

@@ -144,6 +144,7 @@ from dskit.pipeline.kinds_flow import (
     GroupBy,
     Join,
     KeyBy,
+    WeekdayOneHot,
 )
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
@@ -200,8 +201,9 @@ from dskit.pipeline.runs import (
 #: The toolkit-owned kinds claim their names the moment the package
 #: imports (idempotent — a re-import never re-registers): stat_test,
 #: validate and run-report as OWNED doctrine kinds, plus filter /
-#: derive / event-grid / concat / join / event-bank / eligibility / banking-report /
-#: hpo-grid / table-file / table-write / records-write.
+#: derive / event-grid / concat / join / weekday-onehot / event-bank /
+#: eligibility / banking-report / hpo-grid / table-file / table-write /
+#: records-write.
 #:
 #: EVERY kinds module's register() must be called here: the flow verbs
 #: and the banking chain ship from two modules, and a document naming a
@@ -255,6 +257,7 @@ __all__ = [
     "Validate",
     "WalkForwardRunResult",
     "WalkForwardSpec",
+    "WeekdayOneHot",
     "load_document",
     "plan",
     "register_node_kind",

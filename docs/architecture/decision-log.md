@@ -29111,3 +29111,9 @@ is deferred to a named follow-up (it must call `weekday_flags`, baseline
 option (a), `weekdays` all seven, `baseline` none; seven columns sum to 1
 (collinear with an intercept) and Sat/Sun are constant zero on business days.
 Q3: `DAY_NAMES` repointed in this slice.
+
+**Implementation note.** `weekday_flags` raises `TypeError` for a non-`date`
+(a `datetime` included) and `ValueError` for an unknown tag or an uncovered
+weekday; `counts` carries all seven tags, zero where no row fell; the defaults
+are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
+`_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.

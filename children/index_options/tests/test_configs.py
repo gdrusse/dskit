@@ -1643,3 +1643,34 @@ def test_feature_gap_output_names_reasons_and_exact_identities(child_root):
     assert all(set(r) == {"symbol", "quote_date", "expiry", "audit_gap", "observations"} for r in compact)
     assert d["pipeline"]["feature_gap_evidence"]["params"]["path"].endswith("feature-gaps.jsonl")
     assert d["pipeline"]["family_gap_evidence"]["params"]["path"].endswith("family-gaps.jsonl")
+
+
+def test_committed_qqq_cohort_weekday_census(child_root):
+    """ADR-0214: weekday over the committed cohort rows, against an independent tally.
+
+    The cohort is Friday-heavy until 2021 and carries no weekend rows, which is
+    the confound the weekday feature is meant to expose (not to remove).
+    """
+    from collections import Counter
+    from datetime import date
+    from dskit.pipeline.kinds_flow import WeekdayOneHot
+
+    path = child_root/"pipeline_runs/qqq-feature-availability/rows.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    out = WeekdayOneHot("weekday", {"date_field": "quote_date", "prefix": "dow_"}).run(
+        None, {"records": rows})
+    assert len(out["records"]) == len(rows) == 1497
+
+    # The oracle restates the vocabulary and uses isoweekday() (Monday = 1), so
+    # it shares neither the tag tuple nor date.weekday() with the node.
+    names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+    tally = Counter(names[date.fromisoformat(r["quote_date"]).isoweekday() - 1] for r in rows)
+    assert out["counts"] == {name: tally.get(name, 0) for name in names}
+    assert sum(out["counts"].values()) == 1497
+    assert out["counts"]["sat"] == out["counts"]["sun"] == 0
+
+    early = [r for r in out["records"] if r["quote_date"] < "2021-01-01"]
+    assert len(early) == 508
+    assert sum(1 for r in early if r["dow_fri"] == 0) == 35
+    for row in out["records"]:
+        assert sum(row[f"dow_{name}"] for name in names) == 1

@@ -95,6 +95,7 @@ __all__ = [
     "TrailingSplitSpec",
     "WalkForwardSpec",
     "doc_split_from_obj",
+    "date_problem",
     "flatten_param_paths",
     "foreach_slug",
     "is_node_ref",
@@ -1277,11 +1278,38 @@ DOC_SPLIT_KINDS = {
 _DATE_OK = r"^\d{4}-\d{2}-\d{2}$"
 
 
-def _date_problem(value) -> bool:
-    """True when ``value`` is not a REAL calendar date. The regex alone
-    let a 2026-02-30 through `validate` to crash mid-plan at run (the
-    skeptic pass) — fail-loudly-at-validate is the document doctrine."""
-    if not re.match(_DATE_OK, value):
+def date_problem(value) -> bool:
+    """Say whether ``value`` is NOT a real ISO ``YYYY-MM-DD`` calendar date.
+
+    The one public date rule (ADR-0214): the walk-forward cutoffs and the
+    ``weekday-onehot`` kind both ask it, so neither restates the shape.
+    The regex alone let a 2026-02-30 through ``validate`` to crash
+    mid-plan at run (the skeptic pass); fail-loudly-at-validate is the
+    document doctrine, so the calendar is consulted too.
+
+    Parameters
+    ----------
+    value : object
+        The candidate, of any type. A non-string is a problem, not an
+        exception: the rule once raised a bare ``TypeError`` on ``None``.
+
+    Returns
+    -------
+    bool
+        True when ``value`` is not a ``str`` holding a real date in the
+        extended ``YYYY-MM-DD`` form. ``20260105``, ``2026-1-5``, a
+        trailing newline, a time of day and every ``date`` or ``datetime``
+        object are all problems.
+
+    Examples
+    --------
+    Shape and calendar are both checked::
+
+        date_problem("2026-01-05")  # False
+        date_problem("2026-02-30")  # True
+        date_problem(None)  # True
+    """
+    if not isinstance(value, str) or not re.match(_DATE_OK, value):
         return True
     from datetime import date
 
@@ -1357,7 +1385,7 @@ class WalkForwardSpec:
             if (
                 not isinstance(self.folds, (list, tuple))
                 or not self.folds
-                or any(not isinstance(f, str) or _date_problem(f) for f in self.folds)
+                or any(not isinstance(f, str) or date_problem(f) for f in self.folds)
             ):
                 errors.append(
                     "walkforward.folds must be a non-empty list of REAL "
@@ -1370,7 +1398,7 @@ class WalkForwardSpec:
                     f"duplicates, got {list(self.folds)!r}"
                 )
         elif generated:
-            if not isinstance(self.first, str) or _date_problem(self.first or ""):
+            if not isinstance(self.first, str) or date_problem(self.first or ""):
                 errors.append(
                     "walkforward.first must be a REAL 'YYYY-MM-DD' cutoff, got "
                     f"{self.first!r}"

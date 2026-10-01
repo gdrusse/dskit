@@ -37,6 +37,7 @@ from datetime import time as time_of_day
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dskit.pipeline.node import check_int_param
+from dskit.pipeline.records import WEEKDAY_TAGS
 from dskit.production.base import (
     ProductionError,
     Registry,
@@ -60,8 +61,9 @@ __all__ = [
     "WeeklySessions",
 ]
 
-#: Session day names, indexed like ``date.weekday()`` (Monday is 0).
-DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+#: Session day names, indexed like ``date.weekday()`` (Monday is 0): the
+#: pipeline-owned weekday vocabulary (ADR-0214), not a second literal of it.
+DAY_NAMES = WEEKDAY_TAGS
 
 #: First and last year (inclusive) the DST-gap validation scans for zone
 #: transitions. Fixed rather than "now" so a document's validity — and

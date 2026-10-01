@@ -42,7 +42,16 @@ from dskit.pipeline.synthetic_nodes import SynthClip
 #: The kinds each module owns after the split — the pin that catches a
 #: class drifting back across the boundary.
 BANKING_KINDS = ("event-bank", "eligibility", "banking-report")
-FLOW_KINDS = ("filter", "event-grid", "concat", "join", "derive", "groupby", "keyby")
+FLOW_KINDS = (
+    "filter",
+    "event-grid",
+    "concat",
+    "join",
+    "derive",
+    "groupby",
+    "keyby",
+    "weekday-onehot",
+)
 
 
 def _rec(instrument, contract, asof_ms, **extra):
@@ -82,6 +91,7 @@ class TestModuleHome:
             "GroupBy",
             "Join",
             "KeyBy",
+            "WeekdayOneHot",
             "clause_holds",
             "clause_problems",
             "register",
@@ -133,6 +143,10 @@ class TestBothRegistersReachableFromThePackage:
         assert pipeline.EventBank is EventBank
         assert pipeline.EventGrid is kinds_flow.EventGrid
         assert pipeline.Eligibility is Eligibility
+
+    def test_the_package_exports_the_weekday_kind(self):
+        assert pipeline.WeekdayOneHot is kinds_flow.WeekdayOneHot
+        assert "WeekdayOneHot" in pipeline.__all__
         assert pipeline.BankingReport is BankingReport
         for name in ("EventBank", "Eligibility", "BankingReport"):
             assert name in pipeline.__all__
