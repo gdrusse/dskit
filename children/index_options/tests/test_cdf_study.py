@@ -238,6 +238,53 @@ def test_decision_region_refinement_requires_small_error_and_stable_rank():
         cdf_study.DecisionRegionStudy.check_weighted_score_refinement(unstable, .1)
 
 
+def test_decision_region_block_intervals_are_paired_by_date_and_symbol():
+    rows = []
+    for day in range(1, 7):
+        for symbol in ("SPY", "QQQ"):
+            identity = {"symbol": symbol, "quote_date": f"2020-01-{day:02d}",
+                        "expiry": "2020-02-21", "reason": None}
+            rows.append({**identity, "model": "base", "weighted_crps_refined": 1.,
+                         "strike_brier": .5, "loss_mse": 2.})
+            rows.append({**identity, "model": "candidate",
+                         "weighted_crps_refined": .8,
+                         "strike_brier": .4, "loss_mse": 1.6})
+    result = cdf_study.DecisionRegionStudy.paired_block_intervals(
+        pd.DataFrame(rows), {"reference_model": "base",
+                             "metrics": ["weighted_crps_refined", "strike_brier"],
+                             "blocks": [2], "replicates": 100,
+                             "alpha": .05, "seed": 7})
+    assert len(result) == 2
+    assert all(item["point_skill_pct"] == pytest.approx(20.) for item in result)
+    assert all(item["lo_skill_pct"] == pytest.approx(20.) for item in result)
+    assert all(item["hi_skill_pct"] == pytest.approx(20.) for item in result)
+
+
+def test_decision_region_bootstrap_contract_refuses_unknown_metric(tmp_path):
+    settings = {
+        "forecast_root": str(tmp_path), "partition": "development",
+        "models": {"base": "raw"}, "symbols": ["SPY"],
+        "archive_root": str(tmp_path), "output": str(tmp_path/"out"),
+        "max_rows_per_symbol": 1,
+        "underlying": {"root": str(tmp_path), "source": "fixture",
+                       "since_ms": 0, "carry_rate": .055},
+        "strata": {"tenor_days": [7, 21], "iv": [20, 30],
+                   "wing_log_moneyness": [.02, .05]},
+        "chain_rule": {"max_abs_log_moneyness": .1,
+                       "min_wing_width": 5., "max_wing_width": 5.,
+                       "max_candidates": 10, "fee_per_leg": 0., "multiplier": 100},
+        "audit": {"price_step": .5, "support_margin_fraction": .02,
+                  "mesh_tolerance": .5, "floor": .1, "radius": 0.,
+                  "score_refinement_factor": 2, "score_tolerance": .01},
+        "limits": {"max_seconds": 1800, "max_address_space_mib": 6144,
+                   "max_chain_rows": 100000, "max_grid_nodes": 4001},
+        "bootstrap": {"reference_model": "base", "metrics": ["regret"],
+                      "blocks": [2], "replicates": 10, "alpha": .05, "seed": 1},
+    }
+    with pytest.raises(ValueError, match="bootstrap"):
+        cdf_study.DecisionRegionStudy(settings)
+
+
 def test_option_surface_features_are_scale_stable_and_preserve_missingness():
     rows = pd.DataFrame({
         'chain_atm_iv': [.2, .3], 'chain_put25_iv': [.3, np.nan],

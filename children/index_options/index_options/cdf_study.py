@@ -368,7 +368,7 @@ class DecisionRegionStudy:
 
     KEYS = {"forecast_root", "partition", "models", "symbols", "archive_root",
             "output", "max_rows_per_symbol", "chain_rule", "audit",
-            "underlying", "strata", "limits", "notes"}
+            "underlying", "strata", "limits", "bootstrap", "notes"}
     AUDIT_KEYS = {"price_step", "support_margin_fraction", "mesh_tolerance",
                   "floor", "radius", "score_refinement_factor", "score_tolerance"}
     CHAIN_COLUMNS = ("symbol", "date", "expiration", "strike", "type",
@@ -378,13 +378,31 @@ class DecisionRegionStudy:
     def __init__(self, config):
         import math
 
-        if (set(config)-self.KEYS or self.KEYS-{"notes"}-set(config)
+        if (set(config)-self.KEYS or self.KEYS-{"notes", "bootstrap"}-set(config)
                 or set(config["audit"]) != self.AUDIT_KEYS
                 or not config["models"] or not config["symbols"]
                 or len(config["symbols"]) != len(set(config["symbols"]))
                 or type(config["max_rows_per_symbol"]) is not int
                 or config["max_rows_per_symbol"] < 1):
             raise ValueError("invalid decision-region JSON document")
+        bootstrap = config.get("bootstrap")
+        if bootstrap is not None and (
+                set(bootstrap) != {"reference_model", "metrics", "blocks",
+                                   "replicates", "alpha", "seed"}
+                or bootstrap["reference_model"] not in config["models"]
+                or not bootstrap["metrics"]
+                or not set(bootstrap["metrics"]).issubset(
+                    {"weighted_crps_refined", "strike_brier", "loss_mse"})
+                or not bootstrap["blocks"]
+                or any(type(value) is not int or value < 1
+                       for value in bootstrap["blocks"])
+                or type(bootstrap["replicates"]) is not int
+                or bootstrap["replicates"] < 1
+                or isinstance(bootstrap["alpha"], bool)
+                or not isinstance(bootstrap["alpha"], (int, float))
+                or not 0 < bootstrap["alpha"] < 1
+                or type(bootstrap["seed"]) is not int):
+            raise ValueError("invalid decision-region bootstrap")
         if any(variant != "raw" for variant in config["models"].values()):
             raise ValueError("decision-region pilot requires raw GridCurve variants")
         limits = config["limits"]
@@ -803,9 +821,25 @@ class DecisionRegionStudy:
         self.check_weighted_score_refinement(
             eligible, self.config["audit"]["score_tolerance"])
         stage.mkdir(parents=True)
-        score_rows.to_parquet(stage/"scores.parquet", index=False)
-        pd.DataFrame(candidate_records).to_parquet(stage/"candidate_scores.parquet",
-                                                   index=False)
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        score_table = pa.Table.from_pandas(
+            score_rows, preserve_index=False, nthreads=1)
+        pq.write_table(score_table, stage/"scores.parquet")
+        writer = None
+        try:
+            for offset in range(0, len(candidate_records), 100_000):
+                table = pa.Table.from_pylist(candidate_records[offset:offset+100_000])
+                if writer is None:
+                    writer = pq.ParquetWriter(stage/"candidate_scores.parquet",
+                                              table.schema)
+                writer.write_table(table)
+        finally:
+            if writer is not None:
+                writer.close()
+        if writer is None:
+            raise ValueError("decision-region audit produced no candidate scores")
         result = {"config_sha256": self._config_digest(), "rows": len(records),
                   "implementation_sha256": self._digest(__file__),
                   "scores_sha256": self._digest(stage/"scores.parquet"),
@@ -843,6 +877,11 @@ class DecisionRegionStudy:
         stage.mkdir(parents=True)
         by_entry.to_csv(stage/"by_entry.csv")
         by_wing.to_csv(stage/"by_wing.csv")
+        intervals = []
+        if "bootstrap" in self.config:
+            intervals = self.paired_block_intervals(rows, self.config["bootstrap"])
+            (stage/"paired_block_intervals.json").write_text(
+                json.dumps(intervals, indent=2, allow_nan=False)+"\n")
         summary = {"config_sha256": self._config_digest(),
                    "eligible_rows": int(rows.reason.isna().sum()),
                    "total_rows": len(rows),
@@ -855,9 +894,91 @@ class DecisionRegionStudy:
                    "charge_status": rows.american_charge_status.value_counts(
                        dropna=False).to_dict(),
                    "by_entry_sha256": self._digest(stage/"by_entry.csv"),
-                   "by_wing_sha256": self._digest(stage/"by_wing.csv")}
+                   "by_wing_sha256": self._digest(stage/"by_wing.csv"),
+                   "paired_block_intervals": intervals}
+        if intervals:
+            summary["paired_block_intervals_sha256"] = self._digest(
+                stage/"paired_block_intervals.json")
         (stage/"summary.json").write_text(json.dumps(summary, indent=2)+"\n")
         return summary
+
+    @staticmethod
+    def paired_block_intervals(rows, spec):
+        """Return paired circular moving-date-block skill intervals."""
+        import numpy as np
+        import pandas as pd
+
+        identity = list(DecisionRegionStudy.IDENTITY)
+        required = {*identity, "model", "reason", *spec["metrics"]}
+        eligible = rows.loc[rows.reason.isna()].copy()
+        if required-set(rows) or eligible.empty:
+            raise ValueError("invalid paired decision-region scores")
+        models = sorted(eligible.model.unique())
+        reference = spec["reference_model"]
+        if reference not in models:
+            raise ValueError("missing paired decision-region reference")
+        dates = sorted(eligible.quote_date.unique())
+        if any(width > len(dates) for width in spec["blocks"]):
+            raise ValueError("decision-region block exceeds available dates")
+        alpha = float(spec["alpha"])
+        records = []
+        for metric in spec["metrics"]:
+            wide = eligible.pivot(index=identity, columns="model", values=metric)
+            if (set(wide.columns) != set(models) or wide.isna().any().any()
+                    or not np.isfinite(wide.to_numpy()).all()):
+                raise ValueError("decision-region comparison rows are not paired")
+            frame = wide.reset_index()
+            symbols = sorted(frame.symbol.unique())
+            arrays = {}
+            for symbol in symbols:
+                group = frame.loc[frame.symbol.eq(symbol)]
+                grouped = group.groupby("quote_date", sort=False)
+                count = grouped.size().reindex(dates, fill_value=0).to_numpy(float)
+                arrays[symbol] = {
+                    model: grouped[model].sum().reindex(dates, fill_value=0).to_numpy(float)
+                    for model in models}
+                arrays[symbol]["count"] = count
+            for model in models:
+                if model == reference:
+                    continue
+                per_symbol = {}
+                for symbol in symbols:
+                    values = arrays[symbol]
+                    if values["count"].sum() <= 0 or values[reference].sum() <= 0:
+                        raise ValueError("decision-region symbol lacks reference scores")
+                    per_symbol[symbol] = 100*(1-
+                        (values[model].sum()/values["count"].sum())
+                        /(values[reference].sum()/values["count"].sum()))
+                point = float(np.mean(list(per_symbol.values())))
+                for width in spec["blocks"]:
+                    rng = np.random.default_rng(spec["seed"])
+                    draws = []
+                    for _ in range(spec["replicates"]):
+                        starts = rng.integers(0, len(dates),
+                                              size=int(np.ceil(len(dates)/width)))
+                        idx = ((starts[:, None]+np.arange(width)) % len(dates)
+                               ).ravel()[:len(dates)]
+                        skills = []
+                        for symbol in symbols:
+                            values = arrays[symbol]
+                            count = values["count"][idx].sum()
+                            reference_sum = values[reference][idx].sum()
+                            if count <= 0 or reference_sum <= 0:
+                                raise ValueError("bootstrap draw lacks paired symbol rows")
+                            skills.append(100*(1-
+                                (values[model][idx].sum()/count)
+                                /(reference_sum/count)))
+                        draws.append(float(np.mean(skills)))
+                    lo, hi = np.quantile(draws, [alpha/2, 1-alpha/2])
+                    records.append({
+                        "metric": metric, "model": model,
+                        "reference": reference, "forecast_rows": len(wide),
+                        "dates": len(dates), "symbols": symbols,
+                        "block_dates": width, "replicates": spec["replicates"],
+                        "point_skill_pct": point, "lo_skill_pct": float(lo),
+                        "hi_skill_pct": float(hi),
+                        "skill_by_symbol_pct": per_symbol})
+        return records
 
 
 class RobustCorrectionStudy:

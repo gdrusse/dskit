@@ -1,0 +1,58 @@
+{
+  "decision_study": {
+    "forecast_root": "/home/russell/dskit-cdf-option-surface/children/index_options/pipeline_runs/predictive_cdf_guard_aware_20260930",
+    "partition": "development",
+    "models": {
+      "horizon_empirical": "raw",
+      "tail_blend_very_conservative": "raw",
+      "option_proxy_transport": "raw"
+    },
+    "symbols": ["SPY", "QQQ"],
+    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+    "output": "/home/russell/dskit/children/index_options/pipeline_runs/cdf_actual_wing_paired_audit_20260930",
+    "max_rows_per_symbol": 1000,
+    "limits": {
+      "max_seconds": 1800,
+      "max_address_space_mib": 6144,
+      "max_chain_rows": 400000,
+      "max_grid_nodes": 4001
+    },
+    "underlying": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "optionshist-chain",
+      "since_ms": 1451606400000,
+      "carry_rate": 0.055
+    },
+    "strata": {
+      "tenor_days": [7, 21],
+      "iv": [20, 30],
+      "wing_log_moneyness": [0.02, 0.05]
+    },
+    "chain_rule": {
+      "max_abs_log_moneyness": 0.1,
+      "min_wing_width": 5.0,
+      "max_wing_width": 5.0,
+      "max_candidates": 5000,
+      "fee_per_leg": 0.5,
+      "multiplier": 100
+    },
+    "audit": {
+      "price_step": 0.5,
+      "support_margin_fraction": 0.02,
+      "mesh_tolerance": 0.5,
+      "floor": 0.1,
+      "radius": 0.0,
+      "score_refinement_factor": 4,
+      "score_tolerance": 0.005
+    },
+    "bootstrap": {
+      "reference_model": "horizon_empirical",
+      "metrics": ["weighted_crps_refined", "strike_brier", "loss_mse"],
+      "blocks": [30, 60],
+      "replicates": 2000,
+      "alpha": 0.05,
+      "seed": 200
+    },
+    "notes": "Paired actual-listed-wing audit on 1,000 evenly spaced development identities per SPY and QQQ. The three frozen raw GridCurve forecasts share identical identities. Every forecast has equal weight; all models see the same eligible chain rows and deduplicated wings. Circular date-block intervals carry every symbol and forecast on a sampled quote date together. This is reused, after-close research evidence, not a fresh holdout or trading result."
+  }
+}

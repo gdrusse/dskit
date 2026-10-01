@@ -1,21 +1,20 @@
 # Re-entry
 
-## CDF branches consolidated; decision-region signal path frozen (2026-09-30)
+## Actual-listed-wing paired audit completed (2026-09-30)
 
 - Merged the risk-neutral, dynamic-tail, point-in-time feature, decision-region,
   and robust-condor lines into `main`. Parallel strategy history keeps
   ADR-0193--0197/A0611--A0612; the CDF continuation is collision-safely
   renumbered ADR-0198--0206/A0613--A0620.
-- The merged affected suites pass 225 tests with 26 dependency warnings.
-- Historical signal exists but is not deployment-grade: option transport
-  showed +4.38%/+4.70% SPY/QQQ strike-Brier skill and +8.29%/+8.34% bounded
-  condor-loss-MSE skill versus empirical, while failing development tail guards.
-  The actual-listed-wing screen showed only ~0.33% incumbent skill versus
-  empirical; GPD and causal isotonic challengers did not improve it.
-- Next: one bounded actual-listed-wing comparison of empirical, governed
-  physical, option transport, and a tail-constrained blend. Require positive
-  block-supported local skill for both SPY and QQQ before optimizer tuning.
-  Memo: `children/index_options/docs/memos/2026-09-30-decision-region-signal-synthesis.md`.
+- Paired 1,992 eligible SPY/QQQ forecasts across 249 dates, 344,932 chain rows,
+  1,761,423 candidate/model rows, and 67,073 unique wings. Focused tests: 46.
+- Option transport's proper wing-score skill was +1.207% versus empirical, but
+  30/60-date intervals crossed zero; QQQ was +2.314%, SPY only +0.100%.
+  Conservative-blend skill was +0.249%, with QQQ +0.551% and SPY -0.053%.
+- No model clears the joint local-signal gate. Do not tune the optimizer. Next,
+  freeze this comparison on the existing later partitions to test whether the
+  QQQ-only lead persists. Memo:
+  `children/index_options/docs/memos/2026-09-30-actual-listed-wing-paired-audit.md`.
 
 
 ## index_options: strategy-alternatives build complete (ADR-0193..0197) (2026-09-30)

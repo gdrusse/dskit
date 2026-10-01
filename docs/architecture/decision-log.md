@@ -28603,3 +28603,32 @@ mesh tolerance; nonnegative unit-sum mass and a nonempty shared $W_1$ set;
 zero-radius nominal parity and nondecreasing worst loss as radius grows;
 causal settlement cutoffs and a refusal for undated executable quotes. Each
 boundary gets a focused valid case and a malformed/look-ahead refusal.
+
+## ADR-0207 — Actual-listed-wing paired predictive audit
+
+**Status:** completed 2026-09-30.
+
+Before further training or optimizer tuning, audit the three frozen forecasts
+(`horizon_empirical`, `tail_blend_very_conservative`, and
+`option_proxy_transport`) on the same actual listed SPY/QQQ wings. Use 1,000
+entry rows per symbol from the development partition and the matching option
+chain; no model fitting, candidate selection, or trading simulation is in
+scope. The primary endpoint is refined decision-region weighted CRPS. Strike
+Brier and terminal condor-loss MSE are secondary diagnostics and cannot
+override the primary proper score.
+
+Uncertainty is paired by quote date: circular moving-date-block bootstrap with
+30- and 60-date blocks, 2,000 replicates, and all same-date symbols and models
+kept together. The first run correctly refused an overly tight quadrature
+tolerance. The second exposed Arrow thread creation under the memory cap; the
+standardized study writer was changed to bounded single-thread batches, and
+the third run completed under the 30-minute/6-GiB limits.
+
+Across 1,992 eligible forecast identities, option transport improved refined
+wing CRPS by 1.21% and the conservative blend by 0.25% versus empirical, but
+both paired confidence intervals crossed zero. The apparent option-transport
+gain was concentrated in QQQ (+2.31%); SPY was effectively flat (+0.10%). No
+forecast is promoted and optimizer tuning remains deferred. The next bounded
+test is the identical frozen audit on later untouched partitions, reported
+descriptively by index. Persisting QQQ-only evidence would require an
+index-specific path; failure to persist ends this option-transport direction.
