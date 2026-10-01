@@ -10,8 +10,12 @@
 - Memo: `docs/memos/2026-09-30-stock-options-source-and-starting-symbol.md`.
 - Design: freeze the stock/market-only forecast in pre-option development, then
   use option-era data as the mixed-integer optimizer's point-in-time action set.
-- Next: inventory the generic forecast/chain/optimizer seams and select
-  point-in-time earnings/ex-dividend sources before any strategy run.
+- Review lock: 449700a7 passed two independent skeptic lenses at C0/M0 and
+  39 focused checks; later changes only merge current-main docs and record wrap.
+- Limit: free bars lack complete historical action sets and bid/ask quotes, so
+  executable P&L remains unsupported.
+- Next: pull additional stock histories, then inventory the generic forecast,
+  chain and optimizer seams before any strategy run.
 
 ## Generic Torch decision-region CDF zoo completed (2026-10-01)
 
