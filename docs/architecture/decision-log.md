@@ -29047,3 +29047,87 @@ refuses. Snapshot identity is contract/session for this single-snapshot archive
 workflow; conflicting timestamps in one session refuse at onboarding. Prepared
 quantile field collisions refuse configuration. Public labels and numerical
 curves fail closed on missing clocks and invalid numerical geometry.
+
+## ADR-0214 — Generic weekday one-hot node
+
+**Status:** proposed 2026-10-01; awaiting owner approval (direction ruled
+2026-10-01: graduate it into dskit). Base: aeea072. No code until approved.
+
+The QQQ exact-7-day CDF cohort (1,497 entry dates, run
+`qqq-feature-availability`) changes shape by era: 2011-2020 entries are almost
+all Fridays, 2021-22 add Mon/Wed, 2023+ nearly every session. The owner wants
+weekday as a feature; rows carry `quote_date` (ISO string) and `asof_ms`.
+
+**Inventory.** No dskit node computes it. `derive` has no expression language
+by design; `ArrayMap` writes back only envelope price fields and `ArrayFeatures`
+emits tensor rows, so neither adds a field to a dict row; the stream kinds are
+`filter`/`regroup`; `kinds_table` only reads and writes files;
+`libs/kronos.py::_time_stamps` is private pandas model input. The only copies
+are child-local: `tod_columns` in intraday_equities `features.py`
+(`dow_mon..dow_fri`, ADR-0071) and its separate cyclical `dow_sin`/`dow_cos`
+in `nodes.py`. `tools/sweep/sweep weekday dow_ dayofweek isoweekday`: no dskit
+hit.
+
+**Decision.**
+
+1. **Home.** One tier-1 stdlib kind, `WeekdayOneHot`, registered
+   `weekday-onehot` (`owned=False`) in `dskit/pipeline/kinds_flow.py` beside
+   `derive`, reusing `_mapping_row`, `reject_unknown_params` and the `_KINDS`
+   table (eight kinds). No pack, no new base class, no import-path wiring.
+2. **Input.** `date_field` names a field holding an ISO `YYYY-MM-DD` real
+   calendar date string, checked by the existing `document._date_problem` rule
+   (no third copy). Dates only: an instant's weekday depends on its timezone,
+   so the node has no timezone knob and refuses numbers, date-times and
+   `YYYYMMDD`. A caller holding epoch-ms derives the local date in its own
+   declared zone first, as intraday_equities already does from `session.tz`.
+   An instant reader would be a separate kind and ADR, with a required
+   `timezone` and no default.
+3. **Output.** One `int` 0/1 per declared weekday, named `prefix + tag`
+   (`number_ok` refuses `bool`); tags `mon..sun` index `date.weekday()`.
+   Default is all seven, so a weekend is never a silent all-zero row. A
+   declared subset makes an undeclared weekday all zeros, the baseline level
+   (omit one tag to avoid dummy collinearity); a Saturday is valid, not
+   refused. A missing, `None`, non-string or invalid date, or a non-mapping
+   row, RAISES naming node, row and field, because NaN or zeros would read as a
+   baseline day. A row already carrying an output column raises; no `overwrite`
+   knob. A second output, `counts` (rows per tag plus `baseline`), shows the
+   era split in the run.
+4. **One owner.** `kinds_flow` exports the pure rule, `WEEKDAY_TAGS` and
+   `weekday_flags(day, tags)`; the node calls it. intraday_equities
+   `tod_columns` imports it for `dow_*` and keeps its Mon-Fri subset (domain
+   constraint in the child, mechanism in dskit). Same slice, separate commit
+   after the node lands: deferring ships the second copy this repo forbids.
+   `dow_*` must stay byte-identical (names, order, float64 values, `tod` block
+   layout) so no prior run or stored feature is orphaned; if any byte differs,
+   revert the child edit and keep the node.
+5. **Causality.** A pure function of each row's own `date_field`:
+   `serving_effect` is `"pure"`, rows never read each other. The node cannot
+   tell an entry date from an outcome date; wiring a known-at-decision field
+   (`quote_date`) is the document's job.
+6. **Params.** `_PARAMS = ("date_field", "prefix", "weekdays")`. `date_field`:
+   str, required (a default would hardcode someone's column). `prefix`:
+   non-empty str, `DEFAULT_PREFIX = "dow_"`. `weekdays`: non-empty list of
+   distinct tags, `DEFAULT_WEEKDAYS = WEEKDAY_TAGS`; column order is declared
+   order. Defaults are named once, read by both `validate_params` and `run`.
+
+**Tests that would pin it (listed, not written).** Registration (eight,
+unowned), `__all__`, the toolkit-conformance table and per-knob fuzz, `_PARAMS`
+exact; known date per weekday, and `WEEKDAY_TAGS` against `date.weekday()`;
+validate/run default agreement; subset baseline and `counts`; each refusal
+(number, date-time, `20201231`, `2021-02-30`, `None`, missing, non-mapping row,
+existing column, unknown or duplicate tag, empty prefix); row independence
+under shuffle and truncation; core purity; child golden byte-identity of
+`dow_*` and `TOD_NAMES` captured from the pre-change code over weekend dates;
+the weekday census of the 1,497 QQQ rows against an independent `datetime`
+count.
+
+**Modeling caveat.** Before 2021 the QQQ entry rows are all Fridays, so weekday
+is partly confounded with era; judging that is an experiment concern, not node
+behavior.
+
+**Non-goals.** Month-edge flags, time of day, cyclical sin/cos (child
+`dow_sin`/`dow_cos` untouched), the expiry-frequency count (existing
+groupby/join), instants and timezones, holiday logic, any training or run.
+Authorized paths if approved: `kinds_flow.py`, its tests, the pipeline
+README/CLAUDE.md/AGENTS.md kind lists, intraday_equities `features.py` and its
+test, this ADR. Wiring an index_options config is a separate slice.
