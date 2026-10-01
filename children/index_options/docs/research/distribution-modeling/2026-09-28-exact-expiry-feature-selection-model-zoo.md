@@ -24,12 +24,12 @@ rule, backtest, or authorization to trade.
 For actual expiry (e) with (N_{t,e}) remaining trading sessions, integrated
 variance is
 
-\[
+```math
 V_{t,e}=\sum_{s=t+1}^{S(e)}r_s^2
 =N_{t,e}\,\sigma_{t,e}^2,
 \qquad
 \sigma_{t,e}=\sqrt{V_{t,e}/N_{t,e}}.
-\]
+```
 
 The first run fitted one model per index directly to (V). A linear additive
 model cannot naturally express `state-dependent variance rate × horizon`.
@@ -73,10 +73,10 @@ available:
 
 The target is
 
-\[
+```math
 y_{i,t,e}=\sqrt{\frac{1}{N_{t,e}}
 \sum_{s=t+1}^{S(e)}\left[\log(P_{i,s}/P_{i,s-1})\right]^2}.
-\]
+```
 
 It is daily log-return RMS over that row's actual expiry window. Calendar DTE
 is the public grid key; (N) comes from the trading calendar. The learned

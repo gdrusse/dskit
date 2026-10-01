@@ -10,7 +10,7 @@ What uncertainty should a weak-signal, walk-forward US-equity intradaily return 
 
 For every `(timestamp, name, horizon)`, emit:
 
-1. A **non-crossing conditional quantile grid**, for example \(q_{.01},q_{.05},q_{.10},q_{.25},q_{.50},q_{.75},q_{.90},q_{.95},q_{.99}\), trained with pinball loss.
+1. A **non-crossing conditional quantile grid**, for example $q_{.01},q_{.05},q_{.10},q_{.25},q_{.50},q_{.75},q_{.90},q_{.95},q_{.99}$, trained with pinball loss.
 2. **Rolling conformal corrections** for selected central and one-sided intervals, using asymmetric, volatility-normalized conformity scores.
 3. A synchronized bank of **joint standardized residual vectors** across names, with timestamps or block identifiers, plus the current per-name scale forecasts.
 4. Calibration metadata: calibration-window dates, effective sample size, realized coverage and interval score by name, horizon, time-of-day, volatility regime, and selected-versus-unselected trades.
@@ -39,7 +39,7 @@ There is no nontrivial, assumption-free guarantee of exact conditional coverage 
 
 **MC dropout / deep ensembles:** These estimate model or parameter dispersion, not frequentist predictive coverage. MC dropout depends materially on dropout rate and variational approximation. Deep ensembles generally provide stronger empirical uncertainty than MC dropout, but ensemble agreement can remain high-confidence and wrong under a shared regime shift. Neither is calibrated on fat-tailed intraday returns merely because multiple forward passes were made. They can be useful as features, ensemble diversity diagnostics, or CQR base learners—but should still receive out-of-sample conformal calibration.
 
-**NGBoost / heteroskedastic Gaussian:** NGBoost cleanly outputs a full conditional distribution and can learn input-dependent scale. The default Gaussian family is a poor final assumption for skewed, heavy-tailed, discontinuous intraday returns: one variance parameter cannot represent asymmetric tails, and likelihood training may underestimate crisis risk. A Student-\(t\), mixture, or flexible distribution is more defensible, but remains model-dependent and requires PIT, tail exceedance, and proper-score validation. Conformalizing its quantiles improves marginal coverage but does not repair an inadequate joint dependence model.
+**NGBoost / heteroskedastic Gaussian:** NGBoost cleanly outputs a full conditional distribution and can learn input-dependent scale. The default Gaussian family is a poor final assumption for skewed, heavy-tailed, discontinuous intraday returns: one variance parameter cannot represent asymmetric tails, and likelihood training may underestimate crisis risk. A Student-$t$, mixture, or flexible distribution is more defensible, but remains model-dependent and requires PIT, tail exceedance, and proper-score validation. Conformalizing its quantiles improves marginal coverage but does not repair an inadequate joint dependence model.
 
 **Empirical residual distributions:** Raw pooled residuals fail because return scale, time-of-day, name, and regime are not stationary. A **filtered** empirical distribution is much more useful: divide residuals by ex-ante conditional scale, retain synchronized cross-name vectors, resample rows or short blocks, then restore current scales. This supplies the optimizer with realistic non-Gaussian joint scenarios. It still fails when the volatility filter is wrong, dependence changes, extreme events are absent from the window, or overlapping horizons are resampled as independent.
 

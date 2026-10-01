@@ -13,11 +13,11 @@ an option-distribution model, an option-pricing model, or a trading rule.
 
 For underlying (i), forecast date (t), and horizon (h), the target is
 
-\[
+```math
 y_{i,t,h} = \sqrt{\frac{1}{h}\sum_{k=1}^{h} r_{i,t+k}^{2}},
 \qquad
 r_{i,t}=\log(P_{i,t}/P_{i,t-1}).
-\]
+```
 
 The model outputs one nonnegative scalar, `rv_hat`, in **daily log-return
 volatility units**. If `rv_hat=0.012`, the forecast says the next horizon is
@@ -52,19 +52,19 @@ Every cell uses the same 27 columns:
 All input means and standard deviations, plus the target mean and standard
 deviation, are fitted on the training rows only. The prediction is
 
-\[
+```math
 \widehat y = \max\left(0,\; \mu_y + s_y\left[b +
 \sum_{j=1}^{27}\beta_j\frac{x_j-\mu_j}{s_j}\right]\right).
-\]
+```
 
 ElasticNet fits the standardized coefficients by minimizing squared error plus
 an equal L1/L2 penalty:
 
-\[
+```math
 \frac{1}{2n}\lVert z_y-X_z\beta\rVert_2^2
 +0.03\left(0.5\lVert\beta\rVert_1
 +0.25\lVert\beta\rVert_2^2\right).
-\]
+```
 
 This is a regularized linear model. The L1 half sets weak coefficients exactly
 to zero; the L2 half stabilizes correlated return lags and volatility windows.

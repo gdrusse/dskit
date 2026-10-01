@@ -19,15 +19,15 @@ For each put $i\in\mathcal P$ and call $j\in\mathcal C$, the inputs are:
 
 Precompute expected intrinsic values from the CDF:
 
-$$
+```math
 v_i^P=E[(K_i-S_T)^+]
      =\int_{-\infty}^{K_i}F_t(s)\,ds,
-$$
+```
 
-$$
+```math
 v_j^C=E[(S_T-K_j)^+]
      =\int_{K_j}^{\infty}(1-F_t(s))\,ds.
-$$
+```
 
 These are constants when the optimizer runs.
 
@@ -42,30 +42,30 @@ Use binary variables:
 
 Exactly one contract is selected for each leg:
 
-$$
+```math
 \sum_{i\in\mathcal P}x_i^{LP}=1,\qquad
 \sum_{i\in\mathcal P}x_i^{SP}=1,
-$$
+```
 
-$$
+```math
 \sum_{j\in\mathcal C}x_j^{SC}=1,\qquad
 \sum_{j\in\mathcal C}x_j^{LC}=1.
-$$
+```
 
 Let $\delta>0$ be the minimum strike increment. Enforce the iron-condor
 ordering:
 
-$$
+```math
 \sum_i K_i x_i^{LP}+\delta\le\sum_i K_i x_i^{SP},
-$$
+```
 
-$$
+```math
 \sum_i K_i x_i^{SP}+\delta\le\sum_j K_j x_j^{SC},
-$$
+```
 
-$$
+```math
 \sum_j K_j x_j^{SC}+\delta\le\sum_j K_j x_j^{LC}.
-$$
+```
 
 Thus $K_{LP}<K_{SP}<K_{SC}<K_{LC}$.
 
@@ -74,32 +74,32 @@ Thus $K_{LP}<K_{SP}<K_{SC}<K_{LC}$.
 A long option is purchased at its ask and a short option is sold at its bid.
 The expected profit per share of each possible leg is therefore:
 
-$$
+```math
 \begin{aligned}
 LP_i &: v_i^P-a_i,\\
 SP_i &: b_i-v_i^P,\\
 SC_j &: b_j-v_j^C,\\
 LC_j &: v_j^C-a_j.
 \end{aligned}
-$$
+```
 
 The basic mixed-integer linear program is:
 
-$$
+```math
 \max_x\;M\left[
 \sum_i x_i^{LP}(v_i^P-a_i)
 +\sum_i x_i^{SP}(b_i-v_i^P)
 +\sum_j x_j^{SC}(b_j-v_j^C)
 +\sum_j x_j^{LC}(v_j^C-a_j)
 \right].
-$$
+```
 
 Equivalently, it maximizes:
 
-$$
+```math
 \text{initial executable credit}
 -E_F[\text{terminal intrinsic loss}].
-$$
+```
 
 Transaction fees can be subtracted from each selected-leg coefficient. Because
 the CDF integrals and executable prices are precomputed constants, the core

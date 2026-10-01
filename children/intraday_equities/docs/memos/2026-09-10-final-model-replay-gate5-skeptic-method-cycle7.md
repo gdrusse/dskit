@@ -180,22 +180,22 @@ field, not a silent 21.0 drop. Ingest does not name `high`/`low`/
 
 ## Math
 
-Let \(P_o, P_c\) be the expiry bar's open and close, qty \(q=10\).
-Schwab sell-per-share \(s(P)\) from the shipped rates
+Let $P_o, P_c$ be the expiry bar's open and close, qty $q=10$.
+Schwab sell-per-share $s(P)$ from the shipped rates
 (`spread_bps=2.2`, `taf_per_share=0.000195`, `sec31_bps=0.0206`):
 
-\[
+```math
 s(P) = 2.2 \times 10^{-4}\,P + 0.000195 + 0.0206 \times 10^{-4}\,P
-\]
+```
 
-\[
+```math
 q \cdot s(12.0) = 0.0285972,\quad q \cdot s(12.5) = 0.0297075
-\]
+```
 
 Under `forced_exit_price_field="close"`, recorded exit price is
-\(P_c=12.5\) and the fee is \(q \cdot s(12.5)\). Cycle-4's split
-is still gone. Peer BBB entry at \(P=21.0\) pays
-\(q \cdot 2.2 \times 10^{-4} \times 21 = 0.0462\); halt
+$P_c=12.5$ and the fee is $q \cdot s(12.5)$. Cycle-4's split
+is still gone. Peer BBB entry at $P=21.0$ pays
+$q \cdot 2.2 \times 10^{-4} \times 21 = 0.0462$; halt
 `open=None` still records that print.
 
 Fill-only size: `fill_suffix_bars = fill_bar_offset + 1170 = 1 + 1170

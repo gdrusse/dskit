@@ -15,20 +15,20 @@ Use a **partially pooled mixture**, not one architecture everywhere:
 
 ### What the predictor should emit
 
-At decision time \(t\), emit exactly one direct forecast per eligible name:
+At decision time $t$, emit exactly one direct forecast per eligible name:
 
-\[
+```math
 \hat{\mathbf y}_t =
 \left(
 \widehat r_{1,t\rightarrow t+H_1},
 \ldots,
 \widehat r_{N,t\rightarrow t+H_N}
 \right),
-\]
+```
 
-where \(H_i\) is the horizon selected for name \(i\) by the modelability gate. Thus AAPL might emit a 10-minute forward return while JPM emits a 30-minute return. This is **not** one common-horizon vector and need not be a complete trajectory from minute 1 through \(H_i\). A practical output record should carry `name`, `asof`, `horizon`, `forecast`, and—if validated—predictive scale or ensemble dispersion.
+where $H_i$ is the horizon selected for name $i$ by the modelability gate. Thus AAPL might emit a 10-minute forward return while JPM emits a 30-minute return. This is **not** one common-horizon vector and need not be a complete trajectory from minute 1 through $H_i$. A practical output record should carry `name`, `asof`, `horizon`, `forecast`, and—if validated—predictive scale or ensemble dispersion.
 
-Train each output directly against that name’s \(H_i\)-ahead return. Marcellino, Stock, and Watson distinguish direct horizon-specific estimation from recursively iterating a one-step model: iteration is more efficient when the one-step specification is correct, while direct estimation is more robust to misspecification. Their macroeconomic experiment favored iteration, so the literature does not establish a universal direct-forecast victory [4]. Here, however, recursive minute-return prediction would require an unusually trustworthy transition model and repeatedly feed predictions back into it. Because Gate 3 has already selected heterogeneous terminal horizons, direct terminal targets align the statistical objective with the delivered forecast and avoid unnecessary rollout error.
+Train each output directly against that name’s $H_i$-ahead return. Marcellino, Stock, and Watson distinguish direct horizon-specific estimation from recursively iterating a one-step model: iteration is more efficient when the one-step specification is correct, while direct estimation is more robust to misspecification. Their macroeconomic experiment favored iteration, so the literature does not establish a universal direct-forecast victory [4]. Here, however, recursive minute-return prediction would require an unusually trustworthy transition model and repeatedly feed predictions back into it. Because Gate 3 has already selected heterogeneous terminal horizons, direct terminal targets align the statistical objective with the delivered forecast and avoid unnecessary rollout error.
 
 ### Why sharing should be tested first
 
@@ -36,7 +36,7 @@ Caruana’s multi-task-learning result is the central statistical argument: rela
 
 Those papers do **not** justify a large transformer here. Gu–Kelly–Xiu used a vastly broader panel and found performance peak at moderate depth before declining [2]. Sirignano–Cont used billions of order-book quotes and transactions, not a modest panel of one-minute features [3]. Their transferable conclusion is pooling, not model size.
 
-The first shared candidate should therefore be deliberately small: a pooled linear/tree baseline or compact shared trunk, followed by a low-capacity residual head for each name. The trunk learns common effects such as volatility, liquidity, market movement, and lag-shape responses; each head calibrates the representation to that name and its selected \(H_i\). Horizon may be supplied as a conditioning value, but the emitted head remains tied to the pair \((i,H_i)\). Names with insufficient evidence for specialization can use the global head.
+The first shared candidate should therefore be deliberately small: a pooled linear/tree baseline or compact shared trunk, followed by a low-capacity residual head for each name. The trunk learns common effects such as volatility, liquidity, market movement, and lag-shape responses; each head calibrates the representation to that name and its selected $H_i$. Horizon may be supplied as a conditioning value, but the emitted head remains tied to the pair $(i,H_i)$. Names with insufficient evidence for specialization can use the global head.
 
 ### When sharing helps—and when it hurts
 
@@ -75,7 +75,7 @@ Official Chronos, TimesFM, and Moirai tooling supports fine-tuning or parameter-
 
 Finally, ensemble only validated architectures. Gu–Kelly–Xiu average networks initialized with multiple seeds to reduce stochastic prediction variance [2], while deep ensembles can improve calibration and uncertainty estimates [12]. In this low-SNR setting, three to five seeds of the **same small winning specification** are defensible. Ensembling several overfit architectures merely averages expensive noise.
 
-The recommended decision is therefore: **small shared trunk plus direct \((name,H_i)\) heads, guarded by independent per-name baselines and fallbacks; seed ensembles after validation; transformers and frozen foundation models as bounded challengers.**
+The recommended decision is therefore: **small shared trunk plus direct $(name,H_i)$ heads, guarded by independent per-name baselines and fallbacks; seed ensembles after validation; transformers and frozen foundation models as bounded challengers.**
 
 ## Sources
 
