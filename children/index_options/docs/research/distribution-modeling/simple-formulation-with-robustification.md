@@ -45,7 +45,7 @@ For any coherent CDF $F$, including CDFs with atoms,
 \mathbb E_F[L_x]
 =\int_{K_{LP}}^{K_{SP}}F(s)\,ds
  +\int_{K_{SC}}^{K_{LC}}[1-F(s)]\,ds.
-\tag{1}
+\qquad\text{(1)}
 ```
 
 Thus nominal expected profit is $M[c_t(x)-f_t(x)-\mathbb E_{\widehat F_t}L_x]$,
@@ -73,7 +73,7 @@ The proposed ambiguity set is the following polytope:
 &\ell_{t,j}\le Q_j\le u_{t,j}\quad(j\in\mathcal J_t),\\
 &\textstyle\sum_{j=1}^{m-1}\frac{s_{j+1}-s_j}{S_t}|Q_j-\widehat Q_j|
 \le\rho_t\}.
-\end{aligned}\tag{2}
+\end{aligned}\qquad\text{(2)}
 ```
 
 $\mathcal J_t$ includes all eligible strikes and wing-interior grid points.
@@ -122,7 +122,7 @@ expected loss is a linear program:
 
 ```math
 R_t(x)=\max_{q\in\mathcal U_t}\sum_kq_k\ell_{x,k}.
-\tag{3}
+\qquad\text{(3)}
 ```
 
 Select
@@ -132,7 +132,7 @@ x_t^*\in\arg\max_{x\in\mathcal X_t\cup\{\varnothing\}}
 \begin{cases}
 M[c_t(x)-f_t(x)-R_t(x)],&x\ne\varnothing,\\
 0,&x=\varnothing.
-\end{cases}\tag{4}
+\end{cases}\qquad\text{(4)}
 ```
 
 Break ties toward no trade. The ambiguity set is fixed **before** selecting

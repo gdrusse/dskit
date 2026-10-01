@@ -299,7 +299,7 @@ a finite valid bound cannot be proved, the solve refuses.
 For every $i$:
 
 ```math
-q_i=h_i+b_i-s_i. \tag{C1}
+q_i=h_i+b_i-s_i.\qquad\text{(C1)}
 ```
 
 New risk and forced exits are constrained explicitly:
@@ -307,7 +307,7 @@ New risk and forced exits are constrained explicitly:
 ```math
 b_i\le M_i^{buy}e_i,
 \qquad
-q_i\le M_i^{target}(1-f_i). \tag{C1a}
+q_i\le M_i^{target}(1-f_i).\qquad\text{(C1a)}
 ```
 
 Thus an ineligible held stock can only stay unchanged or shrink, while a
@@ -318,37 +318,37 @@ Target activation and minimum position value are
 ```math
 x_i\le \bar x_i y_i,
 \qquad
-x_i\ge m_{ticket}y_i. \tag{C2}
+x_i\ge m_{ticket}y_i.\qquad\text{(C2)}
 ```
 
 The portfolio position-count cap is
 
 ```math
-\sum_{i\in I}y_i\le N_{max}. \tag{C3}
+\sum_{i\in I}y_i\le N_{max}.\qquad\text{(C3)}
 ```
 
 The post-trade cash identity is
 
 ```math
-C_{after}=C_0+\sum_i v_i^- -\sum_i v_i^+ - Cost_{entry}. \tag{C4}
+C_{after}=C_0+\sum_i v_i^- -\sum_i v_i^+ - Cost_{entry}.\qquad\text{(C4)}
 ```
 
 Cash and buying-power limits are
 
 ```math
-C_{after}\ge C_{reserve}, \tag{C5a}
+C_{after}\ge C_{reserve},\qquad\text{(C5a)}
 ```
 
 ```math
 \sum_i v_i^+ + Cost_{entry}
-\le BP_0+\sum_i\rho_i v_i^-. \tag{C5b}
+\le BP_0+\sum_i\rho_i v_i^-.\qquad\text{(C5b)}
 ```
 
 The gross-exposure ceiling is deliberately an inequality, so cash may remain
 unused:
 
 ```math
-\sum_i x_i\le X_{gross}. \tag{C6}
+\sum_i x_i\le X_{gross}.\qquad\text{(C6)}
 ```
 
 The locked false-signal-capital rule is
@@ -361,7 +361,7 @@ The locked false-signal-capital rule is
 or equivalently
 
 ```math
-\sum_i(\pi_i^{upper}-q_{fdr})x_i\le0. \tag{C7}
+\sum_i(\pi_i^{upper}-q_{fdr})x_i\le0.\qquad\text{(C7)}
 ```
 
 The point estimate $\widehat\pi_i$ changes the scenario mean; the upper bound
@@ -375,13 +375,13 @@ Buy and sell cannot both be active:
 ```math
 0\le b_i\le M_i^{buy}d_i,
 \qquad
-0\le s_i\le M_i^{sell}(1-d_i). \tag{C8a}
+0\le s_i\le M_i^{sell}(1-d_i).\qquad\text{(C8a)}
 ```
 
 The no-trade band is enforced inside the optimization:
 
 ```math
-band_i a_i\le b_i+s_i\le M_i^{trade}a_i. \tag{C8b}
+band_i a_i\le b_i+s_i\le M_i^{trade}a_i.\qquad\text{(C8b)}
 ```
 
 Thus $a_i=0$ forces no trade, while $a_i=1$ requires a change at least as large
@@ -416,7 +416,7 @@ For every scenario $o$:
 ```math
 W_o^{actual}=C_{after}
 +\sum_i(1+r_{oi})x_i
--Cost_{exit,o}(q). \tag{C9}
+-Cost_{exit,o}(q).\qquad\text{(C9)}
 ```
 
 `Cost_exit` prices liquidation at the declared horizon convention, including
@@ -428,7 +428,7 @@ calibrated opportunity charge gives
 
 ```math
 W_o^{utility}=W_o^{actual}
--\lambda_t^{bps}10^{-4}\sum_i x_i. \tag{C10}
+-\lambda_t^{bps}10^{-4}\sum_i x_i.\qquad\text{(C10)}
 ```
 
 Unspent cash is not penalized.
@@ -451,7 +451,7 @@ verified positive wealth bounds,
 
 ```math
 t_o\le u(k_j)+u'(k_j)(W_o^{utility}-k_j),
-\qquad \forall o,j. \tag{C11}
+\qquad \forall o,j.\qquad\text{(C11)}
 ```
 
 The minimum of these tangent upper bounds is a piecewise-linear approximation
@@ -477,12 +477,12 @@ L_o=W_0-W_o^{actual}.
 The Rockafellar–Uryasev linear construction is
 
 ```math
-z_o\ge L_o-\eta,\qquad z_o\ge0, \tag{C12a}
+z_o\ge L_o-\eta,\qquad z_o\ge0,\qquad\text{(C12a)}
 ```
 
 ```math
 \eta+\frac{1}{1-\beta}\sum_o\omega_oz_o
-\le L_{CVaR}. \tag{C12b}
+\le L_{CVaR}.\qquad\text{(C12b)}
 ```
 
 This limit uses actual wealth, so both entry and scenario-liquidation costs are
@@ -493,7 +493,7 @@ inside the loss calculation.
 The solver maximizes scenario-weighted utility:
 
 ```math
-\max\;\sum_{o\in\Omega}\omega_ot_o. \tag{OBJ}
+\max\;\sum_{o\in\Omega}\omega_ot_o.\qquad\text{(OBJ)}
 ```
 
 The opportunity charge is already inside $W_o^{utility}$; adding a second
