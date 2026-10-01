@@ -1,5 +1,25 @@
 # Re-entry
 
+## Generic Torch decision-region CDF zoo completed (2026-10-01)
+
+- ADR-0211: JSON MLP/GRU encoders and composite NLL/local-Brier/local-log
+  objectives; generic code has no index choice. Actual listed-wing endpoints
+  remain child-owned, entry-known, identity-bound and source-hashed.
+- Twelve QQQ candidates used paired 2018 decision-region skill for HPO; none
+  beat empirical. Frozen 2019 MLP skill +2.043%, GRU -1.944% on 1,676 eligible
+  forecasts /90,795 thresholds /251 dates. Both 30/60-date intervals cross
+  zero; local bias guards pass, joint acceptance fails. No promotion/optimizer.
+- Full training/calibration/validation losses, skill and denominators are saved.
+  Global/tail/constructed-wing metrics are diagnostic only. Equal-DTE MLP
+  improvement is not pooled-row improvement; the memo explains the difference.
+- Final six WSL2/CUDA stages: 4m11s total, 2.434 GiB peak process RSS,
+  257.2 MiB peak Torch GPU allocation; hard 29m/6GiB/no-swap per invocation.
+  Focused tests 233; two fresh final lenses C0/M0/m0/n0 on d2bbdd96.
+- Memo: children/index_options/docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md.
+  Run: isolated WSL worktree's pipeline_runs/qqq_torch_cdf_20261001_r2.
+  Next: retain empirical; any further tuning/new-period test is a separately
+  declared study. Historical inspected data do not establish trading authority.
+
 ## QQQ decision-strike diagnosis completed (2026-10-01)
 
 - Frozen raw wide MLP versus horizon empirical; no retraining or reselection.

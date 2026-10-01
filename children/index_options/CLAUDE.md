@@ -118,6 +118,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-predictive-cdf-qqq-torch-{zoo,smoke}.json (ADR-0211 generic Torch/local HPO)
                            # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison),
                            # run-predictive-cdf-methods.json (ADR-0191 three-method comparison)
                            # run-predictive-cdf-refinement.json (ADR-0191 blend refinement)

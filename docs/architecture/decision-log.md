@@ -28710,7 +28710,7 @@ the unchanged SPY local/global/tail guards, not a broader architecture zoo.
 
 ## ADR-0211 — Configurable Torch CDF decision-region study
 
-**Status:** authorized by the owner's 2026-10-01 implementation request.
+**Status:** completed 2026-10-01; both finalists fail descriptive acceptance.
 Base: 8c269a46. This request supersedes the prior no-zoo recommendation.
 
 Extend the existing mixture estimator and chronological HPO seams. JSON chooses
@@ -28743,3 +28743,9 @@ Matrix: encoder causality/shapes; composite losses and gradients; invalid JSON
 refusal; purged train/cal/validation isolation; identity/eligibility pairing;
 decision ranking despite opposite CRPS ranking; loss/skill/count telemetry;
 decision-only guards; bounded real CLI run; two final reviews; commit and push.
+
+ADR-0211 execution: all 12 development challengers were below empirical.
+Frozen later MLP/GRU skill was +2.043%/-1.944%; both 30/60-date intervals
+crossed zero. No promotion. Six bounded stages took 4m11s total, 2.434 GiB
+peak process RSS; 233 focused tests and two final C0/M0 reviews. Standalone
+memo: children/index_options/docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md.
