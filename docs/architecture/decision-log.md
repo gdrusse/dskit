@@ -29103,3 +29103,70 @@ holidays, any run.
 
 **Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
 **Owner question 2.** Default `weekdays`: all seven (proposed) or Mon-Fri?
+
+## ADR-0218 — Torch CDF CRPS and condor-wing twCRPS losses
+
+**Status:** proposed 2026-10-01 (owner direction 2026-10-01). Base: b6efdfe.
+The owner's pre-approval applies only after a clean (C0/M0) Sonnet skeptic
+review, recorded here before any code.
+
+A condor's expected P&L is credit - ∫F over the put wing - ∫(1-F) over the
+call wing, so training must score the CDF across whole wings, not only at
+strikes. Inventory: TorchCDF `_LOSSES` (predictive_cdf.py:2567) holds nll,
+decision_brier, decision_log; `Crps`/`ThresholdWeightedCrps`
+(distribution_scores.py:269/292) score sample sets only; `CDFThresholdAudit`
+(predictive_cdf.py:33) is a numpy fixed-grid audit; the child builder forms
+wing pairs (cdf_study.py:335) that `_decision_threshold_inventory`
+(predictive_cdf.py:917) discards. No Torch CRPS/twCRPS, interval union or Torch
+Student CDF exists (sweep).
+
+1. **Objective.** `L = Σ_g w_g·mean_all(g) + Σ_l λ_l·mean_E_l(l)`. Registry
+   gains `crps` (global) and `wing_twcrps` (local); terms stay unique
+   `{"kind","weight"}`, weight > 0. Each term class declares its scope;
+   at least one global and one local term are required (supersedes
+   ADR-0211's mandatory nll). ADR-0211's N/|E_l| minibatch scaling stays:
+   a null date adds only global terms and never dilutes λ.
+2. **Family.** Optional TorchCDF `family`: absent = Gaussian (named once,
+   omitted from state, so existing identities/digests are unchanged) or
+   `{"kind": "student", "degrees": k}`, integer k >= 3. Terms are strategy
+   objects built with the family; curve() returns the matching
+   MixtureCurve/StudentMixtureCurve. Existing Gaussian formulas unchanged.
+3. **Segments.** Optional context key `weight_segments`: sorted, disjoint
+   `[lo, hi, density]` in the forecast's standardized units, density > 0,
+   Σ density·(hi-lo) = 1; `[]` marks a null region; every record or none.
+   One validator on `DecisionRegionScores`, reused by
+   `_decision_threshold_inventory` (now admits the key; non-empty iff
+   eligible). `DecisionRegionScores.segments_from_groups(groups)` unions
+   each group and gives every group equal mass, uniform on its union.
+4. **Child.** `decision_regions.wing_weight_segments: true` (opt-in;
+   absent keeps contexts and HPO frame hashes byte-identical) emits groups
+   `[long put, short put]` and `[short call, long call]` from the same
+   eligible candidates, in log(K/spot)/reference_scale. Puts and calls get
+   mass 1/2 each (continuous form of the 1/2-1/2 strike Brier); the body
+   and outer tails get 0; no candidate gives `[]`. Never synthesized.
+5. **Math.** `wing_twcrps = Σ_s d_s ∫(F(z) - 1{y<=z})² dz`, each segment split
+   at clamp(y) (F² left, (1-F)² right) and at component means, 64-point
+   Gauss-Legendre per sub-piece. crps: Gaussian exact pair form (Grimit et
+   al. 2006); Student exact E|X_k - y| and same-component E|X - X'|, cross
+   pairs by 64-point Gauss-Legendre over the narrower component
+   (u = √ν·tan φ). Student CDF: exact integer-ν series (A&S 26.7.3-4),
+   lower tail by its positive remainder series. Measured: twCRPS <= 1e-10
+   abs at segment/scale 200 (<= 6e-6 at 1000); Student CRPS <= 4e-8 rel;
+   Student CDF <= 1e-15 abs, <= 3e-11 rel in the lower tail. One node
+   constant serves training and evaluation.
+6. **Evaluation.** `DecisionRegionScores.score` adds `decision_wing_twcrps`
+   (NaN on null rows) and `decision_wing_segment_count` only when segments
+   exist. `_Curve` owns the numpy rule (mixtures pass their means, so it
+   equals the Torch term); `GridCurve` integrates exactly; other curves use
+   plain Gauss-Legendre (<= 1e-3 rel). The study adds it to equal-cell
+   skill, paired block intervals vs references and Torch telemetry; HPO
+   accepts `selection_metric: decision_wing_twcrps`. The metric-to-count
+   vocabulary has one owner on `DecisionRegionScores`.
+
+**Pins.** Closed forms vs scipy quad; twCRPS/CRPS vs `ThresholdWeightedCrps`/
+`Crps` on 20,000 midpoint quantiles of the same curve; Torch term = scorer;
+batch-partition invariance; null rows add only global terms; refusals;
+opt-in byte identity. **Touched.** predictive_cdf.py, test_predictive_cdf.py,
+child cdf_study.py + test_cdf_study.py, pipeline README/CLAUDE, child README,
+this ADR. **Non-goals.** Runs, new configs, λ tuning, feature selection,
+acceptance/promotion guards, StudentMixtureMLPCDF, non-integer Torch degrees.
