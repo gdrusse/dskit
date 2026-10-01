@@ -1,7 +1,7 @@
 """Pin the approved ADR-0212 bootstrap and child boundary."""
 
 from pathlib import Path
-import re
+import ast
 import tomllib
 
 CHILD_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +46,17 @@ def test_package_is_empty_and_importable():
     import stock_options
 
     assert stock_options.__all__ == ()
+    source = (CHILD_ROOT / "stock_options/__init__.py").read_text()
+    body = ast.parse(source).body
+    assert len(body) == 2
+    assert isinstance(body[0], ast.Expr)
+    assert isinstance(body[0].value, ast.Constant)
+    assert isinstance(body[0].value.value, str)
+    assert isinstance(body[1], ast.Assign)
+    assert [target.id for target in body[1].targets if isinstance(target, ast.Name)] == [
+        "__all__"
+    ]
+    assert isinstance(body[1].value, ast.Tuple) and body[1].value.elts == []
 
 
 def test_packaging_is_standalone_and_only_depends_on_dskit():
@@ -59,13 +70,19 @@ def test_packaging_is_standalone_and_only_depends_on_dskit():
 
 
 def test_child_does_not_import_sibling_children():
+    forbidden = {"children", "index_options", "intraday_equities", "intraday_poc", "pmquant"}
     offenders = []
     for path in (CHILD_ROOT / "stock_options").rglob("*.py"):
-        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-            if line.lstrip().startswith(("import ", "from ")) and re.search(
-                r"\bchildren\b", line
-            ):
-                offenders.append(f"{path.name}:{line_number}:{line.strip()}")
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            for module in modules:
+                if module.split(".", 1)[0] in forbidden:
+                    offenders.append(f"{path.name}:{node.lineno}:{module}")
     assert offenders == []
 
 

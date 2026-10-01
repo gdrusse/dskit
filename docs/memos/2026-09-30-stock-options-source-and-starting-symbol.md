@@ -161,5 +161,5 @@ ADR-0212 is accepted and the exact initial `stock_options` child now exists.
 Generic mechanisms remain upstream. The bootstrap contains no runnable strategy
 config; those wait for an approved generic chain/condor seam in `dskit/`.
 A point-in-time earnings/ex-dividend source remains a pre-run dependency.
-The reuse research is temporarily journaled as index_options A0626 because the
-separate child cannot exist before ADR approval.
+The index_options A0626-A0629 rows retain the historical source and reuse audit
+recorded before the separate child existed.
