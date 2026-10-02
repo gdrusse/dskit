@@ -29162,3 +29162,46 @@ authority, no decision policy in the loop.
   default-deny/load-refusal tests.
 - Update the `dskit/pipeline` AGENTS.md/README.md inventory lines for
   `libs/predictive_cdf.py`.
+
+## ADR-0216 — Alpaca multi-ticker option fetch connector (proposed, 2026-10-01)
+
+**Status: proposed.** ADR-0213 ships `AlpacaOptionArchiveConnector`, which only
+READS SHA-256-pinned saved archives; the AMZN pull itself was external and
+uncommitted. To build the candidate-ticker universe we need the pull to be a
+first-class, configurable acquisition. Base: `9a859fea`.
+
+### Smallest extension
+
+Add `AlpacaOptionFetchConnector` (a `Connector`) to
+`dskit/onboarding/libs/alpaca.py`. It fetches, for a config-declared
+`symbols` list, inactive option contracts (paginated), daily trade bars over
+each expiry's DTE window (`dte_min`/`dte_max`), and current snapshots, and
+emits the SAME `contracts`/`bars`/`snapshots` streams and row fields as
+`AlpacaOptionArchiveConnector`, so the stock-options panel flow consumes
+fetched rows identically to a pinned archive. No new package.
+
+### Contracts
+
+- Credential material is named by environment variables (`key_env`/
+  `secret_env`, default `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY`); secret
+  material never enters config, stores, or hashes.
+- The multiplier/root/status/DTE gates replicate ADR-0213's: only
+  `size == multiplier` (default 100), `root_symbol == symbol`, `status`
+  (default `inactive`) contracts are admitted; bars are fetched over
+  `expiry - dte_max .. expiry - dte_min`.
+- The free tier returns trade bars only (no bid/ask quotes); `price_basis`
+  is `trade_close` and fills stay out of scope, exactly as the archive
+  connector records.
+- Heavy SDK imports stay inside methods; the pack stays importable without
+  alpaca-py.
+
+### Approved file/API manifest
+
+- Extend `dskit/onboarding/libs/alpaca.py` with `AlpacaOptionFetchConnector`
+  (and the option stream-name constants).
+- Add `children/stock_options/configs/source-option-fetch.json` (the
+  configurable symbol list, window and DTE).
+- Extend `tests/onboarding/test_alpaca.py` with mocked no-network
+  contract/bar emission and non-standard-multiplier refusal tests.
+- Update the `dskit/onboarding` AGENTS.md/README.md inventory lines for
+  `libs/alpaca.py`.

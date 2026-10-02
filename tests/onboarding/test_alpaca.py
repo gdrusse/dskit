@@ -302,3 +302,111 @@ def test_option_archive_refuses_multiple_snapshots_per_contract_session(tmp_path
     config = _archive_config(tmp_path, {"snapshots": {"pages": pages}})
     with pytest.raises(AssetError, match="conflicting duplicate"):
         list(alpaca.AlpacaOptionArchiveConnector().read(config, ["snapshots"], {}, "backfill"))
+
+
+def _option_config(**overrides):
+    config = {
+        "symbols": ["AMZN"],
+        "start": "2024-02-01",
+        "end": "2026-09-30",
+        "dte_min": 30,
+        "dte_max": 45,
+        "multiplier": 100,
+        "status": "inactive",
+        "include_snapshots": False,
+    }
+    config.update(overrides)
+    return config
+
+
+class _FakeContract:
+    def __init__(self, symbol, underlying, size, style):
+        self.symbol = symbol
+        self.underlying_symbol = underlying
+        self.size = size
+        self.style = style
+
+
+class _FakeContractsResponse:
+    def __init__(self, contracts, next_page_token=None):
+        self.option_contracts = contracts
+        self.next_page_token = next_page_token
+
+
+class _FakeTradingClient:
+    def __init__(self, key, secret):
+        pass
+
+    def get_option_contracts(self, request):
+        return _FakeContractsResponse([
+            _FakeContract("AMZN240202C00125000", "AMZN", 100, "american"),
+        ])
+
+
+class _FakeBar:
+    def __init__(self, ts, o, h, low, c, v):
+        self.timestamp = ts
+        self.open, self.high, self.low, self.close, self.volume = o, h, low, c, v
+        self.trade_count = None
+        self.vwap = None
+
+
+class _FakeHistoricalClient:
+    def __init__(self, key, secret):
+        pass
+
+    def get_option_bars(self, request):
+        return type("BarSet", (), {"data": {
+            "AMZN240202C00125000": [_FakeBar(
+                datetime(2023, 12, 20, 20, 0, tzinfo=timezone.utc),
+                124.0, 126.0, 123.0, 125.5, 500.0)],
+        }})()
+
+
+def test_option_fetch_emits_contracts_and_bars_without_network(monkeypatch):
+    from alpaca.data import historical as hist
+    from alpaca.trading import client as trading
+
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    monkeypatch.setattr(trading, "TradingClient", _FakeTradingClient)
+    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeHistoricalClient)
+
+    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
+    connector = AlpacaOptionFetchConnector()
+    messages = list(connector.read(
+        _option_config(), ["contracts", "bars"], {}, "backfill"))
+    assert all(check_message(m) for m in messages)
+    records = [m for m in messages if m["type"] == "RECORD"]
+    contracts = [m for m in records if m["stream"] == "contracts"]
+    bars = [m for m in records if m["stream"] == "bars"]
+    assert len(contracts) == 1
+    assert contracts[0]["data"]["strike"] == 125.0
+    assert contracts[0]["data"]["expiry"] == "2024-02-02"
+    assert contracts[0]["data"]["style"] == "american"
+    assert len(bars) == 1
+    assert bars[0]["data"]["mark"] == 125.5
+    assert bars[0]["data"]["quote_date"] == "2023-12-20"
+    assert bars[0]["data"]["price_basis"] == "trade_close"
+
+
+def test_option_fetch_refuses_nonstandard_multiplier(monkeypatch):
+    from alpaca.data import historical as hist
+    from alpaca.trading import client as trading
+
+    class NonStandard(_FakeTradingClient):
+        def get_option_contracts(self, request):
+            return _FakeContractsResponse([
+                _FakeContract("AMZN240202C00125000", "AMZN", 0, "american"),
+            ])
+
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    monkeypatch.setattr(trading, "TradingClient", NonStandard)
+    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeHistoricalClient)
+
+    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
+    messages = list(AlpacaOptionFetchConnector().read(
+        _option_config(), ["contracts", "bars"], {}, "backfill"))
+    records = [m for m in messages if m["type"] == "RECORD"]
+    assert records == []

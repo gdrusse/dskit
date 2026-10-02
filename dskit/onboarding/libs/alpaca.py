@@ -32,8 +32,12 @@ __all__ = [
     "DEFAULT_SECRET_ENV",
     "LIVE_MODE",
     "TIMEFRAME_UNITS",
+    "OPTION_CONTRACT_STREAM",
+    "OPTION_BAR_STREAM",
+    "OPTION_SNAPSHOT_STREAM",
     "AlpacaBarsConnector",
     "AlpacaOptionArchiveConnector",
+    "AlpacaOptionFetchConnector",
     "bar_timeframe",
     "resolve_credentials",
 ]
@@ -711,3 +715,446 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
         readers = {"contracts": self._contracts, "bars": self._bars,
                    "snapshots": self._snapshots}
         return readers[stream](raw)
+
+
+OPTION_CONTRACT_STREAM = "contracts"
+OPTION_BAR_STREAM = "bars"
+OPTION_SNAPSHOT_STREAM = "snapshots"
+_OPTION_STREAMS = (OPTION_CONTRACT_STREAM, OPTION_BAR_STREAM, OPTION_SNAPSHOT_STREAM)
+_OPTION_STREAM_KEYS = {
+    OPTION_CONTRACT_STREAM: ("contract",),
+    OPTION_BAR_STREAM: ("contract", "quote_date"),
+    OPTION_SNAPSHOT_STREAM: ("contract", "quote_date"),
+}
+_DEFAULT_OPTION_MULTIPLIER = 100
+_DEFAULT_OPTION_STATUS = "inactive"
+_DEFAULT_MAX_SYMBOLS_PER_REQUEST = 100
+
+
+class AlpacaOptionFetchConnector(Connector):
+    """Fetch Alpaca option contracts, daily trade bars and snapshots.
+
+    Replicates the AMZN historical pull (ADR-0213) for a config-declared
+    ``symbols`` list: inactive contracts from the option-contracts endpoint,
+    daily trade bars over the per-expiry DTE window, and current snapshots.
+    Emits the same ``contracts``/``bars``/``snapshots`` stream vocabulary and
+    row fields as :class:`AlpacaOptionArchiveConnector`, so the stock-options
+    panel flow consumes fetched rows identically to a pinned archive. The free
+    tier returns trade bars only: no bid/ask quotes, so fills stay out of scope.
+
+    Credential material is named by environment variables (``key_env`` /
+    ``secret_env``), never held in config. Heavy imports stay inside methods.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Declare the pull without importing the SDK::
+
+        connector = AlpacaOptionFetchConnector()
+        streams = connector.discover({
+            "symbols": ["AMZN", "MSFT"],
+            "start": "2024-02-01",
+            "end": "2026-09-30",
+            "dte_min": 30, "dte_max": 45,
+        })
+    """
+
+    def spec(self):
+        """Declare the default-deny Alpaca option-fetch configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
+        return {"params": {
+            "symbols": {
+                "required": True,
+                "notes": "Non-empty list of underlying symbols to pull.",
+            },
+            "start": {
+                "required": True,
+                "notes": "Earliest ISO date (inclusive) for contract expiration.",
+            },
+            "end": {
+                "notes": "Optional EXCLUSIVE ISO upper bound on contract expiration.",
+            },
+            "dte_min": {
+                "notes": "Fewest days-to-expiry a bar is fetched for; default 30.",
+            },
+            "dte_max": {
+                "notes": "Most days-to-expiry a bar is fetched for; default 45.",
+            },
+            "multiplier": {
+                "notes": f"Standard contract multiplier gate; default "
+                         f"{_DEFAULT_OPTION_MULTIPLIER}.",
+            },
+            "status": {
+                "notes": f"Contract status filter; default {_DEFAULT_OPTION_STATUS!r}.",
+            },
+            "feed": {
+                "notes": "Option data feed (opra | indicative); default indicative.",
+            },
+            "timeframe": {
+                "notes": "Bar interval [amount, unit]; default [1, 'Day'].",
+            },
+            "max_symbols_per_request": {
+                "notes": "Bar symbols per request; default "
+                         f"{_DEFAULT_MAX_SYMBOLS_PER_REQUEST}.",
+            },
+            "include_snapshots": {
+                "notes": "Whether to also pull the current snapshot chain.",
+            },
+            "key_env": {
+                "secret": True,
+                "notes": f"Environment variable naming the Alpaca key; "
+                         f"default {DEFAULT_KEY_ENV}.",
+            },
+            "secret_env": {
+                "secret": True,
+                "notes": f"Environment variable naming the Alpaca secret; "
+                         f"default {DEFAULT_SECRET_ENV}.",
+            },
+        }}
+
+    def resolve_knobs(self, config):
+        """Resolve and validate every knob, defaulting optional ones."""
+        errors = []
+        symbols = config.get("symbols")
+        if (not isinstance(symbols, (list, tuple)) or not symbols
+                or any(not isinstance(s, str) or not s for s in symbols)
+                or len(set(symbols)) != len(symbols)):
+            errors.append("config.symbols must be a non-empty list of distinct symbols")
+        start = config.get("start")
+        if not isinstance(start, str) or not start:
+            errors.append("config.start must be an ISO date string")
+        end = config.get("end", "")
+        if end and (not isinstance(end, str) or not end):
+            errors.append("config.end must be an ISO date string or absent")
+        dte_min = config.get("dte_min", 30)
+        dte_max = config.get("dte_max", 45)
+        for name, value in (("dte_min", dte_min), ("dte_max", dte_max)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append(f"config.{name} must be an int >= 1")
+        if not isinstance(dte_min, bool) and not isinstance(dte_max, bool) \
+                and isinstance(dte_min, int) and isinstance(dte_max, int) \
+                and dte_min > dte_max:
+            errors.append("config.dte_min must not exceed config.dte_max")
+        multiplier = config.get("multiplier", _DEFAULT_OPTION_MULTIPLIER)
+        if (isinstance(multiplier, bool) or not isinstance(multiplier, int)
+                or multiplier < 1):
+            errors.append("config.multiplier must be a positive int")
+        status = config.get("status", _DEFAULT_OPTION_STATUS)
+        if not isinstance(status, str) or not status:
+            errors.append("config.status must be a non-empty string")
+        timeframe = config.get("timeframe", [1, "Day"])
+        if not isinstance(timeframe, (list, tuple)) or len(timeframe) != 2 \
+                or not isinstance(timeframe[0], int) or timeframe[0] < 1 \
+                or not isinstance(timeframe[1], str):
+            errors.append("config.timeframe must be an [int, unit] pair")
+        max_symbols = config.get("max_symbols_per_request",
+                                 _DEFAULT_MAX_SYMBOLS_PER_REQUEST)
+        if (isinstance(max_symbols, bool) or not isinstance(max_symbols, int)
+                or max_symbols < 1):
+            errors.append("config.max_symbols_per_request must be a positive int")
+        include = config.get("include_snapshots", True)
+        if not isinstance(include, bool):
+            errors.append("config.include_snapshots must be a bool")
+        key_env = config.get("key_env", DEFAULT_KEY_ENV)
+        secret_env = config.get("secret_env", DEFAULT_SECRET_ENV)
+        for name, value in (("key_env", key_env), ("secret_env", secret_env)):
+            if not isinstance(value, str) or not value:
+                errors.append(f"config.{name} must be a non-empty env-var name")
+        if errors:
+            raise AssetError(errors)
+        return {
+            "symbols": list(symbols),
+            "start": start,
+            "end": end or None,
+            "dte_min": dte_min,
+            "dte_max": dte_max,
+            "multiplier": multiplier,
+            "status": status,
+            "feed": config.get("feed", "indicative"),
+            "timeframe": list(timeframe),
+            "max_symbols_per_request": max_symbols,
+            "include_snapshots": include,
+            "key_env": key_env,
+            "secret_env": secret_env,
+        }
+
+    def _credentials(self, knobs):
+        """Resolve the named key pair at the vendor boundary."""
+        return resolve_credentials(knobs)
+
+    def check(self, config):
+        """Validate config, credentials, and one authenticated probe.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AssetError
+            If config, credentials, SDK loading, or the probe fails.
+        """
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import GetOptionContractsRequest
+
+            client = TradingClient(key, secret)
+            client.get_option_contracts(GetOptionContractsRequest(
+                underlying_symbols=knobs["symbols"][:1],
+                status=knobs["status"], limit=1))
+        except Exception as exc:
+            raise AssetError(
+                ["Alpaca option-contracts probe failed; check credentials, "
+                 "network and option-data access"]) from exc
+
+    def discover(self, config):
+        """Describe the three normalized option streams without a vendor.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        list
+            One stream declaration per option stream.
+
+        Raises
+        ------
+        AssetError
+            If config values are invalid.
+        """
+        self.resolve_knobs(config)
+        out = []
+        for stream in _OPTION_STREAMS:
+            if stream == OPTION_SNAPSHOT_STREAM and not config.get(
+                    "include_snapshots", True):
+                continue
+            out.append({
+                "stream": stream,
+                "schema": {"fields": []},
+                "primary_key": list(_OPTION_STREAM_KEYS[stream]),
+            })
+        return out
+
+    def read(self, config, streams, state, mode):
+        """Emit schemas, normalized records and one checkpoint.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+        streams : list
+            Requested streams.
+        state : dict
+            Prior mode-keyed connector checkpoint; ``{}`` on first pull.
+        mode : str
+            ``backfill`` or ``live``.
+
+        Yields
+        ------
+        dict
+            Onboarding protocol messages.
+
+        Raises
+        ------
+        AssetError
+            If arguments, config, or the vendor request fail.
+        """
+        if not isinstance(state, dict):
+            raise AssetError([f"state must be a dict, got {state!r}"])
+        if not isinstance(streams, list) or not streams:
+            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
+        if mode not in MODES:
+            raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
+        unknown = [s for s in streams if s not in _OPTION_STREAMS]
+        if unknown:
+            raise AssetError([f"unknown stream(s) {unknown}; discovered: "
+                              f"{list(_OPTION_STREAMS)}"])
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        for stream in streams:
+            yield {
+                "protocol": PROTOCOL, "type": "SCHEMA",
+                "stream": stream, "schema": {"fields": []},
+            }
+        if OPTION_CONTRACT_STREAM in streams:
+            yield from self._contracts(key, secret, knobs)
+        contracts = None
+        if OPTION_BAR_STREAM in streams or OPTION_SNAPSHOT_STREAM in streams:
+            contracts = self._eligible_contracts(key, secret, knobs)
+        if OPTION_BAR_STREAM in streams:
+            yield from self._bars(key, secret, knobs, contracts)
+        if OPTION_SNAPSHOT_STREAM in streams:
+            yield from self._snapshots(key, secret, knobs, contracts)
+        new_state = {k: dict(v) for k, v in state.items()}
+        new_state.setdefault("last_pull", {})["at"] = datetime.now(
+            timezone.utc).isoformat()
+        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+    def _contract_client(self, key, secret):
+        from alpaca.trading.client import TradingClient
+        return TradingClient(key, secret)
+
+    def _eligible_contracts(self, key, secret, knobs):
+        """Return the contract dicts that pass the DTE/multiplier/root gates."""
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        client = self._contract_client(key, secret)
+        result = {}
+        for symbol in knobs["symbols"]:
+            page_token = None
+            while True:
+                request = GetOptionContractsRequest(
+                    underlying_symbols=[symbol], status=knobs["status"],
+                    expiration_date_gte=knobs["start"],
+                    expiration_date_lte=knobs["end"],
+                    limit=1000, page_token=page_token)
+                response = client.get_option_contracts(request)
+                for contract in response.option_contracts:
+                    item = AlpacaOptionArchiveConnector._identity(contract.symbol)
+                    size = contract.size
+                    if (size != knobs["multiplier"]
+                            or item["root_symbol"] != symbol):
+                        continue
+                    item.update(symbol=contract.underlying_symbol,
+                                multiplier=float(size),
+                                contract_size=float(size),
+                                style=contract.style,
+                                contract_terms_status="metadata_present",
+                                effective_at=datetime.now(timezone.utc).isoformat())
+                    result[item["contract"]] = item
+                page_token = response.next_page_token
+                if not page_token:
+                    break
+        return result
+
+    def _contracts(self, key, secret, knobs):
+        """Emit the normalized contract stream."""
+        for contract, item in sorted(
+                self._eligible_contracts(key, secret, knobs).items()):
+            yield {
+                "protocol": PROTOCOL, "type": "RECORD",
+                "stream": OPTION_CONTRACT_STREAM,
+                "effective_date": item["effective_at"],
+                "kind": "observation",
+                "data": item,
+            }
+
+    def _bars(self, key, secret, knobs, contracts):
+        """Emit normalized daily trade bars over each expiry's DTE window."""
+        from datetime import date, timedelta as _td
+
+        from alpaca.data.enums import OptionsFeed
+        from alpaca.data.historical import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionBarsRequest
+
+        client = OptionHistoricalDataClient(key, secret)
+        by_expiry = {}
+        for item in contracts.values():
+            by_expiry.setdefault(item["expiry"], []).append(item["contract"])
+        for expiry, symbols in sorted(by_expiry.items()):
+            exp = date.fromisoformat(expiry)
+            start = exp - _td(days=knobs["dte_max"])
+            end = exp - _td(days=knobs["dte_min"])
+            for offset in range(0, len(symbols), knobs["max_symbols_per_request"]):
+                batch = symbols[offset:offset + knobs["max_symbols_per_request"]]
+                bars = client.get_option_bars(OptionBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=bar_timeframe(tuple(knobs["timeframe"])),
+                    start=start, end=end,
+                    feed=OptionsFeed(knobs["feed"])))
+                for contract in batch:
+                    base = contracts[contract]
+                    for bar in bars.data.get(contract, []):
+                        yield self._bar_record(base, bar)
+
+    def _bar_record(self, base, bar):
+        stamp = bar.timestamp.astimezone(timezone.utc)
+        number = AlpacaOptionArchiveConnector._number
+        row = dict(base)
+        row.update(effective_at=stamp.isoformat(), source_timestamp=stamp.isoformat(),
+                   quote_date=stamp.date().isoformat(), quote_timestamp=None,
+                   price_basis="trade_close", timestamp_basis="session_label",
+                   bid=None, ask=None, bid_size=None, ask_size=None,
+                   implied_volatility=None, open_interest=None)
+        for target, value in (("open", bar.open), ("high", bar.high),
+                              ("low", bar.low), ("close", bar.close),
+                              ("volume", bar.volume),
+                              ("trade_count", bar.trade_count),
+                              ("vwap", bar.vwap)):
+            row[target] = number(value)
+        valid = (all(row[k] is not None for k in ("open", "high", "low", "close", "volume"))
+                 and 0 < row["low"] <= min(row["open"], row["close"])
+                 <= max(row["open"], row["close"]) <= row["high"]
+                 and row["volume"] >= 0)
+        row["mark"] = row["close"] if valid else None
+        row["observation_reasons"] = [] if valid else ["invalid_trade_bar"]
+        return {
+            "protocol": PROTOCOL, "type": "RECORD",
+            "stream": OPTION_BAR_STREAM,
+            "effective_date": stamp.isoformat(),
+            "kind": "observation",
+            "data": row,
+        }
+
+    def _snapshots(self, key, secret, knobs, contracts):
+        """Emit the current snapshot chain for the declared symbols."""
+        from alpaca.data.enums import OptionsFeed
+        from alpaca.data.historical import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionSnapshotRequest
+
+        client = OptionHistoricalDataClient(key, secret)
+        symbols = sorted(contracts) or None
+        if not symbols:
+            return
+        for offset in range(0, len(symbols), knobs["max_symbols_per_request"]):
+            batch = symbols[offset:offset + knobs["max_symbols_per_request"]]
+            snapshots = client.get_option_snapshot(OptionSnapshotRequest(
+                symbol_or_symbols=batch, feed=OptionsFeed(knobs["feed"])))
+            for contract in batch:
+                snap = snapshots.get(contract)
+                if snap is None:
+                    continue
+                latest = snap.latest_quote or snap.latest_trade
+                if latest is None:
+                    continue
+                base = contracts.get(contract) or \
+                    AlpacaOptionArchiveConnector._identity(contract)
+                stamp = latest.timestamp.astimezone(timezone.utc)
+                row = dict(base)
+                row.update(effective_at=stamp.isoformat(),
+                           quote_date=stamp.date().isoformat(),
+                           quote_timestamp=stamp.isoformat(),
+                           price_basis="indicative_quote",
+                           bid=latest.bid_price if hasattr(latest, "bid_price") else None,
+                           ask=latest.ask_price if hasattr(latest, "ask_price") else None,
+                           bid_size=latest.bid_size if hasattr(latest, "bid_size") else None,
+                           ask_size=latest.ask_size if hasattr(latest, "ask_size") else None,
+                           open=None, high=None, low=None, close=None, volume=None,
+                           trade_count=None, vwap=None, mark=None,
+                           observation_reasons=[])
+                yield {
+                    "protocol": PROTOCOL, "type": "RECORD",
+                    "stream": OPTION_SNAPSHOT_STREAM,
+                    "effective_date": stamp.isoformat(),
+                    "kind": "observation",
+                    "data": row,
+                }

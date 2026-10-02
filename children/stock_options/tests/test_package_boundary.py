@@ -28,6 +28,7 @@ EXPECTED_FILES = {
     "configs/source-underlying-history.json",
     "configs/source-option-panel.json",
     "configs/run-prepare-option-panel.json",
+    "configs/source-option-fetch.json",
 }
 
 
