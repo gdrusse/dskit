@@ -29104,7 +29104,7 @@ holidays, any run.
 **Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
 **Owner question 2.** Default `weekdays`: all seven (proposed) or Mon-Fri?
 
-## ADR-0215 — Data-driven holdout and count-sized rolling folds
+## ADR-0222 — Data-driven holdout and count-sized rolling folds
 
 **Status:** proposed 2026-10-01; revised after skeptic review; owner approved
 2026-10-01, conditional on a clean skeptic review (config values delegated to
@@ -29124,7 +29124,11 @@ are literal, `$ref` never crosses runs, `SPLIT_KINDS` cuts per record. No
 `WarmupHpoCandidate` narrows to the FIRST fold and HPO only; nothing carries a
 multi-fold, all-selection warm-up (`warmup_folds`, `warmup_weeks`: no hit).
 Neither amends nor supersedes ADR-0098 or `ProgramCalendar`; the plan rows are
-data for a later consumer.
+data for a later consumer. **Id:** drafted as ADR-0215, which
+`origin/codex/index-options-iterative-validation` holds for a different ADR
+(CDFEstimatorModel); 0216-0221 are taken across lanes, so this is 0222. Any
+earlier "ADR-0215" citing `kinds_split`, the fold table or `holdout_start` (this
+branch's commits, steps 4-6) means THIS ADR.
 
 **Handoff** (owner ruling: three chained JSON pipelines). Step 3 reads step 2's
 persisted `rows.jsonl` through `localtables` + `ObservationRows` (`ts_unit`
