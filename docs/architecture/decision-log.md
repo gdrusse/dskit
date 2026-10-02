@@ -29117,3 +29117,206 @@ Q3: `DAY_NAMES` repointed in this slice.
 weekday; `counts` carries all seven tags, zero where no row fell; the defaults
 are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
 `_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.
+
+## ADR-0222 — Data-driven holdout and count-sized rolling folds
+
+**Status:** accepted 2026-10-01 under the owner's standing conditional approval
+(config values delegated to us): skeptic review clean of Critical/Major at
+917066a after four rounds (Major 3, 1, 1, 0; last round 6 Minor, 3 Nit).
+**Owner ruling 2026-10-01 (warm-up), RESOLVED here, no open question:** ALL
+selection (steps 4 feature selection, 5 model zoo, 6 HPO) runs ONLY on warm-up
+folds; scored folds are a clean model simulation with every choice frozen; the
+warm-up is multi-fold, `warmup_folds` 4 (56 weeks, 12 scored) derived from the
+committed rows below. Base: 1968283. **Depends on ADR-0214** (public
+`document.date_problem`): implementation starts after it merges; nothing here
+touches `document.py`.
+
+Step 3 takes data from steps 1-2 (the `selected_dte` cohort with its
+`available_<family>` flags); nothing derivable is typed. **Sweep** (`holdout
+lockbox count_folds rolling_origin embargo purge kinds_split TimeSeriesSplit
+holdout-cut rolling-origin-plan`): no near-name hit; `WalkForwardSpec` cutoffs
+are literal, `$ref` never crosses runs, `SPLIT_KINDS` cuts per record. No
+`TimeSeriesSplit` wrapper: its gap counts rows, not calendar days. Intraday's
+`WarmupHpoCandidate` narrows to the FIRST fold and HPO only; nothing carries a
+multi-fold, all-selection warm-up (`warmup_folds`, `warmup_weeks`: no hit).
+Neither amends nor supersedes ADR-0098 or `ProgramCalendar`; the plan rows are
+data for a later consumer. **Id:** drafted as ADR-0215, which
+`origin/codex/index-options-iterative-validation` holds for a different ADR
+(CDFEstimatorModel); 0216-0221 are taken across lanes, so this is 0222. Any
+earlier "ADR-0215" citing `kinds_split`, the fold table or `holdout_start` (this
+branch's commits, steps 4-6) means THIS ADR.
+
+**Handoff** (owner ruling: three chained JSON pipelines). Step 3 reads step 2's
+persisted `rows.jsonl` through `localtables` + `ObservationRows` (`ts_unit`
+"ms", `ts_field` "asof_ms", which the rows carry; any other `ts_field`
+collides with `ts_out` and refuses). The pin is the acquisition's stream digest
+of the deduplicated snapshot, not the file's sha256.
+
+**Flow** (config; existing nodes except 1 and 3).
+1. **Holdout first** (`holdout-cut`) on the FULL cohort: lock the last
+   `ceil(fraction x dates)` dates; purge dev rows whose label reaches
+   `holdout_start`. Only dev rows and dates-only metrics are emitted.
+2. **Admission:** `groupby` mean of each 0/1 flag over dev rows, `derive`
+   required = 1 when mean >= tau, `keyby`, `filter` `available_f >=
+   $required_f.table.all` (step 1 `maximizers` precedent). tau is declared once
+   (a `concat` table the derives reference); training = complete-case dates.
+3. **Folds** (`rolling-origin-plan`) follow intraday_equities' rolling origin
+   (`fold_schedules`): retrain per fold, the holdout the untouched final test,
+   no extra late periods. The oldest `warmup_folds` folds are the WARM-UP, the
+   rest SCORED (below). Windows count cohort DATES: val = `val_n`, a fold every
+   `step_n`, train = the last `train_n` dates with date < `val_start -
+   embargo_days` (the strict-before of `driver._fold_splits`). END-anchored:
+   the last val window ends at the last date; the dropped remainder is the
+   oldest history, never the edge beside the holdout. A window with under
+   `train_n` train dates is not a fold.
+4. **Embargo:** `embargo_days` = `$dte.table.all`, a `keyby` of the rows' own
+   `actual_calendar_dte` (group max, as step 1's `selected_dte`); never a
+   literal. `end_field` = `settlement_date` (7 days on all QQQ rows; `expiry`
+   is 8-9 on 42 and would refuse).
+
+**Kinds** `HoldoutCut` (`holdout-cut`), `RollingOriginPlan`
+(`rolling-origin-plan`), named in hashed `uses`, in **new
+`dskit/pipeline/kinds_split.py`** (owner ruling; own `register()`, banking
+precedent): tier-1 stdlib, `owned=False`, `role="transform"`, `serving_effect`
+`"forbidden"`. An abstract `_DatedCohort` base owns the shared rules: mapping
+rows (fields via `kinds_flow._field`), ISO dates (`date_problem`), `end >= date`
+(a label ending before its entry is the defect; same-session labels are
+lawful), params (`node.reject_unknown_params`, `node.check_int_param`: `7.0`
+coerces to int; a `$`-form passes plan time and the materialized value is
+re-validated). All params required, none defaulted in code. Refusals name node,
+row and field. **One purge owner:** public pure `label_reaches(end, start)`
+(`end >= start`) in `kinds_split.__all__`, called by both kinds.
+`predictive_cdf`'s `end < boundary` split imports it in a named follow-up and
+keeps its own strict CDF `end > date`; until then its copy and
+`program_calendar._date_problem` remain.
+- `holdout-cut`: `date_field`, `end_field`, `fraction` (`records.number_ok`,
+  0 < f < 1). Size = `ceil(Fraction(repr(float(fraction))) x n_dates)`: the
+  decimal, never the binary float, under `n_dates`. REFUSES when the purge
+  leaves no dev rows. Outputs `records` (dev, sorted by date then canonical row
+  JSON: a total order) and `metrics` {`holdout_start`, `holdout_end`,
+  `holdout_dates`, `holdout_weeks`, `dev_dates`, `purged_rows`}: dates; distinct
+  (ISO year, ISO week); distinct dates among emitted rows; rows.
+- `rolling-origin-plan`: `date_field`, `end_field`, `holdout_start`
+  (`$cut.metrics.holdout_start`), `embargo_days` (int >= 0), `step_n`,
+  `train_n`, `val_n` (int >= 1; `step_n >= val_n`), `warmup_folds` (int >= 0).
+  REFUSES a row with date or end >= `holdout_start` (the lock is mechanical,
+  not wiring) and `end - date > embargo_days`. Outputs `records`, one row per
+  fold, oldest first (`fold`, `role`, ISO `train_start/end`, `val_start/end`,
+  `train_dates`, `val_dates`, `train_weeks`, `val_weeks`, `purged` = cohort
+  dates between train end and val start: the per-fold purge count) and
+  `metrics` {`folds`, `scored`, `warmup_weeks`, `scored_start`}. `role` is
+  `warmup` for the oldest `warmup_folds` folds, else `scored`. ALL selection
+  (feature selection, model zoo, HPO: steps 4-6) runs ONLY on warm-up folds;
+  scored folds refit parameters per fold with every choice frozen and are the
+  only evidence. Every warm-up fold precedes every scored fold and the val
+  windows are disjoint (`step_n >= val_n`). `warmup_weeks` = distinct (ISO
+  year, ISO week) over the UNION of warm-up val windows, one owner (the
+  per-fold `val_weeks` sum overcounts weeks adjacent windows share); 0 at
+  `warmup_folds` 0. `scored_start` = the first scored fold's `val_start` (ISO
+  date): the warm-up/scored seam, as `holdout_start` is the dev/holdout seam;
+  always defined, since fewer than `warmup_folds + 1` folds refuses.
+
+**Outputs.** Holdout and plan metrics -> `table-write`; admitted families,
+training dates and the fold table -> `records-write`. A consumer pins the table
+file by `provenance.sha256` (records files: `metrics.sha256`) and
+`holdout_start` AND `holdout_end` by VALUE, never re-cutting: appended rows
+would grow the "frozen" final test, and a fraction cut and an end-anchored grid
+both move when dates are added. Steps 4-6 pin the warm-up set by `role ==
+warmup`, never by fold count, choose nothing from a scored val window, and
+consume `scored_start` by VALUE from the persisted plan metrics. **Seam rule
+(decided here, binding on steps 4-6):** a selection step MUST drop every
+warm-up val row with `label_reaches(end, scored_start)` (the holdout purge's
+one owner and rule), so no choice was made on a label that settles inside
+scored evidence. Warm-up train rows cannot reach it (their ends precede their
+fold's val start, by the embargo). Each steps 4-6 ADR MUST pin the drop (end ==
+`scored_start` dropped, a day earlier kept; no selection input reaches
+`scored_start`). Steps 1-2 used
+whole-history availability (no target values); only admission and folds are
+pre-holdout.
+
+**Config values** (child JSON, `notes` carry the derivations; none in code).
+Criteria in distinct ISO weeks, authoring-time pins (not run-time guards),
+judgment the owner may override: C1 >= 10 scored folds (a spread needs ~10
+draws); C2 every val window >= 8 (about two months, so one regime is not a
+window); C3 every train window >= 100 (about two annual cycles); C4 holdout >=
+52 (one annual cycle) and complete-case dev dates >= `train_n + (warmup_folds +
+10) x step_n` (+ the embargo-excluded dates); C5 `warmup_weeks` >= 52 (the
+selection evidence spans every season once). On the committed QQQ rows (1,497
+dates, `rows.jsonl` sha256 `e12fa2ca...13aac9`, in the notes): `fraction` 0.2
+(300 holdout dates, 66 weeks), tau 0.9 (10 families admitted, 1,096
+complete-case dev dates), `val_n` = `step_n` = 40, `train_n` 450: 16 folds, min
+val 9 weeks, min train 107. `warmup_folds` is the smallest k meeting C5 that
+still leaves C1, swept on these rows (the sweep goes in the notes): k=3 41
+weeks, 13 scored (fails C5); **k=4 56 weeks over 160 dates, 12 scored**; k=5
+70, 11; k=6 80, 10; k>=7 fails C1. So `warmup_folds` 4, and `train_n`, `val_n`,
+`step_n` need no re-derivation; C4 needs 450 + 14 x 40 = 1,010 of 1,096. C1-C5
+hold, C5 also after the seam drop: `scored_start` is 2022-07-22 (fold 5), and
+the 3 warm-up val rows 2022-07-15, -18, -20 settle 07-22, -25, -27 and are
+dropped, which costs 2022-W29 only: 55 weeks remain. AMZN (90 dates) fails;
+the plan refuses. PROVISIONAL: step 2's rebuild drops its CDF filter, so the
+values, `warmup_folds` included, are re-derived, not merely re-tested, on the
+rebuilt rows.
+
+**Pins, toolkit** (synthetic rows): contract, `KIND_EFFECTS`, `__all__` exact,
+every refusal above (incl. empty dev set: 2 dates, fraction 0.5, date 1's end
+>= date 2). Cut sizes where float and decimal differ: 0.07x100=7 (float gives
+8), 0.14x150=21, 0.55x100=55; non-integral 0.2x1497=300; a float subclass with a
+numpy-style `repr`. `end == holdout_start` purged, a day earlier kept;
+shuffled duplicate-date input gives equal rows and metrics;
+`purged_rows`/`dev_dates` on an example with a fully purged date; weeks across
+a year boundary (2020-12-31 and 2021-01-01 one week, 2021-01-04 the next).
+Plan: sizes equal the declared counts, the last val ends at the last date,
+windows `step_n` apart (plus one `step_n = 2 x val_n` case), a date at
+`val_start - embargo_days` excluded and the day before kept (equal to
+`_fold_splits` on a daily panel), `max(train end) < min(val date)`, roles for
+`warmup_folds` 0/1/n (n = folds - 1; n = folds refuses); `warmup_weeks` is the
+UNION: a case where adjacent warm-up windows share a boundary ISO week (union <
+`val_weeks` sum), one across a year boundary, and 0 at `warmup_folds` 0; every
+warm-up fold and val date precedes every scored one, val sets disjoint (also at
+`step_n = 2 x val_n`); `end - date` = embargo accepted and +1 refused, `end ==
+date` accepted at embargo 0; `embargo_days` materialized as 7.0 is int 7, and
+`"x"`, `True`, a negative refuse; one literal golden fold table with `role` and
+`warmup_weeks` (30 daily dates, `val_n` 5, `step_n` 5, `train_n` 10, embargo 2,
+warmup 2: 3 folds, roles warmup, warmup, scored; `scored_start` = fold 3's
+`val_start`). `scored_start` equals the `val_start` of the first `scored` row,
+and exceeds every warm-up `val_end`, at `warmup_folds` 0 (fold 1's), 1, n and
+at `step_n = 2 x val_n`.
+`import dskit.pipeline` registers both kinds (cf.
+`TestBothRegistersReachableFromThePackage`); `register()` adds exactly the two,
+`owned=False`, idempotent, never shadows. E2e under
+`run_document`: cut -> (derive group, groupby max, keyby) -> plan ->
+`records-write`, BOTH refs wired; every fold date < `holdout_start`, fold dates
+disjoint from the holdout dates, embargo equals the keyed value, written bytes
+match `metrics.sha256`.
+**Pins, child** (config slice, after the step-1/2 rebuilds land;
+`index_options`): row count and `rows.jsonl` sha equal step 2's
+`verification.json`; acquiring that file into a temp onboarding root yields
+source rows equal to the file's; rows == distinct dates; cut and plan declare
+equal `date_field` and `end_field`, and `end_field` is `settlement_date`; one
+distinct DTE, no literal embargo; every node after the cut reads `$cut.records`;
+C1-C5 on the committed rows (`warmup_folds` is 4, `warmup_weeks` >= 52, scored
+>= 10); the `warmup_folds` notes quote the k = 3..6 sweep and the test
+recomputes each (k, weeks, scored) from the committed rows and finds it in the
+notes, so the note cannot drift; the persisted `scored_start` equals the first
+`scored` fold's `val_start`, and the notes quote it with the seam count (rows
+with `date` in a warm-up val window and `settlement_date >= scored_start`) and
+the post-drop weeks, both recomputed from the committed rows (C5 holds on the
+post-drop weeks); the AMZN refusal sits in `stock_options` on its own rows (no
+cross-child read).
+
+**Touched.** New `dskit/pipeline/kinds_split.py` and
+`tests/pipeline/test_kinds_split.py`; `kinds_flow.py` and its tests do not
+change (0214 edits them). Also `dskit/pipeline/__init__.py` (import, `__all__`,
+the `_register_*` block and its comment), `test_toolkit_conformance` (a probe
+each; its "six modules" docstring), `test_serving_effect` (its set-equality
+fails until both kinds are classified), and the kind table and trees in
+`dskit/pipeline/README.md`, `CLAUDE.md` and `AGENTS.md`. Later:
+`index_options/tests/test_configs.py` and
+`stock_options/tests/test_package_boundary.py` (ADR-0212 manifest).
+**Caveat:** labels overlap inside a window, so effective n < dates. The last
+warm-up val labels reach up to `embargo_days` into the first scored val window;
+the plan emits `scored_start` and the seam rule above makes the consumer drop
+those rows, so scored folds stay a clean simulation. Scored train windows hold
+warm-up rows lawfully (parameters refit; their labels settled before `val_start`
+by the embargo). **Non-goals:** selection consumers (steps 4-6),
+final test.

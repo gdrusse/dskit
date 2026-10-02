@@ -735,6 +735,9 @@ dskit/pipeline/
 │                      table join reads; weekday-onehot: ISO date -> 0/1 weekday columns)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
+├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
+│                      holdout locked first, count-sized rolling folds, warm-up vs
+│                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
