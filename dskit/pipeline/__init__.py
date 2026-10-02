@@ -151,6 +151,8 @@ from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_report import register as _register_report_kinds
 from dskit.pipeline.kinds_search import CandidateInventory, HpoGrid, OneStandardErrorSelector, SelectionRecord, TrialLedger
 from dskit.pipeline.kinds_search import register as _register_search_kinds
+from dskit.pipeline.kinds_split import HoldoutCut, RollingOriginPlan
+from dskit.pipeline.kinds_split import register as _register_split_kinds
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_stats import register as _register_stats_kinds
 from dskit.pipeline.kinds_table import TableFile
@@ -202,16 +204,17 @@ from dskit.pipeline.runs import (
 #: imports (idempotent — a re-import never re-registers): stat_test,
 #: validate and run-report as OWNED doctrine kinds, plus filter /
 #: derive / event-grid / concat / join / weekday-onehot / event-bank /
-#: eligibility / banking-report / hpo-grid / table-file / table-write /
-#: records-write.
+#: eligibility / banking-report / holdout-cut / rolling-origin-plan /
+#: hpo-grid / table-file / table-write / records-write.
 #:
-#: EVERY kinds module's register() must be called here: the flow verbs
-#: and the banking chain ship from two modules, and a document naming a
-#: kind whose register() was left out stops resolving while every unit
-#: test still passes.
+#: EVERY kinds module's register() must be called here: the flow verbs,
+#: the banking chain and the evaluation-protocol pair ship from three
+#: modules, and a document naming a kind whose register() was left out
+#: stops resolving while every unit test still passes.
 _register_stats_kinds()
 _register_flow_kinds()
 _register_banking_kinds()
+_register_split_kinds()
 _register_search_kinds()
 _register_report_kinds()
 _register_table_kinds()
@@ -235,6 +238,7 @@ __all__ = [
     "ForeachSpec",
     "GroupBy",
     "HorizonConquest",
+    "HoldoutCut",
     "HpoGrid",
     "OneStandardErrorSelector",
     "Join",
@@ -247,6 +251,7 @@ __all__ = [
     "Plan",
     "RandomSplitSpec",
     "ReplayRun",
+    "RollingOriginPlan",
     "RunReport",
     "ScheduleConfig",
     "Standardize",
