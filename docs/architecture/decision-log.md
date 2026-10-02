@@ -29421,3 +29421,29 @@ those rows, so scored folds stay a clean simulation. Scored train windows hold
 warm-up rows lawfully (parameters refit; their labels settled before `val_start`
 by the embargo). **Non-goals:** selection consumers (steps 4-6),
 final test.
+
+## ADR-0223 — Fold-table splits and a patience stop for the Torch CDF study
+
+**Status:** proposed 2026-10-02 (owner pre-approves once review has no
+Critical/Major). Base 6394a41 + 8085997 (ADR-0222). **Sweep** (`fold_table
+patience early_stop label_reaches`): the study splits by calendar year only; no
+`predictive_cdf` model monitors held-out rows; `label_reaches` is imported.
+1. **Config.** `ChronologicalCDFStudy` takes `fold_table` XOR `years`
+   (`development_end` is refused with a table). `fold_table` = `{path, sha256,
+   holdout_start, cal_n, roles}`, all required: the plan's `records-write` file,
+   refused on sha mismatch; `holdout_start` by value; `roles` = the folds this
+   run fits. Per fold: val = its val dates, train = `[train_start, train_end]`,
+   cal = the last `cal_n` run-frame dates of train, fit = the rest, purged by
+   `label_reaches` (fit vs cal, cal vs val). Rows at/after `holdout_start`
+   (date or label) are refused; the child reader drops them first. Warm-up val
+   rows reaching `scored_start` (table-derived) drop (ADR-0222 seam). Scores
+   carry `fold`, not `year`; each fold refits.
+2. **HPO.** With a table, `development_years`, `label_cutoff` and
+   `evaluation_partitions` are refused as derived: search, selection and the
+   development evaluation use `warmup` folds only, `later` uses `scored` only.
+3. **Stop.** `MixtureMLPCDF`/`TorchCDF` gain `patience` (int >= 1; absent =
+   fixed `epochs`, digests unchanged): cal-slice objective, best-weight restore,
+   the only exit; reaching `epochs` first raises. Never the scored window;
+   `calibrate: true` with patience refuses (second map).
+**Pins.** Year configs' hashes and scores unchanged; each refusal above; roles.
+**Non-goals.** New configs, feature selection, cadence.
