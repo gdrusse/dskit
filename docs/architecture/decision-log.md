@@ -29106,7 +29106,7 @@ holidays, any run.
 
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
-**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 4;
+**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 5;
 awaiting owner approval. Base: 46f3574. Owner question 1 resolved (all
 current-snapshot OI withheld; item 7). Owner ruling 2026-10-02:
 attach-by-identity graduates to dskit `kinds_flow.py`; the child keeps the
@@ -29221,10 +29221,17 @@ after the step-1/2 rebuild.
 5. **Outputs.** `records`; `summary` per family and carried entry: rows,
    computed/absent (families), per field non-null, null, `discarded` (withheld
    fields: rows whose source value was non-null and was nulled), min, max, mean
-   (numbers only), `withheld_fields`, `clock_note`; `provenance`: `input_sha256`
-   over canonical identity + `agree_fields` values as received, every
-   `clock_note` and `withheld_fields`. The reader's `provenance` is its own
-   port. Both are run-local node outputs; the rows carry status and reasons.
+   (over `records.number_ok` values only; **null when the field has no
+   numbers**, a withheld or all-null field, never omitted and never NaN),
+   `withheld_fields`, `clock_note`; `provenance`: `input_sha256` over canonical
+   identity + `agree_fields` values as received, every `clock_note` and
+   `withheld_fields`. The reader's `provenance` is its own port. These dicts
+   are run-local node outputs, and `carry.json` is their only persisted copy:
+   the driver writes a dict output only if its canonical JSON has no NaN/inf
+   and is at most 20,000 chars (`driver._carryable`, `_CARRY_LIMIT`), and the
+   node record keeps just `{type, len}`, so a dict that fails either test is
+   lost silently. The dict's size follows the declared fields, not the row
+   count (the Persistence pin). The rows carry status and reasons.
 6. **Expiry density** (owner-required; existing nodes plus a `carried` entry).
    `expiry_density` is the number of distinct `expiry` values in the source
    panel for the row's symbol and `quote_date` that meet step 1's settled rule
@@ -29290,8 +29297,9 @@ stream order kept, a withheld field null on every row with its reason in
 `_reasons` and `summary`, for `families` (a non-null table value) and for
 `carried` (a non-null stream value, which is the overwrite path and not the
 collision refusal: the same field declared in `families` still refuses),
-`discarded` counting exactly the rows nulled over a non-null value, a
-`carried` entry gets `_reasons` and no `_status`, `summary`/`provenance` echo
+`discarded` counting exactly the rows nulled over a non-null value, `min`/`max`/
+`mean` null (key present) for a field with no numbers and NaN/inf never in a
+`summary`, a `carried` entry gets `_reasons` and no `_status`, `summary`/`provenance` echo
 each `clock_note` and `withheld_fields` as declared, carried audit (a missing
 carried key refuses, a null is allowed), `input_sha256` moves with any
 `agree_fields` value, a fixture differing on one identity's `agree_fields`
@@ -29337,6 +29345,16 @@ an `oi` token or an `open_interest` substring and is in neither tuple fails (the
 tuple, not the name, covers `chain_liquidity_asymmetry`, which has neither); its
 `agree_fields` include `terminal_return`, `actual_calendar_dte`, `chain_atm_iv`,
 `rv_22` and `rn_q_*`; the pipeline validates and plans.
+*Persistence* (child tests, beside the Handoff fixture): the shipped FE document
+runs through the driver on the fixture, and the run's `carry.json` holds the
+reader node's `provenance` and, for each ticker's `features` node, `summary` and
+`provenance`; `summary` has an entry for every declared family and `carried`
+entry with every declared field present, the all-null and withheld ones
+included, their `min`/`max`/`mean` null. The shipped document's declared fields
+fix the dicts' size, so the fixture run carries the real shape and growth past
+the limit fails here. The runbook's post-run check reads the same keys in the
+real run's `carry.json` (the reader's provenance size depends on the real
+sources).
 *Density:* a date with 3 in-horizon and 1 out-of-horizon expiries, plus another
 symbol's rows, gives 3 on every cohort row of that symbol; cohort-first gives 1
 and fails the pin (`cohort` not upstream of `density`); expiries with planned DTE
