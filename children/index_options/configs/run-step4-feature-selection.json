@@ -1,5 +1,5 @@
 {
-  "notes": "STEP 4 feature selection, forward step 1 (owner rules: forward over families with no cap; warm-up folds only; wing-weighted twCRPS selection). Candidates = the core (return history + realized volatility + horizon/scale context) alone and core + each other family, using TorchCDF feature_indices (ADR-0224) over one shared panel. Families and their columns come from step 2's family_contracts; drop any family step 3 did not admit. Next forward step: copy this file, make the winner the new core, and add each remaining family; stop when no candidate beats the incumbent. Open owner rules not yet expressible in the study: within-family elimination, PCA on continuous fields only, and the 25%-std tie rule (selection is by mean warm-up wing skill).",
+  "notes": "STEP 4 feature selection, forward step 1 (owner rules: forward over families with no cap; warm-up folds only; wing-weighted twCRPS selection). Candidates = the core (return history + realized volatility + horizon/scale context) alone and core + each other family, using TorchCDF feature_indices (ADR-0224) over one shared panel. Families and their columns come from step 2's family_contracts; drop any family step 3 did not admit. Next forward step: copy this file, make the winner the new core, and add each remaining family; stop when no candidate beats the incumbent. Open owner rules not yet expressible in the study: within-family elimination, PCA on continuous fields only, and the 25%-std tie rule (selection is by mean warm-up wing skill). All 18 open-interest-derived columns are excluded from every candidate: ADR-0217 (accepted) withholds them because the OI publication clock is unverified. Keep only candidates whose added family was admitted by step 3 (and set max_candidates to match).",
   "data": {
     "root": "/home/russell/data/index_options/ob",
     "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
@@ -183,7 +183,13 @@
         2016,
         2017,
         2018,
-        2019
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
       ],
       "clock": "after_date_close_indicative_not_executable",
       "limits": {
@@ -198,9 +204,10 @@
         "fee_per_leg": 0.5,
         "multiplier": 100
       },
-      "notes": "Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings."
+      "notes": "Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
     },
-    "exact_dte": 7
+    "exact_dte": 7,
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source."
   },
   "diagnostic": {
     "strikes_z": [
@@ -252,9 +259,7 @@
       "life_fraction_sessions",
       "calendar_days_per_session",
       "reference_scale",
-      "is_SPY",
       "is_QQQ",
-      "is_IWM",
       "chain_log_atm_iv",
       "chain_log_skew25",
       "chain_log_curvature25",
@@ -519,15 +524,15 @@
         "class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
         "params": {
           "proxy_indices": [
+            127,
+            128,
             129,
             130,
             131,
             132,
             133,
             134,
-            135,
-            136,
-            137
+            135
           ],
           "probabilities": [
             0.01,
@@ -540,20 +545,16 @@
             0.95,
             0.99
           ],
-          "eligible_index": 125,
+          "eligible_index": 123,
           "condition_indices": [
-            27,
-            39,
-            40,
-            41
+            27
           ],
           "reference_index": 38,
           "knots": 401,
           "tail_width": 4,
           "transport_knots": 21
         },
-        "calibrate": false,
-        "pooled": true
+        "calibrate": false
       }
     },
     "decision_acceptance": {
@@ -575,7 +576,7 @@
       ]
     },
     "wing_metrics": true,
-    "notes": "Folds come from step 3's fold table (ADR-0222/0223): warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry."
+    "notes": "Folds come from step 3's fold table (ADR-0222/0223): warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
   },
   "experiment": {
     "output": "pipeline_runs/step4_feature_selection",
@@ -651,12 +652,12 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
-            56,
-            57,
-            58
+            56
           ]
         }
       },
@@ -730,21 +731,21 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
+            127,
+            128,
             129,
             130,
             131,
             132,
             133,
             134,
-            135,
-            136,
-            137
+            135
           ]
         }
       },
@@ -818,12 +819,14 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
+            197,
+            198,
             199,
             200,
             201,
@@ -834,9 +837,7 @@
             206,
             207,
             208,
-            209,
-            210,
-            211
+            209
           ]
         }
       },
@@ -911,18 +912,18 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
             57,
-            58,
             59,
             61,
             63,
             65,
-            67,
-            69
+            67
           ]
         }
       },
@@ -996,19 +997,19 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
-            224,
-            230,
-            233,
-            236,
-            239,
-            242,
-            245
+            222,
+            228,
+            231,
+            234,
+            237,
+            240,
+            243
           ]
         }
       },
@@ -1082,15 +1083,15 @@
             36,
             37,
             38,
+            40,
+            41,
             42,
-            43,
-            44,
+            51,
+            52,
             53,
             54,
             55,
-            56,
-            57,
-            58
+            56
           ]
         }
       },
@@ -1164,12 +1165,14 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
+            164,
+            165,
             166,
             167,
             168,
@@ -1178,9 +1181,7 @@
             171,
             172,
             173,
-            174,
-            175,
-            176
+            174
           ]
         }
       },
@@ -1254,16 +1255,16 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
+            210,
+            211,
             212,
-            213,
-            214,
-            215
+            213
           ]
         }
       },
@@ -1337,15 +1338,15 @@
             36,
             37,
             38,
+            43,
             45,
             47,
-            49,
+            51,
+            52,
             53,
             54,
             55,
-            56,
-            57,
-            58
+            56
           ]
         }
       },
@@ -1419,15 +1420,15 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
-            216,
-            217,
-            221
+            214,
+            215,
+            219
           ]
         }
       },
@@ -1501,23 +1502,23 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
-            142,
-            145,
-            148,
-            151,
-            154,
-            157,
-            160,
-            163,
-            191,
-            194,
-            197
+            140,
+            143,
+            146,
+            149,
+            152,
+            155,
+            158,
+            161,
+            189,
+            192,
+            195
           ]
         }
       },
@@ -1591,48 +1592,48 @@
             36,
             37,
             38,
+            51,
+            52,
             53,
             54,
             55,
             56,
-            57,
-            58,
+            69,
+            70,
             71,
-            72,
             73,
             75,
+            76,
             77,
-            78,
             79,
             81,
+            82,
             83,
-            84,
             85,
             87,
+            88,
             89,
-            90,
             91,
             93,
+            94,
             95,
-            96,
             97,
             99,
+            100,
             101,
-            102,
             103,
             105,
+            106,
             107,
-            108,
             109,
             111,
+            112,
             113,
-            114,
             115,
             117,
+            118,
             119,
-            120,
-            121,
-            123
+            121
           ]
         }
       }
