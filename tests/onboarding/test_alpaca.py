@@ -417,53 +417,6 @@ def test_option_fetch_refuses_nonstandard_multiplier(monkeypatch):
     assert records == []
 
 
-class _FakeQuote:
-    def __init__(self, bid, ask):
-        self.timestamp = datetime(2026, 9, 30, 20, 0, tzinfo=timezone.utc)
-        self.bid_price = bid
-        self.ask_price = ask
-        self.bid_size = 10.0
-        self.ask_size = 10.0
-
-
-class _FakeSnapshot:
-    def __init__(self, quote):
-        self.latest_quote = quote
-        self.latest_trade = None
-        self.implied_volatility = 0.3
-
-
-class _FakeSnapshotHistoricalClient(_FakeHistoricalClient):
-    def get_option_snapshot(self, request):
-        return {
-            "AMZN240202C00125000": _FakeSnapshot(_FakeQuote(125.0, 126.0)),
-        }
-
-
-def test_option_fetch_emits_snapshot_with_mid_mark(monkeypatch):
-    from alpaca.data import historical as hist
-    from alpaca.trading import client as trading
-
-    monkeypatch.setenv("APCA_API_KEY_ID", "k")
-    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
-    monkeypatch.setattr(trading, "TradingClient", _FakeTradingClient)
-    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeSnapshotHistoricalClient)
-
-    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
-    messages = list(AlpacaOptionFetchConnector().read(
-        _option_config(include_snapshots=True),
-        ["contracts", "snapshots"], {}, "backfill"))
-    assert all(check_message(m) for m in messages)
-    snaps = [m for m in messages if m["type"] == "RECORD" and m["stream"] == "snapshots"]
-    assert len(snaps) == 1
-    data = snaps[0]["data"]
-    assert data["mark"] == 125.5
-    assert data["price_basis"] == "indicative_quote"
-    assert data["timestamp_basis"] == "quote_time"
-    assert data["bid"] == 125.0 and data["ask"] == 126.0
-    assert snaps[0]["effective_date"] is not None
-
-
 def test_option_fetch_paginates_contracts(monkeypatch):
     from alpaca.data import historical as hist
     from alpaca.trading import client as trading

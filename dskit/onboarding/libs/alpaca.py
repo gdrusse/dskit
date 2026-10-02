@@ -34,7 +34,6 @@ __all__ = [
     "TIMEFRAME_UNITS",
     "OPTION_CONTRACT_STREAM",
     "OPTION_BAR_STREAM",
-    "OPTION_SNAPSHOT_STREAM",
     "AlpacaBarsConnector",
     "AlpacaOptionArchiveConnector",
     "AlpacaOptionFetchConnector",
@@ -719,12 +718,10 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
 
 OPTION_CONTRACT_STREAM = "contracts"
 OPTION_BAR_STREAM = "bars"
-OPTION_SNAPSHOT_STREAM = "snapshots"
-_OPTION_STREAMS = (OPTION_CONTRACT_STREAM, OPTION_BAR_STREAM, OPTION_SNAPSHOT_STREAM)
+_OPTION_STREAMS = (OPTION_CONTRACT_STREAM, OPTION_BAR_STREAM)
 _OPTION_STREAM_KEYS = {
     OPTION_CONTRACT_STREAM: ("contract",),
     OPTION_BAR_STREAM: ("contract", "quote_date"),
-    OPTION_SNAPSHOT_STREAM: ("contract", "quote_date"),
 }
 _DEFAULT_OPTION_MULTIPLIER = 100
 _DEFAULT_OPTION_STATUS = "inactive"
@@ -732,15 +729,17 @@ _DEFAULT_MAX_SYMBOLS_PER_REQUEST = 100
 
 
 class AlpacaOptionFetchConnector(Connector):
-    """Fetch Alpaca option contracts, daily trade bars and snapshots.
+    """Fetch Alpaca option contracts and daily trade bars.
 
     Replicates the AMZN historical pull (ADR-0213) for a config-declared
-    ``symbols`` list: inactive contracts from the option-contracts endpoint,
-    daily trade bars over the per-expiry DTE window, and current snapshots.
-    Emits the same ``contracts``/``bars``/``snapshots`` stream vocabulary and
-    row fields as :class:`AlpacaOptionArchiveConnector`, so the stock-options
-    panel flow consumes fetched rows identically to a pinned archive. The free
-    tier returns trade bars only: no bid/ask quotes, so fills stay out of scope.
+    ``symbols`` list: inactive contracts from the option-contracts endpoint and
+    daily trade bars over the per-expiry DTE window. Emits the same
+    ``contracts``/``bars`` stream vocabulary and row fields as
+    :class:`AlpacaOptionArchiveConnector`, so the stock-options panel flow
+    consumes fetched rows identically to a pinned archive. Current indicative
+    quotes/snapshots are a separate pull (as they were in the archive) and are
+    out of scope here; the free tier returns trade bars only, so fills stay out
+    of scope too.
 
     Credential material is named by environment variables (``key_env`` /
     ``secret_env``), never held in config. Heavy imports stay inside methods.
@@ -806,9 +805,6 @@ class AlpacaOptionFetchConnector(Connector):
                 "notes": "Bar symbols per request; default "
                          f"{_DEFAULT_MAX_SYMBOLS_PER_REQUEST}.",
             },
-            "include_snapshots": {
-                "notes": "Whether to also pull the current snapshot chain.",
-            },
             "key_env": {
                 "secret": True,
                 "notes": f"Environment variable naming the Alpaca key; "
@@ -858,9 +854,6 @@ class AlpacaOptionFetchConnector(Connector):
         if (isinstance(max_symbols, bool) or not isinstance(max_symbols, int)
                 or max_symbols < 1):
             errors.append("config.max_symbols_per_request must be a positive int")
-        include = config.get("include_snapshots", True)
-        if not isinstance(include, bool):
-            errors.append("config.include_snapshots must be a bool")
         key_env = config.get("key_env", DEFAULT_KEY_ENV)
         secret_env = config.get("secret_env", DEFAULT_SECRET_ENV)
         for name, value in (("key_env", key_env), ("secret_env", secret_env)):
@@ -879,7 +872,6 @@ class AlpacaOptionFetchConnector(Connector):
             "feed": config.get("feed", "indicative"),
             "timeframe": list(timeframe),
             "max_symbols_per_request": max_symbols,
-            "include_snapshots": include,
             "key_env": key_env,
             "secret_env": secret_env,
         }
@@ -941,9 +933,6 @@ class AlpacaOptionFetchConnector(Connector):
         self.resolve_knobs(config)
         out = []
         for stream in _OPTION_STREAMS:
-            if stream == OPTION_SNAPSHOT_STREAM and not config.get(
-                    "include_snapshots", True):
-                continue
             out.append({
                 "stream": stream,
                 "schema": {"fields": []},
@@ -992,15 +981,11 @@ class AlpacaOptionFetchConnector(Connector):
                 "protocol": PROTOCOL, "type": "SCHEMA",
                 "stream": stream, "schema": {"fields": []},
             }
+        contracts = self._eligible_contracts(key, secret, knobs)
         if OPTION_CONTRACT_STREAM in streams:
-            yield from self._contracts(key, secret, knobs)
-        contracts = None
-        if OPTION_BAR_STREAM in streams or OPTION_SNAPSHOT_STREAM in streams:
-            contracts = self._eligible_contracts(key, secret, knobs)
+            yield from self._contracts(contracts)
         if OPTION_BAR_STREAM in streams:
             yield from self._bars(key, secret, knobs, contracts)
-        if OPTION_SNAPSHOT_STREAM in streams:
-            yield from self._snapshots(key, secret, knobs, contracts)
         new_state = {k: dict(v) for k, v in state.items()}
         new_state.setdefault("last_pull", {})["at"] = datetime.now(
             timezone.utc).isoformat()
@@ -1046,10 +1031,9 @@ class AlpacaOptionFetchConnector(Connector):
                     break
         return result
 
-    def _contracts(self, key, secret, knobs):
+    def _contracts(self, contracts):
         """Emit the normalized contract stream."""
-        for contract, item in sorted(
-                self._eligible_contracts(key, secret, knobs).items()):
+        for contract, item in sorted(contracts.items()):
             yield {
                 "protocol": PROTOCOL, "type": "RECORD",
                 "stream": OPTION_CONTRACT_STREAM,
@@ -1114,53 +1098,3 @@ class AlpacaOptionFetchConnector(Connector):
             "kind": "observation",
             "data": row,
         }
-
-    def _snapshots(self, key, secret, knobs, contracts):
-        """Emit the current snapshot chain for the declared symbols."""
-        from alpaca.data.enums import OptionsFeed
-        from alpaca.data.historical import OptionHistoricalDataClient
-        from alpaca.data.requests import OptionSnapshotRequest
-
-        client = OptionHistoricalDataClient(key, secret)
-        symbols = sorted(contracts) or None
-        if not symbols:
-            return
-        for offset in range(0, len(symbols), knobs["max_symbols_per_request"]):
-            batch = symbols[offset:offset + knobs["max_symbols_per_request"]]
-            snapshots = client.get_option_snapshot(OptionSnapshotRequest(
-                symbol_or_symbols=batch, feed=OptionsFeed(knobs["feed"])))
-            for contract in batch:
-                snap = snapshots.get(contract)
-                if snap is None:
-                    continue
-                quote = snap.latest_quote
-                if quote is None:
-                    continue
-                base = contracts.get(contract) or \
-                    AlpacaOptionArchiveConnector._identity(contract)
-                stamp = quote.timestamp.astimezone(timezone.utc)
-                number = AlpacaOptionArchiveConnector._number
-                row = dict(base)
-                row.update(effective_at=stamp.isoformat(),
-                           source_timestamp=stamp.isoformat(),
-                           quote_timestamp=stamp.isoformat(),
-                           quote_date=stamp.date().isoformat(),
-                           price_basis="indicative_quote", timestamp_basis="quote_time",
-                           bid=number(quote.bid_price),
-                           ask=number(quote.ask_price),
-                           bid_size=number(quote.bid_size),
-                           ask_size=number(quote.ask_size),
-                           implied_volatility=number(snap.implied_volatility),
-                           open_interest=None, observation_reasons=[])
-                bid, ask = row["bid"], row["ask"]
-                valid = bid is not None and ask is not None and 0 <= bid <= ask and ask > 0
-                row["mark"] = (bid + ask) / 2 if valid else None
-                if not valid:
-                    row["observation_reasons"].append("invalid_quote")
-                yield {
-                    "protocol": PROTOCOL, "type": "RECORD",
-                    "stream": OPTION_SNAPSHOT_STREAM,
-                    "effective_date": stamp.isoformat(),
-                    "kind": "observation",
-                    "data": row,
-                }

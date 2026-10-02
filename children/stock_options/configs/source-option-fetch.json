@@ -20,8 +20,7 @@
   "feed": "indicative",
   "timeframe": [1, "Day"],
   "max_symbols_per_request": 100,
-  "include_snapshots": true,
   "key_env": "APCA_API_KEY_ID",
   "secret_env": "APCA_API_SECRET_KEY",
-  "notes": "Multi-ticker Alpaca historical option pull (ADR-0216): inactive contracts + daily trade bars over each expiry's DTE window + current snapshots, for every symbol in `symbols`. Edit `symbols`, `start`/`end`, `dte_min`/`dte_max` to change the universe and window. Free tier returns trade bars only (no bid/ask quotes), so fills stay out of scope. Run: register this source with connector dskit.onboarding.libs.alpaca:AlpacaOptionFetchConnector, then `dskit.onboarding acquire` for the contracts/bars/snapshots streams. Credentials are the named environment variables, never secret material."
+  "notes": "Multi-ticker Alpaca historical option pull (ADR-0216): inactive contracts + daily trade bars over each expiry's DTE window, for every symbol in `symbols`. Edit `symbols`, `start`/`end`, `dte_min`/`dte_max` to change the universe and window. Free tier returns trade bars only (no bid/ask quotes), so fills stay out of scope; current indicative quotes/snapshots are a separate pull. Run: register this source with connector dskit.onboarding.libs.alpaca:AlpacaOptionFetchConnector, then `dskit.onboarding acquire` for the contracts/bars streams. Credentials are the named environment variables, never secret material."
 }

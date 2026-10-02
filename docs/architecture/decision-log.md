@@ -29177,11 +29177,12 @@ first-class, configurable acquisition. Base: `9a859fea`.
 
 Add `AlpacaOptionFetchConnector` (a `Connector`) to
 `dskit/onboarding/libs/alpaca.py`. It fetches, for a config-declared
-`symbols` list, inactive option contracts (paginated), daily trade bars over
-each expiry's DTE window (`dte_min`/`dte_max`), and current snapshots, and
-emits the SAME `contracts`/`bars`/`snapshots` streams and row fields as
-`AlpacaOptionArchiveConnector`, so the stock-options panel flow consumes
-fetched rows identically to a pinned archive. No new package.
+`symbols` list, inactive option contracts (paginated) and daily trade bars over
+each expiry's DTE window (`dte_min`/`dte_max`), and emits the SAME
+`contracts`/`bars` streams and row fields as `AlpacaOptionArchiveConnector`, so
+the stock-options panel flow consumes fetched rows identically to a pinned
+archive. Current indicative quotes/snapshots are a separate pull (as they were
+in the archive) and out of scope. No new package.
 
 ### Contracts
 

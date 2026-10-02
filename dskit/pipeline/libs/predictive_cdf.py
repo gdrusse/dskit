@@ -1936,9 +1936,9 @@ class PCAAugmentedCDF(CDFEstimator):
         self.pca_indices = tuple(pca_indices)
         self.components = components
         module, name = estimator_class.split(":", 1)
+        inner = getattr(importlib.import_module(module), name)(**dict(estimator_params))
         self.consumes_calibration_labels = getattr(
-            getattr(importlib.import_module(module), name),
-            "consumes_calibration_labels", False)
+            inner, "consumes_calibration_labels", False)
 
     def _validate_x(self, x):
         import numpy as np
