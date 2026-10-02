@@ -1259,13 +1259,20 @@ def test_panel_exact_dte_keeps_only_the_actual_calendar_horizon(tmp_path, monkey
             ExactExpiryCDFPanel({**config, 'exact_dte': bad})
 
 
-@pytest.mark.parametrize('name', ['run-step5-model-zoo', 'run-step6-hpo'])
+@pytest.mark.parametrize('name', ['run-step4-feature-selection', 'run-step5-model-zoo', 'run-step6-hpo'])
 def test_step_configs_declare_the_one_exact_dte_the_study_expects(name):
     config = json.loads((Path(__file__).parents[1]/'configs'/f'{name}.json').read_text())
     horizon = config['data']['exact_dte']
     assert type(horizon) is int and horizon >= 1 and horizon <= config['data']['max_dte']
     for partition, cells in config['experiment']['expected_cells'].items():
         assert cells == {'QQQ': [horizon]}, partition
+
+
+@pytest.mark.parametrize('name', ['run-step4-feature-selection', 'run-step5-model-zoo', 'run-step6-hpo'])
+def test_step_configs_decision_regions_build_as_the_cli_builds_them(name):
+    # The CLI builds this block before any stage runs; an unknown key refuses there.
+    config = json.loads((Path(__file__).parents[1]/'configs'/f'{name}.json').read_text())
+    DecisionRegionContextBuilder(config['data']['decision_regions'])
 
 
 def test_cli_hands_the_study_holdout_to_the_reader_and_runs_the_fold_table(

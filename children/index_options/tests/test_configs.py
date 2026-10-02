@@ -2845,3 +2845,311 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
         assert row["available_implied_cdf"] == "yes"
     assert {r["available_expanded_volatility_context"] for r in flags} == {"yes", "no"}
     assert pd.Series([r["quote_date"] for r in flags]).isin(days).all()
+
+
+# -- steps 3-6: the owner-ruling values, pinned (ADR-0222..0224) ---------------------------------
+#
+# The documents are JSON over existing kinds, so the only defence against a silent edit of a ruling
+# (tau, the holdout share, the window counts, the baselines, the losses, the exit rule) is a test
+# that restates each value here, independently of the document. The tests below also build a filled
+# copy of steps 4-6 (what the owner does after the real runs) and run step 3 on fixture sources.
+
+STEP3 = "configs/run-step3-holdout-folds.json"
+STEP2_DATES_SOURCE = "configs/source-step2-dates.json"
+STEPS_4_TO_6 = ["configs/run-step4-feature-selection.json", "configs/run-step5-model-zoo.json",
+                "configs/run-step6-hpo.json"]
+WING_LOSSES = [{"kind": "nll", "weight": 0.1}, {"kind": "wing_twcrps", "weight": 1.0}]
+RULING_DTE = 7
+#: Step 3's window counts (owner rulings), restated independently of the document.
+RULING_PLAN = {"train_n": 450, "val_n": 40, "step_n": 40, "warmup_folds": 4}
+
+
+def _no_notes(value):
+    """A JSON value with every ``notes`` key removed (documentation, outside the identity hash)."""
+    if isinstance(value, dict):
+        return {k: _no_notes(v) for k, v in value.items() if k != "notes"}
+    if isinstance(value, list):
+        return [_no_notes(v) for v in value]
+    return value
+
+
+def test_step3_document_validates_and_plans(child_root):
+    for verb in ("validate", "plan"):
+        done = _must(_cli(["dskit.pipeline", verb, str(child_root/STEP3)], child_root))
+    planned = json.loads(done.stdout)
+    assert {"step2_dates", "source", "plan__qqq", "fold_table__qqq", "fold_evidence",
+            "admission_evidence"} <= set(planned["order"])
+    assert all(planned["nodes"][key]["class"] for key in planned["order"])
+
+
+def test_step3_pins_the_owner_rulings(child_root):
+    doc = _step(child_root, STEP3)
+    each = doc["foreach"]["pipeline"]
+    assert doc["foreach"]["keys"] == ["QQQ"]                         # one ticker per run
+    assert doc["pipeline"]["tau"]["params"]["tables"] == {"admission": {"tau": 0.9}}
+    cut = each["cut"]
+    assert cut["uses"] == "holdout-cut" and cut["params"]["fraction"] == 0.2
+    assert set(cut["params"]) == {"date_field", "end_field", "fraction"}      # no typed cut date
+    plan = each["plan"]["params"]
+    assert {k: plan[k] for k in RULING_PLAN} == RULING_PLAN
+    # wired, never typed: the embargo is the selected DTE, the holdout is the cut's own metric
+    assert plan["embargo_days"] == "$dte.table.all"
+    assert plan["holdout_start"] == "$cut.metrics.holdout_start"
+    assert set(plan) == {"date_field", "end_field", "holdout_start", "embargo_days", *RULING_PLAN}
+    assert each["dte"]["params"]["value"] == "actual_calendar_dte"
+    # tau is read by every admission, in BOTH outcomes, and every family has a training clause
+    for family in FAMILIES:
+        admit = each[f"admit_{family}"]["params"]
+        assert admit["field"] == f"required_{family}"
+        assert [(c["when"][0]["op"], c["when"][0]["value"], c["value"]) for c in admit["cases"]] == [
+            (">=", "$tau.merged.tau", 1), ("<", "$tau.merged.tau", 0)]
+    clauses = {c["field"]: c for c in each["training"]["params"]["where"]}
+    assert set(clauses) == {f"has_{f}" for f in FAMILIES}
+    assert all(c["op"] == ">=" and c["value"] == f"$required_{f}.table.all"
+               for f in FAMILIES for c in [clauses[f"has_{f}"]])
+    assert each["training"]["inputs"] == {"records": "$has_chain_nodes.records"}
+    assert each["plan"]["inputs"] == {"records": "$training.records"}
+
+
+def test_step2_dates_source_agrees_with_step2s_writer_and_step3s_reader(child_root):
+    """Step 3 imports exactly the file step 2 writes: directory, stream, format, key, clock."""
+    import posixpath
+
+    from dskit.onboarding.connector import check_config
+    from dskit.onboarding.libs.localtables import LocalTablesConnector
+
+    two, three = _step(child_root, STEP2), _step(child_root, STEP3)
+    source = _step(child_root, STEP2_DATES_SOURCE)
+    written = two["pipeline"]["date_evidence"]["params"]["path"]
+    assert posixpath.normpath(posixpath.dirname(written)) == posixpath.normpath(source["path"])
+    stem, suffix = posixpath.basename(written).rsplit(".", 1)
+    assert source["streams"] == [stem] == [three["pipeline"]["step2_dates"]["params"]["stream"]]
+    assert source["formats"] == [suffix]
+    patterns = two["foreach"]["pipeline"]["date_patterns"]["params"]["keys"]
+    assert source["effective_field"] == "quote_date" and "quote_date" in patterns
+    assert source["effective_unit"] == "iso"
+    reader = three["pipeline"]["step2_dates"]["params"]
+    assert reader["ts_field"] == "quote_date" and reader["ts_unit"] == "iso"
+    assert reader["key_fields"] == ["symbol", "quote_date"] and set(reader["key_fields"]) <= set(
+        patterns)
+    assert reader["source"] == "step2-dates" and reader["root"] == "./pipeline_runs/step2-dates-source"
+    # every flag step 3 reads is one step 2 writes, and the two documents list the same families
+    each = three["foreach"]["pipeline"]
+    flags = {f"available_{f}" for f in FAMILIES}
+    assert flags <= set(patterns)
+    assert {each[f"has_{f}"]["params"]["cases"][0]["when"][0]["field"] for f in FAMILIES} == flags
+    assert {c["when"][0]["value"] for f in FAMILIES for c in each[f"has_{f}"]["params"]["cases"]
+            } == {"yes", "no"}
+    check_config(LocalTablesConnector(), source)
+
+
+def _step3_fixture(child_root, cwd):
+    """Step 2's dates and the panel for 1,400 weekdays of one ticker; designed availability.
+
+    ``liquidity`` is present on half the dates (rejected at tau 0.9), ``macro_context`` is missing
+    on every twentieth date (95%, admitted) and every other family is always present.
+    """
+    days, day = [], date(2016, 1, 4)
+    while len(days) < 1400:
+        if day.weekday() < 5:
+            days.append(day)
+        day += timedelta(days=1)
+    missing = {days[i].isoformat() for i in range(len(days)) if i % 20 == 3}
+    dates = []
+    for i, day in enumerate(days):
+        row = {"symbol": "QQQ", "selection_group": "all", "actual_calendar_dte": RULING_DTE,
+               "quote_date": day.isoformat(), "cohort_rows": 1}
+        row.update({f"available_{f}": "yes" for f in FAMILIES})
+        row["available_liquidity"] = "yes" if i % 2 == 0 else "no"
+        row["available_macro_context"] = "no" if day.isoformat() in missing else "yes"
+        dates.append(row)
+    panel = [{"symbol": "QQQ", "quote_date": d.isoformat(), "actual_calendar_dte": RULING_DTE,
+              "expiry": (d + timedelta(days=RULING_DTE)).isoformat(),
+              "settlement_date": (d + timedelta(days=RULING_DTE)).isoformat(),
+              "terminal_return": ((i * 7) % 11 - 5) / 500} for i, d in enumerate(days)]
+    _write_jsonl(cwd/"pipeline_runs/step2-feature-availability/dates.jsonl", dates)
+    # step 2's other stream in the same directory must stay out of the import
+    _write_jsonl(cwd/"pipeline_runs/step2-feature-availability/combinations.jsonl",
+                 [{"symbol": "QQQ", "combination": "decoy"}])
+    _write_jsonl(cwd/"pipeline_runs/panel-data/input_panel.jsonl", panel)
+    return [d.isoformat() for d in days], missing
+
+
+def test_step3_end_to_end_on_fixture_sources(child_root, tmp_path):
+    env = _fe_env(child_root)
+    days, missing = _step3_fixture(child_root, tmp_path)
+    _onboard(tmp_path, "step2-dates", "./pipeline_runs/step2-dates-source",
+             "@"+str(child_root/STEP2_DATES_SOURCE), "dates")
+    _onboard(tmp_path, "cdf-horizon-panel", "./pipeline_runs/cdf-horizon-source", json.dumps({
+        "path": "pipeline_runs/panel-data", "layout": "file", "effective_field": "quote_date",
+        "effective_unit": "iso", "streams": ["input_panel"], "formats": ["jsonl"]}), "input_panel")
+    (tmp_path/"pipeline_runs/step3-holdout-folds").mkdir(parents=True)
+    _must(_cli(["dskit.pipeline", "run", str(child_root/STEP3), "--asof", "2026-10-01"],
+               tmp_path, env))
+    out = tmp_path/"pipeline_runs/step3-holdout-folds"
+    folds = _read_jsonl(out/"fold-table.jsonl")
+    admission, = _read_jsonl(out/"admission-and-metrics.jsonl")
+    # the holdout is the last 20% of the dates, locked first and never inside a fold
+    holdout_start = days[len(days) - len(days)//5]
+    assert admission["holdout"]["holdout_start"] == holdout_start
+    assert admission["holdout"]["holdout_dates"] == len(days)//5 == 280
+    assert all(f["val_end"] < holdout_start for f in folds)
+    # tau 0.9 admits macro_context (95%) and refuses liquidity (50%); the rest are always present
+    assert admission["required_liquidity"] == 0 and 0.45 < admission["rate_liquidity"] < 0.55
+    assert admission["required_macro_context"] == 1
+    assert [admission[f"required_{f}"] for f in FAMILIES if f != "liquidity"] == [1] * 12
+    # sized by counts: 450 train and 40 validation complete-case dates, four warm-up folds first
+    assert len(folds) == admission["plan"]["folds"] >= 5
+    assert [f["role"] for f in folds[:4]] == ["warmup"] * 4
+    assert {f["role"] for f in folds[4:]} == {"scored"} and admission["plan"]["scored"] == len(
+        folds) - 4
+    assert {(f["train_dates"], f["val_dates"]) for f in folds} == {(450, 40)}
+    assert {f["symbol"] for f in folds} == {"QQQ"}
+    assert admission["plan"]["scored_start"] == folds[4]["val_start"]
+    # OWNER DECISION 2026-10-02 (option A): imputation is accepted. The counts are complete-case,
+    # but a fold only carries boundary dates, so its window spans the dates missing macro_context
+    # as well (the study median-imputes them): no training-dates file, no complete-case filter.
+    assert not (out/"training-dates.jsonl").exists()
+    for fold in folds:
+        for edge, count in (("train", 450), ("val", 40)):
+            span = [d for d in days if fold[f"{edge}_start"] <= d <= fold[f"{edge}_end"]]
+            assert len([d for d in span if d not in missing]) == count
+            assert len(span) > count
+    # the unrelated stream never reached step 3
+    assert not any("decoy" in line for line in (out/"admission-and-metrics.jsonl").read_text()
+                   .splitlines())
+
+
+def _studies(child_root):
+    return {name: _step(child_root, name) for name in STEPS_4_TO_6}
+
+
+def test_steps_4_to_6_share_one_data_and_study_block(child_root):
+    docs = [_no_notes(d) for d in _studies(child_root).values()]
+    for block in ("data", "diagnostic"):
+        assert docs[0][block] == docs[1][block] == docs[2][block], block
+    outputs = [d["study"].pop("output") for d in docs]
+    assert len(set(outputs)) == 3                    # each step writes its own tree
+    assert docs[0]["study"] == docs[1]["study"] == docs[2]["study"]
+
+
+@pytest.mark.parametrize("name", STEPS_4_TO_6)
+def test_steps_4_to_6_pin_the_owner_rulings(child_root, name):
+    doc = _step(child_root, name)
+    study, experiment, data = doc["study"], doc["experiment"], doc["data"]
+    assert data["symbols"] == {"QQQ": "VXN"} and data["exact_dte"] == RULING_DTE
+    assert experiment["expected_cells"] == {part: {"QQQ": [RULING_DTE]}
+                                            for part in ("development", "evaluation")}
+    assert experiment["selection_metric"] == "decision_wing_twcrps" and study["wing_metrics"] is True
+    assert study["fold_table"]["roles"] == ["warmup", "scored"]     # the holdout is never a role
+    assert study["fold_table"]["cal_n"] == RULING_PLAN["val_n"]
+    # both baselines, in every step: signal = beat the empirical CDF, market edge = beat the proxy
+    assert set(study["models"]) == {"horizon_empirical", "option_proxy_transport"}
+    assert study["reference_model"] == "horizon_empirical"
+    assert study["comparison_references"] == ["horizon_empirical", "option_proxy_transport"]
+    assert study["models"]["horizon_empirical"]["class"].endswith(":HorizonEmpiricalCDF")
+    assert study["models"]["option_proxy_transport"]["class"].endswith(
+        ":OptionImpliedTransportCDF")
+    # the baselines' column positions name the columns the notes say they do
+    features = study["features"]
+    empirical = study["models"]["horizon_empirical"]["params"]
+    proxy = study["models"]["option_proxy_transport"]["params"]
+    assert features[empirical["horizon_index"]] == "calendar_dte"
+    assert features[empirical["reference_index"]] == features[proxy["reference_index"]] == study[
+        "reference"]
+    assert [features[i] for i in proxy["proxy_indices"]] == [
+        f"rn_q_{round(p * 10000):04d}" for p in proxy["probabilities"]]
+    assert features[proxy["eligible_index"]] == "rn_proxy_eligible"
+    # the training recipe of every Torch candidate: patience is the only exit, epochs a guard
+    assert len(experiment["candidates"]) == experiment["max_candidates"]
+    for label, candidate in experiment["candidates"].items():
+        params = candidate["params"]
+        assert candidate["class"] == "dskit.pipeline.libs.predictive_cdf:TorchCDF", label
+        assert params["losses"] == WING_LOSSES, label
+        assert params["patience"] == 20 and params["epochs"] == 2000, label
+        assert candidate.get("calibrate") is False, label
+
+
+def test_step4_is_forward_step_one_over_admitted_families_without_open_interest(child_root):
+    doc = _step(child_root, STEPS_4_TO_6[0])
+    features, candidates = doc["study"]["features"], doc["experiment"]["candidates"]
+    names = lambda label: [features[i] for i in candidates[label]["params"]["feature_indices"]]  # noqa: E731
+    assert list(candidates) == ["core", *(f"core+{f}" for f in FAMILIES
+                                          if f not in ("return_history", "realized_volatility"))]
+    assert doc["experiment"]["candidate_groups"] == {"forward_1": list(candidates)}
+    assert doc["experiment"]["search_partitions"] == doc["experiment"]["candidate_groups"]
+    core = names("core")
+    for label in candidates:
+        assert set(core) <= set(names(label)) and not set(names(label)) & set(FE_OI_ALL), label
+
+
+def _filled_fold_table(child_root, tmp_path):
+    """A real fold table (the step-3 plan on 1,000 fixture dates), its sha256 and holdout_start."""
+    import hashlib
+
+    from dskit.pipeline.kinds_split import RollingOriginPlan
+
+    wired = _step(child_root, STEP3)["foreach"]["pipeline"]["plan"]["params"]
+    days, day = [], date(2015, 1, 5)
+    while len(days) < 1000:
+        if day.weekday() < 5:
+            days.append(day)
+        day += timedelta(days=1)
+    rows = [{"quote_date": d.isoformat(), "settlement_date": (d + timedelta(days=RULING_DTE)
+                                                              ).isoformat()} for d in days]
+    holdout = (days[-1] + timedelta(days=30)).isoformat()
+    plan = RollingOriginPlan("plan", {
+        "date_field": "quote_date", "end_field": "settlement_date", "holdout_start": holdout,
+        "embargo_days": RULING_DTE, **{k: wired[k] for k in RULING_PLAN}}).run(
+            None, {"records": rows})
+    table = tmp_path/"fold-table.jsonl"
+    table.write_text("".join(json.dumps(dict(r, symbol="QQQ"), sort_keys=True,
+                                        separators=(",", ":")) + "\n" for r in plan["records"]))
+    return str(table), hashlib.sha256(table.read_bytes()).hexdigest(), holdout
+
+
+def _fill(doc, table, sha, holdout, step4_core):
+    """What the owner does after the real runs: pin the fold table, then the step-4 winner."""
+    doc = json.loads(json.dumps(doc))
+    doc["study"]["fold_table"].update(path=table, sha256=sha, holdout_start=holdout)
+    features = doc["study"]["features"]
+    names = [features[i] for i in step4_core]
+    steps = [names.index(f"ret_lag_{k}") for k in range(21, -1, -1)]       # oldest step first
+    context = [i for i in range(len(names)) if i not in steps]
+    for candidate in doc["experiment"]["candidates"].values():
+        params = candidate["params"]
+        if params["feature_indices"] == []:                  # steps 5-6 ship it unfilled
+            params["feature_indices"] = list(step4_core)
+            if params["encoder"]["kind"] == "gru":
+                params["encoder"].update(sequence_indices=[[i] for i in steps],
+                                         context_indices=context)
+    return doc
+
+
+@pytest.mark.parametrize("name", STEPS_4_TO_6)
+def test_steps_4_to_6_refuse_the_shipped_copy_and_accept_a_filled_one(child_root, tmp_path, name):
+    pytest.importorskip("pandas")
+    pytest.importorskip("torch")
+    from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy
+
+    docs = _studies(child_root)
+    shipped = docs[name]
+    table, sha, holdout = _filled_fold_table(child_root, tmp_path)
+    core = docs[STEPS_4_TO_6[0]]["experiment"]["candidates"]["core"]["params"]["feature_indices"]
+    with pytest.raises(ValueError, match="invalid fold_table"):       # placeholders refuse by design
+        CDFHyperparameterStudy(shipped)
+    filled = _fill(shipped, table, sha, holdout, core)
+    study = CDFHyperparameterStudy(filled)
+    assert study.plan.warmup_ids and study.plan.scored_ids
+    assert study.plan.holdout == holdout
+    if name != STEPS_4_TO_6[0]:
+        # the fold table alone is not enough: an unfilled feature subset is refused, never run
+        unfilled = json.loads(json.dumps(filled))
+        for candidate in unfilled["experiment"]["candidates"].values():
+            candidate["params"]["feature_indices"] = []
+        with pytest.raises(ValueError, match="invalid feature indices"):
+            CDFHyperparameterStudy(unfilled)
+    tampered = json.loads(json.dumps(filled))
+    tampered["study"]["fold_table"]["sha256"] = "0"*64
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        CDFHyperparameterStudy(tampered)

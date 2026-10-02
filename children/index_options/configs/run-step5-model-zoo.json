@@ -203,11 +203,10 @@
         "max_candidates": 5000,
         "fee_per_leg": 0.5,
         "multiplier": 100
-      },
-      "notes": "Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+      }
     },
     "exact_dte": 7,
-    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source."
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source. decision_regions (the block refuses its own notes key): Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
   },
   "diagnostic": {
     "strikes_z": [
@@ -576,7 +575,7 @@
       ]
     },
     "wing_metrics": true,
-    "notes": "Folds come from step 3's fold table (ADR-0222/0223): warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
+    "notes": "Folds come from step 3's fold table (ADR-0222/0223), which carries date boundaries and complete-case counts only: the study slices every panel row inside a fold's boundaries and median-imputes the dates missing an admitted family (about 8% of QQQ dev dates), so training is NOT complete-case. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
   },
   "experiment": {
     "output": "pipeline_runs/step5_model_zoo",
@@ -699,6 +698,6 @@
         ]
       }
     },
-    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 20 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence = the ret_lag_21..ret_lag_0 positions (one per step), context = all other subset positions."
+    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 20 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence_indices is a list of ROWS, one row per step oldest first, each row the subset position(s) of that step's channel, here [[ret_lag_21], ..., [ret_lag_0]] (one return per step); context_indices is a flat list of all other subset positions."
   }
 }
