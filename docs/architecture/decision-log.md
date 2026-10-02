@@ -29731,10 +29731,11 @@ final test.
 
 ## ADR-0223 — Fold-table splits and a patience stop for the Torch CDF study
 
-**Status:** proposed 2026-10-02 (owner pre-approves once review has no
-Critical/Major). Base 6394a41 + 8085997 (ADR-0222). **Sweep** (`fold_table
-patience early_stop label_reaches`): no `predictive_cdf` model monitors held-out
-rows (`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
+**Status:** accepted 2026-10-02 under the owner's standing conditional approval
+(review clean of Critical/Major at 8c877aa; r1 cf57748 M1/m8/n1, r2 8c877aa
+m7/n2). Base 6394a41 + 8085997 (ADR-0222). **Sweep** (`fold_table patience
+early_stop label_reaches`): no `predictive_cdf` model monitors held-out rows
+(`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
 1. **Config.** `ChronologicalCDFStudy` takes `fold_table` XOR `years`
    (`development_end` is refused with a table). `fold_table` = `{path, sha256,
    holdout_start, cal_n, roles}`, all required: the plan's `records-write` file,
