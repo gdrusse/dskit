@@ -29104,16 +29104,19 @@ holidays, any run.
 **Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
 **Owner question 2.** Default `weekdays`: all seven (proposed) or Mon-Fri?
 
-## ADR-0217 — Feature-engineering step: exact-expiry panel features as a pipeline node
+## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
-**Status:** proposed 2026-10-01, revised after review round 1; awaiting owner
-approval (option (a), a thin child wrapper, approved in direction). Base:
-46f3574. No Python until approved; the JSON pipeline (Phase A) is not gated,
-the node (Phase B) is.
+**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 and 2;
+awaiting owner approval. Base: 46f3574. No Python until approved and owner
+question 3 is answered; the JSON pipeline (Phase A) is not gated, the code
+(Phase B) is.
 
 A step between step 1 (tradable dates) and step 2 (feature availability): a JSON
 pipeline whose output is a per-date panel, one row per ticker/quote_date/expiry
 of the step-1 cohort, engineered fields explicit null when not computable.
+Direction approved: a thin child wrapper. Round 2: the generic mechanism (attach
+by composite identity, audit, summary) belongs in dskit, so the child keeps only
+the reader.
 
 **Inventory.** `ExactExpiryCDFPanel.read()` with the ADR-0203 tail-data `data`
 block already computes variance_gap (`add_matched_dte_vrp`), ohlc_shape
@@ -29123,16 +29126,26 @@ block already computes variance_gap (`add_matched_dte_vrp`), ohlc_shape
 (`ChronologicalCDFStudy.run` writes `input_panel.parquet` at the start of a
 fit; the HPO search stage passes just the 2016-2018 development slice, hence the
 ablation's years); `prepare` builds only the raw-chain cache. dskit has no
-arithmetic node, strictly-prior as-of join or OHLC-shape node.
+arithmetic node, strictly-prior as-of join, OHLC-shape node or composite-identity
+attach: `keyby` takes one `key` and one `value` field (a composite key has no
+JSON-object spelling, ADR-0086) and `join` indexes each side table by that key.
+Sweep (`tools/sweep/sweep`): attach_columns, attach_by_identity,
+AttachByIdentity, carried_families, withheld_fields, agree_fields,
+max_absent_fraction, expiry_density, horizon_rows, ExactExpiryPanelFeatures,
+ExactExpiryPanelRead: no near matches on any ref or worktree (`SideTable` and
+`Composite` hits are unrelated production test names).
 
-**Pipeline (Phase A).** `configs/run-step1b-feature-engineering.json` reads the
-prepared panel through a source block with **no `ts_field`/`ts_out`**: rows keep
-only the panel's own columns, because `ObservationRows` stamps `ts_out`
-(`quote_date_ms` in steps 1-2) in place and refuses a record already carrying it
-(`dskit/onboarding/observations.py:536`), and step 2 stamps its own. It takes the
-selected DTE from step 1's `selection/selected.jsonl` (never typed), keeps step
-1's settled rows, adds the node's fields and pins its row count to step 1's
-`listed_forecasts`. Expiry density uses existing groupby/join nodes; weekday
+**Pipeline (Phase A).** `configs/run-step1b-feature-engineering.json`. Top
+level: `source` (ObservationRows over the prepared panel with **no
+`ts_field`/`ts_out`**: rows keep only the panel's columns, because
+`ObservationRows` stamps `ts_out` (`quote_date_ms` in steps 1-2) in place and
+refuses a record already carrying it, `dskit/onboarding/observations.py:536`,
+and step 2 stamps its own) and `panel` (the child reader, once for all
+tickers). Per ticker, as in step 1: `cohort` (step 1's cohort rule plus
+`actual_calendar_dte` equal to the selected DTE from step 1's
+`selection/selected.jsonl`, never typed; row count pinned to step 1's
+`listed_forecasts`); `horizon_rows`, `density`, `density_by_date`, `dense`
+(item 6); `features`, the attach kind over `dense` and `$panel.records`. Weekday
 stays pending until ADR-0214 merges. Output
 `pipeline_runs/feature-engineering/panel/input_panel.jsonl` is onboarded by the
 new `configs/source-feature-panel.json` (localtables, `effective_field`
@@ -29142,46 +29155,79 @@ new `configs/source-feature-panel.json` (localtables, `effective_field`
 handoff pin passes that is a prediction. The FE config merges after the step-1/2
 rebuild.
 
-1. **Home.** `index_options.cdf_study:ExactExpiryPanelFeatures(Node)`, role
-   `transform`, beside its only owner. Tier 3 (exact-expiry semantics are the
-   child's; project-specific). One node for all families: one `read()` per run,
-   one `data` block. Calls `read()` unchanged, restates no formula.
-2. **Params** (default-deny): the tail-data `read()` keys minus `archive_root`
-   (`prepare` only). Required `root surface lifecycle symbols price_source
-   iv_source since max_dte lags windows feature_gap_days reference_floor
-   spot_tolerance`; optional `chain_features raw_chain market_symbols
-   fred_market_symbols surface_features ohlc_windows matched_dte_vrp`;
-   `decision_regions`, `macro_event_calendars` refused. Also required:
-   `column_prefix` (columns `<prefix><family>_status`, `_reasons`);
+1. **Two homes.** (a) **dskit, tier 1:** `AttachByIdentity` (`attach-by-identity`,
+   `owned=False`, `role="transform"`, `serving_effect` `"pure"`) in
+   `kinds_flow.py` beside `join`, as ADR-0214 did for `weekday-onehot`. Stdlib
+   only, nothing about options. Ports `records` (stream) and `table` (rows with
+   the identity and every declared column); outputs `records`, `summary`,
+   `provenance`; `run()` delegates one method per job. (b) **child, tier 3:**
+   `index_options.nodes:ExactExpiryPanelRead`, role `data`, no inputs: builds
+   `ExactExpiryCDFPanel(params)`, calls `read()` unchanged (restates no
+   formula), emits `records` (its `columns` only) and `provenance`. It is the
+   only exact-expiry code; `stock_options` (AMZN) would write its own reader and
+   reuse (a).
+2. **Reader params** (default-deny): the tail-data `read()` keys minus
+   `archive_root` (`prepare` only). Required `root surface lifecycle symbols
+   price_source iv_source since max_dte lags windows feature_gap_days
+   reference_floor spot_tolerance`; optional `chain_features raw_chain
+   market_symbols fred_market_symbols surface_features ohlc_windows
+   matched_dte_vrp`; `decision_regions`, `macro_event_calendars` refused; plus
+   required `columns` (non-empty; a name `read()` lacks refuses). The `read()`
+   provenance moves to `ExactExpiryCDFPanel.provenance()` (refused counts,
+   source sha256, reader fingerprints, market coverage, macro status, adapter
+   hash), which `cdf_study._main` then calls: one owner, identical dict (HPO
+   hashes it).
+3. **Attach params** (default-deny): `identity` (non-empty field list);
    `agree_fields` (non-empty list); `max_absent_fraction` (float in [0, 1], no
-   default); `families` = `{family: {fields, withheld_fields, clock_note}}`.
-   `fields` is the family's contract columns plus those its quality checks name
-   (`market_*_age_days`, `market_*_missing`); `withheld_fields` is
+   default); `column_prefix` (columns `<prefix><family>_status`, `_reasons`);
+   `families` = `{family: {fields, withheld_fields, clock_note}}`; optional
+   `carried` = `{family: {fields, clock_note}}` for fields already on the
+   stream. `fields` is the family's contract columns plus those its quality
+   checks name (`market_*_age_days`, `market_*_missing`); `withheld_fields` is
    `{field: reason}` (may be `{}`), a subset of `fields`; `clock_note` is a
    non-empty string, hashed on purpose (a changed clock claim is a changed run).
-   A field in two families refuses.
-3. **Run.** Narrow `symbols` to the input tickers (unknown refuses); call
-   `read()`; index by (symbol, quote_date, expiry). **Refuses:** an input field
-   collision; a `fields` column `read()` lacks (withheld too); a duplicate
-   identity; an `agree_fields` column missing on either side; a matched identity
+   A field in two families, or a family and `carried`, refuses.
+4. **Attach run. Refuses:** `table` columns other than exactly `identity` +
+   `agree_fields` + every `fields` (withheld too), a missing and an unclaimed
+   column alike, which pins the reader's `columns` to this contract at run time;
+   a stream field colliding with a declared one; a duplicate identity on either
+   side; an `agree_fields` column missing from the stream; a matched identity
    whose `agree_fields` differ (exact, null equals null, no tolerance knob until
    a lossless round trip disagrees); absent identities above
-   `max_absent_fraction` (fraction of input rows). Then attach every family's
-   `fields` in input order, every key on every row, NaN/inf as null; a withheld
-   field is dropped after `read()` and emitted null, never omitted. Per family,
-   status is `computed` or `identity_absent_from_engineered_panel`; `_reasons`
-   is a JSON object string `{field: reason}` over the row's null fields (the
-   withheld reason, else the absent literal, else `not_computable`), `{}` when
-   none.
-4. **Outputs.** `records`; `summary` per family (rows, computed/absent, non-null
-   per field, refused counts, `withheld_fields`, `clock_note`); `provenance`
-   (`input_sha256` over canonical identity + `agree_fields` values as received,
-   `read()`'s source sha256, reader fingerprints, market coverage, adapter hash,
-   each family's `clock_note`/`withheld_fields`). The `read()` part moves to
-   `ExactExpiryCDFPanel.provenance()`, which `cdf_study._main` then calls: one
-   owner, identical dict (HPO hashes it). Summary and provenance are the
-   run-local record; the rows carry status and reasons.
-5. **Clock rules** (pipeline and `family_contracts`). VRP: entry-chain ATM IV
+   `max_absent_fraction` (of stream rows); a `carried` field missing from a row
+   (null is allowed). Then attach every family's `fields` in stream order, every
+   key on every row, NaN/inf as null; a withheld field's table value is
+   discarded and emitted null, never omitted. Per family, status is `computed`
+   or `identity_absent_from_table`; `_reasons` is a JSON object string
+   `{field: reason}` over the row's null fields (the withheld reason, else the
+   absent literal, else `not_computable`), `{}` when none.
+5. **Outputs.** `records`; `summary` per family and carried family: rows,
+   computed/absent (families), per field non-null, null, min, max, mean (numbers
+   only), `withheld_fields`, `clock_note`; `provenance`: `input_sha256` over
+   canonical identity + `agree_fields` values as received, every `clock_note`
+   and `withheld_fields`. The reader's `provenance` is its own port. Both are
+   run-local node outputs; the rows carry status and reasons.
+6. **Expiry density** (owner-required; existing nodes plus a `carried` entry).
+   `expiry_density` is the number of distinct `expiry` values in the source
+   panel for the row's symbol and `quote_date` that meet step 1's settled rule
+   (`terminal_return` not null, `actual_calendar_dte >= 1`) and have **planned**
+   `calendar_dte <= selected DTE`. `horizon_rows` is that filter on the ticker's
+   rows BEFORE the cohort filter; `density` is groupby (`symbol`, `quote_date`;
+   nunique `expiry`); `density_by_date` is keyby `quote_date`; `dense` is a
+   `left` join of the cohort on `quote_date`, `unmatched_fill
+   {expiry_density: null}` (a date whose only cohort expiry has planned DTE above
+   the selected one, an unscheduled closure having moved its settlement earlier,
+   gets a declared null, counted in the summary). A cohort-first count is 1 on
+   every row. Planned, not actual: the planned bound is entry-known (regular
+   holidays), the actual one is label information
+   (`test_future_unscheduled_closure_is_label_information_only`). Clock note:
+   "listed expiries with planned settlement 1 to the selected DTE calendar days
+   after entry; the panel keeps only expiries with an observed settlement path
+   and a defined rv_22, so an expiry dropped for a missing close is uncounted
+   (`incomplete_path`, `missing_reference` in the reader's `refused` size the
+   loss)". Step 2 has no density family yet, so its one-line root change does
+   not consume it; adding one is a step-2 contract edit, untouched here.
+7. **Clock rules** (pipeline and `family_contracts`). VRP: entry-chain ATM IV
    against backward 22-session realized vol, planned sessions. OHLC: entry bar
    plus backward windows; after-close estimand only. Positioning: entry-snapshot
    volume/spread and prior-observation OI computed; current-snapshot OI x greek
@@ -29189,38 +29235,78 @@ rebuild.
    row, reason `oi_publication_clock_unverified` (config data, not a code
    vocabulary), until an audit shows archive `open_interest` excludes the entry
    day's trades; lifting it is a JSON edit citing the audit. Expanded Cboe: last
-   close strictly before entry, at most 7 days old, else null with `_missing`;
-   only the download vintage is uncertified (a `clock_note`, not a withhold).
-   Nothing is imputed. Step 2's flags are yes/no: a withheld and an absent field
-   both read `no`; the reason lives in the panel and the summary.
+   close on a date strictly before entry (`allow_exact_matches=False`,
+   `cdf_study.py:2371`), never the entry-date close; age is entry date minus
+   that close's date, at least 1 and at most the data block's `max_age_days` (7,
+   `:2378`), else null with `_missing`; only the download vintage is uncertified
+   (a `clock_note`, not a withhold). Step 2's `>= 0` age bound is looser than the
+   node's `>= 1`; the pin below is the strict one. Nothing is imputed. Step 2's
+   flags are yes/no: a withheld, absent or null field reads `no`; the reason
+   lives in the panel and the summary.
 
-**Pins.** Node values equal `read()` for the same identities, every non-withheld
-field. Every withheld field is null on every row, its reason in `_reasons` and
-`summary`; the shipped JSON withholds exactly the three OI x greek fields with
-that reason; `summary`/`provenance` echo each `clock_note` and `withheld_fields`
-as declared. Agreement: a fixture differing on one identity's `agree_fields`
-refuses, so does an absent fraction over the bound, and `input_sha256` moves
-with any `agree_fields` value; the shipped `agree_fields` include
-`terminal_return`, `actual_calendar_dte`, `chain_atm_iv`, `rv_22` and `rn_q_*`.
-FE `data` block equals the tail-data block key by key over the node's keys; FE's
-four families equal step 2's same-named `family_contracts`, key by key.
-**Handoff:** a fixture panel written by the node (nulls and reasons included) is
-onboarded through `source-feature-panel.json` and read with step 2's committed
-`source.params`, only `root` replaced: every identity returns, nulls stay null,
-no `quote_date_ms` in the FE rows, and step 2's `available_*` derive reads `no`
-for a family with a null field. Writer path and stream agree with the source
-config; status and `not_computable` literals equal the class constants;
-`provenance()` equals today's `_main` dict. **Touched.** `cdf_study.py`,
-`tests/test_cdf_study.py`, `tests/test_configs.py`, the plan README runbook, the
-pipeline JSON, `configs/source-feature-panel.json`.
+**Pins.** *Attach kind* (`tests/pipeline`): registration, `__all__`, `_PARAMS`,
+every refusal in item 4 (unclaimed column included), values equal `table`,
+stream order kept, a withheld field null on every row with its reason in
+`_reasons` and `summary`, `summary`/`provenance` echo each `clock_note` and
+`withheld_fields` as declared, carried audit, `input_sha256` moves with any
+`agree_fields` value, a fixture differing on one identity's `agree_fields`
+refuses, so does an absent fraction over the bound; status and `not_computable`
+literals equal the class constants; purity gate. The kind count in
+`test_registers_all_seven_unowned` and the "seven" docstrings change with it;
+ADR-0214 edits the same lines, so one lands first and the other rebases.
+*Reader* (`tests/test_nodes.py`): registration; `_PARAMS` equals the tail-data
+keys minus `archive_root`, plus `columns`. (`tests/test_cdf_study.py`, beside the
+`read()` fixtures): values equal `read()` for the same identities; `provenance()`
+equals today's `_main` dict. *Clock* (same file, through the reader, with the
+existing `IndexCloseRows` fixture): (1) strict prior: an index close ON the entry
+date plus earlier ones gives the latest strictly earlier close with `_age_days >=
+1`; perturbing the entry-date close changes nothing; age equal to `max_age_days`
+is kept, one more is null with `_missing` 1; a date before the series starts is
+null with `_missing` 1. (2) Causality, all four families: run B replaces every
+source observation (prices, OHLC bars, Cboe closes, chain-feature rows) dated
+after a cutoff `q*` with different values, keeping dates so settlement paths
+survive; every engineered field on rows dated `<= q*` equals run A's (null equals
+null), and one field per family on a later row differs, so the perturbation
+bites. Run C drops all sources after `D`: surviving identities equal run A's.
+Positioning's prior-observation rule lives in `RawChainFeatureBuilder.transform`,
+so the truncation pin runs there too. (3) One number: the integer before
+`calendar days` in the expanded-context `clock_note` equals every `max_age_days`
+of the `market_*` entries feeding the family (all equal) and step 2's
+`market_*_age_days <=` bounds. *Config* (`tests/test_configs.py`): reader params
+equal the tail-data `data` block key by key over the node's keys; attach
+`families` `fields` equal step 2's same-named `family_contracts`; the shipped
+JSON withholds exactly the three OI x greek fields with that reason; its
+`agree_fields` include `terminal_return`, `actual_calendar_dte`, `chain_atm_iv`,
+`rv_22` and `rn_q_*`; the pipeline validates and plans. *Density:* a date with 3
+in-horizon and 1 out-of-horizon expiries, plus another symbol's rows, gives 3 on
+every cohort row of that symbol; cohort-first gives 1 and fails the pin (`cohort`
+not upstream of `density`); expiries with planned DTE 13 and 14, both actual 13
+(selected 13), each get 1, and a date with only the planned-14 expiry gets null;
+`horizon_rows` `where` equals step 1's cohort `where` except its upper bound;
+step 1's upper bound is at most the reader's `max_dte`. **Handoff:** a fixture
+panel written by the pipeline (nulls and reasons included) is onboarded through
+`source-feature-panel.json` and read with step 2's committed `source.params`,
+only `root` replaced: every identity returns, nulls stay null, no `quote_date_ms`
+in the FE rows, and step 2's `available_*` derive reads `no` for a family with a
+null field; writer path and stream agree with the source config. **Touched.**
+`dskit/pipeline/kinds_flow.py`, the pipeline README/CLAUDE kind lists,
+`tests/pipeline/test_kinds_flow.py`, `test_toolkit_conformance.py`;
+`index_options/nodes.py`, `cdf_study.py` (`provenance()` only), the child's
+`tests/test_nodes.py`, `test_cdf_study.py`, `test_configs.py`; the plan README
+runbook, the pipeline JSON, `configs/source-feature-panel.json`.
 
-**Rejected.** Graduating generic kinds first (re-implements tested formulas,
-byte-parity risk); a panel-only `cdf_study` CLI stage (computation outside a
-pipeline); one node instance per family (a `read()` and a `data` block each);
-pass-through columns taken from `read()` (one vintage, but FE becomes a second
-panel builder and step 1's rows stop passing through); withhold reasons as code
-constants (a new audit would edit code). **Non-goals:** formula changes, macro,
-21/41 quantiles, AMZN, training, selection.
+**Rejected.** The whole mechanism as one child class (breaks the graduation
+rule; a second consumer is foreseeable; question 3). Composite keys in
+`keyby`/`join` (ADR-0086; one `keyby` and port per column is dozens of nodes and
+no audit). Graduating the formulas (re-implements tested code, byte-parity risk:
+only the plumbing graduates). A panel-only `cdf_study` CLI stage (computation
+outside a pipeline). One reader per family (a `read()` and a `data` block each).
+Pass-through columns from `read()` (FE becomes a second panel builder and step
+1's rows stop passing through). Withhold reasons as code constants (a new audit
+would edit code). Density counted on the cohort (constant 1), by actual DTE
+(label information), or called plainly entry-known (panel membership needs an
+observed settlement path). **Non-goals:** formula changes, macro, 21/41
+quantiles, AMZN, training, selection.
 
 **Owner question 1.** The three OI x greek fields: withheld as null (proposed)
 or attached labelled unverified?
@@ -29231,3 +29317,8 @@ combinations per ticker; recommended; edits the concurrent step-2 contract,
 untouched here), or (b) one `positioning_changes` family that reads `no` on
 every date until the audit? Phase A ships (b), which matches step 2 today; (a)
 is a JSON-only change on both sides.
+**Owner question 3 (blocks Phase B).** Where does the attach and audit mechanism
+live? (a) `attach-by-identity` in dskit `kinds_flow.py` plus the thin child
+reader (proposed: standing graduation rule, ADR-0213's precedent, `stock_options`
+as second consumer); (b) one child class in `index_options`, which needs your
+explicit waiver of the graduation rule (same contract, only the home changes).
