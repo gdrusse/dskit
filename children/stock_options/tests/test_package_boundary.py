@@ -26,9 +26,8 @@ EXPECTED_FILES = {
     "tests/test_package_boundary.py",
     "configs/source-option-archives.json",
     "configs/source-underlying-history.json",
+    "configs/source-option-panel.json",
     "configs/run-prepare-option-panel.json",
-    "configs/run-cdf-horizon-coverage.json",
-    "configs/run-amzn-feature-availability.json",
 }
 
 
@@ -103,64 +102,28 @@ def test_scope_documents_name_the_prediction_action_split():
     assert "split-adjusted" in text
 
 
-def test_stock_conversion_configs_use_shared_nodes_and_same_preparation():
+def test_prepare_config_writes_the_panel_the_shared_step_files_read():
     import json
-    from dskit.pipeline.document import load_document
+    import posixpath
 
-    prepared = json.loads((CHILD_ROOT/"configs/run-prepare-option-panel.json").read_text())
-    selected = json.loads((CHILD_ROOT/"configs/run-cdf-horizon-coverage.json").read_text())
-    assert prepared["pipeline"] == selected["pipeline"]
-    assert selected["foreach"]["keys"] == ["AMZN"]
-    assert selected["foreach"]["pipeline"]["cohort"]["inputs"]["records"] == "$panel.records"
-    for filename in ("run-prepare-option-panel.json", "run-cdf-horizon-coverage.json"):
-        document = load_document(CHILD_ROOT/"configs"/filename)
-        assert document.name
+    from dskit.onboarding.connector import check_config
+    from dskit.onboarding.libs.localtables import LocalTablesConnector
+    from dskit.pipeline.document import load_document
     from dskit.pipeline.libs.predictive_cdf import ExpiryCloseLabels, OptionCDFPanel
+
+    prepared = json.loads((CHILD_ROOT / "configs/run-prepare-option-panel.json").read_text())
+    assert load_document(CHILD_ROOT / "configs/run-prepare-option-panel.json").name
     for name, cls in (("labels", ExpiryCloseLabels), ("panel", OptionCDFPanel)):
         assert cls.validate_params(prepared["pipeline"][name]["params"]) == []
         assert cls.validate_params(dict(prepared["pipeline"][name]["params"], typo=True))
-
-
-def test_amzn_feature_gaps_share_interface_and_keep_selected_cohort():
-    import json
-    from dskit.pipeline.document import load_document
-    from dskit.pipeline.kinds_flow import Derive, Filter
-
-    path = CHILD_ROOT / "configs/run-amzn-feature-availability.json"
-    assert path.exists(), "AMZN needs the same JSON feature-gap interface"
-    amzn = json.loads(path.read_text())
-    qqq = json.loads((CHILD_ROOT.parent / "index_options/configs/run-qqq-feature-availability.json").read_text())
-    prepared = json.loads((CHILD_ROOT / "configs/run-prepare-option-panel.json").read_text())
-    graph = amzn["pipeline"]
-    assert all(graph[k] == v for k, v in prepared["pipeline"].items())
-    assert amzn["foreach"] == qqq["foreach"]
-    assert graph["family_contracts"] == qqq["pipeline"]["family_contracts"]
-    for key, value in qqq["pipeline"].items():
-        if key.startswith(("check_", "summary_", "family_gap", "all_")):
-            if key == "family_gap_evidence":
-                continue
-            assert graph[key] == value
-    probabilities = prepared["pipeline"]["panel"]["params"]["probabilities"]
-    row = {f"rn_q_{round(p * 10000):04d}": p / 100 for p in probabilities}
-    row.update(symbol="AMZN", quote_date="2024-04-04", expiry="2024-05-16",
-               actual_calendar_dte=42, rn_proxy_eligible=1, terminal_return=.01)
-    rows = [row, dict(row, actual_calendar_dte=30), dict(row, symbol="QQQ")]
-    selected = Filter("cohort", graph["cohort"]["params"]).run(None, {"records": rows})["records"]
-    assert selected == [row]
-    for key, spec in graph.items():
-        if key.startswith("check_"):
-            selected = Derive(key, spec["params"]).run(None, {"records": selected})["records"]
-    assert len(selected) == 1
-    assert selected[0]["available_implied_cdf"] == 1
-    assert selected[0]["available_return_history"] == 0
-    assert selected[0]["available_all_families"] == 0
-    assert graph["row_evidence"]["params"]["expect"] == 90
-    assert graph["cohort"]["inputs"]["records"] == "$panel.records"
-    for node, filename in (("row_evidence", "rows.jsonl"),
-                           ("feature_gap_evidence", "feature-gaps.jsonl"),
-                           ("family_gap_evidence", "family-gaps.jsonl")):
-        assert graph[node]["params"]["path"] == "./pipeline_runs/amzn-feature-availability/" + filename
-    assert load_document(path).name == "amzn-feature-availability"
-    from dskit.pipeline.kinds_flow import Concat
-    source = Concat("source_contract", graph["source_contract"]["params"]).run(None, {})
-    assert source["merged"]["archive"]["expected_dates"] == 90
+    # the panel is written for the shared files: a records-write wired to the panel's rows, at
+    # the path (and stream name) the localtables source config reads
+    writer = prepared["pipeline"]["panel_rows"]
+    assert writer["uses"] == "records-write"
+    assert writer["inputs"] == {"records": "$panel.records"}
+    source = json.loads((CHILD_ROOT / "configs/source-option-panel.json").read_text())
+    written = writer["params"]["path"]
+    assert posixpath.normpath(posixpath.dirname(written)) == posixpath.normpath(source["path"])
+    assert source["streams"] == [posixpath.basename(written).rsplit(".", 1)[0]]
+    assert source["formats"] == [written.rsplit(".", 1)[1]]
+    check_config(LocalTablesConnector(), source)

@@ -17,9 +17,10 @@ hashes, source/clock caveats, counts and date windows. QQQ retains 1,497 dates:
 fields complete; 146 candidate fields not materialized, 13,140 feature-gap
 cells. These are prepared-data gaps, not proof all underlying sources are absent.
 
-Both runbooks are children/<child>/docs/plans/README.md. Standard runner JSON:
-index_options/configs/run-qqq-feature-availability.json and
-stock_options/configs/run-amzn-feature-availability.json. Use existing source
+Both runbooks are children/<child>/docs/plans/README.md. Those two runner JSONs
+are retired (their committed evidence stays); the ticker/source-neutral successors
+are index_options/configs/run-step1-expiry-coverage.json and
+run-step2-feature-availability.json. Use existing source
 onboarding and fresh run_root/three writer paths for repeats; committed outputs
 refuse overwrite. WSL2, project venv, hard6GiB/no-swap/1740sec limits.
 Independent AMZN rerun byte-matched all three JSONL files in19.72sec/<1GiB.
@@ -53,7 +54,7 @@ trade bars lack historical quote/IV/OI fields and current data cannot fill them.
 
 ## Three-index exact-horizon coverage automated (2026-10-01)
 
-- `children/index_options/configs/run-cdf-horizon-coverage.json`: set only
+- `children/index_options/configs/run-step1-expiry-coverage.json` (was run-cdf-horizon-coverage.json): set only
   `foreach.keys` for ticker(s), plus `pipeline.source.params` if changing the
   already prepared/acquired source. JSON-only; no new Python implementation.
 - Standard runner now retains the full DTE coverage arrays and winners in
@@ -76,7 +77,7 @@ trade bars lack historical quote/IV/OI fields and current data cannot fill them.
 
 ## QQQ exact-horizon CDF coverage selector completed (2026-10-01)
 
-- JSON-only existing-node pipeline: `children/index_options/configs/run-cdf-horizon-coverage.json`;
+- JSON-only existing-node pipeline: `children/index_options/configs/run-step1-expiry-coverage.json` (was run-cdf-horizon-coverage.json);
   localtables source config beside it. No Python implementation changed.
 - QQQ argmax over exact actual settlement-close horizons 1-45: **7 days / 1,497
   eligible dates**; runner-up 14 days / 1,400. All 45 counts independently verified.

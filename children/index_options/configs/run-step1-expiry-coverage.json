@@ -1,0 +1,245 @@
+{
+  "name": "step1-expiry-coverage",
+  "notes": "STEP 1 of the three-step data selection: tradable dates per expiry horizon. Inputs are a ticker (foreach.keys) and one prepared option-panel source (pipeline.source.params). For each ticker it counts, per exact calendar DTE 1..45, the distinct entry dates that have a listed expiry and a settled underlying close, keeps the full table (carry.json coverage__<t>.records) plus a chart (artifacts/coverage_figure__<t>/coverage.png), and names the argmax DTE (winner__<t>.records): most dates, ties to the shorter DTE. 'Listed' is what the panel holds: index panels, an expiry in the quoted chain with a valid bid/ask; AMZN, observed option trade/quote rows from the saved 30-45 nominal-DTE archive, where trade bars (price_basis trade_close) are a DECLARED stand-in for tradable quotes and DTEs 1-29 were never collected. 'Settled' is terminal_return not null: the underlying close at settlement is known. There is NO implied-CDF filter; any option the optimizer may trade counts, and a missing CDF is a step-2 gap. The close source is the panel's one source: for AMZN the saved Alpaca IEX daily stock bars (single-exchange closes, NOT the consolidated official close), blocked until ADR-0216's pinned-archive reader lands. selected.jsonl holds one winner row per ticker for step 2, which reads the DTE from it and never types one. Historical coverage is not a prospective calendar policy; nothing is trained or built here.",
+  "pipeline": {
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/cdf-horizon-source",
+        "source": "cdf-horizon-panel",
+        "stream": "input_panel",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "ts_field": "quote_date",
+        "ts_unit": "iso",
+        "ts_out": "quote_date_ms"
+      },
+      "notes": "THE DATA SOURCE: the onboarded prepared option panel, named by root/source/stream and resolved from the working directory. Another panel changes these values and nothing else. Both child runbooks onboard their own panel under these same names (index_options reuses its cdf-horizon-source acquisition; stock_options imports the AMZN panel there), so this file runs unchanged from either child. key_fields is the panel's row identity: rows that differ only elsewhere (AMZN rows differing only by price_basis) collide and refuse loudly instead of one being chosen silently. ts_out is quote_date_ms, not the default asof_ms, because the AMZN panel already carries asof_ms and ObservationRows refuses to overwrite a field."
+    },
+    "selection_rows": {
+      "uses": "concat",
+      "inputs": {
+        "winner__each": "$winner.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each winner row carries its own symbol; the key check proves no ticker appears twice"
+      },
+      "notes": "One winner row per ticker: its symbol, selected exact DTE and that DTE's date, forecast and expiry counts and entry-date bounds."
+    },
+    "selection_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$selection_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/step1-expiry-coverage/selection/selected.jsonl",
+        "source": "One winner row per ticker: the selected exact DTE and its date counts; step 2 imports it through source-step1-selection.json"
+      },
+      "notes": "The step-1 to step-2 hand-off. No expect: the row count is the number of tickers in foreach.keys. The parent directory must exist (mkdir -p) and the writer refuses to overwrite, so to repeat a run move pipeline_runs/step1-expiry-coverage (and step1-selection-source, step2-feature-availability) aside first."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/step1-expiry-coverage/runs"
+  },
+  "foreach": {
+    "keys": [
+      "QQQ",
+      "SPY",
+      "IWM"
+    ],
+    "notes": "The only ticker setting: one or several symbols present in the prepared panel. AMZN is [\"AMZN\"], run from children/stock_options. One shared acquisition is read once and each ticker gets an independent table and argmax; no per-ticker copies of this file exist or are needed.",
+    "pipeline": {
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": ">=",
+              "value": 1
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": "<=",
+              "value": 45
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "Settled rows of this ticker inside the owner's 1-45 day window. A pending row (no terminal_return) or a non-session row (null DTE) is not a tradable date yet and drops out here."
+      },
+      "coverage": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$cohort.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "listed_dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "listed_forecasts": {
+              "op": "count"
+            },
+            "expiry_series": {
+              "op": "nunique",
+              "field": "expiry"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        },
+        "notes": "The full per-DTE table (at most 45 rows per ticker), retained in carry.json. A DTE with no dates is absent, which means zero within this source. listed_forecasts counts panel rows; entry-ms bounds are UTC midnight of the quote dates, not publication clocks."
+      },
+      "selection_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$coverage.records"
+        },
+        "params": {
+          "field": "selection_group",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "maximum": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "keys": [
+            "selection_group"
+          ],
+          "aggregates": {
+            "listed_dates": {
+              "op": "max",
+              "field": "listed_dates"
+            }
+          }
+        }
+      },
+      "maximum_value": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$maximum.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "listed_dates"
+        }
+      },
+      "maximizers": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "listed_dates",
+              "op": "==",
+              "value": "$maximum_value.table.all"
+            }
+          ]
+        }
+      },
+      "tie_break": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$maximizers.records"
+        },
+        "params": {
+          "keys": [
+            "selection_group"
+          ],
+          "aggregates": {
+            "days_to_expiry": {
+              "op": "min",
+              "field": "actual_calendar_dte"
+            }
+          }
+        },
+        "notes": "Deterministic argmax: the shortest exact DTE among equal largest date counts. An empty cohort refuses through the missing maximum reference."
+      },
+      "selected_dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$tie_break.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "days_to_expiry"
+        }
+      },
+      "winner": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$coverage.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$selected_dte.table.all"
+            }
+          ]
+        },
+        "notes": "The selected DTE's coverage row; collected into selected.jsonl."
+      },
+      "coverage_figure": {
+        "uses": "dskit.pipeline.libs.matplotlib:DeclaredFigure",
+        "inputs": {
+          "rows": "$coverage.records"
+        },
+        "params": {
+          "title": "$each",
+          "xlabel": "Exact calendar days to settlement close",
+          "ylabel": "Distinct entry dates (listed expiry, settled close)",
+          "filename": "coverage.png",
+          "marks": [
+            {
+              "kind": "line",
+              "x": "actual_calendar_dte",
+              "y": "listed_dates"
+            }
+          ]
+        },
+        "notes": "Run-local chart of the whole date-count distribution next to the table, not a fitted return CDF."
+      }
+    }
+  }
+}
