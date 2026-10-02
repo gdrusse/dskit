@@ -34,15 +34,19 @@ derivable from a prior step is typed in.
 | 1. Tradable dates | ticker; option-chain source; one configurable underlying-close source | dates per exact DTE 1-45 (table + chart); argmax DTE, ties to shorter |
 | 1b. Feature engineering | step-1 selected DTE (`selected.jsonl`); the prepared panel step 1 read; the ADR-0203 tail-data sources | step-1 cohort rows plus engineered families and expiry density, explicit nulls with reasons, `fe_<family>_status`; per-family summaries and clock notes (`carry.json`) |
 | 2. Feature availability | ticker; family set (implied CDF is one family); step-1 dates at the selected DTE | dates per family; dates for every non-empty family combination; per-date feature/family gaps |
-| 3. Holdout and folds | step-1 DTE and dates; step-2 availability; holdout share H (0.2), tau (0.9), train/validation sizes and retrain interval, all in dates | locked holdout dates; admitted families; training dates; fold table (train/val dates, boundaries, purge counts) |
+| 3. Holdout and folds | step-1 DTE and dates; step-2 availability; holdout share H (0.2), tau (0.9), train/validation sizes and retrain interval, all in dates | holdout_start/end and counts; admitted families; fold table (train/val boundary dates, date and week counts, purge counts); no training-dates file |
 
 - Step 1 has no CDF filter: "available" means any option with a valid bid/ask,
   since the MIO may select any. A missing implied CDF is a step-2 gap.
 - The holdout is locked first (last H of step-1 dates, purging earlier labels
   that reach it) and is the final frozen MIO test.
-- A family is admitted when available on at least tau of pre-holdout dates;
-  training uses complete-case dates. Gaps are assumed random for now, though
-  surface gaps cluster in 2011-2014. Rows are weighted equally.
+- A family is admitted when available on at least tau of pre-holdout dates.
+  Fold windows are sized by complete-case date counts, but steps 4-6 slice
+  each fold by date range and median-impute dates missing an admitted family
+  (about 8% of QQQ dev dates); no training-dates file is written. Owner
+  decision 2026-10-02 (option A): imputation is accepted, no complete-case
+  filter will be built. Gaps are assumed random for now, though surface gaps
+  cluster in 2011-2014. Rows are weighted equally.
 - Folds keep intraday_equities' rolling-origin shape (warm-up folds, retrain
   per fold) without its extra late periods. Windows and the retrain interval
   count dates, so retraining follows expiry frequency; embargo = selected DTE.

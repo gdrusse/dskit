@@ -1259,7 +1259,7 @@ def test_panel_exact_dte_keeps_only_the_actual_calendar_horizon(tmp_path, monkey
             ExactExpiryCDFPanel({**config, 'exact_dte': bad})
 
 
-@pytest.mark.parametrize('name', ['run-step5-model-zoo', 'run-step6-hpo'])
+@pytest.mark.parametrize('name', ['run-step4-feature-selection', 'run-step5-model-zoo', 'run-step6-hpo'])
 def test_step_configs_declare_the_one_exact_dte_the_study_expects(name):
     config = json.loads((Path(__file__).parents[1]/'configs'/f'{name}.json').read_text())
     horizon = config['data']['exact_dte']
