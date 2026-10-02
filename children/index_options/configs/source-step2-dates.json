@@ -1,0 +1,13 @@
+{
+  "path": "pipeline_runs/step2-feature-availability",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "dates"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Imports step 2's dates.jsonl (one row per cohort date and ticker with its available_<family> yes/no flags) for step 3: register it as source step2-dates and acquire stream dates into ./pipeline_runs/step2-dates-source. streams and formats keep step 2's combinations.jsonl (8,192 rows per ticker, a different stream in the same directory) out of the import. effective_field is quote_date because every onboarded row needs an instant and step 2 writes no publication clock (nor the asof_ms the ADR assumed for a rebuilt step 2). The path is relative to the working directory at acquire time and must equal the directory step 2's date_evidence writes to. Use a fresh onboarding root whenever step 2 is re-run, since acquired data is immutable."
+}

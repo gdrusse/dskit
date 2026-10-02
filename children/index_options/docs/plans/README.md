@@ -92,6 +92,19 @@ aside first. Cross-checks against run `cdf-horizon-coverage-2026-10-01-6ae71aa4`
 
 The earlier CDF-based selector and QQQ gap runbooks below are superseded.
 
+### Step 3 runbook
+
+Onboard step 2's `dates.jsonl` (`configs/source-step2-dates.json`, source/stream
+`step2-dates`/`dates`, root `./pipeline_runs/step2-dates-source`), then:
+
+    mkdir -p pipeline_runs/step3-holdout-folds
+    python -m dskit.pipeline run configs/run-step3-holdout-folds.json --asof 2026-10-01
+
+Writes `fold-table.jsonl` (sha256: `carry.json` `fold_evidence.provenance`) and
+`admission-and-metrics.jsonl` (`holdout.holdout_start`, admitted families) to
+`pipeline_runs/step3-holdout-folds/`; they feed `study.fold_table` in steps 5-6
+(`step4-7-configs`, which still says `pipeline_runs/step3/`). One ticker per file.
+
 ## Draft: Torch CDF feature families (2026-10-01)
 
 Planning only; feature choices and experiment design remain open.
