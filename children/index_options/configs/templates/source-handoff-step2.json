@@ -1,0 +1,11 @@
+{
+  "path": "${L.step2.handoff_dir}",
+  "layout": "${handoff.layout}",
+  "effective_field": "${S.quote_date}",
+  "effective_unit": "${handoff.effective_unit}",
+  "streams": [
+    "${stream}"
+  ],
+  "formats": "${handoff.formats}",
+  "notes": "Onboarding source config (localtables) for step2's hand-off file, written beside the step's config by the runner and passed to register-source. path is the directory holding only that file (nothing else lives there), streams the one stream it carries, effective_field the entry date every row has. Template, not a typed config: the values come from the hand-off args and the layout."
+}

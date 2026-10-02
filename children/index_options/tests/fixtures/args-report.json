@@ -1,0 +1,151 @@
+{
+  "notes": "Values for templates/report-spec.json: one in map (the report step's), as the runner would resolve it for one lane. Paths are placeholders the test rewrites into a temp directory; `report` is a copy of args.report and a pin test keeps it equal to the manifest's.",
+  "report": {
+    "T": "QQQ",
+    "W": "@WORK@",
+    "report": {
+      "notes": "Edit only here to change the report. Each section names its title, reader format, optional row path inside the document, whether it is required and (for sources inside a step's output directory) the file name. File names are what the study writes into its stage folders; a pin test checks they are the ones the study code names.",
+      "title": "Signal validation report",
+      "max_rows": 200,
+      "statements": [
+        {
+          "title": "Scope.",
+          "text": "Descriptive evidence: warm-up folds select, scored folds evaluate with frozen choices, and the holdout is never evaluated."
+        },
+        {
+          "title": "Gaps.",
+          "text": "n/a marks a value the model or stage did not produce, never a zero."
+        }
+      ],
+      "sections": {
+        "data_points_total": {
+          "title": "Data points: totals and holdout",
+          "format": "jsonl",
+          "rows": "",
+          "required": true,
+          "flatten": {
+            "separator": ", ",
+            "max_items": 12
+          }
+        },
+        "folds": {
+          "title": "Fold table",
+          "format": "jsonl",
+          "rows": "",
+          "required": true,
+          "caption": "train_dates is the nominal window of complete-case dates. The fit and calibration counts in the data-points tables are panel rows and include imputed dates, so fit plus calibration can differ from train_dates."
+        },
+        "data_points_development": {
+          "title": "Data points per warm-up fold",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "counts.json",
+          "caption": "Counts here are panel rows, imputed dates included; the Fold table's train_dates is the nominal complete-case window, so the two can differ."
+        },
+        "data_points_scored": {
+          "title": "Data points per scored fold",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "counts.json",
+          "caption": "Counts here are panel rows, imputed dates included; the Fold table's train_dates is the nominal complete-case window, so the two can differ."
+        },
+        "features_rounds": {
+          "title": "Feature selection rounds",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "features_final": {
+          "title": "Final feature set",
+          "format": "json",
+          "rows": "names",
+          "required": true
+        },
+        "features_by_family": {
+          "title": "Final feature count by family",
+          "format": "json",
+          "rows": "by_family",
+          "required": false
+        },
+        "features_zoo": {
+          "title": "Feature counts per zoo candidate",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "features_hpo": {
+          "title": "Feature counts per search candidate",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "losses_development": {
+          "title": "Training and validation losses, warm-up folds",
+          "format": "csv",
+          "rows": "",
+          "required": true,
+          "file": "fold_losses.csv"
+        },
+        "losses_scored": {
+          "title": "Training and validation losses, scored folds",
+          "format": "csv",
+          "rows": "",
+          "required": true,
+          "file": "fold_losses.csv"
+        },
+        "loss_metrics": {
+          "title": "Loss metrics",
+          "format": "json",
+          "rows": "metrics",
+          "required": true,
+          "file": "comparison.json"
+        },
+        "comparisons": {
+          "title": "Winner versus baselines, paired block bootstrap",
+          "format": "json",
+          "rows": "paired_block_intervals",
+          "required": true,
+          "file": "comparison.json"
+        },
+        "acceptance": {
+          "title": "Acceptance rule",
+          "format": "json",
+          "rows": "decision_acceptance",
+          "required": false,
+          "file": "comparison.json"
+        },
+        "identity": {
+          "title": "Stage identity hashes",
+          "format": "json",
+          "rows": "identity",
+          "required": true,
+          "file": "complete.json"
+        },
+        "snapshots": {
+          "title": "Source snapshots read",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "data_provenance.json"
+        }
+      },
+      "lane_field": "lane"
+    },
+    "admission": "@WORK@/step3/admission.jsonl",
+    "fold_table": "@WORK@/step3/folds.jsonl",
+    "selection_rounds": "@WORK@/step4/rounds.jsonl",
+    "core": "@WORK@/step4/core.json",
+    "zoo_rounds": "@WORK@/step5/rounds.jsonl",
+    "hpo_rounds": "@WORK@/step6/rounds.jsonl",
+    "development": "@WORK@/study/evaluate/development",
+    "scored": "@WORK@/study/evaluate/later",
+    "evaluation": "@WORK@/study/report",
+    "L": {
+      "report": {
+        "output": "@WORK@/out"
+      }
+    }
+  }
+}

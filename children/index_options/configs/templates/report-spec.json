@@ -1,0 +1,213 @@
+{
+  "notes": "TEMPLATE (neutral). Spec for dskit.pipeline.workflow_report, one report per lane. Every section's file, format, row path, title and required flag come from ${report.sections.<name>}; the sources are the step outputs this step reads (its in map), so a changed upstream output reruns the report, and workflow_report refuses when a source no longer hashes to the ledger. step names carry @${T}, the ledger key of this lane.",
+  "ledger": "${W}",
+  "output_dir": "${L.report.output}",
+  "title": "${report.title}: ${T}",
+  "required_steps": [
+    "step1@${T}",
+    "step1b@${T}",
+    "step2@${T}",
+    "step3@${T}",
+    "step4@${T}",
+    "step5@${T}",
+    "step6@${T}",
+    "step7@${T}"
+  ],
+  "max_rows": "${report.max_rows}",
+  "statements": "${report.statements}",
+  "sections": [
+    {
+      "name": "data_points_total",
+      "title": "${report.sections.data_points_total.title}",
+      "source": "${admission}",
+      "format": "${report.sections.data_points_total.format}",
+      "rows": "${report.sections.data_points_total.rows}",
+      "step": "step3@${T}",
+      "output": "admission",
+      "required": "${report.sections.data_points_total.required}",
+      "notes": "One row per ticker: development dates, holdout dates and rows, purged rows (step 3). The holdout is counted here and never evaluated.",
+      "flatten": "${report.sections.data_points_total.flatten}"
+    },
+    {
+      "name": "folds",
+      "title": "${report.sections.folds.title}",
+      "source": "${fold_table}",
+      "format": "${report.sections.folds.format}",
+      "rows": "${report.sections.folds.rows}",
+      "step": "step3@${T}",
+      "output": "fold_table",
+      "required": "${report.sections.folds.required}",
+      "notes": "The rolling-origin fold table: role (warmup or scored), train and validation boundaries, date and week counts.",
+      "caption": "${report.sections.folds.caption}"
+    },
+    {
+      "name": "data_points_development",
+      "title": "${report.sections.data_points_development.title}",
+      "source": "${development}/${report.sections.data_points_development.file}",
+      "format": "${report.sections.data_points_development.format}",
+      "rows": "${report.sections.data_points_development.rows}",
+      "step": "step7@${T}",
+      "output": "development",
+      "required": "${report.sections.data_points_development.required}",
+      "bound": "${development}",
+      "notes": "Per warm-up fold: panel rows and dates in the fit, calibration (early-stopping) and validation bands.",
+      "caption": "${report.sections.data_points_development.caption}"
+    },
+    {
+      "name": "data_points_scored",
+      "title": "${report.sections.data_points_scored.title}",
+      "source": "${scored}/${report.sections.data_points_scored.file}",
+      "format": "${report.sections.data_points_scored.format}",
+      "rows": "${report.sections.data_points_scored.rows}",
+      "step": "step7@${T}",
+      "output": "scored",
+      "required": "${report.sections.data_points_scored.required}",
+      "bound": "${scored}",
+      "notes": "Per scored fold: panel rows and dates in the fit, calibration (early-stopping) and validation bands.",
+      "caption": "${report.sections.data_points_scored.caption}"
+    },
+    {
+      "name": "features_rounds",
+      "title": "${report.sections.features_rounds.title}",
+      "source": "${selection_rounds}",
+      "format": "${report.sections.features_rounds.format}",
+      "rows": "${report.sections.features_rounds.rows}",
+      "step": "step4@${T}",
+      "output": "rounds",
+      "required": "${report.sections.features_rounds.required}",
+      "notes": "Feature selection: one row per round (family tried, features, score, winner)."
+    },
+    {
+      "name": "features_final",
+      "title": "${report.sections.features_final.title}",
+      "source": "${core}",
+      "format": "${report.sections.features_final.format}",
+      "rows": "${report.sections.features_final.rows}",
+      "step": "step4@${T}",
+      "output": "core",
+      "required": "${report.sections.features_final.required}",
+      "notes": "The final selected feature set."
+    },
+    {
+      "name": "features_by_family",
+      "title": "${report.sections.features_by_family.title}",
+      "source": "${core}",
+      "format": "${report.sections.features_by_family.format}",
+      "rows": "${report.sections.features_by_family.rows}",
+      "step": "step4@${T}",
+      "output": "core",
+      "required": "${report.sections.features_by_family.required}",
+      "notes": "Final feature count by family; absent when the selection output carries no per-family counts."
+    },
+    {
+      "name": "features_zoo",
+      "title": "${report.sections.features_zoo.title}",
+      "source": "${zoo_rounds}",
+      "format": "${report.sections.features_zoo.format}",
+      "rows": "${report.sections.features_zoo.rows}",
+      "step": "step5@${T}",
+      "output": "rounds",
+      "required": "${report.sections.features_zoo.required}",
+      "notes": "Model zoo: one row per candidate and variant with its feature count."
+    },
+    {
+      "name": "features_hpo",
+      "title": "${report.sections.features_hpo.title}",
+      "source": "${hpo_rounds}",
+      "format": "${report.sections.features_hpo.format}",
+      "rows": "${report.sections.features_hpo.rows}",
+      "step": "step6@${T}",
+      "output": "rounds",
+      "required": "${report.sections.features_hpo.required}",
+      "notes": "Hyperparameter search: one row per candidate and variant with its feature count and warm-up skill."
+    },
+    {
+      "name": "losses_development",
+      "title": "${report.sections.losses_development.title}",
+      "source": "${development}/${report.sections.losses_development.file}",
+      "format": "${report.sections.losses_development.format}",
+      "rows": "${report.sections.losses_development.rows}",
+      "step": "step7@${T}",
+      "output": "development",
+      "required": "${report.sections.losses_development.required}",
+      "bound": "${development}",
+      "notes": "Training, calibration and validation losses per warm-up fold and model, with epochs run and the best epoch (early stopping)."
+    },
+    {
+      "name": "losses_scored",
+      "title": "${report.sections.losses_scored.title}",
+      "source": "${scored}/${report.sections.losses_scored.file}",
+      "format": "${report.sections.losses_scored.format}",
+      "rows": "${report.sections.losses_scored.rows}",
+      "step": "step7@${T}",
+      "output": "scored",
+      "required": "${report.sections.losses_scored.required}",
+      "bound": "${scored}",
+      "notes": "Training, calibration and validation losses per scored fold and model, with epochs run and the best epoch (early stopping)."
+    },
+    {
+      "name": "loss_metrics",
+      "title": "${report.sections.loss_metrics.title}",
+      "source": "${evaluation}/${report.sections.loss_metrics.file}",
+      "format": "${report.sections.loss_metrics.format}",
+      "rows": "${report.sections.loss_metrics.rows}",
+      "step": "step7@${T}",
+      "output": "report",
+      "required": "${report.sections.loss_metrics.required}",
+      "bound": "${evaluation}",
+      "notes": "Frozen-choice scores on the scored folds: wing twCRPS, decision Brier, CRPS and the rest, with equal-cell skill versus the reference."
+    },
+    {
+      "name": "comparisons",
+      "title": "${report.sections.comparisons.title}",
+      "source": "${evaluation}/${report.sections.comparisons.file}",
+      "format": "${report.sections.comparisons.format}",
+      "rows": "${report.sections.comparisons.rows}",
+      "step": "step7@${T}",
+      "output": "report",
+      "required": "${report.sections.comparisons.required}",
+      "bound": "${evaluation}",
+      "notes": "Paired date-block bootstrap intervals (lo, hi, point) of skill versus each comparison reference."
+    },
+    {
+      "name": "acceptance",
+      "title": "${report.sections.acceptance.title}",
+      "source": "${evaluation}/${report.sections.acceptance.file}",
+      "format": "${report.sections.acceptance.format}",
+      "rows": "${report.sections.acceptance.rows}",
+      "step": "step7@${T}",
+      "output": "report",
+      "required": "${report.sections.acceptance.required}",
+      "bound": "${evaluation}",
+      "notes": "The preregistered acceptance rule applied to the winner; descriptive only."
+    },
+    {
+      "name": "identity",
+      "title": "${report.sections.identity.title}",
+      "source": "${scored}/${report.sections.identity.file}",
+      "format": "${report.sections.identity.format}",
+      "rows": "${report.sections.identity.rows}",
+      "step": "step7@${T}",
+      "output": "scored",
+      "required": "${report.sections.identity.required}",
+      "bound": "${scored}",
+      "notes": "Identity hashes of the scored stage: config, panel, provenance, inventory, implementation."
+    },
+    {
+      "name": "snapshots",
+      "title": "${report.sections.snapshots.title}",
+      "source": "${scored}/${report.sections.snapshots.file}",
+      "format": "${report.sections.snapshots.format}",
+      "rows": "${report.sections.snapshots.rows}",
+      "step": "step7@${T}",
+      "output": "scored",
+      "required": "${report.sections.snapshots.required}",
+      "bound": "${scored}",
+      "notes": "Upstream source and snapshot fingerprints the stage read."
+    }
+  ],
+  "lane": {
+    "field": "${report.lane_field}",
+    "value": "${T}"
+  }
+}

@@ -517,7 +517,7 @@ def test_surface_dynamics_are_causal_by_expiry_and_emit_proxy_moments():
                          'chain_log_skew25': i/200, 'chain_log_curvature25': i/300,
                          'chain_log_put_call_oi': .2,
                          'rn_q_1000': -1., 'rn_q_5000': 0., 'rn_q_9000': 2.})
-    out = ExactExpiryCDFPanel.add_surface_dynamics(pd.DataFrame(rows), [.1, .5, .9])
+    out = ExactExpiryCDFPanel.add_surface_dynamics(pd.DataFrame(rows), [.1, .5, .9], (1, 5, 22), 22, 252)
     first = out[out.expiry.eq('2020-03-20')].sort_values('quote_date')
     assert first.chain_log_atm_iv_change_22.iloc[-1] == pytest.approx(.22)
     assert first.chain_log_atm_iv_change_22.iloc[:22].isna().all()
@@ -528,7 +528,7 @@ def test_surface_dynamics_are_causal_by_expiry_and_emit_proxy_moments():
 
 def test_fred_daily_availability_waits_for_one_complete_exchange_session():
     dates = pd.to_datetime(['2020-07-01', '2020-07-02'])
-    available = ExactExpiryCDFPanel._availability_dates(dates, lag_sessions=1)
+    available = ExactExpiryCDFPanel._availability_dates(dates, 'XNYS', lag_sessions=1)
     assert available.strftime('%Y-%m-%d').tolist() == ['2020-07-06', '2020-07-07']
 
 
@@ -581,7 +581,7 @@ def test_matched_dte_vrp_uses_requested_sessions_not_actual_dte():
         'chain_atm_iv': [.20], 'rv_22': [.01], 'sessions_to_expiry': [10],
         'actual_calendar_dte': [99],
     })
-    out = ExactExpiryCDFPanel.add_matched_dte_vrp(frame.copy(), 1e-3)
+    out = ExactExpiryCDFPanel.add_matched_dte_vrp(frame.copy(), 1e-3, 22, 252)
     implied = .20**2*10/252
     realized = .01**2*10
     assert out.matched_implied_variance.iloc[0] == pytest.approx(implied)
@@ -589,7 +589,7 @@ def test_matched_dte_vrp_uses_requested_sessions_not_actual_dte():
     assert out.matched_vrp.iloc[0] == pytest.approx(implied-realized)
     changed = frame.copy()
     changed.actual_calendar_dte = 2
-    other = ExactExpiryCDFPanel.add_matched_dte_vrp(changed, 1e-3)
+    other = ExactExpiryCDFPanel.add_matched_dte_vrp(changed, 1e-3, 22, 252)
     columns = ['matched_implied_variance', 'matched_trailing_variance',
                'matched_vrp', 'matched_vrp_ratio']
     pd.testing.assert_frame_equal(out[columns], other[columns])
@@ -1195,7 +1195,8 @@ def test_panel_exact_holiday_settlement_missing_path_and_dividend_flag(tmp_path,
                                   'symbols': {'IWM': 'RVX'}, 'price_source': 'fixture', 'iv_source': 'fixture',
                                   'since': '2023-01-01', 'max_dte': 45, 'lags': 22,
                                   'windows': [1, 5, 22, 66], 'feature_gap_days': 7,
-                                  'reference_floor': .001, 'spot_tolerance': .02})
+                                  'reference_floor': .001, 'spot_tolerance': .02,
+                                  'dividend_field': 'dividend_amount'})
     out = adapter.read()
     assert out.settlement_date.tolist() == ['2023-06-30', '2023-07-03']
     assert out.sessions_to_expiry.tolist() == [1, 2]

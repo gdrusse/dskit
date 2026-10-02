@@ -1,0 +1,252 @@
+{
+  "name": "step2-feature-availability",
+  "notes": "NEUTRAL TEMPLATE, step 2: which feature families are usable on which dates. Every project value is a ${name.path} placeholder filled from the step's in map: T the ticker (one per document, the runner's lane), panel_root and target_root (the onboarding stores of step 1b's panel and step 1's target dates) with handoff (their source/stream names and effective_unit), families.availability (the family spec) and families.schema_fields (the panel's columns), S schema field names, L output locations, W run root. One family-availability node per ticker replaces a check, a summary and a fan-out join per family: the families are data, so a different source or family count changes the in map and never this file. A date is yes for a family only when every row on it satisfies the family (finite fields plus the family's own require conditions); one bad row makes it no, so a date has exactly one pattern. Outputs, one writer each, rows carry the ticker: dates (per date flags), summary (per family counts), combinations (dates on which every family of each subset is yes; the empty subset is the cohort total, 2**n rows per ticker), cohort (date count and bounds). The cohort is the step 1b panel for the ticker; every cohort date must be one of step 1's target dates (a strict join, the rule step 1b applies to the same rows, which pinned the panel's row count to the cohort it verified). The counts are NOT compared for equality: step 1 lists every entry date with a settled close, the panel only the dates with an expiry at the horizon, so the cohort is a proper subset of step 1 and a date step 1 lacks means the two steps ran on different sources. Availability is measured on the cohort, never used to choose it. Finite values give no historical known-at certification. The writers refuse to overwrite and need their parent directory. Internal derived names (cohort_dates, dates, rows) are literals because the expander substitutes values, never keys.",
+  "pipeline": {
+    "panel": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${panel_root}",
+        "source": "${handoff.source}",
+        "stream": "${handoff.streams.panel}",
+        "key_fields": [
+          "${S.symbol}",
+          "${S.quote_date}",
+          "${S.expiry}"
+        ],
+        "ts_field": "${S.quote_date}",
+        "ts_unit": "${handoff.effective_unit}",
+        "ts_out": "${S.date_ms}"
+      },
+      "notes": "Step 1b's panel as an onboarded store reference. key_fields is the row identity: rows that differ only elsewhere collide and refuse loudly. ts_out is the schema's millisecond field, not the default, so a panel that already carries the default name does not refuse."
+    },
+    "targets": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${target_root}",
+        "source": "${handoff.source}",
+        "stream": "${handoff.streams.target_dates}",
+        "key_fields": [
+          "${S.symbol}",
+          "${S.quote_date}"
+        ]
+      },
+      "notes": "Step 1's records (one per ticker and entry date), read only to pin the cohort's date count."
+    },
+    "date_rows": {
+      "uses": "concat",
+      "inputs": {
+        "dates__each": "$availability.dates"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "date_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$date_rows.merged"
+      },
+      "params": {
+        "path": "${L.step2.dates}",
+        "source": "One row per cohort date and ticker with an available_<family> yes/no flag per family"
+      }
+    },
+    "summary_rows": {
+      "uses": "concat",
+      "inputs": {
+        "summary__each": "$tagged_summary.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "summary_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$summary_rows.merged"
+      },
+      "params": {
+        "path": "${L.step2.summary}",
+        "source": "Per ticker and family: rows, present, finite and missing counts, dates yes and no, first and last yes date"
+      }
+    },
+    "combination_rows": {
+      "uses": "concat",
+      "inputs": {
+        "combinations__each": "$tagged_combinations.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "combination_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$combination_rows.merged"
+      },
+      "params": {
+        "path": "${L.step2.combinations}",
+        "source": "Per ticker, distinct cohort dates for every subset of families (2**n rows); the empty subset is the cohort total"
+      }
+    },
+    "cohort_out_rows": {
+      "uses": "concat",
+      "inputs": {
+        "cohort__each": "$tagged_cohort.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "cohort_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$cohort_out_rows.merged"
+      },
+      "params": {
+        "path": "${L.step2.cohort}",
+        "source": "Per ticker, the cohort's date count, row count and first and last date"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "${W}"
+  },
+  "foreach": {
+    "keys": [
+      "${T}"
+    ],
+    "notes": "One independent chain per ticker; the symbol arrives as the foreach key. A ticker absent from step 1 or from the panel refuses at the agreement check below.",
+    "pipeline": {
+      "step1_rows": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$targets.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's step-1 target dates."
+      },
+      "step1_dates": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$step1_rows.records"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "value": "${S.symbol}"
+        },
+        "notes": "Step 1's entry dates of this ticker as a lookup (date -> symbol), the list the cohort is checked against."
+      },
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$panel.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "${S.target}",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "This ticker's settled rows of the step 1b panel. No feature or CDF clause may ever be added here: availability is measured on this cohort, not used to choose it."
+      },
+      "checked_cohort": {
+        "uses": "join",
+        "inputs": {
+          "records": "$cohort.records",
+          "listed_in_step1": "$step1_dates.table"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "how": "strict"
+        },
+        "notes": "Cohort rule (same as step 1b's cohort_check): every date of the step 1b panel must be one of step 1's target dates, else the join refuses. Step 1b already pinned its written row count to the cohort it verified, so this containment is the whole agreement; the two counts are NOT equal and are not compared: step 1 lists every entry date with a settled close (holiday fallbacks included), the panel only dates with an expiry at the horizon. Availability is measured on the cohort, never used to choose it."
+      },
+      "availability": {
+        "uses": "family-availability",
+        "inputs": {
+          "records": "$checked_cohort.records"
+        },
+        "params": {
+          "families": "${families.availability}",
+          "schema_fields": "${families.schema_fields}",
+          "date_field": "${S.quote_date}",
+          "group_keys": [
+            "${S.symbol}"
+          ]
+        },
+        "notes": "The whole family reduction in one node: per-date flags, per-family summary, subset counts and cohort bounds. Families come from the in map; nothing here names one."
+      },
+      "tagged_summary": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$availability.summary"
+        },
+        "params": {
+          "field": "${S.symbol}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "summary, combinations and cohort rows carry no ticker; it is stamped so the tickers can share one file (dates already carry it as the group key)."
+      },
+      "tagged_combinations": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$availability.combinations"
+        },
+        "params": {
+          "field": "${S.symbol}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        }
+      },
+      "tagged_cohort": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$availability.cohort"
+        },
+        "params": {
+          "field": "${S.symbol}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

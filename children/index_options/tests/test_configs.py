@@ -184,6 +184,28 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-store-option-archive.json",
         "configs/source-store-raw-chain-features.json", "index_options/datafiles.py",
         "tests/test_config_data_sources.py", "tests/test_datafiles.py",
+        # ADR-0226, ADR-0229: the 7-step workflow for arbitrary tickers/families:
+        # step1 (target dates), step1b (feature engineering), step2 (availability),
+        # step3 (holdout/folds), step4 (forward selection), step5 (zoo), step6 (HPO),
+        # step7 (evaluate + report). Template configs, workflow.json, tests, fixtures.
+        "configs/workflow.json",
+        "configs/templates/step1-target-dates.json",
+        "configs/templates/step1b-feature-engineering.json",
+        "configs/templates/step2-feature-availability.json",
+        "configs/templates/step3-holdout-folds.json",
+        "configs/templates/step4-feature-selection.json",
+        "configs/templates/step5-model-zoo.json",
+        "configs/templates/step6-hpo.json",
+        "configs/templates/report-spec.json",
+        "configs/templates/source-handoff-step1.json",
+        "configs/templates/source-handoff-step1b.json",
+        "configs/templates/source-handoff-step2.json",
+        "tests/test_workflow_pins.py", "tests/test_study_literals.py", "tests/test_feature_templates.py",
+        "tests/test_step1_template.py", "tests/test_study_templates.py",
+        "tests/test_new_family.py", "tests/test_step7_report.py",
+        "tests/fixtures/args-step1.json", "tests/fixtures/args-features.json",
+        "tests/fixtures/args-report.json", "tests/fixtures/args-study.json",
+        "docs/plans/archive-2026-10-02.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -201,8 +223,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus ADR-0195's 28 select documents (14 cells x two rungs) = 262,
     # plus ADR-0196's ledger_studies.py and its test = 264, plus ADR-0197's 10 documents and
     # test_debit_backtest.py = 275, plus the 78 files origin/main gained after ADR-0197 = 353,
-    # plus the 21 steps 1-6 and onboarding-store files = 374
-    assert len(actual) == 374
+    # plus the 21 steps 1-6 and onboarding-store files = 374, plus ADR-0226/0229's workflow
+    # (workflow.json, 11 templates, 7 tests, 4 fixtures, 1 archive doc) = 24 new = 398
+    assert len(actual) == 398
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -2463,11 +2486,14 @@ def test_step1b_reader_params_equal_the_tail_data_block_and_its_columns_the_atta
     reader = _fe(child_root)["pipeline"]["panel"]["params"]
     tail = json.loads((child_root / TAIL_DATA).read_text())["data"]
     assert ExactExpiryPanelRead.validate_params(reader) == []
-    assert set(reader) - {"columns"} == set(tail) - {"archive_root", "fred_market_symbols"}
+    study_conventions = {"reference_window", "change_lags", "directional_windows",
+                         "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
+    assert set(reader) - {"columns"} - study_conventions == (
+        set(tail) - {"archive_root", "fred_market_symbols"})      # the frozen tail config omits them
     for key, value in reader.items():
         if key in ("surface", "lifecycle", "chain_features"):  # store references now (ADR-0225)
             assert value["relpath"] == os.path.basename(tail[key]), key   # the same file
-        elif key not in ("columns", "market_symbols"):
+        elif key not in {"columns", "market_symbols"} | study_conventions:
             assert value == tail[key], key                    # key by key, values unchanged
     markets = reader["market_symbols"]
     assert markets == {k: tail["market_symbols"][k] for k in markets} and set(markets) == {

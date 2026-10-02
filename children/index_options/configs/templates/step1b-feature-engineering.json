@@ -1,0 +1,348 @@
+{
+  "name": "step1b-feature-engineering",
+  "notes": "NEUTRAL TEMPLATE, step 1b: the engineered per-date feature panel between step 1 (target dates) and step 2 (feature availability). Every project value is a ${name.path} placeholder filled from the step's in map: T tickers, H horizon (calendar days), O the prepared panel's store reference, target_root and handoff (step 1's onboarding store and the hand-off source/stream names: step 1's target dates are read back from it), F the feature stores, V ticker to volatility-index map, windows, G limits, C chain proxy, M market series, families (engineered, carried, attach, columns, pending), S schema field names, L output locations (layout), W run root. Per ticker it keeps the panel rows at horizon H that have a settled return and attaches the engineered families by identity, plus the expiry-density count. Every cohort date is checked to be one of step 1's target dates (strict join) and the written row count is pinned to that check. The attach node refuses a cohort row the reader lacks and any field the two sources disagree on. A field that cannot be computed or whose entry-time availability cannot be established is an explicit null with its reason in <prefix><entry>_reasons. Output: one row per ticker, date and expiry, every prepared-panel field unchanged plus the engineered ones. Internal port and derived field names (expiry_density, listed_in_step1, rows) are literals because the expander substitutes values, never keys. M is the whole market-series map: the reader computes every series in it and families.columns keeps only the engineered ones. Keyed families (families.keyed, any onboarded table keyed by entity and date) are read by panel_keyed and attached by the same attach node. One document runs ONE ticker (T is the runner's lane), so V is narrowed to that ticker.",
+  "pipeline": {
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${O.root}",
+        "source": "${O.source}",
+        "stream": "${O.stream}",
+        "key_fields": "${O.key_fields}"
+      },
+      "notes": "The prepared option panel step 1 read, named by O (store reference). There is deliberately no ts_field: ObservationRows would stamp a millisecond field into every row and refuse a row that already carries it; the next step stamps its own when it reads this step's output."
+    },
+    "step1_targets": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${target_root}",
+        "source": "${handoff.source}",
+        "stream": "${handoff.streams.target_dates}",
+        "key_fields": [
+          "${S.symbol}",
+          "${S.quote_date}"
+        ]
+      },
+      "notes": "Step 1's target-dates records, onboarded as a store reference like any other stream (target). One record per ticker and entry date with a settled close; they are the date universe the cohort below must sit inside."
+    },
+    "panel": {
+      "uses": "index_options.nodes:ExactExpiryPanelRead",
+      "params": {
+        "root": "${F.root}",
+        "surface": "${F.surface}",
+        "lifecycle": "${F.lifecycle}",
+        "chain_features": "${F.chain_features}",
+        "raw_chain": "${C}",
+        "symbols": "${V}",
+        "market_symbols": "${M}",
+        "price_source": "${F.price_source}",
+        "iv_source": "${F.iv_source}",
+        "since": "${G.since}",
+        "max_dte": "${G.max_dte}",
+        "lags": "${G.lags}",
+        "windows": "${windows.returns}",
+        "feature_gap_days": "${G.feature_gap_days}",
+        "reference_floor": "${G.reference_floor}",
+        "spot_tolerance": "${G.spot_tolerance}",
+        "surface_features": "${G.surface_features}",
+        "ohlc_windows": "${windows.ohlc}",
+        "matched_dte_vrp": "${G.matched_dte_vrp}",
+        "reference_window": "${G.reference_window}",
+        "change_lags": "${G.change_lags}",
+        "directional_windows": "${windows.directional}",
+        "periods_per_year": "${G.periods_per_year}",
+        "calendar": "${G.calendar}",
+        "calendar_pad_days": "${G.calendar_pad_days}",
+        "dividend_field": "${F.dividend_field}",
+        "columns": "${families.columns}"
+      },
+      "notes": "The panel reader (an existing node, no formula restated), run once for every ticker and narrowed to families.columns: the identity, agreed and engineered columns. Its columns must equal what the attach node expects, or the attach refuses. F holds the store references (source, stream, relpath) resolved against F.root, V maps each ticker to its volatility index, C is the chain-proxy limits, M the market series, G the limits and windows the lookback windows."
+    },
+    "panel_keyed": {
+      "uses": "dskit.pipeline.libs.observation_tables:ObservationTables",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "key": "${families.keyed_key}",
+        "tables": "${families.keyed_tables}",
+        "age_suffix": "${families.keyed_naming.age}",
+        "missing_suffix": "${families.keyed_naming.missing}"
+      },
+      "notes": "Keyed families (families.keyed): each is a table in an onboarded store keyed by entity and date, read through the same store seam as every other source and written onto the reader's rows by key; the attach node below then attaches its columns like any engineered family (one joiner, not two). No keyed family declared means an empty tables block and the reader's rows pass through unchanged. An as-of table (max_age_days) matches the latest prior row within the age and writes <field>_age_days/_missing companions; a plain table matches the exact date. Nothing is imputed."
+    },
+    "panel_rows": {
+      "uses": "concat",
+      "inputs": {
+        "features__each": "$features.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      },
+      "notes": "The tickers' engineered rows as one stream for the writer."
+    },
+    "expected_rows": {
+      "uses": "concat",
+      "inputs": {
+        "checked__each": "$checked_count.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each count row carries its own symbol"
+      },
+      "notes": "One verified-cohort count per ticker, to total them."
+    },
+    "expected_sum": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$expected_rows.merged"
+      },
+      "params": {
+        "keys": [
+          "${S.selection_group}"
+        ],
+        "aggregates": {
+          "rows": {
+            "op": "sum",
+            "field": "rows"
+          }
+        }
+      },
+      "notes": "Cohort rows confirmed to be step-1 dates, summed over the tickers run: the number of rows this step must write."
+    },
+    "expected_value": {
+      "uses": "keyby",
+      "inputs": {
+        "records": "$expected_sum.records"
+      },
+      "params": {
+        "key": "${S.selection_group}",
+        "value": "rows"
+      }
+    },
+    "panel_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$panel_rows.merged"
+      },
+      "params": {
+        "path": "${L.step1b.panel}",
+        "source": "Step-1 cohort rows at the selected exact DTE with engineered features; onboarded through source-feature-panel.json as step 2's data source",
+        "expect": "$expected_value.table.all"
+      },
+      "notes": "The step 1b output. expect pins the written row count to the cohort rows checked against step 1, so a source or ticker that changed between the steps refuses. The writer refuses to overwrite and needs its parent directory; to repeat, move the output aside."
+    },
+    "pending_inputs": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "pending": "${families.pending}"
+        }
+      },
+      "notes": "Declared, not computed: inputs this step is waiting for (families.pending)."
+    }
+  },
+  "outputs": {
+    "run_root": "${W}"
+  },
+  "foreach": {
+    "keys": [
+      "${T}"
+    ],
+    "notes": "One independent chain per ticker; the symbol arrives as the foreach key, never typed in a node. Each ticker must appear in the prepared panel and in step 1's target dates.",
+    "pipeline": {
+      "selection": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$step1_targets.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's step-1 target dates."
+      },
+      "target_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$selection.records"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "value": "${S.symbol}"
+        },
+        "notes": "Step 1's dates for this ticker as a side table, for the membership check below."
+      },
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "${S.dte}",
+              "op": "==",
+              "value": "${H}"
+            },
+            {
+              "field": "${S.target}",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "The settled-row predicate at the horizon H, now given as an input instead of read from a selection file. No feature clause may be added here: features are attached to the cohort, never used to choose it."
+      },
+      "cohort_check": {
+        "uses": "join",
+        "inputs": {
+          "records": "$cohort.records",
+          "listed_in_step1": "$target_by_date.table"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "how": "strict"
+        },
+        "notes": "Membership check only; its output feeds the row-count pin, never the features. A cohort date that step 1 does not list refuses naming the row, so this step can never describe dates step 1 did not."
+      },
+      "checked_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$cohort_check.records"
+        },
+        "params": {
+          "field": "${S.selection_group}",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "checked_count": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$checked_group.records"
+        },
+        "params": {
+          "keys": [
+            "${S.symbol}",
+            "${S.selection_group}"
+          ],
+          "aggregates": {
+            "rows": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "Cohort rows verified against step 1, per ticker: what the writer must find."
+      },
+      "horizon_rows": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "${S.dte}",
+              "op": ">=",
+              "value": 1
+            },
+            {
+              "field": "${S.planned_dte}",
+              "op": "<=",
+              "value": "${H}"
+            },
+            {
+              "field": "${S.target}",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "Every settled expiry of this ticker listed within the selected horizon, BEFORE the cohort filter (a cohort-first count would be 1 on every row). The bound is the planned calendar_dte: it is known at entry from regular holidays, where the actual settlement date is label information."
+      },
+      "density": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$horizon_rows.records"
+        },
+        "params": {
+          "keys": [
+            "${S.symbol}",
+            "${S.quote_date}"
+          ],
+          "aggregates": {
+            "expiry_density": {
+              "op": "nunique",
+              "field": "${S.expiry}"
+            }
+          }
+        }
+      },
+      "density_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$density.records"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "value": "expiry_density"
+        }
+      },
+      "dense": {
+        "uses": "join",
+        "inputs": {
+          "records": "$cohort.records",
+          "expiry_density": "$density_by_date.table"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "how": "left",
+          "unmatched_fill": {
+            "expiry_density": null
+          }
+        },
+        "notes": "A date whose only cohort expiry has a planned DTE above the selected one (an unscheduled closure moved its settlement earlier) gets a declared null, counted in the summary."
+      },
+      "features": {
+        "uses": "attach-by-identity",
+        "inputs": {
+          "records": "$dense.records",
+          "table": "$panel_keyed.records"
+        },
+        "params": {
+          "identity": "${families.attach.identity}",
+          "agree_fields": "${families.attach.agree_fields}",
+          "max_absent_fraction": "${families.attach.max_absent_fraction}",
+          "column_prefix": "${families.attach.column_prefix}",
+          "families": "${families.engineered}",
+          "carried": "${families.carried}"
+        },
+        "notes": "Attaches the reader's engineered families to the cohort by identity. agree_fields are fields both sources hold and must equal on a matched identity, so a prepared panel and a reader built from different sources refuse. max_absent_fraction 0 refuses any cohort row the reader lacks; raise it only to a fraction the refusal message reports and you have explained. A withheld field is null on every row with its reason in <prefix><entry>_reasons; lifting a withhold is a JSON edit citing the audit. The table is the reader's rows plus the keyed families' columns (panel_keyed)."
+      }
+    }
+  }
+}

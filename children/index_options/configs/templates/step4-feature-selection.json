@@ -1,0 +1,104 @@
+{
+  "notes": "TEMPLATE (neutral). The candidate blocks (one per family set, keyed by name, each a full model spec with feature_indices) arrive whole as ${selection.candidates}; the runner generates them from step 3's admitted families and ${features}, so no family name lives here.  STEP 4 feature selection, forward step 1 (owner rules: forward over families with no cap; warm-up folds only; wing-weighted twCRPS selection). Candidates = the core (return history + realized volatility + horizon/scale context) alone and core + each other family, using TorchCDF feature_indices (ADR-0224) over one shared panel. Families and their columns come from step 2's family_contracts; drop any family step 3 did not admit. Next forward step: copy this file, make the winner the new core, and add each remaining family; stop when no candidate beats the incumbent. Open owner rules not yet expressible in the study: within-family elimination, PCA on continuous fields only, and the 25%-std tie rule (selection is by mean warm-up wing skill). All 18 open-interest-derived columns are excluded from every candidate: ADR-0217 (accepted) withholds them because the OI publication clock is unverified. Keep only candidates whose added family was admitted by step 3 (and set max_candidates to match).",
+  "data": {
+    "root": "${F.root}",
+    "surface": "${F.surface}",
+    "lifecycle": "${F.lifecycle}",
+    "archive_root": "${F.archive_root}",
+    "chain_features": "${F.chain_features}",
+    "raw_chain": "${C}",
+    "symbols": "${V}",
+    "market_symbols": "${M}",
+    "fred_market_symbols": "${G.fred}",
+    "price_source": "${F.price_source}",
+    "iv_source": "${F.iv_source}",
+    "since": "${G.since}",
+    "max_dte": "${G.max_dte}",
+    "lags": "${G.lags}",
+    "windows": "${windows.returns}",
+    "feature_gap_days": "${G.feature_gap_days}",
+    "reference_floor": "${G.reference_floor}",
+    "spot_tolerance": "${G.spot_tolerance}",
+    "surface_features": "${G.surface_features}",
+    "ohlc_windows": "${windows.ohlc}",
+    "matched_dte_vrp": "${G.matched_dte_vrp}",
+    "reference_window": "${G.reference_window}",
+    "change_lags": "${G.change_lags}",
+    "directional_windows": "${windows.directional}",
+    "periods_per_year": "${G.periods_per_year}",
+    "calendar": "${G.calendar}",
+    "calendar_pad_days": "${G.calendar_pad_days}",
+    "dividend_field": "${F.dividend_field}",
+    "decision_regions": {
+      "archive_root": "${F.archive_root}",
+      "max_chain_rows": "${regions.max_chain_rows}",
+      "panel_years": "${regions.panel_years}",
+      "clock": "${regions.clock}",
+      "limits": "${regions.limits}",
+      "chain_rule": "${regions.chain_rule}"
+    },
+    "exact_dte": "${H}",
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+  },
+  "diagnostic": {
+    "strikes_z": "${resolutions.strikes_z}",
+    "integration_points": "${resolutions.integration_points}"
+  },
+  "study": {
+    "features": "${features}",
+    "group": "${S.symbol}",
+    "date": "${S.quote_date}",
+    "end": "${S.settlement}",
+    "horizon": "${S.dte}",
+    "target": "${S.target}",
+    "reference": "${S.reference}",
+    "identity": [
+      "${S.symbol}",
+      "${S.quote_date}",
+      "${S.expiry}"
+    ],
+    "series_identity": [
+      "${S.symbol}",
+      "${S.expiry}"
+    ],
+    "decision_context": "${S.decision_context}",
+    "output": "${L.step4.study_output}",
+    "samples": "${resolutions.samples}",
+    "tail_intervals": "${resolutions.tail_intervals}",
+    "tail_points": "${resolutions.tail_points}",
+    "calibration_knots": "${resolutions.calibration_knots}",
+    "reference_model": "${references.model}",
+    "comparison_references": "${references.comparison}",
+    "bootstrap": "${bootstrap}",
+    "models": "${references.models}",
+    "decision_acceptance": "${acceptance}",
+    "fold_table": {
+      "path": "${fold_table.path}",
+      "sha256": "${fold_table.sha256}",
+      "holdout_start": "${fold_table.holdout_start}",
+      "cal_n": "${folds.cal_n}",
+      "roles": "${folds.roles}"
+    },
+    "wing_metrics": "${G.wing_metrics}",
+    "notes": "Folds come from step 3's fold table (ADR-0222/0223), which carries date boundaries and complete-case counts only: the study slices every panel row inside a fold's boundaries and median-imputes the dates missing an admitted family (about 8% of QQQ dev dates), so training is NOT complete-case. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
+  },
+  "experiment": {
+    "output": "${L.step4.output}",
+    "max_candidates": "${selection.max_candidates}",
+    "candidates": "${selection.candidates}",
+    "candidate_groups": "${selection.groups}",
+    "search_partitions": "${selection.partitions}",
+    "task_features": "${G.task_features}",
+    "selection_metric": "${selection.metric}",
+    "resolutions": {
+      "screen_samples": "${resolutions.screen_samples}",
+      "final_samples": "${resolutions.final_samples}",
+      "tail_points": "${resolutions.tail_points}",
+      "integration_points": "${resolutions.integration_points}",
+      "audit_samples": "${resolutions.audit_samples}",
+      "audit_rows": "${resolutions.audit_rows}"
+    },
+    "expected_cells": "${G.expected_cells}",
+    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223)."
+  }
+}

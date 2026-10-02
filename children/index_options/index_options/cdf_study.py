@@ -23,7 +23,8 @@ from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
-__all__ = ["ExactExpiryCDFPanel", "RawChainFeatureBuilder", "CondorCDFDiagnostic",
+__all__ = ["ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS", "panel_convention_problems",
+           "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
            "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
@@ -1730,6 +1731,19 @@ class RobustCorrectionStudy:
         (stage/"summary.json").write_text(json.dumps(record, indent=2)+"\n")
         return record
 
+    def _dividend_limitations(self):
+        """One limitation line naming the symbols whose prepared rows have unknown dividends."""
+        import pandas as pd
+
+        panel = pd.read_parquet(Path(self.config["decision_root"])/"prepare"/"panel.parquet")
+        if "dividends_known" not in panel:
+            return []
+        symbols = sorted(panel.symbol[~panel.dividends_known.astype(bool)].unique())
+        if not symbols:
+            return []
+        verb = "is" if len(symbols) == 1 else "are"
+        return [f"{', '.join(symbols)} {verb} excluded when dividend windows are unknown"]
+
     def report(self):
         """Create one immutable machine-readable final summary."""
         stage = self.output/"report"
@@ -1748,7 +1762,7 @@ class RobustCorrectionStudy:
                   "optimization": optimized,
                   "limitations": ["date-only chain quotes are not executable",
                                   "reused historical sample is not a fresh holdout",
-                                  "IWM is excluded when dividend windows are unknown"]}
+                                  *self._dividend_limitations()]}
         stage.mkdir(parents=True)
         (stage/"summary.json").write_text(json.dumps(result, indent=2)+"\n")
         return result
@@ -1995,6 +2009,67 @@ class RawChainFeatureBuilder:
         return result
 
 
+# The conventions the frozen pre-workflow configs were written under. A config that
+# declares a key overrides it; the workflow always declares every key (pinned by
+# tests/test_study_literals.py), so no new config relies on this table.
+FROZEN_PANEL_CONVENTIONS = {
+    "reference_window": 22, "change_lags": (1, 5, 22), "directional_windows": (5, 22),
+    "periods_per_year": 252, "calendar": "XNYS", "calendar_pad_days": 30}
+
+
+def _int_list_problems(problems, name, values, allowed=None, upper=None):
+    """Append what is wrong with a non-empty list of distinct positive ints."""
+    if (not isinstance(values, (list, tuple)) or not values
+            or any(type(v) is not int or v < 1 for v in values)
+            or len(set(values)) != len(values)):
+        problems.append(f"{name} must be a non-empty list of distinct ints >= 1, got {values!r}")
+        return
+    if allowed is not None and not set(values) <= set(allowed):
+        problems.append(f"{name} {list(values)} must be members of windows {list(allowed)}")
+    if upper is not None and max(values) > upper:
+        problems.append(f"{name} {list(values)} exceeds lags {upper}")
+
+
+def panel_convention_problems(config):
+    """List what is wrong with the study-convention keys of a panel config.
+
+    Parameters
+    ----------
+    config : dict
+        A panel config; absent convention keys take ``FROZEN_PANEL_CONVENTIONS``.
+        ``reference_window`` and every ``change_lags`` member must be in ``windows``,
+        every ``directional_windows`` member at most ``lags``; ``periods_per_year``
+        is a positive number, ``calendar`` an exchange-calendars name and
+        ``calendar_pad_days`` an int >= 0; ``dividend_field`` (optional) names the
+        price column holding dividends, none declared meaning dividends are known zero.
+
+    Returns
+    -------
+    list of str
+        Every problem; empty when the keys are usable.
+    """
+    got = {k: config.get(k, v) for k, v in FROZEN_PANEL_CONVENTIONS.items()}
+    windows, lags, problems = config.get("windows"), config.get("lags"), []
+    _int_list_problems(problems, "directional_windows", got["directional_windows"],
+                           upper=lags if type(lags) is int else None)
+    _int_list_problems(problems, "change_lags", got["change_lags"], allowed=windows)
+    if got["reference_window"] not in (windows or ()):
+        problems.append(f"reference_window {got['reference_window']!r} must be a member of "
+                        f"windows {windows!r}")
+    ppy = got["periods_per_year"]
+    if isinstance(ppy, bool) or not isinstance(ppy, (int, float)) or not ppy > 0:
+        problems.append(f"periods_per_year must be a number > 0, got {ppy!r}")
+    if not isinstance(got["calendar"], str) or not got["calendar"]:
+        problems.append(f"calendar must be a non-empty string, got {got['calendar']!r}")
+    pad = got["calendar_pad_days"]
+    if type(pad) is not int or pad < 0:
+        problems.append(f"calendar_pad_days must be an int >= 0, got {pad!r}")
+    field = config.get("dividend_field")
+    if "dividend_field" in config and (not isinstance(field, str) or not field):
+        problems.append(f"dividend_field must be a non-empty string, got {field!r}")
+    return problems
+
+
 class ExactExpiryCDFPanel:
     """Join observed listed expiries to complete exchange-session price paths.
 
@@ -2008,6 +2083,9 @@ class ExactExpiryCDFPanel:
         resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
         absent keeps every horizon up to ``max_dte``.
+        Study conventions (see ``panel_convention_problems``): ``reference_window``,
+        ``change_lags``, ``directional_windows``, ``periods_per_year``, ``calendar``,
+        ``calendar_pad_days``, and ``dividend_field`` (absent: dividends known zero).
     holdout_start : str or None
         ISO date of a locked holdout (a fold-table study's own value). Rows
         dated on or after it, or whose label reaches it, never enter the panel.
@@ -2028,6 +2106,43 @@ class ExactExpiryCDFPanel:
             if problems:
                 raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
         self.config, self.holdout_start = config, holdout_start
+
+    def _resolve_conventions(self):
+        """Return the convention keys (declared or frozen), refusing a malformed set."""
+        problems = panel_convention_problems(self.config)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return {name: self._convention(name) for name in FROZEN_PANEL_CONVENTIONS}
+
+    def _convention(self, name):
+        """One convention key: the config's value, else the frozen-config one."""
+        return self.config.get(name, FROZEN_PANEL_CONVENTIONS[name])
+
+    @staticmethod
+    def _within_horizon(meta, max_dte, pad_days):
+        """Keep rows whose expiry can fall inside the cohort (``max_dte`` plus the pad).
+
+        A further expiry can never pass the ``calendar_dte <= max_dte`` cut, and keeping it
+        would stretch the session calendar to the furthest listed expiry.
+        """
+        import pandas as pd
+
+        days = (pd.to_datetime(meta.expiry)-pd.to_datetime(meta.quote_date)).dt.days
+        kept = meta[days <= max_dte+pad_days]
+        if kept.empty:
+            raise ValueError("no surface row expires within max_dte plus calendar_pad_days")
+        return kept
+
+    def _dividend_series(self, price_frame, index):
+        """Dividends on ``index``; NaN is unknown, and no declared field means known zero."""
+        import pandas as pd
+
+        field = self.config.get("dividend_field")
+        if field is None:
+            return pd.Series(0.0, index=index)
+        if field not in price_frame:
+            raise ValueError(f"dividend_field {field!r} is not a column of the price source")
+        return price_frame[field].reindex(index)
 
     def _horizon_cohort(self, rows):
         """Keep the rows at ``exact_dte`` when declared, else every row."""
@@ -2071,13 +2186,30 @@ class ExactExpiryCDFPanel:
         return frame.drop(columns=["open", "high", "low", "close"])
 
     @staticmethod
-    def add_matched_dte_vrp(frame, reference_floor):
-        """Add requested-session implied minus backward realized variance."""
+    def add_matched_dte_vrp(frame, reference_floor, reference_window, periods_per_year):
+        """Add requested-session implied minus backward realized variance.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            Rows with ``chain_atm_iv``, ``sessions_to_expiry`` and ``rv_<reference_window>``.
+        reference_floor : float
+            Floor of the realized-variance denominator in the ratio.
+        reference_window : int
+            Window of the trailing realized volatility column ``rv_<window>``.
+        periods_per_year : float
+            Sessions per year the implied volatility is annualized over.
+
+        Returns
+        -------
+        DataFrame
+            ``frame`` with the four ``matched_*`` columns added.
+        """
         import numpy as np
 
         sessions = frame.sessions_to_expiry.astype(float)
-        implied = frame.chain_atm_iv.astype(float).pow(2)*sessions/252.
-        realized = frame.rv_22.astype(float).pow(2)*sessions
+        implied = frame.chain_atm_iv.astype(float).pow(2)*sessions/float(periods_per_year)
+        realized = frame[f"rv_{reference_window}"].astype(float).pow(2)*sessions
         floor = max(float(reference_floor), np.finfo(float).eps)**2*sessions
         frame["matched_implied_variance"] = implied
         frame["matched_trailing_variance"] = realized
@@ -2126,7 +2258,7 @@ class ExactExpiryCDFPanel:
         return cumulative[end+1]-cumulative[entry] == 0
 
     @staticmethod
-    def _availability_dates(observation_dates, lag_sessions=0, lag_days=0):
+    def _availability_dates(observation_dates, calendar_name, lag_sessions=0, lag_days=0):
         """Return conservative dates after the declared publication lag."""
         import numpy as np
         import pandas as pd
@@ -2139,7 +2271,7 @@ class ExactExpiryCDFPanel:
         import exchange_calendars as xcals
         start = dates.min()-pd.Timedelta(days=10)
         end = dates.max()+pd.Timedelta(days=30)
-        calendar = xcals.get_calendar("XNYS", start=start, end=end)
+        calendar = xcals.get_calendar(calendar_name, start=start, end=end)
         sessions = calendar.sessions.tz_localize(None)
         positions = np.searchsorted(sessions.to_numpy(), dates.to_numpy(), side="right")
         positions = positions+lag_sessions
@@ -2198,8 +2330,28 @@ class ExactExpiryCDFPanel:
         return frame
 
     @staticmethod
-    def add_surface_dynamics(frame, proxy_probabilities):
-        """Add causal same-series changes, cross-expiry slopes and proxy moments."""
+    def add_surface_dynamics(frame, proxy_probabilities, change_lags, reference_window,
+                             periods_per_year):
+        """Add causal same-series changes, cross-expiry slopes and proxy moments.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            The cohort rows (surface columns, ``rv_<reference_window>``).
+        proxy_probabilities : list of float
+            The risk-neutral proxy probabilities.
+        change_lags : list of int
+            Same-series lags (in quote dates) of the ``*_change_<lag>`` columns.
+        reference_window : int
+            Window of the trailing realized volatility column ``rv_<window>``.
+        periods_per_year : float
+            Sessions per year the implied variance is annualized over.
+
+        Returns
+        -------
+        DataFrame
+            ``frame`` sorted by symbol, expiry and quote date, with the columns added.
+        """
         import numpy as np
         import pandas as pd
 
@@ -2207,11 +2359,12 @@ class ExactExpiryCDFPanel:
         group = frame.groupby(["symbol", "expiry"], sort=False)
         surface = ("chain_log_atm_iv", "chain_log_skew25", "chain_log_curvature25")
         for name in surface:
-            for lag in (1, 5, 22):
+            for lag in change_lags:
                 frame[f"{name}_change_{lag}"] = frame[name]-group[name].shift(lag)
         frame["chain_liquidity_asymmetry"] = np.tanh(frame.chain_log_put_call_oi)
         frame["implied_minus_realized_variance"] = (
-            frame.chain_atm_iv**2/252.-frame.rv_22**2)
+            frame.chain_atm_iv**2/float(periods_per_year)
+            -frame[f"rv_{reference_window}"]**2)
 
         frame["term_slope_prev"] = np.nan
         frame["term_slope_next"] = np.nan
@@ -2267,7 +2420,7 @@ class ExactExpiryCDFPanel:
             values["observation_date"] = pd.to_datetime(values.observation_date)
             values[feature] = pd.to_numeric(values[spec["field"]], errors="coerce")
             values["available_date"] = self._availability_dates(
-                values.observation_date, spec.get("lag_sessions", 0),
+                values.observation_date, self._convention("calendar"), spec.get("lag_sessions", 0),
                 spec.get("lag_days", 0))
             values = values.dropna(subset=[feature]).sort_values("available_date")
             joined = pd.merge_asof(quotes.sort_values("quote_date_dt"), values,
@@ -2315,6 +2468,8 @@ class ExactExpiryCDFPanel:
         from dskit.pipeline.libs.numpy import RealizedVolFeatures, ReturnWindows
 
         c = self.config
+        self.conventions = self._resolve_conventions()
+        conv = self.conventions
         files = self.data_files = DataFiles(c.get("root"))
         surface = pd.read_parquet(files.path(c["surface"]))
         lifecycle = pd.read_parquet(files.path(c["lifecycle"]))
@@ -2325,7 +2480,11 @@ class ExactExpiryCDFPanel:
             meta = meta.merge(chain_features, on=keys, validate="one_to_one")
         if c.get("surface_features", False):
             meta = self.add_surface_features(meta)
-        calendar = xc.get_calendar("XNYS", start="1998-01-01", end="2026-12-31")
+        meta = self._within_horizon(meta, c["max_dte"], conv["calendar_pad_days"])
+        pad = pd.Timedelta(days=conv["calendar_pad_days"])
+        first_day = pd.to_datetime(pd.concat([meta.quote_date, meta.first_seen_date])).min()
+        calendar = xc.get_calendar(conv["calendar"], start=first_day-pad,
+                                   end=pd.to_datetime(meta.expiry).max()+pad)
         sessions = calendar.sessions.tz_localize(None)
         # Fixed planned convention: regular holidays, never future ad-hoc closures.
         # Actual session dates remain the label/purge truth, not model predictors.
@@ -2374,7 +2533,7 @@ class ExactExpiryCDFPanel:
                  | (rows.actual_sessions_to_expiry != rows.sessions_to_expiry)).sum())
             # Reindex exposes missing interior observations instead of treating a gap as one day.
             closes = price_frame.close.reindex(sessions.strftime("%Y-%m-%d"))
-            dividends = price_frame.dividend_amount.reindex(closes.index)
+            dividends = self._dividend_series(price_frame, closes.index)
             missing = closes.isna().to_numpy().astype(int)
             rows["dividends_known"] = self.dividend_window_eligibility(
                 dividends, entry_index, end_index)
@@ -2421,7 +2580,7 @@ class ExactExpiryCDFPanel:
             rows["life_fraction_calendar"] = rows.series_age_calendar/rows.series_total_tenor_calendar
             rows["life_fraction_sessions"] = rows.series_age_sessions/rows.series_total_tenor_sessions
             rows["calendar_days_per_session"] = rows.calendar_dte/rows.sessions_to_expiry
-            rows["reference_scale"] = rows.rv_22.clip(lower=c["reference_floor"])*np.sqrt(rows.sessions_to_expiry)
+            rows["reference_scale"] = rows[f"rv_{conv['reference_window']}"].clip(lower=c["reference_floor"])*np.sqrt(rows.sessions_to_expiry)
             rows["strategy_dividend_eligible"] = rows.dividends_known.astype(int)
             refused[symbol]["strategy_dividend_eligible"] = int(rows.dividends_known.sum())
             refused[symbol]["strategy_dividend_ineligible"] = int((~rows.dividends_known).sum())
@@ -2451,7 +2610,7 @@ class ExactExpiryCDFPanel:
         for symbol in c["symbols"]:
             result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
         lags = result[[f"ret_lag_{i}" for i in range(c["lags"])]].to_numpy()
-        for window in (5, 22):
+        for window in conv["directional_windows"]:
             values = lags[:, :window]
             result[f"momentum_{window}"] = values.sum(1)
             result[f"down_rv_{window}"] = np.sqrt(np.mean(np.minimum(values, 0)**2, axis=1))
@@ -2489,9 +2648,11 @@ class ExactExpiryCDFPanel:
             result = self._join_fred_features(result, c["fred_market_symbols"])
         if c.get("surface_features") and c.get("raw_chain", {}).get("proxy_probabilities"):
             result = self.add_surface_dynamics(
-                result, c["raw_chain"]["proxy_probabilities"])
+                result, c["raw_chain"]["proxy_probabilities"], conv["change_lags"],
+                conv["reference_window"], conv["periods_per_year"])
         if c.get("matched_dte_vrp"):
-            result = self.add_matched_dte_vrp(result, c["reference_floor"])
+            result = self.add_matched_dte_vrp(
+                result, c["reference_floor"], conv["reference_window"], conv["periods_per_year"])
         result, self.macro_event_status = self.add_macro_event_features(
             result, c.get("macro_event_calendars"))
         if c.get("decision_regions"):

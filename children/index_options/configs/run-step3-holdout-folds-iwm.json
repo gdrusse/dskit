@@ -100,7 +100,7 @@
       },
       "params": {
         "path": "./pipeline_runs/step3-holdout-folds-iwm/admission-and-metrics.jsonl",
-        "source": "One row per ticker: dev_dates, rate_<f> (share of dev dates on which family f is available), required_<f> (1 = admitted at tau), holdout (holdout-cut metrics: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows) and plan (rolling-origin-plan metrics: folds, scored, warmup_weeks, scored_start)"
+        "source": "One row per ticker: dev_dates, rate_<f> (share of dev dates on which family f is available), required_<f> (1 = admitted at tau), holdout (holdout-cut metrics: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows, holdout_rows, panel_rows) and plan (rolling-origin-plan metrics: folds, scored, warmup_weeks, scored_start)"
       },
       "notes": "The persisted handoff values: a consumer reads holdout.holdout_start and plan.scored_start BY VALUE from here and never recomputes them (a fraction cut and an end-anchored grid both move when dates are appended). Same overwrite and parent-directory rules as fold_evidence."
     }
@@ -1376,7 +1376,7 @@
             }
           ]
         },
-        "notes": "Attaches the holdout-cut metrics (dates only: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows) to the admission row."
+        "notes": "Attaches the holdout-cut metrics (dates and row counts only: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows, holdout_rows, panel_rows) to the admission row."
       },
       "protocol": {
         "uses": "derive",

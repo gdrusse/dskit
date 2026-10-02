@@ -1,0 +1,3112 @@
+{
+  "notes": "THE single entry point of the index_options study (steps 1 to 7). Edit only args; layout, registry and steps hold references and patterns, never values. Run: python -m dskit.pipeline workflow configs/workflow.json [--plan] [--from STEP] [--only STEP] [--args FILE].",
+  "args": {
+    "notes": "Edit only this block. Per-ticker values are objects keyed by ticker. Pinned agreements (tests/test_workflow_pins.py): feature_limits.expected_cells is derived from horizon (limits_contract) and the reference models name features, resolved against the derived feature_order; panel_schema keeps the alias pairs (date/quote_date, settlement/settlement_date, target/terminal_return) only until the templates standardize on one name each.",
+    "run_env": {
+      "notes": "Environment added to every command the runner starts (top-level env). CUBLAS_WORKSPACE_CONFIG is required by torch deterministic CUDA; the thread counts pin BLAS/OpenMP to one thread. A changed value reruns the steps.",
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1"
+    },
+    "tickers": [
+      "QQQ",
+      "IWM"
+    ],
+    "A": "2026-10-01",
+    "work_dir": "./pipeline_runs/workflow",
+    "horizon": 7,
+    "price_source": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "philippdubach-options",
+      "stream": "files",
+      "columns": {
+        "date": "date",
+        "close": "close"
+      },
+      "fallback": "previous",
+      "relpath": {
+        "QQQ": "qqq/underlying_prices.parquet",
+        "IWM": "iwm/underlying_prices.parquet"
+      },
+      "fields": {
+        "date": "date",
+        "close": "close"
+      }
+    },
+    "chart_labels": {
+      "x": "Entry year",
+      "y": "Entry dates with a settled close",
+      "filename": "date_counts.png",
+      "notes": "x/y are the axis labels; filename is the chart file the run writes inside its own run directory (a bare name: the figure node refuses a path)."
+    },
+    "options_panel": {
+      "root": "/home/russell/data/index_options/ob",
+      "source": "cdf-horizon-panel",
+      "stream": "input_panel",
+      "key_fields": [
+        "symbol",
+        "quote_date",
+        "expiry"
+      ],
+      "ts_unit": "iso"
+    },
+    "feature_sources": {
+      "root": "/home/russell/data/index_options/ob",
+      "surface": {
+        "source": "exact-expiry-tables",
+        "stream": "files",
+        "relpath": "exact_expiry_surface.parquet"
+      },
+      "lifecycle": {
+        "source": "exact-expiry-tables",
+        "stream": "files",
+        "relpath": "date_expiry_lifecycle.parquet"
+      },
+      "chain_features": {
+        "source": "raw-chain-features",
+        "stream": "files",
+        "relpath": "raw_chain_features.parquet"
+      },
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
+      "price_source": "optionshist-chain",
+      "dividend_field": "dividend_amount",
+      "iv_source": "cboe-index-wide"
+    },
+    "vol_index": {
+      "QQQ": "VXN",
+      "IWM": "RVX"
+    },
+    "feature_windows": {
+      "returns": [
+        1,
+        5,
+        22,
+        66
+      ],
+      "ohlc": [
+        5,
+        22
+      ],
+      "directional": [
+        5,
+        22
+      ]
+    },
+    "feature_limits": {
+      "fred": {
+        "rate_dff": {
+          "stream": "dff",
+          "field": "DFF",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "rate_dgs3mo": {
+          "stream": "dgs3mo",
+          "field": "DGS3MO",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "rate_dgs10": {
+          "stream": "dgs10",
+          "field": "DGS10",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "credit_hy_oas": {
+          "stream": "bamlh0a0hym2",
+          "field": "BAMLH0A0HYM2",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "credit_cp_nonfinancial": {
+          "stream": "dcpn3m",
+          "field": "DCPN3M",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "credit_cp_financial": {
+          "stream": "dcpf3m",
+          "field": "DCPF3M",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "dollar_broad": {
+          "stream": "dtwexbgs",
+          "field": "DTWEXBGS",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "oil_wti": {
+          "stream": "dcoilwtico",
+          "field": "DCOILWTICO",
+          "lag_sessions": 1,
+          "max_age_days": 7
+        },
+        "financial_nfci": {
+          "stream": "nfci",
+          "field": "NFCI",
+          "lag_days": 7,
+          "max_age_days": 14
+        },
+        "financial_anfci": {
+          "stream": "anfci",
+          "field": "ANFCI",
+          "lag_days": 7,
+          "max_age_days": 14
+        }
+      },
+      "since": "2007-01-01",
+      "max_dte": 45,
+      "lags": 22,
+      "feature_gap_days": 7,
+      "reference_floor": 0.001,
+      "reference_window": 22,
+      "change_lags": [
+        1,
+        5,
+        22
+      ],
+      "periods_per_year": 252,
+      "calendar": "XNYS",
+      "calendar_pad_days": 30,
+      "spot_tolerance": 0.02,
+      "surface_features": true,
+      "matched_dte_vrp": true,
+      "wing_metrics": true,
+      "task_features": {
+        "QQQ": "is_QQQ",
+        "IWM": "is_IWM"
+      }
+    },
+    "limits_contract": {
+      "notes": "expected_cells is DERIVED: {role: {lane: [horizon]}} for each role below, never typed (the horizon_limits hook refuses a declared table that differs). max_dte must be an integer of at least the horizon. `cells` and `bound` name the feature_limits key that holds the table and the key bounded by the horizon; roles are the role keys the study nodes read.",
+      "roles": [
+        "development",
+        "evaluation"
+      ],
+      "cells": "expected_cells",
+      "bound": "max_dte"
+    },
+    "chain_proxy": {
+      "nodes": 9,
+      "moneyness_bounds": [
+        -0.3,
+        0.3
+      ],
+      "max_node_gap": 0.04,
+      "proxy_probabilities": [
+        0.01,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        0.95,
+        0.99
+      ],
+      "min_wing_nodes": 3,
+      "max_inner_gap": 0.08,
+      "max_outer_gap": 0.12
+    },
+    "market_series": {
+      "market_vix9d": {
+        "symbol": "VIX9D",
+        "max_age_days": 7
+      },
+      "market_vix3m": {
+        "symbol": "VIX3M",
+        "max_age_days": 7
+      },
+      "market_vix6m": {
+        "symbol": "VIX6M",
+        "max_age_days": 7
+      },
+      "market_vvix": {
+        "symbol": "VVIX",
+        "max_age_days": 7
+      },
+      "market_skew": {
+        "symbol": "SKEW",
+        "max_age_days": 7
+      },
+      "market_gvz": {
+        "symbol": "GVZ",
+        "max_age_days": 7
+      },
+      "market_vix1y": {
+        "symbol": "VIX1Y",
+        "max_age_days": 7
+      },
+      "market_vxn": {
+        "symbol": "VXN",
+        "max_age_days": 7
+      },
+      "market_rvx": {
+        "symbol": "RVX",
+        "max_age_days": 7
+      },
+      "market_vxd": {
+        "symbol": "VXD",
+        "max_age_days": 7
+      },
+      "market_ovx": {
+        "symbol": "OVX",
+        "max_age_days": 7
+      },
+      "market_vxeem": {
+        "symbol": "VXEEM",
+        "max_age_days": 7
+      },
+      "market_vxslv": {
+        "symbol": "VXSLV",
+        "max_age_days": 7
+      },
+      "market_vxtlt": {
+        "symbol": "VXTLT",
+        "max_age_days": 7
+      }
+    },
+    "market_policy": {
+      "notes": "drop_own_index false keeps every market_series entry, including one whose symbol is the lane's own vol_index (QQQ VXN, IWM RVX): the verified runs carry those columns and feature_order names them. true drops such an entry for the lane and REFUSES when a family field, a family condition or feature_order still names it, so set it only after removing those names.",
+      "drop_own_index": false
+    },
+    "families": {
+      "notes": "ONE families spec, consumed unchanged by the step templates through placeholders: availability (step 2: per family fields plus require conditions, the family-availability node's own shape), schema_fields (step 2: the 1b panel's columns), engineered/carried/attach/columns/pending (step 1b: what the panel reader emits and the attach node merges), flags/dates_fields (step 3: the yes/no columns step 2 wrote and their file's columns). The lists that repeat a fact are pinned by tests/test_workflow_pins.py (every availability field of an engineered family is among its engineered fields, the rest being the <field>_missing and <field>_age_days companions; columns equal identity + agreed + engineered + companions; flags are available_<family>; every availability field is in schema_fields). documentation holds the prose lookback/clock per family, kept out of availability because the node denies unknown keys. ADDING A FAMILY WITH NO CODE: put it under keyed (family -> sources [{root, source, stream, key_fields [entity field, date field in the stored table], columns {stored column: panel field}}], fields (the availability fields), require, optional max_age_days (as-of match strictly before the entry date, with <field>_age_days and <field>_missing companions) and strict_prior, lookback, clock_note, optional withheld_fields). The families_spec hook folds it into availability, documentation, engineered, flags, schema_fields, dates_fields and keyed_tables; keyed_pool and keyed_cap add it to the forward pool and cap; feature_order appends its fields (and companions) to the recorded order, or derives the whole order (core names, then every family's fields) for a ticker with no recorded one. keyed_key names the entity and date fields (pinned equal to panel_schema symbol and quote_date) and keyed_naming the companion suffixes. Limit: the step 4-7 study still builds its own panel (data block), so a keyed family's columns reach it only once that reader also takes keyed tables.",
+      "availability": {
+        "implied_cdf": {
+          "fields": [
+            "rn_q_0100",
+            "rn_q_0500",
+            "rn_q_1000",
+            "rn_q_2500",
+            "rn_q_5000",
+            "rn_q_7500",
+            "rn_q_9000",
+            "rn_q_9500",
+            "rn_q_9900"
+          ],
+          "require": [
+            {
+              "field": "rn_proxy_eligible",
+              "op": "==",
+              "value": 1
+            }
+          ]
+        },
+        "return_history": {
+          "fields": [
+            "ret_lag_0",
+            "ret_lag_1",
+            "ret_lag_2",
+            "ret_lag_3",
+            "ret_lag_4",
+            "ret_lag_5",
+            "ret_lag_6",
+            "ret_lag_7",
+            "ret_lag_8",
+            "ret_lag_9",
+            "ret_lag_10",
+            "ret_lag_11",
+            "ret_lag_12",
+            "ret_lag_13",
+            "ret_lag_14",
+            "ret_lag_15",
+            "ret_lag_16",
+            "ret_lag_17",
+            "ret_lag_18",
+            "ret_lag_19",
+            "ret_lag_20",
+            "ret_lag_21",
+            "momentum_5",
+            "momentum_22"
+          ],
+          "require": []
+        },
+        "realized_volatility": {
+          "fields": [
+            "rv_1",
+            "rv_5",
+            "rv_22",
+            "rv_66",
+            "down_rv_5",
+            "down_rv_22",
+            "up_rv_5",
+            "up_rv_22"
+          ],
+          "require": []
+        },
+        "ohlc_shape": {
+          "fields": [
+            "overnight_return",
+            "intraday_return",
+            "log_high_low_range",
+            "parkinson_variance",
+            "jump_variance_proxy",
+            "range_variance_5",
+            "range_variance_22",
+            "jump_variance_5",
+            "jump_variance_22",
+            "overnight_variance_5",
+            "overnight_variance_22",
+            "intraday_variance_5",
+            "intraday_variance_22"
+          ],
+          "require": []
+        },
+        "volatility_context": {
+          "fields": [
+            "own_iv",
+            "market_vix9d",
+            "market_vix3m",
+            "market_vix6m",
+            "market_vvix",
+            "market_skew",
+            "market_gvz"
+          ],
+          "require": [
+            {
+              "field": "market_vix9d_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vix3m_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vix6m_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vvix_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_skew_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_gvz_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vix9d_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vix9d_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vix3m_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vix3m_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vix6m_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vix6m_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vvix_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vvix_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_skew_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_skew_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_gvz_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_gvz_age_days",
+              "op": "<=",
+              "value": 7
+            }
+          ]
+        },
+        "expanded_volatility_context": {
+          "fields": [
+            "market_vix1y",
+            "market_rvx",
+            "market_vxd",
+            "market_ovx",
+            "market_vxeem",
+            "market_vxslv",
+            "market_vxtlt"
+          ],
+          "require": [
+            {
+              "field": "market_vix1y_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_rvx_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vxd_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_ovx_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vxeem_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vxslv_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vxtlt_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "market_vix1y_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vix1y_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_rvx_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_rvx_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vxd_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vxd_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_ovx_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_ovx_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vxeem_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vxeem_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vxslv_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vxslv_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "market_vxtlt_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "market_vxtlt_age_days",
+              "op": "<=",
+              "value": 7
+            }
+          ]
+        },
+        "surface_level": {
+          "fields": [
+            "chain_log_atm_iv",
+            "chain_log_skew25",
+            "chain_log_curvature25"
+          ],
+          "require": []
+        },
+        "surface_changes": {
+          "fields": [
+            "chain_log_atm_iv_change_1",
+            "chain_log_atm_iv_change_5",
+            "chain_log_atm_iv_change_22",
+            "chain_log_skew25_change_1",
+            "chain_log_skew25_change_5",
+            "chain_log_skew25_change_22",
+            "chain_log_curvature25_change_1",
+            "chain_log_curvature25_change_5",
+            "chain_log_curvature25_change_22",
+            "term_slope_prev",
+            "term_slope_next"
+          ],
+          "require": []
+        },
+        "variance_gap": {
+          "fields": [
+            "matched_implied_variance",
+            "matched_trailing_variance",
+            "matched_vrp",
+            "matched_vrp_ratio"
+          ],
+          "require": []
+        },
+        "liquidity": {
+          "fields": [
+            "chain_log_rel_spread",
+            "chain_log_put_call_oi",
+            "chain_log_contracts",
+            "chain_log_open_interest",
+            "chain_log_quote_depth"
+          ],
+          "require": []
+        },
+        "positioning_changes": {
+          "fields": [
+            "chain_log_volume",
+            "chain_put_call_volume_imbalance",
+            "chain_volume_weighted_rel_spread",
+            "chain_log_lag_open_interest",
+            "chain_log_lag_oi_change",
+            "chain_log_delta_oi",
+            "chain_log_gamma_oi",
+            "chain_log_vega_oi"
+          ],
+          "require": []
+        },
+        "macro_context": {
+          "fields": [
+            "rate_dff",
+            "rate_dgs3mo",
+            "rate_dgs10",
+            "credit_hy_oas",
+            "credit_cp_nonfinancial",
+            "credit_cp_financial",
+            "credit_cp_spread",
+            "dollar_broad",
+            "oil_wti",
+            "financial_nfci",
+            "financial_anfci"
+          ],
+          "require": [
+            {
+              "field": "rate_dff_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "rate_dgs3mo_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "rate_dgs10_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "credit_hy_oas_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "credit_cp_nonfinancial_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "credit_cp_financial_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "credit_cp_spread_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "dollar_broad_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "oil_wti_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "financial_nfci_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "financial_anfci_missing",
+              "op": "==",
+              "value": 0
+            },
+            {
+              "field": "rate_dff_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "rate_dff_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "rate_dgs3mo_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "rate_dgs3mo_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "rate_dgs10_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "rate_dgs10_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "credit_hy_oas_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "credit_hy_oas_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "credit_cp_nonfinancial_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "credit_cp_nonfinancial_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "credit_cp_financial_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "credit_cp_financial_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "dollar_broad_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "dollar_broad_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "oil_wti_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "oil_wti_age_days",
+              "op": "<=",
+              "value": 7
+            },
+            {
+              "field": "financial_nfci_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "financial_nfci_age_days",
+              "op": "<=",
+              "value": 14
+            },
+            {
+              "field": "financial_anfci_age_days",
+              "op": ">=",
+              "value": 0
+            },
+            {
+              "field": "financial_anfci_age_days",
+              "op": "<=",
+              "value": 14
+            }
+          ]
+        },
+        "chain_nodes": {
+          "fields": [
+            "chain_node_00_log_moneyness",
+            "chain_node_00_iv",
+            "chain_node_00_log_rel_spread",
+            "chain_node_00_log_oi",
+            "chain_node_00_log_depth",
+            "chain_node_01_log_moneyness",
+            "chain_node_01_iv",
+            "chain_node_01_log_rel_spread",
+            "chain_node_01_log_oi",
+            "chain_node_01_log_depth",
+            "chain_node_02_log_moneyness",
+            "chain_node_02_iv",
+            "chain_node_02_log_rel_spread",
+            "chain_node_02_log_oi",
+            "chain_node_02_log_depth",
+            "chain_node_03_log_moneyness",
+            "chain_node_03_iv",
+            "chain_node_03_log_rel_spread",
+            "chain_node_03_log_oi",
+            "chain_node_03_log_depth",
+            "chain_node_04_log_moneyness",
+            "chain_node_04_iv",
+            "chain_node_04_log_rel_spread",
+            "chain_node_04_log_oi",
+            "chain_node_04_log_depth",
+            "chain_node_05_log_moneyness",
+            "chain_node_05_iv",
+            "chain_node_05_log_rel_spread",
+            "chain_node_05_log_oi",
+            "chain_node_05_log_depth",
+            "chain_node_06_log_moneyness",
+            "chain_node_06_iv",
+            "chain_node_06_log_rel_spread",
+            "chain_node_06_log_oi",
+            "chain_node_06_log_depth",
+            "chain_node_07_log_moneyness",
+            "chain_node_07_iv",
+            "chain_node_07_log_rel_spread",
+            "chain_node_07_log_oi",
+            "chain_node_07_log_depth",
+            "chain_node_08_log_moneyness",
+            "chain_node_08_iv",
+            "chain_node_08_log_rel_spread",
+            "chain_node_08_log_oi",
+            "chain_node_08_log_depth"
+          ],
+          "require": [
+            {
+              "field": "chain_node_00_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_01_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_02_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_03_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_04_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_05_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_06_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_07_mask",
+              "op": "==",
+              "value": 1
+            },
+            {
+              "field": "chain_node_08_mask",
+              "op": "==",
+              "value": 1
+            }
+          ]
+        }
+      },
+      "documentation": {
+        "implied_cdf": {
+          "lookback": "same entry chain",
+          "clock": "after-close reconstruction; no intraday availability claim"
+        },
+        "return_history": {
+          "lookback": "22 prior exchange-session returns including entry close",
+          "clock": "backward-only daily-close reconstruction"
+        },
+        "realized_volatility": {
+          "lookback": "up to 66 exchange-session returns",
+          "clock": "backward-only daily-close reconstruction"
+        },
+        "ohlc_shape": {
+          "lookback": "up to 22 OHLC sessions plus prior close",
+          "clock": "requires full-cohort materialization from local OHLC source"
+        },
+        "volatility_context": {
+          "lookback": "last observation within configured maximum age (7 calendar days)",
+          "clock": "date-level backward join; release timestamp not certified"
+        },
+        "expanded_volatility_context": {
+          "lookback": "last observation within 7 calendar days; duplicate VXN omitted",
+          "clock": "requires full-cohort materialization and release-clock audit"
+        },
+        "surface_level": {
+          "lookback": "same entry chain",
+          "clock": "after-close reconstruction; observed quotes"
+        },
+        "surface_changes": {
+          "lookback": "1/5/22 prior observations within expiry, not necessarily exchange sessions",
+          "clock": "same-series backward changes; term slope ordering used realized DTE, needs prospective scheduled-DTE rebuild"
+        },
+        "variance_gap": {
+          "lookback": "same-expiry IV, scheduled sessions, prior 22-session variance",
+          "clock": "requires full-cohort materialization from existing fields"
+        },
+        "liquidity": {
+          "lookback": "same entry snapshot",
+          "clock": "after-close snapshot proxies, not executable quotes or signed dealer positions"
+        },
+        "positioning_changes": {
+          "lookback": "same snapshot plus prior same-contract open interest",
+          "clock": "requires full-cohort materialization and OI publication-clock audit"
+        },
+        "macro_context": {
+          "lookback": "daily sources lagged one declared exchange session; weekly seven days; age guards",
+          "clock": "historical release/vintage not certified; finite values are not proof of entry-known availability"
+        },
+        "chain_nodes": {
+          "lookback": "same entry chain within configured moneyness gap",
+          "clock": "after-close reconstruction; all nine masks required for full-family completeness"
+        }
+      },
+      "engineered": {
+        "variance_gap": {
+          "fields": [
+            "matched_implied_variance",
+            "matched_trailing_variance",
+            "matched_vrp",
+            "matched_vrp_ratio"
+          ],
+          "withheld_fields": {},
+          "clock_note": "same-date entry-chain ATM IV against backward 22-session realized volatility over the planned sessions to expiry (regular holidays, never ad hoc closures); after-close estimand"
+        },
+        "ohlc_shape": {
+          "fields": [
+            "overnight_return",
+            "intraday_return",
+            "log_high_low_range",
+            "parkinson_variance",
+            "jump_variance_proxy",
+            "range_variance_5",
+            "range_variance_22",
+            "jump_variance_5",
+            "jump_variance_22",
+            "overnight_variance_5",
+            "overnight_variance_22",
+            "intraday_variance_5",
+            "intraday_variance_22"
+          ],
+          "withheld_fields": {},
+          "clock_note": "entry bar plus backward 5- and 22-session windows from the local OHLC source; the entry bar is known only after that close (after-close estimand, not intraday); raw prices, so an ex-dividend gap shows in overnight_return"
+        },
+        "positioning_changes": {
+          "fields": [
+            "chain_log_volume",
+            "chain_put_call_volume_imbalance",
+            "chain_volume_weighted_rel_spread",
+            "chain_log_lag_open_interest",
+            "chain_log_lag_oi_change",
+            "chain_log_delta_oi",
+            "chain_log_gamma_oi",
+            "chain_log_vega_oi"
+          ],
+          "withheld_fields": {
+            "chain_log_delta_oi": "oi_publication_clock_unverified",
+            "chain_log_gamma_oi": "oi_publication_clock_unverified",
+            "chain_log_vega_oi": "oi_publication_clock_unverified"
+          },
+          "clock_note": "entry-snapshot volume and spread plus the prior observation's open interest of the same expiry series (known at entry under either OI convention; built per calendar year, so a series' first observation in a year has no lag); the three OI x greek fields are withheld: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+        },
+        "expanded_volatility_context": {
+          "fields": [
+            "market_vix1y",
+            "market_rvx",
+            "market_vxd",
+            "market_ovx",
+            "market_vxeem",
+            "market_vxslv",
+            "market_vxtlt",
+            "market_vix1y_missing",
+            "market_rvx_missing",
+            "market_vxd_missing",
+            "market_ovx_missing",
+            "market_vxeem_missing",
+            "market_vxslv_missing",
+            "market_vxtlt_missing",
+            "market_vix1y_age_days",
+            "market_rvx_age_days",
+            "market_vxd_age_days",
+            "market_ovx_age_days",
+            "market_vxeem_age_days",
+            "market_vxslv_age_days",
+            "market_vxtlt_age_days"
+          ],
+          "withheld_fields": {},
+          "clock_note": "last Cboe index close strictly before the entry date, at most 7 calendar days old, else null; a prior-date close is published before the entry close; the retrospective download vintage is not certified; VXN is omitted as QQQ's own_iv; IWM's market_rvx is its own RVX from the prior date"
+        }
+      },
+      "carried": {
+        "expiry_density": {
+          "fields": [
+            "expiry_density"
+          ],
+          "withheld_fields": {},
+          "clock_note": "listed expiries with planned settlement 1 to the selected DTE calendar days after entry; the panel keeps only expiries with an observed settlement path and a defined rv_22, so an expiry dropped for a missing close is uncounted (incomplete_path, missing_reference in the reader's refused size the loss)"
+        },
+        "liquidity_oi": {
+          "fields": [
+            "chain_log_put_call_oi",
+            "chain_log_open_interest"
+          ],
+          "withheld_fields": {
+            "chain_log_put_call_oi": "oi_publication_clock_unverified",
+            "chain_log_open_interest": "oi_publication_clock_unverified"
+          },
+          "clock_note": "liquidity family OI columns on the prepared panel: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+        },
+        "chain_nodes_oi": {
+          "fields": [
+            "chain_node_00_log_oi",
+            "chain_node_01_log_oi",
+            "chain_node_02_log_oi",
+            "chain_node_03_log_oi",
+            "chain_node_04_log_oi",
+            "chain_node_05_log_oi",
+            "chain_node_06_log_oi",
+            "chain_node_07_log_oi",
+            "chain_node_08_log_oi"
+          ],
+          "withheld_fields": {
+            "chain_node_00_log_oi": "oi_publication_clock_unverified",
+            "chain_node_01_log_oi": "oi_publication_clock_unverified",
+            "chain_node_02_log_oi": "oi_publication_clock_unverified",
+            "chain_node_03_log_oi": "oi_publication_clock_unverified",
+            "chain_node_04_log_oi": "oi_publication_clock_unverified",
+            "chain_node_05_log_oi": "oi_publication_clock_unverified",
+            "chain_node_06_log_oi": "oi_publication_clock_unverified",
+            "chain_node_07_log_oi": "oi_publication_clock_unverified",
+            "chain_node_08_log_oi": "oi_publication_clock_unverified"
+          },
+          "clock_note": "chain-node OI columns on the prepared panel: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+        },
+        "oi_panel_columns": {
+          "fields": [
+            "chain_open_interest",
+            "chain_put_call_oi",
+            "chain_has_put_call_oi",
+            "chain_liquidity_asymmetry"
+          ],
+          "withheld_fields": {
+            "chain_open_interest": "oi_publication_clock_unverified",
+            "chain_put_call_oi": "oi_publication_clock_unverified",
+            "chain_has_put_call_oi": "oi_publication_clock_unverified",
+            "chain_liquidity_asymmetry": "oi_publication_clock_unverified"
+          },
+          "clock_note": "panel columns in no step-2 contract that still hold the same OI (chain_liquidity_asymmetry is the tanh of chain_log_put_call_oi): entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+        }
+      },
+      "attach": {
+        "identity": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "agree_fields": [
+          "terminal_return",
+          "actual_calendar_dte",
+          "calendar_dte",
+          "sessions_to_expiry",
+          "chain_atm_iv",
+          "rv_22",
+          "rn_q_0100",
+          "rn_q_0500",
+          "rn_q_1000",
+          "rn_q_2500",
+          "rn_q_5000",
+          "rn_q_7500",
+          "rn_q_9000",
+          "rn_q_9500",
+          "rn_q_9900"
+        ],
+        "max_absent_fraction": 0.0,
+        "column_prefix": "fe_"
+      },
+      "columns": [
+        "symbol",
+        "quote_date",
+        "expiry",
+        "terminal_return",
+        "actual_calendar_dte",
+        "calendar_dte",
+        "sessions_to_expiry",
+        "chain_atm_iv",
+        "rv_22",
+        "rn_q_0100",
+        "rn_q_0500",
+        "rn_q_1000",
+        "rn_q_2500",
+        "rn_q_5000",
+        "rn_q_7500",
+        "rn_q_9000",
+        "rn_q_9500",
+        "rn_q_9900",
+        "matched_implied_variance",
+        "matched_trailing_variance",
+        "matched_vrp",
+        "matched_vrp_ratio",
+        "overnight_return",
+        "intraday_return",
+        "log_high_low_range",
+        "parkinson_variance",
+        "jump_variance_proxy",
+        "range_variance_5",
+        "range_variance_22",
+        "jump_variance_5",
+        "jump_variance_22",
+        "overnight_variance_5",
+        "overnight_variance_22",
+        "intraday_variance_5",
+        "intraday_variance_22",
+        "chain_log_volume",
+        "chain_put_call_volume_imbalance",
+        "chain_volume_weighted_rel_spread",
+        "chain_log_lag_open_interest",
+        "chain_log_lag_oi_change",
+        "chain_log_delta_oi",
+        "chain_log_gamma_oi",
+        "chain_log_vega_oi",
+        "market_vix1y",
+        "market_rvx",
+        "market_vxd",
+        "market_ovx",
+        "market_vxeem",
+        "market_vxslv",
+        "market_vxtlt",
+        "market_vix1y_missing",
+        "market_rvx_missing",
+        "market_vxd_missing",
+        "market_ovx_missing",
+        "market_vxeem_missing",
+        "market_vxslv_missing",
+        "market_vxtlt_missing",
+        "market_vix1y_age_days",
+        "market_rvx_age_days",
+        "market_vxd_age_days",
+        "market_ovx_age_days",
+        "market_vxeem_age_days",
+        "market_vxslv_age_days",
+        "market_vxtlt_age_days"
+      ],
+      "pending": {
+        "weekday_onehot": {
+          "status": "pending_merge",
+          "reason": "ADR-0214's weekday-onehot kind is not merged; after it merges add one template node using it on $features.records (date_field quote_date) and feed panel_rows from it. Its code is never copied here."
+        }
+      },
+      "schema_fields": [
+        "symbol",
+        "quote_date",
+        "expiry",
+        "terminal_return",
+        "rn_q_0100",
+        "rn_q_0500",
+        "rn_q_1000",
+        "rn_q_2500",
+        "rn_q_5000",
+        "rn_q_7500",
+        "rn_q_9000",
+        "rn_q_9500",
+        "rn_q_9900",
+        "rn_proxy_eligible",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "momentum_5",
+        "momentum_22",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "overnight_return",
+        "intraday_return",
+        "log_high_low_range",
+        "parkinson_variance",
+        "jump_variance_proxy",
+        "range_variance_5",
+        "range_variance_22",
+        "jump_variance_5",
+        "jump_variance_22",
+        "overnight_variance_5",
+        "overnight_variance_22",
+        "intraday_variance_5",
+        "intraday_variance_22",
+        "own_iv",
+        "market_vix9d",
+        "market_vix3m",
+        "market_vix6m",
+        "market_vvix",
+        "market_skew",
+        "market_gvz",
+        "market_vix9d_missing",
+        "market_vix3m_missing",
+        "market_vix6m_missing",
+        "market_vvix_missing",
+        "market_skew_missing",
+        "market_gvz_missing",
+        "market_vix9d_age_days",
+        "market_vix3m_age_days",
+        "market_vix6m_age_days",
+        "market_vvix_age_days",
+        "market_skew_age_days",
+        "market_gvz_age_days",
+        "market_vix1y",
+        "market_rvx",
+        "market_vxd",
+        "market_ovx",
+        "market_vxeem",
+        "market_vxslv",
+        "market_vxtlt",
+        "market_vix1y_missing",
+        "market_rvx_missing",
+        "market_vxd_missing",
+        "market_ovx_missing",
+        "market_vxeem_missing",
+        "market_vxslv_missing",
+        "market_vxtlt_missing",
+        "market_vix1y_age_days",
+        "market_rvx_age_days",
+        "market_vxd_age_days",
+        "market_ovx_age_days",
+        "market_vxeem_age_days",
+        "market_vxslv_age_days",
+        "market_vxtlt_age_days",
+        "chain_log_atm_iv",
+        "chain_log_skew25",
+        "chain_log_curvature25",
+        "chain_log_atm_iv_change_1",
+        "chain_log_atm_iv_change_5",
+        "chain_log_atm_iv_change_22",
+        "chain_log_skew25_change_1",
+        "chain_log_skew25_change_5",
+        "chain_log_skew25_change_22",
+        "chain_log_curvature25_change_1",
+        "chain_log_curvature25_change_5",
+        "chain_log_curvature25_change_22",
+        "term_slope_prev",
+        "term_slope_next",
+        "matched_implied_variance",
+        "matched_trailing_variance",
+        "matched_vrp",
+        "matched_vrp_ratio",
+        "chain_log_rel_spread",
+        "chain_log_put_call_oi",
+        "chain_log_contracts",
+        "chain_log_open_interest",
+        "chain_log_quote_depth",
+        "chain_log_volume",
+        "chain_put_call_volume_imbalance",
+        "chain_volume_weighted_rel_spread",
+        "chain_log_lag_open_interest",
+        "chain_log_lag_oi_change",
+        "chain_log_delta_oi",
+        "chain_log_gamma_oi",
+        "chain_log_vega_oi",
+        "rate_dff",
+        "rate_dgs3mo",
+        "rate_dgs10",
+        "credit_hy_oas",
+        "credit_cp_nonfinancial",
+        "credit_cp_financial",
+        "credit_cp_spread",
+        "dollar_broad",
+        "oil_wti",
+        "financial_nfci",
+        "financial_anfci",
+        "rate_dff_missing",
+        "rate_dgs3mo_missing",
+        "rate_dgs10_missing",
+        "credit_hy_oas_missing",
+        "credit_cp_nonfinancial_missing",
+        "credit_cp_financial_missing",
+        "credit_cp_spread_missing",
+        "dollar_broad_missing",
+        "oil_wti_missing",
+        "financial_nfci_missing",
+        "financial_anfci_missing",
+        "rate_dff_age_days",
+        "rate_dgs3mo_age_days",
+        "rate_dgs10_age_days",
+        "credit_hy_oas_age_days",
+        "credit_cp_nonfinancial_age_days",
+        "credit_cp_financial_age_days",
+        "dollar_broad_age_days",
+        "oil_wti_age_days",
+        "financial_nfci_age_days",
+        "financial_anfci_age_days",
+        "chain_node_00_log_moneyness",
+        "chain_node_00_iv",
+        "chain_node_00_log_rel_spread",
+        "chain_node_00_log_oi",
+        "chain_node_00_log_depth",
+        "chain_node_01_log_moneyness",
+        "chain_node_01_iv",
+        "chain_node_01_log_rel_spread",
+        "chain_node_01_log_oi",
+        "chain_node_01_log_depth",
+        "chain_node_02_log_moneyness",
+        "chain_node_02_iv",
+        "chain_node_02_log_rel_spread",
+        "chain_node_02_log_oi",
+        "chain_node_02_log_depth",
+        "chain_node_03_log_moneyness",
+        "chain_node_03_iv",
+        "chain_node_03_log_rel_spread",
+        "chain_node_03_log_oi",
+        "chain_node_03_log_depth",
+        "chain_node_04_log_moneyness",
+        "chain_node_04_iv",
+        "chain_node_04_log_rel_spread",
+        "chain_node_04_log_oi",
+        "chain_node_04_log_depth",
+        "chain_node_05_log_moneyness",
+        "chain_node_05_iv",
+        "chain_node_05_log_rel_spread",
+        "chain_node_05_log_oi",
+        "chain_node_05_log_depth",
+        "chain_node_06_log_moneyness",
+        "chain_node_06_iv",
+        "chain_node_06_log_rel_spread",
+        "chain_node_06_log_oi",
+        "chain_node_06_log_depth",
+        "chain_node_07_log_moneyness",
+        "chain_node_07_iv",
+        "chain_node_07_log_rel_spread",
+        "chain_node_07_log_oi",
+        "chain_node_07_log_depth",
+        "chain_node_08_log_moneyness",
+        "chain_node_08_iv",
+        "chain_node_08_log_rel_spread",
+        "chain_node_08_log_oi",
+        "chain_node_08_log_depth",
+        "chain_node_00_mask",
+        "chain_node_01_mask",
+        "chain_node_02_mask",
+        "chain_node_03_mask",
+        "chain_node_04_mask",
+        "chain_node_05_mask",
+        "chain_node_06_mask",
+        "chain_node_07_mask",
+        "chain_node_08_mask"
+      ],
+      "flags": {
+        "implied_cdf": {
+          "flag": "available_implied_cdf"
+        },
+        "return_history": {
+          "flag": "available_return_history"
+        },
+        "realized_volatility": {
+          "flag": "available_realized_volatility"
+        },
+        "ohlc_shape": {
+          "flag": "available_ohlc_shape"
+        },
+        "volatility_context": {
+          "flag": "available_volatility_context"
+        },
+        "expanded_volatility_context": {
+          "flag": "available_expanded_volatility_context"
+        },
+        "surface_level": {
+          "flag": "available_surface_level"
+        },
+        "surface_changes": {
+          "flag": "available_surface_changes"
+        },
+        "variance_gap": {
+          "flag": "available_variance_gap"
+        },
+        "liquidity": {
+          "flag": "available_liquidity"
+        },
+        "positioning_changes": {
+          "flag": "available_positioning_changes"
+        },
+        "macro_context": {
+          "flag": "available_macro_context"
+        },
+        "chain_nodes": {
+          "flag": "available_chain_nodes"
+        }
+      },
+      "dates_fields": [
+        "symbol",
+        "quote_date",
+        "available_implied_cdf",
+        "available_return_history",
+        "available_realized_volatility",
+        "available_ohlc_shape",
+        "available_volatility_context",
+        "available_expanded_volatility_context",
+        "available_surface_level",
+        "available_surface_changes",
+        "available_variance_gap",
+        "available_liquidity",
+        "available_positioning_changes",
+        "available_macro_context",
+        "available_chain_nodes"
+      ],
+      "keyed": {},
+      "keyed_key": [
+        "symbol",
+        "quote_date"
+      ],
+      "keyed_naming": {
+        "age": "_age_days",
+        "missing": "_missing"
+      }
+    },
+    "feature_order": {
+      "notes": "ONE canonical order for every lane (positions are what feature_indices mean, so never reorder; append new names at the end). The slot entry is replaced by the lane's feature_limits.task_features entry; every core name, task feature and family field the list lacks is appended by the feature_order hook, so a new ticker or family needs no edit here. Delete names only together with their family fields. WHY THE LIST STAYS: 78 of its names (companions, chain masks, rn statistics) are declared by no family, and the interleaving is the verified runs' history, so no rule derives it; positions are model semantics (references resolve names against it). Declarations alone derive only a subset (pinned in tests/test_workflow_pins.py); a lane with no list gets that derived order.",
+      "slot": "<task_feature>",
+      "names": [
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "ret_lag_4",
+        "ret_lag_5",
+        "ret_lag_6",
+        "ret_lag_7",
+        "ret_lag_8",
+        "ret_lag_9",
+        "ret_lag_10",
+        "ret_lag_11",
+        "ret_lag_12",
+        "ret_lag_13",
+        "ret_lag_14",
+        "ret_lag_15",
+        "ret_lag_16",
+        "ret_lag_17",
+        "ret_lag_18",
+        "ret_lag_19",
+        "ret_lag_20",
+        "ret_lag_21",
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "own_iv",
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "series_age_calendar",
+        "series_age_sessions",
+        "series_total_tenor_calendar",
+        "series_total_tenor_sessions",
+        "life_fraction_calendar",
+        "life_fraction_sessions",
+        "calendar_days_per_session",
+        "reference_scale",
+        "<task_feature>",
+        "chain_log_atm_iv",
+        "chain_log_skew25",
+        "chain_log_curvature25",
+        "chain_log_rel_spread",
+        "chain_log_put_call_oi",
+        "chain_log_contracts",
+        "chain_log_open_interest",
+        "chain_log_quote_depth",
+        "chain_has_25d_pair",
+        "chain_has_put_call_oi",
+        "actual_calendar_dte",
+        "momentum_5",
+        "momentum_22",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22",
+        "market_vix9d",
+        "market_vix9d_age_days",
+        "market_vix3m",
+        "market_vix3m_age_days",
+        "market_vix6m",
+        "market_vix6m_age_days",
+        "market_vvix",
+        "market_vvix_age_days",
+        "market_skew",
+        "market_skew_age_days",
+        "market_gvz",
+        "market_gvz_age_days",
+        "chain_node_00_log_moneyness",
+        "chain_node_00_iv",
+        "chain_node_00_log_rel_spread",
+        "chain_node_00_log_oi",
+        "chain_node_00_log_depth",
+        "chain_node_00_mask",
+        "chain_node_01_log_moneyness",
+        "chain_node_01_iv",
+        "chain_node_01_log_rel_spread",
+        "chain_node_01_log_oi",
+        "chain_node_01_log_depth",
+        "chain_node_01_mask",
+        "chain_node_02_log_moneyness",
+        "chain_node_02_iv",
+        "chain_node_02_log_rel_spread",
+        "chain_node_02_log_oi",
+        "chain_node_02_log_depth",
+        "chain_node_02_mask",
+        "chain_node_03_log_moneyness",
+        "chain_node_03_iv",
+        "chain_node_03_log_rel_spread",
+        "chain_node_03_log_oi",
+        "chain_node_03_log_depth",
+        "chain_node_03_mask",
+        "chain_node_04_log_moneyness",
+        "chain_node_04_iv",
+        "chain_node_04_log_rel_spread",
+        "chain_node_04_log_oi",
+        "chain_node_04_log_depth",
+        "chain_node_04_mask",
+        "chain_node_05_log_moneyness",
+        "chain_node_05_iv",
+        "chain_node_05_log_rel_spread",
+        "chain_node_05_log_oi",
+        "chain_node_05_log_depth",
+        "chain_node_05_mask",
+        "chain_node_06_log_moneyness",
+        "chain_node_06_iv",
+        "chain_node_06_log_rel_spread",
+        "chain_node_06_log_oi",
+        "chain_node_06_log_depth",
+        "chain_node_06_mask",
+        "chain_node_07_log_moneyness",
+        "chain_node_07_iv",
+        "chain_node_07_log_rel_spread",
+        "chain_node_07_log_oi",
+        "chain_node_07_log_depth",
+        "chain_node_07_mask",
+        "chain_node_08_log_moneyness",
+        "chain_node_08_iv",
+        "chain_node_08_log_rel_spread",
+        "chain_node_08_log_oi",
+        "chain_node_08_log_depth",
+        "chain_node_08_mask",
+        "rn_proxy_eligible",
+        "rn_forward_ratio",
+        "rn_projection_distance",
+        "rn_interior_mass",
+        "rn_q_0100",
+        "rn_q_0500",
+        "rn_q_1000",
+        "rn_q_2500",
+        "rn_q_5000",
+        "rn_q_7500",
+        "rn_q_9000",
+        "rn_q_9500",
+        "rn_q_9900",
+        "rn_median",
+        "rn_iqr",
+        "rn_left_width",
+        "rn_right_width",
+        "rate_dff",
+        "rate_dff_age_days",
+        "rate_dff_missing",
+        "rate_dgs3mo",
+        "rate_dgs3mo_age_days",
+        "rate_dgs3mo_missing",
+        "rate_dgs10",
+        "rate_dgs10_age_days",
+        "rate_dgs10_missing",
+        "credit_hy_oas",
+        "credit_hy_oas_age_days",
+        "credit_hy_oas_missing",
+        "dollar_broad",
+        "dollar_broad_age_days",
+        "dollar_broad_missing",
+        "oil_wti",
+        "oil_wti_age_days",
+        "oil_wti_missing",
+        "financial_nfci",
+        "financial_nfci_age_days",
+        "financial_nfci_missing",
+        "financial_anfci",
+        "financial_anfci_age_days",
+        "financial_anfci_missing",
+        "chain_log_atm_iv_change_1",
+        "chain_log_atm_iv_change_5",
+        "chain_log_atm_iv_change_22",
+        "chain_log_skew25_change_1",
+        "chain_log_skew25_change_5",
+        "chain_log_skew25_change_22",
+        "chain_log_curvature25_change_1",
+        "chain_log_curvature25_change_5",
+        "chain_log_curvature25_change_22",
+        "term_slope_prev",
+        "term_slope_next",
+        "chain_liquidity_asymmetry",
+        "implied_minus_realized_variance",
+        "rn_mean",
+        "rn_variance",
+        "rn_skewness",
+        "rn_kurtosis",
+        "rn_left_tail_integral",
+        "rn_right_tail_integral",
+        "market_vix9d_missing",
+        "market_vix3m_missing",
+        "market_vix6m_missing",
+        "market_vvix_missing",
+        "market_skew_missing",
+        "market_gvz_missing",
+        "credit_cp_nonfinancial",
+        "credit_cp_nonfinancial_age_days",
+        "credit_cp_nonfinancial_missing",
+        "credit_cp_financial",
+        "credit_cp_financial_age_days",
+        "credit_cp_financial_missing",
+        "credit_cp_spread",
+        "credit_cp_spread_missing",
+        "overnight_return",
+        "intraday_return",
+        "log_high_low_range",
+        "parkinson_variance",
+        "jump_variance_proxy",
+        "range_variance_5",
+        "jump_variance_5",
+        "overnight_variance_5",
+        "intraday_variance_5",
+        "range_variance_22",
+        "jump_variance_22",
+        "overnight_variance_22",
+        "intraday_variance_22",
+        "matched_implied_variance",
+        "matched_trailing_variance",
+        "matched_vrp",
+        "matched_vrp_ratio",
+        "chain_log_volume",
+        "chain_put_call_volume_imbalance",
+        "chain_log_delta_oi",
+        "chain_log_gamma_oi",
+        "chain_log_vega_oi",
+        "chain_volume_weighted_rel_spread",
+        "chain_log_lag_open_interest",
+        "chain_log_lag_oi_change",
+        "market_vix1y",
+        "market_vix1y_age_days",
+        "market_vix1y_missing",
+        "market_vxn",
+        "market_vxn_age_days",
+        "market_vxn_missing",
+        "market_rvx",
+        "market_rvx_age_days",
+        "market_rvx_missing",
+        "market_vxd",
+        "market_vxd_age_days",
+        "market_vxd_missing",
+        "market_ovx",
+        "market_ovx_age_days",
+        "market_ovx_missing",
+        "market_vxeem",
+        "market_vxeem_age_days",
+        "market_vxeem_missing",
+        "market_vxslv",
+        "market_vxslv_age_days",
+        "market_vxslv_missing",
+        "market_vxtlt",
+        "market_vxtlt_age_days",
+        "market_vxtlt_missing"
+      ]
+    },
+    "panel_schema": {
+      "symbol": "symbol",
+      "date": "quote_date",
+      "quote_date": "quote_date",
+      "date_ms": "quote_date_ms",
+      "expiry": "expiry",
+      "settlement": "settlement_date",
+      "settlement_date": "settlement_date",
+      "selection_group": "selection_group",
+      "dte": "actual_calendar_dte",
+      "target": "terminal_return",
+      "terminal_return": "terminal_return",
+      "reference": "reference_scale",
+      "decision_context": "decision_region_context",
+      "entry_close": "spot",
+      "settle_close": "terminal_price",
+      "period": "year",
+      "planned_dte": "calendar_dte"
+    },
+    "split": {
+      "holdout_fraction": 0.2,
+      "tau": 0.9,
+      "folds": {
+        "train_n": 450,
+        "val_n": 40,
+        "step_n": 40,
+        "warmup_folds": 4
+      }
+    },
+    "core": {
+      "families": [
+        "return_history",
+        "realized_volatility"
+      ],
+      "names": [
+        "calendar_dte",
+        "sessions_to_expiry",
+        "log_calendar_dte",
+        "log_sessions_to_expiry",
+        "series_age_calendar",
+        "series_age_sessions",
+        "series_total_tenor_calendar",
+        "series_total_tenor_sessions",
+        "life_fraction_calendar",
+        "life_fraction_sessions",
+        "calendar_days_per_session",
+        "reference_scale"
+      ]
+    },
+    "model": {
+      "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+      "calibrate": false,
+      "params": {
+        "encoder": {
+          "kind": "mlp"
+        },
+        "losses": [
+          {
+            "kind": "nll",
+            "weight": 0.1
+          },
+          {
+            "kind": "wing_twcrps",
+            "weight": 1.0
+          }
+        ],
+        "components": 3,
+        "hidden": [
+          32,
+          16
+        ],
+        "epochs": 2000,
+        "patience": 6,
+        "batch_size": 512,
+        "seeds": [
+          11
+        ],
+        "learning_rate": 0.001,
+        "device": "cuda",
+        "deterministic": true
+      },
+      "notes": "The base candidate spec every study candidate starts from; generators set the feature subset and encoder at the paths in handoff.paths."
+    },
+    "zoo": {
+      "candidates": {
+        "mlp": {
+          "kind": "mlp"
+        },
+        "gru": {
+          "kind": "gru",
+          "sequence": [
+            [
+              "ret_lag_21"
+            ],
+            [
+              "ret_lag_20"
+            ],
+            [
+              "ret_lag_19"
+            ],
+            [
+              "ret_lag_18"
+            ],
+            [
+              "ret_lag_17"
+            ],
+            [
+              "ret_lag_16"
+            ],
+            [
+              "ret_lag_15"
+            ],
+            [
+              "ret_lag_14"
+            ],
+            [
+              "ret_lag_13"
+            ],
+            [
+              "ret_lag_12"
+            ],
+            [
+              "ret_lag_11"
+            ],
+            [
+              "ret_lag_10"
+            ],
+            [
+              "ret_lag_9"
+            ],
+            [
+              "ret_lag_8"
+            ],
+            [
+              "ret_lag_7"
+            ],
+            [
+              "ret_lag_6"
+            ],
+            [
+              "ret_lag_5"
+            ],
+            [
+              "ret_lag_4"
+            ],
+            [
+              "ret_lag_3"
+            ],
+            [
+              "ret_lag_2"
+            ],
+            [
+              "ret_lag_1"
+            ],
+            [
+              "ret_lag_0"
+            ]
+          ],
+          "hidden_size": 16,
+          "num_layers": 1
+        }
+      },
+      "notes": "One encoder block per zoo candidate; a block's sequence (rows of feature NAMES) is turned into subset positions by the generator, and each candidate gets its own group."
+    },
+    "zoo_sequence": {
+      "sequence": [
+        {
+          "stage": "search",
+          "partition": "*"
+        },
+        {
+          "stage": "select"
+        }
+      ]
+    },
+    "references": {
+      "model": "horizon_empirical",
+      "comparison": [
+        "horizon_empirical",
+        "option_proxy_transport"
+      ],
+      "models": {
+        "horizon_empirical": {
+          "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+          "params": {
+            "horizon_feature": "calendar_dte",
+            "reference_feature": "reference_scale",
+            "knots": 401
+          },
+          "calibrate": false
+        },
+        "option_proxy_transport": {
+          "class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+          "params": {
+            "proxy_features": [
+              "rn_q_0100",
+              "rn_q_0500",
+              "rn_q_1000",
+              "rn_q_2500",
+              "rn_q_5000",
+              "rn_q_7500",
+              "rn_q_9000",
+              "rn_q_9500",
+              "rn_q_9900"
+            ],
+            "probabilities": [
+              0.01,
+              0.05,
+              0.1,
+              0.25,
+              0.5,
+              0.75,
+              0.9,
+              0.95,
+              0.99
+            ],
+            "eligible_feature": "rn_proxy_eligible",
+            "condition_features": [
+              "calendar_dte"
+            ],
+            "reference_feature": "reference_scale",
+            "knots": 401,
+            "tail_width": 4,
+            "transport_knots": 21
+          },
+          "calibrate": false
+        }
+      },
+      "resolve": {
+        "notes": "Name param -> the index param the model class takes. The reference_indices hook looks each name up in the lane's feature order (never typed as positions) and removes this object from the result.",
+        "horizon_feature": "horizon_index",
+        "reference_feature": "reference_index",
+        "proxy_features": "proxy_indices",
+        "eligible_feature": "eligible_index",
+        "condition_features": "condition_indices"
+      }
+    },
+    "acceptance": {
+      "blocks": [
+        30,
+        60
+      ],
+      "min_lower_bound": 0.0,
+      "max_bias_increase": 0.01
+    },
+    "selection": {
+      "metric": "decision_wing_twcrps",
+      "max_candidates": 12,
+      "max_rounds": 11,
+      "stop": {
+        "rule": "no_gain"
+      },
+      "group": "core",
+      "group_name": "forward",
+      "pool": [
+        "implied_cdf",
+        "ohlc_shape",
+        "volatility_context",
+        "expanded_volatility_context",
+        "surface_level",
+        "surface_changes",
+        "variance_gap",
+        "liquidity",
+        "positioning_changes",
+        "macro_context",
+        "chain_nodes"
+      ],
+      "run": {
+        "sequence": [
+          {
+            "stage": "search",
+            "partition": "*"
+          },
+          {
+            "stage": "select"
+          }
+        ]
+      }
+    },
+    "evaluation": {
+      "resolutions": {
+        "screen_samples": 101,
+        "final_samples": 201,
+        "tail_points": 101,
+        "integration_points": 101,
+        "audit_samples": [
+          101,
+          201,
+          401
+        ],
+        "audit_rows": 16,
+        "samples": 201,
+        "tail_intervals": [
+          [
+            -2.5,
+            -0.5
+          ],
+          [
+            0.5,
+            2.5
+          ]
+        ],
+        "calibration_knots": 21,
+        "strikes_z": [
+          -2,
+          -1,
+          1,
+          2
+        ]
+      },
+      "bootstrap": {
+        "blocks": [
+          30,
+          60
+        ],
+        "replicates": 1000,
+        "seed": 829
+      }
+    },
+    "hpo": {
+      "axes": {
+        "hidden": [
+          [
+            16
+          ],
+          [
+            32,
+            16
+          ],
+          [
+            64,
+            32
+          ]
+        ],
+        "learning_rate": [
+          0.0003,
+          0.001,
+          0.003
+        ]
+      },
+      "name": {
+        "pattern": "{encoder}_h{hidden}_lr{learning_rate}",
+        "list_join": "x",
+        "winner_var": "encoder"
+      },
+      "run": {
+        "sequence": [
+          {
+            "stage": "search",
+            "partition": "*"
+          },
+          {
+            "stage": "select"
+          }
+        ]
+      },
+      "paths": {
+        "hidden": "params.hidden",
+        "learning_rate": "params.learning_rate"
+      }
+    },
+    "evaluate": {
+      "stages": {
+        "sequence": [
+          {
+            "stage": "evaluate",
+            "partition": "development"
+          },
+          {
+            "stage": "evaluate",
+            "partition": "later"
+          },
+          {
+            "stage": "report"
+          }
+        ]
+      },
+      "notes": "Step 6 already ran search and select, so step 7 starts at evaluate (select would refuse to overwrite the frozen selection). development = warm-up folds, later = scored folds only (frozen choices, holdout refused)."
+    },
+    "decision_regions": {
+      "max_chain_rows": 14000000,
+      "panel_years": [
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {
+        "max_seconds": 1740,
+        "max_resident_mib": 6144
+      },
+      "chain_rule": {
+        "max_abs_log_moneyness": 0.1,
+        "region": "span"
+      }
+    },
+    "fold_use": {
+      "notes": "How the study uses the step-3 fold table: cal_n = trailing calendar dates of a fold's train window held out for calibration/early stopping; roles = which fold roles the study iterates. Independent of split.folds, which sizes the folds.",
+      "cal_n": 40,
+      "roles": [
+        "warmup",
+        "scored"
+      ]
+    },
+    "report": {
+      "notes": "Edit only here to change the report. Each section names its title, reader format, optional row path inside the document, whether it is required and (for sources inside a step's output directory) the file name. File names are what the study writes into its stage folders; a pin test checks they are the ones the study code names.",
+      "title": "Signal validation report",
+      "max_rows": 200,
+      "statements": [
+        {
+          "title": "Scope.",
+          "text": "Descriptive evidence: warm-up folds select, scored folds evaluate with frozen choices, and the holdout is never evaluated."
+        },
+        {
+          "title": "Gaps.",
+          "text": "n/a marks a value the model or stage did not produce, never a zero."
+        }
+      ],
+      "sections": {
+        "data_points_total": {
+          "title": "Data points: totals and holdout",
+          "format": "jsonl",
+          "rows": "",
+          "required": true,
+          "flatten": {
+            "separator": ", ",
+            "max_items": 12
+          }
+        },
+        "folds": {
+          "title": "Fold table",
+          "format": "jsonl",
+          "rows": "",
+          "required": true,
+          "caption": "train_dates is the nominal window of complete-case dates. The fit and calibration counts in the data-points tables are panel rows and include imputed dates, so fit plus calibration can differ from train_dates."
+        },
+        "data_points_development": {
+          "title": "Data points per warm-up fold",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "counts.json",
+          "caption": "Counts here are panel rows, imputed dates included; the Fold table's train_dates is the nominal complete-case window, so the two can differ."
+        },
+        "data_points_scored": {
+          "title": "Data points per scored fold",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "counts.json",
+          "caption": "Counts here are panel rows, imputed dates included; the Fold table's train_dates is the nominal complete-case window, so the two can differ."
+        },
+        "features_rounds": {
+          "title": "Feature selection rounds",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "features_final": {
+          "title": "Final feature set",
+          "format": "json",
+          "rows": "names",
+          "required": true
+        },
+        "features_by_family": {
+          "title": "Final feature count by family",
+          "format": "json",
+          "rows": "by_family",
+          "required": false
+        },
+        "features_zoo": {
+          "title": "Feature counts per zoo candidate",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "features_hpo": {
+          "title": "Feature counts per search candidate",
+          "format": "jsonl",
+          "rows": "",
+          "required": true
+        },
+        "losses_development": {
+          "title": "Training and validation losses, warm-up folds",
+          "format": "csv",
+          "rows": "",
+          "required": true,
+          "file": "fold_losses.csv"
+        },
+        "losses_scored": {
+          "title": "Training and validation losses, scored folds",
+          "format": "csv",
+          "rows": "",
+          "required": true,
+          "file": "fold_losses.csv"
+        },
+        "loss_metrics": {
+          "title": "Loss metrics",
+          "format": "json",
+          "rows": "metrics",
+          "required": true,
+          "file": "comparison.json"
+        },
+        "comparisons": {
+          "title": "Winner versus baselines, paired block bootstrap",
+          "format": "json",
+          "rows": "paired_block_intervals",
+          "required": true,
+          "file": "comparison.json"
+        },
+        "acceptance": {
+          "title": "Acceptance rule",
+          "format": "json",
+          "rows": "decision_acceptance",
+          "required": false,
+          "file": "comparison.json"
+        },
+        "identity": {
+          "title": "Stage identity hashes",
+          "format": "json",
+          "rows": "identity",
+          "required": true,
+          "file": "complete.json"
+        },
+        "snapshots": {
+          "title": "Source snapshots read",
+          "format": "json",
+          "rows": "",
+          "required": true,
+          "file": "data_provenance.json"
+        }
+      },
+      "lane_field": "lane"
+    },
+    "study_io": {
+      "notes": "The vocabulary the step 4-6 strategies share (ADR-0229): names of the files and fields the study writes and the step outputs use, spec locations, candidate naming, and the study command-line flags. Edit here when the study's names change; no dskit code names them. select.score is higher-is-better when direction is max. Pin: cli.flags and the wildcard must agree with the stage lists in selection.run, zoo_sequence, hpo.run and evaluate.stages.",
+      "labels": {
+        "names": "names",
+        "families": "families",
+        "by_family": "by_family",
+        "fields": "fields",
+        "other": "context",
+        "winner": "winner",
+        "name": "name",
+        "spec": "spec",
+        "round": "round",
+        "candidates": "candidates",
+        "scores": "scores",
+        "added": "added"
+      },
+      "select": {
+        "dir": "selection",
+        "file": "candidates.jsonl",
+        "candidate": "candidate",
+        "partition": "partition",
+        "score": "warmup_mean_skill",
+        "winner": "winner",
+        "variant": "variant"
+      },
+      "direction": "max",
+      "margin": 0,
+      "at": {
+        "output": "experiment.output",
+        "candidates": "experiment.candidates"
+      },
+      "paths": {
+        "features": "params.feature_indices",
+        "encoder": "params.encoder",
+        "sequence_names": "sequence",
+        "sequence_indices": "sequence_indices",
+        "context_indices": "context_indices"
+      },
+      "naming": {
+        "incumbent": "core",
+        "added": "core+{family}",
+        "group": "{group_name}_{round}"
+      },
+      "admit": {
+        "flag": "required_{family}",
+        "value": 1
+      },
+      "cli": {
+        "flags": {
+          "stage": "--stage",
+          "partition": "--partition"
+        },
+        "expand": "partition",
+        "wildcard": "*",
+        "partitions_at": "experiment.search_partitions"
+      }
+    },
+    "handoff": {
+      "notes": "The hand-off between steps: a step's records file is imported into a per-step onboarding store by the registry's after commands (init, register-source, acquire with the connector below) and the next step reads it back as source/stream. One source name is enough because every step has its own store (layout onboard). streams names the stream of each file: a hand-off file's stem is its stream name, so it must be a lowercase segment. effective_unit says how the effective_field (the panel_schema quote_date column) is spelled; the hand-off files all carry it.",
+      "source": "handoff",
+      "connector": "localtables",
+      "layout": "file",
+      "mode": "backfill",
+      "formats": [
+        "jsonl"
+      ],
+      "effective_unit": "iso",
+      "streams": {
+        "target_dates": "target_dates",
+        "panel": "panel",
+        "dates": "dates"
+      }
+    }
+  },
+  "env": "$args.run_env",
+  "layout": {
+    "step1": {
+      "dir": "{W}/step1",
+      "handoff_dir": "{L.step1.dir}/handoff_{T}_h{H}",
+      "target_dates": "{L.step1.handoff_dir}/{stream}.jsonl",
+      "onboard": "{L.step1.dir}/onboard_{T}_h{H}"
+    },
+    "step1b": {
+      "dir": "{W}/step1b",
+      "handoff_dir": "{L.step1b.dir}/handoff_{T}_h{H}",
+      "panel": "{L.step1b.handoff_dir}/{stream}.jsonl",
+      "onboard": "{L.step1b.dir}/onboard_{T}_h{H}"
+    },
+    "step2": {
+      "dir": "{W}/step2",
+      "handoff_dir": "{L.step2.dir}/handoff_{T}_h{H}",
+      "dates": "{L.step2.handoff_dir}/{stream}.jsonl",
+      "combinations": "{L.step2.dir}/combinations_{T}_h{H}.jsonl",
+      "summary": "{L.step2.dir}/summary_{T}_h{H}.jsonl",
+      "cohort": "{L.step2.dir}/cohort_{T}_h{H}.jsonl",
+      "onboard": "{L.step2.dir}/onboard_{T}_h{H}"
+    },
+    "step3": {
+      "dir": "{W}/step3",
+      "fold_table": "{L.step3.dir}/fold-table_{T}_h{H}.jsonl",
+      "admission": "{L.step3.dir}/admission-and-metrics_{T}_h{H}.jsonl",
+      "run_root": "{L.step3.dir}/runs_{T}_h{H}"
+    },
+    "step4": {
+      "dir": "{W}/step4",
+      "core": "{L.step4.dir}/core_{T}.json",
+      "rounds": "{L.step4.dir}/rounds_{T}.jsonl",
+      "study_output": "{L.step4.dir}/unused_{T}",
+      "output": "{L.step4.dir}/study_{T}_r{round}"
+    },
+    "step5": {
+      "dir": "{W}/step5",
+      "winner": "{L.step5.dir}/winner_{T}.json",
+      "rounds": "{L.step5.dir}/rounds_{T}.jsonl",
+      "study_output": "{L.step5.dir}/unused_{T}",
+      "output": "{L.step5.dir}/study_{T}"
+    },
+    "step6": {
+      "dir": "{W}/step6",
+      "best": "{L.step6.dir}/best_{T}.json",
+      "rounds": "{L.step6.dir}/rounds_{T}.jsonl",
+      "study_output": "{L.step6.dir}/unused_{T}",
+      "output": "{L.step6.dir}/study_{T}"
+    },
+    "step7": {
+      "dir": "{W}/step7/{T}",
+      "development": "{L.step6.output}/evaluate/development",
+      "scored": "{L.step6.output}/evaluate/later",
+      "report": "{L.step6.output}/report",
+      "notes": "Step 7 writes inside step 6's study directory (shared output). The partition folders follow args.evaluate.stages (development = warm-up folds, later = scored folds); a pin test keeps the names in step."
+    },
+    "report": {
+      "dir": "{W}/report",
+      "output": "{L.report.dir}/report_{T}",
+      "markdown": "{L.report.output}/report.md",
+      "html": "{L.report.output}/report.html",
+      "sections": "{L.report.output}/sections"
+    }
+  },
+  "registry": {
+    "step1": {
+      "template": "templates/step1-target-dates.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline run {config} --asof {in.A}",
+      "notes": "Pipeline-style base: every dskit.pipeline step runs this command; the as-of date is the A input.",
+      "files": {
+        "source": "templates/source-handoff-step1.json"
+      },
+      "after": [
+        "{python} -m dskit.onboarding init --root {out.onboard}",
+        "{python} -m dskit.onboarding register-source {in.handoff.source} --catalog-source {in.handoff.source} --connector {in.handoff.connector} --config @{file.source} --activate --root {out.onboard}",
+        "{python} -m dskit.onboarding acquire --source {in.handoff.source} --stream {in.stream} --mode {in.handoff.mode} --root {out.onboard}"
+      ]
+    },
+    "step1b": {
+      "template": "templates/step1b-feature-engineering.json",
+      "extends": "step1",
+      "files": {
+        "source": "templates/source-handoff-step1b.json"
+      }
+    },
+    "step2": {
+      "template": "templates/step2-feature-availability.json",
+      "extends": "step1",
+      "files": {
+        "source": "templates/source-handoff-step2.json"
+      }
+    },
+    "step3": {
+      "template": "templates/step3-holdout-folds.json",
+      "extends": "step1",
+      "pins": {
+        "fold_table": {
+          "notes": "The study (FoldTable) takes the fold table as {path, sha256, holdout_start, cal_n, roles}. path and sha256 come from the file step 3 wrote (sha256 equals the ledger hash, and a changed file refuses); holdout_start is read from the first row of the admission output (holdout.holdout_start). cal_n and roles are study knobs, args.fold_use.",
+          "file": "fold_table",
+          "sha256": true,
+          "values": {
+            "holdout_start": {
+              "from": "admission",
+              "path": "holdout.holdout_start"
+            }
+          }
+        }
+      },
+      "files": {},
+      "after": []
+    },
+    "step4": {
+      "template": "templates/step4-feature-selection.json",
+      "extends": null,
+      "command": "{python} -m index_options.cdf_study {config}",
+      "notes": "Study-style base. The sequence input is JSON {\"sequence\":[{\"stage\":s,\"partition\":p?}]}; partition \"*\" means every declared search partition. cdf_study runs the pairs in order."
+    },
+    "step5": {
+      "template": "templates/step5-model-zoo.json",
+      "extends": "step4"
+    },
+    "step6": {
+      "template": "templates/step6-hpo.json",
+      "extends": "step4",
+      "command": "{python} -m index_options.cdf_study {config} {in.sequence}"
+    },
+    "step7": {
+      "extends": "step6",
+      "command": "{python} -m index_options.cdf_study {config} {in.stages}",
+      "notes": "Reuses step 6's template: step 7 is the same study document's later stages. Shared output directory: the template's experiment.output is ${L.step6.output}, so step 7 reads step 6's search and selection there and writes evaluate/ and report/ beside them. The stage list is args.evaluate.stages, passed as in.stages (the command flag {in.stages} is that same list)."
+    },
+    "report": {
+      "template": "templates/report-spec.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline.workflow_report {config}",
+      "notes": "Expands the neutral report spec and hands it to the workflow_report assembler, which verifies the ledger and the output hashes before writing report.md, report.html and sections/*.csv."
+    }
+  },
+  "steps": {
+    "step1": {
+      "registry": "step1",
+      "in": {
+        "T": "$lane",
+        "U": "$args.price_source",
+        "H": "$args.horizon",
+        "S": "$args.panel_schema",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "labels": "$args.chart_labels",
+        "handoff": "$args.handoff",
+        "stream": "$args.handoff.streams.target_dates"
+      },
+      "out": [
+        "target_dates",
+        "onboard"
+      ]
+    },
+    "step1b": {
+      "registry": "step1b",
+      "in": {
+        "T": "$lane",
+        "H": "$args.horizon",
+        "S": "$args.panel_schema",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "target_root": "$step1.out.onboard",
+        "handoff": "$args.handoff",
+        "stream": "$args.handoff.streams.panel",
+        "O": "$args.options_panel",
+        "V": "$args.vol_index",
+        "windows": "$args.feature_windows",
+        "G": {
+          "hook": "horizon_limits",
+          "limits": "$args.feature_limits",
+          "horizon": "$args.horizon",
+          "lane": "$lane",
+          "contract": "$args.limits_contract"
+        },
+        "C": "$args.chain_proxy",
+        "M": {
+          "hook": "market_series",
+          "series": "$args.market_series",
+          "own": "$args.vol_index",
+          "lane": "$lane",
+          "drop": "$args.market_policy.drop_own_index",
+          "spec": "$args.families",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "families": {
+          "hook": "families_spec",
+          "spec": "$args.families"
+        },
+        "F": "$args.feature_sources"
+      },
+      "out": [
+        "panel",
+        "onboard"
+      ]
+    },
+    "step2": {
+      "registry": "step2",
+      "in": {
+        "T": "$lane",
+        "H": "$args.horizon",
+        "S": "$args.panel_schema",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "panel_root": "$step1b.out.onboard",
+        "target_root": "$step1.out.onboard",
+        "handoff": "$args.handoff",
+        "stream": "$args.handoff.streams.dates",
+        "families": {
+          "hook": "families_spec",
+          "spec": "$args.families"
+        }
+      },
+      "out": [
+        "dates",
+        "combinations",
+        "summary",
+        "cohort",
+        "onboard"
+      ]
+    },
+    "step3": {
+      "registry": "step3",
+      "in": {
+        "T": "$lane",
+        "H": "$args.horizon",
+        "S": "$args.panel_schema",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "dates_root": "$step2.out.onboard",
+        "panel_root": "$step1b.out.onboard",
+        "handoff": "$args.handoff",
+        "families": {
+          "hook": "families_spec",
+          "spec": "$args.families"
+        },
+        "split": "$args.split"
+      },
+      "out": [
+        "fold_table",
+        "admission"
+      ]
+    },
+    "step4": {
+      "registry": "step4",
+      "loop": {
+        "until": "$args.selection.stop",
+        "max_rounds": "$args.selection.max_rounds",
+        "group": "$args.selection.group"
+      },
+      "in": {
+        "T": "$lane",
+        "fold_table": "$step3.pin.fold_table",
+        "references": {
+          "hook": "reference_indices",
+          "references": "$args.references",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "acceptance": "$args.acceptance",
+        "selection": {
+          "hook": "forward_candidates",
+          "base": "$args.selection",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          },
+          "labels": "$args.study_io.labels",
+          "spec": "$args.model",
+          "paths": "$args.study_io.paths",
+          "contracts": {
+            "hook": "family_contracts",
+            "spec": "$args.families"
+          },
+          "start": "$args.core",
+          "current": "$self.out.core",
+          "pool": {
+            "hook": "keyed_pool",
+            "base": "$args.selection.pool",
+            "spec": "$args.families"
+          },
+          "cap": {
+            "hook": "keyed_cap",
+            "base": "$args.selection.max_candidates",
+            "pool": "$args.selection.pool",
+            "spec": "$args.families"
+          },
+          "admission": "$step3.out.admission",
+          "admit": "$args.study_io.admit",
+          "naming": "$args.study_io.naming",
+          "group_name": "$args.selection.group_name"
+        },
+        "S": "$args.panel_schema",
+        "resolutions": "$args.evaluation.resolutions",
+        "bootstrap": "$args.evaluation.bootstrap",
+        "H": "$args.horizon",
+        "W": "$args.work_dir",
+        "F": "$args.feature_sources",
+        "V": "$args.vol_index",
+        "windows": "$args.feature_windows",
+        "G": {
+          "hook": "horizon_limits",
+          "limits": "$args.feature_limits",
+          "horizon": "$args.horizon",
+          "lane": "$lane",
+          "contract": "$args.limits_contract"
+        },
+        "C": "$args.chain_proxy",
+        "M": {
+          "hook": "market_series",
+          "series": "$args.market_series",
+          "own": "$args.vol_index",
+          "lane": "$lane",
+          "drop": "$args.market_policy.drop_own_index",
+          "spec": "$args.families",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "regions": "$args.decision_regions",
+        "features": {
+          "hook": "feature_order",
+          "order": "$args.feature_order",
+          "task": "$args.feature_limits.task_features",
+          "lane": "$lane",
+          "spec": "$args.families",
+          "labels": "$args.study_io.labels",
+          "start": "$args.core"
+        },
+        "folds": "$args.fold_use"
+      },
+      "out": [
+        "core",
+        "rounds"
+      ],
+      "stages": {
+        "hook": "declared_sequence",
+        "records": "$args.selection.run.sequence",
+        "flags": "$args.study_io.cli.flags",
+        "expand": "$args.study_io.cli.expand",
+        "wildcard": "$args.study_io.cli.wildcard",
+        "partitions_at": "$args.study_io.cli.partitions_at"
+      },
+      "collect": {
+        "hook": "forward_collector",
+        "select": "$args.study_io.select",
+        "direction": "$args.study_io.direction",
+        "output_at": "$args.study_io.at.output",
+        "candidates_at": "$args.study_io.at.candidates",
+        "labels": "$args.study_io.labels",
+        "rounds": "$self.out.rounds",
+        "result": "$self.out.core",
+        "order": {
+          "hook": "feature_order",
+          "order": "$args.feature_order",
+          "task": "$args.feature_limits.task_features",
+          "lane": "$lane",
+          "spec": "$args.families",
+          "labels": "$args.study_io.labels",
+          "start": "$args.core"
+        },
+        "contracts": {
+          "hook": "family_contracts",
+          "spec": "$args.families"
+        },
+        "start": "$args.core",
+        "current": "$self.out.core",
+        "pool": {
+          "hook": "keyed_pool",
+          "base": "$args.selection.pool",
+          "spec": "$args.families"
+        },
+        "paths": "$args.study_io.paths",
+        "naming": "$args.study_io.naming",
+        "margin": "$args.study_io.margin"
+      }
+    },
+    "step5": {
+      "registry": "step5",
+      "in": {
+        "T": "$lane",
+        "fold_table": "$step3.pin.fold_table",
+        "references": {
+          "hook": "reference_indices",
+          "references": "$args.references",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "acceptance": "$args.acceptance",
+        "selection": "$args.selection",
+        "S": "$args.panel_schema",
+        "resolutions": "$args.evaluation.resolutions",
+        "bootstrap": "$args.evaluation.bootstrap",
+        "H": "$args.horizon",
+        "W": "$args.work_dir",
+        "F": "$args.feature_sources",
+        "V": "$args.vol_index",
+        "windows": "$args.feature_windows",
+        "G": {
+          "hook": "horizon_limits",
+          "limits": "$args.feature_limits",
+          "horizon": "$args.horizon",
+          "lane": "$lane",
+          "contract": "$args.limits_contract"
+        },
+        "C": "$args.chain_proxy",
+        "M": {
+          "hook": "market_series",
+          "series": "$args.market_series",
+          "own": "$args.vol_index",
+          "lane": "$lane",
+          "drop": "$args.market_policy.drop_own_index",
+          "spec": "$args.families",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "regions": "$args.decision_regions",
+        "features": {
+          "hook": "feature_order",
+          "order": "$args.feature_order",
+          "task": "$args.feature_limits.task_features",
+          "lane": "$lane",
+          "spec": "$args.families",
+          "labels": "$args.study_io.labels",
+          "start": "$args.core"
+        },
+        "zoo": {
+          "hook": "zoo_candidates",
+          "base": "$args.zoo",
+          "encoders": "$args.zoo.candidates",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          },
+          "labels": "$args.study_io.labels",
+          "spec": "$args.model",
+          "paths": "$args.study_io.paths",
+          "final": "$step4.out.core"
+        },
+        "folds": "$args.fold_use"
+      },
+      "out": [
+        "winner",
+        "rounds"
+      ],
+      "stages": {
+        "hook": "declared_sequence",
+        "records": "$args.zoo_sequence.sequence",
+        "flags": "$args.study_io.cli.flags",
+        "expand": "$args.study_io.cli.expand",
+        "wildcard": "$args.study_io.cli.wildcard",
+        "partitions_at": "$args.study_io.cli.partitions_at"
+      },
+      "collect": {
+        "hook": "zoo_collector",
+        "select": "$args.study_io.select",
+        "direction": "$args.study_io.direction",
+        "output_at": "$args.study_io.at.output",
+        "candidates_at": "$args.study_io.at.candidates",
+        "labels": "$args.study_io.labels",
+        "rounds": "$self.out.rounds",
+        "result": "$self.out.winner"
+      }
+    },
+    "step6": {
+      "registry": "step6",
+      "in": {
+        "T": "$lane",
+        "fold_table": "$step3.pin.fold_table",
+        "references": {
+          "hook": "reference_indices",
+          "references": "$args.references",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "acceptance": "$args.acceptance",
+        "selection": "$args.selection",
+        "S": "$args.panel_schema",
+        "resolutions": "$args.evaluation.resolutions",
+        "bootstrap": "$args.evaluation.bootstrap",
+        "H": "$args.horizon",
+        "W": "$args.work_dir",
+        "F": "$args.feature_sources",
+        "V": "$args.vol_index",
+        "windows": "$args.feature_windows",
+        "G": {
+          "hook": "horizon_limits",
+          "limits": "$args.feature_limits",
+          "horizon": "$args.horizon",
+          "lane": "$lane",
+          "contract": "$args.limits_contract"
+        },
+        "C": "$args.chain_proxy",
+        "M": {
+          "hook": "market_series",
+          "series": "$args.market_series",
+          "own": "$args.vol_index",
+          "lane": "$lane",
+          "drop": "$args.market_policy.drop_own_index",
+          "spec": "$args.families",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "regions": "$args.decision_regions",
+        "features": {
+          "hook": "feature_order",
+          "order": "$args.feature_order",
+          "task": "$args.feature_limits.task_features",
+          "lane": "$lane",
+          "spec": "$args.families",
+          "labels": "$args.study_io.labels",
+          "start": "$args.core"
+        },
+        "hpo": {
+          "hook": "grid_candidates",
+          "base": "$args.hpo",
+          "encoders": "$args.zoo.candidates",
+          "axes": "$args.hpo.axes",
+          "axis_paths": "$args.hpo.paths",
+          "naming": "$args.hpo.name",
+          "winner": "$step5.out.winner",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          },
+          "labels": "$args.study_io.labels",
+          "spec": "$args.model",
+          "paths": "$args.study_io.paths",
+          "final": "$step4.out.core"
+        },
+        "folds": "$args.fold_use",
+        "sequence": "$args.hpo.run.sequence"
+      },
+      "out": [
+        "best",
+        "rounds"
+      ],
+      "stages": {
+        "hook": "declared_sequence",
+        "records": "$args.hpo.run.sequence",
+        "flags": "$args.study_io.cli.flags",
+        "expand": "$args.study_io.cli.expand",
+        "wildcard": "$args.study_io.cli.wildcard",
+        "partitions_at": "$args.study_io.cli.partitions_at"
+      },
+      "collect": {
+        "hook": "grid_collector",
+        "select": "$args.study_io.select",
+        "direction": "$args.study_io.direction",
+        "output_at": "$args.study_io.at.output",
+        "candidates_at": "$args.study_io.at.candidates",
+        "labels": "$args.study_io.labels",
+        "rounds": "$self.out.rounds",
+        "result": "$self.out.best"
+      }
+    },
+    "step7": {
+      "registry": "step7",
+      "in": {
+        "fold_table": "$step3.pin.fold_table",
+        "references": {
+          "hook": "reference_indices",
+          "references": "$args.references",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "acceptance": "$args.acceptance",
+        "selection": "$args.selection",
+        "S": "$args.panel_schema",
+        "resolutions": "$args.evaluation.resolutions",
+        "bootstrap": "$args.evaluation.bootstrap",
+        "H": "$args.horizon",
+        "W": "$args.work_dir",
+        "F": "$args.feature_sources",
+        "V": "$args.vol_index",
+        "windows": "$args.feature_windows",
+        "G": {
+          "hook": "horizon_limits",
+          "limits": "$args.feature_limits",
+          "horizon": "$args.horizon",
+          "lane": "$lane",
+          "contract": "$args.limits_contract"
+        },
+        "C": "$args.chain_proxy",
+        "M": {
+          "hook": "market_series",
+          "series": "$args.market_series",
+          "own": "$args.vol_index",
+          "lane": "$lane",
+          "drop": "$args.market_policy.drop_own_index",
+          "spec": "$args.families",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          }
+        },
+        "regions": "$args.decision_regions",
+        "features": {
+          "hook": "feature_order",
+          "order": "$args.feature_order",
+          "task": "$args.feature_limits.task_features",
+          "lane": "$lane",
+          "spec": "$args.families",
+          "labels": "$args.study_io.labels",
+          "start": "$args.core"
+        },
+        "hpo": {
+          "hook": "grid_candidates",
+          "base": "$args.hpo",
+          "encoders": "$args.zoo.candidates",
+          "axes": "$args.hpo.axes",
+          "axis_paths": "$args.hpo.paths",
+          "naming": "$args.hpo.name",
+          "winner": "$step5.out.winner",
+          "order": {
+            "hook": "feature_order",
+            "order": "$args.feature_order",
+            "task": "$args.feature_limits.task_features",
+            "lane": "$lane",
+            "spec": "$args.families",
+            "labels": "$args.study_io.labels",
+            "start": "$args.core"
+          },
+          "labels": "$args.study_io.labels",
+          "spec": "$args.model",
+          "paths": "$args.study_io.paths",
+          "final": "$step4.out.core"
+        },
+        "folds": "$args.fold_use",
+        "T": "$lane",
+        "stages": "$args.evaluate.stages"
+      },
+      "out": [
+        "development",
+        "scored",
+        "report"
+      ],
+      "notes": "Mirrors step 6's in map key for key (only the stage list differs), so the expanded study document is the same one and its identity matches the search and selection artifacts; a pin test keeps the two in step. T only names this step's config directory; the outputs come from step 6's layout.",
+      "stages": {
+        "hook": "declared_sequence",
+        "records": "$args.evaluate.stages.sequence",
+        "flags": "$args.study_io.cli.flags",
+        "expand": "$args.study_io.cli.expand",
+        "wildcard": "$args.study_io.cli.wildcard",
+        "partitions_at": "$args.study_io.cli.partitions_at"
+      }
+    },
+    "report": {
+      "registry": "report",
+      "in": {
+        "T": "$lane",
+        "W": "$args.work_dir",
+        "report": "$args.report",
+        "admission": "$step3.out.admission",
+        "fold_table": "$step3.out.fold_table",
+        "selection_rounds": "$step4.out.rounds",
+        "core": "$step4.out.core",
+        "zoo_rounds": "$step5.out.rounds",
+        "hpo_rounds": "$step6.out.rounds",
+        "development": "$step7.out.development",
+        "scored": "$step7.out.scored",
+        "evaluation": "$step7.out.report"
+      },
+      "out": [
+        "markdown",
+        "html",
+        "sections"
+      ]
+    }
+  },
+  "lanes": {
+    "notes": "One full chain per value of args.tickers: the runner binds $lane to that value (steps take T: $lane), writes under the layout patterns that carry {T}, and records ledger keys step@lane. `keyed` lists args objects keyed by lane value; each lane sees only its own key (same shape), so a single-ticker study never receives another ticker's task_features; a lane-keyed args object missing from `keyed` is refused by name. Run one lane or step: --only step4@IWM, --only @QQQ, --from step4@IWM.",
+    "key": "tickers",
+    "keyed": [
+      "price_source.relpath",
+      "vol_index",
+      "feature_limits.task_features"
+    ]
+  }
+}

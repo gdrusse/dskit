@@ -186,6 +186,20 @@
       22
     ],
     "matched_dte_vrp": true,
+    "reference_window": 22,
+    "change_lags": [
+      1,
+      5,
+      22
+    ],
+    "directional_windows": [
+      5,
+      22
+    ],
+    "periods_per_year": 252,
+    "calendar": "XNYS",
+    "calendar_pad_days": 30,
+    "dividend_field": "dividend_amount",
     "decision_regions": {
       "archive_root": {
         "source": "philippdubach-options",

@@ -1,0 +1,41 @@
+{
+  "T": "QQQ",
+  "U": {
+    "root": "/home/russell/data/index_options/ob",
+    "source": "philippdubach-options",
+    "stream": "files",
+    "relpath": {
+      "QQQ": "qqq/underlying_prices.parquet"
+    },
+    "columns": {
+      "date": "bar_date",
+      "close": "bar_close"
+    },
+    "fields": {
+      "date": "bar_date",
+      "close": "bar_close"
+    },
+    "fallback": "previous"
+  },
+  "H": 7,
+  "S": {
+    "symbol": "symbol",
+    "date": "quote_date",
+    "settlement_date": "settlement_date",
+    "entry_close": "spot",
+    "settle_close": "terminal_price",
+    "terminal_return": "terminal_return",
+    "period": "period"
+  },
+  "W": "./pipeline_runs/step1-target-dates",
+  "L": {
+    "step1": {
+      "target_dates": "./pipeline_runs/step1-target-dates/handoff/target_dates.jsonl"
+    }
+  },
+  "labels": {
+    "x": "Entry year",
+    "y": "Entry dates with a settled close",
+    "filename": "date_counts.png"
+  }
+}

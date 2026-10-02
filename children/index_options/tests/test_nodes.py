@@ -976,10 +976,12 @@ PANEL_READ_KEYS = {
     "root", "surface", "lifecycle", "symbols", "price_source", "iv_source", "since", "max_dte",
     "lags", "windows", "feature_gap_days", "reference_floor", "spot_tolerance", "chain_features",
     "raw_chain", "market_symbols", "fred_market_symbols", "surface_features", "ohlc_windows",
-    "matched_dte_vrp", "columns"}
+    "matched_dte_vrp", "columns", "reference_window", "change_lags", "directional_windows",
+    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
 PANEL_READ_REQUIRED = PANEL_READ_KEYS - {
     "chain_features", "raw_chain", "market_symbols", "fred_market_symbols", "surface_features",
-    "ohlc_windows", "matched_dte_vrp"}
+    "ohlc_windows", "matched_dte_vrp", "reference_window", "change_lags", "directional_windows",
+    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
 
 
 def _panel_read_params(**over):
@@ -1035,8 +1037,10 @@ def test_the_panel_reader_declares_its_role_ports_and_forbids_serving():
 
 def test_the_panel_readers_params_are_the_tail_data_read_keys_plus_columns(child_root):
     data = json.loads((child_root / "configs/run-predictive-cdf-tail-data.json").read_text())["data"]
-    assert set(ExactExpiryPanelRead._PARAMS) == PANEL_READ_KEYS == (set(data) - {"archive_root"}
-                                                                    | {"columns"})
+    study_conventions = {"reference_window", "change_lags", "directional_windows",
+                         "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
+    assert set(ExactExpiryPanelRead._PARAMS) == PANEL_READ_KEYS == (
+        set(data) - {"archive_root"} | {"columns"} | study_conventions)   # frozen tail config omits them
     assert set(ExactExpiryPanelRead._PARAMS) & {"decision_regions", "macro_event_calendars"} == set()
 
 

@@ -2635,7 +2635,9 @@ class ExactExpiryPanelRead(Node):
         lifecycle symbols price_source iv_source since max_dte lags windows
         feature_gap_days reference_floor spot_tolerance columns``; optional:
         ``chain_features raw_chain market_symbols fred_market_symbols
-        surface_features ohlc_windows matched_dte_vrp``.
+        surface_features ohlc_windows matched_dte_vrp reference_window change_lags
+        directional_windows periods_per_year calendar calendar_pad_days dividend_field``
+        (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`).
 
     Examples
     --------
@@ -2656,8 +2658,10 @@ class ExactExpiryPanelRead(Node):
     _REQUIRED = ("columns", "feature_gap_days", "iv_source", "lags", "lifecycle", "max_dte",
                  "price_source", "reference_floor", "root", "since", "spot_tolerance", "surface",
                  "symbols", "windows")
-    _OPTIONAL = ("chain_features", "fred_market_symbols", "market_symbols", "matched_dte_vrp",
-                 "ohlc_windows", "raw_chain", "surface_features")
+    _OPTIONAL = ("calendar", "calendar_pad_days", "chain_features", "change_lags",
+                 "directional_windows", "dividend_field", "fred_market_symbols",
+                 "market_symbols", "matched_dte_vrp", "ohlc_windows", "periods_per_year",
+                 "raw_chain", "reference_window", "surface_features")
     _PARAMS = _REQUIRED + _OPTIONAL
 
     def __init__(self, key, params=None, **kwargs):
@@ -2694,6 +2698,8 @@ class ExactExpiryPanelRead(Node):
         for name in ("surface", "lifecycle", "chain_features"):
             if name in params:
                 problems += entry_problems(name, params[name])
+        from .cdf_study import panel_convention_problems   # the one owner of the convention rules
+        problems += panel_convention_problems(params)
         return problems
 
     @classmethod

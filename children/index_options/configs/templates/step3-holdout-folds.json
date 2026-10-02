@@ -1,0 +1,343 @@
+{
+  "name": "step3-holdout-folds",
+  "notes": "TEMPLATE (neutral). Families are data (${families}, read by one family-availability node, ADR-0226 amendment), so no per-family node exists.  STEP 3 of the three-step data selection (ADR-0222): lock the holdout, admit the feature families, and cut the rolling-origin fold table. Input is step 2's dates file and step 1b's panel (each read back from its upstream onboarding store: dates_root, panel_root, handoff names), the panel read only for each cohort date's settlement_date. Order is the point: (1) holdout-cut locks the last 20% of the cohort's dates and purges dev rows whose label reaches it; (2) a family is admitted (availability node) when available on >= tau (${split.tau}) of dev dates, and the complete-case dates (every admitted family available) are the dates the folds are SIZED by; (3) rolling-origin-plan windows those dates into folds (train_n, val_n, step_n from the plan params, the oldest warmup_folds marked warmup, the rest scored) with the embargo equal to the horizon H (also the DTE the panel rows are selected at). Outputs (the layout): the fold table and the admission-and-metrics file (admitted families, holdout and plan metrics). One document runs ONE ticker (T is the runner's lane); families.flags is the spec of the yes/no columns step 2 wrote and families.dates_fields their file's columns. No training-dates file is written (a writer that runs before the plan could leave a stale file behind a refused run). A fold carries only its boundary dates and counts, and steps 4-6 slice EVERY panel row between those boundaries, so a date missing an admitted family (a few percent of dev dates in the derivation case) is median-imputed there, not excluded, and a fold's train_dates and val_dates count only the complete-case dates, so its window can span more panel dates than the count. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. The knob values are derived in ADR-0222 from the study's committed rows and carried in each node's notes; nothing derivable is typed (embargo, holdout_start, tickers, dates). Selection in steps 4-6 uses warmup folds only and must drop every warm-up validation row whose label reaches plan.scored_start. Memory: the source and the panel are each read once; every other node holds at most one ticker's dates.",
+  "pipeline": {
+    "step2_dates": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${dates_root}",
+        "source": "${handoff.source}",
+        "stream": "${handoff.streams.dates}",
+        "key_fields": [
+          "${S.symbol}",
+          "${S.quote_date}"
+        ],
+        "ts_field": "${S.quote_date}",
+        "ts_unit": "${handoff.effective_unit}",
+        "ts_out": "${S.date_ms}"
+      },
+      "notes": "Step 2's dates file, read back from step 2's onboarding store (dates_root, handoff): one row per cohort date and ticker with the available_<family> yes/no flags. It carries no DTE or group column: the horizon H is the one DTE of the whole chain. key_fields is (symbol, quote_date) because step 2 refuses a date with two availability patterns, so a duplicate key here means the file was edited. ts_field is quote_date (ISO): these rows carry no asof_ms, and ts_out is free because they carry no such field either."
+    },
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "${panel_root}",
+        "source": "${handoff.source}",
+        "stream": "${handoff.streams.panel}",
+        "key_fields": [
+          "${S.symbol}",
+          "${S.quote_date}",
+          "${S.expiry}"
+        ],
+        "ts_field": "${S.quote_date}",
+        "ts_unit": "${handoff.effective_unit}",
+        "ts_out": "${S.date_ms}"
+      },
+      "notes": "The SAME prepared option panel steps 1-2 read, read here for ONE column step 2's dates.jsonl does not carry: settlement_date, the day each date's label is known (the holdout purge and the embargo need it as end_field). Only dates already in step 2's cohort are looked up from it; no panel row becomes a cohort row. Another panel changes only these params, exactly as in steps 1-2. Root is the onboarding store (source cdf-horizon-panel, stream input_panel), not a per-run copy."
+    },
+    "columns": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "columns": {
+            "date_field": "${S.quote_date}",
+            "end_field": "${S.settlement}"
+          }
+        }
+      },
+      "notes": "The two column names holdout-cut and rolling-origin-plan must agree on, declared ONCE and referenced by both ($columns.merged.date_field / end_field), so the cut and the folds can never read different dates. date_field is the cohort date (entry day). end_field is settlement_date, the day the label is known: it is the horizon H after the entry date on every row, while expiry can be later on a few rows and would exceed the embargo and refuse (ADR-0222)."
+    },
+    "tau": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "admission": {
+            "tau": "${split.tau}"
+          }
+        }
+      },
+      "notes": "tau, the family admission threshold, declared ONCE; the availability node's admit.min_rate reads it ($tau.merged.tau). A family is admitted when it is available on at least tau of the pre-holdout dates. The chosen value and its admitted-family and complete-case counts are recorded in ADR-0222 (flag columns only; aggregate flags are not families); judgment the owner may override. Gaps are assumed random for now, though they may cluster in time."
+    },
+    "fold_rows": {
+      "uses": "concat",
+      "inputs": {
+        "fold_table__each": "$fold_table.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each fold row carries its own symbol (the fold_table derive stamps it); the key check proves no ticker appears twice"
+      }
+    },
+    "fold_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$fold_rows.merged"
+      },
+      "params": {
+        "path": "${L.step3.fold_table}",
+        "source": "The fold table: one row per rolling-origin fold and ticker (fold, role warmup|scored, train/val start and end, date and ISO-week counts, purged), oldest first. Pin it by provenance.sha256 (metrics.sha256) and holdout_start by value; never re-cut it."
+      },
+      "notes": "Refuses to overwrite and needs its parent directory: mkdir -p pipeline_runs/step3-holdout-folds, and move that directory aside to repeat. With more than one ticker the file holds one fold-id series per ticker and each ticker has its own holdout_start, so the study's fold_table reader (unique fold ids, one holdout_start) refuses it: for a study, run with ONE foreach key (a copy of this file differing only there) and a fresh output directory."
+    },
+    "admission_rows": {
+      "uses": "concat",
+      "inputs": {
+        "protocol__each": "$protocol.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${S.symbol}",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "admission_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$admission_rows.merged"
+      },
+      "params": {
+        "path": "${L.step3.admission}",
+        "source": "One row per ticker: dev_dates, rate_<f> (share of dev dates on which family f is available), required_<f> (1 = admitted at tau), holdout (holdout-cut metrics: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows, holdout_rows, panel_rows) and plan (rolling-origin-plan metrics: folds, scored, warmup_weeks, scored_start)"
+      },
+      "notes": "The persisted handoff values: a consumer reads holdout.holdout_start and plan.scored_start BY VALUE from here and never recomputes them (a fraction cut and an end-anchored grid both move when dates are appended). Same overwrite and parent-directory rules as fold_evidence."
+    }
+  },
+  "outputs": {
+    "run_root": "${L.step3.run_root}"
+  },
+  "foreach": {
+    "keys": [
+      "${T}"
+    ],
+    "notes": "One ticker per run: the study's fold_table reader needs unique fold ids and one holdout_start, so run step 3 once per ticker (set keys to that ticker) into a fresh output directory, then point that ticker's study config at its fold table.",
+    "pipeline": {
+      "ticker_dates": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$step2_dates.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's step-2 cohort dates. An empty result (a ticker step 2 never ran) leaves dte without an 'all' key and the run refuses at settled, the first node to read it."
+      },
+      "settled": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "${S.symbol}",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "${S.dte}",
+              "op": "==",
+              "value": "${H}"
+            },
+            {
+              "field": "${S.target}",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "${S.settlement}",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "The panel rows at the cohort's DTE whose label is known (step 2's own terminal_return != null rule), kept only to read settlement_date."
+      },
+      "settlement_groups": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$settled.records"
+        },
+        "params": {
+          "keys": [
+            "${S.symbol}",
+            "${S.quote_date}",
+            "${S.settlement}"
+          ],
+          "aggregates": {
+            "rows": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "One row per (date, settlement date): expiries on one date collapse here, and a date with two settlement dates yields two rows, which settlement_by_date refuses."
+      },
+      "settlement_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$settlement_groups.records"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "value": "${S.settlement}"
+        },
+        "notes": "quote_date -> settlement_date. A date with two different settlement dates would make its label end ambiguous, so keyby refuses the repeated key."
+      },
+      "dated": {
+        "uses": "join",
+        "inputs": {
+          "records": "$ticker_dates.records",
+          "settlement_date": "$settlement_by_date.table"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "how": "strict"
+        },
+        "notes": "Adds settlement_date to every cohort date. strict: a cohort date with no panel row at that DTE refuses naming the date, so the source or ticker changing between steps 2 and 3 cannot go unnoticed. This is the only join; step 2's rows lack the column and the kinds need it as end_field."
+      },
+      "cut": {
+        "uses": "holdout-cut",
+        "inputs": {
+          "records": "$dated.records"
+        },
+        "params": {
+          "date_field": "$columns.merged.date_field",
+          "end_field": "$columns.merged.end_field",
+          "fraction": "${split.holdout_fraction}"
+        },
+        "notes": "Holdout FIRST, on the full cohort: the last ceil(0.2 x dates) dates are locked and only dev rows (dates before the holdout whose label settles before holdout_start) and dates-only metrics leave this node. The fraction param sets the holdout size; C4 needs at least 52 weeks, one annual cycle (counts for the derivation case: ADR-0222). Every node after this one reads $cut.records, never $dated, so nothing downstream can see a holdout row."
+      },
+      "availability": {
+        "uses": "family-availability",
+        "inputs": {
+          "records": "$cut.records"
+        },
+        "params": {
+          "families": "${families.flags}",
+          "schema_fields": "${families.dates_fields}",
+          "date_field": "${S.quote_date}",
+          "group_keys": [
+            "${S.symbol}"
+          ],
+          "admit": {
+            "min_rate": "$tau.merged.tau"
+          },
+          "dates_count_field": "dev_dates"
+        },
+        "notes": "Replaces the per-family has_/admit_/required_ chains and the rate_ aggregates (ADR-0226 amendment). Reads step 2's yes/no available_<family> columns through flag families (the families spec is data: add or drop a family there, never in the graph) over DEV rows only, because its input is $cut.records. Port 'admission' is the one per-ticker row (dev_dates, rate_<family> = share of dev dates available, required_<family> = 1 when rate >= tau, admitted = sorted names); a rate exactly equal to tau admits. Port 'dates' flags each date complete = every ADMITTED family available. The node refuses a flag column holding anything but yes/no, so a step-2 vocabulary change cannot count as 0. group_keys carry the ticker and selection group so the admission row keeps both."
+      },
+      "complete_dates": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$availability.dates"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "complete",
+              "op": "==",
+              "value": "yes"
+            }
+          ]
+        },
+        "notes": "The complete-case dates: every admitted family available. 'complete' is the availability node's own output field and vocabulary (yes/no), not a project value."
+      },
+      "complete_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$complete_dates.records"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "value": "complete"
+        },
+        "notes": "quote_date -> 'yes' for each complete-case date, as a side table the training join reads. keyby refuses a repeated date, which one ticker's dates never have."
+      },
+      "training": {
+        "uses": "join",
+        "inputs": {
+          "records": "$cut.records",
+          "complete": "$complete_by_date.table"
+        },
+        "params": {
+          "key": "${S.quote_date}",
+          "how": "inner"
+        },
+        "notes": "Complete-case dates: a dev date stays only when every ADMITTED family is available on it (inner join drops the rest, counted). These dates SIZE and place the folds (the plan counts them); they are not written out and are not a training filter, because steps 4-6 slice by date range and median-impute the dates missing an admitted family. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Rows keep settlement_date from $cut.records, which the plan needs as end_field."
+      },
+      "plan": {
+        "uses": "rolling-origin-plan",
+        "inputs": {
+          "records": "$training.records"
+        },
+        "params": {
+          "date_field": "$columns.merged.date_field",
+          "end_field": "$columns.merged.end_field",
+          "holdout_start": "$cut.metrics.holdout_start",
+          "embargo_days": "${H}",
+          "train_n": "${split.folds.train_n}",
+          "val_n": "${split.folds.val_n}",
+          "step_n": "${split.folds.step_n}",
+          "warmup_folds": "${split.folds.warmup_folds}"
+        },
+        "notes": "Count-sized rolling folds over the complete-case dates; all counts are DATES, not weeks. The fold windows are date boundaries that downstream cover ALL cohort dates between them: train_dates and val_dates count only complete-case dates, and the study median-imputes the rest (Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built). holdout_start and embargo_days are wired (the cut's metric; the horizon H), never typed. val_n, step_n and train_n are chosen so every window meets C2 (>= 8 weeks) and C3 (>= 100 weeks) and C1 (>= 10 scored folds) holds; the derivation case is in ADR-0222. warmup_folds is the smallest k meeting C5 (warm-up validation spans >= 52 ISO weeks, every season once) that still leaves C1; ADR-0222 records the sweep over k (weeks spanned vs scored folds left). All selection (steps 4-6) runs on role == warmup only; scored folds are the clean evidence. The plan refuses a row on or past holdout_start and a label longer than the embargo, and a ticker with too few dates yields no fold and refuses. PROVISIONAL: these values were derived on one case's step 2 rows and must be re-derived, not merely re-tested, when step 2 is rebuilt or another ticker is added."
+      },
+      "fold_table": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$plan.records"
+        },
+        "params": {
+          "field": "${S.symbol}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "Stamps the ticker on each fold row so several tickers can share one file. The plan's own columns are untouched, so the rows are exactly what the node emits."
+      },
+      "protocol_holdout": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$availability.admission"
+        },
+        "params": {
+          "field": "holdout",
+          "cases": [
+            {
+              "when": [],
+              "value": "$cut.metrics"
+            }
+          ]
+        },
+        "notes": "Attaches the holdout-cut metrics (dates and row counts only: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows, holdout_rows, panel_rows) to the admission row."
+      },
+      "protocol": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$protocol_holdout.records"
+        },
+        "params": {
+          "field": "plan",
+          "cases": [
+            {
+              "when": [],
+              "value": "$plan.metrics"
+            }
+          ]
+        },
+        "notes": "Attaches the plan metrics (folds, scored, warmup_weeks, scored_start). The result is the single per-ticker row admission_evidence writes: the admitted families next to the two seams a consumer pins by value."
+      }
+    }
+  }
+}
