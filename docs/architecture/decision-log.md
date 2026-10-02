@@ -29106,19 +29106,22 @@ holidays, any run.
 
 ## ADR-0218 — Torch CDF CRPS and condor-wing twCRPS losses
 
-**Status:** proposed 2026-10-01 (owner direction 2026-10-01). Base: b6efdfe.
-The owner's pre-approval applies only after a clean (C0/M0) Sonnet skeptic
-review, recorded here before any code.
+**Status:** proposed 2026-10-01 (owner direction 2026-10-01); revised
+2026-10-02 after skeptic round 1 (wing geometry is the existing `intervals`,
+no second copy). Base: b6efdfe. The owner's pre-approval applies only after a
+clean (C0/M0) Sonnet skeptic review, recorded here before any code.
 
 A condor's expected P&L is credit - ∫F over the put wing - ∫(1-F) over the
 call wing, so training must score the CDF across whole wings, not only at
 strikes. Inventory: TorchCDF `_LOSSES` (predictive_cdf.py:2567) holds nll,
 decision_brier, decision_log; `Crps`/`ThresholdWeightedCrps`
 (distribution_scores.py:269/292) score sample sets only; `CDFThresholdAudit`
-(predictive_cdf.py:33) is a numpy fixed-grid audit; the child builder forms
-wing pairs (cdf_study.py:335) that `_decision_threshold_inventory`
-(predictive_cdf.py:917) discards. No Torch CRPS/twCRPS, interval union or Torch
-Student CDF exists (sweep).
+(predictive_cdf.py:33) is a numpy fixed-grid audit. Every decision-context
+record already carries the wing pairs as `intervals`, in the same standardized
+units as `thresholds` (child builder cdf_study.py:335-349), validated at
+predictive_cdf.py:942-953 and round-tripped at cdf_study.py:2613; only
+`DecisionRegionScores` (predictive_cdf.py:2393-2424) ignores them. No Torch
+CRPS/twCRPS, interval union or Torch Student CDF exists (sweep).
 
 1. **Objective.** `L = Σ_g w_g·mean_all(g) + Σ_l λ_l·mean_E_l(l)`. Registry
    gains `crps` (global) and `wing_twcrps` (local); terms stay unique
@@ -29131,19 +29134,27 @@ Student CDF exists (sweep).
    `{"kind": "student", "degrees": k}`, integer k >= 3. Terms are strategy
    objects built with the family; curve() returns the matching
    MixtureCurve/StudentMixtureCurve. Existing Gaussian formulas unchanged.
-3. **Segments.** Optional context key `weight_segments`: sorted, disjoint
-   `[lo, hi, density]` in the forecast's standardized units, density > 0,
-   Σ density·(hi-lo) = 1; `[]` marks a null region; every record or none.
-   One validator on `DecisionRegionScores`, reused by
-   `_decision_threshold_inventory` (now admits the key; non-empty iff
-   eligible). `DecisionRegionScores.segments_from_groups(groups)` unions
-   each group and gives every group equal mass, uniform on its union.
-4. **Child.** `decision_regions.wing_weight_segments: true` (opt-in;
-   absent keeps contexts and HPO frame hashes byte-identical) emits groups
-   `[long put, short put]` and `[short call, long call]` from the same
-   eligible candidates, in log(K/spot)/reference_scale. Puts and calls get
-   mass 1/2 each (continuous form of the 1/2-1/2 strike Brier); the body
-   and outer tails get 0; no candidate gives `[]`. Never synthesized.
+3. **Segments.** No new context key: the wing geometry is the existing
+   `intervals`, its only copy. `DecisionRegionScores.wing_groups(intervals)`
+   splits them by side of 0, the unchanged-underlying return: high <= 0 is
+   the lower (put) group, low >= 0 the upper (call) group; an interval
+   straddling 0 is refused, not guessed. `segments_from_groups(groups)` is
+   the single union owner: it unions each non-empty group and gives each
+   equal mass, uniform on its union (density > 0, Σ density·(hi-lo) = 1);
+   a condor record gets 1/2 + 1/2 (continuous form of the 1/2-1/2 strike
+   Brier), the body and outer tails 0. Refusals, raised only by wing
+   consumers (existing contexts and fixtures stay valid for every other
+   use): exactly one of `thresholds`/`intervals` empty; an interval endpoint
+   not among that record's `thresholds` (wings use listed strikes only,
+   never synthesized). Both empty is a null region.
+4. **Child.** No code change: the builder already emits `intervals`
+   (puts below spot, calls above: cdf_study.py:213-214, so sides separate by
+   sign), and contexts and HPO frame hashes are untouched (no key or flag
+   added). A builder-fed child test pins the contract: contexts from
+   `DecisionRegionContextBuilder` on a synthetic chain yield, per side, a
+   segment union equal to the union of that side's `intervals`, endpoints
+   within `thresholds`, mass 1/2 each. A later change to the wing-pair rule
+   edits the one list; this test reads it.
 5. **Math.** `wing_twcrps = Σ_s d_s ∫(F(z) - 1{y<=z})² dz`, each segment split
    at clamp(y) (F² left, (1-F)² right) and at component means, 64-point
    Gauss-Legendre per sub-piece. crps: Gaussian exact pair form (Grimit et
@@ -29154,19 +29165,24 @@ Student CDF exists (sweep).
    abs at segment/scale 200 (<= 6e-6 at 1000); Student CRPS <= 4e-8 rel;
    Student CDF <= 1e-15 abs, <= 3e-11 rel in the lower tail. One node
    constant serves training and evaluation.
-6. **Evaluation.** `DecisionRegionScores.score` adds `decision_wing_twcrps`
-   (NaN on null rows) and `decision_wing_segment_count` only when segments
-   exist. `_Curve` owns the numpy rule (mixtures pass their means, so it
-   equals the Torch term); `GridCurve` integrates exactly; other curves use
-   plain Gauss-Legendre (<= 1e-3 rel). The study adds it to equal-cell
-   skill, paired block intervals vs references and Torch telemetry; HPO
-   accepts `selection_metric: decision_wing_twcrps`. The metric-to-count
-   vocabulary has one owner on `DecisionRegionScores`.
+6. **Evaluation.** `DecisionRegionScores.wing_score(curve, y)`, separate
+   from `score` (whose keys and values stay byte-identical), returns
+   `decision_wing_twcrps` (NaN on null rows) and `decision_wing_segment_count`.
+   `_Curve` owns the numpy rule (mixtures pass their means, so it equals the
+   Torch term); `GridCurve` integrates exactly; other curves use plain
+   Gauss-Legendre (<= 1e-3 rel). The study calls it only when its experiment
+   sets `wing_metrics: true` (default false, default-deny key), then adds it
+   to equal-cell skill, paired block intervals vs references and Torch
+   telemetry; `selection_metric: decision_wing_twcrps` requires the flag.
+   The metric-to-count vocabulary has one owner on `DecisionRegionScores`.
 
 **Pins.** Closed forms vs scipy quad; twCRPS/CRPS vs `ThresholdWeightedCrps`/
 `Crps` on 20,000 midpoint quantiles of the same curve; Torch term = scorer;
-batch-partition invariance; null rows add only global terms; refusals;
-opt-in byte identity. **Touched.** predictive_cdf.py, test_predictive_cdf.py,
-child cdf_study.py + test_cdf_study.py, pipeline README/CLAUDE, child README,
-this ADR. **Non-goals.** Runs, new configs, λ tuning, feature selection,
+batch-partition invariance; null rows add only global terms; refusals
+(straddling interval, one-sided emptiness, endpoint not a threshold);
+builder-fed side/endpoint/mass pin (item 4); `score` output, contexts and
+frame hashes unchanged without `wing_metrics`. **Touched.**
+predictive_cdf.py, test_predictive_cdf.py, child test_cdf_study.py (contract
+pin only), pipeline README/CLAUDE, this ADR. **Non-goals.** Builder or
+context changes, runs, new configs, λ tuning, feature selection,
 acceptance/promotion guards, StudentMixtureMLPCDF, non-integer Torch degrees.
