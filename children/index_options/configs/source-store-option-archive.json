@@ -1,0 +1,11 @@
+{
+  "path": "/home/russell/data/options_archives/philippdubach_full",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "qqq/*.parquet",
+    "spy/*.parquet",
+    "iwm/*.parquet"
+  ],
+  "notes": "Registration input, not a run input: the origin of the QQQ/SPY/IWM EOD option-chain archive (philippdubach / options-dataset-hist, MIT). Acquire into the store root as source philippdubach-options, stream files; runs read it with dskit.onboarding.payload_files(root, \"philippdubach-options\", \"files\"). relpaths keep the symbol directory, e.g. qqq/options_2012.parquet and qqq/underlying_prices.parquet. Upstream pins (per-file sha256 and the source commit) are the separate source philippdubach-options-pins."
+}

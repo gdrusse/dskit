@@ -1,5 +1,5 @@
 {
-  "notes": "STEP 4 feature selection, forward step 1 (owner rules: forward over families with no cap; warm-up folds only; wing-weighted twCRPS selection). Candidates = the core (return history + realized volatility + horizon/scale context) alone and core + each other family, using TorchCDF feature_indices (ADR-0224) over one shared panel. Families and their columns come from step 2's family_contracts; drop any family step 3 did not admit. Next forward step: copy this file, make the winner the new core, and add each remaining family; stop when no candidate beats the incumbent. Open owner rules not yet expressible in the study: within-family elimination, PCA on continuous fields only, and the 25%-std tie rule (selection is by mean warm-up wing skill). All 18 open-interest-derived columns are excluded from every candidate: ADR-0217 (accepted) withholds them because the OI publication clock is unverified. Keep only candidates whose added family was admitted by step 3 (and set max_candidates to match).",
+  "notes": "STEP 5 model zoo: compare Torch CDF architectures (MLP, GRU encoders) at fixed default hyperparameters on the warm-up folds; the selected architecture feeds step 6. Inputs to change per run: data.symbols (ticker -> vol index), data.exact_dte (step 1's winning DTE; keep experiment.expected_cells to that one horizon), data store references (data.root and the surface/lifecycle/chain_features/archive_root entries), study.features (step 4 output), study.fold_table (step 3 output).",
   "data": {
     "root": "/home/russell/data/index_options/ob",
     "surface": {
@@ -44,7 +44,7 @@
       "max_outer_gap": 0.12
     },
     "symbols": {
-      "QQQ": "VXN"
+      "IWM": "RVX"
     },
     "market_symbols": {
       "market_vix9d": {
@@ -220,7 +220,8 @@
       }
     },
     "exact_dte": 7,
-    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built.",
+    "output": "pipeline_runs/step5_model_zoo_iwm/unused"
   },
   "diagnostic": {
     "strikes_z": [
@@ -272,7 +273,7 @@
       "life_fraction_sessions",
       "calendar_days_per_session",
       "reference_scale",
-      "is_QQQ",
+      "is_IWM",
       "chain_log_atm_iv",
       "chain_log_skew25",
       "chain_log_curvature25",
@@ -496,7 +497,7 @@
       "expiry"
     ],
     "decision_context": "decision_region_context",
-    "output": "pipeline_runs/step4_feature_selection/unused",
+    "output": "pipeline_runs/step5_model_zoo/unused",
     "samples": 201,
     "tail_intervals": [
       [
@@ -579,9 +580,9 @@
       "max_bias_increase": 0.01
     },
     "fold_table": {
-      "path": "pipeline_runs/step3-holdout-folds/fold-table.jsonl",
-      "sha256": "531a01196c9e754a978c6fafe04ca11e1daea0b8ce9de826f49791776a2aa324",
-      "holdout_start": "2024-09-11",
+      "path": "pipeline_runs/step3-holdout-folds-iwm/fold-table.jsonl",
+      "sha256": "7ac39698e9ada1753fe7e986691fc8b661c3b1acd3f3160e38b6c48e6a88ff12",
+      "holdout_start": "2024-10-04",
       "cal_n": 40,
       "roles": [
         "warmup",
@@ -592,12 +593,11 @@
     "notes": "Folds come from step 3's fold table (ADR-0222/0223), which carries date boundaries and complete-case counts only: the study slices every panel row inside a fold's boundaries and median-imputes the dates missing an admitted family (about 8% of QQQ dev dates), so training is NOT complete-case. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
   },
   "experiment": {
-    "output": "pipeline_runs/step4_feature_selection_f4",
-    "max_candidates": 3,
+    "output": "pipeline_runs/step5_model_zoo_iwm",
+    "max_candidates": 2,
     "candidates": {
-      "core": {
+      "mlp": {
         "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
-        "calibrate": false,
         "params": {
           "encoder": {
             "kind": "mlp"
@@ -653,7 +653,6 @@
             23,
             24,
             25,
-            26,
             27,
             28,
             29,
@@ -666,114 +665,12 @@
             36,
             37,
             38,
-            40,
-            41,
-            42,
             51,
             52,
             53,
             54,
             55,
             56,
-            57,
-            59,
-            61,
-            63,
-            65,
-            67,
-            210,
-            211,
-            212,
-            213
-          ]
-        }
-      },
-      "core+implied_cdf": {
-        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
-        "calibrate": false,
-        "params": {
-          "encoder": {
-            "kind": "mlp"
-          },
-          "losses": [
-            {
-              "kind": "nll",
-              "weight": 0.1
-            },
-            {
-              "kind": "wing_twcrps",
-              "weight": 1.0
-            }
-          ],
-          "components": 3,
-          "hidden": [
-            32,
-            16
-          ],
-          "epochs": 2000,
-          "patience": 6,
-          "batch_size": 512,
-          "seeds": [
-            11
-          ],
-          "learning_rate": 0.001,
-          "device": "cuda",
-          "deterministic": true,
-          "feature_indices": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            40,
-            41,
-            42,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            59,
-            61,
-            63,
-            65,
-            67,
             127,
             128,
             129,
@@ -783,99 +680,6 @@
             133,
             134,
             135,
-            210,
-            211,
-            212,
-            213
-          ]
-        }
-      },
-      "core+ohlc_shape": {
-        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
-        "calibrate": false,
-        "params": {
-          "encoder": {
-            "kind": "mlp"
-          },
-          "losses": [
-            {
-              "kind": "nll",
-              "weight": 0.1
-            },
-            {
-              "kind": "wing_twcrps",
-              "weight": 1.0
-            }
-          ],
-          "components": 3,
-          "hidden": [
-            32,
-            16
-          ],
-          "epochs": 2000,
-          "patience": 6,
-          "batch_size": 512,
-          "seeds": [
-            11
-          ],
-          "learning_rate": 0.001,
-          "device": "cuda",
-          "deterministic": true,
-          "feature_indices": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36,
-            37,
-            38,
-            40,
-            41,
-            42,
-            51,
-            52,
-            53,
-            54,
-            55,
-            56,
-            57,
-            59,
-            61,
-            63,
-            65,
-            67,
             197,
             198,
             199,
@@ -894,25 +698,253 @@
             212,
             213
           ]
-        }
+        },
+        "calibrate": false
+      },
+      "gru": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "sequence_indices": [
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ],
+              [
+                5
+              ],
+              [
+                4
+              ],
+              [
+                3
+              ],
+              [
+                2
+              ],
+              [
+                1
+              ],
+              [
+                0
+              ]
+            ],
+            "context_indices": [
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69
+            ],
+            "hidden_size": 16,
+            "num_layers": 1
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            204,
+            205,
+            206,
+            207,
+            208,
+            209,
+            210,
+            211,
+            212,
+            213
+          ]
+        },
+        "calibrate": false
       }
     },
     "candidate_groups": {
-      "forward_4": [
-        "core",
-        "core+implied_cdf",
-        "core+ohlc_shape"
+      "mlp": [
+        "mlp"
+      ],
+      "gru": [
+        "gru"
       ]
     },
     "search_partitions": {
-      "forward_4": [
-        "core",
-        "core+implied_cdf",
-        "core+ohlc_shape"
+      "mlp": [
+        "mlp"
+      ],
+      "gru": [
+        "gru"
       ]
     },
     "task_features": {
-      "QQQ": "is_QQQ"
+      "IWM": "is_IWM"
     },
     "selection_metric": "decision_wing_twcrps",
     "resolutions": {
@@ -929,16 +961,16 @@
     },
     "expected_cells": {
       "development": {
-        "QQQ": [
+        "IWM": [
           7
         ]
       },
       "evaluation": {
-        "QQQ": [
+        "IWM": [
           7
         ]
       }
     },
-    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223)."
+    "notes": "IWM copy of the QQQ config (vol index RVX, is_IWM task flag, IWM fold table, IWM step-4 core). Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence_indices is a list of ROWS, one row per step oldest first, each row the subset position(s) of that step's channel, here [[ret_lag_21], ..., [ret_lag_0]] (one return per step); context_indices is a flat list of all other subset positions."
   }
 }

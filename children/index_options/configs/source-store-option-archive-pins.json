@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell/data/options_archives",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "pins.json",
+    "philippdubach_full.sha256"
+  ],
+  "notes": "Registration input, not a run input: the upstream provenance of the option archive, pins.json (per-file sha256) and philippdubach_full.sha256. Acquire as source philippdubach-options-pins, stream files, next to philippdubach-options."
+}

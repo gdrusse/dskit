@@ -5,7 +5,7 @@
     "source": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/cdf-horizon-source",
+        "root": "/home/russell/data/index_options/ob",
         "source": "cdf-horizon-panel",
         "stream": "input_panel",
         "key_fields": [
@@ -17,7 +17,7 @@
         "ts_unit": "iso",
         "ts_out": "quote_date_ms"
       },
-      "notes": "THE DATA SOURCE: the onboarded prepared option panel, named by root/source/stream and resolved from the working directory. Another panel changes these values and nothing else. Both child runbooks onboard their own panel under these same names (index_options reuses its cdf-horizon-source acquisition; stock_options imports the AMZN panel there), so this file runs unchanged from either child. key_fields is the panel's row identity: rows that differ only elsewhere (AMZN rows differing only by price_basis) collide and refuse loudly instead of one being chosen silently. ts_out is quote_date_ms, not the default asof_ms, because the AMZN panel already carries asof_ms and ObservationRows refuses to overwrite a field."
+      "notes": "THE DATA SOURCE: the onboarded prepared option panel, named by root/source/stream. root is the onboarding store (the store the study configs call data.root), not a working-directory copy. Another panel changes these values and nothing else (stock_options onboards its AMZN panel under the same source and stream names in its own store, so it changes root only). key_fields is the panel's row identity: rows that differ only elsewhere (AMZN rows differing only by price_basis) collide and refuse loudly instead of one being chosen silently. ts_out is quote_date_ms, not the default asof_ms, because the AMZN panel already carries asof_ms and ObservationRows refuses to overwrite a field."
     },
     "selection_rows": {
       "uses": "concat",
@@ -49,10 +49,9 @@
   "foreach": {
     "keys": [
       "QQQ",
-      "SPY",
       "IWM"
     ],
-    "notes": "The only ticker setting: one or several symbols present in the prepared panel. AMZN is [\"AMZN\"], run from children/stock_options. One shared acquisition is read once and each ticker gets an independent table and argmax; no per-ticker copies of this file exist or are needed.",
+    "notes": "The only ticker setting: one or several symbols present in the prepared panel. AMZN is [\"AMZN\"], run from children/stock_options. One shared acquisition is read once and each ticker gets an independent table and argmax; no per-ticker copies of this file exist or are needed. SPY is parked (owner ruling C, 2026-10-02): its panel lists two expiries that settle the same day on 2012-01-27 (Fri 2012-02-03 and a near-empty Sat 2012-02-04), so step 2 refuses one pattern per date; no JSON step keeps one row per date yet. Add SPY back here and in steps 1b and 2 once one does.",
     "pipeline": {
       "cohort": {
         "uses": "filter",

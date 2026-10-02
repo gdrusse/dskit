@@ -44,7 +44,7 @@
       "max_outer_gap": 0.12
     },
     "symbols": {
-      "QQQ": "VXN"
+      "IWM": "RVX"
     },
     "market_symbols": {
       "market_vix9d": {
@@ -220,7 +220,8 @@
       }
     },
     "exact_dte": 7,
-    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built.",
+    "output": "pipeline_runs/step4_feature_selection_iwm/unused"
   },
   "diagnostic": {
     "strikes_z": [
@@ -272,7 +273,7 @@
       "life_fraction_sessions",
       "calendar_days_per_session",
       "reference_scale",
-      "is_QQQ",
+      "is_IWM",
       "chain_log_atm_iv",
       "chain_log_skew25",
       "chain_log_curvature25",
@@ -579,9 +580,9 @@
       "max_bias_increase": 0.01
     },
     "fold_table": {
-      "path": "pipeline_runs/step3-holdout-folds/fold-table.jsonl",
-      "sha256": "531a01196c9e754a978c6fafe04ca11e1daea0b8ce9de826f49791776a2aa324",
-      "holdout_start": "2024-09-11",
+      "path": "pipeline_runs/step3-holdout-folds-iwm/fold-table.jsonl",
+      "sha256": "7ac39698e9ada1753fe7e986691fc8b661c3b1acd3f3160e38b6c48e6a88ff12",
+      "holdout_start": "2024-10-04",
       "cal_n": 40,
       "roles": [
         "warmup",
@@ -592,7 +593,7 @@
     "notes": "Folds come from step 3's fold table (ADR-0222/0223), which carries date boundaries and complete-case counts only: the study slices every panel row inside a fold's boundaries and median-imputes the dates missing an admitted family (about 8% of QQQ dev dates), so training is NOT complete-case. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
   },
   "experiment": {
-    "output": "pipeline_runs/step4_feature_selection_f4",
+    "output": "pipeline_runs/step4_feature_selection_iwm_f4",
     "max_candidates": 3,
     "candidates": {
       "core": {
@@ -653,7 +654,6 @@
             23,
             24,
             25,
-            26,
             27,
             28,
             29,
@@ -666,21 +666,34 @@
             36,
             37,
             38,
-            40,
-            41,
-            42,
             51,
             52,
             53,
             54,
             55,
             56,
-            57,
-            59,
-            61,
-            63,
-            65,
-            67,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            204,
+            205,
+            206,
+            207,
+            208,
+            209,
             210,
             211,
             212,
@@ -688,7 +701,7 @@
           ]
         }
       },
-      "core+implied_cdf": {
+      "core+volatility_context": {
         "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
         "calibrate": false,
         "params": {
@@ -759,9 +772,6 @@
             36,
             37,
             38,
-            40,
-            41,
-            42,
             51,
             52,
             53,
@@ -783,6 +793,19 @@
             133,
             134,
             135,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            204,
+            205,
+            206,
+            207,
+            208,
+            209,
             210,
             211,
             212,
@@ -790,7 +813,7 @@
           ]
         }
       },
-      "core+ohlc_shape": {
+      "core+surface_level": {
         "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
         "calibrate": false,
         "params": {
@@ -848,7 +871,6 @@
             23,
             24,
             25,
-            26,
             27,
             28,
             29,
@@ -870,12 +892,15 @@
             54,
             55,
             56,
-            57,
-            59,
-            61,
-            63,
-            65,
-            67,
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135,
             197,
             198,
             199,
@@ -900,19 +925,19 @@
     "candidate_groups": {
       "forward_4": [
         "core",
-        "core+implied_cdf",
-        "core+ohlc_shape"
+        "core+volatility_context",
+        "core+surface_level"
       ]
     },
     "search_partitions": {
       "forward_4": [
         "core",
-        "core+implied_cdf",
-        "core+ohlc_shape"
+        "core+volatility_context",
+        "core+surface_level"
       ]
     },
     "task_features": {
-      "QQQ": "is_QQQ"
+      "IWM": "is_IWM"
     },
     "selection_metric": "decision_wing_twcrps",
     "resolutions": {
@@ -929,16 +954,16 @@
     },
     "expected_cells": {
       "development": {
-        "QQQ": [
+        "IWM": [
           7
         ]
       },
       "evaluation": {
-        "QQQ": [
+        "IWM": [
           7
         ]
       }
     },
-    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223)."
+    "notes": "IWM copy of the QQQ step-4 config (vol index RVX, is_IWM task flag, IWM fold table, expected cells). Same six candidates: step 3 admitted the same seven families for IWM. Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223)."
   }
 }

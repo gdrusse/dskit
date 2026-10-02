@@ -2385,3 +2385,13 @@ Deferred:
       out of ADR-0020, round-3 residual, loud downstream: every
       dereference refuses; fixing needs O(n) content loads, defeating
       the sqlite index). Stays declared, not fixed.
+
+### Onboard the index_options research data (owner ruling 2026-10-02) — DONE for the step 1-7 inputs
+
+Done 2026-10-02: the option archive (QQQ/SPY/IWM, 54 files, pins checked), the exact-expiry surface and lifecycle tables, the raw-chain features and the prepared panel are onboarded sources in `/home/russell/data/index_options/ob`; the step 1, 1b, 3 and 4-6 configs name them by source, `index_options/datafiles.py` resolves them, and a guard test (`tests/test_config_data_sources.py`) rejects stray absolute paths. The AMZN/MSFT Alpaca files and the ORATS one-day sample are sources in `/home/russell/data/stock_options/ob`. ADR-0225 (`localblobs`, `payload_files`).
+
+Still open:
+- the `run-predictive-cdf-*` and `grid/` configs still name absolute paths (legacy, outside the guard);
+- `cdf_study --stage prepare` writes `data.chain_features` to a plain path: onboard its output after each prepare;
+- stock_options readers still use per-run onboarding roots and have not moved to the stock store;
+- SPY is parked in steps 1, 1b, 2 until a keep-one-row-per-date step exists (two same-day expiries on 2012-01-27).

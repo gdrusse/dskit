@@ -5,7 +5,7 @@
     "source": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/cdf-horizon-source",
+        "root": "./pipeline_runs/feature-panel-source",
         "source": "cdf-horizon-panel",
         "stream": "input_panel",
         "key_fields": [
@@ -766,7 +766,6 @@
   "foreach": {
     "keys": [
       "QQQ",
-      "SPY",
       "IWM"
     ],
     "notes": "The only ticker setting, and it must match step 1's: a ticker absent from step 1's selection refuses. AMZN is [\"AMZN\"], run from children/stock_options. No per-ticker copies of this file exist or are needed.",

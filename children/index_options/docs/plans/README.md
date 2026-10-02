@@ -804,3 +804,64 @@ AMZN now uses the same audit definitions and output schema on its 42-day/90-date
 cohort; see the stock plan runbook. Both evidence folders are tracked for the
 owner-requested agent handoff. Next: prepare missing families without dropping
 dates, audit source clocks, rerun gaps, then plan selection/PCA on training only.
+
+## Data-source debt (owner ruling 2026-10-02)
+
+Rule: every dataset a run reads is an onboarded source (repo `CLAUDE.md` /
+`AGENTS.md`, "Data enters through onboarding"). These inputs still break it. The
+studies read them by absolute path, mostly from sibling clones, so a result
+depends on files no catalog lists. Retire each row, then delete its path from the
+configs.
+
+| Input | Read today as | Origin | Target | Store source (onboarded 2026-10-02) | Status |
+|---|---|---|---|---|---|
+| Option chain archive (QQQ/SPY/IWM `options_YYYY.parquet`, `underlying_prices.parquet`) | `data.archive_root` = `/home/russell/data/options_archives/philippdubach_full` | third-party download; an `optionshist` onboarding pack exists (ADR-0182 amendment, store source `optionshist-chain`) | read through the store, or extend the pack to carry bid/ask sizes the studies need | `philippdubach-options`, stream `files`, 54 files / 1,681,389,588 B, in `/home/russell/data/index_options/ob`; manifest_sha256 `622bc2bd402d21f2...`. Upstream per-file pins: `philippdubach-options-pins` (`pins.json`, `philippdubach_full.sha256`), manifest_sha256 `51d6209ff54a2117...`; all 54 payload hashes equal `pins.json` | onboarded; readers migrated; verified 2026-10-02 (steps 1-3 byte-identical from the store, QQQ step 4 round 1 identical) |
+| `raw_chain_features.parquet` | `data.chain_features`, `dskit-cdf-tail-data/.../predictive_cdf_tail_data_20260930/` | derived by `cdf_study --stage prepare` from the archive | publish via `localtables`; record the archive hashes it read | `raw-chain-features`, stream `files`, 2 files / 28,584,598 B (`raw_chain_features.parquet` plus its `.sources.json`, one payload directory), in `/home/russell/data/index_options/ob`; manifest_sha256 `1a6f3130cb51f49c...` | onboarded; readers migrated; verified 2026-10-02 (steps 1-3 byte-identical from the store, QQQ step 4 round 1 identical) |
+| `exact_expiry_surface.parquet`, `date_expiry_lifecycle.parquet` | `data.surface`, `data.lifecycle`, `dskit-feature-research-20260927/.../exact_maturity_20260928/` | derived in an earlier research clone | publish via `localtables` | `exact-expiry-tables`, stream `files`, 2 files / 7,052,361 B, in `/home/russell/data/index_options/ob`; manifest_sha256 `dd28d6e83762b7cc...` | onboarded; readers migrated; verified 2026-10-02 (steps 1-3 byte-identical from the store, QQQ step 4 round 1 identical) |
+| prepared `input_panel.parquet` (cdf-horizon-panel) | `configs/source-cdf-horizon-panel.json` path, `dskit-cdf-option-surface/.../predictive_cdf_risk_neutral_20260929/evaluate/late/` | derived by an earlier study | publish via `localtables`; the onboarded copy under `pipeline_runs/cdf-horizon-source` is a per-run snapshot, not the home | `cdf-horizon-panel` (connector `localtables`), stream `input_panel`, 109,355 records (equals the parquet's row count), in `/home/russell/data/index_options/ob`; manifest_sha256 `7c5e27af67735ea8...`. The store copy is the home; per-run roots stay snapshots | onboarded; step 1 and 1b readers migrated; verified 2026-10-02 (steps 1-3 byte-identical from the store, QQQ step 4 round 1 identical); step 3 still reads its per-run root |
+| vol indices, chain snapshots, FRED rates | `data.root` = `/home/russell/data/index_options/ob` | already onboarded | none | `cboe-index`, `cboe-index-wide`, `cboe-chain`, `cboe-chain-wide`, `fred-market-features` in the same store | none (already migrated) |
+
+Migration status (2026-10-02): the four rows above are acquired into the standard index
+store and re-hash clean (`dskit.onboarding verify`; `payload_files(..., verify=True)`).
+The step 1, 1b and 4-6 run configs (and the forward-step template) now name them by store
+reference, `{source, stream, relpath}` resolved against `data.root` through
+`index_options/datafiles.py` (a plain path string still works for the older configs); the
+first column is the retired read. Each run records the snapshot id and manifest hash of
+every reference it resolved (`data_provenance.json`, the panel reader's provenance) and takes
+file digests from the manifest. `tests/test_config_data_sources.py` fails any run-step config
+that carries an absolute path outside `root`. Still pending: a rerun that matches the
+earlier results (verification), and step 3's per-run `cdf-horizon-source` root.
+
+### Standard stores
+
+Index store: `/home/russell/data/index_options/ob` (sources: `philippdubach-options`, `philippdubach-options-pins`,
+`exact-expiry-tables`, `raw-chain-features`, `cdf-horizon-panel`, plus the earlier
+`optionshist-chain`, `cboe-index`, `cboe-index-wide`, `cboe-chain`, `cboe-chain-wide`,
+`fred-market-features`). Stock store: `/home/russell/data/stock_options/ob` (initialised
+2026-10-02; sources `stock-amzn-alpaca`, `stock-msft-alpaca`, `stock-long-history-audit`,
+`stock-orats-smv-sample`; see `children/stock_options/docs/plans/README.md`). The
+`localblobs` sources hold existing files as hashed snapshot artifacts
+(`payload/<stream>/<relpath>`, ADR-0225); registration configs are the
+`configs/source-store-*.json` files. Snapshots are immutable: a changed origin file needs a
+new acquire (a new snapshot), never an edit in place.
+
+Acceptance: a fresh clone plus the store lets the step 1-7 chain run for a ticker
+and a data source with no path outside the store or the repo in any config.
+
+### Status of the step 4-6 configs (2026-10-02)
+
+The checked-in step 4, 5 and 6 configs (QQQ and the `-iwm` copies) already carry the
+current settings: store references for the data, the span decision region (no
+wing-width limit) and early-stopping patience 6. Their selection state does not.
+Step 4 is the file as left after the fourth forward round, steps 5 and 6 hold the
+`feature_indices`, and the IWM step 6 holds a GRU grid, all chosen from runs made under
+the earlier $5-wide condor region and patience 20. Those runs, and everything under
+`pipeline_runs/` from them (`step4_feature_selection*`, `step5_model_zoo*`, `step6_hpo*`,
+and their `-iwm` twins), are obsolete.
+
+Steps 4, 5, 6 and the step 7 evaluation must be rerun under the span region and
+patience 6 before any result from them is quoted. Only the QQQ round-1 scores have been
+reproduced under the new settings (core 1.0126, core+volatility_context 0.9814, from
+the store, identical to the pre-migration run). Steps 1-3 do not depend on either change
+and were verified byte-identical from the store. The checked-in files are working
+copies; the step 1-7 chain is meant to generate them from neutral templates.

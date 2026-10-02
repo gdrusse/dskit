@@ -1,0 +1,6 @@
+{
+  "path": "/home/russell/data/stock_options/msft",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "notes": "Registration input, not a run input: MSFT Alpaca indicative chain snapshots. Acquire into the stock_options store root (/home/russell/data/stock_options/ob) as source stock-msft-alpaca, stream files."
+}

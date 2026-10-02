@@ -106,6 +106,25 @@ Use README.md for installation, the temporary demo and focused tests.
 - Keep AGENTS.md and CLAUDE.md identical and both layout trees current.
   No new files outside an owner-approved manifest.
 
+## Data sources (index_options)
+
+Read the repo-level rule "Data enters through onboarding" first. For this child:
+
+- The store of record is the onboarding root `/home/russell/data/index_options/ob`
+  (sources `cboe-chain`, `cboe-chain-wide`, `cboe-index`, `cboe-index-wide`,
+  `fred-market-features`, `optionshist-chain`). New data goes in through
+  `register-source` + `acquire`, never by pointing a config at a file.
+- Known debt, tracked in `docs/plans/README.md` under "Data-source debt": the
+  philippdubach option archive (`data.archive_root`) and four derived tables
+  (`exact_expiry_surface.parquet`, `date_expiry_lifecycle.parquet`,
+  `raw_chain_features.parquet`, the prepared `input_panel.parquet`) are read by
+  absolute path from sibling clones. Do not add to that list. Do not copy those
+  paths into new configs; reference the data-source profile once it exists.
+- Before writing any new `data.*` path in a config, ask whether it is an onboarded
+  source. If not, onboard it first.
+- Every step output that a later step or ticker reads goes to the run's own output
+  directory and, if it crosses runs, is onboarded (`localtables`) before use.
+
 ## Layout
 
 ```text

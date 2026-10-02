@@ -1,0 +1,6 @@
+{
+  "path": "/home/russell/data/stock_options/amzn",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "notes": "Registration input, not a run input: AMZN Alpaca option history (free history bars and contracts) and indicative chain snapshots. Acquire into the stock_options store root (/home/russell/data/stock_options/ob) as source stock-amzn-alpaca, stream files."
+}

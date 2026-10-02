@@ -1,11 +1,26 @@
 {
-  "notes": "STEP 5 model zoo: compare Torch CDF architectures (MLP, GRU encoders) at fixed default hyperparameters on the warm-up folds; the selected architecture feeds step 6. Inputs to change per run: data.symbols (ticker -> vol index), data.exact_dte (step 1's winning DTE; keep experiment.expected_cells to that one horizon), data roots, study.features (step 4 output), study.fold_table (step 3 output).",
+  "notes": "STEP 5 model zoo: compare Torch CDF architectures (MLP, GRU encoders) at fixed default hyperparameters on the warm-up folds; the selected architecture feeds step 6. Inputs to change per run: data.symbols (ticker -> vol index), data.exact_dte (step 1's winning DTE; keep experiment.expected_cells to that one horizon), data store references (data.root and the surface/lifecycle/chain_features/archive_root entries), study.features (step 4 output), study.fold_table (step 3 output).",
   "data": {
     "root": "/home/russell/data/index_options/ob",
-    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
-    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
-    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
-    "chain_features": "/home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930/raw_chain_features.parquet",
+    "surface": {
+      "source": "exact-expiry-tables",
+      "stream": "files",
+      "relpath": "exact_expiry_surface.parquet"
+    },
+    "lifecycle": {
+      "source": "exact-expiry-tables",
+      "stream": "files",
+      "relpath": "date_expiry_lifecycle.parquet"
+    },
+    "archive_root": {
+      "source": "philippdubach-options",
+      "stream": "files"
+    },
+    "chain_features": {
+      "source": "raw-chain-features",
+      "stream": "files",
+      "relpath": "raw_chain_features.parquet"
+    },
     "raw_chain": {
       "nodes": 9,
       "moneyness_bounds": [
@@ -172,7 +187,10 @@
     ],
     "matched_dte_vrp": true,
     "decision_regions": {
-      "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
       "max_chain_rows": 14000000,
       "panel_years": [
         2011,
@@ -198,15 +216,11 @@
       },
       "chain_rule": {
         "max_abs_log_moneyness": 0.1,
-        "min_wing_width": 1,
-        "max_wing_width": 5,
-        "max_candidates": 5000,
-        "fee_per_leg": 0.5,
-        "multiplier": 100
+        "region": "span"
       }
     },
     "exact_dte": 7,
-    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source. decision_regions (the block refuses its own notes key): Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
   },
   "diagnostic": {
     "strikes_z": [
@@ -566,8 +580,8 @@
     },
     "fold_table": {
       "path": "pipeline_runs/step3-holdout-folds/fold-table.jsonl",
-      "sha256": "REPLACE_WITH_STEP3_FOLD_TABLE_SHA256",
-      "holdout_start": "REPLACE_WITH_STEP3_HOLDOUT_START",
+      "sha256": "531a01196c9e754a978c6fafe04ca11e1daea0b8ce9de826f49791776a2aa324",
+      "holdout_start": "2024-09-11",
       "cal_n": 40,
       "roles": [
         "warmup",
@@ -603,7 +617,7 @@
             16
           ],
           "epochs": 2000,
-          "patience": 20,
+          "patience": 6,
           "batch_size": 512,
           "seeds": [
             11
@@ -611,7 +625,66 @@
           "learning_rate": 0.001,
           "device": "cuda",
           "deterministic": true,
-          "feature_indices": []
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            40,
+            41,
+            42,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            59,
+            61,
+            63,
+            65,
+            67,
+            210,
+            211,
+            212,
+            213
+          ]
         },
         "calibrate": false
       },
@@ -620,8 +693,112 @@
         "params": {
           "encoder": {
             "kind": "gru",
-            "sequence_indices": [],
-            "context_indices": [],
+            "sequence_indices": [
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ],
+              [
+                10
+              ],
+              [
+                9
+              ],
+              [
+                8
+              ],
+              [
+                7
+              ],
+              [
+                6
+              ],
+              [
+                5
+              ],
+              [
+                4
+              ],
+              [
+                3
+              ],
+              [
+                2
+              ],
+              [
+                1
+              ],
+              [
+                0
+              ]
+            ],
+            "context_indices": [
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57
+            ],
             "hidden_size": 16,
             "num_layers": 1
           },
@@ -641,7 +818,7 @@
             16
           ],
           "epochs": 2000,
-          "patience": 20,
+          "patience": 6,
           "batch_size": 512,
           "seeds": [
             11
@@ -649,7 +826,66 @@
           "learning_rate": 0.001,
           "device": "cuda",
           "deterministic": true,
-          "feature_indices": []
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            40,
+            41,
+            42,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            59,
+            61,
+            63,
+            65,
+            67,
+            210,
+            211,
+            212,
+            213
+          ]
         },
         "calibrate": false
       }
@@ -698,6 +934,6 @@
         ]
       }
     },
-    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 20 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence_indices is a list of ROWS, one row per step oldest first, each row the subset position(s) of that step's channel, here [[ret_lag_21], ..., [ret_lag_0]] (one return per step); context_indices is a flat list of all other subset positions."
+    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 6 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence_indices is a list of ROWS, one row per step oldest first, each row the subset position(s) of that step's channel, here [[ret_lag_21], ..., [ret_lag_0]] (one return per step); context_indices is a flat list of all other subset positions."
   }
 }

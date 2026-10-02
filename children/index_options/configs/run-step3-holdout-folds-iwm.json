@@ -1,6 +1,6 @@
 {
-  "name": "step3-holdout-folds",
-  "notes": "STEP 3 of the three-step data selection (ADR-0222): lock the holdout, admit the feature families, and cut the rolling-origin fold table. Input is step 2's dates.jsonl (onboarded through source-step2-dates.json) plus the same prepared panel as steps 1-2, read only for each cohort date's settlement_date. Order is the point: (1) holdout-cut locks the last 20% of the cohort's dates and purges dev rows whose label reaches it; (2) a family is admitted when available on >= tau (0.9) of dev dates, and the complete-case dates (every admitted family available) are the dates the folds are SIZED by; (3) rolling-origin-plan windows those dates into folds (train_n 450, val_n 40, step_n 40, the oldest warmup_folds 4 marked warmup, the rest scored) with the embargo equal to the selected DTE. Outputs in pipeline_runs/step3-holdout-folds: fold-table.jsonl (the fold table) and admission-and-metrics.jsonl (admitted families, holdout and plan metrics). No training-dates file is written (a writer that runs before the plan could leave a stale file behind a refused run). A fold carries only its boundary dates and counts, and steps 4-6 slice EVERY panel row between those boundaries, so a date missing an admitted family (about 8% of QQQ dev dates) is median-imputed there, not excluded, and a fold's train_dates and val_dates count only the complete-case dates, so its window can span more panel dates than the count. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. The knob values are derived in ADR-0222 from the committed QQQ rows and carried in each node's notes; nothing derivable is typed (embargo, holdout_start, tickers, dates). Selection in steps 4-6 uses warmup folds only and must drop every warm-up validation row whose label reaches plan.scored_start. Memory: the source and the panel are each read once; every other node holds at most one ticker's dates.",
+  "name": "step3-holdout-folds-iwm",
+  "notes": "IWM copy of run-step3-holdout-folds.json (one ticker per step-3 file): only foreach.keys and the output paths differ. STEP 3 of the three-step data selection (ADR-0222): lock the holdout, admit the feature families, and cut the rolling-origin fold table. Input is step 2's dates.jsonl (onboarded through source-step2-dates.json) plus the same prepared panel as steps 1-2, read only for each cohort date's settlement_date. Order is the point: (1) holdout-cut locks the last 20% of the cohort's dates and purges dev rows whose label reaches it; (2) a family is admitted when available on >= tau (0.9) of dev dates, and the complete-case dates (every admitted family available) are the dates the folds are SIZED by; (3) rolling-origin-plan windows those dates into folds (train_n 450, val_n 40, step_n 40, the oldest warmup_folds 4 marked warmup, the rest scored) with the embargo equal to the selected DTE. Outputs in pipeline_runs/step3-holdout-folds-iwm: fold-table.jsonl (the fold table) and admission-and-metrics.jsonl (admitted families, holdout and plan metrics). No training-dates file is written (a writer that runs before the plan could leave a stale file behind a refused run). A fold carries only its boundary dates and counts, and steps 4-6 slice EVERY panel row between those boundaries, so a date missing an admitted family (about 8% of QQQ dev dates) is median-imputed there, not excluded, and a fold's train_dates and val_dates count only the complete-case dates, so its window can span more panel dates than the count. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. The knob values are derived in ADR-0222 from the committed QQQ rows and carried in each node's notes; nothing derivable is typed (embargo, holdout_start, tickers, dates). Selection in steps 4-6 uses warmup folds only and must drop every warm-up validation row whose label reaches plan.scored_start. Memory: the source and the panel are each read once; every other node holds at most one ticker's dates.",
   "pipeline": {
     "step2_dates": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
@@ -77,10 +77,10 @@
         "records": "$fold_rows.merged"
       },
       "params": {
-        "path": "./pipeline_runs/step3-holdout-folds/fold-table.jsonl",
+        "path": "./pipeline_runs/step3-holdout-folds-iwm/fold-table.jsonl",
         "source": "The fold table: one row per rolling-origin fold and ticker (fold, role warmup|scored, train/val start and end, date and ISO-week counts, purged), oldest first. Pin it by provenance.sha256 (metrics.sha256) and holdout_start by value; never re-cut it."
       },
-      "notes": "Refuses to overwrite and needs its parent directory: mkdir -p pipeline_runs/step3-holdout-folds, and move that directory aside to repeat. With more than one ticker the file holds one fold-id series per ticker and each ticker has its own holdout_start, so the study's fold_table reader (unique fold ids, one holdout_start) refuses it: for a study, run with ONE foreach key (a copy of this file differing only there) and a fresh output directory."
+      "notes": "Refuses to overwrite and needs its parent directory: mkdir -p pipeline_runs/step3-holdout-folds-iwm, and move that directory aside to repeat. With more than one ticker the file holds one fold-id series per ticker and each ticker has its own holdout_start, so the study's fold_table reader (unique fold ids, one holdout_start) refuses it: for a study, run with ONE foreach key (a copy of this file differing only there) and a fresh output directory."
     },
     "admission_rows": {
       "uses": "concat",
@@ -99,18 +99,18 @@
         "records": "$admission_rows.merged"
       },
       "params": {
-        "path": "./pipeline_runs/step3-holdout-folds/admission-and-metrics.jsonl",
+        "path": "./pipeline_runs/step3-holdout-folds-iwm/admission-and-metrics.jsonl",
         "source": "One row per ticker: dev_dates, rate_<f> (share of dev dates on which family f is available), required_<f> (1 = admitted at tau), holdout (holdout-cut metrics: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows) and plan (rolling-origin-plan metrics: folds, scored, warmup_weeks, scored_start)"
       },
       "notes": "The persisted handoff values: a consumer reads holdout.holdout_start and plan.scored_start BY VALUE from here and never recomputes them (a fraction cut and an end-anchored grid both move when dates are appended). Same overwrite and parent-directory rules as fold_evidence."
     }
   },
   "outputs": {
-    "run_root": "./pipeline_runs/step3-holdout-folds/runs"
+    "run_root": "./pipeline_runs/step3-holdout-folds-iwm/runs"
   },
   "foreach": {
     "keys": [
-      "QQQ"
+      "IWM"
     ],
     "notes": "One ticker per run: the study's fold_table reader needs unique fold ids and one holdout_start, so run step 3 once per ticker (set keys to that ticker) into a fresh output directory, then point that ticker's study config at its fold table.",
     "pipeline": {

@@ -91,6 +91,99 @@ def test_exact_manifest_and_agent_parity(child_root):
         *(f"configs/grid/{u}-30-45-long-{kind}-spread.json" for u in ("spy", "qqq")
           for kind in ("call", "put")),
         "tests/test_debit_backtest.py",
+        # Files ADR-0198 onward added to origin/main without extending this manifest (the
+        # CDF study configs, memos, research notes and tests), pinned here 2026-10-02.
+        "configs/run-cdf-actual-wing-paired-audit-r2.json",
+        "configs/run-cdf-actual-wing-paired-audit-r3.json",
+        "configs/run-cdf-actual-wing-paired-audit.json",
+        "configs/run-cdf-causal-robust-condor-calibration.json",
+        "configs/run-cdf-decision-regions-w1-smoke.json",
+        "configs/run-cdf-decision-regions.json",
+        "configs/run-cdf-gpd-decision-regions-calibration.json",
+        "configs/run-cdf-gpd-decision-regions-screen-r4.json",
+        "configs/run-cdf-gpd-decision-regions-screen.json",
+        "configs/run-decision-strike-qqq-diagnosis.json",
+        "configs/run-predictive-cdf-center-transport.json",
+        "configs/run-predictive-cdf-comparison.json",
+        "configs/run-predictive-cdf-conditioned-transport.json",
+        "configs/run-predictive-cdf-decision-loss-spy-persistence.json",
+        "configs/run-predictive-cdf-decision-loss-zoo-r2.json",
+        "configs/run-predictive-cdf-decision-loss-zoo-r3.json",
+        "configs/run-predictive-cdf-decision-loss-zoo-r4.json",
+        "configs/run-predictive-cdf-decision-loss-zoo-r5.json",
+        "configs/run-predictive-cdf-decision-loss-zoo.json",
+        "configs/run-predictive-cdf-downside.json",
+        "configs/run-predictive-cdf-guard-aware.json", "configs/run-predictive-cdf-hpo.json",
+        "configs/run-predictive-cdf-methods.json",
+        "configs/run-predictive-cdf-option-surface.json",
+        "configs/run-predictive-cdf-qqq-torch-smoke.json",
+        "configs/run-predictive-cdf-qqq-torch-zoo.json",
+        "configs/run-predictive-cdf-refinement.json",
+        "configs/run-predictive-cdf-risk-neutral.json",
+        "configs/run-predictive-cdf-tail-blend.json",
+        "configs/run-predictive-cdf-tail-calibration-center-gpd-bounded.json",
+        "configs/run-predictive-cdf-tail-calibration-center-gpd-final.json",
+        "configs/run-predictive-cdf-tail-calibration-center-gpd.json",
+        "configs/run-predictive-cdf-tail-calibration.json",
+        "configs/run-predictive-cdf-tail-data.json",
+        "configs/run-predictive-cdf-transport-ablation.json",
+        "configs/source-cdf-horizon-panel.json", "docs/explanations/robust-condor-selection.md",
+        "docs/explanations/robust-condor-selection.svg",
+        "docs/memos/2026-09-27-index-options-modelability-ranking.md",
+        "docs/memos/2026-09-28-predictive-cdf-comparison.md",
+        "docs/memos/2026-09-28-predictive-cdf-downside.md",
+        "docs/memos/2026-09-28-predictive-cdf-hpo.md",
+        "docs/memos/2026-09-28-predictive-cdf-methods.md",
+        "docs/memos/2026-09-28-predictive-cdf-refinement.md",
+        "docs/memos/2026-09-29-predictive-cdf-option-surface.md",
+        "docs/memos/2026-09-29-risk-neutral-cdf-architecture-comparison.md",
+        "docs/memos/2026-09-30-actual-listed-wing-paired-audit.md",
+        "docs/memos/2026-09-30-causal-decision-region-calibration-and-robust-condor.md",
+        "docs/memos/2026-09-30-center-only-conditioned-transport.md",
+        "docs/memos/2026-09-30-decision-region-loss-zoo-design.md",
+        "docs/memos/2026-09-30-decision-region-loss-zoo-results.md",
+        "docs/memos/2026-09-30-decision-region-robust-condor-pilot.md",
+        "docs/memos/2026-09-30-decision-region-signal-synthesis.md",
+        "docs/memos/2026-09-30-dynamic-tail-calibration-and-gpd.md",
+        "docs/memos/2026-09-30-gpd-decision-region-screen.md",
+        "docs/memos/2026-09-30-guard-aware-cdf-selection.md",
+        "docs/memos/2026-09-30-tail-constrained-quantile-blend.md",
+        "docs/memos/2026-09-30-tail-data-feature-ablation.md",
+        "docs/memos/2026-10-01-qqq-30-day-call-region.png",
+        "docs/memos/2026-10-01-qqq-decision-strike-diagnosis.md",
+        "docs/memos/2026-10-01-qqq-torch-decision-cdf-results.png",
+        "docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md",
+        "docs/memos/2026-10-01-spy-decision-region-persistence.md",
+        "docs/research/distribution-modeling/2026-09-27-feature-acquisition.md",
+        "docs/research/distribution-modeling/2026-09-28-cdf-distribution-assumptions-hpo.md",
+        "docs/research/distribution-modeling/2026-09-28-exact-expiry-feature-selection-model-zoo.md",
+        "docs/research/distribution-modeling/2026-09-28-exact-expiry-tcn-output-and-day-skill.md",
+        "docs/research/distribution-modeling/2026-09-28-final-elasticnet-output-and-cell-skill.md",
+        "docs/research/distribution-modeling/2026-09-28-fixed-feature-model-zoo-selection.md",
+        "docs/research/distribution-modeling/2026-09-28-predictive-cdf-condor-research.md",
+        "docs/research/distribution-modeling/2026-09-28-temporal-mlp-gru-screen.md",
+        "docs/research/distribution-modeling/basic-iron-condor-optimization.md",
+        "docs/research/distribution-modeling/simple-formulation-with-robustification.md",
+        "docs/research/stock-options/2026-10-01-source-and-starting-symbol.md",
+        "docs/research/strategy-alternatives/2026-09-30-survey.md",
+        "docs/research/strategy-alternatives/2026-09-30-synthesis.md",
+        "index_options/cdf_study.py", "tests/test_cdf_study.py",
+        # The steps 1-6 data-selection documents and source configs (ADR-0217..0224), their
+        # IWM copies and the onboarding-store references (ADR-0225: datafiles.py, the four
+        # source-store-* registrations, and their tests).
+        "configs/run-step1-expiry-coverage.json", "configs/run-step1b-feature-engineering.json",
+        "configs/run-step2-feature-availability.json",
+        "configs/run-step3-holdout-folds-iwm.json", "configs/run-step3-holdout-folds.json",
+        "configs/run-step4-feature-selection-iwm.json",
+        "configs/run-step4-feature-selection.json", "configs/run-step5-model-zoo-iwm.json",
+        "configs/run-step5-model-zoo.json", "configs/run-step6-hpo-iwm.json",
+        "configs/run-step6-hpo.json", "configs/source-feature-panel.json",
+        "configs/source-step1-selection.json", "configs/source-step2-dates.json",
+        "configs/source-store-exact-expiry-tables.json",
+        "configs/source-store-option-archive-pins.json",
+        "configs/source-store-option-archive.json",
+        "configs/source-store-raw-chain-features.json", "index_options/datafiles.py",
+        "tests/test_config_data_sources.py", "tests/test_datafiles.py",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -107,8 +200,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus ADR-0193's 14 put-spread documents = 220, plus ADR-0194's 14 gate documents = 234,
     # plus ADR-0195's 28 select documents (14 cells x two rungs) = 262,
     # plus ADR-0196's ledger_studies.py and its test = 264, plus ADR-0197's 10 documents and
-    # test_debit_backtest.py = 275
-    assert len(actual) == 275
+    # test_debit_backtest.py = 275, plus the 78 files origin/main gained after ADR-0197 = 353,
+    # plus the 21 steps 1-6 and onboarding-store files = 374
+    assert len(actual) == 374
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -190,6 +284,22 @@ def test_the_grid_is_twenty_one_cells_with_the_adr_buckets_and_starts():
     assert spy.since_ms == 941414400000  # 1999-11-01T00:00:00Z
 
 
+def _approved_like(relpath, document, shipped):
+    """The generator writes both approval values of a zoo as PENDING-PLAN-REVIEW and the owner
+    replaces them by hand after reviewing the inventory (2026-09-27): compare a zoo with the
+    shipped pair copied in, and require the shipped pair to be filled. Other files pass through.
+    """
+    if not relpath.endswith("-zoo.json"):
+        return document
+    given = shipped["stages"]["approval"]["params"]
+    assert "PENDING-PLAN-REVIEW" not in (given["approved_by"], given["approved_inventory_sha256"])
+    approval = document["stages"]["approval"]
+    return {**document, "stages": {**document["stages"], "approval": {
+        **approval, "params": {**approval["params"],
+                               "approved_by": given["approved_by"],
+                               "approved_inventory_sha256": given["approved_inventory_sha256"]}}}}
+
+
 def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
     files = grid.grid_files(child_root / "configs")
     expected = {f"grid/{c.name}.json" for c in grid.CELLS} | {
@@ -201,12 +311,19 @@ def test_every_shipped_grid_file_equals_its_generator(child_root, tmp_path):
         for kind in ("call", "put")}
     assert set(files) == expected
     for relpath, document in files.items():
-        assert (child_root / "configs" / relpath).read_text() == \
-            json.dumps(document, indent=2) + "\n", relpath
+        shipped = (child_root / "configs" / relpath).read_text()
+        document = _approved_like(relpath, document, json.loads(shipped))
+        assert shipped == json.dumps(document, indent=2) + "\n", relpath
     written = grid.write_grid(child_root / "configs", tmp_path)
     assert sorted(written) == sorted(files)
     for relpath in files:
-        assert (tmp_path / relpath).read_bytes() == (child_root / "configs" / relpath).read_bytes()
+        shipped = (child_root / "configs" / relpath).read_bytes()
+        if relpath.endswith("-zoo.json"):
+            regenerated = _approved_like(relpath, json.loads((tmp_path / relpath).read_text()),
+                                         json.loads(shipped))
+            assert json.dumps(regenerated, indent=2) + "\n" == shipped.decode(), relpath
+        else:
+            assert (tmp_path / relpath).read_bytes() == shipped, relpath
     assert grid.write_grid(child_root / "configs", tmp_path) == written  # regenerating in place
     nested = tmp_path / "a" / "b"  # missing parents are created
     assert sorted(grid.write_grid(child_root / "configs", nested)) == sorted(files)
@@ -330,7 +447,10 @@ def test_every_cells_zoo_compares_four_rungs(child_root, monkeypatch, cell):
         assert "pipeline.backtest" not in params["contract_paths"]
     assert "pipeline.model.params.ridge_alpha" not in params["contract_paths"]
     assert params["protocol"]["attempt_family"] == f"index-options-grid-{cell.name}"
-    assert zoo["stages"]["approval"]["params"]["approved_by"] == "PENDING-PLAN-REVIEW"
+    approval = zoo["stages"]["approval"]["params"]
+    # the owner replaced both PENDING values after reviewing the frozen inventory (2026-09-27)
+    assert approval["approved_by"] == "owner directive 2026-09-27"
+    assert re.fullmatch(r"[0-9a-f]{64}", approval["approved_inventory_sha256"])
     assert zoo["pipeline"]["market"]["params"]["symbol"] == cell.underlying.symbol
     PipelineDocument.from_obj(zoo)
     for c in candidates:
@@ -1592,6 +1712,9 @@ FAMILIES = [
     "liquidity", "positioning_changes", "macro_context", "chain_nodes"]
 FLOAT_MAX = sys.float_info.max
 SOURCE_ROOT = "./pipeline_runs/cdf-horizon-source"
+#: Where step 2 reads the panel: step 1b's output onboarded per run (steps 1, 1b and 3 read the
+#: onboarding store instead, and these tests onboard their fixture panel under SOURCE_ROOT).
+STEP2_PANEL_ROOT = "./pipeline_runs/feature-panel-source"
 
 
 def _step(child_root, name):
@@ -1843,11 +1966,13 @@ def test_step_documents_validate_and_plan(child_root, name):
     planned = json.loads(done.stdout)
     assert "source" in planned["order"][:2]
     assert all(planned["nodes"][key]["class"] for key in planned["order"])
-    expected = {STEP1: {"winner__qqq", "winner__spy", "winner__iwm", "selection_rows",
+    expected = {STEP1: {"winner__qqq", "winner__iwm", "selection_rows",
                         "selection_evidence", "coverage_figure__qqq"},
-                STEP2: {"combinations__qqq", "combinations__iwm", "date_patterns__spy",
+                STEP2: {"combinations__qqq", "combinations__iwm", "date_patterns__iwm",
                         "combination_evidence", "date_evidence", "step1_selection"}}[name]
     assert expected <= set(planned["order"])
+    # SPY is parked (owner ruling C, 2026-10-02): foreach.keys are QQQ and IWM, no SPY node
+    assert not [key for key in planned["order"] if key.endswith("__spy")]
 
 
 # -- (b) step 1: no CDF anywhere; settled, listed dates per exact DTE; argmax ---------------
@@ -1902,7 +2027,14 @@ def test_step1_has_no_cdf_clause_and_counts_settled_listed_dates(child_root):
 def test_step_files_share_source_and_cohort_predicate(child_root):
     one, two = _step(child_root, STEP1), _step(child_root, STEP2)
     assert one["pipeline"]["source"]["uses"] == two["pipeline"]["source"]["uses"]
-    assert one["pipeline"]["source"]["params"] == two["pipeline"]["source"]["params"]
+    # one source and one read shape; only the root differs: step 1 reads the onboarding store
+    # (an absolute root, pinned in test_config_data_sources), step 2 reads step 1b's per-run
+    # hand-off, onboarded under the working directory
+    other_than_root = lambda doc: {k: v for k, v in doc["pipeline"]["source"]["params"].items()  # noqa: E731
+                                   if k != "root"}
+    assert other_than_root(one) == other_than_root(two)
+    assert one["pipeline"]["source"]["params"]["root"].startswith("/")
+    assert two["pipeline"]["source"]["params"]["root"] == STEP2_PANEL_ROOT
     assert two["pipeline"]["source"]["params"]["ts_out"] != "asof_ms"   # AMZN rows carry it
     assert one["foreach"]["keys"] == two["foreach"]["keys"]
     ranged = ("actual_calendar_dte",)
@@ -2114,14 +2246,22 @@ def _write_panel(shape, child_root, cwd, families):
     return rows, designed, config
 
 
-def _step_copy(child_root, name, cwd, keys):
-    """A temporary copy of a step document whose ONLY difference is foreach.keys."""
+def _step_copy(child_root, name, cwd, keys, source_root=None):
+    """A temporary copy of a step document whose ONLY differences are foreach.keys (when given)
+    and the panel source root (when given: steps 1 and 1b ship it at the onboarding store, and
+    these tests onboard their fixture panel under the working directory instead)."""
     original = _step(child_root, name)
     copy_ = json.loads(json.dumps(original))
-    copy_["foreach"]["keys"] = keys
+    expected = set()
+    if keys is not None:
+        copy_["foreach"]["keys"] = keys
+        expected.add("/foreach/keys")
+    if source_root is not None:
+        copy_["pipeline"]["source"]["params"]["root"] = source_root
+        expected.add("/pipeline/source/params/root")
     delta = _differences(original, copy_)
-    assert delta == {"/foreach/keys"}
-    path = cwd / ("amzn-" + name.rsplit("/", 1)[1])
+    assert delta == expected
+    path = cwd / (("amzn-" if keys is not None else "local-") + name.rsplit("/", 1)[1])
     path.write_text(json.dumps(copy_))
     return path
 
@@ -2133,14 +2273,16 @@ def test_two_step_files_end_to_end(child_root, tmp_path, shape):
         "families"]
     rows, designed, config = _write_panel(shape, child_root, tmp_path, families)
     _onboard(tmp_path, "cdf-horizon-panel", SOURCE_ROOT, config, "input_panel")
+    _onboard(tmp_path, "cdf-horizon-panel", STEP2_PANEL_ROOT, config, "input_panel")   # step 2's root
     for sub in ("step1-expiry-coverage/selection", "step2-feature-availability"):
         (tmp_path / "pipeline_runs" / sub).mkdir(parents=True)
     if shape == "index":
-        step1, step2 = child_root / STEP1, child_root / STEP2
+        step1 = _step_copy(child_root, STEP1, tmp_path, None, source_root=SOURCE_ROOT)
+        step2 = child_root / STEP2
     else:
-        step1 = _step_copy(child_root, STEP1, tmp_path, ["AMZN"])
+        step1 = _step_copy(child_root, STEP1, tmp_path, ["AMZN"], source_root=SOURCE_ROOT)
         step2 = _step_copy(child_root, STEP2, tmp_path, ["AMZN"])
-    tickers = list(designed)
+    tickers = [t for t in designed if t != "SPY"]      # SPY is parked: not in foreach.keys
     # -- step 1 --
     _must(_cli(["dskit.pipeline", "run", str(step1), "--asof", "2026-10-01"], tmp_path))
     run1 = _only_run(tmp_path, "step1-expiry-coverage")
@@ -2172,7 +2314,8 @@ def test_two_step_files_end_to_end(child_root, tmp_path, shape):
         neg.mkdir()
         _write_jsonl(neg / "pipeline_runs/panel-data/input_panel.jsonl", rows)
         _onboard(neg, "cdf-horizon-panel", SOURCE_ROOT, config, "input_panel")
-        tampered = [dict(r, listed_dates=r["listed_dates"] + (r["symbol"] == "SPY"))
+        _onboard(neg, "cdf-horizon-panel", STEP2_PANEL_ROOT, config, "input_panel")
+        tampered = [dict(r, listed_dates=r["listed_dates"] + (r["symbol"] == "QQQ"))
                     for r in selected]
         _write_jsonl(neg / "pipeline_runs/step1-expiry-coverage/selection/selected.jsonl",
                      tampered)
@@ -2306,8 +2449,8 @@ def test_step1b_document_validates_and_plans(child_root):
         done = _must(_cli(["dskit.pipeline", verb, str(child_root / FE)], child_root))
     planned = json.loads(done.stdout)
     assert {"source", "step1_selection", "panel", "panel_evidence", "features__qqq",
-            "features__spy", "features__iwm", "dense__qqq", "horizon_rows__iwm"} <= set(
-        planned["order"])
+            "features__iwm", "dense__qqq", "horizon_rows__iwm"} <= set(planned["order"])
+    assert not [key for key in planned["order"] if key.endswith("__spy")]     # SPY is parked
     assert planned["nodes"]["features__qqq"]["class"].endswith(":AttachByIdentity")
     assert planned["nodes"]["panel"]["class"] == "index_options.nodes:ExactExpiryPanelRead"
 
@@ -2322,7 +2465,9 @@ def test_step1b_reader_params_equal_the_tail_data_block_and_its_columns_the_atta
     assert ExactExpiryPanelRead.validate_params(reader) == []
     assert set(reader) - {"columns"} == set(tail) - {"archive_root", "fred_market_symbols"}
     for key, value in reader.items():
-        if key not in ("columns", "market_symbols"):
+        if key in ("surface", "lifecycle", "chain_features"):  # store references now (ADR-0225)
+            assert value["relpath"] == os.path.basename(tail[key]), key   # the same file
+        elif key not in ("columns", "market_symbols"):
             assert value == tail[key], key                    # key by key, values unchanged
     markets = reader["market_symbols"]
     assert markets == {k: tail["market_symbols"][k] for k in markets} and set(markets) == {
@@ -2579,6 +2724,7 @@ def test_step1b_declares_weekday_pending_and_copies_no_code(child_root):
 # -- step 1b end to end: fixture sources -> prepared panel -> step 1 -> step 1b -> step 2 ----------
 
 FE_INDEXES = {"QQQ": "VXN", "SPY": "VIX", "IWM": "RVX"}
+FE_RUN_SYMBOLS = ("QQQ", "IWM")        # SPY is parked (owner ruling C, 2026-10-02): sources only
 FE_MARKET_SYMBOLS = ("VIX1Y", "RVX", "VXD", "OVX", "VXEEM", "VXSLV", "VXTLT")
 FE_PROBS = [.01, .05, .1, .25, .5, .75, .9, .95, .99]
 FE_POSITIONING = ["chain_log_volume", "chain_put_call_volume_imbalance",
@@ -2719,17 +2865,17 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
     for sub in ("step1-expiry-coverage/selection", "feature-engineering/panel",
                 "step2-feature-availability"):
         (tmp_path/"pipeline_runs"/sub).mkdir(parents=True)
-    # -- step 1 (unchanged document) picks the DTE --
-    _must(_cli(["dskit.pipeline", "run", str(child_root/STEP1), "--asof", "2026-10-01"],
-               tmp_path, env))
+    # -- step 1 (the document, reading the fixture panel onboarded here) picks the DTE --
+    step1 = _step_copy(child_root, STEP1, tmp_path, None, source_root=SOURCE_ROOT)
+    _must(_cli(["dskit.pipeline", "run", str(step1), "--asof", "2026-10-01"], tmp_path, env))
     selected = _read_jsonl(tmp_path/"pipeline_runs/step1-expiry-coverage/selection/selected.jsonl")
     wins = {r["symbol"]: r for r in selected}
-    assert sorted(wins) == ["IWM", "QQQ", "SPY"] and {w["actual_calendar_dte"] for w in
-                                                      wins.values()} == {7}
+    assert sorted(wins) == sorted(FE_RUN_SYMBOLS) and {w["actual_calendar_dte"] for w in
+                                                       wins.values()} == {7}
     _onboard(tmp_path, "step1-selection", "./pipeline_runs/step1-selection-source",
              "@"+str(child_root/SELECTION_SOURCE), "selected")
     # -- the disagreeing hand-off refuses before writing anything --
-    tampered = [dict(r, listed_forecasts=r["listed_forecasts"]+(r["symbol"] == "SPY"))
+    tampered = [dict(r, listed_forecasts=r["listed_forecasts"]+(r["symbol"] == "QQQ"))
                 for r in selected]
     _write_jsonl(tmp_path/"pipeline_runs/neg-selection/selected.jsonl", tampered)
     _onboard(tmp_path, "step1-selection", "./pipeline_runs/neg-selection-source", json.dumps({
@@ -2737,6 +2883,7 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
         "effective_unit": "ms", "streams": ["selected"], "formats": ["jsonl"]}), "selected")
 
     def paths(doc):
+        doc["pipeline"]["source"]["params"]["root"] = SOURCE_ROOT   # the fixture panel, not the store
         doc["pipeline"]["panel"]["params"].update(reader)
 
     def neg(doc):
@@ -2746,17 +2893,18 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
     bad, changed = _fe_copy(child_root, FE, tmp_path, neg)
     assert changed == {f"/pipeline/panel/params/{k}" for k in
                        ("root", "surface", "lifecycle", "chain_features", "price_source",
-                        "iv_source")} | {"/pipeline/step1_selection/params/root"}
+                        "iv_source")} | {"/pipeline/step1_selection/params/root",
+                                         "/pipeline/source/params/root"}
     done = _cli(["dskit.pipeline", "run", str(bad), "--asof", "2026-10-01"], tmp_path, env)
     assert done.returncode != 0 and "panel_evidence" in done.stdout + done.stderr
     assert not (tmp_path/"pipeline_runs/feature-engineering/panel/input_panel.jsonl").exists()
     # -- step 1b --
     good, changed = _fe_copy(child_root, FE, tmp_path, paths)
-    assert "/pipeline/step1_selection/params/root" not in changed and len(changed) == 6
+    assert "/pipeline/step1_selection/params/root" not in changed and len(changed) == 7
     _must(_cli(["dskit.pipeline", "run", str(good), "--asof", "2026-10-01"], tmp_path, env))
     out = _read_jsonl(tmp_path/"pipeline_runs/feature-engineering/panel/input_panel.jsonl")
     cohort = [r for r in panel_rows if r["terminal_return"] is not None
-              and r["actual_calendar_dte"] == 7]
+              and r["actual_calendar_dte"] == 7 and r["symbol"] in wins]
     assert len(out) == sum(w["listed_forecasts"] for w in wins.values()) == len(cohort) > 0
     assert all("quote_date_ms" not in r for r in out)
     # every prepared field unchanged; the engineered ones equal the reader's own values
@@ -2799,7 +2947,7 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
         carry["panel"]["provenance"]["sha256"])
     assert carry["panel"]["provenance"]["adapter_sha256"]
     assert carry["panel_evidence"]["metrics"]["rows"] == len(out)
-    for symbol in FE_INDEXES:
+    for symbol in FE_RUN_SYMBOLS:
         node = carry[f"features__{symbol.lower()}"]
         assert set(node) == {"summary", "provenance"}
         assert set(node["summary"]["families"]) == set(attach["families"])
@@ -2815,11 +2963,12 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
         stats = node["summary"]["families"]["positioning_changes"]["fields"]["chain_log_gamma_oi"]
         assert stats["non_null"] == 0 and stats["min"] is None and stats["discarded"] == len(mine)
         assert node["provenance"]["input_sha256"]
-    # -- the hand-off: onboard the output, change only step 2's source root --
+    # -- the hand-off: onboard the output at the root step 2 already reads --
     _onboard(tmp_path, "cdf-horizon-panel", "./pipeline_runs/feature-panel-source",
              "@"+str(child_root/FE_SOURCE), "input_panel")
     step2 = _step(child_root, STEP2)
-    params = dict(step2["pipeline"]["source"]["params"], root="./pipeline_runs/feature-panel-source")
+    assert step2["pipeline"]["source"]["params"]["root"] == STEP2_PANEL_ROOT   # shipped as is
+    params = dict(step2["pipeline"]["source"]["params"])
     here = os.getcwd()
     os.chdir(tmp_path)
     try:
@@ -2832,10 +2981,8 @@ def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
     assert {k: v for k, v in sorted(read_back[0].items()) if k != "quote_date_ms"} == dict(
         sorted(next(o for o in out if tuple(o[k] for k in FE_IDENTITY) == tuple(
             read_back[0][k] for k in FE_IDENTITY)).items()))      # nulls stay null
-    path, changed = _fe_copy(child_root, STEP2, tmp_path, lambda d: d["pipeline"]["source"][
-        "params"].update(root="./pipeline_runs/feature-panel-source"))
-    assert changed == {"/pipeline/source/params/root"}
-    _must(_cli(["dskit.pipeline", "run", str(path), "--asof", "2026-10-01"], tmp_path, env))
+    _must(_cli(["dskit.pipeline", "run", str(child_root/STEP2), "--asof", "2026-10-01"],
+               tmp_path, env))
     flags = _read_jsonl(tmp_path/"pipeline_runs/step2-feature-availability/dates.jsonl")
     assert len(flags) == len(out)
     for row in flags:
@@ -2980,12 +3127,15 @@ def test_step3_end_to_end_on_fixture_sources(child_root, tmp_path):
     days, missing = _step3_fixture(child_root, tmp_path)
     _onboard(tmp_path, "step2-dates", "./pipeline_runs/step2-dates-source",
              "@"+str(child_root/STEP2_DATES_SOURCE), "dates")
-    _onboard(tmp_path, "cdf-horizon-panel", "./pipeline_runs/cdf-horizon-source", json.dumps({
+    _onboard(tmp_path, "cdf-horizon-panel", SOURCE_ROOT, json.dumps({
         "path": "pipeline_runs/panel-data", "layout": "file", "effective_field": "quote_date",
         "effective_unit": "iso", "streams": ["input_panel"], "formats": ["jsonl"]}), "input_panel")
     (tmp_path/"pipeline_runs/step3-holdout-folds").mkdir(parents=True)
-    _must(_cli(["dskit.pipeline", "run", str(child_root/STEP3), "--asof", "2026-10-01"],
-               tmp_path, env))
+    # step 3 ships reading the onboarding store; the fixture panel is onboarded under tmp_path
+    step3, changed = _fe_copy(child_root, STEP3, tmp_path, lambda d: d["pipeline"]["source"][
+        "params"].update(root=SOURCE_ROOT))
+    assert changed == {"/pipeline/source/params/root"}
+    _must(_cli(["dskit.pipeline", "run", str(step3), "--asof", "2026-10-01"], tmp_path, env))
     out = tmp_path/"pipeline_runs/step3-holdout-folds"
     folds = _read_jsonl(out/"fold-table.jsonl")
     admission, = _read_jsonl(out/"admission-and-metrics.jsonl")
@@ -3061,12 +3211,13 @@ def test_steps_4_to_6_pin_the_owner_rulings(child_root, name):
         f"rn_q_{round(p * 10000):04d}" for p in proxy["probabilities"]]
     assert features[proxy["eligible_index"]] == "rn_proxy_eligible"
     # the training recipe of every Torch candidate: patience is the only exit, epochs a guard
+    # (patience 6, lowered from 20 on 2026-10-02 to bound a round's run time)
     assert len(experiment["candidates"]) == experiment["max_candidates"]
     for label, candidate in experiment["candidates"].items():
         params = candidate["params"]
         assert candidate["class"] == "dskit.pipeline.libs.predictive_cdf:TorchCDF", label
         assert params["losses"] == WING_LOSSES, label
-        assert params["patience"] == 20 and params["epochs"] == 2000, label
+        assert params["patience"] == 6 and params["epochs"] == 2000, label
         assert candidate.get("calibrate") is False, label
 
 
@@ -3074,13 +3225,22 @@ def test_step4_is_forward_step_one_over_admitted_families_without_open_interest(
     doc = _step(child_root, STEPS_4_TO_6[0])
     features, candidates = doc["study"]["features"], doc["experiment"]["candidates"]
     names = lambda label: [features[i] for i in candidates[label]["params"]["feature_indices"]]  # noqa: E731
-    assert list(candidates) == ["core", *(f"core+{f}" for f in FAMILIES
-                                          if f not in ("return_history", "realized_volatility"))]
-    assert doc["experiment"]["candidate_groups"] == {"forward_1": list(candidates)}
+    # The file is edited in place round by round: a round is the incumbent "core" (earlier
+    # rounds' winners folded in) and core + ONE of the admitted families not yet in it. It now
+    # ships round 4, so the candidates are a subset of the admitted families, not all of them.
+    admitted = [f for f in FAMILIES if f not in ("return_history", "realized_volatility")]
+    labels = list(candidates)
+    assert labels[0] == "core" and len(labels) > 1 and len(set(labels)) == len(labels)
+    assert all(label.startswith("core+") and label[len("core+"):] in admitted
+               for label in labels[1:])
+    group, = doc["experiment"]["candidate_groups"]
+    assert re.fullmatch(r"forward_[1-9]\d*", group)
+    assert doc["experiment"]["candidate_groups"] == {group: labels}
     assert doc["experiment"]["search_partitions"] == doc["experiment"]["candidate_groups"]
     core = names("core")
     for label in candidates:
         assert set(core) <= set(names(label)) and not set(names(label)) & set(FE_OI_ALL), label
+        assert (set(names(label)) == set(core)) == (label == "core"), label   # adds a family
 
 
 def _filled_fold_table(child_root, tmp_path):
@@ -3136,8 +3296,17 @@ def test_steps_4_to_6_refuse_the_shipped_copy_and_accept_a_filled_one(child_root
     shipped = docs[name]
     table, sha, holdout = _filled_fold_table(child_root, tmp_path)
     core = docs[STEPS_4_TO_6[0]]["experiment"]["candidates"]["core"]["params"]["feature_indices"]
-    with pytest.raises(ValueError, match="invalid fold_table"):       # placeholders refuse by design
-        CDFHyperparameterStudy(shipped)
+    # The owner has filled the shipped copies (step 3's fold-table sha256 and holdout_start, and
+    # in steps 5-6 the step-4 winner's feature_indices): nothing is left to replace ...
+    assert "REPLACE_WITH" not in json.dumps(shipped)
+    assert all(c["params"]["feature_indices"] for c in shipped["experiment"]["candidates"].values())
+    # ... so the placeholders the shipped copy used to carry are restored on a copy, and they
+    # still refuse by design
+    placeholder = json.loads(json.dumps(shipped))
+    placeholder["study"]["fold_table"].update(sha256="REPLACE_WITH_STEP3_FOLD_TABLE_SHA256",
+                                              holdout_start="REPLACE_WITH_STEP3_HOLDOUT_START")
+    with pytest.raises(ValueError, match="invalid fold_table"):
+        CDFHyperparameterStudy(placeholder)
     filled = _fill(shipped, table, sha, holdout, core)
     study = CDFHyperparameterStudy(filled)
     assert study.plan.warmup_ids and study.plan.scored_ids

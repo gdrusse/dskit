@@ -18,6 +18,7 @@ from dskit.pipeline.libs.predictive_cdf import (
     DiscreteCDFGrid, GridCurve,
 )
 from dskit.pipeline.libs.observations import ObservationRows
+from .datafiles import DataFiles, DataTree, archive_relpath, entry_problems
 from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
@@ -169,10 +170,25 @@ class EligibleCondorChain:
     strike/payoff diagnostic only; an executable decision refuses explicitly.
     """
 
-    def __init__(self, max_abs_log_moneyness, min_wing_width, max_wing_width,
-                 max_candidates, fee_per_leg, multiplier):
+    def __init__(self, max_abs_log_moneyness, min_wing_width=None, max_wing_width=None,
+                 max_candidates=None, fee_per_leg=None, multiplier=None,
+                 region="condors"):
         import math
 
+        if region not in ("condors", "span"):
+            raise ValueError("invalid eligible-condor rule")
+        if region == "span":
+            # The span region is every quotable strike between each side's
+            # extremes: no wing width, candidate cap or fee applies to it.
+            if (any(v is not None for v in (min_wing_width, max_wing_width,
+                                            max_candidates, fee_per_leg, multiplier))
+                    or isinstance(max_abs_log_moneyness, bool)
+                    or not isinstance(max_abs_log_moneyness, (int, float))
+                    or not math.isfinite(max_abs_log_moneyness)
+                    or max_abs_log_moneyness <= 0):
+                raise ValueError("invalid eligible-condor rule")
+            self.band, self.region = max_abs_log_moneyness, region
+            return
         values = (max_abs_log_moneyness, min_wing_width, max_wing_width,
                   fee_per_leg, multiplier)
         if (any(isinstance(v, bool) or not isinstance(v, (int, float))
@@ -182,13 +198,13 @@ class EligibleCondorChain:
                 or multiplier <= 0 or type(max_candidates) is not int
                 or max_candidates < 1):
             raise ValueError("invalid eligible-condor rule")
-        self.band = max_abs_log_moneyness
+        self.band, self.region = max_abs_log_moneyness, region
         self.min_width, self.max_width = min_wing_width, max_wing_width
         self.max_candidates = max_candidates
         self.fee, self.multiplier = fee_per_leg, multiplier
 
-    def candidates(self, chain, spot, *, executable=False):
-        """Return every qualifying four-leg candidate in stable strike order."""
+    def _eligible(self, chain, spot, executable):
+        """Validate one dated chain and return its quotable strikes per right and side."""
         import math
 
         required = {"symbol", "date", "expiration", "strike", "type",
@@ -220,6 +236,13 @@ class EligibleCondorChain:
                 if not quote_problems(row.bid, row.ask, row.bid_size,
                                       row.ask_size, 1, side=side):
                     eligible[right][side].append(row)
+        return eligible
+
+    def candidates(self, chain, spot, *, executable=False):
+        """Return every qualifying four-leg candidate in stable strike order."""
+        if self.region != "condors":
+            raise ValueError("a span rule has no condor candidates")
+        eligible = self._eligible(chain, spot, executable)
         result = []
         for long_put in eligible["put"]["buy"]:
             for short_put in eligible["put"]["sell"]:
@@ -249,15 +272,46 @@ class EligibleCondorChain:
                             raise ValueError("candidate universe exceeds declared cap")
         return sorted(result, key=lambda item: item["strikes"])
 
+    def span(self, chain, spot, *, executable=False):
+        """Return each side's lowest-to-highest quotable strike span.
+
+        A put wing is bought below and sold above, a call wing sold below and
+        bought above, so the put span runs from the lowest strike with a valid
+        ask to the highest with a valid bid, and the call span from the lowest
+        valid bid to the highest valid ask. ``strikes`` lists every strike
+        quotable on either side inside a span. No width, credit or pairing
+        rule applies, so a gap between quoted strikes stays inside the region.
+        """
+        if self.region != "span":
+            raise ValueError("a condor rule has no span region")
+        eligible = self._eligible(chain, spot, executable)
+        bounds, strikes = {}, set()
+        for right, (low_side, high_side) in (("put", ("buy", "sell")),
+                                             ("call", ("sell", "buy"))):
+            lows = [row.strike for row in eligible[right][low_side]]
+            highs = [row.strike for row in eligible[right][high_side]]
+            if lows and highs and min(lows) < max(highs):
+                low, high = float(min(lows)), float(max(highs))
+                bounds[right] = (low, high)
+                strikes |= {float(row.strike) for side in eligible[right].values()
+                            for row in side if low <= row.strike <= high}
+        return {"bounds": bounds, "strikes": sorted(strikes)}
+
 
 class DecisionRegionContextBuilder:
-    """Attach immutable actual-strike training context to exact-expiry rows."""
+    """Attach immutable actual-strike training context to exact-expiry rows.
+
+    ``archive_root`` is a legacy directory string or a store reference
+    (``{"source", "stream"}``, no ``relpath``) that ``files`` resolves. ``files`` is a
+    :class:`~index_options.datafiles.DataFiles` bound to ``data.root``; without it only
+    legacy paths resolve.
+    """
 
     COLUMNS = ("symbol", "date", "expiration", "strike", "type",
                "bid", "ask", "bid_size", "ask_size")
     CLOCK = "after_date_close_indicative_not_executable"
 
-    def __init__(self, config):
+    def __init__(self, config, files=None):
         required = {"archive_root", "chain_rule", "max_chain_rows", "clock", "limits"}
         if (not required.issubset(config)
                 or set(config)-required != ({"panel_years"} if "panel_years" in config else set())
@@ -272,18 +326,12 @@ class DecisionRegionContextBuilder:
                 or set(config["limits"]) != {"max_seconds", "max_resident_mib"}
                 or any(type(v) is not int or v < 1 for v in config["limits"].values())
                 or config["limits"]["max_seconds"] > 1800
-                or config["limits"]["max_resident_mib"] > 6144):
+                or config["limits"]["max_resident_mib"] > 6144
+                or entry_problems("archive_root", config["archive_root"], tree=True)):
             raise ValueError("invalid non-executable decision-context protocol")
         self.config = config
         self.rule = EligibleCondorChain(**config["chain_rule"])
-
-    @staticmethod
-    def _digest(path):
-        digest = hashlib.sha256()
-        with Path(path).open("rb") as stream:
-            for block in iter(lambda: stream.read(8*1024*1024), b""):
-                digest.update(block)
-        return digest.hexdigest()
+        self.files = DataFiles() if files is None else files
 
     def build(self, panel):
         """Scan exact identities and derive all unique eligible-wing strikes."""
@@ -303,10 +351,11 @@ class DecisionRegionContextBuilder:
                     self.config["panel_years"]).all()):
             raise ValueError("decision-context panel exceeds declared years")
         retained, sources, payloads = 0, {}, {}
+        tree = self.files.tree(self.config["archive_root"])
         for (symbol, year), rows in panel.groupby(
                 ["symbol", panel.quote_date.str[:4]], sort=True):
-            path = (Path(self.config["archive_root"])/str(symbol).lower()/
-                    f"options_{year}.parquet")
+            relpath = archive_relpath(symbol, year)
+            path = tree.path(relpath)
             wanted = set(zip(rows.quote_date, rows.expiry))
             parts = []
             for batch in pq.ParquetFile(path).iter_batches(
@@ -321,7 +370,7 @@ class DecisionRegionContextBuilder:
                     if retained > self.config["max_chain_rows"]:
                         raise ValueError("decision-context matching chain rows exceed cap")
                     parts.append(chosen)
-            sources[str(path)] = self._digest(path)
+            sources[tree.label(relpath)] = tree.sha256(relpath)
             chain = (pd.concat(parts, ignore_index=True) if parts
                      else pd.DataFrame(columns=self.COLUMNS))
             grouped = {(a, b, c): snapshot for (a, b, c), snapshot in
@@ -329,15 +378,22 @@ class DecisionRegionContextBuilder:
             for row in rows.itertuples(index=False):
                 key = (row.symbol, row.quote_date, row.expiry)
                 snapshot = grouped.get(key)
-                candidates = (self.rule.candidates(snapshot, float(row.spot))
-                              if snapshot is not None else [])
-                strikes = sorted({float(strike) for candidate in candidates
-                                  for strike in candidate["strikes"]})
+                if self.rule.region == "span":
+                    found = (self.rule.span(snapshot, float(row.spot))
+                             if snapshot is not None else {"bounds": {}, "strikes": []})
+                    strikes = found["strikes"]
+                    wing_prices = sorted(found["bounds"].values())
+                else:
+                    candidates = (self.rule.candidates(snapshot, float(row.spot))
+                                  if snapshot is not None else [])
+                    strikes = sorted({float(strike) for candidate in candidates
+                                      for strike in candidate["strikes"]})
+                    wing_prices = sorted({tuple(pair) for candidate in candidates
+                                          for pair in
+                                          ((candidate["strikes"][0], candidate["strikes"][1]),
+                                           (candidate["strikes"][2], candidate["strikes"][3]))})
                 thresholds = [math.log(strike/float(row.spot))/float(row.reference_scale)
                               for strike in strikes]
-                wing_prices = sorted({tuple(pair) for candidate in candidates for pair in
-                                      ((candidate["strikes"][0], candidate["strikes"][1]),
-                                       (candidate["strikes"][2], candidate["strikes"][3]))})
                 intervals = [[math.log(low/float(row.spot))/float(row.reference_scale),
                               math.log(high/float(row.spot))/float(row.reference_scale)]
                              for low, high in wing_prices]
@@ -506,7 +562,12 @@ class CondorDecisionAudit:
 
 
 class DecisionRegionStudy:
-    """JSON-driven posthoc audit of saved OOF curves on archived chain strikes."""
+    """JSON-driven posthoc audit of saved OOF curves on archived chain strikes.
+
+    ``archive_root`` is a legacy directory string or a store reference
+    (``{"source", "stream"}``, no ``relpath``) resolved against ``underlying.root``,
+    the onboarding store this document already names.
+    """
 
     KEYS = {"forecast_root", "partition", "models", "symbols", "archive_root",
             "output", "max_rows_per_symbol", "chain_rule", "audit",
@@ -577,6 +638,9 @@ class DecisionRegionStudy:
                        or bounds[0] >= bounds[1]
                        for bounds in config["strata"].values())):
             raise ValueError("invalid frozen reporting strata")
+        problems = entry_problems("archive_root", config["archive_root"], tree=True)
+        if problems:
+            raise ValueError(f"invalid decision-region archive_root: {'; '.join(problems)}")
         self.output = Path(config["output"])
 
     def _enforce_limits(self):
@@ -732,10 +796,12 @@ class DecisionRegionStudy:
             raise ValueError("saved forecast identities absent from input panel")
         parts = []
         retained = 0
+        files = DataFiles(self.config["underlying"]["root"])
+        tree = files.tree(self.config["archive_root"])
         for (symbol, year), group in selected.groupby(
                 ["symbol", selected.quote_date.str[:4]], sort=True):
-            source = (Path(self.config["archive_root"])/str(symbol).lower()/
-                      f"options_{year}.parquet")
+            relpath = archive_relpath(symbol, year)
+            source = tree.path(relpath)
             wanted = set(zip(group.quote_date, group.expiry))
             for batch in pq.ParquetFile(source).iter_batches(
                     columns=list(self.CHAIN_COLUMNS), batch_size=250_000):
@@ -748,7 +814,7 @@ class DecisionRegionStudy:
                     if retained > self.config["limits"]["max_chain_rows"]:
                         raise ValueError("matching chain rows exceed JSON cap")
                     parts.append(chosen)
-            sources[str(source)] = self._digest(source)
+            sources[str(source)] = tree.sha256(relpath)
         chain = (pd.concat(parts, ignore_index=True) if parts
                  else pd.DataFrame(columns=self.CHAIN_COLUMNS))
         stage.mkdir(parents=True)
@@ -760,6 +826,8 @@ class DecisionRegionStudy:
                     "panel_sha256": self._digest(stage/"panel.parquet"),
                     "chain_sha256": self._digest(stage/"chain.parquet"),
                     "clock": "after_date_close_indicative_not_executable"}
+        if files.provenance():
+            manifest["store"] = files.provenance()
         (stage/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
         return manifest
 
@@ -1835,17 +1903,18 @@ class RawChainFeatureBuilder:
         return result.drop(columns=["chain_total_oi_snapshot"])
 
     def build_archive(self, meta, archive_root, output):
-        """Scan bounded annual parquet files and atomically publish features."""
+        """Scan bounded annual parquet files and atomically publish features.
+
+        ``archive_root`` is a legacy directory or a
+        :class:`~index_options.datafiles.DataTree` (``DataFiles.tree`` resolves a store
+        reference to one). A store tree takes its file digests from the snapshot manifest
+        and names the snapshot in the ``.sources.json`` sidecar.
+        """
         import pyarrow.parquet as pq
         import pandas as pd
 
-        def content_hash(path):
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for block in iter(lambda: handle.read(8*1024*1024), b""):
-                    digest.update(block)
-            return digest.hexdigest()
-
+        tree = (archive_root if isinstance(archive_root, DataTree)
+                else DataFiles().tree(archive_root))
         columns = ["symbol", "date", "expiration", "strike", "type", "mark", "bid",
                    "ask", "bid_size", "ask_size", "open_interest", "volume",
                    "implied_volatility", "delta", "gamma", "vega"]
@@ -1872,12 +1941,13 @@ class RawChainFeatureBuilder:
         cache.mkdir(parents=True, exist_ok=True)
         source_hashes = {}
         for (symbol, year), requested in meta.groupby(["symbol", "year"]):
-            path = Path(archive_root)/symbol.lower()/f"options_{year}.parquet"
-            if not path.exists():
+            relpath = archive_relpath(symbol, year)
+            if not tree.has(relpath):
                 continue
-            source_digest = content_hash(path)
+            path = tree.path(relpath)
+            source_digest = tree.sha256(relpath)
             source_hashes[f"{symbol}-{year}"] = {
-                "path": str(path), "sha256": source_digest,
+                "path": tree.label(relpath), "sha256": source_digest,
             }
             cached = cache/f"{symbol}-{year}-{source_digest[:16]}.parquet"
             if cached.exists():
@@ -1915,11 +1985,12 @@ class RawChainFeatureBuilder:
         result.to_parquet(temporary, index=False); temporary.replace(target)
         manifest = Path(str(target)+".sources.json")
         temporary_manifest = manifest.with_suffix(manifest.suffix+".tmp")
-        temporary_manifest.write_text(json.dumps({
-            "metadata_columns": metadata_columns,
-            "metadata_sha256": metadata_sha256,
-            "sources": source_hashes,
-        }, indent=2, sort_keys=True)+"\n")
+        sidecar = {"metadata_columns": metadata_columns,
+                   "metadata_sha256": metadata_sha256,
+                   "sources": source_hashes}
+        if tree.store is not None:
+            sidecar["store"] = tree.store
+        temporary_manifest.write_text(json.dumps(sidecar, indent=2, sort_keys=True)+"\n")
         temporary_manifest.replace(manifest)
         return result
 
@@ -1930,8 +2001,11 @@ class ExactExpiryCDFPanel:
     Parameters
     ----------
     config : dict
-        Archive root, surface/lifecycle files, symbols, volatility-index mapping,
-        max DTE, lag/window counts and reference floor. Optional ``exact_dte``
+        Store ``root``, surface/lifecycle files, symbols, volatility-index mapping,
+        max DTE, lag/window counts and reference floor. ``surface``, ``lifecycle``,
+        ``chain_features`` (and ``decision_regions.archive_root``) each name an onboarded
+        file by store reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``,
+        resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
         absent keeps every horizon up to ``max_dte``.
     holdout_start : str or None
@@ -2241,12 +2315,13 @@ class ExactExpiryCDFPanel:
         from dskit.pipeline.libs.numpy import RealizedVolFeatures, ReturnWindows
 
         c = self.config
-        surface = pd.read_parquet(c["surface"])
-        lifecycle = pd.read_parquet(c["lifecycle"])
+        files = self.data_files = DataFiles(c.get("root"))
+        surface = pd.read_parquet(files.path(c["surface"]))
+        lifecycle = pd.read_parquet(files.path(c["lifecycle"]))
         keys = ["symbol", "quote_date", "expiry"]
         meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
         if c.get("chain_features"):
-            chain_features = pd.read_parquet(c["chain_features"])
+            chain_features = pd.read_parquet(files.path(c["chain_features"]))
             meta = meta.merge(chain_features, on=keys, validate="one_to_one")
         if c.get("surface_features", False):
             meta = self.add_surface_features(meta)
@@ -2366,14 +2441,12 @@ class ExactExpiryCDFPanel:
             panels.append(rows[good])
         self.refused = refused
         source_names = ["surface", "lifecycle"]+(["chain_features"] if c.get("chain_features") else [])
-        self.source_hashes = {name: hashlib.sha256(Path(c[name]).read_bytes()).hexdigest()
-                              for name in source_names}
+        self.source_hashes = {name: files.sha256(c[name]) for name in source_names}
         if c.get("chain_features"):
-            manifest = Path(str(c["chain_features"])+".sources.json")
-            if not manifest.exists():
+            if not files.has(c["chain_features"], ".sources.json"):
                 raise ValueError("raw-chain source hash manifest is missing")
-            self.source_hashes["chain_feature_sources"] = hashlib.sha256(
-                manifest.read_bytes()).hexdigest()
+            self.source_hashes["chain_feature_sources"] = files.sha256(
+                c["chain_features"], ".sources.json")
         result = pd.concat(panels, ignore_index=True)
         for symbol in c["symbols"]:
             result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
@@ -2428,7 +2501,7 @@ class ExactExpiryCDFPanel:
                 result = result.loc[years.isin(decision_config["panel_years"])].copy()
                 if result.empty:
                     raise ValueError("decision-context declared years select no rows")
-            builder = DecisionRegionContextBuilder(decision_config)
+            builder = DecisionRegionContextBuilder(decision_config, files)
             result["decision_region_context"] = builder.build(result)
             self.decision_region_provenance = builder.provenance
             self.source_hashes.update({f"decision_chain:{path}": digest
@@ -2445,19 +2518,26 @@ class ExactExpiryCDFPanel:
             ``refused`` (per-symbol exclusion counts), ``sha256`` (source
             file hashes), ``readers`` (the price/index reader
             fingerprints), ``market_coverage`` and ``macro_event_status``
-            (empty when the read declared neither) and ``adapter_sha256``
-            (this module's bytes).
+            (empty when the read declared neither), ``adapter_sha256``
+            (this module's bytes) and, only when the read resolved a store
+            reference, ``store``: one record per resolved snapshot (``source``,
+            ``stream``, ``snapshot``, ``manifest_sha256``, ``files``), whose
+            manifest digests are the ``sha256`` entries for those files.
 
         Raises
         ------
         AttributeError
             When ``read()`` has not run.
         """
-        return {"refused": self.refused, "sha256": self.source_hashes,
-                "readers": self.reader_fingerprints,
-                "market_coverage": getattr(self, "market_coverage", {}),
-                "macro_event_status": getattr(self, "macro_event_status", {}),
-                "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        result = {"refused": self.refused, "sha256": self.source_hashes,
+                  "readers": self.reader_fingerprints,
+                  "market_coverage": getattr(self, "market_coverage", {}),
+                  "macro_event_status": getattr(self, "macro_event_status", {}),
+                  "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        files = getattr(self, "data_files", None)
+        if files is not None and files.provenance():
+            result["store"] = files.provenance()
+        return result
 
 
 class CondorCDFDiagnostic:
@@ -2874,12 +2954,17 @@ def _main():
         if args.partition:
             parser.error("prepare does not accept a partition")
         data = config["data"]
-        surface = pd.read_parquet(data["surface"])
-        lifecycle = pd.read_parquet(data["lifecycle"])
+        if not isinstance(data["chain_features"], str):
+            raise ValueError("prepare writes data.chain_features: name a plain output path "
+                             "(a store reference is read-only; onboard the result afterwards)")
+        files = DataFiles(data.get("root"))
+        surface = pd.read_parquet(files.path(data["surface"]))
+        lifecycle = pd.read_parquet(files.path(data["lifecycle"]))
         meta = surface.merge(lifecycle, on=["symbol", "quote_date", "expiry"],
                              validate="one_to_one")
         builder = RawChainFeatureBuilder(**data["raw_chain"])
-        rows = builder.build_archive(meta, data["archive_root"], data["chain_features"])
+        rows = builder.build_archive(meta, files.tree(data["archive_root"]),
+                                     data["chain_features"])
         print("prepared raw-chain rows", len(rows), flush=True)
         return
     fold_table = config.get("study", {}).get("fold_table")
@@ -2907,9 +2992,11 @@ def _main():
     scores = study.run(frame, diagnostic)
     study.summarize(scores)
     frame.to_parquet(output/"panel.parquet", index=False)
-    (output/"data_provenance.json").write_text(json.dumps({"refused": adapter.refused,
-                                                         "sha256": adapter.source_hashes,
-                                                         "readers": adapter.reader_fingerprints}, indent=2))
+    record = {"refused": adapter.refused, "sha256": adapter.source_hashes,
+              "readers": adapter.reader_fingerprints}
+    if "store" in provenance:
+        record["store"] = provenance["store"]
+    (output/"data_provenance.json").write_text(json.dumps(record, indent=2))
     if config.get("data", {}).get("decision_regions"):
         # The transient systemd service owns the hard wall/RSS limits. Stop the
         # secondary periodic watchdog before Python restores SIGALRM's default

@@ -284,3 +284,22 @@ Caveats: trade bars are not bid/ask; the archive covers only 30-45 nominal DTE (
 collected); families other than the CDF are absent from the panel and report as gaps. Reading
 the outputs is as in the index runbook. Cross-check: step-2 `implied_cdf` "yes" dates equal the
 prior `coverage__amzn` `eligible_dates` at the new DTE (90 if the winner is 42).
+
+## Standard store (2026-10-02)
+
+Stock data is onboarded into `/home/russell/data/stock_options/ob` (initialised 2026-10-02),
+one `localblobs` source per origin directory, stream `files`, registration configs
+`configs/source-store-<name>.json`:
+
+| Source | Holds | Files / bytes | manifest_sha256 prefix |
+|---|---|---|---|
+| `stock-amzn-alpaca` | AMZN Alpaca free option history (inactive contracts, DTE 30-45 daily bars) and indicative chain snapshots | 7 / 3,808,214 | `b837149c10d27a77` |
+| `stock-msft-alpaca` | MSFT Alpaca indicative chain snapshots | 3 / 1,011,196 | `fb12abfca336bceb` |
+| `stock-long-history-audit` | AMZN/MSFT long-history underlying price audits (IEX, Yahoo, Stooq; the two SIP files are 68-byte refusals, "subscription does not permit querying recent SIP data") | 7 / 1,812,006 | `a4f742be2a3f25cb` |
+| `stock-orats-smv-sample` | the public ORATS SMV Strikes near-close sample for 2024-01-03 (one zip, 5,787 tickers), source audit only | 1 / 66,808,802 | `8238c85afd278f7f` |
+
+All four re-hash clean. Readers resolve them with `dskit.onboarding.payload_files(root,
+source, "files")`; the AMZN steps above still read their own pinned paths until readers are
+migrated. No 100+ stock options dataset exists on this machine beyond the ORATS one-day
+sample (5,787 tickers on 2024-01-03): there is no multi-day, multi-name stock option history
+here, only AMZN (Alpaca, DTE 30-45) and MSFT (chain snapshots).

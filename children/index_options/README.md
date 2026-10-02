@@ -385,6 +385,10 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   a combined book with none (k would not be a positive scale), refuses with one
   `error:` line.
 
+> Data rule: every dataset a run reads is an onboarded source and configs name it by catalog
+> source, never by an absolute path (repo `CLAUDE.md`, "Data enters through onboarding").
+> Inputs that still break it are listed in `docs/plans/README.md`, "Data-source debt".
+
 ## Real data: Cboe pull, chain recorder, zoo and VIX-proxy backtest (ADR-0182)
 
 Cboe serves daily SPX/VIX history and a 15-minute-delayed option chain with no

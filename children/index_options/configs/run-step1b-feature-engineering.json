@@ -5,7 +5,7 @@
     "source": {
       "uses": "dskit.pipeline.libs.observations:ObservationRows",
       "params": {
-        "root": "./pipeline_runs/cdf-horizon-source",
+        "root": "/home/russell/data/index_options/ob",
         "source": "cdf-horizon-panel",
         "stream": "input_panel",
         "key_fields": [
@@ -32,9 +32,21 @@
       "uses": "index_options.nodes:ExactExpiryPanelRead",
       "params": {
         "root": "/home/russell/data/index_options/ob",
-        "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
-        "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
-        "chain_features": "/home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930/raw_chain_features.parquet",
+        "surface": {
+          "source": "exact-expiry-tables",
+          "stream": "files",
+          "relpath": "exact_expiry_surface.parquet"
+        },
+        "lifecycle": {
+          "source": "exact-expiry-tables",
+          "stream": "files",
+          "relpath": "date_expiry_lifecycle.parquet"
+        },
+        "chain_features": {
+          "source": "raw-chain-features",
+          "stream": "files",
+          "relpath": "raw_chain_features.parquet"
+        },
         "raw_chain": {
           "nodes": 9,
           "moneyness_bounds": [
@@ -179,7 +191,7 @@
           "market_vxtlt_age_days"
         ]
       },
-      "notes": "The tail-data panel read (ADR-0203's data block, values unchanged), once for every ticker, narrowed to the identity, agreed and engineered columns; it calls the existing ExactExpiryCDFPanel.read() and restates no formula. archive_root (the raw-chain prepare stage), fred_market_symbols (macro is not an engineered family) and the market series no family uses are left out. Its columns must equal what the attach node expects, or the attach refuses."
+      "notes": "The tail-data panel read (ADR-0203's data block, values unchanged), once for every ticker, narrowed to the identity, agreed and engineered columns; it calls the existing ExactExpiryCDFPanel.read() and restates no formula. archive_root (the raw-chain prepare stage), fred_market_symbols (macro is not an engineered family) and the market series no family uses are left out. Its columns must equal what the attach node expects, or the attach refuses. surface, lifecycle and chain_features are store references (source, stream, relpath) resolved against root, the onboarding store."
     },
     "panel_rows": {
       "uses": "concat",
@@ -267,7 +279,6 @@
   "foreach": {
     "keys": [
       "QQQ",
-      "SPY",
       "IWM"
     ],
     "notes": "The only ticker setting: symbols present in the prepared panel and in step 1's selected.jsonl (each must have a winner row or the run refuses); keep it equal to step 1's keys. AMZN is out of scope until its close-source ADR lands.",

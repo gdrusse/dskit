@@ -52,6 +52,7 @@ from .contracts import (
     structure_max_loss,
     structure_payoff,
 )
+from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
@@ -2624,6 +2625,9 @@ class ExactExpiryPanelRead(Node):
     key : str
         Pipeline node key.
     params : dict
+        ``surface``, ``lifecycle`` and ``chain_features`` each name an onboarded file by store
+        reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``, resolved against
+        ``root``) or, legacy, by path string.
         The tail-data ``read()`` keys except ``archive_root`` (the
         ``prepare`` stage's) and the ones ``read()`` ignores here
         (``decision_regions``, ``macro_event_calendars``: refused), plus
@@ -2687,6 +2691,9 @@ class ExactExpiryPanelRead(Node):
         for knob in ("max_dte", "lags"):
             if knob in params:
                 check_int_param(problems, knob, params[knob], ge=1)
+        for name in ("surface", "lifecycle", "chain_features"):
+            if name in params:
+                problems += entry_problems(name, params[name])
         return problems
 
     @classmethod

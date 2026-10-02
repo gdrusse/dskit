@@ -1095,3 +1095,19 @@ def test_the_panel_reader_reads_once_and_its_fingerprint_names_what_run_emits(st
     assert node.run(None, {}) is not None and stub_panel.reads == 1
     other = ExactExpiryPanelRead("panel", _panel_read_params())
     assert other.fingerprint() == fingerprint            # same data, same identity
+
+
+@pytest.mark.parametrize("name", ["surface", "lifecycle", "chain_features"])
+def test_the_panel_reader_takes_a_store_reference_or_a_path_and_refuses_a_malformed_entry(
+        name, stub_panel):
+    good = {"source": "exact-expiry-tables", "stream": "files", "relpath": "t.parquet"}
+    assert ExactExpiryPanelRead.validate_params(_panel_read_params(**{name: good})) == []
+    assert ExactExpiryPanelRead.validate_params(_panel_read_params(**{name: "t.parquet"})) == []
+    for bad in ({"source": "s", "stream": "files"}, {**good, "extra": 1}, 3, ""):
+        problems = ExactExpiryPanelRead.validate_params(_panel_read_params(**{name: bad}))
+        assert any(p.startswith(name) for p in problems), (bad, problems)
+        with pytest.raises(ConfigError, match=name):
+            ExactExpiryPanelRead("panel", _panel_read_params(**{name: bad}))
+    node = ExactExpiryPanelRead("panel", _panel_read_params(**{name: good}))
+    node.run(None, {})
+    assert stub_panel.configs[-1][name] == good          # handed to the adapter unchanged

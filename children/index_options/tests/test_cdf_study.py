@@ -12,7 +12,9 @@ import pytest
 from index_options.cdf_study import (CondorCDFDiagnostic, DecisionRegionContextBuilder,
                                      ExactExpiryCDFPanel, RawChainFeatureBuilder)
 from index_options import cdf_study
+from index_options.datafiles import DataFiles, DataSourceError
 from index_options.distribution import condor_payoff
+from dskit.onboarding import payload_files
 from dskit.pipeline.libs.predictive_cdf import CDFHyperparameterStudy, GridCurve, MixtureCurve
 
 
@@ -40,6 +42,99 @@ def test_entry_chain_enumerates_fixed_quotable_condors_and_refuses_undated_execu
     assert all(x["strikes"][1] != 95. for x in rule.candidates(rows, spot=100.))
     with pytest.raises(ValueError, match="timestamp"):
         rule.candidates(rows, spot=100., executable=True)
+
+
+def _span_chain(rows):
+    """One dated SPY chain; each row is (strike, type[, bid_size[, ask_size]])."""
+    bids = [(r[0]-60.)/10. if r[1] == "put" else (120.-r[0])/10. for r in rows]
+    return pd.DataFrame({
+        "symbol": ["SPY"] * len(rows), "date": ["2020-01-02"] * len(rows),
+        "expiration": ["2020-02-21"] * len(rows),
+        "strike": [float(r[0]) for r in rows], "type": [r[1] for r in rows],
+        "bid": bids, "ask": [b+.1 for b in bids],
+        "bid_size": [r[2] if len(r) > 2 else 3 for r in rows],
+        "ask_size": [r[3] if len(r) > 3 else 3 for r in rows]})
+
+
+_SPAN_ROWS = ([(k, "put") for k in (70, 75, 80, 90, 95)]
+              + [(k, "call") for k in (105, 110)])
+
+
+def test_span_region_keeps_the_gap_that_width_capped_condors_leave_out():
+    chain = _span_chain(_SPAN_ROWS)
+    span = cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5, region="span")
+    found = span.span(chain, spot=100.)
+    assert found["bounds"] == {"put": (70., 95.), "call": (105., 110.)}
+    assert found["strikes"] == [70., 75., 80., 90., 95., 105., 110.]
+    capped = cdf_study.EligibleCondorChain(
+        max_abs_log_moneyness=.5, min_wing_width=5., max_wing_width=5.,
+        max_candidates=100, fee_per_leg=0., multiplier=100)
+    wings = {(c["strikes"][0], c["strikes"][1]) for c in capped.candidates(chain, 100.)}
+    assert wings == {(70., 75.), (75., 80.), (90., 95.)}   # nothing reaches 80..90
+
+
+def test_span_endpoints_need_the_side_a_wing_actually_trades():
+    span = cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5, region="span")
+    # puts are bought low and sold high: no valid ask at 70 or bid at 95 shrinks the span
+    no_ask = _span_chain([(k, "put", 3, 0 if k == 70 else 3) for k in (70, 75, 80, 90, 95)]
+                         + [(105, "call"), (110, "call")])
+    found = span.span(no_ask, spot=100.)
+    assert found["bounds"]["put"] == (75., 95.) and 70. not in found["strikes"]
+    no_bid = _span_chain([(k, "put", 0 if k == 95 else 3, 3) for k in (70, 75, 80, 90, 95)]
+                         + [(105, "call"), (110, "call")])
+    found = span.span(no_bid, spot=100.)
+    assert found["bounds"]["put"] == (70., 90.) and 95. not in found["strikes"]
+    # calls are sold low and bought high
+    no_bid_call = _span_chain([(k, "put") for k in (90, 95)]
+                              + [(105, "call", 0, 3), (110, "call"), (115, "call")])
+    assert span.span(no_bid_call, spot=100.)["bounds"]["call"] == (110., 115.)
+    # a side with a single quotable strike has no span
+    one = _span_chain([(95, "put"), (105, "call"), (110, "call")])
+    assert "put" not in span.span(one, spot=100.)["bounds"]
+    # strikes outside the moneyness band are ignored
+    narrow = cdf_study.EligibleCondorChain(max_abs_log_moneyness=.12, region="span")
+    assert narrow.span(_span_chain(_SPAN_ROWS), spot=100.)["bounds"]["put"] == (90., 95.)
+
+
+def test_span_rule_takes_no_condor_settings_and_the_two_rules_do_not_mix():
+    with pytest.raises(ValueError, match="invalid eligible-condor rule"):
+        cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5, region="span",
+                                      max_wing_width=5.)
+    with pytest.raises(ValueError, match="invalid eligible-condor rule"):
+        cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5, region="wings")
+    with pytest.raises(ValueError, match="invalid eligible-condor rule"):
+        cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5)
+    span = cdf_study.EligibleCondorChain(max_abs_log_moneyness=.5, region="span")
+    with pytest.raises(ValueError, match="no condor candidates"):
+        span.candidates(_span_chain(_SPAN_ROWS), spot=100.)
+    capped = cdf_study.EligibleCondorChain(
+        max_abs_log_moneyness=.5, min_wing_width=5., max_wing_width=5.,
+        max_candidates=100, fee_per_leg=0., multiplier=100)
+    with pytest.raises(ValueError, match="no span region"):
+        capped.span(_span_chain(_SPAN_ROWS), spot=100.)
+
+
+def test_decision_context_span_region_is_one_interval_per_side(tmp_path):
+    archive = tmp_path/"spy"
+    archive.mkdir()
+    _span_chain(_SPAN_ROWS).to_parquet(archive/"options_2020.parquet", index=False)
+    config = {"archive_root": str(tmp_path), "max_chain_rows": 100,
+              "clock": "after_date_close_indicative_not_executable",
+              "limits": {"max_seconds": 1800, "max_resident_mib": 6144},
+              "chain_rule": {"max_abs_log_moneyness": .5, "region": "span"}}
+    panel = pd.DataFrame({"symbol": ["SPY"], "quote_date": ["2020-01-02"],
+                          "expiry": ["2020-02-21"], "spot": [100.],
+                          "reference_scale": [.2]})
+    context = DecisionRegionContextBuilder(config).build(panel)[0]
+    z = lambda k: float(np.log(k/100.)/.2)
+    assert context["status"] == "eligible"
+    assert context["thresholds"] == pytest.approx([z(k) for k in (70, 75, 80, 90, 95, 105, 110)])
+    assert np.ravel(context["intervals"]).tolist() == pytest.approx([z(70), z(95), z(105), z(110)])
+    assert len(context["intervals"]) == 2
+    assert context["weights"] == pytest.approx([.1]*5+[.25]*2)
+    empty = DecisionRegionContextBuilder(config).build(
+        panel.assign(quote_date="2020-01-03"))
+    assert empty[0]["status"] == "no_eligible_condor"
 
 
 def test_decision_context_uses_all_actual_eligible_strikes_and_pins_sources(tmp_path):
@@ -1649,3 +1744,311 @@ def test_positioning_lags_read_only_earlier_snapshots_and_survive_truncation():
     cut = builder.transform(chain[chain.date <= dates[2]], meta[meta.quote_date <= dates[2]])
     pd.testing.assert_frame_equal(full.iloc[:3].reset_index(drop=True), cut)
     assert full.chain_log_lag_open_interest.iloc[3] == pytest.approx(np.log1p(370))
+
+
+# -- store references (ADR-0225): the same bytes by name read the same rows as by path ---------------
+
+def _store_ref(source, relpath=None, **extra):
+    entry = {'source': source, 'stream': 'files', **extra}
+    if relpath is not None:
+        entry['relpath'] = relpath
+    return entry
+
+
+def _sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _decision_chain():
+    return pd.DataFrame({
+        'symbol': ['SPY']*6, 'date': ['2020-01-02']*6, 'expiration': ['2020-02-21']*6,
+        'strike': [85., 90., 95., 105., 110., 115.], 'type': ['put']*3+['call']*3,
+        'bid': [1., 2., 3., 3., 2., 1.], 'ask': [1.2, 2.2, 3.2, 3.2, 2.2, 1.2],
+        'bid_size': [3]*6, 'ask_size': [3]*6})
+
+
+def _decision_config(archive_root):
+    return {'archive_root': archive_root, 'max_chain_rows': 100,
+            'clock': 'after_date_close_indicative_not_executable',
+            'limits': {'max_seconds': 1800, 'max_resident_mib': 6144},
+            'chain_rule': {'max_abs_log_moneyness': .2, 'min_wing_width': 5.,
+                           'max_wing_width': 10., 'max_candidates': 100,
+                           'fee_per_leg': 0., 'multiplier': 100}}
+
+
+def test_decision_context_from_a_store_reference_equals_the_path_read(tmp_path, blob_store):
+    archive = tmp_path/'archive'
+    (archive/'spy').mkdir(parents=True)
+    source = archive/'spy'/'options_2020.parquet'
+    _decision_chain().to_parquet(source, index=False)
+    blob_store.add('options-archive', archive)
+    panel = pd.DataFrame({'symbol': ['SPY', 'SPY'], 'quote_date': ['2020-01-02', '2020-01-03'],
+                          'expiry': ['2020-02-21']*2, 'spot': [100.]*2,
+                          'reference_scale': [.2]*2})
+    legacy = DecisionRegionContextBuilder(_decision_config(str(archive)))
+    stored = DecisionRegionContextBuilder(
+        _decision_config(_store_ref('options-archive')), DataFiles(blob_store.path))
+    want, got = legacy.build(panel), stored.build(panel)
+
+    def body(contexts):
+        return [{k: v for k, v in c.items() if k != 'provenance_sha256'} for c in contexts]
+
+    assert body(got) == body(want) and got[0]['status'] == 'eligible'
+    assert got[1]['status'] == 'no_eligible_condor'
+    assert stored.provenance['matching_chain_rows'] == legacy.provenance['matching_chain_rows'] == 6
+    # a path source is named by its path, a store source by name; both carry the file's digest
+    assert legacy.provenance['sources'] == {str(source): _sha256(source)}
+    assert stored.provenance['sources'] == {
+        'store:options-archive/files/spy/options_2020.parquet': _sha256(source)}
+    assert {c['provenance_sha256'] for c in got} == {stored.provenance['sha256']}
+    snapshot = payload_files(blob_store.path, 'options-archive', 'files')
+    assert stored.files.provenance() == [{
+        'source': 'options-archive', 'stream': 'files', 'snapshot': snapshot['snapshot'],
+        'manifest_sha256': snapshot['manifest_sha256'], 'files': 1}]
+    assert legacy.files.provenance() == []
+
+
+def test_decision_context_refuses_an_unresolvable_or_malformed_archive_reference(
+        tmp_path, blob_store):
+    reference = _store_ref('options-archive')
+    with pytest.raises(DataSourceError, match='needs a store root'):
+        DecisionRegionContextBuilder(_decision_config(reference)).build(pd.DataFrame({
+            'symbol': ['SPY'], 'quote_date': ['2020-01-02'], 'expiry': ['2020-02-21'],
+            'spot': [100.], 'reference_scale': [.2]}))
+    for bad in ({'source': 'options-archive'}, _store_ref('options-archive', 'spy/a.parquet'),
+                {**reference, 'pin': 'x'}, 3, ''):
+        with pytest.raises(ValueError, match='invalid non-executable decision-context protocol'):
+            DecisionRegionContextBuilder(_decision_config(bad))
+
+
+def test_raw_chain_archive_from_a_store_tree_equals_the_path_build(tmp_path, blob_store):
+    archive = tmp_path/'archive'
+    (archive/'spy').mkdir(parents=True)
+    source = archive/'spy'/'options_2020.parquet'
+    pd.DataFrame([{'symbol': 'SPY', 'date': '2020-01-02', 'expiration': '2020-02-21',
+                   'strike': 100., 'type': 'call', 'mark': 4., 'bid': 3.9, 'ask': 4.1,
+                   'bid_size': 10, 'ask_size': 12, 'open_interest': 100,
+                   'implied_volatility': .2}]).to_parquet(source, index=False)
+    blob_store.add('options-archive', archive)
+    meta = pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'],
+                         'expiry': ['2020-02-21'], 'chain_underlying_price': [100.]})
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1, .1], max_node_gap=.1,
+                                     proxy_probabilities=[.1, .5, .9], min_wing_nodes=1,
+                                     max_inner_gap=.1, max_outer_gap=.2)
+    files = DataFiles(blob_store.path)
+    legacy = builder.build_archive(meta, archive, tmp_path/'legacy.parquet')
+    stored = builder.build_archive(meta, files.tree(_store_ref('options-archive')),
+                                   tmp_path/'stored.parquet')
+    pd.testing.assert_frame_equal(stored, legacy)
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path/'stored.parquet'),
+                                  pd.read_parquet(tmp_path/'legacy.parquet'))
+    old = json.loads(Path(str(tmp_path/'legacy.parquet')+'.sources.json').read_text())
+    new = json.loads(Path(str(tmp_path/'stored.parquet')+'.sources.json').read_text())
+    digest = _sha256(source)
+    assert old['sources'] == {'SPY-2020': {'path': str(source), 'sha256': digest}}
+    assert new['sources'] == {'SPY-2020': {
+        'path': 'store:options-archive/files/spy/options_2020.parquet', 'sha256': digest}}
+    assert 'store' not in old
+    record, = files.provenance()
+    assert new['store'] == {k: record[k] for k in ('source', 'stream', 'snapshot', 'manifest_sha256')}
+    assert new['metadata_sha256'] == old['metadata_sha256']
+
+
+def test_prepare_reads_store_references_and_writes_only_a_plain_output_path(
+        tmp_path, monkeypatch, blob_store):
+    import sys
+
+    archive, tables = tmp_path/'archive', tmp_path/'tables'
+    (archive/'spy').mkdir(parents=True)
+    tables.mkdir()
+    pd.DataFrame([{'symbol': 'SPY', 'date': '2020-01-02', 'expiration': '2020-02-21',
+                   'strike': 100., 'type': 'call', 'mark': 4., 'bid': 3.9, 'ask': 4.1,
+                   'bid_size': 10, 'ask_size': 12, 'open_interest': 100,
+                   'implied_volatility': .2}]).to_parquet(
+                       archive/'spy'/'options_2020.parquet', index=False)
+    identity = {'symbol': ['SPY'], 'quote_date': ['2020-01-02'], 'expiry': ['2020-02-21']}
+    pd.DataFrame({**identity, 'chain_underlying_price': [100.]}).to_parquet(
+        tables/'surface.parquet', index=False)
+    pd.DataFrame({**identity, 'first_seen_date': ['2019-12-01']}).to_parquet(
+        tables/'lifecycle.parquet', index=False)
+    blob_store.add('options-archive', archive)
+    blob_store.add('tables', tables)
+    output = tmp_path/'features.parquet'
+    config = {'data': {
+        'root': blob_store.path, 'surface': _store_ref('tables', 'surface.parquet'),
+        'lifecycle': _store_ref('tables', 'lifecycle.parquet'),
+        'archive_root': _store_ref('options-archive'), 'chain_features': str(output),
+        'raw_chain': {'nodes': 3, 'moneyness_bounds': [-.1, .1], 'max_node_gap': .1,
+                      'proxy_probabilities': [.1, .5, .9], 'min_wing_nodes': 1,
+                      'max_inner_gap': .1, 'max_outer_gap': .2}}}
+    path = tmp_path/'prepare.json'
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(sys, 'argv', ['cdf_study', str(path), '--stage', 'prepare'])
+    cdf_study._main()
+    assert len(pd.read_parquet(output)) == 1
+    sidecar = json.loads(Path(str(output)+'.sources.json').read_text())
+    assert list(sidecar['sources']) == ['SPY-2020'] and sidecar['store']['source'] == 'options-archive'
+    # the output is written, so a store reference cannot name it
+    config['data']['chain_features'] = _store_ref('raw-chain-features', 'raw_chain_features.parquet')
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='prepare writes data.chain_features'):
+        cdf_study._main()
+
+
+def test_panel_read_from_store_references_equals_the_path_read(tmp_path, monkeypatch, blob_store):
+    cfg = _fe_fixture(tmp_path, monkeypatch, 'a')
+    blob_store.add('fixture-tables', tmp_path/'a')
+
+    def ref(relpath):
+        return _store_ref('fixture-tables', relpath)
+
+    stored_cfg = {**cfg, 'root': blob_store.path, 'surface': ref('surface.parquet'),
+                  'lifecycle': ref('lifecycle.parquet'), 'chain_features': ref('chain.parquet')}
+    legacy, stored = ExactExpiryCDFPanel(cfg), ExactExpiryCDFPanel(stored_cfg)
+    want, got = legacy.read(), stored.read()
+    pd.testing.assert_frame_equal(got, want)
+    assert len(got) > 0
+    # the same bytes: the manifest's digests are the digests the path read computes
+    assert stored.source_hashes == legacy.source_hashes
+    assert set(stored.source_hashes) == {'surface', 'lifecycle', 'chain_features',
+                                         'chain_feature_sources'}
+    snapshot = payload_files(blob_store.path, 'fixture-tables', 'files')
+    assert stored.provenance()['store'] == [{
+        'source': 'fixture-tables', 'stream': 'files', 'snapshot': snapshot['snapshot'],
+        'manifest_sha256': snapshot['manifest_sha256'], 'files': 4}]
+    assert 'store' not in legacy.provenance()
+    assert {k: v for k, v in stored.provenance().items() if k != 'store'} == legacy.provenance()
+
+
+def test_panel_read_pins_and_sidecar_are_enforced_for_store_references(
+        tmp_path, monkeypatch, blob_store):
+    cfg = _fe_fixture(tmp_path, monkeypatch, 'a')
+    bare = tmp_path/'bare'
+    bare.mkdir()
+    for name in ('surface.parquet', 'lifecycle.parquet', 'chain.parquet'):
+        (bare/name).write_bytes((tmp_path/'a'/name).read_bytes())
+    blob_store.add('fixture-tables', tmp_path/'a')
+    blob_store.add('fixture-bare', bare)
+
+    def stored(source, **chain):
+        return {**cfg, 'root': blob_store.path,
+                'surface': _store_ref(source, 'surface.parquet'),
+                'lifecycle': _store_ref(source, 'lifecycle.parquet'),
+                'chain_features': _store_ref(source, 'chain.parquet', **chain)}
+
+    with pytest.raises(ValueError, match='raw-chain source hash manifest is missing'):
+        ExactExpiryCDFPanel(stored('fixture-bare')).read()
+    with pytest.raises(DataSourceError, match='pinned manifest_sha256'):
+        ExactExpiryCDFPanel(stored('fixture-tables', manifest_sha256='0'*64)).read()
+    manifest = payload_files(blob_store.path, 'fixture-tables', 'files')['manifest_sha256']
+    assert len(ExactExpiryCDFPanel(stored('fixture-tables', manifest_sha256=manifest)).read()) > 0
+    with pytest.raises(DataSourceError, match="no file 'nope.parquet'"):
+        ExactExpiryCDFPanel({**stored('fixture-tables'),
+                             'surface': _store_ref('fixture-tables', 'nope.parquet')}).read()
+
+
+def test_cli_writes_the_resolved_snapshots_into_data_provenance(tmp_path, monkeypatch, blob_store):
+    import sys
+
+    (tmp_path/'t').mkdir()
+    (tmp_path/'t'/'a.parquet').write_bytes(b'PAR1')
+    blob_store.add('tables', tmp_path/'t')
+    output, seen = tmp_path/'run', {}
+
+    class Adapter:
+        provenance = cdf_study.ExactExpiryCDFPanel.provenance
+
+        def __init__(self, config, holdout_start=None):
+            self.refused, self.source_hashes, self.reader_fingerprints = {}, {'surface': 'abc'}, {}
+            self.data_files = DataFiles(blob_store.path)
+
+        def read(self):
+            seen['path'] = self.data_files.path(_store_ref('tables', 'a.parquet'))
+            return pd.DataFrame({'a': [1]})
+
+    class Study:
+        def __init__(self, config):
+            self.output = Path(config['output'])
+
+        def run(self, frame, diagnostic):
+            self.output.mkdir(parents=True)
+
+        def summarize(self, scores):
+            pass
+
+    monkeypatch.setattr(cdf_study, 'ExactExpiryCDFPanel', Adapter)
+    monkeypatch.setattr(cdf_study, 'ChronologicalCDFStudy', Study)
+    config = tmp_path/'config.json'
+    config.write_text(json.dumps({
+        'data': {}, 'diagnostic': {'strikes_z': [-2, -1, 1, 2], 'integration_points': 11},
+        'study': {'output': str(output)}}))
+    monkeypatch.setattr(sys, 'argv', ['cdf_study', str(config)])
+    cdf_study._main()
+    snapshot = payload_files(blob_store.path, 'tables', 'files')
+    record = json.loads((output/'data_provenance.json').read_text())
+    assert record == {'refused': {}, 'sha256': {'surface': 'abc'}, 'readers': {},
+                      'store': [{'source': 'tables', 'stream': 'files',
+                                 'snapshot': snapshot['snapshot'],
+                                 'manifest_sha256': snapshot['manifest_sha256'], 'files': 1}]}
+    assert seen['path'] == snapshot['files']['a.parquet']
+
+
+def _region_settings(tmp_path, archive_root, underlying_root):
+    return {
+        'forecast_root': str(tmp_path/'frozen'), 'partition': 'late',
+        'models': {'base': 'raw'}, 'symbols': ['SPY'], 'archive_root': archive_root,
+        'output': str(tmp_path/'out'), 'max_rows_per_symbol': 1,
+        'underlying': {'root': underlying_root, 'source': 'fixture', 'since_ms': 0,
+                       'carry_rate': .055},
+        'strata': {'tenor_days': [7, 21], 'iv': [20, 30], 'wing_log_moneyness': [.02, .05]},
+        'chain_rule': {'max_abs_log_moneyness': .1, 'min_wing_width': 5., 'max_wing_width': 5.,
+                       'max_candidates': 10, 'fee_per_leg': 0., 'multiplier': 100},
+        'audit': {'price_step': .5, 'support_margin_fraction': .02, 'mesh_tolerance': .5,
+                  'floor': .1, 'radius': 0., 'score_refinement_factor': 2,
+                  'score_tolerance': .01},
+        'limits': {'max_seconds': 1800, 'max_address_space_mib': 6144,
+                   'max_chain_rows': 100000, 'max_grid_nodes': 4001}}
+
+
+def test_decision_region_study_refuses_a_malformed_archive_entry(tmp_path):
+    for bad in ({'source': 'options-archive'}, _store_ref('options-archive', 'spy/a.parquet'), 3, ''):
+        with pytest.raises(ValueError, match='invalid decision-region archive_root'):
+            cdf_study.DecisionRegionStudy(_region_settings(tmp_path, bad, str(tmp_path)))
+    cdf_study.DecisionRegionStudy(_region_settings(tmp_path, _store_ref('options-archive'),
+                                                   str(tmp_path)))
+
+
+@pytest.mark.parametrize('mode', ['path', 'store'])
+def test_decision_region_prepare_pins_the_archive_it_read(tmp_path, monkeypatch, blob_store, mode):
+    archive = tmp_path/'archive'
+    (archive/'spy').mkdir(parents=True)
+    source = archive/'spy'/'options_2020.parquet'
+    _decision_chain().to_parquet(source, index=False)
+    blob_store.add('options-archive', archive)
+    partition = tmp_path/'frozen'/'evaluate'/'late'
+    partition.mkdir(parents=True)
+    pd.DataFrame({'symbol': ['SPY'], 'quote_date': ['2020-01-02'], 'expiry': ['2020-02-21'],
+                  'settlement_date': ['2020-02-21'], 'actual_calendar_dte': [50],
+                  'spot': [100.], 'terminal_price': [101.], 'reference_scale': [.02]}).to_parquet(
+                      partition/'input_panel.parquet', index=False)
+    settings = _region_settings(
+        tmp_path, str(archive) if mode == 'path' else _store_ref('options-archive'),
+        blob_store.path)
+    study = cdf_study.DecisionRegionStudy(settings)
+    monkeypatch.setattr(study, '_verified_partition', lambda _partition: {})
+    np.savez_compressed(study._curve_path('SPY', 'base'),
+                        identities=np.array([['SPY', '2020-01-02', '2020-02-21']]))
+    manifest = study.prepare()
+    assert manifest['chain_rows'] == 6
+    location = source if mode == 'path' else payload_files(
+        blob_store.path, 'options-archive', 'files')['files']['spy/options_2020.parquet']
+    assert manifest['sources'][str(location)] == _sha256(source)
+    assert set(manifest['sources']) == {str(location), str(study._curve_path('SPY', 'base'))}
+    for path, digest in manifest['sources'].items():          # what `evaluate` re-checks
+        assert cdf_study.DecisionRegionStudy._digest(path) == digest
+    written = json.loads((tmp_path/'out'/'prepare'/'manifest.json').read_text())
+    if mode == 'path':
+        assert 'store' not in written
+    else:
+        assert written['store'] == manifest['store']
+        assert [r['source'] for r in written['store']] == ['options-archive']

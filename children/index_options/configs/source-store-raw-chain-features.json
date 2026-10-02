@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "raw_chain_features.parquet",
+    "raw_chain_features.parquet.sources.json"
+  ],
+  "notes": "Registration input, not a run input: the raw-chain feature table derived by cdf_study --stage prepare from the option archive, with its sources manifest (the archive file hashes it read). Acquire as source raw-chain-features, stream files; the study config data.chain_features resolves the parquet and its .sources.json sibling from the same payload directory."
+}

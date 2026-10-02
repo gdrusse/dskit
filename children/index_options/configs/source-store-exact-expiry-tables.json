@@ -1,0 +1,10 @@
+{
+  "path": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928",
+  "as_of": "2026-10-02T00:00:00+00:00",
+  "stream": "files",
+  "include": [
+    "exact_expiry_surface.parquet",
+    "date_expiry_lifecycle.parquet"
+  ],
+  "notes": "Registration input, not a run input: the exact-maturity surface and the date/expiry lifecycle tables derived by an earlier research clone. Acquire as source exact-expiry-tables, stream files; these are the study configs data.surface and data.lifecycle."
+}
