@@ -340,6 +340,15 @@ slice, using the actual reference model and its own fitted preprocessing. Full
 pooled fitting populations remain in each model's `_fit` counts. Training mini-batch
 curves are labelled composite, never NLL. All acceptance remains descriptive.
 
+ADR-0223: `study.fold_table` (`path`, `sha256`, `holdout_start`, `cal_n`, `roles`)
+replaces `years`/`development_end` with a pinned `rolling-origin-plan` table: one
+refit per fold, the last `cal_n` train dates calibrate, `label_reaches` purges,
+a row at or after `holdout_start` refuses, and scores carry `fold`. HPO derives
+its partitions: search, selection and the `development` evaluation use `warmup`
+folds only, `later` uses `scored` folds. `MixtureMLPCDF`/`TorchCDF` `patience`
+(int >= 1) watches the calibration-slice objective, restores the best weights and
+is the only exit: `epochs` becomes a ceiling and reaching it raises.
+
 The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the
 cross-run view:
 

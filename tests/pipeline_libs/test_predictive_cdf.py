@@ -1,6 +1,7 @@
 """Independent numerical and temporal contracts for ADR-0189."""
 
 import copy
+import hashlib
 import json
 
 import numpy as np
@@ -2910,3 +2911,446 @@ def test_expiry_labels_retain_boundary_calendar_rejections(day, expiry, reason):
     out = node.run(None, {"bars": [{"symbol": "XYZ", "quote_date": day, "expiry": expiry,
                                    "price_basis": "trade_close"}], "snapshots": [], "prices": []})
     assert reason in out["records"][0]["label_reasons"]
+
+
+# ---- ADR-0223: count-sized fold tables and the patience stop ---------------
+
+HOLDOUT = '2020-02-24'  # day 54 of a 60-day daily panel: the last six days are held out
+
+
+def _fold_rows(groups=('A',), n=60, lag=1):
+    """Daily rows over ``n`` calendar days whose labels settle ``lag`` days later."""
+    from datetime import date, timedelta
+    rows = []
+    for unit in groups:
+        for i in range(n):
+            day, settle = date(2020, 1, 1)+timedelta(days=i), date(2020, 1, 1)+timedelta(days=i+lag)
+            rows.append({'unit': unit, 'date': day.isoformat(), 'end': settle.isoformat(),
+                         'expiry': settle.isoformat(), 'h': 1, 'scale': 1., 't': float(i),
+                         'y': ((i*7) % 11-5)/5, 'is_A': int(unit == 'A'),
+                         'is_B': int(unit == 'B')})
+    return rows
+
+
+def _fold_table(tmp_path, rows, lag, **over):
+    """Run the real ``rolling-origin-plan`` on the dev rows and pin its jsonl."""
+    from dskit.pipeline.kinds_split import RollingOriginPlan
+    params = {'date_field': 'date', 'end_field': 'end', 'holdout_start': HOLDOUT,
+              'embargo_days': lag, 'val_n': 5, 'step_n': 5, 'train_n': 20,
+              'warmup_folds': 1, **over}
+    out = RollingOriginPlan('plan', params).run(
+        None, {'records': [r for r in rows if r['end'] < HOLDOUT]})
+    path = tmp_path/'folds.jsonl'
+    path.write_text(''.join(json.dumps(r, sort_keys=True, separators=(',', ':'))+'\n'
+                            for r in out['records']))
+    spec = {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'holdout_start': HOLDOUT, 'cal_n': 5, 'roles': ['warmup', 'scored']}
+    return spec, out
+
+
+def _fold_config(tmp_path, spec, name='out'):
+    return {'features': ['h', 'scale', 't'], 'group': 'unit', 'date': 'date', 'end': 'end',
+            'horizon': 'h', 'target': 'y', 'reference': 'scale', 'fold_table': spec,
+            'output': str(tmp_path/name), 'samples': 41, 'tail_intervals': [[-2, -1], [1, 2]],
+            'tail_points': 41, 'calibration_knots': 5,
+            'bootstrap': {'blocks': [3], 'replicates': 10, 'seed': 4},
+            'reference_model': 'reference', 'comparison_references': ['reference'],
+            'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+            'models': {'reference': {
+                'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+                'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+                'calibrate': True}}}
+
+
+def _fold_setup(tmp_path, lag=1, **over):
+    rows = _fold_rows(lag=lag)
+    spec, plan = _fold_table(tmp_path, rows, lag, **over)
+    return [r for r in rows if r['end'] < HOLDOUT], spec, plan
+
+
+def test_year_study_config_identity_is_unchanged_by_the_fold_table_keys():
+    from dskit.pipeline.base import config_hash
+    c = {'features': ['h', 'scale'], 'group': 'unit', 'date': 'date', 'end': 'end',
+         'horizon': 'h', 'target': 'y', 'reference': 'scale', 'years': [2017, 2019],
+         'output': 'out', 'samples': 41, 'tail_intervals': [[-2, -1], [1, 2]],
+         'tail_points': 41, 'calibration_knots': 5, 'development_end': 2017,
+         'bootstrap': {'blocks': [3], 'replicates': 10, 'seed': 4},
+         'reference_model': 'reference', 'comparison_references': ['reference'],
+         'identity': ['unit', 'date', 'expiry'], 'series_identity': ['unit', 'expiry'],
+         'models': {'reference': {
+             'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+             'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+             'calibrate': True}}}
+    # Golden taken on 6394a41, before the fold-table keys existed.
+    assert config_hash(ChronologicalCDFStudy(c), exclude=()) == (
+        '095b0ebdc2d3c620c6e139b0ac90204ab30d3b54f50a627cc5d98136a6acca7a')
+
+
+def test_year_hpo_document_is_not_rewritten_by_construction(tmp_path):
+    config, _ = _hpo_fixture(tmp_path)
+    assert CDFHyperparameterStudy(copy.deepcopy(config)).to_obj() == config
+
+
+def test_fold_table_bands_follow_the_table_with_a_calibration_tail_and_label_purge(tmp_path):
+    frame, spec, plan = _fold_setup(tmp_path)
+    scores = ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(pd.DataFrame(frame))
+    counts = json.loads((tmp_path/'out/counts.json').read_text())
+    folds, seam = plan['records'], plan['metrics']['scored_start']
+    assert [c['fold'] for c in counts] == [f['fold'] for f in folds]
+    assert 'year' not in scores and set(scores.fold) == {f['fold'] for f in folds}
+    days = sorted({r['date'] for r in frame})
+    ends = {r['date']: r['end'] for r in frame}
+    for count, fold in zip(counts, folds):
+        train = [d for d in days if fold['train_start'] <= d <= fold['train_end']]
+        tail = train[-5:]
+        fit = [d for d in train[:-5] if ends[d] < tail[0]]
+        cal = [d for d in tail if ends[d] < fold['val_start']]
+        val = [d for d in days if fold['val_start'] <= d <= fold['val_end']]
+        if fold['role'] == 'warmup':
+            val = [d for d in val if ends[d] < seam]
+        assert len(val) < 5 if fold['role'] == 'warmup' else len(val) == 5
+        for name, want in (('fit', fit), ('cal', cal), ('val', val)):
+            got = count[name]
+            assert (got['n'], got['first'], got['last']) == (len(want), want[0], want[-1]), name
+        assert count['fit']['latest_label'] < tail[0]
+        assert count['cal']['latest_label'] < fold['val_start']
+        assert set(scores[scores.fold == fold['fold']].date) == set(val)
+
+
+def test_fold_table_drops_warmup_val_rows_whose_label_reaches_the_scored_seam(tmp_path):
+    frame, spec, plan = _fold_setup(tmp_path, lag=3)
+    scores = ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(pd.DataFrame(frame))
+    seam = plan['metrics']['scored_start']
+    warmup = scores[scores.fold == 1]
+    assert len(warmup) and (warmup.end < seam).all()  # a label settling on the seam is cut
+    first_scored = scores[scores.fold == 2]
+    assert first_scored.date.min() == seam and len(first_scored.date.unique()) == 5
+
+
+def test_fold_table_roles_choose_which_folds_are_fitted(tmp_path):
+    frame, spec, plan = _fold_setup(tmp_path)
+    spec['roles'] = ['scored']
+    scores = ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(pd.DataFrame(frame))
+    assert set(scores.fold) == {f['fold'] for f in plan['records'] if f['role'] == 'scored'}
+
+
+@pytest.mark.parametrize(('mutate', 'match'), [
+    (lambda c: c.update(years=[2017]), 'exactly one'),
+    (lambda c: c.pop('fold_table'), 'missing keys'),
+    (lambda c: c.update(development_end=1), 'development_end'),
+    (lambda c: c['fold_table'].update(sha256='0'*64), 'sha256'),
+    (lambda c: c['fold_table'].pop('cal_n'), 'cal_n'),
+    (lambda c: c['fold_table'].update(cal_n=0), 'cal_n'),
+    (lambda c: c['fold_table'].update(cal_n=True), 'cal_n'),
+    (lambda c: c['fold_table'].update(roles=[]), 'roles'),
+    (lambda c: c['fold_table'].update(roles=['validation']), 'roles'),
+    (lambda c: c['fold_table'].update(roles=['scored', 'scored']), 'roles'),
+    (lambda c: c['fold_table'].update(holdout_start='2020-02-30'), 'holdout_start'),
+    (lambda c: c['fold_table'].update(holdout_start='2020-02-10'), 'holdout'),
+    (lambda c: c['fold_table'].update(surprise=1), 'fold_table'),
+])
+def test_fold_table_config_is_default_deny_and_pins_the_file(tmp_path, mutate, match):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    mutate(config)
+    with pytest.raises(ValueError, match=match):
+        ChronologicalCDFStudy(config)
+
+
+def test_fold_table_refuses_a_table_edited_after_it_was_pinned(tmp_path):
+    _, spec, _ = _fold_setup(tmp_path)
+    path = tmp_path/'folds.jsonl'
+    path.write_text(path.read_text().replace('"warmup"', '"scored"', 1))
+    with pytest.raises(ValueError, match='sha256'):
+        ChronologicalCDFStudy(_fold_config(tmp_path, spec))
+
+
+@pytest.mark.parametrize('late', [
+    {'date': HOLDOUT, 'end': '2020-02-25'},          # entered on the first holdout day
+    {'date': '2020-02-23', 'end': HOLDOUT},          # label settles on the first holdout day
+])
+def test_fold_table_refuses_holdout_rows_before_any_output(tmp_path, late):
+    frame, spec, _ = _fold_setup(tmp_path)
+    frame = pd.DataFrame(frame + [{**frame[0], **late, 'expiry': late['end']}])
+    with pytest.raises(ValueError, match='holdout'):
+        ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(frame)
+    assert not (tmp_path/'out').exists()
+
+
+class _SpyCDF(HorizonEmpiricalCDF):
+    """Records what the fit was given: the training rows and the monitor rows."""
+    seen = []
+
+    def fit(self, x, y, cal_x, cal_y):
+        type(self).seen.append((np.array(x)[:, 2], np.array(cal_x)[:, 2]))
+        return super().fit(x, y, cal_x, cal_y)
+
+
+def test_fit_receives_the_calibration_slice_never_the_scored_window(tmp_path, monkeypatch):
+    frame, spec, plan = _fold_setup(tmp_path)
+    monkeypatch.setattr(predictive_cdf, '_SpyCDF', _SpyCDF, raising=False)
+    _SpyCDF.seen = []
+    config = _fold_config(tmp_path, spec)
+    config['models']['spy'] = {'class': 'dskit.pipeline.libs.predictive_cdf:_SpyCDF',
+                               'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+                               'calibrate': False}
+    ChronologicalCDFStudy(config).run(pd.DataFrame(frame))
+    index = {r['date']: r['t'] for r in frame}
+    assert len(_SpyCDF.seen) == len(plan['records'])
+    for (train_t, monitor_t), fold in zip(_SpyCDF.seen, plan['records']):
+        window = [index[d] for d in index if fold['train_start'] <= d <= fold['train_end']]
+        assert set(monitor_t) <= set(window) and len(set(monitor_t)) <= 5
+        assert max(train_t) < min(monitor_t)
+        assert max(monitor_t) < index[fold['val_start']]
+
+
+def _fold_hpo_fixture(tmp_path, lag=1):
+    rows = _fold_rows(groups=('A', 'B'), lag=lag)
+    spec, plan = _fold_table(tmp_path, rows, lag)
+    config = _fold_config(tmp_path, spec, 'unused')
+    config['features'] = ['h', 'scale', 'is_A', 'is_B']
+    candidate = {'class': 'dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF',
+                 'params': {'components': 1, 'hidden': [3], 'epochs': 1, 'seeds': [11],
+                            'device': 'cpu'}, 'calibrate': True, 'pooled': False}
+    experiment = {
+        'output': str(tmp_path/'hpo'), 'final_seeds': [11, 29], 'screen_seed': 11,
+        'max_candidates': 1, 'candidates': {'candidate': candidate},
+        'candidate_labels': {'candidate': {'sharing': 'separate', 'family': 'normal',
+                                           'bundle': 'a'}},
+        'axes': {'sharing': ['separate'], 'family': ['normal'], 'bundle': ['a']},
+        'task_features': {'A': 'is_A', 'B': 'is_B'},
+        'resolutions': {'screen_samples': 21, 'final_samples': 41, 'tail_points': 41,
+                        'integration_points': 21, 'audit_samples': [21, 41, 81],
+                        'audit_rows': 2},
+        'expected_cells': {k: {'A': [1], 'B': [1]} for k in ['development', 'evaluation']},
+        'search_partitions': {'separate': ['candidate']}}
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    return {'study': config, 'experiment': experiment}, frame, plan
+
+
+def test_hpo_selects_on_warmup_folds_and_evaluates_on_scored_folds_only(tmp_path):
+    config, frame, plan = _fold_hpo_fixture(tmp_path)
+    study = CDFHyperparameterStudy(config)
+    seam = plan['metrics']['scored_start']
+    warm = {f['fold'] for f in plan['records'] if f['role'] == 'warmup'}
+    scored = {f['fold'] for f in plan['records'] if f['role'] == 'scored'}
+    provenance = {'sources': {'test': 'pinned'}, 'readers': {'fixture': 1}}
+    study.run(frame, stage='search', partition='separate', provenance=provenance)
+    search = pd.read_parquet(tmp_path/'hpo/search/separate/scores.parquet')
+    assert set(search.fold) == warm and (search.end < seam).all()
+    selected = study.run(frame, stage='select', provenance=provenance)
+    assert selected['variants']['reference'] == 'raw'
+    study.run(frame, stage='evaluate', partition='development', provenance=provenance)
+    study.run(frame, stage='evaluate', partition='later', provenance=provenance)
+    development = pd.read_parquet(tmp_path/'hpo/evaluate/development/scores.parquet')
+    later = pd.read_parquet(tmp_path/'hpo/evaluate/later/scores.parquet')
+    assert set(development.fold) == warm and set(later.fold) == scored
+    assert later.date.min() == seam and (development.end < seam).all()
+    report = study.run(frame, stage='report', provenance=provenance)
+    assert report['selected_variants_from_development'] == selected['variants']
+    assert (tmp_path/'hpo/report/skill_by_index_fold.csv').exists()
+
+
+@pytest.mark.parametrize(('mutate', 'match'), [
+    (lambda c: c['experiment'].update(development_years=[2017]), 'derived'),
+    (lambda c: c['experiment'].update(label_cutoff='2020-02-01'), 'derived'),
+    (lambda c: c['experiment'].update(
+        evaluation_partitions={'development': [1], 'later': [2]}), 'derived'),
+    (lambda c: c['study']['fold_table'].update(roles=['warmup']), 'both'),
+    (lambda c: c['study']['fold_table'].update(roles=['scored']), 'both'),
+])
+def test_hpo_fold_table_derives_partitions_and_refuses_year_keys(tmp_path, mutate, match):
+    config, _, _ = _fold_hpo_fixture(tmp_path)
+    mutate(config)
+    with pytest.raises(ValueError, match=match):
+        CDFHyperparameterStudy(config)
+
+
+def test_hpo_needs_warmup_folds_to_select_on(tmp_path):
+    config, _, _ = _fold_hpo_fixture(tmp_path)
+    spec, _ = _fold_table(tmp_path, _fold_rows(groups=('A', 'B')), 1, warmup_folds=0)
+    config['study']['fold_table'] = spec
+    with pytest.raises(ValueError, match='warmup'):
+        CDFHyperparameterStudy(config)
+
+
+def test_hpo_refuses_a_frame_holding_holdout_rows_at_every_stage(tmp_path):
+    config, frame, _ = _fold_hpo_fixture(tmp_path)
+    late = {**frame.iloc[0].to_dict(), 'date': HOLDOUT, 'end': '2020-02-25',
+            'expiry': '2020-02-25'}
+    frame = pd.concat([frame, pd.DataFrame([late])], ignore_index=True)
+    study = CDFHyperparameterStudy(config)
+    for stage, partition in (('search', 'separate'), ('select', None), ('report', None)):
+        with pytest.raises(ValueError, match='holdout'):
+            study.run(frame, stage=stage, partition=partition, provenance={'x': 1})
+
+
+def _patience_model(**over):
+    settings = dict(components=1, hidden=[3], epochs=6, batch_size=4, seeds=[3],
+                    device='cpu', deterministic=True, patience=2)
+    return MixtureMLPCDF(**{**settings, **over})
+
+
+def _training_rows(n=12):
+    x = np.linspace(-1, 1, n)[:, None]
+    return x, np.sin(3*x[:, 0])
+
+
+def _script_monitor(monkeypatch, values):
+    """Replace the monitor loss by a script, keeping each epoch's weights."""
+    snapshots, script = [], iter(values)
+
+    def scripted(self, model, monitor):
+        snapshots.append({k: v.detach().clone() for k, v in model.state_dict().items()})
+        return next(script)
+    monkeypatch.setattr(MixtureMLPCDF, '_monitor_loss', scripted)
+    return snapshots
+
+
+@pytest.mark.parametrize('bad', [0, -1, True, 1.5, '3'])
+def test_patience_is_default_deny(bad):
+    with pytest.raises(ValueError, match='patience'):
+        _patience_model(patience=bad)
+
+
+def test_patience_stops_after_the_wait_and_restores_the_best_weights(monkeypatch):
+    pytest.importorskip('torch')
+    import torch
+    snapshots = _script_monitor(monkeypatch, [5., 4., 3., 3.5, 3.2, 9.])
+    x, y = _training_rows()
+    model = _patience_model().fit(x, y, x, y)
+    assert len(model.losses[0]) == 5 and model.best_epochs == [3]  # strict improvement only
+    assert len(snapshots) == 5
+    for name, value in model.models[0].state_dict().items():
+        assert torch.equal(value, snapshots[2][name])
+
+
+def test_reaching_the_epoch_ceiling_before_the_wait_is_exhausted_raises(monkeypatch):
+    pytest.importorskip('torch')
+    x, y = _training_rows()
+    _script_monitor(monkeypatch, [3., 2., 1.])  # still improving at the ceiling
+    with pytest.raises(ValueError, match='patience'):
+        _patience_model(epochs=3).fit(x, y, x, y)
+    _script_monitor(monkeypatch, [1., 2., 2.])  # stalled, but the wait is not over
+    with pytest.raises(ValueError, match='patience'):
+        _patience_model(epochs=3, patience=3).fit(x, y, x, y)
+
+
+def test_monitor_loss_is_the_likelihood_of_the_calibration_rows_only():
+    pytest.importorskip('torch')
+    from scipy.stats import norm
+    x, y = _training_rows()
+    cal_x, cal_y = x[::2]+.05, y[::2]+3.  # a different population: it must be the one watched
+    model = _patience_model(epochs=60, patience=3).fit(x, y, cal_x, cal_y)
+    curve = model.curve(cal_x)
+    density = (curve.weights*norm.pdf(cal_y[:, None], curve.means, curve.scales)).sum(1)
+    assert min(model.monitor_losses[0]) == pytest.approx(-np.log(density).mean(), rel=1e-4)
+    assert len(model.losses[0]) == model.best_epochs[0]+3 < 60
+
+
+def test_absent_patience_keeps_fixed_epochs_and_the_equivalence_digest():
+    torch = pytest.importorskip('torch')
+    del torch
+    from dskit.pipeline.libs.predictive_cdf import TorchCDF
+    params = {'encoder': {'kind': 'mlp'},
+              'losses': [{'kind': 'nll', 'weight': .1}, {'kind': 'decision_brier', 'weight': 1.}],
+              'components': 2, 'hidden': [4], 'epochs': 2, 'batch_size': 4, 'seeds': [3],
+              'device': 'cpu', 'deterministic': True}
+    settings = TorchCDF(**params)._equivalence_settings()
+    assert 'patience' not in settings  # state digests of existing models are unchanged
+    assert hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest() == (
+        'cb0130d0d6a4bb353ba21f535b38e06f742b4727278defc8966983117458d759')
+    assert TorchCDF(**params, patience=2)._equivalence_settings()['patience'] == 2
+    x, y = _training_rows()
+    assert len(MixtureMLPCDF(components=1, hidden=[3], epochs=4, seeds=[3], device='cpu')
+               .fit(x, y, x, y).losses[0]) == 4
+
+
+def test_torch_cdf_monitors_the_composite_on_the_attached_calibration_context():
+    pytest.importorskip('torch')
+    context = _wing_context()+_wing_context()+_wing_context()
+    for i, record in enumerate(context):
+        record['identity'] = [str(i)]
+    cal_context = context[:8]
+    x = np.random.default_rng(1).normal(size=(12, 3))
+    y = np.linspace(-1.5, 1.5, 12)
+    model = predictive_cdf.TorchCDF(
+        encoder={'kind': 'mlp'}, components=2, hidden=[4], epochs=400, batch_size=5,
+        seeds=[3], device='cpu', deterministic=True, patience=3, learning_rate=.05,
+        losses=[{'kind': 'crps', 'weight': 1.}, {'kind': 'wing_twcrps', 'weight': .5}])
+    with pytest.raises(ValueError, match='context'):
+        model.fit(x, y, x[:8], y[:8])  # no context attached: nothing to train or monitor
+    model.fit_decision_context(context, cal_context).fit(x, y, x[:8], y[:8]+.4)
+    report = model.loss_report(x[:8], y[:8]+.4, cal_context)
+    assert min(model.monitor_losses[0]) == pytest.approx(report['composite'], rel=1e-4)
+    state = model._research_state()
+    assert state['patience'] == 3 and state['best_epoch_by_seed'] == model.best_epochs
+    short = _wing_context()
+    for i, record in enumerate(short):
+        record['identity'] = [f'c{i}']
+    with pytest.raises(ValueError, match='calibration'):
+        model.fit_decision_context(context, short).fit(x, y, x[:8], y[:8])
+
+
+def test_patience_is_refused_where_it_cannot_monitor():
+    pytest.importorskip('torch')
+    x, y = _training_rows()
+    contexts = [_decision_context(('SPY', f'2020-01-{i+1:02}', '2020-02-21')) for i in range(12)]
+    with pytest.raises(ValueError, match='patience'):
+        DecisionWeightedMixtureMLPCDF(
+            components=1, hidden=[3], epochs=2, seeds=[3], device='cpu', patience=1
+        ).fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    with pytest.raises(ValueError, match='patience'):
+        SetMixtureCDF(nodes=1, node_features=1, tensor_indices=[0], mask_indices=[1],
+                      context_indices=[2], device='cpu', patience=1)
+
+
+def test_study_refuses_patience_with_a_second_calibration_map(tmp_path):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    config['models']['net'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF',
+        'params': {'components': 1, 'hidden': [3], 'epochs': 4, 'seeds': [3], 'device': 'cpu',
+                   'patience': 2}, 'calibrate': True}
+    with pytest.raises(ValueError, match='second map'):
+        ChronologicalCDFStudy(config)
+    config['models']['net']['calibrate'] = False
+    ChronologicalCDFStudy(config)
+
+
+def test_fold_roles_agree_with_the_plan_kind():
+    from dskit.pipeline import kinds_split
+    assert predictive_cdf._FoldPlan.ROLES == (kinds_split._ROLE_WARMUP, kinds_split._ROLE_SCORED)
+
+
+@pytest.mark.parametrize(('edit', 'match'), [
+    (lambda rows: [{**r, 'role': 'warmup'} for r in rows], 'scored fold'),
+    (lambda rows: [{**rows[0], 'role': 'scored'}]+[{**r, 'role': 'warmup'} for r in rows[1:]],
+     'every warmup fold before it'),
+    (lambda rows: rows+rows[:1], 'unique folds'),
+    (lambda rows: [{k: v for k, v in rows[0].items() if k != 'val_end'}]+rows[1:], 'plan fold'),
+    (lambda rows: [{**rows[0], 'val_start': rows[0]['train_start']}]+rows[1:], 'plan fold'),
+])
+def test_fold_table_refuses_rows_that_are_not_an_ordered_plan(tmp_path, edit, match):
+    _, spec, plan = _fold_setup(tmp_path)
+    path = tmp_path/'folds.jsonl'
+    path.write_text(''.join(json.dumps(r, sort_keys=True)+'\n' for r in edit(plan['records'])))
+    spec['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match=match):
+        ChronologicalCDFStudy(_fold_config(tmp_path, spec))
+
+
+def test_fold_table_pooled_models_fit_once_per_fold_on_the_pooled_bands(tmp_path, monkeypatch):
+    rows = _fold_rows(groups=('A', 'B'))
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_SpyCDF', _SpyCDF, raising=False)
+    _SpyCDF.seen = []
+    config = _fold_config(tmp_path, spec)
+    config['models']['spy'] = {'class': 'dskit.pipeline.libs.predictive_cdf:_SpyCDF',
+                               'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+                               'calibrate': False, 'pooled': True}
+    ChronologicalCDFStudy(config).run(frame)
+    assert len(_SpyCDF.seen) == len(plan['records'])  # once per fold, not per group and fold
+    for train_t, monitor_t in _SpyCDF.seen:
+        assert max(train_t) < min(monitor_t)

@@ -1164,6 +1164,115 @@ def test_future_unscheduled_closure_is_label_information_only(tmp_path, monkeypa
     np.testing.assert_allclose(out.reference_scale, np.maximum(out.rv_22, .001)*np.sqrt([8, 9]))
 
 
+def test_panel_never_reads_rows_dated_or_settling_at_the_holdout(tmp_path, monkeypatch):
+    import exchange_calendars as xc
+    from index_options.cdf_study import ExactExpiryCDFPanel
+
+    dates = xc.get_calendar('XNYS').sessions_in_range('2023-01-03', '2023-07-10')
+    prices = {d.strftime('%Y-%m-%d'): 100+i*.1 for i, d in enumerate(dates)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params['symbol']
+
+        def run(self, ctx, inputs):
+            return {'records': [
+                {'date': d, 'close': 20. if self.symbol == 'RVX' else price,
+                 'asof_ms': int(pd.Timestamp(d).timestamp()*1000), 'instrument': self.symbol,
+                 'contract': self.symbol, 'group': self.symbol, 'dividend_amount': None}
+                for d, price in prices.items()]}
+
+        def fingerprint(self):
+            return {'sha256': 'fixture'}
+
+    monkeypatch.setattr('index_options.cdf_study.IndexCloseRows', Reader)
+    rows = pd.DataFrame({'symbol': ['IWM']*4,
+                         'quote_date': ['2023-06-28', '2023-06-29', '2023-06-30', '2023-07-03'],
+                         'expiry': ['2023-06-29', '2023-06-30', '2023-07-03', '2023-07-05'],
+                         'chain_underlying_price': [prices[d] for d in
+                                                    ('2023-06-28', '2023-06-29', '2023-06-30',
+                                                     '2023-07-03')]})
+    surface, lifecycle = tmp_path/'surface.parquet', tmp_path/'lifecycle.parquet'
+    rows.to_parquet(surface)
+    rows[['symbol', 'quote_date', 'expiry']].assign(first_seen_date='2023-06-01').to_parquet(lifecycle)
+    config = {'root': 'fixture', 'surface': str(surface), 'lifecycle': str(lifecycle),
+              'symbols': {'IWM': 'RVX'}, 'price_source': 'fixture', 'iv_source': 'fixture',
+              'since': '2023-01-01', 'max_dte': 45, 'lags': 22, 'windows': [1, 5, 22, 66],
+              'feature_gap_days': 7, 'reference_floor': .001, 'spot_tolerance': .02}
+    everything = ExactExpiryCDFPanel(config)
+    assert len(everything.read()) == 4 and 'holdout_locked' not in everything.refused['IWM']
+    # 2023-06-30 is the holdout: the row entering that day, the one entering after,
+    # and the row whose label settles on it (quote 06-29) are all cut.
+    adapter = ExactExpiryCDFPanel(config, holdout_start='2023-06-30')
+    out = adapter.read()
+    assert out.quote_date.tolist() == ['2023-06-28']
+    assert adapter.refused['IWM']['holdout_locked'] == 3
+    with pytest.raises(ValueError, match='holdout_start'):
+        ExactExpiryCDFPanel(config, holdout_start='2023-6-30')
+
+
+def test_cli_hands_the_study_holdout_to_the_reader_and_runs_the_fold_table(
+        tmp_path, monkeypatch):
+    import hashlib
+    import sys
+    from dskit.pipeline.kinds_split import RollingOriginPlan
+
+    days = pd.date_range('2020-01-01', periods=60)
+    frame = pd.DataFrame({
+        'symbol': 'QQQ', 'quote_date': days.strftime('%Y-%m-%d'),
+        'expiry': (days+pd.Timedelta(days=1)).strftime('%Y-%m-%d'),
+        'actual_calendar_dte': 1, 'reference_scale': 1., 'spot': 100.,
+        'terminal_return': [((i*7) % 11-5)/50 for i in range(60)]})
+    frame['settlement_date'] = frame.expiry
+    frame['terminal_price'] = 100.*np.exp(frame.terminal_return)
+    holdout = '2020-02-24'
+    dev = frame[frame.settlement_date < holdout]
+    plan = RollingOriginPlan('plan', {
+        'date_field': 'quote_date', 'end_field': 'settlement_date', 'holdout_start': holdout,
+        'embargo_days': 1, 'val_n': 5, 'step_n': 5, 'train_n': 20, 'warmup_folds': 1}).run(
+        None, {'records': dev.to_dict('records')})
+    table = tmp_path/'folds.jsonl'
+    table.write_text(''.join(json.dumps(r, sort_keys=True, separators=(',', ':'))+'\n'
+                             for r in plan['records']))
+    seen = {}
+
+    class Adapter:
+        def __init__(self, config, holdout_start=None):
+            seen['holdout_start'] = holdout_start
+            self.refused, self.source_hashes, self.reader_fingerprints = {}, {}, {}
+
+        def read(self):
+            return dev.copy()
+
+    monkeypatch.setattr(cdf_study, 'ExactExpiryCDFPanel', Adapter)
+    output = tmp_path/'run'
+    config = {
+        'data': {}, 'diagnostic': {'strikes_z': [-2, -1, 1, 2], 'integration_points': 11},
+        'study': {
+            'features': ['actual_calendar_dte', 'reference_scale'], 'group': 'symbol',
+            'date': 'quote_date', 'end': 'settlement_date', 'horizon': 'actual_calendar_dte',
+            'target': 'terminal_return', 'reference': 'reference_scale',
+            'identity': ['symbol', 'quote_date', 'expiry'], 'series_identity': ['symbol', 'expiry'],
+            'fold_table': {'path': str(table), 'sha256': hashlib.sha256(table.read_bytes()).hexdigest(),
+                           'holdout_start': holdout, 'cal_n': 5, 'roles': ['warmup', 'scored']},
+            'output': str(output), 'samples': 21, 'tail_intervals': [[-2, -1], [1, 2]],
+            'tail_points': 21, 'calibration_knots': 5,
+            'bootstrap': {'blocks': [3], 'replicates': 5, 'seed': 4},
+            'reference_model': 'reference', 'comparison_references': ['reference'],
+            'models': {'reference': {
+                'class': 'dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF',
+                'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 21},
+                'calibrate': True}}}}
+    path = tmp_path/'config.json'
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(sys, 'argv', ['cdf_study', str(path)])
+    cdf_study._main()
+    assert seen == {'holdout_start': holdout}
+    scores = pd.read_parquet(output/'scores.parquet')
+    assert set(scores.fold) == {f['fold'] for f in plan['records']} and (scores.quote_date < holdout).all()
+    assert (output/'skill_by_index_fold.csv').exists() and (output/'comparison.json').exists()
+
+
 def test_decision_strike_diagnosis_is_paired_and_stratified(tmp_path):
     root, output = tmp_path/"source", tmp_path/"out"
     root.mkdir()

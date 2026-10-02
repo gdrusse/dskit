@@ -29426,8 +29426,8 @@ final test.
 
 **Status:** proposed 2026-10-02 (owner pre-approves once review has no
 Critical/Major). Base 6394a41 + 8085997 (ADR-0222). **Sweep** (`fold_table
-patience early_stop label_reaches`): the study splits by calendar year only; no
-`predictive_cdf` model monitors held-out rows; `label_reaches` is imported.
+patience early_stop label_reaches`): no `predictive_cdf` model monitors held-out
+rows (`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
 1. **Config.** `ChronologicalCDFStudy` takes `fold_table` XOR `years`
    (`development_end` is refused with a table). `fold_table` = `{path, sha256,
    holdout_start, cal_n, roles}`, all required: the plan's `records-write` file,

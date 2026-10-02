@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.document import date_problem
+from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
@@ -2157,6 +2159,31 @@ class NGBoostCDF(CDFEstimator):
         return MixtureCurve(np.ones((len(loc), 1)), loc[:, None], scale[:, None])
 
 
+class _PatienceStop:
+    """Early-stopping rule over a monitored loss, with best-weight restore.
+
+    One instance per fitted network. ``exhausted`` records an epoch's loss and
+    says whether ``patience`` epochs have passed without a STRICT improvement;
+    ``restore`` puts the best epoch's weights back.
+    """
+
+    def __init__(self, patience):
+        self.patience, self.history, self.best, self.best_epoch = patience, [], None, 0
+
+    def exhausted(self, loss, model):
+        import math
+        if not math.isfinite(loss):
+            raise ValueError("nonfinite monitored loss")
+        self.history.append(loss)
+        if self.best is None or loss < self.best:
+            self.best, self.best_epoch = loss, len(self.history)
+            self.state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        return len(self.history)-self.best_epoch >= self.patience
+
+    def restore(self, model):
+        model.load_state_dict(self.state)
+
+
 class MixtureMLPCDF(CDFEstimator):
     """Small Gaussian mixture MLP ensemble trained with log likelihood.
 
@@ -2174,6 +2201,13 @@ class MixtureMLPCDF(CDFEstimator):
         Hidden activation, dropout probability, and raw one-hot task columns.
         A list for hidden declares individual layer widths; an integer keeps
         the legacy two-layer architecture. Heads share only the trunk.
+    patience : int or None
+        Absent trains exactly ``epochs``. An integer >= 1 watches the training
+        objective on the calibration rows after every epoch, restores the best
+        epoch's weights and stops once ``patience`` epochs bring no strict
+        improvement. That is the only exit: ``epochs`` becomes a ceiling, and
+        reaching it first raises. The calibration rows then steer training, so
+        a PIT map fitted on them is refused by the study.
 
     Examples
     --------
@@ -2186,7 +2220,8 @@ class MixtureMLPCDF(CDFEstimator):
                  seeds=(11, 29), device="cuda", learning_rate=.001,
                  weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
                  head_features=None, deterministic=False, left_cdf_weight=0.,
-                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None):
+                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
+                 patience=None):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
@@ -2212,6 +2247,9 @@ class MixtureMLPCDF(CDFEstimator):
                  or any(type(v) is not int or v < 0 for v in feature_indices)
                  or len(set(feature_indices)) != len(feature_indices))):
             raise ValueError("invalid feature indices")
+        if patience is not None and (type(patience) is not int or patience < 1):
+            raise ValueError("invalid patience: an integer >= 1 or absent")
+        self.patience = patience
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
@@ -2309,6 +2347,41 @@ class MixtureMLPCDF(CDFEstimator):
         """Return optional immutable tensors used by subclass penalties."""
         return None
 
+    def _monitor_context(self, cal_x):
+        """Return the context the stop rule's loss reads on the calibration rows."""
+        if type(self)._training_context is not MixtureMLPCDF._training_context:
+            raise ValueError(f"{type(self).__name__} has no calibration-row context: "
+                             "patience is unsupported")
+        return None
+
+    def _monitor_set(self, cal_x, cal_y):
+        """Return the calibration rows as tensors, scaled by the TRAINING scaler."""
+        import numpy as np
+        import torch
+        heads = self._heads(cal_x)
+        if not set(heads).issubset(self.seen_heads):
+            raise ValueError("unseen head in the calibration rows")
+        return (torch.tensor(self.scaler.transform(self._features(cal_x)),
+                             dtype=torch.float32, device=self.device),
+                self._target_tensor(np.asarray(cal_y)),
+                torch.tensor(heads, dtype=torch.long, device=self.device),
+                self._monitor_context(cal_x))
+
+    def _monitor_loss(self, model, monitor):
+        """Return the training objective averaged over the calibration rows."""
+        import torch
+        xx, yy, hh, context = monitor
+        model.eval()
+        total = 0.
+        with torch.no_grad():
+            for start in range(0, len(xx), self.batch_size):
+                ix = torch.arange(start, min(start+self.batch_size, len(xx)), device=self.device)
+                logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
+                total += self._objective_loss(
+                    yy[ix], logw, mu, sigma, ix, context).item()*len(ix)
+        model.train()
+        return total/len(xx)
+
     def _extra_training_loss(self, y, logw, mu, sigma, indices, context):
         """Return an optional proper-score addend for one mini-batch."""
         return None
@@ -2337,7 +2410,8 @@ class MixtureMLPCDF(CDFEstimator):
         Parameters
         ----------
         x, y, cal_x, cal_y : array-like
-            Training and separate calibration arrays; no validation early stopping.
+            Training and separate calibration arrays. The calibration rows are
+            read only when ``patience`` is set, as the stop rule's monitor.
 
         Returns
         -------
@@ -2366,13 +2440,15 @@ class MixtureMLPCDF(CDFEstimator):
         xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
         yy = self._target_tensor(y)
         training_context = self._training_context(x)
-        self.models, self.losses = [], []
+        monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
+        self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
         for seed in self.seeds:
             torch.manual_seed(seed)
             model = self._build_module(features.shape[1])
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
+            stop = None if monitor is None else _PatienceStop(self.patience)
             for _ in range(self.epochs):
                 order = torch.randperm(len(xx), device=self.device)
                 total = 0.
@@ -2389,6 +2465,18 @@ class MixtureMLPCDF(CDFEstimator):
                     optimizer.step()
                     total += loss.item()*len(ix)
                 losses.append(total/len(xx))
+                if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
+                    break
+            else:
+                if stop is not None:
+                    raise ValueError(
+                        f"patience {self.patience} was not exhausted within epochs "
+                        f"{self.epochs}: the monitored loss may still be improving; "
+                        "raise epochs, the ceiling")
+            if stop is not None:
+                stop.restore(model)
+                self.monitor_losses.append(stop.history)
+                self.best_epochs.append(stop.best_epoch)
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
@@ -2410,6 +2498,8 @@ class MixtureMLPCDF(CDFEstimator):
                     "deterministic": self.deterministic}
         if self.feature_indices is not None:
             settings["feature_indices"] = self.feature_indices
+        if self.patience is not None:
+            settings["patience"] = self.patience
         if self.left_cdf_weight:
             settings.update(left_cdf_weight=self.left_cdf_weight,
                             left_cdf_bounds=self.left_cdf_bounds,
@@ -3202,7 +3292,8 @@ class TorchCDF(MixtureMLPCDF):
         """Validate and attach entry-known inventories without using outcomes."""
         self._fit_context = DecisionRegionScores(fit_context)
         self._context_arrays(self._fit_context)
-        self._context_arrays(DecisionRegionScores(cal_context))
+        self._cal_context = DecisionRegionScores(cal_context)
+        self._context_arrays(self._cal_context)
         return self
 
     def _target_tensor(self, y):
@@ -3212,16 +3303,25 @@ class TorchCDF(MixtureMLPCDF):
     def _build_module(self, features):
         return self.encoder.build(self, features)
 
-    def _training_context(self, x):
+    def _context_tensors(self, scorer, x, kind, rows):
+        """Return one row set's context as tensors, refusing an unattached or empty one."""
         import torch
-        if not hasattr(self, "_fit_context") or len(self._fit_context.inventory) != len(x):
-            raise ValueError("identity-keyed decision context was not attached")
+        if scorer is None or len(scorer.inventory) != len(x):
+            raise ValueError(f"identity-keyed {kind} context was not attached")
         context = {key: torch.as_tensor(value, device=self.device) for key, value
-                   in self._context_arrays(self._fit_context).items()}
+                   in self._context_arrays(scorer).items()}
         for term_config, term in zip(self.loss_config, self._terms):
             if not term.population_count(context) > 0:
-                raise ValueError(f"no eligible training rows for {term_config['kind']}")
+                raise ValueError(f"no eligible {rows} rows for {term_config['kind']}")
         return context
+
+    def _training_context(self, x):
+        return self._context_tensors(getattr(self, "_fit_context", None), x,
+                                     "decision", "training")
+
+    def _monitor_context(self, cal_x):
+        return self._context_tensors(getattr(self, "_cal_context", None), cal_x,
+                                     "calibration", "calibration")
 
     def _objective_loss(self, y, logw, mu, sigma, indices, context):
         local = {key: value[indices] for key, value in context.items()}
@@ -3277,6 +3377,9 @@ class TorchCDF(MixtureMLPCDF):
                                                if self.device.startswith("cuda") else 0)}
         if self.family_config is not None:
             state["family"] = self.family_config
+        if self.patience is not None:
+            state.update(patience=self.patience, best_epoch_by_seed=self.best_epochs,
+                         monitor_loss_by_seed=self.monitor_losses)
         return state
 
 
@@ -3414,6 +3517,8 @@ class SetMixtureCDF(MixtureMLPCDF):
         self.pooling, self.attention_heads = pooling, attention_heads
         settings.pop("feature_indices", None)
         settings.pop("head_features", None)
+        if settings.get("patience") is not None:
+            raise ValueError("SetMixtureCDF trains its own loop: patience is unsupported")
         super().__init__(feature_indices=None, head_features=None, **settings)
 
     def _validate_x(self, x):
@@ -3827,14 +3932,210 @@ class AdaptiveEmpiricalMLPBlendCDF(EmpiricalMLPBlendCDF):
         return ConvexCurve(self.empirical.curve(x), self.mlp.curve(x), weight)
 
 
+class _SplitPlan(ABC):
+    """How a study carves its bands: one subclass per config grammar.
+
+    ``column`` names the score column that carries the split id. The study
+    asks the plan for every split-shaped fact (ids, bands, the rows a split
+    evaluates), so a new grammar is a subclass, never a branch in the study.
+    """
+
+    column = ""
+
+    def __init__(self, config):
+        self.date, self.end = config["date"], config["end"]
+
+    @abstractmethod
+    def ids(self):
+        """Return the split ids one run fits, oldest first."""
+
+    @abstractmethod
+    def bands(self, frame, split, calendar):
+        """Return the (fit, calibration, evaluation) rows of one split of ``frame``."""
+
+    @abstractmethod
+    def expected(self, frame, ids):
+        """Return the rows the splits ``ids`` evaluate."""
+
+    @abstractmethod
+    def assigned(self, dates):
+        """Return the split id each evaluation date belongs to."""
+
+    @abstractmethod
+    def stage(self, ids):
+        """Return the config keys that make a study fit exactly the splits ``ids``."""
+
+    def calendar(self, frame):
+        """Return the run's date calendar, for grammars that count dates."""
+        return None
+
+    def lock(self, frame):
+        """Refuse rows the grammar forbids reading; the default forbids none."""
+
+
+class _YearPlan(_SplitPlan):
+    """Calendar years: the evaluation year, the year before it as calibration."""
+
+    column = "year"
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.years, self.development_end = config["years"], config["development_end"]
+
+    def ids(self):
+        return list(self.years)
+
+    def bands(self, frame, split, calendar):
+        return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)
+
+    def expected(self, frame, ids):
+        return frame[frame[self.date].str[:4].astype(int).isin(ids)]
+
+    def assigned(self, dates):
+        return dates.str[:4].astype(int)
+
+    def stage(self, ids):
+        return {"years": ids}
+
+
+class _FoldPlan(_SplitPlan):
+    """Count-sized folds from a pinned ``rolling-origin-plan`` table (ADR-0223).
+
+    Each fold evaluates on its validation dates, calibrates on the last
+    ``cal_n`` calendar dates of its train window and fits on the earlier ones;
+    labels are purged with ``kinds_split.label_reaches``. Warm-up rows whose
+    label reaches ``scored_start`` are dropped (ADR-0222's seam), so selection
+    never sees a label that settles inside scored evidence.
+    """
+
+    column = "fold"
+    #: The fold roles ``rolling-origin-plan`` writes; a test pins them to its constants.
+    ROLES = ("warmup", "scored")
+    _SPEC_KEYS = {"path", "sha256", "holdout_start", "cal_n", "roles", "notes"}
+    _EDGES = ("train_start", "train_end", "val_start", "val_end")
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.spec = spec = config["fold_table"]
+        self._check_spec(spec)
+        self.cal_n, self.holdout = spec["cal_n"], spec["holdout_start"]
+        rows = self._read(spec)
+        self._check_folds(rows)
+        self.folds = {row["fold"]: row for row in rows}
+        ids = sorted(self.folds)
+        self.warmup_ids = [i for i in ids if self.folds[i]["role"] == "warmup"]
+        self.scored_ids = [i for i in ids if self.folds[i]["role"] == "scored"]
+        self.scored_start = self.folds[self.scored_ids[0]]["val_start"]
+        self.development_end = max(self.warmup_ids, default=0)
+
+    def _check_spec(self, spec):
+        """Refuse a malformed ``fold_table`` block by name."""
+        if (not isinstance(spec, dict) or set(spec)-self._SPEC_KEYS
+                or (self._SPEC_KEYS-{"notes"})-set(spec)):
+            raise ValueError("invalid fold_table: needs exactly path, sha256, "
+                             "holdout_start, cal_n, roles (and optional notes)")
+        sha, roles, problems = spec["sha256"], spec["roles"], []
+        if not isinstance(spec["path"], str) or not spec["path"]:
+            problems.append("path must be a nonempty string")
+        if not (isinstance(sha, str) and len(sha) == 64
+                and all(ch in "0123456789abcdef" for ch in sha)):
+            problems.append("sha256 must be 64 lowercase hex digits")
+        if date_problem(spec["holdout_start"]):
+            problems.append("holdout_start must be an ISO date")
+        if type(spec["cal_n"]) is not int or spec["cal_n"] < 1:
+            problems.append("cal_n must be an integer >= 1")
+        if (not isinstance(roles, list) or not roles or len(set(roles)) != len(roles)
+                or not set(roles) <= set(self.ROLES)):
+            problems.append(f"roles must be a nonempty list of unique roles from {self.ROLES}")
+        if problems:
+            raise ValueError("invalid fold_table: " + "; ".join(problems))
+
+    @staticmethod
+    def _read(spec):
+        """Return the table's rows, refusing a file that is not the pinned one."""
+        raw = Path(spec["path"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != spec["sha256"]:
+            raise ValueError(f"fold table sha256 mismatch: {spec['path']} is not the pinned file")
+        return [json.loads(line) for line in raw.decode().splitlines() if line]
+
+    def _check_folds(self, rows):
+        """Refuse rows that are not plan folds, reach the holdout or misorder the roles."""
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("fold")) is not int
+                    or row.get("role") not in self.ROLES
+                    or any(date_problem(row.get(edge)) for edge in self._EDGES)
+                    or not row["train_start"] <= row["train_end"] < row["val_start"]
+                    <= row["val_end"]):
+                raise ValueError(f"fold table row is not a rolling-origin-plan fold: {row!r}")
+            if label_reaches(row["val_end"], self.holdout):
+                raise ValueError(f"fold {row['fold']} validates through {row['val_end']}, on or "
+                                 f"after holdout_start {self.holdout}")
+        roles = [row["role"] for row in sorted(rows, key=lambda row: row["fold"])]
+        if (len({row["fold"] for row in rows}) != len(rows) or "scored" not in roles
+                or roles != sorted(roles, key=self.ROLES.index)):
+            raise ValueError("fold table needs unique folds, a scored fold and every "
+                             "warmup fold before it")
+
+    def ids(self):
+        return [i for i in sorted(self.folds) if self.folds[i]["role"] in self.spec["roles"]]
+
+    def calendar(self, frame):
+        return sorted(frame[self.date].unique())
+
+    def _val(self, frame, fold):
+        """Return a fold's evaluation rows, warm-up ones cut at the scored seam."""
+        date = frame[self.date]
+        rows = (date >= fold["val_start"]) & (date <= fold["val_end"])
+        if fold["role"] == "warmup":
+            rows &= ~label_reaches(frame[self.end], self.scored_start)
+        return frame[rows]
+
+    def bands(self, frame, split, calendar):
+        fold = self.folds[split]
+        days = [d for d in calendar if fold["train_start"] <= d <= fold["train_end"]]
+        start = (days[-self.cal_n:] or [fold["train_start"]])[0]
+        date, end = frame[self.date], frame[self.end]
+        train = (date >= fold["train_start"]) & (date <= fold["train_end"])
+        return (frame[train & (date < start) & ~label_reaches(end, start)],
+                frame[train & (date >= start) & ~label_reaches(end, fold["val_start"])],
+                self._val(frame, fold))
+
+    def expected(self, frame, ids):
+        import pandas as pd
+        return pd.concat([self._val(frame, self.folds[i]) for i in ids])
+
+    def assigned(self, dates):
+        import pandas as pd
+        result = pd.Series(0, index=dates.index)
+        for number, fold in self.folds.items():
+            result[(dates >= fold["val_start"]) & (dates <= fold["val_end"])] = number
+        return result
+
+    def stage(self, ids):
+        roles = {self.folds[i]["role"] for i in ids}
+        return {"fold_table": {**self.spec, "roles": [r for r in self.ROLES if r in roles]}}
+
+    def lock(self, frame):
+        for field in (self.date, self.end):
+            late = label_reaches(frame[field], self.holdout)
+            if late.any():
+                raise ValueError(
+                    f"{field} {frame.loc[late, field].min()} is on or after holdout_start "
+                    f"{self.holdout}: the holdout is locked and is never read")
+
+
 class ChronologicalCDFStudy:
     """JSON-driven paired research, with purged training/calibration/year splits.
 
     Parameters
     ----------
     config : dict
-        Fields, features, named estimator imports, years, integration resolutions
-        and output directory. Unknown top-level keys refuse.
+        Fields, features, named estimator imports, integration resolutions and
+        output directory, and ONE split grammar: ``years`` with
+        ``development_end`` (calendar years), or ``fold_table`` (``path``,
+        ``sha256``, ``holdout_start``, ``cal_n``, ``roles``: the pinned
+        ``rolling-origin-plan`` folds of ADR-0223, whose ``roles`` pick the
+        folds this run fits). Unknown top-level keys refuse.
 
     Examples
     --------
@@ -3849,16 +4150,21 @@ class ChronologicalCDFStudy:
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
             "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
-            "wing_metrics", "notes"}
+            "wing_metrics", "fold_table", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
                     "frozen_variants", "promotion_guard", "decision_acceptance",
-                    "wing_metrics"}
-        missing = self.KEYS-optional-set(config)
+                    "wing_metrics", "fold_table"}
+        folds = "fold_table" in config
+        year_keys = {"years", "development_end"}
+        missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
+        if folds and year_keys & set(config):
+            raise ValueError(f"fold_table replaces {sorted(year_keys & set(config))}: "
+                             "declare exactly one of years or fold_table")
         if "wing_metrics" in config and (type(config["wing_metrics"]) is not bool
                                          or (config["wing_metrics"]
                                              and not config.get("decision_context"))):
@@ -3873,7 +4179,8 @@ class ChronologicalCDFStudy:
             if spec["calibrate"]:
                 module, cls = spec["class"].split(":")
                 estimator = getattr(importlib.import_module(module), cls)
-                if getattr(estimator, "consumes_calibration_labels", False):
+                if (getattr(estimator, "consumes_calibration_labels", False)
+                        or spec["params"].get("patience") is not None):
                     raise ValueError("estimator consumes calibration labels; second map refused")
         frozen = config.get("frozen_variants")
         if (frozen is not None
@@ -3923,6 +4230,7 @@ class ChronologicalCDFStudy:
                     or acceptance["max_bias_increase"] < 0):
                 raise ValueError("invalid decision-only acceptance guard")
         self.config = config
+        self.plan = (_FoldPlan if folds else _YearPlan)(config)
 
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
@@ -4041,8 +4349,9 @@ class ChronologicalCDFStudy:
             self._validate_decision_scores(scores)
         output = Path(c["output"])
         cells = [c["group"], c["horizon"]]
-        dev = scores[scores.year <= c["development_end"]]
-        later = scores[scores.year > c["development_end"]]
+        split = self.plan.column
+        dev = scores[scores[split] <= self.plan.development_end]
+        later = scores[scores[split] > self.plan.development_end]
         selection_metric = ("decision_strike_brier"
                             if "decision_strike_brier" in dev else "crps")
         dev_means = dev.groupby(cells+["model", "variant"])[selection_metric].mean().unstack(["model", "variant"])
@@ -4107,14 +4416,14 @@ class ChronologicalCDFStudy:
                                                      and np.isfinite(ratio[model].mean()) else None)})
             if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95",
                               "payoff_quadrature_gap"):
-                annual = picked.groupby([c["group"], "year", "model"])[metric].mean().unstack("model")
+                annual = picked.groupby([c["group"], split, "model"])[metric].mean().unstack("model")
                 annual_ratio = annual.div(annual[baseline], axis=0)
                 for model in c["models"]:
                     row = (100*(1-annual_ratio[model])).rename("skill").reset_index()
                     row["metric"], row["model"] = metric, model
                     n = (picked[picked.model == model].dropna(subset=[metric])
-                         .groupby([c["group"], "year"]).size().rename("n").reset_index())
-                    yearly_grids.append(row.merge(n, on=[c["group"], "year"],
+                         .groupby([c["group"], split]).size().rename("n").reset_index())
+                    yearly_grids.append(row.merge(n, on=[c["group"], split],
                                                   validate="one_to_one"))
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
@@ -4241,7 +4550,7 @@ class ChronologicalCDFStudy:
         (output/"comparison.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
         pd.concat(grids, ignore_index=True).to_csv(output/"skill_by_exact_day.csv", index=False)
         pd.concat(yearly_grids, ignore_index=True).to_csv(
-            output/"skill_by_index_year.csv", index=False)
+            output/f"skill_by_index_{split}.csv", index=False)
         picked.groupby([c["group"], "model"])[metrics].mean().to_csv(output/"metrics_by_index.csv")
         later.groupby(["model", "variant"])[metrics].mean().to_csv(output/"raw_vs_calibrated.csv")
         return summary
@@ -4327,7 +4636,7 @@ class ChronologicalCDFStudy:
         return result, q
 
     def run(self, frame, diagnostic=None):
-        """Fit paired annual folds and retain row scores, counts and curves.
+        """Fit paired splits (years or fold-table folds); retain scores, counts, curves.
 
         Parameters
         ----------
@@ -4344,7 +4653,8 @@ class ChronologicalCDFStudy:
         Raises
         ------
         ValueError
-            For missing/empty bands or invalid labels/reference scales.
+            For missing/empty bands or invalid labels/reference scales, or, with a
+            fold table, a row dated or settling on or after ``holdout_start``.
         FileExistsError
             If the output directory exists; no research evidence is overwritten.
         """
@@ -4354,6 +4664,7 @@ class ChronologicalCDFStudy:
 
         c = self.config
         _validate_temporal_frame(frame, c["date"], c["end"])
+        self.plan.lock(frame)
         output = Path(c["output"])
         output.mkdir(parents=True, exist_ok=False)
         from dskit.pipeline.base import config_hash
@@ -4384,16 +4695,17 @@ class ChronologicalCDFStudy:
             raise ValueError("missing or duplicate forecast identity")
         results, counts, pooled_cache = [], [], {}
         equivalence = {}
+        calendar = self.plan.calendar(frame)
         for group, group_frame in frame.groupby(c["group"]):
-            for year in c["years"]:
-                fit, cal, val = self._split_validated(group_frame, year, c["date"], c["end"])
+            for split in self.plan.ids():
+                fit, cal, val = self.plan.bands(group_frame, split, calendar)
                 if min(len(fit), len(cal), len(val)) < 1:
-                    raise ValueError(f"empty band: {group} {year}")
+                    raise ValueError(f"empty band: {group} {split}")
                 if c.get("wing_metrics"):
                     # Refuse malformed wing intervals before any model is fitted.
                     for band in (fit, cal, val):
                         DecisionRegionScores(self._decision_context_rows(band)).segment_arrays()
-                count = {"group": group, "year": year}
+                count = {"group": group, self.plan.column: split}
                 for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
                     count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
                                    "ends": band[c["end"]].nunique(),
@@ -4405,12 +4717,12 @@ class ChronologicalCDFStudy:
                                      key=lambda item: item[0] != c["reference_model"])
                 for name, spec in model_items:
                     start = time.monotonic()
-                    key = (year, name, json.dumps(spec, sort_keys=True))
+                    key = (split, name, json.dumps(spec, sort_keys=True))
                     pooled = spec.get("pooled", False)
                     new_fit = not (pooled and key in pooled_cache)
                     if new_fit:
-                        model_fit, model_cal, _ = self._split_validated(
-                            frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
+                        model_fit, model_cal, _ = self.plan.bands(
+                            frame, split, calendar) if pooled else (fit, cal, val)
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
                         for band in (model_fit, model_cal, val):
@@ -4432,7 +4744,7 @@ class ChronologicalCDFStudy:
                                 raise ValueError("equivalence model does not expose fitted state")
                             state = model._equivalence_state()
                             population = "pooled" if pooled else str(group)
-                            equivalence_key = (int(year), population, label)
+                            equivalence_key = (int(split), population, label)
                             record = equivalence.setdefault(
                                 equivalence_key, {"digest": state, "members": []})
                             if record["digest"] != state:
@@ -4473,7 +4785,7 @@ class ChronologicalCDFStudy:
                         columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
                                                       c["group"], c["date"], c["end"], c["horizon"]]))
                         part = val[columns].copy()
-                        part["year"], part["model"], part["variant"] = year, name, variant
+                        part[self.plan.column], part["model"], part["variant"] = split, name, variant
                         for metric, values in scored.items():
                             part[metric] = values
                         part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
@@ -4490,7 +4802,7 @@ class ChronologicalCDFStudy:
                         results.append(part)
                         # Retain both exact grids/maps/mixtures and quadrature draws.
                         # This is numerical research evidence, not a serving artifact.
-                        if year == max(c["years"]):
+                        if split == max(self.plan.ids()):
                             np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
                                                 draws=draws.astype("float32"),
                                                 reference=val[c["reference"]].to_numpy(),
@@ -4506,15 +4818,15 @@ class ChronologicalCDFStudy:
                             model, imputer, reference_model, reference_imputer, fit, cal, val)
                     elif isinstance(model, MixtureMLPCDF):
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
-                    print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
+                    print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
-        evidence = [{"year": year, "population": population, "label": label,
+        evidence = [{self.plan.column: split, "population": population, "label": label,
                      "digest": record["digest"],
                      "members": sorted(set(record["members"])),
                      "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
-                    for (year, population, label), record in sorted(equivalence.items())]
+                    for (split, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return pd.concat(results, ignore_index=True)
 
@@ -4543,6 +4855,8 @@ class CDFHyperparameterStudy:
     _COMMON_KEYS = {"output", "development_years", "label_cutoff", "max_candidates",
                     "candidates", "task_features", "resolutions", "expected_cells",
                     "search_partitions", "evaluation_partitions"}
+    #: The year-grammar keys a fold table derives (ADR-0223), refused beside one.
+    _YEAR_KEYS = {"development_years", "label_cutoff", "evaluation_partitions"}
 
     def __init__(self, config):
         import copy
@@ -4554,10 +4868,14 @@ class CDFHyperparameterStudy:
             raise ValueError("unknown HPO document keys")
         self.base, self.experiment = self.config["study"], self.config["experiment"]
         c, e = self.base, self.experiment
-        ChronologicalCDFStudy(c)
+        self.plan = ChronologicalCDFStudy(c).plan
+        folds = "fold_table" in c
+        if folds and self._YEAR_KEYS & set(e):
+            raise ValueError(f"{sorted(self._YEAR_KEYS & set(e))} are derived from the fold table")
         self.grouped = "candidate_groups" in e
-        required = self._COMMON_KEYS | ({"candidate_groups"} if self.grouped else
-                                        {"final_seeds", "screen_seed", "candidate_labels", "axes"})
+        required = ((self._COMMON_KEYS - (self._YEAR_KEYS if folds else set()))
+                    | ({"candidate_groups"} if self.grouped else
+                       {"final_seeds", "screen_seed", "candidate_labels", "axes"}))
         if set(e)-required-{"notes", "public_probes", "selection_guard", "selection_metric"} or required-set(e):
             raise ValueError("unknown or missing experiment keys")
         metric = e.get("selection_metric", "crps")
@@ -4666,13 +4984,24 @@ class CDFHyperparameterStudy:
                 or any(type(n) is not int or n < 1 for n in r["audit_samples"])
                 or ("diagnostic" in config and r["integration_points"] != config["diagnostic"]["integration_points"])):
             raise ValueError("invalid or mixed scoring resolution")
-        dev = e["development_years"]
-        years = [y for values in e["evaluation_partitions"].values() for y in values]
-        if (not dev or len(set(dev)) != len(dev) or any(type(y) is not int for y in years+dev)
-                or max(dev) != c["development_end"] or e["label_cutoff"] != f"{max(dev)+1}-01-01"
-                or e["evaluation_partitions"].get("development") != dev
-                or len(years) != len(set(years)) or set(years) != set(c["years"])):
-            raise ValueError("development cutoff or evaluation year partition mismatch")
+        if folds:
+            plan = self.plan
+            if not plan.warmup_ids or sorted(c["fold_table"]["roles"]) != sorted(plan.ROLES):
+                raise ValueError("selection needs warmup folds and a fold_table naming both roles")
+            self.development, self.later, self.cutoff = (
+                plan.warmup_ids, plan.scored_ids, plan.scored_start)
+            self.partitions = {"development": self.development, "later": self.later}
+        else:
+            dev = e["development_years"]
+            years = [y for values in e["evaluation_partitions"].values() for y in values]
+            if (not dev or len(set(dev)) != len(dev) or any(type(y) is not int for y in years+dev)
+                    or max(dev) != c["development_end"] or e["label_cutoff"] != f"{max(dev)+1}-01-01"
+                    or e["evaluation_partitions"].get("development") != dev
+                    or len(years) != len(set(years)) or set(years) != set(c["years"])):
+                raise ValueError("development cutoff or evaluation year partition mismatch")
+            self.development, self.cutoff = dev, e["label_cutoff"]
+            self.later = [y for y in c["years"] if y > c["development_end"]]
+            self.partitions = e["evaluation_partitions"]
         if set(e["expected_cells"]) != {"development", "evaluation"}:
             raise ValueError("expected cells must declare development and evaluation")
         self.output = Path(e["output"])
@@ -4753,8 +5082,8 @@ class CDFHyperparameterStudy:
         if actual != expected:
             raise ValueError(f"{which} cell set mismatch: missing {expected-actual}, extra {actual-expected}")
 
-    def _expected(self, frame, years):
-        return frame[frame[self.base["date"]].str[:4].astype(int).isin(years)]
+    def _expected(self, frame, ids):
+        return self.plan.expected(frame, ids)
 
     def _check_scores(self, scores, expected, models):
         import numpy as np
@@ -4780,7 +5109,8 @@ class CDFHyperparameterStudy:
             for variant in ("raw", "calibrated"):
                 rows = scores[(scores.model == name) & (scores.variant == variant)]
                 got = rows[columns].sort_values(c["identity"]).reset_index(drop=True)
-                if not got.equals(want) or not (rows.year == rows[c["date"]].str[:4].astype(int)).all():
+                if (not got.equals(want)
+                        or not (rows[self.plan.column] == self.plan.assigned(rows[c["date"]])).all()):
                     raise ValueError("unpaired or substituted score identities/years")
 
     def _rank(self, scores):
@@ -4862,7 +5192,7 @@ class CDFHyperparameterStudy:
         import copy
         import pandas as pd
         e, c = self.experiment, self.base
-        expected = self._expected(frame, e["development_years"])
+        expected = self._expected(frame, self.development)
         all_scores, controls, screen_specs, selected, variants = [], None, {}, {}, {}
         rankings, guard_evidence = {}, {}
         for partition, names in e["search_partitions"].items():
@@ -5004,6 +5334,7 @@ class CDFHyperparameterStudy:
         if stage not in ("search", "select", "evaluate", "report") or not provenance:
             raise ValueError("invalid stage or missing provenance")
         _validate_temporal_frame(frame, c["date"], c["end"])
+        self.plan.lock(frame)
         if frame.duplicated(c["identity"]).any() or frame[c["identity"]].isna().any().any():
             raise ValueError("missing or duplicate panel identities")
         mapping = e["task_features"]
@@ -5012,10 +5343,9 @@ class CDFHyperparameterStudy:
         for group, feature in mapping.items():
             if not (frame[feature] == (frame[c["group"]] == group).astype(int)).all():
                 raise ValueError("raw one-hot task features disagree with symbol mapping")
-        dev = frame[frame[c["end"]] < e["label_cutoff"]]
-        self._check_cells(self._expected(dev, e["development_years"]), "development")
-        later_years = [y for y in c["years"] if y > c["development_end"]]
-        self._check_cells(self._expected(frame, later_years), "evaluation")
+        dev = frame[~label_reaches(frame[c["end"]], self.cutoff)]
+        self._check_cells(self._expected(dev, self.development), "development")
+        self._check_cells(self._expected(frame, self.later), "evaluation")
         identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
                     "provenance": self._digest(provenance), "inventory": self.inventory.digest,
                     "implementation": self._file_hash(__file__),
@@ -5029,7 +5359,7 @@ class CDFHyperparameterStudy:
             if partition not in e["search_partitions"]:
                 raise ValueError("unknown search partition")
             models = {**c["models"], **{n: e["candidates"][n] for n in e["search_partitions"][partition]}}
-            years, panel, samples = e["development_years"], dev, e["resolutions"]["screen_samples"]
+            years, panel, samples = self.development, dev, e["resolutions"]["screen_samples"]
             selection_hash = None
         else:
             selection, selection_hash = self._selection(identity)
@@ -5038,7 +5368,7 @@ class CDFHyperparameterStudy:
                 if partition is not None:
                     raise ValueError("report does not accept partition")
                 parts, paths = [], []
-                for name, years in e["evaluation_partitions"].items():
+                for name, years in self.partitions.items():
                     path = self.output/"evaluate"/name
                     record = self._load(path, identity, "evaluate", name)
                     if record["selection_hash"] != selection_hash:
@@ -5061,13 +5391,14 @@ class CDFHyperparameterStudy:
                 })
                 self._complete(path, identity, stage, None, selection_hash=selection_hash)
                 return result
-            if partition not in e["evaluation_partitions"]:
+            if partition not in self.partitions:
                 raise ValueError("unknown evaluation partition")
-            years = e["evaluation_partitions"][partition]
+            years = self.partitions[partition]
             panel = dev if partition == "development" else frame
             samples = e["resolutions"]["final_samples"]
         path = self.output/stage/partition
-        study = ChronologicalCDFStudy({**c, "output": str(path), "years": years, "samples": samples, "models": models})
+        study = ChronologicalCDFStudy({**c, "output": str(path), **self.plan.stage(years),
+                                       "samples": samples, "models": models})
         scores = study.run(panel, diagnostic)
         self._check_scores(scores, self._expected(panel, years), models)
         self._write(path/"data_provenance.json", provenance)
