@@ -29106,12 +29106,13 @@ holidays, any run.
 
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
-**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 5;
-awaiting owner approval. Base: 46f3574. Owner question 1 resolved (all
+**Status:** accepted 2026-10-01 (owner chose option (a): a thin,
+project-specific child wrapper; clean Sonnet skeptic review at 142aa76 after six
+rounds; revised 2026-10-02). Base: 46f3574. Owner question 1 resolved (all
 current-snapshot OI withheld; item 7). Owner ruling 2026-10-02:
 attach-by-identity graduates to dskit `kinds_flow.py`; the child keeps the
-reader only. No Python until this ADR is approved; the JSON pipeline (Phase A)
-is not gated, the code (Phase B) is. AMZN is parked (owner ruling 2026-10-02):
+reader only. Phase A (JSON pipeline) and Phase B (code) may now be built.
+AMZN is parked (owner ruling 2026-10-02):
 out of scope until its close-source ADR (ADR-0216) lands; this design serves
 SPY, QQQ and IWM.
 
