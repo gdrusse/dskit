@@ -29106,8 +29106,9 @@ holidays, any run.
 
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
-**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 3;
-awaiting owner approval. Base: 46f3574. Owner ruling 2026-10-02:
+**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 4;
+awaiting owner approval. Base: 46f3574. Owner question 1 resolved (all
+current-snapshot OI withheld; item 7). Owner ruling 2026-10-02:
 attach-by-identity graduates to dskit `kinds_flow.py`; the child keeps the
 reader only. No Python until this ADR is approved; the JSON pipeline (Phase A)
 is not gated, the code (Phase B) is. AMZN is parked (owner ruling 2026-10-02):
@@ -29188,15 +29189,17 @@ after the step-1/2 rebuild.
    hashes it).
 3. **Attach params** (default-deny): `identity` (non-empty field list);
    `agree_fields` (non-empty list); `max_absent_fraction` (float in [0, 1], no
-   default); `column_prefix` (columns `<prefix><family>_status`, `_reasons`);
+   default); `column_prefix` (columns `<prefix><entry>_reasons` for every
+   family and carried entry, `<prefix><family>_status` for families);
    `families` = `{family: {fields, withheld_fields, clock_note}}`; optional
-   `carried` = `{family: {fields, clock_note}}` for fields already on the
-   stream (density, item 6; the OI subsets, item 7). `fields` is the family's
-   contract columns plus those its quality checks name (`market_*_age_days`,
-   `market_*_missing`); `withheld_fields` is `{field: reason}` (may be `{}`), a
-   subset of `fields`; `clock_note` is a non-empty string, hashed on purpose (a
-   changed clock claim is a changed run). A field in two families, or a family
-   and `carried`, refuses.
+   `carried` = `{entry: {fields, withheld_fields, clock_note}}` for fields
+   already on the stream (density, item 6; the OI-derived columns, item 7).
+   `fields` is the family's contract columns plus those its quality checks name
+   (`market_*_age_days`, `market_*_missing`); `withheld_fields` is
+   `{field: reason}` (may be `{}`), a subset of `fields`, on `carried` as on
+   `families`; `clock_note` is a non-empty string, hashed on purpose (a changed
+   clock claim is a changed run). A field in two entries, whether `families` or
+   `carried`, refuses.
 4. **Attach run. Refuses:** `table` columns other than exactly `identity` +
    `agree_fields` + every `fields` (withheld too), a missing and an unclaimed
    column alike, which pins the reader's `columns` to this contract at run time;
@@ -29206,17 +29209,22 @@ after the step-1/2 rebuild.
    a lossless round trip disagrees); absent identities above
    `max_absent_fraction` (of stream rows); a `carried` field missing from a row
    (null is allowed). Then attach every family's `fields` in stream order, every
-   key on every row, NaN/inf as null; a withheld field's table value is
-   discarded and emitted null, never omitted. Per family, status is `computed`
-   or `identity_absent_from_table`; `_reasons` is a JSON object string
-   `{field: reason}` over the row's null fields (the withheld reason, else the
-   absent literal, else `not_computable`), `{}` when none.
-5. **Outputs.** `records`; `summary` per family and carried family: rows,
-   computed/absent (families), per field non-null, null, min, max, mean (numbers
-   only), `withheld_fields`, `clock_note`; `provenance`: `input_sha256` over
-   canonical identity + `agree_fields` values as received, every `clock_note`
-   and `withheld_fields`. The reader's `provenance` is its own port. Both are
-   run-local node outputs; the rows carry status and reasons.
+   key on every row, NaN/inf as null. A withheld field's source value (the
+   table's for `families`, the stream's for `carried`) is discarded and emitted
+   null, never omitted. For `carried` that is an explicit overwrite of a
+   non-null stream value, not the collision refusal above (a carried field is on
+   the stream by declaration). Per family, status is `computed` or
+   `identity_absent_from_table`; every family and every carried entry also gets
+   `_reasons`, a JSON object string `{field: reason}` over the row's null fields
+   (the withheld reason, else the absent literal, else `not_computable`), `{}`
+   when none: one loop for both.
+5. **Outputs.** `records`; `summary` per family and carried entry: rows,
+   computed/absent (families), per field non-null, null, `discarded` (withheld
+   fields: rows whose source value was non-null and was nulled), min, max, mean
+   (numbers only), `withheld_fields`, `clock_note`; `provenance`: `input_sha256`
+   over canonical identity + `agree_fields` values as received, every
+   `clock_note` and `withheld_fields`. The reader's `provenance` is its own
+   port. Both are run-local node outputs; the rows carry status and reasons.
 6. **Expiry density** (owner-required; existing nodes plus a `carried` entry).
    `expiry_density` is the number of distinct `expiry` values in the source
    panel for the row's symbol and `quote_date` that meet step 1's settled rule
@@ -29239,25 +29247,35 @@ after the step-1/2 rebuild.
    not consume it; adding one is a step-2 contract edit, untouched here.
 7. **Clock rules** (pipeline and `family_contracts`). VRP: entry-chain ATM IV
    against backward 22-session realized vol, planned sessions. OHLC: entry bar
-   plus backward windows; after-close estimand only. Positioning: entry-snapshot
-   volume/spread and prior-observation OI computed; current-snapshot OI x greek
-   (`chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`) **withheld**: null on every
-   row, reason `oi_publication_clock_unverified` (config data, not a code
-   vocabulary), until an audit shows archive `open_interest` excludes the entry
-   day's trades; lifting it is a JSON edit citing the audit. The same entry
-   snapshot's OI feeds 11 fields of step 2's other families, which pass through
-   the stream untouched: `liquidity` `chain_log_put_call_oi` and
-   `chain_log_open_interest` (surface columns, `cdf_study.py:2095-2099`), and
-   `chain_nodes` `chain_node_00..08_log_oi` (`chosen.open_interest`, `:1781`).
-   They are `carried` as `liquidity_oi` and `chain_nodes_oi` (OI subsets of
-   those families) with `clock_note` "entry-snapshot OI; publication clock
-   unverified, same audit as positioning", echoed in `summary` and `provenance`
-   (item 5). No repo document establishes archive OI timing (grep, 2026-10-02).
-   They stay attached because withholding would read `no` on every date for all
-   of `liquidity` and `chain_nodes` on an unverified premise; if the audit finds
-   entry-day trades in OI, these 11 reach step 4 selection until withheld, and a
-   step-2 `yes` for either family does not certify OI timing (question 1).
-   Expanded Cboe: last close on a date strictly before entry
+   plus backward windows; after-close estimand only. **Open interest** (owner
+   question 1, resolved: option b): no repo document establishes archive OI
+   timing (grep, 2026-10-02), so every field derived from the entry snapshot's
+   `open_interest` is **withheld**: null on every row, reason
+   `oi_publication_clock_unverified` (config data, not a code vocabulary), until
+   an audit shows archive `open_interest` excludes the entry day's trades;
+   lifting it is a JSON edit citing the audit. Positioning's entry-snapshot
+   volume/spread and prior-observation OI (`chain_log_lag_open_interest`,
+   `chain_log_lag_oi_change`: an earlier snapshot's OI) stay computed. Eighteen
+   fields are withheld, in three places. (1) `positioning_changes`
+   `withheld_fields`: `chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`. (2) `carried`
+   from the prepared panel, which passes through the stream untouched:
+   `liquidity_oi` (`chain_log_put_call_oi`, `chain_log_open_interest`,
+   `cdf_study.py:2097-2099`) and `chain_nodes_oi` (`chain_node_00..08_log_oi`,
+   `chosen.open_interest`, `:1781`). (3) `carried` `oi_panel_columns`: four
+   panel columns in no step-2 contract that still hold the same OI on that
+   stream, so withholding only the contract fields would leave
+   `chain_log_open_interest` recoverable, namely raw `chain_open_interest` and
+   `chain_put_call_oi` (`:2066-2075`), `chain_has_put_call_oi` (`:2102`) and
+   `chain_liquidity_asymmetry`, the tanh of `chain_log_put_call_oi` (`:2117`).
+   Elsewhere in `RawChainFeatureBuilder` OI is only a validity gate (finite and
+   non-negative, `_usable_quotes`, `:1727`), never a magnitude. Every
+   `clock_note` names the audit (OI entries: "entry-snapshot OI; publication
+   clock unverified, one audit for positioning, liquidity and chain nodes";
+   positioning's also states the prior-observation rule), echoed in `summary`
+   and `provenance` (item 5). Step-2 consequence: `positioning_changes`,
+   `liquidity` and `chain_nodes` each hold a withheld field, so they read `no`
+   on every date and every combination containing one counts 0 dates until the
+   audit (question 2). Expanded Cboe: last close on a date strictly before entry
    (`allow_exact_matches=False`, `cdf_study.py:2371`), never the entry-date
    close; age is entry date minus that close's date, at least 1 and at most the
    data block's `max_age_days` (7, `:2378`), else null with `_missing`; only the
@@ -29269,8 +29287,13 @@ after the step-1/2 rebuild.
 **Pins.** *Attach kind* (`tests/pipeline`): registration, `__all__`, `_PARAMS`,
 every refusal in item 4 (unclaimed column included), values equal `table`,
 stream order kept, a withheld field null on every row with its reason in
-`_reasons` and `summary`, `summary`/`provenance` echo each `clock_note` and
-`withheld_fields` as declared, carried audit, `input_sha256` moves with any
+`_reasons` and `summary`, for `families` (a non-null table value) and for
+`carried` (a non-null stream value, which is the overwrite path and not the
+collision refusal: the same field declared in `families` still refuses),
+`discarded` counting exactly the rows nulled over a non-null value, a
+`carried` entry gets `_reasons` and no `_status`, `summary`/`provenance` echo
+each `clock_note` and `withheld_fields` as declared, carried audit (a missing
+carried key refuses, a null is allowed), `input_sha256` moves with any
 `agree_fields` value, a fixture differing on one identity's `agree_fields`
 refuses, so does an absent fraction over the bound; status and `not_computable`
 literals equal the class constants; purity gate. The kind count in
@@ -29297,27 +29320,37 @@ of the `market_*` entries feeding the family (all equal) and step 2's
 `market_*_age_days <=` bounds. *Config* (`tests/test_configs.py`): reader params
 equal the tail-data `data` block key by key over the node's keys; attach
 `families` `fields` equal step 2's same-named `family_contracts`; the shipped
-JSON withholds exactly the three OI x greek fields with that reason and carries
-`liquidity_oi` (2 fields) and `chain_nodes_oi` (`chain_node_00..08_log_oi`),
-each `fields` a subset of step 2's same-named contract; *OI completeness:* every
-field of a test-local, independently restated tuple of the contract fields
-derived from `open_interest` (the three above, the two lagged OI fields, the two
-liquidity, the nine node fields) is either withheld or in a `families`/`carried`
-entry whose `clock_note` names OI, and a contract field with an `oi` or
-`open_interest` name token outside the tuple fails; its `agree_fields` include
-`terminal_return`, `actual_calendar_dte`, `chain_atm_iv`, `rv_22` and `rn_q_*`;
-the pipeline validates and plans. *Density:* a date with 3
-in-horizon and 1 out-of-horizon expiries, plus another symbol's rows, gives 3 on
-every cohort row of that symbol; cohort-first gives 1 and fails the pin (`cohort`
-not upstream of `density`); expiries with planned DTE 13 and 14, both actual 13
-(selected 13), each get 1, and a date with only the planned-14 expiry gets null;
+JSON's `positioning_changes` withholds exactly the three OI x greek fields, and
+`carried` holds `liquidity_oi` (2 fields), `chain_nodes_oi`
+(`chain_node_00..08_log_oi`; both `fields` a subset of step 2's same-named
+contract) and `oi_panel_columns` (the four), each `withheld_fields` covering all
+its `fields`, every reason `oi_publication_clock_unverified`; *OI completeness:*
+two test-local tuples, restated independently of the JSON. The 18 withheld (the
+three, the two liquidity, the nine node fields, the four panel columns) must
+each be withheld in the shipped JSON, and the two prior-observation fields
+(`chain_log_lag_open_interest`, `chain_log_lag_oi_change`) must be computed, in
+`positioning_changes` `fields`, not withheld. A fixture stream and reader table
+where all 18 are non-null, run through the shipped attach params, leave all 18
+null on every output row and none non-null anywhere. A column of step 2's
+contracts, of the fixture `read()` frame or of the fixture stream whose name has
+an `oi` token or an `open_interest` substring and is in neither tuple fails (the
+tuple, not the name, covers `chain_liquidity_asymmetry`, which has neither); its
+`agree_fields` include `terminal_return`, `actual_calendar_dte`, `chain_atm_iv`,
+`rv_22` and `rn_q_*`; the pipeline validates and plans.
+*Density:* a date with 3 in-horizon and 1 out-of-horizon expiries, plus another
+symbol's rows, gives 3 on every cohort row of that symbol; cohort-first gives 1
+and fails the pin (`cohort` not upstream of `density`); expiries with planned DTE
+13 and 14, both actual 13 (selected 13), each get 1, and a date with only the
+planned-14 expiry gets null;
 `horizon_rows` `where` equals step 1's cohort `where` except its upper bound;
 step 1's upper bound is at most the reader's `max_dte`. **Handoff:** a fixture
 panel written by the pipeline (nulls and reasons included) is onboarded through
 `source-feature-panel.json` and read with step 2's committed `source.params`,
 only `root` replaced: every identity returns, nulls stay null, no `quote_date_ms`
 in the FE rows, and step 2's `available_*` derive reads `no` for a family with a
-null field; writer path and stream agree with the source config. **Touched.**
+null field, in particular `positioning_changes`, `liquidity` and `chain_nodes` on
+every row (each holds a withheld field); writer path and stream agree with the
+source config. **Touched.**
 `dskit/pipeline/kinds_flow.py`, the pipeline README/CLAUDE kind lists,
 `tests/pipeline/test_kinds_flow.py`, `test_toolkit_conformance.py`;
 `index_options/nodes.py`, `cdf_study.py` (`provenance()` only), the child's
@@ -29326,30 +29359,35 @@ runbook, the pipeline JSON, `configs/source-feature-panel.json`.
 
 **Rejected.** The whole mechanism as one child class (breaks the graduation
 rule; a second consumer is foreseeable; the owner rejected the waiver
-alternative, 2026-10-02). Withholding all 14 current-snapshot OI fields by
-default (zeroes two step-2 families on an unverified premise; question 1).
-Composite keys in `keyby`/`join` (ADR-0086; one `keyby` and port per column is
-dozens of nodes and no audit). Graduating the formulas (re-implements tested
-code, byte-parity risk: only the plumbing graduates). A panel-only `cdf_study`
-CLI stage (computation outside a pipeline). One reader per family (a `read()`
-and a `data` block each). Pass-through columns from `read()` (FE becomes a
+alternative, 2026-10-02). A drop or projection param on the attach kind for
+the OI panel columns (a second mechanism beside a withheld `carried` entry,
+which already nulls with a reason, counts and echoes it). Composite keys in
+`keyby`/`join` (ADR-0086; one `keyby` and port per column is dozens of nodes and
+no audit). Graduating the formulas (re-implements tested code, byte-parity
+risk: only the plumbing graduates). A panel-only `cdf_study` CLI stage
+(computation outside a pipeline). One reader per family (a `read()` and a `data`
+block each). Pass-through columns from `read()` (FE becomes a
 second panel builder and step 1's rows stop passing through). Withhold reasons
 as code constants (a new audit would edit code). Density counted on the cohort
 (constant 1), by actual DTE (label information), or called plainly entry-known
 (panel membership needs an observed settlement path). **Non-goals:** formula
 changes, macro, 21/41 quantiles, AMZN (parked), training, selection.
 
-**Owner question 1.** Current-snapshot OI has 14 fields. (a) The three OI x
-greek withheld as null, the other 11 carried with the unverified-clock note
-(proposed: positioning's contract already requires the OI audit, liquidity's and
-chain_nodes' do not). (b) All 14 withheld: `carried` takes the same
-`withheld_fields` as `families` (the same loop, a small Phase B addition), and
-`liquidity` and `chain_nodes` read `no` on every date until the audit, unless
-split as in question 2. (c) All 14 attached labelled.
-**Owner question 2.** Positioning at step 2: (a) split into `positioning_verified`
-(5 fields) and `positioning_oi_exposure` (the 3 withheld) in both FE and step 2,
-so the trio cannot zero the 5 verifiable fields (14 families, 16,384
-combinations per ticker; recommended; edits the concurrent step-2 contract,
-untouched here), or (b) one `positioning_changes` family that reads `no` on
-every date until the audit? Phase A ships (b), which matches step 2 today; (a)
-is a JSON-only change on both sides.
+**Owner question 1 (resolved 2026-10-02).** All current-snapshot OI withheld,
+option (b): the owner's standing FE rule (a field whose entry-time availability
+cannot be established is null with a reason), applied by the orchestrator; the
+owner may later override to (a) (the three OI x greek withheld, the 11 other
+contract fields attached labelled) or (c) (all attached labelled). An override
+is a JSON edit of `withheld_fields` (on the `carried` entries for (a), also on
+`positioning_changes` for (c)), no code.
+**Owner question 2.** Step 2 families that hold a withheld OI field read `no` on
+every date until the audit, zeroing every combination that contains them:
+`positioning_changes` (5 of 8 fields verifiable), `liquidity` (3 of 5),
+`chain_nodes` (36 of 45). (a) Leave them whole (Phase A ships this, as step 2
+is today: 13 families, 8,192 combinations per ticker). (b) Split positioning
+only into `positioning_verified` and `positioning_oi_exposure` (14 families,
+16,384 combinations). (c) Split all three the same way (16 families, 65,536
+combinations; recommended: the same reason applies to each). A split is
+JSON-only on both sides (the FE `families`/`carried` entries and step 2's
+`family_contracts`; the step-2 edit belongs to the concurrent lane, untouched
+here).
