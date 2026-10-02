@@ -781,7 +781,7 @@ class AlpacaOptionFetchConnector(Connector):
                 "notes": "Earliest ISO date (inclusive) for contract expiration.",
             },
             "end": {
-                "notes": "Optional EXCLUSIVE ISO upper bound on contract expiration.",
+                "notes": "Optional INCLUSIVE ISO upper bound on contract expiration.",
             },
             "dte_min": {
                 "notes": "Fewest days-to-expiry a bar is fetched for; default 30.",
@@ -852,10 +852,7 @@ class AlpacaOptionFetchConnector(Connector):
         if not isinstance(status, str) or not status:
             errors.append("config.status must be a non-empty string")
         timeframe = config.get("timeframe", [1, "Day"])
-        if not isinstance(timeframe, (list, tuple)) or len(timeframe) != 2 \
-                or not isinstance(timeframe[0], int) or timeframe[0] < 1 \
-                or not isinstance(timeframe[1], str):
-            errors.append("config.timeframe must be an [int, unit] pair")
+        errors.extend(_timeframe_problems(timeframe))
         max_symbols = config.get("max_symbols_per_request",
                                  _DEFAULT_MAX_SYMBOLS_PER_REQUEST)
         if (isinstance(max_symbols, bool) or not isinstance(max_symbols, int)
@@ -1028,7 +1025,7 @@ class AlpacaOptionFetchConnector(Connector):
                     expiration_date_lte=knobs["end"],
                     limit=1000, page_token=page_token)
                 response = client.get_option_contracts(request)
-                for contract in response.option_contracts:
+                for contract in response.option_contracts or []:
                     item = AlpacaOptionArchiveConnector._identity(contract.symbol)
                     size = float(contract.size)
                     if (size != float(knobs["multiplier"])
@@ -1038,10 +1035,10 @@ class AlpacaOptionFetchConnector(Connector):
                             or item["strike"] != float(contract.strike_price)):
                         continue
                     item.update(symbol=contract.underlying_symbol,
-                                multiplier=None,
+                                multiplier=size,
                                 contract_size=size,
                                 style=contract.style,
-                                contract_terms_status="unverified_contract_terms",
+                                contract_terms_status="metadata_present",
                                 effective_at=datetime.now(timezone.utc).isoformat())
                     result[item["contract"]] = item
                 page_token = response.next_page_token
@@ -1136,24 +1133,30 @@ class AlpacaOptionFetchConnector(Connector):
                 snap = snapshots.get(contract)
                 if snap is None:
                     continue
-                latest = snap.latest_quote or snap.latest_trade
-                if latest is None:
+                quote = snap.latest_quote
+                if quote is None:
                     continue
                 base = contracts.get(contract) or \
                     AlpacaOptionArchiveConnector._identity(contract)
-                stamp = latest.timestamp.astimezone(timezone.utc)
+                stamp = quote.timestamp.astimezone(timezone.utc)
+                number = AlpacaOptionArchiveConnector._number
                 row = dict(base)
                 row.update(effective_at=stamp.isoformat(),
-                           quote_date=stamp.date().isoformat(),
+                           source_timestamp=stamp.isoformat(),
                            quote_timestamp=stamp.isoformat(),
-                           price_basis="indicative_quote",
-                           bid=latest.bid_price if hasattr(latest, "bid_price") else None,
-                           ask=latest.ask_price if hasattr(latest, "ask_price") else None,
-                           bid_size=latest.bid_size if hasattr(latest, "bid_size") else None,
-                           ask_size=latest.ask_size if hasattr(latest, "ask_size") else None,
-                           open=None, high=None, low=None, close=None, volume=None,
-                           trade_count=None, vwap=None, mark=None,
-                           observation_reasons=[])
+                           quote_date=stamp.date().isoformat(),
+                           price_basis="indicative_quote", timestamp_basis="quote_time",
+                           bid=number(quote.bid_price),
+                           ask=number(quote.ask_price),
+                           bid_size=number(quote.bid_size),
+                           ask_size=number(quote.ask_size),
+                           implied_volatility=number(snap.implied_volatility),
+                           open_interest=None, observation_reasons=[])
+                bid, ask = row["bid"], row["ask"]
+                valid = bid is not None and ask is not None and 0 <= bid <= ask and ask > 0
+                row["mark"] = (bid + ask) / 2 if valid else None
+                if not valid:
+                    row["observation_reasons"].append("invalid_quote")
                 yield {
                     "protocol": PROTOCOL, "type": "RECORD",
                     "stream": OPTION_SNAPSHOT_STREAM,

@@ -387,8 +387,8 @@ def test_option_fetch_emits_contracts_and_bars_without_network(monkeypatch):
     assert contracts[0]["data"]["expiry"] == "2024-02-02"
     assert contracts[0]["data"]["style"] == "american"
     assert contracts[0]["data"]["contract_size"] == 100.0
-    assert contracts[0]["data"]["multiplier"] is None
-    assert contracts[0]["data"]["contract_terms_status"] == "unverified_contract_terms"
+    assert contracts[0]["data"]["multiplier"] == 100.0
+    assert contracts[0]["data"]["contract_terms_status"] == "metadata_present"
     assert len(bars) == 1
     assert bars[0]["data"]["mark"] == 125.5
     assert bars[0]["data"]["quote_date"] == "2023-12-20"
@@ -415,3 +415,110 @@ def test_option_fetch_refuses_nonstandard_multiplier(monkeypatch):
         _option_config(), ["contracts", "bars"], {}, "backfill"))
     records = [m for m in messages if m["type"] == "RECORD"]
     assert records == []
+
+
+class _FakeQuote:
+    def __init__(self, bid, ask):
+        self.timestamp = datetime(2026, 9, 30, 20, 0, tzinfo=timezone.utc)
+        self.bid_price = bid
+        self.ask_price = ask
+        self.bid_size = 10.0
+        self.ask_size = 10.0
+
+
+class _FakeSnapshot:
+    def __init__(self, quote):
+        self.latest_quote = quote
+        self.latest_trade = None
+        self.implied_volatility = 0.3
+
+
+class _FakeSnapshotHistoricalClient(_FakeHistoricalClient):
+    def get_option_snapshot(self, request):
+        return {
+            "AMZN240202C00125000": _FakeSnapshot(_FakeQuote(125.0, 126.0)),
+        }
+
+
+def test_option_fetch_emits_snapshot_with_mid_mark(monkeypatch):
+    from alpaca.data import historical as hist
+    from alpaca.trading import client as trading
+
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    monkeypatch.setattr(trading, "TradingClient", _FakeTradingClient)
+    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeSnapshotHistoricalClient)
+
+    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
+    messages = list(AlpacaOptionFetchConnector().read(
+        _option_config(include_snapshots=True),
+        ["contracts", "snapshots"], {}, "backfill"))
+    assert all(check_message(m) for m in messages)
+    snaps = [m for m in messages if m["type"] == "RECORD" and m["stream"] == "snapshots"]
+    assert len(snaps) == 1
+    data = snaps[0]["data"]
+    assert data["mark"] == 125.5
+    assert data["price_basis"] == "indicative_quote"
+    assert data["timestamp_basis"] == "quote_time"
+    assert data["bid"] == 125.0 and data["ask"] == 126.0
+    assert snaps[0]["effective_date"] is not None
+
+
+def test_option_fetch_paginates_contracts(monkeypatch):
+    from alpaca.data import historical as hist
+    from alpaca.trading import client as trading
+
+    class Paged(_FakeTradingClient):
+        def __init__(self, key, secret):
+            self._pages = 0
+
+        def get_option_contracts(self, request):
+            self._pages += 1
+            if self._pages == 1:
+                return _FakeContractsResponse(
+                    [_FakeContract("AMZN240202C00125000", "AMZN", "100", "american")],
+                    next_page_token="tok")
+            return _FakeContractsResponse(
+                [_FakeContract("AMZN240202P00125000", "AMZN", "100", "american")])
+
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    monkeypatch.setattr(trading, "TradingClient", Paged)
+    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeHistoricalClient)
+
+    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
+    messages = list(AlpacaOptionFetchConnector().read(
+        _option_config(), ["contracts"], {}, "backfill"))
+    contracts = [m for m in messages if m["type"] == "RECORD"]
+    assert len(contracts) == 2
+    assert {c["data"]["contract"] for c in contracts} == {
+        "AMZN240202C00125000", "AMZN240202P00125000"}
+
+
+def test_option_fetch_contract_is_admissible_to_the_panel(monkeypatch):
+    from alpaca.data import historical as hist
+    from alpaca.trading import client as trading
+
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    monkeypatch.setattr(trading, "TradingClient", _FakeTradingClient)
+    monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeHistoricalClient)
+
+    from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
+    from dskit.pipeline.libs.predictive_cdf import OptionCDFPanel
+
+    messages = list(AlpacaOptionFetchConnector().read(
+        _option_config(), ["contracts", "bars"], {}, "backfill"))
+    bar = [m for m in messages if m["type"] == "RECORD" and m["stream"] == "bars"][0]["data"]
+    panel = OptionCDFPanel("panel", {
+        "probabilities": [0.1, 0.5, 0.9],
+        "min_forward_pairs": 2, "min_wing_nodes": 2,
+        "max_inner_gap": 0.2, "max_outer_gap": 0.2,
+        "max_projection_distance": None, "max_forward_dispersion": None,
+        "required_multiplier": 100, "required_style": "american",
+        "max_quote_age_seconds": 900,
+    })
+    label = {"spot": 125.0, "entry_close_at": "2026-09-30T20:00:00+00:00"}
+    reasons = panel._admission(bar, label)
+    assert "unverified_contract_terms" not in reasons
+    assert "nonstandard_contract_terms" not in reasons

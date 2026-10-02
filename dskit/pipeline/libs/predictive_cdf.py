@@ -793,6 +793,12 @@ class ScaledEmpiricalCDF(CDFEstimator):
         model = ScaledEmpiricalCDF(alpha=10, floor=.02, knots=401)
     """
 
+    #: Fit reads the held-out calibration outcomes directly (the residual shape
+    #: is quantiles of ``cal_y / scale(cal_x)``), so a caller that feeds the fit
+    #: band as its own calibration band calibrates on training labels. The
+    #: walk-forward fit node and the study's calibrate guard both refuse on this.
+    consumes_calibration_labels = True
+
     def __init__(self, alpha, floor, knots):
         self.alpha, self.floor, self.knots = alpha, floor, knots
 
@@ -1618,6 +1624,8 @@ class SemiparametricGPDTailCDF(CDFEstimator):
             raise ValueError("invalid GPD endpoint declaration")
         module, name = endpoint_class.split(":", 1)
         self.endpoint = getattr(importlib.import_module(module), name)(**endpoint_params)
+        self.consumes_calibration_labels = getattr(
+            self.endpoint, "consumes_calibration_labels", False)
         self.index_indices, self.knots = tuple(index_indices), knots
         self.splice_probabilities = tuple(float(v) for v in splice_probabilities)
         self.minimum_exceedances = minimum_exceedances
@@ -1927,6 +1935,10 @@ class PCAAugmentedCDF(CDFEstimator):
         self.estimator_params = dict(estimator_params)
         self.pca_indices = tuple(pca_indices)
         self.components = components
+        module, name = estimator_class.split(":", 1)
+        self.consumes_calibration_labels = getattr(
+            getattr(importlib.import_module(module), name),
+            "consumes_calibration_labels", False)
 
     def _validate_x(self, x):
         import numpy as np
@@ -4993,13 +5005,13 @@ class CDFEstimatorModel(TrainableNode):
 
         module, cls = params["estimator"].split(":")
         est_cls = getattr(importlib.import_module(module), cls)
-        if getattr(est_cls, "consumes_calibration_labels", False):
+        model = est_cls(**dict(params.get("estimator_params") or {}))
+        if getattr(model, "consumes_calibration_labels", False):
             raise ValueError(
                 f"{self.key}: {params['estimator']} consumes calibration labels "
                 "but a walk-forward fold carves no calibration band — refusing to "
                 "calibrate on training labels"
             )
-        model = est_cls(**dict(params.get("estimator_params") or {}))
 
         x = np.asarray(
             [[_node_number(_node_field(r, f)) for f in features] for r in fit_rows],

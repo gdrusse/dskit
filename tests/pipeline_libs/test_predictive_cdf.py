@@ -1648,7 +1648,7 @@ def test_grouped_multiyear_flow_verifies_blend_and_audits_convex_curves(tmp_path
     empirical['pooled'] = True
     scaled = {'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
               'params': {'alpha': 10, 'floor': .02, 'knots': 21},
-              'calibrate': True, 'pooled': True}
+              'calibrate': False, 'pooled': True}
     blend = {'class': 'dskit.pipeline.libs.predictive_cdf:EmpiricalMLPBlendCDF',
              'params': {'mlp_weight': .25, 'condition_indices': [0, 2, 3],
                         'reference_index': 1, 'knots': 21, 'mlp': settings},
@@ -2181,7 +2181,8 @@ def test_cdf_estimator_model_fits_mlp_and_emits_standardized_draws(tmp_path):
     draws = rows[0]["samples"]
     assert len(draws) == 50 and draws == sorted(draws)
     assert rows[35]["outcome"] == pytest.approx(rows[35]["label"] / rows[35]["reference_scale"])
-    assert rows[35]["reference_scale"] == rows[35]["reference_scale"]
+    assert rows[35]["reference_scale"] == pytest.approx(0.022)
+    assert rows[35]["samples"] is not None and len(rows[35]["samples"]) == 50
 
 
 def test_cdf_estimator_model_refuses_unknown_knobs_and_load(tmp_path):
@@ -2205,8 +2206,8 @@ def test_cdf_estimator_model_refuses_calibration_consuming_estimator(tmp_path):
     ctx = NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path),
                       splits=splits, splits_info=splits.to_obj())
     node = CDFEstimatorModel("model", {
-        "estimator": "dskit.pipeline.libs.predictive_cdf:DynamicPITRecalibratedCDF",
-        "estimator_params": {},
+        "estimator": "dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF",
+        "estimator_params": {"alpha": 10, "floor": 0.02, "knots": 401},
         "features": ["x0", "x1"],
         "target": "label", "reference": "reference_scale",
     })

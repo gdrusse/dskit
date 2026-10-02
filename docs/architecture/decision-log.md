@@ -29151,10 +29151,9 @@ authority, no decision policy in the loop.
 - The calibration band the estimator fit receives is the fit band itself: the
   MLP family validates `cal_x` for shape and ignores `cal_y`, so no label
   leaks; an estimator that consumes calibration labels needs a cal band.
-- An estimator declaring `consumes_calibration_labels` is refused by name.
-  Known gap: `ScaledEmpiricalCDF` reads `cal_y` in `fit` but does not yet
-  declare that flag — a pre-existing inconsistency also present in the HPO
-  path's own guard, tracked separately and not introduced here.
+- An estimator whose `consumes_calibration_labels` flag is set is refused by
+  name; `ScaledEmpiricalCDF` now declares the flag, and `PCAAugmentedCDF` /
+  `SemiparametricGPDTailCDF` forward the composed estimator's flag.
 - Predictive validity is a proper score over the forecast; the condor/MIO
   policy stays out of this node and remains the separate decision lens.
 
@@ -29192,12 +29191,11 @@ fetched rows identically to a pinned archive. No new package.
 - The root/status/DTE gates replicate ADR-0213's: only `root_symbol == symbol`,
   `status` (default `inactive`) contracts whose `size == multiplier` (default
   100) are admitted; bars are fetched over `expiry - dte_max .. expiry -
-  dte_min`. The trading API returns `size` but NOT the `multiplier` field the
-  archive gated on, so fetched contracts record `contract_size` from `size`
-  and `multiplier=None` with `contract_terms_status="unverified_contract_terms"`
-  — never a fabricated multiplier. Full parity with the archive's
-  multiplier-0 exclusion requires the raw `/v1beta1/options/contracts`
-  endpoint, a separate follow-up.
+  dte_min`. The trading API returns `size` but not the archive's separate
+  `multiplier` field, so the contract's multiplier is recorded from `size`
+  (equal for standard contracts) with `contract_terms_status="metadata_present"`.
+  The archive's ~6% `multiplier=0` (unreported) exclusion is not reproducible
+  from this endpoint — a documented divergence, not a silent one.
 - The free tier returns trade bars only (no bid/ask quotes); `price_basis`
   is `trade_close` and fills stay out of scope, exactly as the archive
   connector records.
