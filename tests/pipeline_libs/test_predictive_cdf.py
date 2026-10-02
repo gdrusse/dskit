@@ -1942,6 +1942,65 @@ def test_torch_gru_refuses_invalid_feature_partitions(defect):
             device="cpu")
         model._build_module(4)
 
+
+_SUBSET_LOSSES = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}]
+_SUBSET_GRU = {"kind": "gru", "sequence_indices": [[2], [1], [0]],
+               "context_indices": [3], "hidden_size": 4, "num_layers": 1}
+
+
+def _subset_fit(encoder, feature_indices, x, y):
+    """Fit a one-seed CPU TorchCDF on the rows with the given subset (ADR-0224)."""
+    context = [{"identity": [str(i)], "thresholds": [-.5, .5], "weights": [.5, .5]}
+               for i in range(len(x))]
+    extra = {} if feature_indices is None else {"feature_indices": feature_indices}
+    model = predictive_cdf.TorchCDF(
+        encoder=encoder, losses=_SUBSET_LOSSES, components=2, hidden=[4], epochs=2,
+        batch_size=3, seeds=[7], device="cpu", deterministic=True, **extra)
+    return model.fit_decision_context(context, context).fit(x, y, x, y)
+
+
+@pytest.mark.parametrize("encoder, subset", [
+    ({"kind": "mlp"}, [0, 2, 3]),
+    # GRU positions are WITHIN the subset: the four kept columns, in subset order.
+    (_SUBSET_GRU, [5, 3, 1, 0])])
+def test_torch_cdf_feature_subset_ignores_excluded_columns_and_keeps_absent_digest(
+        encoder, subset):
+    pytest.importorskip("torch")
+    x = np.random.default_rng(3).normal(size=(6, 6))
+    y = np.linspace(-1, 1, 6)
+    model = _subset_fit(encoder, subset, x, y)
+    changed = x.copy()
+    changed[:, [i for i in range(6) if i not in subset]] += 1000.
+    np.testing.assert_array_equal(model.curve(x).cdf([-.3, .4]),
+                                  model.curve(changed).cdf([-.3, .4]))
+    assert model._equivalence_settings()["feature_indices"] == tuple(subset)
+    full = _subset_fit(encoder, None, x[:, subset], y)
+    assert "feature_indices" not in full._equivalence_settings()
+    assert model._equivalence_state() != full._equivalence_state()
+    # The subset is a column pick: the same columns fed whole give the same network.
+    np.testing.assert_allclose(model.curve(x).cdf([-.3, .4]),
+                               full.curve(x[:, subset]).cdf([-.3, .4]), atol=1e-7)
+
+
+def test_torch_cdf_feature_subset_refuses_mixed_encoder_positions_and_bad_indices():
+    pytest.importorskip("torch")
+    x = np.random.default_rng(3).normal(size=(6, 6))
+    y = np.linspace(-1, 1, 6)
+    # Encoder positions read as raw columns (0..5) are not a partition of the 4 kept ones.
+    raw = {**_SUBSET_GRU, "sequence_indices": [[5], [4], [3]], "context_indices": [0, 1, 2]}
+    with pytest.raises(ValueError, match="within feature_indices"):
+        _subset_fit(raw, [5, 3, 1, 0], x, y)
+    with pytest.raises(ValueError, match="feature indices"):
+        _subset_fit({"kind": "mlp"}, [0, 0], x, y)
+    with pytest.raises(ValueError, match="feature indices outside input"):
+        _subset_fit({"kind": "mlp"}, [0, 9], x, y)
+    # Head routing and the legacy left-tail penalty stay refused beside the subset.
+    for refused in ({"head_features": [0, 1]}, {"left_cdf_weight": .5}):
+        with pytest.raises(ValueError, match="head_features and left_cdf_weight"):
+            predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
+                                    feature_indices=[2, 3], device="cpu", **refused)
+
+
 @pytest.mark.parametrize("global_kind", ["nll", "crps"])
 @pytest.mark.parametrize("local_kind", ["decision_brier", "decision_log", "wing_twcrps"])
 def test_torch_composite_gradient_is_invariant_to_batch_eligibility(local_kind, global_kind):

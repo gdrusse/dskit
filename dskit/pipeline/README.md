@@ -348,6 +348,8 @@ its partitions: search, selection and the `development` evaluation use `warmup`
 folds only, `later` uses `scored` folds. `MixtureMLPCDF`/`TorchCDF` `patience`
 (int >= 1) watches the calibration-slice objective, restores the best weights and
 is the only exit: `epochs` becomes a ceiling and reaching it raises.
+`TorchCDF` also takes `feature_indices` (ADR-0224; absent = all columns): the subset
+is cut before the encoder, so GRU indices are positions within it.
 
 The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the
 cross-run view:

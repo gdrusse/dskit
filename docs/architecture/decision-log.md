@@ -29447,3 +29447,21 @@ rows (`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
    `calibrate: true` with patience refuses (second map).
 **Pins.** Year configs' hashes and scores unchanged; each refusal above; roles.
 **Non-goals.** New configs, feature selection, cadence.
+
+## ADR-0224 — Exact-DTE cohort and Torch feature subset for the step 4-7 studies
+
+**Status:** proposed 2026-10-02 (owner pre-approves once review has no
+Critical/Major). Base c504a9f (ADR-0223). **Sweep** (`exact_dte
+feature_indices`): the panel reader has no per-horizon cohort; `feature_indices`
+exists on `MixtureMLPCDF` and others, but `TorchCDF` refuses it.
+1. **`data.exact_dte`** (int >= 1; absent = today's panel). `ExactExpiryCDFPanel`
+   keeps only rows whose `actual_calendar_dte` equals it, so step 1's winner
+   needs one `expected_cells` horizon. Validated by `check_int_param`.
+2. **`TorchCDF` `feature_indices`.** Accepted through `MixtureMLPCDF`'s one rule
+   (no restatement); absent = all features, digests unchanged. The subset is
+   taken before the encoder: GRU `sequence_indices`/`context_indices` are
+   positions WITHIN it and must partition it, else the build refuses. This
+   lets step 4 compare feature sets in one run and keeps `rn_q_*` baseline
+   columns in `study.features` out of the network. `head_features` and
+   `left_cdf_weight` stay refused.
+**Non-goals.** Per-fold DTE choice, new estimators, other encoders.

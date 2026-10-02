@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dskit.pipeline.document import date_problem
 from dskit.pipeline.kinds_split import label_reaches
+from dskit.pipeline.node import check_int_param
 from dskit.pipeline.libs.predictive_cdf import (
     ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
     DiscreteCDFGrid, GridCurve,
@@ -1930,7 +1931,9 @@ class ExactExpiryCDFPanel:
     ----------
     config : dict
         Archive root, surface/lifecycle files, symbols, volatility-index mapping,
-        max DTE, lag/window counts and reference floor.
+        max DTE, lag/window counts and reference floor. Optional ``exact_dte``
+        (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
+        absent keeps every horizon up to ``max_dte``.
     holdout_start : str or None
         ISO date of a locked holdout (a fold-table study's own value). Rows
         dated on or after it, or whose label reaches it, never enter the panel.
@@ -1945,7 +1948,18 @@ class ExactExpiryCDFPanel:
     def __init__(self, config, holdout_start=None):
         if holdout_start is not None and date_problem(holdout_start):
             raise ValueError("holdout_start must be an ISO date or None")
+        if "exact_dte" in config:
+            problems = []
+            check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
+            if problems:
+                raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
         self.config, self.holdout_start = config, holdout_start
+
+    def _horizon_cohort(self, rows):
+        """Keep the rows at ``exact_dte`` when declared, else every row."""
+        if "exact_dte" not in self.config:
+            return rows
+        return rows[rows.actual_calendar_dte == self.config["exact_dte"]]
 
     @staticmethod
     def ohlc_features(prices, windows):
@@ -2262,7 +2276,8 @@ class ExactExpiryCDFPanel:
             planned_end = planned[planned.searchsorted(expiry, side="right")-1]
             rows["planned_settlement_date"] = planned_end.strftime("%Y-%m-%d")
             rows["calendar_dte"] = (pd.to_datetime(rows.planned_settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
-            rows = rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])].copy()
+            rows = self._horizon_cohort(
+                rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])]).copy()
             locked = None
             if self.holdout_start:
                 locked = (label_reaches(rows.quote_date, self.holdout_start)

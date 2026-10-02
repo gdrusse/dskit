@@ -1211,6 +1211,63 @@ def test_panel_never_reads_rows_dated_or_settling_at_the_holdout(tmp_path, monke
         ExactExpiryCDFPanel(config, holdout_start='2023-6-30')
 
 
+def test_panel_exact_dte_keeps_only_the_actual_calendar_horizon(tmp_path, monkeypatch):
+    import exchange_calendars as xc
+    from index_options.cdf_study import ExactExpiryCDFPanel
+
+    dates = xc.get_calendar('XNYS').sessions_in_range('2023-01-03', '2023-07-10')
+    prices = {d.strftime('%Y-%m-%d'): 100+i*.1 for i, d in enumerate(dates)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params['symbol']
+
+        def run(self, ctx, inputs):
+            return {'records': [
+                {'date': d, 'close': 20. if self.symbol == 'RVX' else price,
+                 'asof_ms': int(pd.Timestamp(d).timestamp()*1000), 'instrument': self.symbol,
+                 'contract': self.symbol, 'group': self.symbol, 'dividend_amount': None}
+                for d, price in prices.items()]}
+
+        def fingerprint(self):
+            return {'sha256': 'fixture'}
+
+    monkeypatch.setattr('index_options.cdf_study.IndexCloseRows', Reader)
+    # Actual DTE 1, 2, 5, 4 and 7. The 07-04 expiry is a holiday: nominal DTE 5, actual 4.
+    quotes = ['2023-06-28', '2023-06-28', '2023-06-28', '2023-06-29', '2023-06-28']
+    expiry = ['2023-06-29', '2023-06-30', '2023-07-03', '2023-07-04', '2023-07-05']
+    rows = pd.DataFrame({'symbol': ['IWM']*5, 'quote_date': quotes, 'expiry': expiry,
+                         'chain_underlying_price': [prices[d] for d in quotes]})
+    surface, lifecycle = tmp_path/'surface.parquet', tmp_path/'lifecycle.parquet'
+    rows.to_parquet(surface)
+    rows[['symbol', 'quote_date', 'expiry']].assign(first_seen_date='2023-06-01').to_parquet(lifecycle)
+    config = {'root': 'fixture', 'surface': str(surface), 'lifecycle': str(lifecycle),
+              'symbols': {'IWM': 'RVX'}, 'price_source': 'fixture', 'iv_source': 'fixture',
+              'since': '2023-01-01', 'max_dte': 45, 'lags': 22, 'windows': [1, 5, 22, 66],
+              'feature_gap_days': 7, 'reference_floor': .001, 'spot_tolerance': .02}
+    everything = ExactExpiryCDFPanel(config).read()
+    assert sorted(everything.actual_calendar_dte) == [1, 2, 4, 5, 7]
+    for horizon in (1, 2, 4, 5, 7):
+        out = ExactExpiryCDFPanel({**config, 'exact_dte': horizon}).read()
+        assert out.actual_calendar_dte.tolist() == [horizon]
+        pd.testing.assert_frame_equal(
+            out, everything[everything.actual_calendar_dte == horizon].reset_index(drop=True))
+    # A horizon the panel never lists is an empty cohort, not a fallback to the rest.
+    assert ExactExpiryCDFPanel({**config, 'exact_dte': 3}).read().empty
+    for bad in (0, -1, True, '5', 5.5, None):
+        with pytest.raises(ValueError, match='exact_dte'):
+            ExactExpiryCDFPanel({**config, 'exact_dte': bad})
+
+
+@pytest.mark.parametrize('name', ['run-step5-model-zoo', 'run-step6-hpo'])
+def test_step_configs_declare_the_one_exact_dte_the_study_expects(name):
+    config = json.loads((Path(__file__).parents[1]/'configs'/f'{name}.json').read_text())
+    horizon = config['data']['exact_dte']
+    assert type(horizon) is int and horizon >= 1 and horizon <= config['data']['max_dte']
+    for partition, cells in config['experiment']['expected_cells'].items():
+        assert cells == {'QQQ': [horizon]}, partition
+
+
 def test_cli_hands_the_study_holdout_to_the_reader_and_runs_the_fold_table(
         tmp_path, monkeypatch):
     import hashlib

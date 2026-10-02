@@ -2864,7 +2864,8 @@ class _CDFGRUEncoder:
         sequence, context = config["sequence_indices"], config["context_indices"]
         flat = [v for row in sequence for v in row] + context
         if set(flat) != set(range(features)):
-            raise ValueError("GRU indices must partition all input features")
+            raise ValueError(f"GRU indices must partition the {features} model input "
+                             "features (positions within feature_indices when set)")
         class Module(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -3221,8 +3222,10 @@ class TorchCDF(MixtureMLPCDF):
         with integer ``k >= 3`` selects Student components; ``{"kind":
         "gaussian"}`` names the default explicitly.
     settings : dict
-        Existing mixture training and output-head settings. Column selection,
-        task heads and the legacy left-tail penalty are deliberately refused.
+        Existing mixture training and output-head settings. ``feature_indices``
+        (the base class's one rule; absent = every column) picks the encoder's
+        input columns, and GRU indices are then positions WITHIN that subset.
+        Task heads and the legacy left-tail penalty are deliberately refused.
 
     Examples
     --------
@@ -3247,8 +3250,9 @@ class TorchCDF(MixtureMLPCDF):
         import copy
         import math
         super().__init__(**settings)
-        if self.feature_indices is not None or self.head_features or self.left_cdf_weight:
-            raise ValueError("TorchCDF uses explicit encoder columns and composite losses")
+        if self.head_features or self.left_cdf_weight:
+            raise ValueError("TorchCDF refuses head_features and left_cdf_weight: "
+                             "it uses explicit encoder columns and composite losses")
         if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
             raise ValueError("unknown CDF encoder")
         if family is not None and (not isinstance(family, dict)
