@@ -42,9 +42,15 @@ derivable from a prior step is typed in.
 - A family is admitted when available on at least tau of pre-holdout dates;
   training uses complete-case dates. Gaps are assumed random for now, though
   surface gaps cluster in 2011-2014. Rows are weighted equally.
-- Folds keep intraday_equities' rolling-origin shape (warmup fold, retrain per
-  fold) without its extra late periods. Windows and the retrain interval count
-  dates, so retraining follows expiry frequency; embargo = selected DTE.
+- Folds keep intraday_equities' rolling-origin shape (warm-up folds, retrain
+  per fold) without its extra late periods. Windows and the retrain interval
+  count dates, so retraining follows expiry frequency; embargo = selected DTE.
+- **All selection uses the warm-up folds only.** Feature selection (step 4),
+  the model zoo (step 5) and HPO (step 6) score on the first k folds. The
+  later scored folds are a clean simulation with every choice frozen; the
+  holdout stays the final frozen MIO test. k is derived from the data (about
+  a year of warm-up validation weeks, at least 10 scored folds) and declared
+  in the step-3 config.
 - Planned features: weekday one-hot (ADR-0214) and expiry density. Pre-2021
   entries are mostly Fridays, so weekday is partly confounded with era.
 - Status: steps 1-2 built (QQQ/SPY/IWM; AMZN waits on ADR-0216's close-bar

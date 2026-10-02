@@ -423,6 +423,9 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `join` | transform | attach keyed lookup rows to records |
 | `groupby` | transform | one record per group of declared `keys`, carrying declared `aggregates` over a closed op table (ADR-0086) |
 | `keyby` | transform | a record stream -> the `{key: value}` side table `join` reads; one field each, a repeated key refused unless `allow_fanout` (then lists) — ADR-0086's deferred pivot, landed by ADR-0182 |
+| `weekday-onehot` | transform | 0/1 weekday columns from one ISO `date_field` (`weekdays` default all seven, `baseline` tags all-zero); an uncovered weekday or bad date raises; `counts` per weekday (ADR-0214) |
+| `holdout-cut` | transform | lock the last `ceil(fraction x dates)` dates as the holdout and purge dev rows whose label reaches it; emits dev rows + dates-only `metrics` (ADR-0215) |
+| `rolling-origin-plan` | transform | count-sized rolling-origin folds over the dev dates; the oldest `warmup_folds` are `warmup` (all selection), the rest `scored`; refuses rows on/past `holdout_start`; every knob required (ADR-0215) |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
 | `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
@@ -782,9 +785,13 @@ dskit/pipeline/
 │                      intervals + joint scenario sets over dependent, time-ordered
 │                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby — record-flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
+│                      weekday-onehot — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
+├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
+│                      holdout locked first, count-sized rolling folds, warm-up vs
+│                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
@@ -851,6 +858,7 @@ dskit/pipeline/
 │                      answers it. Screens fail closed for an ordinary
 │                      caller; they are not a root of trust
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
+│                      + the weekday vocabulary and one-hot rule (WEEKDAY_TAGS, weekday_flags)
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade
 ├── testing.py         SyntheticBackend, MemoryTracker, register_synthetic

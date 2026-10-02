@@ -80,11 +80,13 @@ KIND_EFFECTS = {
     "event-grid": ("pure", "pure"),
     "filter": ("pure", "pure"),
     "groupby": ("pure", "pure"),
+    "holdout-cut": ("forbidden", "forbidden"),
     "hpo-grid": ("forbidden", "forbidden"),
     "join": ("pure", "pure"),
     "keyby": ("pure", "pure"),
     "records-write": ("forbidden", "forbidden"),
     "replay": ("forbidden", "forbidden"),
+    "rolling-origin-plan": ("forbidden", "forbidden"),
     "run-report": ("forbidden", "forbidden"),
     "standardize": ("forbidden", "release_read"),
     "stat_test": ("pure", "pure"),
@@ -92,6 +94,7 @@ KIND_EFFECTS = {
     "table-write": ("forbidden", "forbidden"),
     "top-trials": ("forbidden", "forbidden"),
     "validate": ("forbidden", "forbidden"),
+    "weekday-onehot": ("pure", "pure"),
 }
 
 #: The audited classes that no toolkit registry claims a name for:

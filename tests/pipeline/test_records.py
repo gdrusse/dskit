@@ -1,5 +1,7 @@
 """MarketRecord envelope shape rules + the accounting split arithmetic."""
 
+from datetime import date, datetime, timedelta
+
 import pytest
 
 from dskit.pipeline import (
@@ -9,11 +11,14 @@ from dskit.pipeline import (
     PositionOutcome,
     settle_position,
 )
+from dskit.pipeline import records
 from dskit.pipeline.records import (
     CLUSTER_FIELD,
     CONTRACT_FIELD,
+    WEEKDAY_TAGS,
     cluster_of,
     cluster_ok,
+    weekday_flags,
 )
 
 
@@ -190,3 +195,81 @@ class TestSharedSettlementArithmetic:
             settle_position("C", qty=1, cost=float("nan"), fee=0.0, payout_per_unit=1.0)
         with pytest.raises(ValueError, match="number"):
             settle_position("C", qty=True, cost=0.5, fee=0.0, payout_per_unit=1.0)
+
+
+MON_FRI = ("mon", "tue", "wed", "thu", "fri")
+
+
+class TestWeekdayFlags:
+    """The one owner of "which weekday column does this date light" (ADR-0214)."""
+
+    def test_the_vocabulary_is_seven_tags_monday_first(self):
+        assert WEEKDAY_TAGS == ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+    @pytest.mark.parametrize(
+        "day, expected",
+        [
+            # Anchors are calendar facts, not asked of the rule under test:
+            # 2026-01-05 was a Monday, 2000-01-01 a Saturday, 2024-02-29 a Thursday.
+            (date(2026, 1, 5), (1, 0, 0, 0, 0, 0, 0)),
+            (date(2026, 1, 9), (0, 0, 0, 0, 1, 0, 0)),
+            (date(2000, 1, 1), (0, 0, 0, 0, 0, 1, 0)),
+            (date(2026, 1, 11), (0, 0, 0, 0, 0, 0, 1)),
+            (date(2024, 2, 29), (0, 0, 0, 1, 0, 0, 0)),
+        ],
+    )
+    def test_each_day_lights_exactly_its_own_column(self, day, expected):
+        assert weekday_flags(day, WEEKDAY_TAGS, ()) == expected
+
+    def test_a_week_walks_the_one_hot_diagonal(self):
+        monday = date(2026, 1, 5)
+        rows = [weekday_flags(monday + timedelta(days=i), WEEKDAY_TAGS, ()) for i in range(7)]
+        assert rows == [tuple(int(i == j) for j in range(7)) for i in range(7)]
+
+    def test_the_result_is_a_tuple_of_plain_ints(self):
+        flags = weekday_flags(date(2026, 1, 5), MON_FRI, ())
+        assert isinstance(flags, tuple)
+        assert all(type(flag) is int for flag in flags)
+
+    def test_columns_follow_the_declared_order_not_the_calendar(self):
+        friday = date(2026, 1, 9)
+        assert weekday_flags(friday, ("fri", "mon"), ("tue", "wed", "thu", "sat", "sun")) == (1, 0)
+        assert weekday_flags(friday, ("mon", "fri"), ("tue", "wed", "thu", "sat", "sun")) == (0, 1)
+
+    @pytest.mark.parametrize("day", [date(2026, 1, 10), date(2026, 1, 11)])
+    def test_a_baseline_weekday_is_all_zero(self, day):
+        assert weekday_flags(day, MON_FRI, ("sat", "sun")) == (0, 0, 0, 0, 0)
+
+    @pytest.mark.parametrize(
+        "day, weekdays, baseline, named",
+        [
+            (date(2026, 1, 10), MON_FRI, (), "sat"),  # Saturday, no baseline
+            (date(2026, 1, 10), MON_FRI, ("sun",), "sat"),  # Saturday, wrong baseline
+            (date(2026, 1, 6), ("mon",), (), "tue"),  # a single column
+            (date(2026, 1, 11), ("sat",), ("mon",), "sun"),
+        ],
+    )
+    def test_a_weekday_in_neither_set_raises_naming_it(self, day, weekdays, baseline, named):
+        with pytest.raises(ValueError, match=named):
+            weekday_flags(day, weekdays, baseline)
+
+    def test_a_datetime_is_refused_not_truncated(self):
+        for moment in (datetime(2026, 1, 5), datetime(2026, 1, 5, 23, 59, 59)):
+            with pytest.raises(TypeError, match="datetime"):
+                weekday_flags(moment, MON_FRI, ())
+
+    @pytest.mark.parametrize("value", ["2026-01-05", None, 20260105, 1.5, b"2026-01-05"])
+    def test_anything_but_a_date_is_refused(self, value):
+        with pytest.raises(TypeError, match="date"):
+            weekday_flags(value, MON_FRI, ())
+
+    @pytest.mark.parametrize(
+        "weekdays, baseline", [(("mon", "funday"), ()), (("mon",), ("xyz",)), ("mon", ())]
+    )
+    def test_an_unknown_tag_is_refused_rather_than_read_as_all_zero(self, weekdays, baseline):
+        with pytest.raises(ValueError, match="unknown"):
+            weekday_flags(date(2026, 1, 5), weekdays, baseline)
+
+    def test_the_public_surface_names_the_rule_and_leaks_nothing_private(self):
+        assert {"WEEKDAY_TAGS", "weekday_flags"} <= set(records.__all__)
+        assert [name for name in records.__all__ if name.startswith("_")] == []

@@ -733,10 +733,14 @@ dskit/pipeline/
 ├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
 │                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby —
-│                      flow verbs (keyby: records -> the keyed side table join reads)
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
+│                      weekday-onehot — flow verbs (keyby: records -> the keyed side
+│                      table join reads; weekday-onehot: ISO date -> 0/1 weekday columns)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
+├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
+│                      holdout locked first, count-sized rolling folds, warm-up vs
+│                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
@@ -783,7 +787,7 @@ dskit/pipeline/
 │                      answering from the REGISTRY at use time, and a
 │                      ProbabilityUpperBound family no intake answers
 │                      (ADR-0165)
-├── records.py         MarketRecord + accounting seams
+├── records.py         MarketRecord + accounting seams + WEEKDAY_TAGS / weekday_flags
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
 ├── testing.py         SyntheticBackend, MemoryTracker, register_synthetic

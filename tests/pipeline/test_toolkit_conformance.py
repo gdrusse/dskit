@@ -21,7 +21,7 @@ Two deliberate deviations from a typical adapter hookup:
   dependent (an adapter registers into it whenever any test
   imports it), and a conformance bar over a registry whose membership
   depends on what ran first is not a bar.
-* no ``module=`` — the kinds span six modules, and tier-1 import
+* no ``module=`` — the kinds span eight modules, and tier-1 import
   purity (stdlib-only, heavy libraries blocked) is already enforced for
   every ``dskit/pipeline`` module by ``tests/pipeline/test_purity.py``.
 
@@ -36,14 +36,25 @@ every probe that carries ``inputs``, ``()`` where no port is a stream.
 import hashlib
 import json
 import os
+from datetime import date, timedelta
 
 from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
-from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, GroupBy, Join, KeyBy
+from dskit.pipeline.kinds_flow import (
+    Concat,
+    Derive,
+    EventGrid,
+    Filter,
+    GroupBy,
+    Join,
+    KeyBy,
+    WeekdayOneHot,
+)
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid, TopTrials
+from dskit.pipeline.kinds_split import HoldoutCut, RollingOriginPlan
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_table import RecordsWrite, TableFile, TableWrite
 from dskit.pipeline.node import NodeContext
@@ -66,6 +77,9 @@ TOOLKIT_NODE_KINDS = (
     ("derive", Derive),
     ("groupby", GroupBy),
     ("keyby", KeyBy),
+    ("weekday-onehot", WeekdayOneHot),
+    ("holdout-cut", HoldoutCut),
+    ("rolling-origin-plan", RollingOriginPlan),
     ("table-file", TableFile),
     ("table-write", TableWrite),
     ("records-write", RecordsWrite),
@@ -94,6 +108,12 @@ TOOLKIT_ROLES = {
     "derive": "transform",
     "groupby": "transform",
     "keyby": "transform",
+    # A pure per-row projection (ADR-0214): it adds columns, never decides.
+    "weekday-onehot": "transform",
+    # The evaluation-protocol pair (ADR-0215): they cut a dated cohort into
+    # a holdout and a fold table, never decide, score or spend.
+    "holdout-cut": "transform",
+    "rolling-origin-plan": "transform",
     # The table pair: the reader supplies a value (transform), the
     # writer materialises one and proves it (report) — as does the
     # stream writer beside it (ADR-0085).
@@ -133,6 +153,32 @@ def _records():
 
 #: Settled outcomes for the stream above — presence marks settledness.
 _OUTCOMES = {"AAA-1": True, "AAA-2": False, "BBB-1": True}
+
+
+def _dated_rows(count):
+    """``count`` consecutive-day rows whose labels end two days on."""
+    start = date(2026, 1, 1)
+    return [
+        {
+            "quote_date": (start + timedelta(days=i)).isoformat(),
+            "settle": (start + timedelta(days=i + 2)).isoformat(),
+            "mid": 0.5,
+        }
+        for i in range(count)
+    ]
+
+
+#: The plan's knobs that have no default in code: every one is required.
+PLAN_REQUIRED = (
+    "date_field",
+    "end_field",
+    "holdout_start",
+    "embargo_days",
+    "step_n",
+    "train_n",
+    "val_n",
+    "warmup_folds",
+)
 
 
 def _book(tmp_path):
@@ -362,6 +408,55 @@ def probes(tmp_path):
             params={"key": "contract", "value": "mid", "allow_fanout": False},
             required=("key", "value"),
             inputs={"records": records},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        # Weekday one-hot (ADR-0214) reads an ISO date field, which this
+        # module's envelope-shaped ``records`` do not carry, so the probe
+        # brings its own dated rows: a weekday, a Saturday (the baseline)
+        # and a second weekday, so the baseline branch runs too.
+        "weekday-onehot": NodeProbe(
+            params={
+                "date_field": "quote_date",
+                "prefix": "dow_",
+                "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+                "baseline": ["sat", "sun"],
+            },
+            required=("date_field", "prefix"),
+            inputs={
+                "records": [
+                    {"quote_date": "2026-01-05", "mid": 0.4},
+                    {"quote_date": "2026-01-10", "mid": 0.5},
+                    {"quote_date": "2026-01-09", "mid": 0.6},
+                ]
+            },
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        # The protocol pair (ADR-0215) reads ISO dates and label ends, which
+        # this module's envelope-shaped ``records`` do not carry, so each
+        # probe brings its own dated rows: twenty consecutive days whose
+        # labels end two days on, so the cut's purge has rows to drop.
+        "holdout-cut": NodeProbe(
+            params={"date_field": "quote_date", "end_field": "settle", "fraction": 0.25},
+            required=("date_field", "end_field", "fraction"),
+            inputs={"records": _dated_rows(20)},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        "rolling-origin-plan": NodeProbe(
+            params={
+                "date_field": "quote_date",
+                "end_field": "settle",
+                "holdout_start": "2026-02-01",
+                "embargo_days": 2,
+                "step_n": 3,
+                "train_n": 5,
+                "val_n": 3,
+                "warmup_folds": 1,
+            },
+            required=PLAN_REQUIRED,
+            inputs={"records": _dated_rows(20)},
             stream_ports=("records",),
             runnable=True,
         ),
