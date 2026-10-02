@@ -203,11 +203,10 @@
         "max_candidates": 5000,
         "fee_per_leg": 0.5,
         "multiplier": 100
-      },
-      "notes": "Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+      }
     },
     "exact_dte": 7,
-    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source."
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source. decision_regions (the block refuses its own notes key): Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
   },
   "diagnostic": {
     "strikes_z": [

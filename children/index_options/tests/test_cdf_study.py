@@ -1268,6 +1268,13 @@ def test_step_configs_declare_the_one_exact_dte_the_study_expects(name):
         assert cells == {'QQQ': [horizon]}, partition
 
 
+@pytest.mark.parametrize('name', ['run-step4-feature-selection', 'run-step5-model-zoo', 'run-step6-hpo'])
+def test_step_configs_decision_regions_build_as_the_cli_builds_them(name):
+    # The CLI builds this block before any stage runs; an unknown key refuses there.
+    config = json.loads((Path(__file__).parents[1]/'configs'/f'{name}.json').read_text())
+    DecisionRegionContextBuilder(config['data']['decision_regions'])
+
+
 def test_cli_hands_the_study_holdout_to_the_reader_and_runs_the_fold_table(
         tmp_path, monkeypatch):
     import hashlib
