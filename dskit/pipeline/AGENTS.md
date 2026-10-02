@@ -533,8 +533,9 @@ dskit/pipeline/
 │                      (ADR-0069, `bar` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
-│                      weekday-onehot — flow verbs (keyby: records -> the keyed side
-│                      table join reads; weekday-onehot: ISO date -> 0/1 weekday columns)
+│                      weekday-onehot, attach-by-identity — flow verbs (keyby: records ->
+│                      the keyed side table join reads; weekday-onehot: ISO date -> 0/1
+│                      weekday columns)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:

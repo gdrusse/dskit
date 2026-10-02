@@ -34,6 +34,7 @@ from dskit.pipeline.kinds_banking import register as register_banking
 import dskit.pipeline.kinds_flow as kinds_flow
 from dskit.pipeline.kinds_flow import (
     CLAUSE_OPS,
+    AttachByIdentity,
     Concat,
     Derive,
     EventGrid,
@@ -1610,12 +1611,332 @@ class TestWeekdayOneHot:
         assert moved.hash != bare.hash
 
 
+# ---------------------------------------------------------------------------
+# attach-by-identity — a keyed table's declared columns onto a stream (ADR-0217)
+# ---------------------------------------------------------------------------
+
+#: The literals a document and a downstream reader see, restated here and pinned
+#: to the class constants by test_the_status_literals_equal_the_class_constants.
+COMPUTED, ABSENT, NOT_COMPUTABLE = "computed", "identity_absent_from_table", "not_computable"
+
+
+def attach_params(**over):
+    """A valid param set: two families (one withholds a field), two carried entries."""
+    params = {
+        "identity": ["symbol", "quote_date", "expiry"],
+        "agree_fields": ["terminal_return"],
+        "max_absent_fraction": 0.0,
+        "column_prefix": "fe_",
+        "families": {
+            "gap": {"fields": ["gap_a", "gap_b"], "withheld_fields": {}, "clock_note": "gap clock"},
+            "flow": {
+                "fields": ["flow_a", "flow_oi"],
+                "withheld_fields": {"flow_oi": "oi_unverified"},
+                "clock_note": "flow clock",
+            },
+        },
+        "carried": {
+            "density": {"fields": ["density"], "withheld_fields": {}, "clock_note": "density clock"},
+            "liq": {
+                "fields": ["liq_oi"],
+                "withheld_fields": {"liq_oi": "oi_unverified"},
+                "clock_note": "liq clock",
+            },
+        },
+    }
+    params.update(over)
+    return params
+
+
+def attach_stream(*dates):
+    """One stream row per date: identity, the agreed field, and the carried columns."""
+    return [
+        {"symbol": "QQQ", "quote_date": d, "expiry": "2020-02-01", "terminal_return": 0.01 * i,
+         "density": 3, "liq_oi": 9.5, "other": "x"}
+        for i, d in enumerate(dates)
+    ]
+
+
+def attach_table(*dates):
+    """The reader's rows for the same identities: identity, agreed field, every family field."""
+    return [
+        {"symbol": "QQQ", "quote_date": d, "expiry": "2020-02-01", "terminal_return": 0.01 * i,
+         "gap_a": 1.0 + i, "gap_b": 2.0, "flow_a": 3.0, "flow_oi": 4.0}
+        for i, d in enumerate(dates)
+    ]
+
+
+def attach(ctx, stream, table, **over):
+    return AttachByIdentity("attach", attach_params(**over)).run(
+        ctx, {"records": stream, "table": table}
+    )
+
+
+class TestAttachByIdentity:
+    DATES = ("2020-01-02", "2020-01-03", "2020-01-06")
+
+    def test_registration_surface_and_contract(self):
+        assert "AttachByIdentity" in kinds_flow.__all__
+        assert AttachByIdentity.role == "transform"
+        assert AttachByIdentity.outputs == ("records", "summary", "provenance")
+        assert AttachByIdentity._PARAMS == (
+            "agree_fields", "carried", "column_prefix", "families", "identity",
+            "max_absent_fraction",
+        )
+        assert AttachByIdentity.serving_effect({}, {}) == "pure"
+
+    def test_the_status_literals_equal_the_class_constants(self):
+        assert (AttachByIdentity.STATUS_COMPUTED, AttachByIdentity.STATUS_ABSENT,
+                AttachByIdentity.NOT_COMPUTABLE) == (COMPUTED, ABSENT, NOT_COMPUTABLE)
+
+    def test_attaches_every_declared_column_in_stream_order(self, ctx):
+        stream, table = attach_stream(*self.DATES), attach_table(*reversed(self.DATES))
+        # the table is in the opposite order and agrees on terminal_return only by identity
+        for row in table:
+            row["terminal_return"] = {"2020-01-02": 0.0, "2020-01-03": 0.01,
+                                      "2020-01-06": 0.02}[row["quote_date"]]
+        out = attach(ctx, stream, table)["records"]
+        assert [r["quote_date"] for r in out] == list(self.DATES)
+        by_date = {r["quote_date"]: r for r in table}
+        for row, source in zip(out, stream):
+            match = by_date[row["quote_date"]]
+            assert (row["gap_a"], row["gap_b"], row["flow_a"]) == (
+                match["gap_a"], match["gap_b"], match["flow_a"])
+            assert row["fe_gap_status"] == row["fe_flow_status"] == COMPUTED
+            assert row["fe_gap_reasons"] == "{}"
+            assert row["other"] == "x" and row["density"] == 3     # untouched stream fields
+            assert set(source) <= set(row)                          # nothing dropped
+
+    def test_an_absent_identity_gets_every_field_null_status_and_reasons(self, ctx):
+        stream = attach_stream(*self.DATES)
+        table = attach_table(*self.DATES[:2])
+        out = attach(ctx, stream, table, max_absent_fraction=0.5)["records"]
+        row = out[2]
+        assert [row[f] for f in ("gap_a", "gap_b", "flow_a", "flow_oi")] == [None] * 4
+        assert row["fe_gap_status"] == row["fe_flow_status"] == ABSENT
+        assert json.loads(row["fe_gap_reasons"]) == {"gap_a": ABSENT, "gap_b": ABSENT}
+        # a withheld field keeps its own reason even when the identity is absent
+        assert json.loads(row["fe_flow_reasons"]) == {
+            "flow_a": ABSENT, "flow_oi": "oi_unverified"}
+
+    def test_non_finite_and_missing_values_are_null_with_not_computable(self, ctx):
+        table = attach_table(*self.DATES)
+        table[0]["gap_a"] = float("nan")
+        table[1]["gap_a"] = float("inf")
+        table[2]["gap_a"] = None
+        out = attach(ctx, attach_stream(*self.DATES), table)["records"]
+        assert [r["gap_a"] for r in out] == [None, None, None]
+        for row in out:
+            assert json.loads(row["fe_gap_reasons"]) == {"gap_a": NOT_COMPUTABLE}
+            assert row["fe_gap_status"] == COMPUTED
+        json.dumps(out, allow_nan=False)        # never a NaN on the wire
+
+    def test_a_withheld_family_field_is_null_whatever_the_table_holds(self, ctx):
+        out = attach(ctx, attach_stream(*self.DATES), attach_table(*self.DATES))
+        for row in out["records"]:
+            assert row["flow_oi"] is None and row["flow_a"] == 3.0
+            assert json.loads(row["fe_flow_reasons"]) == {"flow_oi": "oi_unverified"}
+        stats = out["summary"]["families"]["flow"]["fields"]["flow_oi"]
+        assert (stats["non_null"], stats["null"], stats["discarded"]) == (0, 3, 3)
+        assert (stats["min"], stats["max"], stats["mean"]) == (None, None, None)
+
+    def test_a_withheld_carried_field_overwrites_a_non_null_stream_value(self, ctx):
+        out = attach(ctx, attach_stream(*self.DATES), attach_table(*self.DATES))
+        for row in out["records"]:
+            assert row["liq_oi"] is None
+            assert json.loads(row["fe_liq_reasons"]) == {"liq_oi": "oi_unverified"}
+            assert "fe_liq_status" not in row           # a carried entry has no status
+        stats = out["summary"]["carried"]["liq"]["fields"]["liq_oi"]
+        assert stats["discarded"] == 3 and stats["non_null"] == 0
+
+    def test_discarded_counts_exactly_the_rows_nulled_over_a_value(self, ctx):
+        stream = attach_stream(*self.DATES)
+        stream[1]["liq_oi"] = None
+        table = attach_table(*self.DATES)
+        table[2]["flow_oi"] = None
+        out = attach(ctx, stream, table)["summary"]
+        assert out["carried"]["liq"]["fields"]["liq_oi"]["discarded"] == 2
+        assert out["families"]["flow"]["fields"]["flow_oi"]["discarded"] == 2
+
+    def test_a_carried_value_passes_through_and_a_null_gets_a_reason(self, ctx):
+        stream = attach_stream(*self.DATES)
+        stream[0]["density"] = None
+        out = attach(ctx, stream, attach_table(*self.DATES))["records"]
+        assert [r["density"] for r in out] == [None, 3, 3]
+        assert json.loads(out[0]["fe_density_reasons"]) == {"density": NOT_COMPUTABLE}
+        assert out[1]["fe_density_reasons"] == "{}"
+
+    def test_summary_statistics_use_only_real_numbers(self, ctx):
+        table = attach_table(*self.DATES)
+        table[1]["gap_a"] = None
+        table[2]["gap_a"] = float("nan")
+        table[0]["gap_b"] = True                  # a bool is not a number here
+        out = attach(ctx, attach_stream(*self.DATES), table)["summary"]["families"]["gap"]
+        a, b = out["fields"]["gap_a"], out["fields"]["gap_b"]
+        assert (a["non_null"], a["null"], a["min"], a["max"], a["mean"]) == (1, 2, 1.0, 1.0, 1.0)
+        assert (b["non_null"], b["min"], b["max"], b["mean"]) == (3, 2.0, 2.0, 2.0)
+        assert out["rows"] == 3 and out["computed"] == 3 and out["absent"] == 0
+        json.dumps(out, allow_nan=False)
+
+    def test_summary_has_every_declared_field_and_echoes_notes_and_withholds(self, ctx):
+        res = attach(ctx, attach_stream(*self.DATES), attach_table(*self.DATES))
+        summary, params = res["summary"], attach_params()
+        assert set(summary) == {"families", "carried"}
+        for section in ("families", "carried"):
+            assert set(summary[section]) == set(params[section])
+            for name, spec in params[section].items():
+                entry = summary[section][name]
+                assert set(entry["fields"]) == set(spec["fields"])
+                assert entry["clock_note"] == spec["clock_note"]
+                assert entry["withheld_fields"] == spec["withheld_fields"]
+                assert entry["rows"] == 3
+                for field in entry["fields"].values():
+                    assert set(field) == {"non_null", "null", "discarded", "min", "max", "mean"}
+        assert "computed" not in summary["carried"]["density"]
+
+    def test_provenance_echoes_notes_and_withholds_and_hashes_the_agreed_input(self, ctx):
+        stream, table = attach_stream(*self.DATES), attach_table(*self.DATES)
+        first = attach(ctx, stream, table)["provenance"]
+        again = attach(ctx, attach_stream(*self.DATES), attach_table(*self.DATES))["provenance"]
+        assert first == again
+        assert first["clock_notes"] == {"gap": "gap clock", "flow": "flow clock",
+                                        "density": "density clock", "liq": "liq clock"}
+        assert first["withheld_fields"]["flow"] == {"flow_oi": "oi_unverified"}
+        assert first["withheld_fields"]["gap"] == {}
+        moved = attach_stream(*self.DATES)
+        moved[1]["terminal_return"] = 0.5
+        table[1]["terminal_return"] = 0.5
+        assert attach(ctx, moved, table)["provenance"]["input_sha256"] != first["input_sha256"]
+        shifted = attach_stream(*self.DATES)
+        shifted[1]["expiry"] = "2020-03-01"
+        shifted_table = attach_table(*self.DATES)
+        shifted_table[1]["expiry"] = "2020-03-01"
+        assert attach(ctx, shifted, shifted_table)["provenance"]["input_sha256"] != first[
+            "input_sha256"]
+
+    @pytest.mark.parametrize("mutate, match", [
+        (lambda s, t: t[0].pop("gap_b"), "gap_b"),                       # a missing column
+        (lambda s, t: t[0].update(extra=1), "extra"),                    # an unclaimed column
+        (lambda s, t: t[1].pop("terminal_return"), "terminal_return"),   # agree column missing
+        (lambda s, t: s[0].update(gap_a=1.0), "gap_a"),                  # stream collides
+        (lambda s, t: s[0].update(fe_gap_status="x"), "fe_gap_status"),  # generated column
+        (lambda s, t: s[0].update(fe_liq_reasons="{}"), "fe_liq_reasons"),
+        (lambda s, t: t.append(dict(t[0])), "duplicate"),                # table duplicate
+        (lambda s, t: s.append(dict(s[0])), "duplicate"),                # stream duplicate
+        (lambda s, t: s[1].pop("terminal_return"), "terminal_return"),   # stream lacks agree
+        (lambda s, t: s[1].pop("expiry"), "expiry"),                     # stream lacks identity
+        (lambda s, t: s[2].pop("density"), "density"),                   # carried key missing
+        (lambda s, t: t[0].update(terminal_return=0.9), "terminal_return"),   # disagreement
+        (lambda s, t: s[0].update(expiry=["x"]), "expiry"),              # unhashable identity
+        (lambda s, t: s.__setitem__(0, "not a row"), "row 0"),
+        (lambda s, t: t.__setitem__(0, "not a row"), "row 0"),
+    ])
+    def test_refusals(self, ctx, mutate, match):
+        stream, table = attach_stream(*self.DATES), attach_table(*self.DATES)
+        mutate(stream, table)
+        with pytest.raises(ValueError, match=match):
+            attach(ctx, stream, table)
+
+    def test_agreement_is_exact_and_null_equals_null(self, ctx):
+        stream, table = attach_stream(*self.DATES), attach_table(*self.DATES)
+        stream[0]["terminal_return"] = None
+        table[0]["terminal_return"] = float("nan")
+        assert len(attach(ctx, stream, table)["records"]) == 3
+        table[0]["terminal_return"] = 0.0
+        with pytest.raises(ValueError, match="terminal_return"):
+            attach(ctx, stream, table)
+
+    def test_absent_identities_refuse_only_above_the_bound(self, ctx):
+        stream, table = attach_stream(*self.DATES), attach_table(*self.DATES[:2])
+        with pytest.raises(ValueError, match="absent"):
+            attach(ctx, stream, table, max_absent_fraction=0.3)
+        assert len(attach(ctx, stream, table, max_absent_fraction=1 / 3)["records"]) == 3
+        assert attach(ctx, [], [])["records"] == []          # no rows, no fraction
+
+    def test_a_refusal_emits_nothing(self, ctx):
+        stream = attach_stream(*self.DATES)
+        table = attach_table(*self.DATES)
+        table[2]["terminal_return"] = 9.0
+        with pytest.raises(ValueError):
+            attach(ctx, stream, table)
+        assert all("fe_gap_status" not in row for row in stream)    # inputs never mutated
+
+    @pytest.mark.parametrize("params, match", [
+        ({"identity": []}, "identity"),
+        ({"identity": ["a", "a"]}, "identity"),
+        ({"agree_fields": []}, "agree_fields"),
+        ({"agree_fields": ["symbol"]}, "agree_fields"),             # overlaps the identity
+        ({"max_absent_fraction": None}, "max_absent_fraction"),
+        ({"max_absent_fraction": True}, "max_absent_fraction"),
+        ({"max_absent_fraction": 1.5}, "max_absent_fraction"),
+        ({"max_absent_fraction": -0.1}, "max_absent_fraction"),
+        ({"max_absent_fraction": "0.1"}, "max_absent_fraction"),
+        ({"max_absent_fraction": float("nan")}, "max_absent_fraction"),
+        ({"column_prefix": ""}, "column_prefix"),
+        ({"families": {}}, "families"),
+        ({"families": {"gap": {"fields": ["x"], "clock_note": "c"}}}, "withheld_fields"),
+        ({"families": {"gap": {"fields": ["x"], "withheld_fields": {}}}}, "clock_note"),
+        ({"families": {"gap": {"fields": ["x"], "withheld_fields": {}, "clock_note": ""}}},
+         "clock_note"),
+        ({"families": {"gap": {"fields": [], "withheld_fields": {}, "clock_note": "c"}}},
+         "fields"),
+        ({"families": {"gap": {"fields": ["x", "x"], "withheld_fields": {}, "clock_note": "c"}}},
+         "distinct"),
+        ({"families": {"gap": {"fields": ["x"], "withheld_fields": {"y": "r"},
+                               "clock_note": "c"}}}, "subset"),
+        ({"families": {"gap": {"fields": ["x"], "withheld_fields": {"x": ""},
+                               "clock_note": "c"}}}, "reason"),
+        ({"families": {"gap": {"fields": ["x"], "withheld_fields": {}, "clock_note": "c",
+                               "extra": 1}}}, "extra"),
+        ({"families": {"gap": {"fields": ["terminal_return"], "withheld_fields": {},
+                               "clock_note": "c"}}}, "terminal_return"),
+        # a field in two entries, whether families or carried
+        ({"carried": {"density": {"fields": ["gap_a"], "withheld_fields": {},
+                                  "clock_note": "c"}}}, "gap_a"),
+        ({"carried": {"gap": {"fields": ["x"], "withheld_fields": {}, "clock_note": "c"}}},
+         "gap"),                                                    # entry named twice
+        ({"carried": "density"}, "carried"),
+        ({"unknown_knob": 1}, "unknown_knob"),
+    ])
+    def test_param_refusals(self, params, match):
+        problems = AttachByIdentity.validate_params(attach_params(**params))
+        assert any(match in p for p in problems), problems
+        with pytest.raises(ConfigError):
+            AttachByIdentity("attach", attach_params(**params))
+
+    def test_carried_is_optional_and_references_wait(self):
+        params = attach_params()
+        del params["carried"]
+        assert AttachByIdentity.validate_params(params) == []
+        refs = {k: "$other.value" for k in AttachByIdentity._PARAMS}
+        assert AttachByIdentity.validate_params(refs) == []
+
+    @pytest.mark.parametrize("junk", [None, 5, "x", [], {}, [1], {"a": 1}, 1.5, True])
+    def test_validation_is_total(self, junk):
+        for key in AttachByIdentity._PARAMS:
+            problems = AttachByIdentity.validate_params({**attach_params(), key: junk})
+            assert isinstance(problems, list)
+        assert isinstance(AttachByIdentity.validate_params({}), list)
+        assert isinstance(AttachByIdentity.validate_params({"families": {"a": junk}}), list)
+
+    def test_container_shapes(self):
+        node = AttachByIdentity("attach", attach_params())
+        assert node.validate_inputs({"records": [], "table": []}) == []
+        assert node.validate_inputs({"records": (), "table": ()}) == []
+        assert len(node.validate_inputs({})) == 2              # a missing port is a problem too
+        assert node.validate_inputs({"records": {}, "table": []}) != []
+        assert node.validate_inputs({"records": [], "table": {}}) != []
+        assert "one-shot" in node.validate_inputs({"records": (r for r in ()), "table": []})[0]
+        assert "one-shot" in node.validate_inputs({"records": [], "table": (r for r in ())})[0]
+
+
 class TestRegister:
-    def test_registers_all_eight_unowned(self):
+    def test_registers_all_nine_unowned(self):
         reg = register(NodeKindRegistry())
         assert {"filter", "concat", "join", "derive", "event-grid", "groupby",
-                "keyby", "weekday-onehot"} <= set(reg.kinds())
+                "keyby", "weekday-onehot", "attach-by-identity"} <= set(reg.kinds())
         assert reg.get("weekday-onehot") == (WeekdayOneHot, False)
+        assert reg.get("attach-by-identity") == (AttachByIdentity, False)
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)

@@ -43,6 +43,7 @@ from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_flow import (
+    AttachByIdentity,
     Concat,
     Derive,
     EventGrid,
@@ -80,6 +81,7 @@ TOOLKIT_NODE_KINDS = (
     ("weekday-onehot", WeekdayOneHot),
     ("holdout-cut", HoldoutCut),
     ("rolling-origin-plan", RollingOriginPlan),
+    ("attach-by-identity", AttachByIdentity),
     ("table-file", TableFile),
     ("table-write", TableWrite),
     ("records-write", RecordsWrite),
@@ -114,6 +116,7 @@ TOOLKIT_ROLES = {
     # a holdout and a fold table, never decide, score or spend.
     "holdout-cut": "transform",
     "rolling-origin-plan": "transform",
+    "attach-by-identity": "transform",
     # The table pair: the reader supplies a value (transform), the
     # writer materialises one and proves it (report) — as does the
     # stream writer beside it (ADR-0085).
@@ -458,6 +461,43 @@ def probes(tmp_path):
             required=PLAN_REQUIRED,
             inputs={"records": _dated_rows(20)},
             stream_ports=("records",),
+            runnable=True,
+        ),
+        # The composite-identity attach: a table keyed by several fields onto the
+        # stream, one family with a withheld field, one carried entry.
+        "attach-by-identity": NodeProbe(
+            params={
+                "identity": ["instrument", "contract"],
+                "agree_fields": ["mid"],
+                "max_absent_fraction": 0.0,
+                "column_prefix": "fe_",
+                "families": {
+                    "quote": {
+                        "fields": ["quote_a", "quote_oi"],
+                        "withheld_fields": {"quote_oi": "oi_clock_unverified"},
+                        "clock_note": "entry-day quote values",
+                    }
+                },
+                "carried": {
+                    "grouping": {
+                        "fields": ["group"],
+                        "withheld_fields": {},
+                        "clock_note": "carried from the stream",
+                    }
+                },
+            },
+            required=(
+                "identity", "agree_fields", "max_absent_fraction", "column_prefix", "families",
+            ),
+            inputs={
+                "records": records,
+                "table": [
+                    {"instrument": r["instrument"], "contract": r["contract"],
+                     "mid": r["mid"], "quote_a": 1.0, "quote_oi": 2.0}
+                    for r in records
+                ],
+            },
+            stream_ports=("records", "table"),
             runnable=True,
         ),
         # The provenance-pinned book on disk: params name the file AND its

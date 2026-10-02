@@ -963,3 +963,135 @@ def test_numpy_scalar_readings_give_plain_float_weights():
     out = _sizing(rows)
     assert all(type(w) is float for r in out for w in _weights(r) if w is not None)
     assert _weights(out[5]) == pytest.approx(tuple(min(4.0, max(0.25, w)) for w in UNCLIPPED[5]))
+
+
+# -- ExactExpiryPanelRead (ADR-0217): the child's one exact-expiry reader -------------------------
+
+from index_options import cdf_study  # noqa: E402
+from index_options.nodes import ExactExpiryPanelRead  # noqa: E402
+
+#: The reader's knobs restated independently of the class: the tail-data `read()` keys minus
+#: `archive_root` (the `prepare` stage's), plus `columns`. Pinned to the shipped document below.
+PANEL_READ_KEYS = {
+    "root", "surface", "lifecycle", "symbols", "price_source", "iv_source", "since", "max_dte",
+    "lags", "windows", "feature_gap_days", "reference_floor", "spot_tolerance", "chain_features",
+    "raw_chain", "market_symbols", "fred_market_symbols", "surface_features", "ohlc_windows",
+    "matched_dte_vrp", "columns"}
+PANEL_READ_REQUIRED = PANEL_READ_KEYS - {
+    "chain_features", "raw_chain", "market_symbols", "fred_market_symbols", "surface_features",
+    "ohlc_windows", "matched_dte_vrp"}
+
+
+def _panel_read_params(**over):
+    params = {
+        "root": "x", "surface": "s.parquet", "lifecycle": "l.parquet", "symbols": {"QQQ": "VXN"},
+        "price_source": "p", "iv_source": "i", "since": "2020-01-01", "max_dte": 45, "lags": 22,
+        "windows": [1, 5, 22], "feature_gap_days": 7, "reference_floor": 0.001,
+        "spot_tolerance": 0.02, "columns": ["symbol", "quote_date", "expiry", "a", "b"]}
+    params.update(over)
+    return params
+
+
+class StubPanel:
+    """Stands in for ExactExpiryCDFPanel: records its config, counts reads, returns a fixed frame."""
+
+    configs = []
+    reads = 0
+
+    def __init__(self, config):
+        self.config = config
+        type(self).configs.append(dict(config))
+
+    def read(self):
+        import numpy as np
+        import pandas as pd
+        type(self).reads += 1
+        self.refused = {"QQQ": {"non_session_quote": 0}}
+        self.source_hashes = {"surface": "abc"}
+        self.reader_fingerprints = {"QQQ": {"sha256": "fixture"}}
+        return pd.DataFrame({
+            "symbol": ["QQQ", "QQQ"], "quote_date": ["2020-01-02", "2020-01-03"],
+            "expiry": ["2020-02-21", "2020-02-21"], "a": [1.5, np.nan], "b": [2, 3],
+            "unrequested": [9., 9.]})
+
+    def provenance(self):
+        return {"refused": self.refused, "sha256": self.source_hashes,
+                "readers": self.reader_fingerprints}
+
+
+@pytest.fixture
+def stub_panel(monkeypatch):
+    StubPanel.configs, StubPanel.reads = [], 0
+    monkeypatch.setattr(cdf_study, "ExactExpiryCDFPanel", StubPanel)
+    return StubPanel
+
+
+def test_the_panel_reader_declares_its_role_ports_and_forbids_serving():
+    assert ExactExpiryPanelRead.role == "data"
+    assert ExactExpiryPanelRead.outputs == ("records", "provenance")
+    assert ExactExpiryPanelRead.serving_effect({}, {}) == "forbidden"
+    assert "ExactExpiryPanelRead" in __import__("index_options.nodes", fromlist=["x"]).__all__
+
+
+def test_the_panel_readers_params_are_the_tail_data_read_keys_plus_columns(child_root):
+    data = json.loads((child_root / "configs/run-predictive-cdf-tail-data.json").read_text())["data"]
+    assert set(ExactExpiryPanelRead._PARAMS) == PANEL_READ_KEYS == (set(data) - {"archive_root"}
+                                                                    | {"columns"})
+    assert set(ExactExpiryPanelRead._PARAMS) & {"decision_regions", "macro_event_calendars"} == set()
+
+
+@pytest.mark.parametrize("change, match", [
+    ({"archive_root": "a"}, "archive_root"), ({"decision_regions": {}}, "decision_regions"),
+    ({"macro_event_calendars": {}}, "macro_event_calendars"), ({"surprise": 1}, "surprise"),
+    ({"columns": []}, "columns"), ({"columns": "a"}, "columns"), ({"columns": ["a", "a"]}, "columns"),
+    ({"columns": ["a", ""]}, "columns"), ({"symbols": {}}, "symbols"),
+    ({"symbols": {"QQQ": 3}}, "symbols"), ({"symbols": ["QQQ"]}, "symbols"),
+    ({"max_dte": 0}, "max_dte"), ({"lags": True}, "lags"),
+])
+def test_the_panel_reader_refuses_what_it_does_not_declare_or_a_bad_value(change, match):
+    problems = ExactExpiryPanelRead.validate_params(_panel_read_params(**change))
+    assert any(match in p for p in problems), problems
+    with pytest.raises(ConfigError, match=match):
+        ExactExpiryPanelRead("panel", _panel_read_params(**change))
+
+
+@pytest.mark.parametrize("name", sorted(PANEL_READ_REQUIRED))
+def test_every_required_panel_reader_param_is_named_when_missing(name):
+    params = _panel_read_params()
+    del params[name]
+    assert any(name in p for p in ExactExpiryPanelRead.validate_params(params))
+    assert ExactExpiryPanelRead.validate_params(_panel_read_params()) == []
+
+
+def test_the_panel_reader_emits_only_its_columns_as_plain_python_with_nulls(stub_panel):
+    node = ExactExpiryPanelRead("panel", _panel_read_params())
+    out = node.run(None, {})
+    assert out["records"] == [
+        {"symbol": "QQQ", "quote_date": "2020-01-02", "expiry": "2020-02-21", "a": 1.5, "b": 2},
+        {"symbol": "QQQ", "quote_date": "2020-01-03", "expiry": "2020-02-21", "a": None, "b": 3}]
+    assert [type(r["a"]) for r in out["records"]] == [float, type(None)]
+    assert type(out["records"][0]["b"]) is int
+    assert out["provenance"] == {"refused": {"QQQ": {"non_session_quote": 0}},
+                                 "sha256": {"surface": "abc"},
+                                 "readers": {"QQQ": {"sha256": "fixture"}}}
+    assert "columns" not in stub_panel.configs[0]
+    assert stub_panel.configs[0] == {k: v for k, v in _panel_read_params().items() if k != "columns"}
+
+
+def test_a_column_the_read_lacks_refuses_by_name(stub_panel):
+    node = ExactExpiryPanelRead("panel", _panel_read_params(columns=["symbol", "nope"]))
+    with pytest.raises(ValueError, match="nope"):
+        node.run(None, {})
+
+
+def test_the_panel_reader_reads_once_and_its_fingerprint_names_what_run_emits(stub_panel):
+    node = ExactExpiryPanelRead("panel", _panel_read_params())
+    fingerprint = node.fingerprint()
+    out = node.run(None, {})
+    assert stub_panel.reads == 1
+    assert fingerprint == {"kind": "ExactExpiryPanelRead", "rows": len(out["records"]),
+                           "provenance": out["provenance"]}
+    assert len(json.dumps(fingerprint, allow_nan=False)) < 65536
+    assert node.run(None, {}) is not None and stub_panel.reads == 1
+    other = ExactExpiryPanelRead("panel", _panel_read_params())
+    assert other.fingerprint() == fingerprint            # same data, same identity

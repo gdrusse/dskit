@@ -72,6 +72,7 @@ TORCH_IMPORTANCE = import_ref("dskit.pipeline.libs.torch:TorchImportance")
 
 KIND_EFFECTS = {
     "apply-transform": ("pure", "pure"),
+    "attach-by-identity": ("pure", "pure"),
     "banking-report": ("forbidden", "forbidden"),
     "concat": ("pure", "pure"),
     "derive": ("pure", "pure"),

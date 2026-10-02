@@ -32,6 +32,7 @@ derivable from a prior step is typed in.
 | Step | Inputs | Outputs |
 |---|---|---|
 | 1. Tradable dates | ticker; option-chain source; one configurable underlying-close source | dates per exact DTE 1-45 (table + chart); argmax DTE, ties to shorter |
+| 1b. Feature engineering | step-1 selected DTE (`selected.jsonl`); the prepared panel step 1 read; the ADR-0203 tail-data sources | step-1 cohort rows plus engineered families and expiry density, explicit nulls with reasons, `fe_<family>_status`; per-family summaries and clock notes (`carry.json`) |
 | 2. Feature availability | ticker; family set (implied CDF is one family); step-1 dates at the selected DTE | dates per family; dates for every non-empty family combination; per-date feature/family gaps |
 | 3. Holdout and folds | step-1 DTE and dates; step-2 availability; holdout share H (0.2), tau (0.9), train/validation sizes and retrain interval, all in dates | locked holdout dates; admitted families; training dates; fold table (train/val dates, boundaries, purge counts) |
 
@@ -51,11 +52,14 @@ derivable from a prior step is typed in.
   holdout stays the final frozen MIO test. k is derived from the data (about
   a year of warm-up validation weeks, at least 10 scored folds) and declared
   in the step-3 config.
-- Planned features: weekday one-hot (ADR-0214) and expiry density. Pre-2021
-  entries are mostly Fridays, so weekday is partly confounded with era.
-- Status: steps 1-2 built (QQQ/SPY/IWM; AMZN waits on ADR-0216's close-bar
-  reader); real runs pending in WSL; step 3 awaits its ADR (data-driven
-  holdout and count-sized folds).
+- Step 1b (ADR-0217) materializes variance_gap, ohlc_shape, positioning_changes,
+  expanded_volatility_context and expiry density. The ADR-0214 `weekday-onehot`
+  kind exists but is not yet wired into step 1b. Pre-2021 entries are mostly
+  Fridays, so weekday is partly confounded with era. Step 2 reads step 1b's
+  output; its only change is `pipeline.source.params.root`.
+- Status: steps 1, 1b, 2 and 3 built and configured; steps 4-6 configured
+  (step 7 reruns the step-6 config); QQQ first, one ticker per step-3 run;
+  AMZN parked until ADR-0216; real runs pending in WSL.
 
 ### Steps 1-2 runbook
 
@@ -92,6 +96,45 @@ aside first. Cross-checks against run `cdf-horizon-coverage-2026-10-01-6ae71aa4`
 
 The earlier CDF-based selector and QQQ gap runbooks below are superseded.
 
+### Step 1b runbook: feature engineering (ADR-0217)
+
+`configs/run-step1b-feature-engineering.json` reads the prepared panel step 1 read
+(`pipeline.source`), step 1's onboarded `selected.jsonl` (`step1_selection`, as in step 2)
+and the ADR-0203 tail-data sources (`pipeline.panel`, values unchanged). It writes
+`pipeline_runs/feature-engineering/panel/input_panel.jsonl`: one row per
+ticker/quote_date/expiry of step 1's cohort (selected DTE read from `selected.jsonl`;
+row count pinned to its `listed_forecasts`), every prepared field unchanged plus the
+four families and `expiry_density`. A field that cannot be computed, or whose entry-time
+availability cannot be established, is an explicit null with its reason in
+`fe_<entry>_reasons`; `fe_<family>_status` says whether the row's identity was found.
+All 18 open-interest-derived fields are withheld (`oi_publication_clock_unverified`)
+until the OI publication clock is audited; lifting that is a JSON edit. Weekday one-hot
+is declared `pending_merge` (`pending_inputs`). Prerequisites: the prepared panel
+onboarded as in the horizon runbook; step 1 run and `selected.jsonl` onboarded as in the
+steps 1-2 runbook; `ls /home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930/raw_chain_features.parquet{,.sources.json}`
+(rebuild if absent: `python -m index_options.cdf_study configs/run-predictive-cdf-tail-data.json --stage prepare`).
+
+    mkdir -p pipeline_runs/feature-engineering/panel
+    systemd-run --user --wait --pipe --collect --unit=feature-engineering -p MemoryMax=6G -p MemorySwapMax=0 -p RuntimeMaxSec=1740 -p WorkingDirectory="$PWD" -E PYTHONPATH="$(realpath ../..)" /usr/bin/time -v /home/russell/dskit/.venv/bin/python -m dskit.pipeline run configs/run-step1b-feature-engineering.json --asof 2026-10-01
+    python -m dskit.onboarding init --root ./pipeline_runs/feature-panel-source
+    python -m dskit.onboarding register-source cdf-horizon-panel --catalog-source cdf-horizon-panel --connector localtables --config @configs/source-feature-panel.json --activate --root ./pipeline_runs/feature-panel-source
+    python -m dskit.onboarding acquire --source cdf-horizon-panel --stream input_panel --mode backfill --root ./pipeline_runs/feature-panel-source
+
+QQQ, SPY and IWM run together (`foreach.keys`; keep them equal to step 1's). For one
+ticker set `foreach.keys` to `["QQQ"]`; the row pin follows. Repeats need fresh writer and
+onboarding paths (writers refuse overwrite). A refusal names its cause: absent identities
+(the reader lacks cohort rows; `max_absent_fraction` is 0), an agree field that differs
+(prepared panel and reader built from different sources), or a carried column the prepared
+panel lacks. Post-run check: `runs/<run>/carry.json` holds `panel.provenance` and, per
+ticker, `features__<t>.summary` (every family and carried entry, every field, withheld ones
+included) and `.provenance`; it is their only persisted copy. Step 2 then changes one
+line in `run-step2-feature-availability.json`: `pipeline.source.params.root` from
+`./pipeline_runs/cdf-horizon-source` to `./pipeline_runs/feature-panel-source` (the
+source node's note that both children onboard under the `cdf-horizon-source` names goes
+stale). Families holding a withheld field (`positioning_changes`, `liquidity`,
+`chain_nodes`) read `no` on every date until the audit (owner question 2, ADR-0217).
+AMZN is out of scope until ADR-0216's close source lands.
+
 ### Step 3 runbook
 
 Onboard step 2's `dates.jsonl` (`configs/source-step2-dates.json`, source/stream
@@ -102,8 +145,8 @@ Onboard step 2's `dates.jsonl` (`configs/source-step2-dates.json`, source/stream
 
 Writes `fold-table.jsonl` (sha256: `carry.json` `fold_evidence.provenance`) and
 `admission-and-metrics.jsonl` (`holdout.holdout_start`, admitted families) to
-`pipeline_runs/step3-holdout-folds/`; they feed `study.fold_table` in steps 5-6
-(`step4-7-configs`, which still says `pipeline_runs/step3/`). One ticker per file.
+`pipeline_runs/step3-holdout-folds/`; they feed `study.fold_table` in steps 4-6.
+One ticker per file.
 
 ## Draft: Torch CDF feature families (2026-10-01)
 

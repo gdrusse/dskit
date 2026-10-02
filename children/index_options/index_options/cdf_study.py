@@ -2436,6 +2436,29 @@ class ExactExpiryCDFPanel:
                                        builder.provenance["sources"].items()})
         return result
 
+    def provenance(self):
+        """Describe what the last ``read()`` consumed and which code read it.
+
+        Returns
+        -------
+        dict
+            ``refused`` (per-symbol exclusion counts), ``sha256`` (source
+            file hashes), ``readers`` (the price/index reader
+            fingerprints), ``market_coverage`` and ``macro_event_status``
+            (empty when the read declared neither) and ``adapter_sha256``
+            (this module's bytes).
+
+        Raises
+        ------
+        AttributeError
+            When ``read()`` has not run.
+        """
+        return {"refused": self.refused, "sha256": self.source_hashes,
+                "readers": self.reader_fingerprints,
+                "market_coverage": getattr(self, "market_coverage", {}),
+                "macro_event_status": getattr(self, "macro_event_status", {}),
+                "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+
 
 class CondorCDFDiagnostic:
     """Fixed synthetic strike geometry, not selected trades or quoted returns.
@@ -2863,11 +2886,7 @@ def _main():
     adapter = ExactExpiryCDFPanel(
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
     frame = adapter.read()
-    provenance = {"refused": adapter.refused, "sha256": adapter.source_hashes,
-                  "readers": adapter.reader_fingerprints,
-                  "market_coverage": getattr(adapter, "market_coverage", {}),
-                  "macro_event_status": getattr(adapter, "macro_event_status", {}),
-                  "adapter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    provenance = adapter.provenance()
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:
         if not args.stage:

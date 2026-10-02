@@ -51,6 +51,7 @@ FLOW_KINDS = (
     "groupby",
     "keyby",
     "weekday-onehot",
+    "attach-by-identity",
 )
 
 
@@ -83,6 +84,7 @@ class TestModuleHome:
         # ADR-0078, so a child's own tables can speak the document's
         # ``where`` grammar without restating it).
         assert set(kinds_flow.__all__) == {
+            "AttachByIdentity",
             "CLAUSE_OPS",
             "Concat",
             "Derive",

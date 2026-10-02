@@ -1,4 +1,4 @@
-"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby, weekday-onehot.
+"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby, keyby, weekday-onehot, attach-by-identity.
 
 Two verbs read a single stream; the RELATIONAL four combine, project or
 reduce streams instead of reading one. ``weekday-onehot`` (ADR-0214) is
@@ -54,6 +54,11 @@ homes (:mod:`dskit.pipeline.document` and
 module for one release, because that is the path a sibling could be
 importing them by.
 
+``attach-by-identity`` (ADR-0217) is ``join``'s composite-key sibling: a table
+keyed by SEVERAL fields (which ``keyby`` has no spelling for, ADR-0086)
+attached to a stream as declared column families, with the exact column
+contract, an agreement check, per-field withholds and an audit summary.
+
 No import-time side effects: nothing registers until :func:`register`
 is called.
 
@@ -63,7 +68,10 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import copy
+import functools
+import hashlib
 import itertools
+import json
 import math
 import re
 import statistics
@@ -77,6 +85,7 @@ from dskit.pipeline.records import WEEKDAY_TAGS, number_ok, weekday_flags
 
 __all__ = [
     "CLAUSE_OPS",
+    "AttachByIdentity",
     "Concat",
     "Derive",
     "EventGrid",
@@ -2689,11 +2698,616 @@ class WeekdayOneHot(Node):
 
 
 # ---------------------------------------------------------------------------
+# attach-by-identity — a keyed table's declared columns onto a stream (ADR-0217)
+# ---------------------------------------------------------------------------
+
+
+def _null_cell(value):
+    """Read a cell with NaN and +/-inf as ``None`` — JSON has no spelling for them."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+class _FieldTally:
+    """Counts, discards and number statistics for one attached field."""
+
+    def __init__(self):
+        self.non_null = 0
+        self.null = 0
+        self.discarded = 0
+        self.numbers = []
+
+    def add(self, value, *, discarded):
+        """Count one output cell, and whether a source value was nulled to get it."""
+        self.discarded += bool(discarded)
+        if value is None:
+            self.null += 1
+            return
+        self.non_null += 1
+        if number_ok(value):
+            self.numbers.append(value)
+
+    def report(self):
+        """Report the field; ``min``/``max``/``mean`` are ``None`` without numbers."""
+        numbers = self.numbers
+        return {
+            "non_null": self.non_null,
+            "null": self.null,
+            "discarded": self.discarded,
+            "min": min(numbers) if numbers else None,
+            "max": max(numbers) if numbers else None,
+            "mean": math.fsum(numbers) / len(numbers) if numbers else None,
+        }
+
+
+def _generated(prefix, name, family):
+    """Name the columns an entry writes beyond its fields: ``_status`` (families only), ``_reasons``."""
+    reasons = f"{prefix}{name}_reasons"
+    return (f"{prefix}{name}_status", reasons) if family else (reasons,)
+
+
+class _EntryTally:
+    """Row counts and per-field tallies for one family or carried entry."""
+
+    def __init__(self, spec):
+        self.rows = 0
+        self.computed = 0
+        self.absent = 0
+        self.fields = {field: _FieldTally() for field in spec["fields"]}
+
+    def report(self, spec, *, family):
+        """Report the entry, echoing its declared withholds and clock note."""
+        block = {"rows": self.rows}
+        if family:
+            block.update(computed=self.computed, absent=self.absent)
+        block["fields"] = {field: tally.report() for field, tally in self.fields.items()}
+        block["withheld_fields"] = dict(spec["withheld_fields"])
+        block["clock_note"] = spec["clock_note"]
+        return block
+
+
+class _AttachLayout:
+    """One declaration resolved once: entries in order, the table contract, the attached columns."""
+
+    def __init__(self, params):
+        self.identity = tuple(params["identity"])
+        self.agree = tuple(params["agree_fields"])
+        self.prefix = params["column_prefix"]
+        self.entries = {name: (True, spec) for name, spec in params["families"].items()}
+        self.entries.update(
+            {name: (False, spec) for name, spec in (params.get("carried") or {}).items()}
+        )
+        family_fields = {field for family, spec in self.entries.values() if family
+                         for field in spec["fields"]}
+        self.table_columns = set(self.identity) | set(self.agree) | family_fields
+        self.attached = family_fields | {
+            column for name, (family, _spec) in self.entries.items()
+            for column in _generated(self.prefix, name, family)
+        }
+
+
+class AttachByIdentity(Node):
+    """Attach a keyed table's declared columns onto a stream — the ``attach-by-identity`` kind.
+
+    Role ``transform``. :class:`Join` indexes each side table by ONE key
+    and a composite key has no JSON-object spelling (ADR-0086), so a
+    table that is keyed by several fields at once (a ticker, a date and an
+    expiry) cannot be joined; this kind attaches it instead, by the
+    declared composite ``identity``, and audits the attachment.
+
+    Each entry (a *family* of table columns, or a *carried* group of
+    columns the stream already holds) declares its ``fields``, the
+    ``withheld_fields`` it must emit null whatever the source holds, and a
+    ``clock_note`` saying when the values are knowable. Nothing is imputed:
+    a field the table cannot supply is an explicit null with a reason in
+    the row's ``<prefix><entry>_reasons`` JSON object, and a family's
+    ``<prefix><family>_status`` says whether its identity was found.
+
+    Parameters
+    ----------
+    params : dict
+        ``identity`` (non-empty field list), ``agree_fields`` (non-empty
+        field list the table and the stream must hold equal on a matched
+        identity), ``max_absent_fraction`` (float in [0, 1], no default: the
+        share of stream rows whose identity may be missing from the
+        table), ``column_prefix`` (non-empty str), ``families`` (non-empty
+        ``{family: {"fields", "withheld_fields", "clock_note"}}``) and
+        optional ``carried`` (the same shape, for columns already on the
+        stream). A field may appear in one entry only.
+
+    Inputs
+    ------
+    ``records``
+        The stream: a list or tuple of mapping rows.
+    ``table``
+        A list or tuple of mapping rows holding exactly ``identity`` +
+        ``agree_fields`` + every family field (carried fields excluded).
+
+    Outputs
+    -------
+    ``records``
+        The stream rows in input order, each with every declared column,
+        a ``_status`` per family and a ``_reasons`` per entry.
+    ``summary``
+        ``{"families": {...}, "carried": {...}}``: per entry its rows
+        (families: also ``computed`` and ``absent``), per field ``non_null``,
+        ``null``, ``discarded``, ``min``, ``max``, ``mean`` (numbers only;
+        ``None`` when the field has none), plus the declared
+        ``withheld_fields`` and ``clock_note``.
+    ``provenance``
+        ``{"input_sha256", "clock_notes", "withheld_fields"}``: the digest
+        of the stream's identity and agreed values as received, and every
+        entry's declared note and withholds.
+
+    Examples
+    --------
+    Attach a reader's gap features to a cohort, withholding one field::
+
+        node = AttachByIdentity("features", {
+            "identity": ["symbol", "quote_date"],
+            "agree_fields": ["terminal_return"],
+            "max_absent_fraction": 0.0,
+            "column_prefix": "fe_",
+            "families": {"gap": {
+                "fields": ["gap_a", "gap_oi"],
+                "withheld_fields": {"gap_oi": "oi_clock_unverified"},
+                "clock_note": "entry-day values only"}},
+        })
+        out = node.run(ctx, {"records": cohort_rows, "table": reader_rows})
+    """
+
+    role = "transform"
+    outputs = ("records", "summary", "provenance")
+
+    #: The stream port and the keyed table port.
+    _STREAM, _TABLE = "records", "table"
+
+    #: The class's own knobs — anything else is refused by name.
+    _PARAMS = (
+        "agree_fields", "carried", "column_prefix", "families", "identity",
+        "max_absent_fraction",
+    )
+
+    #: What every entry declares, all required: a withhold or a clock claim
+    #: that is not written out is one nobody reviewed.
+    _ENTRY_KEYS = ("clock_note", "fields", "withheld_fields")
+
+    #: The family statuses and the reason for a null the table did not explain.
+    STATUS_COMPUTED = "computed"
+    STATUS_ABSENT = "identity_absent_from_table"
+    NOT_COMPUTABLE = "not_computable"
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — it reads its two wired inputs and params only (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @staticmethod
+    def _name_list_problem(name, value):
+        """Describe what is wrong with a field-name list (non-empty, distinct strings), or ``None``."""
+        if not isinstance(value, (list, tuple)) or not value:
+            return f"{name} must be a non-empty list of field names, got {value!r}"
+        if any(not isinstance(item, str) or not item for item in value):
+            return f"{name} must hold non-empty strings, got {value!r}"
+        if len(set(value)) != len(value):
+            return f"{name} must hold distinct names, got {value!r}"
+        return None
+
+    @classmethod
+    def _entry_problems(cls, where, spec):
+        """Problems with one entry's declaration, empty when sound or deferred."""
+        if is_node_ref(spec):
+            return []
+        if not isinstance(spec, dict):
+            return [f"{where} must be a dict of {list(cls._ENTRY_KEYS)}, got {spec!r}"]
+        problems = []
+        _reject_unknown(problems, spec, cls._ENTRY_KEYS)
+        for key in cls._ENTRY_KEYS:
+            if key not in spec:
+                problems.append(f"{where}: {key} is required — write it out, even if empty")
+        fields = spec.get("fields")
+        if "fields" in spec and not is_node_ref(fields):
+            problem = cls._name_list_problem(f"{where}.fields", fields)
+            if problem:
+                problems.append(problem)
+        problems += cls._withheld_problems(where, spec)
+        note = spec.get("clock_note")
+        if "clock_note" in spec and not is_node_ref(note) and (
+            not isinstance(note, str) or not note
+        ):
+            problems.append(f"{where}.clock_note must be a non-empty string, got {note!r}")
+        return problems
+
+    @staticmethod
+    def _withheld_problems(where, spec):
+        """Problems with an entry's ``withheld_fields``: a ``{field: reason}`` subset of ``fields``."""
+        withheld, fields = spec.get("withheld_fields"), spec.get("fields")
+        if "withheld_fields" not in spec or is_node_ref(withheld):
+            return []
+        if not isinstance(withheld, dict):
+            return [f"{where}.withheld_fields must be a dict of {{field: reason}}, got {withheld!r}"]
+        problems = []
+        for field, reason in withheld.items():
+            if not isinstance(reason, str) or not reason:
+                problems.append(
+                    f"{where}.withheld_fields[{field!r}] needs a non-empty reason string, "
+                    f"got {reason!r}"
+                )
+        if isinstance(fields, (list, tuple)) and not set(withheld) <= set(fields):
+            problems.append(
+                f"{where}.withheld_fields must be a subset of fields; not in fields: "
+                f"{sorted(set(withheld) - set(fields))}"
+            )
+        return problems
+
+    @classmethod
+    def _section_problems(cls, name, section, *, required):
+        """Problems with ``families`` or ``carried``: a dict of declared entries."""
+        if section is None:
+            return [f"{name} is required — declare at least one entry"] if required else []
+        if is_node_ref(section):
+            return []
+        if not isinstance(section, dict) or (required and not section):
+            return [f"{name} must be a {'non-empty ' if required else ''}dict of entries, "
+                    f"got {section!r}"]
+        problems = []
+        for entry, spec in section.items():
+            if not isinstance(entry, str) or not entry:
+                problems.append(f"{name}: entry names must be non-empty strings, got {entry!r}")
+            problems += cls._entry_problems(f"{name}[{entry!r}]", spec)
+        return problems
+
+    @staticmethod
+    def _declared_entries(params):
+        """``[(section, name, spec)]`` for every entry whose declaration is a literal dict."""
+        out = []
+        for section in ("families", "carried"):
+            block = params.get(section)
+            if isinstance(block, dict):
+                out += [(section, name, spec) for name, spec in block.items()
+                        if isinstance(name, str) and isinstance(spec, dict)]
+        return out
+
+    @staticmethod
+    def _strings(value):
+        """Return the string items of a list or tuple, else nothing."""
+        if not isinstance(value, (list, tuple)):
+            return ()
+        return tuple(item for item in value if isinstance(item, str))
+
+    @classmethod
+    def _claim_problems(cls, params):
+        """Problems with how identity, agree_fields, entries and generated columns share names."""
+        claims, problems = {}, []
+
+        def claim(column, owner):
+            if column in claims:
+                problems.append(
+                    f"{column!r} is claimed by both {claims[column]} and {owner} — a column "
+                    "belongs to one place: the identity, agree_fields, one entry's fields, "
+                    "or a generated status/reasons column (entry names must be distinct "
+                    "across families and carried)"
+                )
+            else:
+                claims[column] = owner
+
+        for knob in ("identity", "agree_fields"):
+            for name in cls._strings(params.get(knob)):
+                claim(name, knob)
+        prefix = params.get("column_prefix")
+        prefix = prefix if isinstance(prefix, str) else ""
+        entries = cls._declared_entries(params)
+        for section, name, _spec in entries:
+            for column in _generated(prefix, name, section == "families"):
+                claim(column, f"{section}[{name!r}]")
+        for section, name, spec in entries:
+            for field in cls._strings(spec.get("fields")):
+                claim(field, f"{section}[{name!r}]")
+        return problems
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        for knob in ("identity", "agree_fields"):
+            value = params.get(knob)
+            problem = None if is_node_ref(value) else cls._name_list_problem(knob, value)
+            if problem:
+                problems.append(problem)
+        fraction = params.get("max_absent_fraction")
+        if not is_node_ref(fraction) and (
+            isinstance(fraction, bool)
+            or not isinstance(fraction, (int, float))
+            or not 0 <= fraction <= 1
+        ):
+            problems.append(
+                "max_absent_fraction is required, a number in [0, 1] with no default — "
+                f"the share of stream rows allowed to lack a table identity, got {fraction!r}"
+            )
+        prefix = params.get("column_prefix")
+        if not is_node_ref(prefix) and (not isinstance(prefix, str) or not prefix):
+            problems.append(f"column_prefix must be a non-empty string, got {prefix!r}")
+        problems += cls._section_problems("families", params.get("families"), required=True)
+        problems += cls._section_problems("carried", params.get("carried"), required=False)
+        return problems + cls._claim_problems(params)
+
+    @staticmethod
+    def _container_problem(port, value):
+        """Describe what is wrong with a wired port that must be a list or tuple of rows, or ``None``."""
+        if isinstance(value, (str, bytes, dict)) or not isinstance(value, (list, tuple)):
+            return (
+                f"{port} must be a list or tuple of rows (a one-shot iterable would "
+                f"be consumed by validation), got {value!r}"
+            )
+        return None
+
+    def validate_inputs(self, inputs):
+        """Problems with the materialized inputs, empty when none.
+
+        Container shapes only — the rows are never walked here, because a
+        one-shot iterable consumed by validation would reach ``run``
+        exhausted.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` and ``table``, each a list or tuple of rows.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
+        problems = [
+            self._container_problem(port, inputs.get(port))
+            for port in (self._STREAM, self._TABLE)
+        ]
+        return [problem for problem in problems if problem]
+
+    @functools.cached_property
+    def layout(self):
+        """The declaration resolved once for this node's runs."""
+        return _AttachLayout(self.params)
+
+    def _identity_of(self, row, where):
+        """One row's identity tuple, refusing a missing, unhashable or non-finite part."""
+        fields = self.layout.identity
+        missing = [name for name in fields if name not in row]
+        if missing:
+            raise ValueError(f"{self.key}: {where} carries no identity field(s) {missing}")
+        identity = tuple(row[name] for name in fields)
+        try:
+            hash(identity)
+        except TypeError as exc:
+            raise ValueError(
+                f"{self.key}: {where} has an unusable identity {identity!r} for "
+                f"{list(fields)} — an identity must be hashable ({exc})"
+            ) from exc
+        if any(isinstance(part, float) and not math.isfinite(part) for part in identity):
+            raise ValueError(
+                f"{self.key}: {where} has a non-finite identity {identity!r} for {list(fields)}"
+            )
+        return identity
+
+    def _index_table(self, table):
+        """``{identity: row}`` over the table, refusing a column outside the contract or a repeat."""
+        expected = self.layout.table_columns
+        index = {}
+        for position, row in enumerate(table):
+            where = f"table row {position}"
+            if not isinstance(row, dict):
+                raise ValueError(f"{self.key}: {where} is a {type(row).__name__}, not a mapping")
+            if set(row) != expected:
+                raise ValueError(
+                    f"{self.key}: {where} must hold exactly identity + agree_fields + every "
+                    f"family field; missing {sorted(expected - set(row))}, unclaimed "
+                    f"{sorted(set(row) - expected)} — the reader's columns are pinned to "
+                    "this contract"
+                )
+            identity = self._identity_of(row, where)
+            if identity in index:
+                raise ValueError(
+                    f"{self.key}: duplicate identity {identity!r} in the table ({where})"
+                )
+            index[identity] = row
+        return index
+
+    def _check_stream_row(self, position, row):
+        """Refuse a stream row missing an agree or carried field, or colliding with an attached one."""
+        where = f"row {position}"
+        missing = [name for name in self.layout.agree if name not in row]
+        if missing:
+            raise ValueError(f"{self.key}: {where} carries no agree field(s) {missing}")
+        clash = sorted(self.layout.attached & set(row))
+        if clash:
+            raise ValueError(
+                f"{self.key}: {where} already carries {clash}, which this node attaches — "
+                "an attach adds columns, it does not overwrite the stream's own"
+            )
+        for name, (family, spec) in self.layout.entries.items():
+            absent = [field for field in spec["fields"] if field not in row]
+            if absent and not family:
+                raise ValueError(
+                    f"{self.key}: {where} lacks carried field(s) {absent} of {name!r} — "
+                    "a null is allowed, a missing key is not"
+                )
+
+    def _check_agreement(self, position, row, match, identity):
+        """Refuse a matched identity whose agree fields differ (exact; null equals null)."""
+        for name in self.layout.agree:
+            if _null_cell(row[name]) != _null_cell(match[name]):
+                raise ValueError(
+                    f"{self.key}: row {position} {identity!r}: {name!r} is {row[name]!r} on "
+                    f"the stream but {match[name]!r} in the table — the sources disagree "
+                    "about a field they must share"
+                )
+
+    def _match_rows(self, stream, index):
+        """``[(row, table row or None)]`` in stream order, after every per-row check."""
+        seen = set()
+        matches = []
+        for position, row in enumerate(stream):
+            _mapping_row(self.key, "attach-by-identity", row, position)
+            self._check_stream_row(position, row)
+            identity = self._identity_of(row, f"row {position}")
+            if identity in seen:
+                raise ValueError(
+                    f"{self.key}: duplicate identity {identity!r} in the stream (row {position})"
+                )
+            seen.add(identity)
+            match = index.get(identity)
+            if match is not None:
+                self._check_agreement(position, row, match, identity)
+            matches.append((row, match))
+        return matches
+
+    def _check_absent(self, matches):
+        """Refuse when more of the stream than ``max_absent_fraction`` has no table identity."""
+        absent = sum(match is None for _row, match in matches)
+        bound = self.params["max_absent_fraction"]
+        if matches and absent / len(matches) > bound:
+            raise ValueError(
+                f"{self.key}: absent identities: {absent} of {len(matches)} stream row(s) "
+                f"are not in the table, above max_absent_fraction {bound} — the table is "
+                "not this stream's source, or the bound is deliberate and must be raised"
+            )
+
+    def _fill(self, out, name, spec, sources, tally, fallback):
+        """Write one entry's fields and ``_reasons``; ``sources`` holds the values to attach.
+
+        The one loop for families and carried entries: a withheld field is
+        null whatever its source holds (counted as discarded when it held a
+        value), and every null names its reason.
+        """
+        reasons = {}
+        for field in spec["fields"]:
+            source = _null_cell(sources.get(field))
+            reason = spec["withheld_fields"].get(field)
+            value = None if reason else source
+            tally.fields[field].add(value, discarded=bool(reason) and source is not None)
+            out[field] = value
+            if value is None:
+                reasons[field] = reason or fallback
+        tally.rows += 1
+        out[f"{self.layout.prefix}{name}_reasons"] = json.dumps(
+            reasons, sort_keys=True, separators=(",", ":")
+        )
+
+    def _attach_family(self, out, name, spec, match, tally):
+        """Attach one family: its table values (or nulls), status and reasons."""
+        found = match is not None
+        status = self.STATUS_COMPUTED if found else self.STATUS_ABSENT
+        tally.computed += found
+        tally.absent += not found
+        self._fill(out, name, spec, match or {}, tally,
+                   self.NOT_COMPUTABLE if found else self.STATUS_ABSENT)
+        out[f"{self.layout.prefix}{name}_status"] = status
+
+    def _attach_row(self, row, match, tallies):
+        """Return the stream row with every family and carried entry attached."""
+        out = dict(row)
+        for name, (family, spec) in self.layout.entries.items():
+            if family:
+                self._attach_family(out, name, spec, match, tallies[name])
+            else:
+                self._fill(out, name, spec, row, tallies[name], self.NOT_COMPUTABLE)
+        return out
+
+    def _summary(self, tallies):
+        """``{"families": {...}, "carried": {...}}`` from the entry tallies."""
+        summary = {"families": {}, "carried": {}}
+        for name, (family, spec) in self.layout.entries.items():
+            section = "families" if family else "carried"
+            summary[section][name] = tallies[name].report(spec, family=family)
+        return summary
+
+    def _provenance(self, stream):
+        """Digest the stream's identity and agree values; echo every declared note and withhold."""
+        fields = self.layout.identity + self.layout.agree
+        try:
+            text = json.dumps(
+                [[row[name] for name in fields] for row in stream],
+                sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+            )
+        except TypeError as exc:
+            raise ValueError(f"{self.key}: identity/agree values are not JSON ({exc})") from exc
+        entries = self.layout.entries
+        return {
+            "input_sha256": hashlib.sha256(text.encode("ascii")).hexdigest(),
+            "clock_notes": {name: spec["clock_note"] for name, (_f, spec) in entries.items()},
+            "withheld_fields": {name: dict(spec["withheld_fields"])
+                                for name, (_f, spec) in entries.items()},
+        }
+
+    def run(self, ctx, inputs):
+        """Attach the table's declared columns onto every stream row, in input order.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``records`` (the stream) and ``table`` (the keyed rows).
+
+        Returns
+        -------
+        dict
+            ``records``, ``summary`` and ``provenance`` as the class
+            docstring describes.
+
+        Raises
+        ------
+        ValueError
+            On a non-mapping row, a table column outside the contract, a
+            duplicate or unusable identity on either side, a stream field
+            that collides with an attached one, a missing agree or carried
+            field, a matched identity whose agree fields differ, or more
+            absent identities than ``max_absent_fraction`` allows.
+        """
+        stream, table = inputs[self._STREAM], inputs[self._TABLE]
+        matches = self._match_rows(stream, self._index_table(table))
+        self._check_absent(matches)
+        tallies = {name: _EntryTally(spec) for name, (_f, spec) in self.layout.entries.items()}
+        records = [self._attach_row(row, match, tallies) for row, match in matches]
+        self.log.info("attach-by-identity: %d row(s), %d absent",
+                      len(records), sum(match is None for _row, match in matches))
+        return {"records": records, "summary": self._summary(tallies),
+                "provenance": self._provenance(stream)}
+
+
+# ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------
 
 #: The kinds this module ships, in registration order — the
-#: single-stream verbs, then the five relational ones, then the weekday
+#: single-stream verbs, then the six relational ones, then the weekday
 #: projection. The banking chain registers separately, from
 #: :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
@@ -2705,11 +3319,12 @@ _KINDS = (
     ("groupby", GroupBy),
     ("keyby", KeyBy),
     ("weekday-onehot", WeekdayOneHot),
+    ("attach-by-identity", AttachByIdentity),
 )
 
 
 def register(registry=None):
-    """Register the eight record-flow kinds, ``owned=False``.
+    """Register the nine record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the

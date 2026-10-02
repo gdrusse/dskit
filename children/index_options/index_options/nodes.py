@@ -55,7 +55,8 @@ from .contracts import (
 from .distribution import CondorGeometry, condor_payoff
 
 __all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
-           "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "LongCallSpreadQuoteBacktest",
+           "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
+           "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
            "PutSpreadQuoteBacktest", "VolRegimeSignals", "VolSizingWeights", "mean_or_zero",
            "t_or_zero"]
@@ -2607,3 +2608,156 @@ class VolSizingWeights(_LaggedRowSignals):
                   self._ratios(implied, self._median(implied)))
         return [dict(zip(self.SIZE_FIELDS, map(self._weight, position)))
                 for position in zip(*ratios)]
+
+
+class ExactExpiryPanelRead(Node):
+    """Read the exact-expiry panel once and emit the declared columns (ADR-0217).
+
+    The one pipeline doorway to :meth:`ExactExpiryCDFPanel.read`, called
+    unchanged: this node restates no formula, it only narrows the frame to
+    ``columns`` and reports what the read consumed. Role ``data``, no inputs;
+    the read happens once, at the driver's fingerprint, and ``run`` serves
+    that same snapshot. Forbidden for serving.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        The tail-data ``read()`` keys except ``archive_root`` (the
+        ``prepare`` stage's) and the ones ``read()`` ignores here
+        (``decision_regions``, ``macro_event_calendars``: refused), plus
+        ``columns``, the frame columns to emit. Required: ``root surface
+        lifecycle symbols price_source iv_source since max_dte lags windows
+        feature_gap_days reference_floor spot_tolerance columns``; optional:
+        ``chain_features raw_chain market_symbols fred_market_symbols
+        surface_features ohlc_windows matched_dte_vrp``.
+
+    Examples
+    --------
+    Emit two engineered columns beside the row identity::
+
+        node = ExactExpiryPanelRead("panel", {
+            "root": "./ob", "surface": "surface.parquet", "lifecycle": "life.parquet",
+            "symbols": {"QQQ": "VXN"}, "price_source": "prices", "iv_source": "indexes",
+            "since": "2016-01-01", "max_dte": 45, "lags": 22, "windows": [1, 5, 22],
+            "feature_gap_days": 7, "reference_floor": 0.001, "spot_tolerance": 0.02,
+            "matched_dte_vrp": True,
+            "columns": ["symbol", "quote_date", "expiry", "matched_vrp", "rv_22"]})
+        out = node.run(ctx, {})   # out["records"], out["provenance"]
+    """
+
+    role = "data"
+    outputs = ("records", "provenance")
+    _REQUIRED = ("columns", "feature_gap_days", "iv_source", "lags", "lifecycle", "max_dte",
+                 "price_source", "reference_floor", "root", "since", "spot_tolerance", "surface",
+                 "symbols", "windows")
+    _OPTIONAL = ("chain_features", "fred_market_symbols", "market_symbols", "matched_dte_vrp",
+                 "ohlc_windows", "raw_chain", "surface_features")
+    _PARAMS = _REQUIRED + _OPTIONAL
+
+    def __init__(self, key, params=None, **kwargs):
+        super().__init__(key, params, **kwargs)
+        self._snapshot = None
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse an undeclared knob, a missing required one and a malformed ``columns``/``symbols``.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        problems += [f"{name} is required" for name in cls._REQUIRED if name not in params]
+        owner = _CondorBacktestBase           # the distinct-list rule has one home (ADR-0195)
+        owner._distinct_list_problems(problems, params, "columns", owner._name_ok, "names")
+        symbols = params.get("symbols")
+        if "symbols" in params and (
+                not isinstance(symbols, dict) or not symbols
+                or any(not isinstance(k, str) or not isinstance(v, str) for k, v in symbols.items())):
+            problems.append(f"symbols must be a non-empty {{ticker: index}} dict, got {symbols!r}")
+        for knob in ("max_dte", "lags"):
+            if knob in params:
+                check_int_param(problems, knob, params[knob], ge=1)
+        return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Keep this research reader out of served graphs.
+
+        Parameters
+        ----------
+        params, verified_run_evidence : dict
+            Unused.
+
+        Returns
+        -------
+        str
+            Always forbidden.
+        """
+        return "forbidden"
+
+    def _read(self):
+        """Read the panel once and keep ``columns`` as plain Python rows."""
+        from .cdf_study import ExactExpiryCDFPanel
+
+        columns = self.params["columns"]
+        adapter = ExactExpiryCDFPanel({k: v for k, v in self.params.items() if k != "columns"})
+        frame = adapter.read()
+        missing = [name for name in columns if name not in frame.columns]
+        if missing:
+            raise ValueError(f"{self.key}: the panel read has no column(s) {missing}")
+        kept = frame[columns].astype(object)
+        records = kept.where(frame[columns].notna(), None).to_dict("records")
+        return {"records": records, "provenance": adapter.provenance()}
+
+    def _snapshot_once(self):
+        """Return the one read both ``fingerprint`` and ``run`` serve."""
+        if self._snapshot is None:
+            self._snapshot = self._read()
+        return self._snapshot
+
+    def fingerprint(self):
+        """Name the data this read consumes: row count plus the read's own provenance.
+
+        Returns
+        -------
+        dict
+            ``kind``, ``rows`` and ``provenance`` (source hashes, reader
+            fingerprints, code hash); it moves with any of them.
+        """
+        snapshot = self._snapshot_once()
+        return {"kind": type(self).__name__, "rows": len(snapshot["records"]),
+                "provenance": snapshot["provenance"]}
+
+    def run(self, ctx, inputs):
+        """Emit the snapshot the fingerprint saw.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused: a source reads only its params.
+        inputs : dict
+            Empty: role ``data`` takes no inputs.
+
+        Returns
+        -------
+        dict
+            ``records`` (rows with exactly ``columns``; NaN as ``None``) and
+            ``provenance`` (the read's refusals, hashes and fingerprints).
+
+        Raises
+        ------
+        ValueError
+            When ``columns`` names a column the read does not produce.
+        """
+        snapshot = self._snapshot_once()
+        return {"records": snapshot["records"], "provenance": snapshot["provenance"]}

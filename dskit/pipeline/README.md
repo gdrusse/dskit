@@ -437,6 +437,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `weekday-onehot` | transform | 0/1 weekday columns from one ISO `date_field` (`weekdays` default all seven, `baseline` tags all-zero); an uncovered weekday or bad date raises; `counts` per weekday (ADR-0214) |
 | `holdout-cut` | transform | lock the last `ceil(fraction x dates)` dates as the holdout and purge dev rows whose label reaches it; emits dev rows + dates-only `metrics` (ADR-0215) |
 | `rolling-origin-plan` | transform | count-sized rolling-origin folds over the dev dates; the oldest `warmup_folds` are `warmup` (all selection), the rest `scored`; refuses rows on/past `holdout_start`; every knob required (ADR-0215) |
+| `attach-by-identity` | transform | a table keyed by SEVERAL fields (`identity`) -> declared column families onto a stream: exact column contract, agreed fields, per-field `withheld_fields`, explicit nulls with `_reasons`, `summary` and `provenance` (ADR-0217) |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
 | `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
@@ -797,7 +798,7 @@ dskit/pipeline/
 │                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
-│                      weekday-onehot — record-flow verbs
+│                      weekday-onehot, attach-by-identity — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
