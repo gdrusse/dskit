@@ -3076,6 +3076,22 @@ def test_fold_table_bands_follow_the_table_with_a_calibration_tail_and_label_pur
         assert set(scores[scores.fold == fold['fold']].date) == set(val)
 
 
+def test_fold_table_purges_a_calibration_row_whose_label_reaches_the_validation_window(tmp_path):
+    # The sha pins the table, not the frame: a re-read panel may carry labels that outrun the
+    # plan's embargo, so the study's own cal-vs-val purge is what keeps val out of the monitor.
+    frame, spec, plan = _fold_setup(tmp_path)
+    last = plan['records'][-1]
+    late = [r for r in frame if r['date'] == last['train_end']]
+    assert len(late) == 1 and late[0]['end'] < last['val_start']  # the plan's embargo held
+    late[0]['end'] = late[0]['expiry'] = last['val_start']  # now its label settles on val_start
+    ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(pd.DataFrame(frame))
+    cal = json.loads((tmp_path/'out/counts.json').read_text())[-1]['cal']
+    days = sorted({r['date'] for r in frame})
+    tail = [d for d in days if d <= last['train_end']][-5:]
+    assert (cal['n'], cal['last']) == (4, tail[-2])  # the train_end day is gone, not just late
+    assert cal['last'] < last['train_end'] and cal['latest_label'] < last['val_start']
+
+
 def test_fold_table_drops_warmup_val_rows_whose_label_reaches_the_scored_seam(tmp_path):
     frame, spec, plan = _fold_setup(tmp_path, lag=3)
     scores = ChronologicalCDFStudy(_fold_config(tmp_path, spec)).run(pd.DataFrame(frame))
