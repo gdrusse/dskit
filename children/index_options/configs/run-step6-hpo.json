@@ -167,7 +167,7 @@
       "max_bias_increase": 0.01
     },
     "fold_table": {
-      "path": "pipeline_runs/step3/fold-table.jsonl",
+      "path": "pipeline_runs/step3-holdout-folds/fold-table.jsonl",
       "sha256": "REPLACE_WITH_STEP3_FOLD_TABLE_SHA256",
       "holdout_start": "REPLACE_WITH_STEP3_HOLDOUT_START",
       "cal_n": 40,
