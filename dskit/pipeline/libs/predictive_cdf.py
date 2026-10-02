@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.distribution_scores import row_in_split
 from dskit.pipeline.node import (
     JsonArtifact,
     Node,
@@ -20,8 +21,8 @@ from dskit.pipeline.node import (
     check_int_param,
     reject_unknown_params,
 )
-from dskit.pipeline.records import cluster_of, number_ok
-from dskit.pipeline.split_policy import SPLIT_NAMES, SplitFrame
+from dskit.pipeline.records import number_ok
+from dskit.pipeline.split_policy import SPLIT_NAMES
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "BetaTransformedCurve", "CDFEstimator",
@@ -4992,20 +4993,34 @@ class CDFEstimatorModel(TrainableNode):
 
         module, cls = params["estimator"].split(":")
         est_cls = getattr(importlib.import_module(module), cls)
+        if getattr(est_cls, "consumes_calibration_labels", False):
+            raise ValueError(
+                f"{self.key}: {params['estimator']} consumes calibration labels "
+                "but a walk-forward fold carves no calibration band — refusing to "
+                "calibrate on training labels"
+            )
         model = est_cls(**dict(params.get("estimator_params") or {}))
 
         x = np.asarray(
             [[_node_number(_node_field(r, f)) for f in features] for r in fit_rows],
             dtype=float)
-        y = np.asarray(
-            [_node_number(_node_field(r, target))
-             / _node_number(_node_field(r, reference)) for r in fit_rows],
-            dtype=float)
+        refs, tgts = [], []
+        for r in fit_rows:
+            ref = _node_number(_node_field(r, reference))
+            tgt = _node_number(_node_field(r, target))
+            if ref is None or ref <= 0 or tgt is None:
+                raise ValueError(
+                    f"{self.key}: a fit row has a missing or nonpositive "
+                    f"{reference!r} (or missing {target!r}); every fit row needs "
+                    "a finite nonzero reference"
+                )
+            refs.append(ref)
+            tgts.append(tgt)
+        y = np.asarray([t / r for t, r in zip(tgts, refs)], dtype=float)
         if not np.isfinite(y).all():
             raise ValueError(
                 f"{self.key}: a fit row has a non-finite standardized outcome "
-                f"({target}/{reference}); every fit row needs a finite nonzero "
-                f"{reference}"
+                f"({target}/{reference})"
             )
         imputer = SimpleImputer(strategy="median", keep_empty_features=True)
         x = imputer.fit_transform(x)
@@ -5018,9 +5033,8 @@ class CDFEstimatorModel(TrainableNode):
             model.fit_decision_context(
                 self._context_rows(fit_rows), self._context_rows(fit_rows))
         # The calibration band is the fit band here: the MLP family validates
-        # cal_x for shape and ignores cal_y, so no label leaks. An estimator
-        # that CONSUMES calibration labels needs a declared cal band, which a
-        # walk-forward fold does not carve.
+        # cal_x for shape and ignores cal_y, so no label leaks; cal-consuming
+        # estimators were refused above.
         model.fit(x, y, x, y)
 
         emitted = self._emit(model, imputer, rows)
@@ -5044,17 +5058,7 @@ class CDFEstimatorModel(TrainableNode):
 
     def _fit_rows(self, ctx, rows, fit_split):
         """Select the declared split's rows, or refuse by name."""
-        splits = getattr(ctx, "splits", None)
-        if splits is None:
-            raise ValueError(
-                f"{self.key}: fit_split={fit_split!r} but the run materialized "
-                "no splits — fitting on every row would leak the val split"
-            )
-        keep = [
-            row for row in rows
-            if splits.split_of(SplitFrame(
-                _node_number(_node_field(row, "asof_ms")), cluster_of(row))) == fit_split
-        ]
+        keep = [row for row in rows if row_in_split(ctx, row, fit_split)]
         if not keep:
             raise ValueError(f"{self.key}: fit_split={fit_split!r} matched no row")
         return keep

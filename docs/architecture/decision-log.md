@@ -29151,6 +29151,10 @@ authority, no decision policy in the loop.
 - The calibration band the estimator fit receives is the fit band itself: the
   MLP family validates `cal_x` for shape and ignores `cal_y`, so no label
   leaks; an estimator that consumes calibration labels needs a cal band.
+- An estimator declaring `consumes_calibration_labels` is refused by name.
+  Known gap: `ScaledEmpiricalCDF` reads `cal_y` in `fit` but does not yet
+  declare that flag — a pre-existing inconsistency also present in the HPO
+  path's own guard, tracked separately and not introduced here.
 - Predictive validity is a proper score over the forecast; the condor/MIO
   policy stays out of this node and remains the separate decision lens.
 
@@ -29185,10 +29189,15 @@ fetched rows identically to a pinned archive. No new package.
 - Credential material is named by environment variables (`key_env`/
   `secret_env`, default `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY`); secret
   material never enters config, stores, or hashes.
-- The multiplier/root/status/DTE gates replicate ADR-0213's: only
-  `size == multiplier` (default 100), `root_symbol == symbol`, `status`
-  (default `inactive`) contracts are admitted; bars are fetched over
-  `expiry - dte_max .. expiry - dte_min`.
+- The root/status/DTE gates replicate ADR-0213's: only `root_symbol == symbol`,
+  `status` (default `inactive`) contracts whose `size == multiplier` (default
+  100) are admitted; bars are fetched over `expiry - dte_max .. expiry -
+  dte_min`. The trading API returns `size` but NOT the `multiplier` field the
+  archive gated on, so fetched contracts record `contract_size` from `size`
+  and `multiplier=None` with `contract_terms_status="unverified_contract_terms"`
+  — never a fabricated multiplier. Full parity with the archive's
+  multiplier-0 exclusion requires the raw `/v1beta1/options/contracts`
+  endpoint, a separate follow-up.
 - The free tier returns trade bars only (no bid/ask quotes); `price_basis`
   is `trade_close` and fills stay out of scope, exactly as the archive
   connector records.

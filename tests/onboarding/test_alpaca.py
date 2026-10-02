@@ -1,6 +1,6 @@
 """Alpaca bars pack through its connector contract, without a network."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -325,6 +325,8 @@ class _FakeContract:
         self.underlying_symbol = underlying
         self.size = size
         self.style = style
+        self.expiration_date = date(2024, 2, 2)
+        self.strike_price = 125.0
 
 
 class _FakeContractsResponse:
@@ -339,7 +341,7 @@ class _FakeTradingClient:
 
     def get_option_contracts(self, request):
         return _FakeContractsResponse([
-            _FakeContract("AMZN240202C00125000", "AMZN", 100, "american"),
+            _FakeContract("AMZN240202C00125000", "AMZN", "100", "american"),
         ])
 
 
@@ -384,6 +386,9 @@ def test_option_fetch_emits_contracts_and_bars_without_network(monkeypatch):
     assert contracts[0]["data"]["strike"] == 125.0
     assert contracts[0]["data"]["expiry"] == "2024-02-02"
     assert contracts[0]["data"]["style"] == "american"
+    assert contracts[0]["data"]["contract_size"] == 100.0
+    assert contracts[0]["data"]["multiplier"] is None
+    assert contracts[0]["data"]["contract_terms_status"] == "unverified_contract_terms"
     assert len(bars) == 1
     assert bars[0]["data"]["mark"] == 125.5
     assert bars[0]["data"]["quote_date"] == "2023-12-20"
@@ -397,7 +402,7 @@ def test_option_fetch_refuses_nonstandard_multiplier(monkeypatch):
     class NonStandard(_FakeTradingClient):
         def get_option_contracts(self, request):
             return _FakeContractsResponse([
-                _FakeContract("AMZN240202C00125000", "AMZN", 0, "american"),
+                _FakeContract("AMZN240202C00125000", "AMZN", "0", "american"),
             ])
 
     monkeypatch.setenv("APCA_API_KEY_ID", "k")

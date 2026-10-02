@@ -1030,15 +1030,18 @@ class AlpacaOptionFetchConnector(Connector):
                 response = client.get_option_contracts(request)
                 for contract in response.option_contracts:
                     item = AlpacaOptionArchiveConnector._identity(contract.symbol)
-                    size = contract.size
-                    if (size != knobs["multiplier"]
+                    size = float(contract.size)
+                    if (size != float(knobs["multiplier"])
                             or item["root_symbol"] != symbol):
                         continue
+                    if (item["expiry"] != str(contract.expiration_date)
+                            or item["strike"] != float(contract.strike_price)):
+                        continue
                     item.update(symbol=contract.underlying_symbol,
-                                multiplier=float(size),
-                                contract_size=float(size),
+                                multiplier=None,
+                                contract_size=size,
                                 style=contract.style,
-                                contract_terms_status="metadata_present",
+                                contract_terms_status="unverified_contract_terms",
                                 effective_at=datetime.now(timezone.utc).isoformat())
                     result[item["contract"]] = item
                 page_token = response.next_page_token
