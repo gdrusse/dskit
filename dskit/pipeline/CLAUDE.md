@@ -730,7 +730,8 @@ dskit/pipeline/
 ├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
 │                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby —
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
+│                      attach-by-identity —
 │                      flow verbs (keyby: records -> the keyed side table join reads)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine

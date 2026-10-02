@@ -2236,3 +2236,582 @@ def test_two_step_files_end_to_end(child_root, tmp_path, shape):
         assert totals[(0,) * 13] == 4 and totals[(1,) + (0,) * 12] == 2
         assert totals[(1,) * 13] == 0
 
+
+
+# -- step 1b: the engineered feature panel between steps 1 and 2 (ADR-0217) ----------------------
+
+FE = "configs/run-step1b-feature-engineering.json"
+FE_SOURCE = "configs/source-feature-panel.json"
+TAIL_DATA = "configs/run-predictive-cdf-tail-data.json"
+FE_IDENTITY = ["symbol", "quote_date", "expiry"]
+FE_WITHHELD = "oi_publication_clock_unverified"
+#: The 18 withheld open-interest fields, restated here independently of the shipped document:
+#: three OI x greek fields of positioning_changes, the two liquidity OI fields, the nine
+#: chain-node OI fields and the four panel columns that still hold the same OI.
+FE_OI_POSITIONING = ("chain_log_delta_oi", "chain_log_gamma_oi", "chain_log_vega_oi")
+FE_OI_LIQUIDITY = ("chain_log_put_call_oi", "chain_log_open_interest")
+FE_OI_NODES = tuple(f"chain_node_{i:02d}_log_oi" for i in range(9))
+FE_OI_PANEL = ("chain_open_interest", "chain_put_call_oi", "chain_has_put_call_oi",
+               "chain_liquidity_asymmetry")
+FE_OI_ALL = FE_OI_POSITIONING + FE_OI_LIQUIDITY + FE_OI_NODES + FE_OI_PANEL
+#: Open interest read from an EARLIER snapshot of the same expiry series: known at entry.
+FE_OI_PRIOR = ("chain_log_lag_open_interest", "chain_log_lag_oi_change")
+FE_FAMILIES = ["variance_gap", "ohlc_shape", "positioning_changes", "expanded_volatility_context"]
+
+
+def _fe(child_root):
+    return _step(child_root, FE)
+
+
+def _fe_attach(child_root):
+    return _fe(child_root)["foreach"]["pipeline"]["features"]["params"]
+
+
+def _is_oi_named(name):
+    return "open_interest" in name or "oi" in name.split("_")
+
+
+def test_step1b_document_validates_and_plans(child_root):
+    for verb in ("validate", "plan"):
+        done = _must(_cli(["dskit.pipeline", verb, str(child_root / FE)], child_root))
+    planned = json.loads(done.stdout)
+    assert {"source", "step1_selection", "panel", "panel_evidence", "features__qqq",
+            "features__spy", "features__iwm", "dense__qqq", "horizon_rows__iwm"} <= set(
+        planned["order"])
+    assert planned["nodes"]["features__qqq"]["class"].endswith(":AttachByIdentity")
+    assert planned["nodes"]["panel"]["class"] == "index_options.nodes:ExactExpiryPanelRead"
+
+
+def test_step1b_reader_params_equal_the_tail_data_block_and_its_columns_the_attach_contract(
+        child_root):
+    from dskit.pipeline.kinds_flow import AttachByIdentity
+    from index_options.nodes import ExactExpiryPanelRead
+
+    reader = _fe(child_root)["pipeline"]["panel"]["params"]
+    tail = json.loads((child_root / TAIL_DATA).read_text())["data"]
+    assert ExactExpiryPanelRead.validate_params(reader) == []
+    assert set(reader) - {"columns"} == set(tail) - {"archive_root", "fred_market_symbols"}
+    for key, value in reader.items():
+        if key not in ("columns", "market_symbols"):
+            assert value == tail[key], key                    # key by key, values unchanged
+    markets = reader["market_symbols"]
+    assert markets == {k: tail["market_symbols"][k] for k in markets} and set(markets) == {
+        "market_vix1y", "market_rvx", "market_vxd", "market_ovx", "market_vxeem",
+        "market_vxslv", "market_vxtlt"}                       # exactly the seven the family reads
+    attach = _fe_attach(child_root)
+    assert AttachByIdentity.validate_params(attach) == []
+    owned = [f for spec in attach["families"].values() for f in spec["fields"]]
+    assert reader["columns"] == attach["identity"] + attach["agree_fields"] + owned
+    assert attach["identity"] == FE_IDENTITY
+    assert {"terminal_return", "actual_calendar_dte", "chain_atm_iv", "rv_22"} <= set(
+        attach["agree_fields"]) and {f for f in attach["agree_fields"]
+                                     if f.startswith("rn_q_")} == {
+        "rn_q_0100", "rn_q_0500", "rn_q_1000", "rn_q_2500", "rn_q_5000", "rn_q_7500",
+        "rn_q_9000", "rn_q_9500", "rn_q_9900"}
+
+
+def test_step1b_families_equal_step2s_contracts_with_their_quality_columns(child_root):
+    contracts = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]
+    families = _fe_attach(child_root)["families"]
+    assert list(families) == FE_FAMILIES
+    for name in FE_FAMILIES:
+        quality = [c["field"] for c in contracts[name]["quality_checks"]]
+        want = contracts[name]["fields"] + [f for f in dict.fromkeys(quality)
+                                            if f not in contracts[name]["fields"]]
+        assert families[name]["fields"] == want, name
+    assert len(families["expanded_volatility_context"]["fields"]) == 21
+
+
+def test_step1b_withholds_exactly_the_open_interest_fields_and_computes_the_prior_ones(
+        child_root):
+    attach = _fe_attach(child_root)
+    families, carried = attach["families"], attach["carried"]
+    assert set(families["positioning_changes"]["withheld_fields"]) == set(FE_OI_POSITIONING)
+    assert set(carried) == {"expiry_density", "liquidity_oi", "chain_nodes_oi",
+                            "oi_panel_columns"}
+    assert carried["liquidity_oi"]["fields"] == list(FE_OI_LIQUIDITY)
+    assert carried["chain_nodes_oi"]["fields"] == list(FE_OI_NODES)
+    assert carried["oi_panel_columns"]["fields"] == list(FE_OI_PANEL)
+    assert carried["expiry_density"] == {
+        "fields": ["expiry_density"], "withheld_fields": {},
+        "clock_note": carried["expiry_density"]["clock_note"]}
+    step2 = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]
+    assert set(carried["liquidity_oi"]["fields"]) <= set(step2["liquidity"]["fields"])
+    assert set(carried["chain_nodes_oi"]["fields"]) <= set(step2["chain_nodes"]["fields"])
+    withheld = {}
+    for section in (families, carried):
+        for name, spec in section.items():
+            if name == "expiry_density":
+                continue
+            assert all(r == FE_WITHHELD for r in spec["withheld_fields"].values()), name
+            withheld.update(spec["withheld_fields"])
+    for name in ("liquidity_oi", "chain_nodes_oi", "oi_panel_columns"):
+        assert set(carried[name]["withheld_fields"]) == set(carried[name]["fields"]), name
+    assert set(withheld) == set(FE_OI_ALL) and len(FE_OI_ALL) == 18 == len(withheld)
+    positioning = families["positioning_changes"]
+    assert set(FE_OI_PRIOR) <= set(positioning["fields"])
+    assert not set(FE_OI_PRIOR) & set(withheld)
+    for spec in (*families.values(), *carried.values()):
+        assert spec["clock_note"] and isinstance(spec["clock_note"], str)
+    for name in ("positioning_changes",):
+        assert "audit" in families[name]["clock_note"]
+    for name in ("liquidity_oi", "chain_nodes_oi", "oi_panel_columns"):
+        assert "publication clock" in carried[name]["clock_note"] and "audit" in carried[name][
+            "clock_note"]
+
+
+def test_step1b_every_open_interest_named_column_is_withheld_or_a_prior_observation(child_root):
+    step2 = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]
+    reader = _fe(child_root)["pipeline"]["panel"]["params"]["columns"]
+    names = {f for spec in step2.values() for f in spec["fields"]} | set(reader)
+    unaccounted = sorted(n for n in names if _is_oi_named(n)
+                         and n not in FE_OI_ALL and n not in FE_OI_PRIOR)
+    assert unaccounted == []
+
+
+def test_step1b_all_eighteen_withheld_fields_stay_null_whatever_the_sources_hold(child_root):
+    from dskit.pipeline.kinds_flow import AttachByIdentity
+
+    attach = _fe_attach(child_root)
+    table, stream = [], []
+    for d in ("2020-01-02", "2020-01-03"):
+        agree = {f: 1.0 for f in attach["agree_fields"]}
+        key = {"symbol": "QQQ", "quote_date": d, "expiry": "2020-02-21"}
+        table.append({**key, **agree, **{f: 2.0 for s in attach["families"].values()
+                                         for f in s["fields"]}})
+        stream.append({**key, **agree, **{f: 3.0 for s in attach["carried"].values()
+                                          for f in s["fields"]}})
+    out = AttachByIdentity("features", attach).run(None, {"records": stream, "table": table})
+    assert len(FE_OI_ALL) == 18
+    for row in out["records"]:
+        assert [row[f] for f in FE_OI_ALL] == [None] * 18
+        assert row["chain_log_lag_open_interest"] == 2.0 and row["expiry_density"] == 3.0
+    summary = out["summary"]
+    for section in ("families", "carried"):
+        for entry in summary[section].values():
+            for field, stats in entry["fields"].items():
+                if field in FE_OI_ALL:
+                    assert (stats["non_null"], stats["discarded"]) == (0, 2), field
+                    assert stats["min"] is None and stats["max"] is None
+    assert FE_WITHHELD in json.dumps(out["records"]) and FE_WITHHELD in json.dumps(
+        out["provenance"])
+
+
+def test_step1b_clock_note_age_limit_is_the_one_number_in_the_data_and_in_step2(child_root):
+    import re
+
+    note = _fe_attach(child_root)["families"]["expanded_volatility_context"]["clock_note"]
+    limits = {int(n) for n in re.findall(r"(\d+) calendar days", note)}
+    ages = {s["max_age_days"] for s in _fe(child_root)["pipeline"]["panel"]["params"][
+        "market_symbols"].values()}
+    step2 = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]["expanded_volatility_context"]["quality_checks"]
+    bounds = {c["value"] for c in step2 if c["op"] == "<=" and c["field"].endswith("_age_days")}
+    assert limits == ages == bounds and len(limits) == 1
+
+
+def _fe_template(child_root):
+    return _fe(child_root)["foreach"]["pipeline"]
+
+
+def _ancestors(nodes, key):
+    seen, todo = set(), [key]
+    while todo:
+        for ref in nodes[todo.pop()].get("inputs", {}).values():
+            parent = ref[1:].split(".")[0]
+            if parent in nodes and parent not in seen:
+                seen.add(parent)
+                todo.append(parent)
+    return seen
+
+
+def _fe_panel_rows(rows):
+    """Prepared-panel rows (symbol, quote_date, expiry, actual dte, planned dte, settled)."""
+    return [{"symbol": s, "quote_date": d, "expiry": e, "actual_calendar_dte": a,
+             "calendar_dte": p, "terminal_return": 0.01 if settled else None}
+            for s, d, e, a, p, settled in rows]
+
+
+def _fe_selection(symbol, dte):
+    return [{"symbol": symbol, "actual_calendar_dte": dte, "listed_forecasts": 99}]
+
+
+def test_step1b_cohort_is_step1s_settled_rows_at_the_selected_dte_never_typed(child_root):
+    template = _fe_template(child_root)
+    rows = _fe_panel_rows([
+        ("QQQ", "2020-01-02", "2020-01-09", 7, 7, True),
+        ("QQQ", "2020-01-03", "2020-01-10", 7, 7, False),        # unsettled
+        ("QQQ", "2020-01-06", "2020-01-14", 8, 8, True),         # another DTE
+        ("SPY", "2020-01-02", "2020-01-09", 7, 7, True)])        # another ticker
+    outputs = {"source": {"records": rows}, "step1_selection": {"records": _fe_selection("QQQ", 7)}}
+    out = _run_nodes(template, outputs, each="QQQ")
+    assert [r["quote_date"] for r in out["cohort"]["records"]] == ["2020-01-02"]
+    for name in ("cohort", "horizon_rows"):                     # the DTE is a reference, never a literal
+        dte = [c for c in template[name]["params"]["where"]
+               if c["field"] in ("actual_calendar_dte", "calendar_dte") and c["op"] in ("==", "<=")]
+        assert [c["value"] for c in dte] == ["$selected_dte.table.all"], name
+    assert template["selected_dte"]["params"] == {"key": "selection_group",
+                                                  "value": "actual_calendar_dte"}
+
+
+def test_step1b_cohort_predicate_is_step1s_and_the_horizon_differs_only_in_its_bound(child_root):
+    one = _step(child_root, STEP1)["foreach"]["pipeline"]["cohort"]["params"]["where"]
+    template = _fe_template(child_root)
+    bound = lambda c: c["op"] == "<=" and c["field"] in ("actual_calendar_dte", "calendar_dte")  # noqa: E731
+    horizon = template["horizon_rows"]["params"]["where"]
+    assert [c for c in horizon if not bound(c)] == [c for c in one if not bound(c)]
+    assert [c["field"] for c in horizon if bound(c)] == ["calendar_dte"]    # planned, not actual
+    assert [c["field"] for c in one if bound(c)] == ["actual_calendar_dte"]
+    assert [c["value"] for c in one if bound(c)][0] <= _fe(child_root)["pipeline"]["panel"][
+        "params"]["max_dte"]
+    cohort = template["cohort"]["params"]["where"]
+    assert [c for c in cohort if c["field"] != "actual_calendar_dte"] == [
+        c for c in one if c["field"] not in ("actual_calendar_dte",)]
+
+
+def test_step1b_expiry_density_counts_listed_planned_expiries_before_the_cohort_filter(
+        child_root):
+    template = _fe_template(child_root)
+    assert "cohort" not in _ancestors(template, "density")      # density is counted BEFORE the cohort
+    assert {"density_by_date", "cohort"} <= _ancestors(template, "dense")
+    rows = _fe_panel_rows([
+        # 2020-01-02: three expiries inside the 7-day horizon, one outside, a pending one
+        ("QQQ", "2020-01-02", "2020-01-04", 2, 2, True), ("QQQ", "2020-01-02", "2020-01-07", 5, 5, True),
+        ("QQQ", "2020-01-02", "2020-01-09", 7, 7, True), ("QQQ", "2020-01-02", "2020-01-16", 14, 14, True),
+        ("QQQ", "2020-01-02", "2020-01-08", 6, 6, False),
+        # another symbol's rows must not count
+        ("SPY", "2020-01-02", "2020-01-09", 7, 7, True), ("SPY", "2020-01-02", "2020-01-08", 6, 6, True),
+        # an ad hoc closure: planned 14 and 13, both settling at actual 13 (selected 7 here)
+        ("QQQ", "2020-01-03", "2020-01-10", 7, 7, True), ("QQQ", "2020-01-06", "2020-01-20", 7, 8, True)])
+    outputs = {"source": {"records": rows}, "step1_selection": {"records": _fe_selection("QQQ", 7)}}
+    out = _run_nodes(template, outputs, each="QQQ")
+    dense = {r["quote_date"]: r["expiry_density"] for r in out["dense"]["records"]}
+    assert dense == {"2020-01-02": 3, "2020-01-03": 1, "2020-01-06": None}    # a cohort-first 1 would fail
+    cohort_first = [r for r in out["cohort"]["records"] if r["quote_date"] == "2020-01-02"]
+    assert len(cohort_first) == 1                               # the trap the horizon avoids
+    # planned 13 and 14, both settling at actual 13 (selected 13): each date's lone expiry counts 1,
+    # and a date whose only cohort expiry is planned 14 gets a declared null
+    rows = _fe_panel_rows([
+        ("SPY", "2020-02-03", "2020-02-14", 13, 13, True), ("SPY", "2020-02-04", "2020-02-14", 13, 14, True),
+        ("SPY", "2020-02-05", "2020-02-18", 13, 13, True), ("SPY", "2020-02-05", "2020-02-19", 13, 14, True)])
+    outputs = {"source": {"records": rows}, "step1_selection": {"records": _fe_selection("SPY", 13)}}
+    out = _run_nodes(template, outputs, each="SPY")
+    assert [(r["quote_date"], r["expiry_density"]) for r in out["dense"]["records"]] == [
+        ("2020-02-03", 1), ("2020-02-04", None), ("2020-02-05", 1), ("2020-02-05", 1)]
+
+
+def test_step1b_row_count_is_pinned_to_step1_and_the_sources_agree(child_root):
+    one, two, fe = _step(child_root, STEP1), _step(child_root, STEP2), _fe(child_root)
+    pipe = fe["pipeline"]
+    assert pipe["panel_evidence"]["params"]["expect"] == "$expected_value.table.all"
+    assert pipe["expected_sum"]["params"]["aggregates"] == {
+        "rows": {"op": "sum", "field": "listed_forecasts"}}
+    assert "listed_forecasts" in one["foreach"]["pipeline"]["coverage"]["params"]["aggregates"]
+    assert pipe["expected_value"]["params"] == {"key": "selection_group", "value": "rows"}
+    ours, theirs = pipe["source"]["params"], one["pipeline"]["source"]["params"]
+    assert ours == {k: theirs[k] for k in ("root", "source", "stream", "key_fields")}
+    assert not {"ts_field", "ts_unit", "ts_out"} & set(ours)   # no stamp: step 2 stamps its own
+    assert two["pipeline"]["source"]["params"]["ts_out"] == "quote_date_ms"
+    assert pipe["step1_selection"]["params"] == two["pipeline"]["step1_selection"]["params"]
+    assert fe["foreach"]["keys"] == one["foreach"]["keys"] == two["foreach"]["keys"]
+    assert pipe["step1_selection"]["params"]["key_fields"] == ["symbol"]
+
+
+def test_step1b_writer_agrees_with_its_source_config(child_root):
+    import posixpath
+
+    from dskit.onboarding.connector import check_config
+    from dskit.onboarding.libs.localtables import LocalTablesConnector
+
+    fe, source = _fe(child_root), _step(child_root, FE_SOURCE)
+    written = fe["pipeline"]["panel_evidence"]["params"]["path"]
+    assert posixpath.normpath(posixpath.dirname(written)) == posixpath.normpath(source["path"])
+    stem, suffix = posixpath.basename(written).rsplit(".", 1)
+    assert source["streams"] == [stem] == [fe["pipeline"]["source"]["params"]["stream"]]
+    assert source["formats"] == [suffix] == ["jsonl"]
+    assert (source["effective_field"], source["effective_unit"]) == ("quote_date", "iso")
+    check_config(LocalTablesConnector(), source)
+
+
+def test_step1b_declares_weekday_pending_and_copies_no_code(child_root):
+    fe = _fe(child_root)
+    pending = fe["pipeline"]["pending_inputs"]["params"]["tables"]["pending"]
+    assert pending["weekday_onehot"]["status"] == "pending_merge"
+    assert "ADR-0214" in pending["weekday_onehot"]["reason"]
+    kinds = {n["uses"] for n in (*fe["pipeline"].values(), *fe["foreach"]["pipeline"].values())}
+    assert "weekday-onehot" not in kinds
+    assert "AMZN" in fe["foreach"]["notes"] and "AMZN" in fe["notes"]
+
+
+# -- step 1b end to end: fixture sources -> prepared panel -> step 1 -> step 1b -> step 2 ----------
+
+FE_INDEXES = {"QQQ": "VXN", "SPY": "VIX", "IWM": "RVX"}
+FE_MARKET_SYMBOLS = ("VIX1Y", "RVX", "VXD", "OVX", "VXEEM", "VXSLV", "VXTLT")
+FE_PROBS = [.01, .05, .1, .25, .5, .75, .9, .95, .99]
+FE_POSITIONING = ["chain_log_volume", "chain_put_call_volume_imbalance",
+                  "chain_volume_weighted_rel_spread", "chain_log_lag_open_interest",
+                  "chain_log_lag_oi_change", "chain_log_delta_oi", "chain_log_gamma_oi",
+                  "chain_log_vega_oi"]
+
+
+def _fe_env(child_root):
+    """The subprocess environment: the child importable from any working directory."""
+    return {"PYTHONPATH": os.pathsep.join(
+        p for p in (str(child_root), os.environ.get("PYTHONPATH", "")) if p)}
+
+
+def _onboard_more(cwd, source, root, config, stream, env):
+    _must(_cli(["dskit.onboarding", "register-source", source, "--catalog-source", source,
+                "--connector", "localtables", "--config", config, "--activate", "--root", root],
+               cwd, env))
+    _must(_cli(["dskit.onboarding", "acquire", "--source", source, "--stream", stream,
+                "--mode", "backfill", "--root", root], cwd, env))
+
+
+def _fe_world(cwd, child_root):
+    """Write synthetic sources for QQQ/SPY/IWM, onboard the index series and build the panels.
+
+    Returns ``(days, reader_paths, panel_frame)``: the session dates, the file paths the
+    shipped reader params must point at, and the prepared panel (the read under a config that
+    holds no engineered family, plus two unsettled rows).
+    """
+    import exchange_calendars as xc
+    import numpy as np
+    import pandas as pd
+    from index_options.cdf_study import ExactExpiryCDFPanel
+
+    env = _fe_env(child_root)
+    days = [d.strftime("%Y-%m-%d")
+            for d in xc.get_calendar("XNYS").sessions_in_range("2023-01-03", "2023-04-28")]
+    prices, values = [], []
+    for k, symbol in enumerate(FE_INDEXES):
+        for i, d in enumerate(days):
+            c = 100+i*.3+np.sin(i+k)
+            prices.append({"symbol": symbol, "date": d, "open": c*.99, "high": c*1.01,
+                           "low": c*.98, "close": c, "dividend_amount": 0.})
+    for name in (*FE_INDEXES.values(), *FE_MARKET_SYMBOLS):
+        for i, d in enumerate(days):
+            if name == "VXSLV" and "2023-03-01" <= d <= "2023-03-20":
+                continue                            # a gap longer than the age limit
+            values.append({"symbol": name, "date": d, "close": 20.+i*.01})
+    _write_jsonl(cwd/"pipeline_runs/index-prices/index_daily.jsonl", prices)
+    _write_jsonl(cwd/"pipeline_runs/index-values/index_daily.jsonl", values)
+    root = str(cwd/"pipeline_runs/index-data-source")
+    _must(_cli(["dskit.onboarding", "init", "--root", root], cwd, env))
+    for source, path in (("fixture-prices", "index-prices"), ("fixture-indexes", "index-values")):
+        _onboard_more(cwd, source, root, json.dumps({
+            "path": f"pipeline_runs/{path}", "layout": "file", "effective_field": "date",
+            "effective_unit": "iso", "streams": ["index_daily"], "formats": ["jsonl"]}),
+            "index_daily", env)
+    surface = []
+    for symbol in FE_INDEXES:
+        for i, d in enumerate(days[30:60]):
+            for k in (3, 7, 14):
+                expiry = (pd.Timestamp(d)+pd.Timedelta(days=k)).strftime("%Y-%m-%d")
+                px = next(r["close"] for r in prices if r["symbol"] == symbol and r["date"] == d)
+                surface.append({
+                    "symbol": symbol, "quote_date": d, "expiry": expiry,
+                    "chain_underlying_price": px, "chain_atm_iv": .2+i*.001,
+                    "chain_put25_iv": .22, "chain_call25_iv": .19, "chain_rel_spread": .01,
+                    "chain_put_call_oi": 1.2, "chain_contracts": 100., "chain_open_interest": 1000.,
+                    "chain_quote_depth": 50.})
+    surface = pd.DataFrame(surface)
+    data = cwd/"pipeline_runs/fixture-data"
+    data.mkdir(parents=True)
+    surface.to_parquet(data/"surface.parquet")
+    surface[FE_IDENTITY].assign(first_seen_date="2023-01-03").to_parquet(data/"lifecycle.parquet")
+    panel_chain = surface[FE_IDENTITY].copy()
+    for p, q in zip(FE_PROBS, np.linspace(-.05, .05, 9)):
+        panel_chain[f"rn_q_{int(round(p*1e4)):04d}"] = q
+    panel_chain["rn_proxy_eligible"] = 1
+    for n in range(9):
+        for field in ("log_moneyness", "iv", "log_rel_spread", "log_oi", "log_depth"):
+            panel_chain[f"chain_node_{n:02d}_{field}"] = .1+n*.01
+        panel_chain[f"chain_node_{n:02d}_mask"] = 1
+    tail_chain = panel_chain.copy()
+    for j, field in enumerate(FE_POSITIONING):
+        tail_chain[field] = .5+.01*j+np.arange(len(tail_chain))*1e-4
+    panel_chain.to_parquet(data/"panel_chain.parquet")
+    tail_chain.to_parquet(data/"tail_chain.parquet")
+    for name in ("panel_chain", "tail_chain"):
+        (data/f"{name}.parquet.sources.json").write_text("{}")
+    reader = {"root": root, "surface": str(data/"surface.parquet"),
+              "lifecycle": str(data/"lifecycle.parquet"),
+              "chain_features": str(data/"tail_chain.parquet"),
+              "price_source": "fixture-prices", "iv_source": "fixture-indexes"}
+    block = json.loads((child_root/TAIL_DATA).read_text())["data"]
+    panel_cfg = {k: block[k] for k in ("symbols", "since", "max_dte", "lags", "windows",
+                                       "feature_gap_days", "reference_floor", "spot_tolerance",
+                                       "raw_chain", "surface_features")}
+    panel_cfg.update(reader, chain_features=str(data/"panel_chain.parquet"))
+    frame = ExactExpiryCDFPanel(panel_cfg).read()
+    pending = frame.iloc[:2].copy()                          # unsettled rows beyond the data
+    pending["expiry"] = ["2023-12-22", "2023-12-29"]
+    pending["terminal_return"] = np.nan
+    frame = pd.concat([frame, pending], ignore_index=True)
+    (cwd/"pipeline_runs/panel-data").mkdir(parents=True)
+    frame.to_parquet(cwd/"pipeline_runs/panel-data/input_panel.parquet", index=False)
+    _onboard(cwd, "cdf-horizon-panel", SOURCE_ROOT, json.dumps({
+        "path": "pipeline_runs/panel-data", "layout": "file", "effective_field": "quote_date",
+        "effective_unit": "iso", "streams": ["input_panel"], "formats": ["parquet"]}),
+        "input_panel")
+    return days, reader, frame
+
+
+def _fe_copy(child_root, name, cwd, edit):
+    """A copy of a shipped document with ``edit`` applied; returns its path and the changed paths."""
+    original = _step(child_root, name)
+    copy_ = json.loads(json.dumps(original))
+    edit(copy_)
+    path = cwd/("copy-"+name.rsplit("/", 1)[1])
+    path.write_text(json.dumps(copy_))
+    return path, _differences(original, copy_)
+
+
+def _fe_none(frame_rows):
+    import math
+    return [{k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in r.items()}
+            for r in frame_rows]
+
+
+def test_step1b_end_to_end_from_step1_to_step2(child_root, tmp_path):
+    pytest.importorskip("matplotlib")
+    import pandas as pd
+    from dskit.pipeline.libs.observations import ObservationRows
+    from index_options.cdf_study import ExactExpiryCDFPanel
+
+    env = _fe_env(child_root)
+    days, reader, frame = _fe_world(tmp_path, child_root)
+    panel_rows = _fe_none(frame.to_dict("records"))
+    for sub in ("step1-expiry-coverage/selection", "feature-engineering/panel",
+                "step2-feature-availability"):
+        (tmp_path/"pipeline_runs"/sub).mkdir(parents=True)
+    # -- step 1 (unchanged document) picks the DTE --
+    _must(_cli(["dskit.pipeline", "run", str(child_root/STEP1), "--asof", "2026-10-01"],
+               tmp_path, env))
+    selected = _read_jsonl(tmp_path/"pipeline_runs/step1-expiry-coverage/selection/selected.jsonl")
+    wins = {r["symbol"]: r for r in selected}
+    assert sorted(wins) == ["IWM", "QQQ", "SPY"] and {w["actual_calendar_dte"] for w in
+                                                      wins.values()} == {7}
+    _onboard(tmp_path, "step1-selection", "./pipeline_runs/step1-selection-source",
+             "@"+str(child_root/SELECTION_SOURCE), "selected")
+    # -- the disagreeing hand-off refuses before writing anything --
+    tampered = [dict(r, listed_forecasts=r["listed_forecasts"]+(r["symbol"] == "SPY"))
+                for r in selected]
+    _write_jsonl(tmp_path/"pipeline_runs/neg-selection/selected.jsonl", tampered)
+    _onboard(tmp_path, "step1-selection", "./pipeline_runs/neg-selection-source", json.dumps({
+        "path": "pipeline_runs/neg-selection", "layout": "file", "effective_field": "last_entry_ms",
+        "effective_unit": "ms", "streams": ["selected"], "formats": ["jsonl"]}), "selected")
+
+    def paths(doc):
+        doc["pipeline"]["panel"]["params"].update(reader)
+
+    def neg(doc):
+        paths(doc)
+        doc["pipeline"]["step1_selection"]["params"]["root"] = "./pipeline_runs/neg-selection-source"
+
+    bad, changed = _fe_copy(child_root, FE, tmp_path, neg)
+    assert changed == {f"/pipeline/panel/params/{k}" for k in
+                       ("root", "surface", "lifecycle", "chain_features", "price_source",
+                        "iv_source")} | {"/pipeline/step1_selection/params/root"}
+    done = _cli(["dskit.pipeline", "run", str(bad), "--asof", "2026-10-01"], tmp_path, env)
+    assert done.returncode != 0 and "panel_evidence" in done.stdout + done.stderr
+    assert not (tmp_path/"pipeline_runs/feature-engineering/panel/input_panel.jsonl").exists()
+    # -- step 1b --
+    good, changed = _fe_copy(child_root, FE, tmp_path, paths)
+    assert "/pipeline/step1_selection/params/root" not in changed and len(changed) == 6
+    _must(_cli(["dskit.pipeline", "run", str(good), "--asof", "2026-10-01"], tmp_path, env))
+    out = _read_jsonl(tmp_path/"pipeline_runs/feature-engineering/panel/input_panel.jsonl")
+    cohort = [r for r in panel_rows if r["terminal_return"] is not None
+              and r["actual_calendar_dte"] == 7]
+    assert len(out) == sum(w["listed_forecasts"] for w in wins.values()) == len(cohort) > 0
+    assert all("quote_date_ms" not in r for r in out)
+    # every prepared field unchanged; the engineered ones equal the reader's own values
+    tail = json.loads((child_root/TAIL_DATA).read_text())["data"]
+    tail_cfg = {**{k: v for k, v in tail.items() if k not in ("archive_root", "fred_market_symbols")},
+                **reader}
+    tail_cfg["market_symbols"] = _fe(child_root)["pipeline"]["panel"]["params"]["market_symbols"]
+    read = {tuple(r[k] for k in FE_IDENTITY): r
+            for r in _fe_none(ExactExpiryCDFPanel(tail_cfg).read().to_dict("records"))}
+    by_key = {tuple(r[k] for k in FE_IDENTITY): r for r in panel_rows}
+    attach = _fe_attach(child_root)
+    horizon = {}                       # an independent census: settled expiries listed within 7 days
+    for r in panel_rows:
+        if r["terminal_return"] is not None and r["actual_calendar_dte"] >= 1 \
+                and r["calendar_dte"] <= 7:
+            horizon.setdefault((r["symbol"], r["quote_date"]), set()).add(r["expiry"])
+    density = {k: len(v) for k, v in horizon.items()}
+    assert {1, 2} <= set(density.values())                  # a holiday expiry leaves one date at 1
+    for row in out:
+        key = tuple(row[k] for k in FE_IDENTITY)
+        assert all(row[k] == v for k, v in by_key[key].items() if k not in FE_OI_ALL)
+        for name, spec in attach["families"].items():
+            assert row[f"fe_{name}_status"] == "computed"
+            for field in spec["fields"]:
+                want = None if field in spec["withheld_fields"] else read[key][field]
+                assert row[field] == want, (key, field)
+        assert [row[f] for f in FE_OI_ALL] == [None] * 18             # every withheld field, every row
+        assert row["expiry_density"] == density[(row["symbol"], row["quote_date"])]
+    gap = [r for r in out if r["market_vxslv"] is None]
+    assert gap and all(r["market_vxslv_missing"] == 1 for r in gap)
+    assert all(json.loads(r["fe_expanded_volatility_context_reasons"])["market_vxslv"]
+               == "not_computable" for r in gap)
+    assert json.loads(out[0]["fe_positioning_changes_reasons"]) == {
+        f: FE_WITHHELD for f in FE_OI_POSITIONING}
+    # carry.json: the reader's provenance and each ticker's summary and provenance persist
+    carried = [json.loads((r/"carry.json").read_text())
+               for r in (tmp_path/"pipeline_runs/feature-engineering/runs").iterdir()]
+    carry, = [c for c in carried if "metrics" in c.get("panel_evidence", {})]   # not the refused run
+    assert {"surface", "lifecycle", "chain_features", "chain_feature_sources"} == set(
+        carry["panel"]["provenance"]["sha256"])
+    assert carry["panel"]["provenance"]["adapter_sha256"]
+    assert carry["panel_evidence"]["metrics"]["rows"] == len(out)
+    for symbol in FE_INDEXES:
+        node = carry[f"features__{symbol.lower()}"]
+        assert set(node) == {"summary", "provenance"}
+        assert set(node["summary"]["families"]) == set(attach["families"])
+        assert set(node["summary"]["carried"]) == set(attach["carried"])
+        for section in ("families", "carried"):
+            for name, spec in attach[section].items():
+                fields = node["summary"][section][name]["fields"]
+                assert set(fields) == set(spec["fields"]), name
+        mine = [density[(r["symbol"], r["quote_date"])] for r in out if r["symbol"] == symbol]
+        stats = node["summary"]["carried"]["expiry_density"]["fields"]["expiry_density"]
+        assert (stats["min"], stats["max"], stats["null"], stats["non_null"]) == (
+            min(mine), max(mine), 0, len(mine))
+        stats = node["summary"]["families"]["positioning_changes"]["fields"]["chain_log_gamma_oi"]
+        assert stats["non_null"] == 0 and stats["min"] is None and stats["discarded"] == len(mine)
+        assert node["provenance"]["input_sha256"]
+    # -- the hand-off: onboard the output, change only step 2's source root --
+    _onboard(tmp_path, "cdf-horizon-panel", "./pipeline_runs/feature-panel-source",
+             "@"+str(child_root/FE_SOURCE), "input_panel")
+    step2 = _step(child_root, STEP2)
+    params = dict(step2["pipeline"]["source"]["params"], root="./pipeline_runs/feature-panel-source")
+    here = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        read_back = ObservationRows("source", params).run(None, {})["records"]
+    finally:
+        os.chdir(here)
+    assert {tuple(r[k] for k in FE_IDENTITY) for r in read_back} == {
+        tuple(r[k] for k in FE_IDENTITY) for r in out} and len(read_back) == len(out)
+    assert all(r["quote_date_ms"] == _ms(r["quote_date"]) for r in read_back)
+    assert {k: v for k, v in sorted(read_back[0].items()) if k != "quote_date_ms"} == dict(
+        sorted(next(o for o in out if tuple(o[k] for k in FE_IDENTITY) == tuple(
+            read_back[0][k] for k in FE_IDENTITY)).items()))      # nulls stay null
+    path, changed = _fe_copy(child_root, STEP2, tmp_path, lambda d: d["pipeline"]["source"][
+        "params"].update(root="./pipeline_runs/feature-panel-source"))
+    assert changed == {"/pipeline/source/params/root"}
+    _must(_cli(["dskit.pipeline", "run", str(path), "--asof", "2026-10-01"], tmp_path, env))
+    flags = _read_jsonl(tmp_path/"pipeline_runs/step2-feature-availability/dates.jsonl")
+    assert len(flags) == len(out)
+    for row in flags:
+        for family in ("positioning_changes", "liquidity", "chain_nodes"):   # each holds a withheld field
+            assert row[f"available_{family}"] == "no", family
+        assert row["available_variance_gap"] == row["available_ohlc_shape"] == "yes"
+        assert row["available_implied_cdf"] == "yes"
+    assert {r["available_expanded_volatility_context"] for r in flags} == {"yes", "no"}
+    assert pd.Series([r["quote_date"] for r in flags]).isin(days).all()

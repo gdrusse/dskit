@@ -1,0 +1,589 @@
+{
+  "name": "step1b-feature-engineering",
+  "notes": "STEP 1b of the data selection, between step 1 (tradable dates) and step 2 (feature availability): the engineered per-date feature panel. Inputs are the prepared panel step 1 read (pipeline.source), step 1's selected.jsonl (step1_selection, onboarded as for step 2) and the reader's own sources (pipeline.panel, the ADR-0203 tail-data block). Per ticker in foreach.keys it keeps step 1's cohort rows at step 1's selected DTE (read from selected.jsonl, never typed; row count pinned to step 1's listed_forecasts) and attaches four families: variance_gap, ohlc_shape, positioning_changes, expanded_volatility_context, plus the expiry-density count. Output: input_panel.jsonl, one row per ticker/quote_date/expiry of that cohort, every prepared-panel field unchanged plus the engineered ones. A field that cannot be computed or whose entry-time availability cannot be established is an explicit null with its reason in fe_<entry>_reasons; fe_<family>_status says whether the row's identity was found. Per-family summaries and clock notes land in carry.json (features__<t>.summary and .provenance, panel.provenance). All open-interest-derived fields are withheld until the OI publication clock is audited. Weekday one-hot waits for ADR-0214 (pending_inputs). AMZN is out of scope until its close-source ADR lands. Step 2 consumes this panel by changing only its source root (see the plan runbook).",
+  "pipeline": {
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/cdf-horizon-source",
+        "source": "cdf-horizon-panel",
+        "stream": "input_panel",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ]
+      },
+      "notes": "The prepared option panel step 1 read, same root/source/stream. There is deliberately no ts_field: ObservationRows would stamp quote_date_ms into every row and refuse a row that already carries it, and step 2 stamps its own when it reads this step's output."
+    },
+    "step1_selection": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/step1-selection-source",
+        "source": "step1-selection",
+        "stream": "selected",
+        "key_fields": [
+          "symbol"
+        ]
+      },
+      "notes": "The onboarded selected.jsonl, exactly as step 2 reads it: the selected DTE and its row count come from here."
+    },
+    "panel": {
+      "uses": "index_options.nodes:ExactExpiryPanelRead",
+      "params": {
+        "root": "/home/russell/data/index_options/ob",
+        "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+        "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+        "chain_features": "/home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930/raw_chain_features.parquet",
+        "raw_chain": {
+          "nodes": 9,
+          "moneyness_bounds": [
+            -0.3,
+            0.3
+          ],
+          "max_node_gap": 0.04,
+          "proxy_probabilities": [
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99
+          ],
+          "min_wing_nodes": 3,
+          "max_inner_gap": 0.08,
+          "max_outer_gap": 0.12
+        },
+        "symbols": {
+          "SPY": "VIX",
+          "QQQ": "VXN",
+          "IWM": "RVX"
+        },
+        "market_symbols": {
+          "market_vix1y": {
+            "symbol": "VIX1Y",
+            "max_age_days": 7
+          },
+          "market_rvx": {
+            "symbol": "RVX",
+            "max_age_days": 7
+          },
+          "market_vxd": {
+            "symbol": "VXD",
+            "max_age_days": 7
+          },
+          "market_ovx": {
+            "symbol": "OVX",
+            "max_age_days": 7
+          },
+          "market_vxeem": {
+            "symbol": "VXEEM",
+            "max_age_days": 7
+          },
+          "market_vxslv": {
+            "symbol": "VXSLV",
+            "max_age_days": 7
+          },
+          "market_vxtlt": {
+            "symbol": "VXTLT",
+            "max_age_days": 7
+          }
+        },
+        "price_source": "optionshist-chain",
+        "iv_source": "cboe-index-wide",
+        "since": "2007-01-01",
+        "max_dte": 45,
+        "lags": 22,
+        "windows": [
+          1,
+          5,
+          22,
+          66
+        ],
+        "feature_gap_days": 7,
+        "reference_floor": 0.001,
+        "spot_tolerance": 0.02,
+        "surface_features": true,
+        "ohlc_windows": [
+          5,
+          22
+        ],
+        "matched_dte_vrp": true,
+        "columns": [
+          "symbol",
+          "quote_date",
+          "expiry",
+          "terminal_return",
+          "actual_calendar_dte",
+          "calendar_dte",
+          "sessions_to_expiry",
+          "chain_atm_iv",
+          "rv_22",
+          "rn_q_0100",
+          "rn_q_0500",
+          "rn_q_1000",
+          "rn_q_2500",
+          "rn_q_5000",
+          "rn_q_7500",
+          "rn_q_9000",
+          "rn_q_9500",
+          "rn_q_9900",
+          "matched_implied_variance",
+          "matched_trailing_variance",
+          "matched_vrp",
+          "matched_vrp_ratio",
+          "overnight_return",
+          "intraday_return",
+          "log_high_low_range",
+          "parkinson_variance",
+          "jump_variance_proxy",
+          "range_variance_5",
+          "range_variance_22",
+          "jump_variance_5",
+          "jump_variance_22",
+          "overnight_variance_5",
+          "overnight_variance_22",
+          "intraday_variance_5",
+          "intraday_variance_22",
+          "chain_log_volume",
+          "chain_put_call_volume_imbalance",
+          "chain_volume_weighted_rel_spread",
+          "chain_log_lag_open_interest",
+          "chain_log_lag_oi_change",
+          "chain_log_delta_oi",
+          "chain_log_gamma_oi",
+          "chain_log_vega_oi",
+          "market_vix1y",
+          "market_rvx",
+          "market_vxd",
+          "market_ovx",
+          "market_vxeem",
+          "market_vxslv",
+          "market_vxtlt",
+          "market_vix1y_missing",
+          "market_rvx_missing",
+          "market_vxd_missing",
+          "market_ovx_missing",
+          "market_vxeem_missing",
+          "market_vxslv_missing",
+          "market_vxtlt_missing",
+          "market_vix1y_age_days",
+          "market_rvx_age_days",
+          "market_vxd_age_days",
+          "market_ovx_age_days",
+          "market_vxeem_age_days",
+          "market_vxslv_age_days",
+          "market_vxtlt_age_days"
+        ]
+      },
+      "notes": "The tail-data panel read (ADR-0203's data block, values unchanged), once for every ticker, narrowed to the identity, agreed and engineered columns; it calls the existing ExactExpiryCDFPanel.read() and restates no formula. archive_root (the raw-chain prepare stage), fred_market_symbols (macro is not an engineered family) and the market series no family uses are left out. Its columns must equal what the attach node expects, or the attach refuses."
+    },
+    "panel_rows": {
+      "uses": "concat",
+      "inputs": {
+        "features__each": "$features.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      },
+      "notes": "The tickers' engineered rows as one stream for the writer."
+    },
+    "expected_rows": {
+      "uses": "concat",
+      "inputs": {
+        "selection__each": "$selection_group.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each selection row carries its own symbol"
+      },
+      "notes": "One step-1 winner row per ticker, to total their listed_forecasts."
+    },
+    "expected_sum": {
+      "uses": "groupby",
+      "inputs": {
+        "records": "$expected_rows.merged"
+      },
+      "params": {
+        "keys": [
+          "selection_group"
+        ],
+        "aggregates": {
+          "rows": {
+            "op": "sum",
+            "field": "listed_forecasts"
+          }
+        }
+      },
+      "notes": "Step 1's settled-row count at the winning DTE, summed over the tickers run: the number of rows this step must write."
+    },
+    "expected_value": {
+      "uses": "keyby",
+      "inputs": {
+        "records": "$expected_sum.records"
+      },
+      "params": {
+        "key": "selection_group",
+        "value": "rows"
+      }
+    },
+    "panel_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$panel_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/feature-engineering/panel/input_panel.jsonl",
+        "source": "Step-1 cohort rows at the selected exact DTE with engineered features; onboarded through source-feature-panel.json as step 2's data source",
+        "expect": "$expected_value.table.all"
+      },
+      "notes": "The step 1b output. expect pins the row count to step 1's listed_forecasts, so a source or ticker that changed between the steps refuses. The parent directory must exist (mkdir -p) and the writer refuses to overwrite; to repeat, move pipeline_runs/feature-engineering and feature-panel-source aside."
+    },
+    "pending_inputs": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "pending": {
+            "weekday_onehot": {
+              "status": "pending_merge",
+              "reason": "ADR-0214's weekday-onehot kind is not merged; after it merges add one template node using it on $features.records (date_field quote_date) and feed panel_rows from it. Its code is never copied here."
+            }
+          }
+        }
+      },
+      "notes": "Declared, not computed: an input this step is waiting for."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/feature-engineering/runs"
+  },
+  "foreach": {
+    "keys": [
+      "QQQ",
+      "SPY",
+      "IWM"
+    ],
+    "notes": "The only ticker setting: symbols present in the prepared panel and in step 1's selected.jsonl (each must have a winner row or the run refuses); keep it equal to step 1's keys. AMZN is out of scope until its close-source ADR lands.",
+    "pipeline": {
+      "selection": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$step1_selection.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's winner row from step 1."
+      },
+      "selection_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$selection.records"
+        },
+        "params": {
+          "field": "selection_group",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "selected_dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "actual_calendar_dte"
+        },
+        "notes": "The DTE this step runs at, read from step 1. A ticker absent from step 1 leaves a dangling reference below and the run refuses."
+      },
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$selected_dte.table.all"
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "Step 1's settled-row predicate at step 1's DTE. No feature clause may be added here: features are attached to the cohort, never used to choose it."
+      },
+      "horizon_rows": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": ">=",
+              "value": 1
+            },
+            {
+              "field": "calendar_dte",
+              "op": "<=",
+              "value": "$selected_dte.table.all"
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "Every settled expiry of this ticker listed within the selected horizon, BEFORE the cohort filter (a cohort-first count would be 1 on every row). The bound is the planned calendar_dte: it is known at entry from regular holidays, where the actual settlement date is label information."
+      },
+      "density": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$horizon_rows.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "quote_date"
+          ],
+          "aggregates": {
+            "expiry_density": {
+              "op": "nunique",
+              "field": "expiry"
+            }
+          }
+        }
+      },
+      "density_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$density.records"
+        },
+        "params": {
+          "key": "quote_date",
+          "value": "expiry_density"
+        }
+      },
+      "dense": {
+        "uses": "join",
+        "inputs": {
+          "records": "$cohort.records",
+          "expiry_density": "$density_by_date.table"
+        },
+        "params": {
+          "key": "quote_date",
+          "how": "left",
+          "unmatched_fill": {
+            "expiry_density": null
+          }
+        },
+        "notes": "A date whose only cohort expiry has a planned DTE above the selected one (an unscheduled closure moved its settlement earlier) gets a declared null, counted in the summary."
+      },
+      "features": {
+        "uses": "attach-by-identity",
+        "inputs": {
+          "records": "$dense.records",
+          "table": "$panel.records"
+        },
+        "params": {
+          "identity": [
+            "symbol",
+            "quote_date",
+            "expiry"
+          ],
+          "agree_fields": [
+            "terminal_return",
+            "actual_calendar_dte",
+            "calendar_dte",
+            "sessions_to_expiry",
+            "chain_atm_iv",
+            "rv_22",
+            "rn_q_0100",
+            "rn_q_0500",
+            "rn_q_1000",
+            "rn_q_2500",
+            "rn_q_5000",
+            "rn_q_7500",
+            "rn_q_9000",
+            "rn_q_9500",
+            "rn_q_9900"
+          ],
+          "max_absent_fraction": 0.0,
+          "column_prefix": "fe_",
+          "families": {
+            "variance_gap": {
+              "fields": [
+                "matched_implied_variance",
+                "matched_trailing_variance",
+                "matched_vrp",
+                "matched_vrp_ratio"
+              ],
+              "withheld_fields": {},
+              "clock_note": "same-date entry-chain ATM IV against backward 22-session realized volatility over the planned sessions to expiry (regular holidays, never ad hoc closures); after-close estimand"
+            },
+            "ohlc_shape": {
+              "fields": [
+                "overnight_return",
+                "intraday_return",
+                "log_high_low_range",
+                "parkinson_variance",
+                "jump_variance_proxy",
+                "range_variance_5",
+                "range_variance_22",
+                "jump_variance_5",
+                "jump_variance_22",
+                "overnight_variance_5",
+                "overnight_variance_22",
+                "intraday_variance_5",
+                "intraday_variance_22"
+              ],
+              "withheld_fields": {},
+              "clock_note": "entry bar plus backward 5- and 22-session windows from the local OHLC source; the entry bar is known only after that close (after-close estimand, not intraday); raw prices, so an ex-dividend gap shows in overnight_return"
+            },
+            "positioning_changes": {
+              "fields": [
+                "chain_log_volume",
+                "chain_put_call_volume_imbalance",
+                "chain_volume_weighted_rel_spread",
+                "chain_log_lag_open_interest",
+                "chain_log_lag_oi_change",
+                "chain_log_delta_oi",
+                "chain_log_gamma_oi",
+                "chain_log_vega_oi"
+              ],
+              "withheld_fields": {
+                "chain_log_delta_oi": "oi_publication_clock_unverified",
+                "chain_log_gamma_oi": "oi_publication_clock_unverified",
+                "chain_log_vega_oi": "oi_publication_clock_unverified"
+              },
+              "clock_note": "entry-snapshot volume and spread plus the prior observation's open interest of the same expiry series (known at entry under either OI convention; built per calendar year, so a series' first observation in a year has no lag); the three OI x greek fields are withheld: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+            },
+            "expanded_volatility_context": {
+              "fields": [
+                "market_vix1y",
+                "market_rvx",
+                "market_vxd",
+                "market_ovx",
+                "market_vxeem",
+                "market_vxslv",
+                "market_vxtlt",
+                "market_vix1y_missing",
+                "market_rvx_missing",
+                "market_vxd_missing",
+                "market_ovx_missing",
+                "market_vxeem_missing",
+                "market_vxslv_missing",
+                "market_vxtlt_missing",
+                "market_vix1y_age_days",
+                "market_rvx_age_days",
+                "market_vxd_age_days",
+                "market_ovx_age_days",
+                "market_vxeem_age_days",
+                "market_vxslv_age_days",
+                "market_vxtlt_age_days"
+              ],
+              "withheld_fields": {},
+              "clock_note": "last Cboe index close strictly before the entry date, at most 7 calendar days old, else null; a prior-date close is published before the entry close; the retrospective download vintage is not certified; VXN is omitted as QQQ's own_iv; IWM's market_rvx is its own RVX from the prior date"
+            }
+          },
+          "carried": {
+            "expiry_density": {
+              "fields": [
+                "expiry_density"
+              ],
+              "withheld_fields": {},
+              "clock_note": "listed expiries with planned settlement 1 to the selected DTE calendar days after entry; the panel keeps only expiries with an observed settlement path and a defined rv_22, so an expiry dropped for a missing close is uncounted (incomplete_path, missing_reference in the reader's refused size the loss)"
+            },
+            "liquidity_oi": {
+              "fields": [
+                "chain_log_put_call_oi",
+                "chain_log_open_interest"
+              ],
+              "withheld_fields": {
+                "chain_log_put_call_oi": "oi_publication_clock_unverified",
+                "chain_log_open_interest": "oi_publication_clock_unverified"
+              },
+              "clock_note": "liquidity family OI columns on the prepared panel: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+            },
+            "chain_nodes_oi": {
+              "fields": [
+                "chain_node_00_log_oi",
+                "chain_node_01_log_oi",
+                "chain_node_02_log_oi",
+                "chain_node_03_log_oi",
+                "chain_node_04_log_oi",
+                "chain_node_05_log_oi",
+                "chain_node_06_log_oi",
+                "chain_node_07_log_oi",
+                "chain_node_08_log_oi"
+              ],
+              "withheld_fields": {
+                "chain_node_00_log_oi": "oi_publication_clock_unverified",
+                "chain_node_01_log_oi": "oi_publication_clock_unverified",
+                "chain_node_02_log_oi": "oi_publication_clock_unverified",
+                "chain_node_03_log_oi": "oi_publication_clock_unverified",
+                "chain_node_04_log_oi": "oi_publication_clock_unverified",
+                "chain_node_05_log_oi": "oi_publication_clock_unverified",
+                "chain_node_06_log_oi": "oi_publication_clock_unverified",
+                "chain_node_07_log_oi": "oi_publication_clock_unverified",
+                "chain_node_08_log_oi": "oi_publication_clock_unverified"
+              },
+              "clock_note": "chain-node OI columns on the prepared panel: entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+            },
+            "oi_panel_columns": {
+              "fields": [
+                "chain_open_interest",
+                "chain_put_call_oi",
+                "chain_has_put_call_oi",
+                "chain_liquidity_asymmetry"
+              ],
+              "withheld_fields": {
+                "chain_open_interest": "oi_publication_clock_unverified",
+                "chain_put_call_oi": "oi_publication_clock_unverified",
+                "chain_has_put_call_oi": "oi_publication_clock_unverified",
+                "chain_liquidity_asymmetry": "oi_publication_clock_unverified"
+              },
+              "clock_note": "panel columns in no step-2 contract that still hold the same OI (chain_liquidity_asymmetry is the tanh of chain_log_put_call_oi): entry-snapshot open interest; its publication clock is unverified, so the field is withheld until one audit shows archive open_interest excludes the entry day's trades (one audit for positioning, liquidity and chain nodes)"
+            }
+          }
+        },
+        "notes": "Attaches the reader's families to the cohort by ticker/date/expiry. agree_fields are fields both sources hold and must equal on a matched identity, so a prepared panel and a reader built from different sources refuse. max_absent_fraction 0 refuses any cohort row the reader lacks; raise it only to a fraction the refusal message reports and you have explained. A withheld field is null on every row with its reason in fe_<entry>_reasons; lifting a withhold is a JSON edit citing the audit. The prepared panel must carry every carried field (a null is allowed, a missing key is not)."
+      }
+    }
+  }
+}

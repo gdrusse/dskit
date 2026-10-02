@@ -1,0 +1,13 @@
+{
+  "path": "pipeline_runs/feature-engineering/panel",
+  "layout": "file",
+  "effective_field": "quote_date",
+  "effective_unit": "iso",
+  "streams": [
+    "input_panel"
+  ],
+  "formats": [
+    "jsonl"
+  ],
+  "notes": "Imports step 1b's input_panel.jsonl so step 2 can read it as its data source: register it as source cdf-horizon-panel (stream input_panel) into a fresh ./pipeline_runs/feature-panel-source, then change only pipeline.source.params.root in step 2 to that root. The names stay cdf-horizon-panel/input_panel on purpose: the engineered panel is a superset of the prepared panel. effective_field is quote_date, the one date every row carries. The path is relative to the working directory at acquire time and must equal the directory step 1b's panel_evidence writes to; a test pins the two. Use a fresh onboarding root whenever step 1b is re-run, since acquired data is immutable."
+}

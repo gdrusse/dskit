@@ -532,7 +532,8 @@ dskit/pipeline/
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby —
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby,
+│                      attach-by-identity —
 │                      flow verbs (keyby: records -> the keyed side table join reads)
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine

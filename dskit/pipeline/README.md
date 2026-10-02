@@ -410,6 +410,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `join` | transform | attach keyed lookup rows to records |
 | `groupby` | transform | one record per group of declared `keys`, carrying declared `aggregates` over a closed op table (ADR-0086) |
 | `keyby` | transform | a record stream -> the `{key: value}` side table `join` reads; one field each, a repeated key refused unless `allow_fanout` (then lists) — ADR-0086's deferred pivot, landed by ADR-0182 |
+| `attach-by-identity` | transform | a table keyed by SEVERAL fields (`identity`) -> declared column families onto a stream: exact column contract, agreed fields, per-field `withheld_fields`, explicit nulls with `_reasons`, `summary` and `provenance` (ADR-0217) |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
 | `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
@@ -769,7 +770,7 @@ dskit/pipeline/
 │                      intervals + joint scenario sets over dependent, time-ordered
 │                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby — record-flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby, keyby, attach-by-identity — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed

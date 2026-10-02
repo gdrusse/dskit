@@ -1169,3 +1169,258 @@ def test_decision_strike_diagnosis_rejects_invalid_bins():
                 "max_address_space_mib": 6144}, "notes": "fixture"}
     with pytest.raises(ValueError, match="invalid decision-strike diagnosis"):
         cdf_study.DecisionStrikeDiagnosisStudy(settings)
+
+
+# -- ADR-0217: the panel reader, its provenance and the family clocks -------------------------------
+
+import math  # noqa: E402
+import sys  # noqa: E402
+import datetime as dt  # noqa: E402
+
+from index_options.nodes import ExactExpiryPanelRead  # noqa: E402
+
+FE_PROBS = [.01, .05, .1, .25, .5, .75, .9, .95, .99]
+#: The engineered feature families' columns, restated here and never read from the shipped document.
+FE_FIELDS = {
+    "variance_gap": ["matched_implied_variance", "matched_trailing_variance", "matched_vrp",
+                     "matched_vrp_ratio"],
+    "ohlc_shape": ["overnight_return", "intraday_return", "log_high_low_range",
+                   "parkinson_variance", "jump_variance_proxy", "range_variance_5",
+                   "range_variance_22", "jump_variance_5", "jump_variance_22",
+                   "overnight_variance_5", "overnight_variance_22", "intraday_variance_5",
+                   "intraday_variance_22"],
+    "positioning_changes": ["chain_log_volume", "chain_put_call_volume_imbalance",
+                            "chain_volume_weighted_rel_spread", "chain_log_lag_open_interest",
+                            "chain_log_lag_oi_change", "chain_log_delta_oi", "chain_log_gamma_oi",
+                            "chain_log_vega_oi"],
+    "expanded_volatility_context": [f"market_{n}{s}" for n in
+                                    ("vix1y", "rvx", "vxd", "ovx", "vxeem", "vxslv", "vxtlt")
+                                    for s in ("", "_missing", "_age_days")],
+}
+FE_MARKETS = {"market_vix1y": "VIX1Y", "market_rvx": "RVX", "market_vxd": "VXD",
+              "market_ovx": "OVX", "market_vxeem": "VXEEM", "market_vxslv": "VXSLV",
+              "market_vxtlt": "VXTLT"}
+FE_IDENTITY = ["symbol", "quote_date", "expiry"]
+FE_COLUMNS = FE_IDENTITY + [f for fields in FE_FIELDS.values() for f in fields]
+
+
+def _fe_days():
+    import exchange_calendars as xc
+    return [d.strftime("%Y-%m-%d")
+            for d in xc.get_calendar("XNYS").sessions_in_range("2023-01-03", "2023-04-28")]
+
+
+def _fe_fixture(tmp_path, monkeypatch, name, *, changed_after=None, last=None, skip=None,
+                bump=None):
+    """Write one synthetic QQQ source set and patch ``IndexCloseRows`` to serve it.
+
+    ``changed_after`` gives every observation dated after it a different value (prices, OHLC
+    bars, index closes, chain-feature rows, surface IV); ``last`` removes everything dated after
+    it; ``skip`` maps an index symbol to a predicate dropping its observations; ``bump`` maps
+    (symbol, date) to a replacement close. Returns the reader config.
+    """
+    days = _fe_days()
+    cut = lambda d: changed_after is not None and d > changed_after  # noqa: E731
+    keep = lambda d: last is None or d <= last  # noqa: E731
+    bump = bump or {}
+    skip = skip or {}
+    px = {d: (100+i*.3+math.sin(i))*(1.07 if cut(d) else 1.) for i, d in enumerate(days)}
+
+    class Reader:
+        def __init__(self, key, params):
+            self.symbol = params["symbol"]
+
+        def run(self, ctx, inputs):
+            rows = []
+            for i, d in enumerate(days):
+                if not keep(d) or skip.get(self.symbol, lambda day: False)(d):
+                    continue
+                if self.symbol == "QQQ":
+                    c = px[d]
+                    rows.append({"date": d, "close": c, "open": c*(.97 if cut(d) else .99),
+                                 "high": c*(1.03 if cut(d) else 1.01),
+                                 "low": c*(.95 if cut(d) else .98), "asof_ms": 0,
+                                 "instrument": "QQQ", "contract": "QQQ", "group": "QQQ",
+                                 "dividend_amount": None})
+                else:
+                    close = bump.get((self.symbol, d), 20.+i*.01+(3. if cut(d) else 0.))
+                    rows.append({"date": d, "close": close, "asof_ms": 0,
+                                 "instrument": self.symbol, "contract": self.symbol,
+                                 "group": self.symbol})
+            return {"records": rows}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    monkeypatch.setattr("index_options.cdf_study.IndexCloseRows", Reader)
+    surface = []
+    for d in days[30:60]:
+        if not keep(d):
+            continue
+        for k in (7, 14):
+            expiry = (pd.Timestamp(d)+pd.Timedelta(days=k)).strftime("%Y-%m-%d")
+            surface.append({
+                "symbol": "QQQ", "quote_date": d, "expiry": expiry,
+                "chain_underlying_price": px[d], "chain_atm_iv": .3 if cut(d) else .2,
+                "chain_put25_iv": .22, "chain_call25_iv": .19, "chain_rel_spread": .01,
+                "chain_put_call_oi": 1.2, "chain_contracts": 100., "chain_open_interest": 1000.,
+                "chain_quote_depth": 50.})
+    surface = pd.DataFrame(surface)
+    base = tmp_path/name
+    base.mkdir()
+    surface.to_parquet(base/"surface.parquet")
+    surface[FE_IDENTITY].assign(first_seen_date="2023-01-03").to_parquet(base/"lifecycle.parquet")
+    chain = surface[FE_IDENTITY].copy()
+    for p, q in zip(FE_PROBS, np.linspace(-.05, .05, 9)):
+        chain[f"rn_q_{int(round(p*1e4)):04d}"] = q
+    chain["rn_proxy_eligible"] = 1
+    for j, field in enumerate(FE_FIELDS["positioning_changes"]):
+        chain[field] = [.5+.01*j+(1. if cut(d) else 0.) for d in chain.quote_date]
+    chain.to_parquet(base/"chain.parquet")
+    (base/"chain.parquet.sources.json").write_text("{}")
+    return {"root": "x", "surface": str(base/"surface.parquet"),
+            "lifecycle": str(base/"lifecycle.parquet"), "chain_features": str(base/"chain.parquet"),
+            "raw_chain": {"proxy_probabilities": FE_PROBS}, "symbols": {"QQQ": "VXN"},
+            "market_symbols": {k: {"symbol": v, "max_age_days": 7} for k, v in FE_MARKETS.items()},
+            "price_source": "p", "iv_source": "i", "since": "2023-01-01", "max_dte": 45,
+            "lags": 22, "windows": [1, 5, 22, 66], "feature_gap_days": 7,
+            "reference_floor": .001, "spot_tolerance": .02, "surface_features": True,
+            "ohlc_windows": [5, 22], "matched_dte_vrp": True}
+
+
+def _fe_read(cfg, columns=FE_COLUMNS):
+    """The engineered rows through the reader node, keyed by identity."""
+    out = ExactExpiryPanelRead("panel", {**cfg, "columns": list(columns)}).run(None, {})
+    return {tuple(r[k] for k in FE_IDENTITY): r for r in out["records"]}
+
+
+def test_panel_reader_values_equal_the_read_for_the_same_identities(tmp_path, monkeypatch):
+    cfg = _fe_fixture(tmp_path, monkeypatch, "a")
+    frame = ExactExpiryCDFPanel(cfg).read()
+    node = ExactExpiryPanelRead("panel", {**cfg, "columns": FE_COLUMNS})
+    out = node.run(None, {})
+    assert len(out["records"]) == len(frame) > 0
+    for record, (_, row) in zip(out["records"], frame.iterrows()):          # the read's order
+        assert list(record) == FE_COLUMNS
+        for name in FE_COLUMNS:
+            want = row[name]
+            if isinstance(want, float) and math.isnan(want):
+                assert record[name] is None
+            else:
+                assert record[name] == want
+    assert all(r[n] is not None for r in out["records"] for n in FE_COLUMNS)    # a full fixture
+    assert type(out["records"][0]["matched_vrp"]) is float            # plain Python, not numpy
+
+
+def test_provenance_is_the_one_owner_of_what_main_hands_the_study(tmp_path, monkeypatch):
+    cfg = _fe_fixture(tmp_path, monkeypatch, "a")
+    adapter = ExactExpiryCDFPanel(cfg)
+    adapter.read()
+    expected = {"refused": adapter.refused, "sha256": adapter.source_hashes,
+                "readers": adapter.reader_fingerprints, "market_coverage": adapter.market_coverage,
+                "macro_event_status": adapter.macro_event_status,
+                "adapter_sha256": hashlib.sha256(Path(cdf_study.__file__).read_bytes()).hexdigest()}
+    assert adapter.provenance() == expected
+    assert list(adapter.provenance()) == list(expected)
+    assert set(adapter.market_coverage) == set(FE_MARKETS)
+    bare = ExactExpiryCDFPanel({})
+    bare.refused, bare.source_hashes, bare.reader_fingerprints = {}, {}, {}
+    assert bare.provenance()["market_coverage"] == {} == bare.provenance()["macro_event_status"]
+    # and _main passes exactly that dict to the study (the HPO hashes it)
+    seen = {}
+
+    class Study:
+        def __init__(self, config):
+            pass
+
+        def run(self, frame, diagnostic, **kwargs):
+            seen.update(kwargs)
+
+    class Panel(ExactExpiryCDFPanel):
+        def read(self):
+            self.refused, self.source_hashes, self.reader_fingerprints = {"a": 1}, {"b": "c"}, {}
+            return pd.DataFrame()
+
+    monkeypatch.setattr(cdf_study, "ExactExpiryCDFPanel", Panel)
+    monkeypatch.setattr(cdf_study, "CDFHyperparameterStudy", Study)
+    config = tmp_path/"config.json"
+    config.write_text(json.dumps({"data": {}, "diagnostic": {"strikes_z": [-1., 1.],
+                                                            "integration_points": 5},
+                                  "experiment": {}}))
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "search"])
+    cdf_study._main()
+    assert seen["provenance"] == {
+        "refused": {"a": 1}, "sha256": {"b": "c"}, "readers": {}, "market_coverage": {},
+        "macro_event_status": {},
+        "adapter_sha256": hashlib.sha256(Path(cdf_study.__file__).read_bytes()).hexdigest()}
+
+
+def test_expanded_context_joins_only_the_strictly_prior_close_and_ages_it(tmp_path, monkeypatch):
+    days = _fe_days()
+    entry = days[40]
+    bumped = {(sym, entry): 99. for sym in FE_MARKETS.values()}
+    skip = {"VXSLV": lambda d: "2023-03-01" <= d <= "2023-03-20",
+            "VXTLT": lambda d: d < "2023-02-22"}
+    base = _fe_read(_fe_fixture(tmp_path, monkeypatch, "a", skip=skip))
+    moved = _fe_read(_fe_fixture(tmp_path, monkeypatch, "b", skip=skip, bump=bumped))
+    by_date = {k[1]: v for k, v in base.items()}
+    moved_by_date = {k[1]: v for k, v in moved.items()}
+    for quote_date, row in by_date.items():                       # a plain prior close, age >= 1
+        i = days.index(quote_date)
+        if row["market_vix1y_missing"] == 0:
+            assert row["market_vix1y"] == pytest.approx(20+(i-1)*.01)
+            assert row["market_vix1y_age_days"] == (
+                dt.date.fromisoformat(days[i])-dt.date.fromisoformat(days[i-1])).days >= 1
+    # perturbing the entry-date close changes nothing that day; the next day reads it
+    assert moved_by_date[entry]["market_vix1y"] == by_date[entry]["market_vix1y"]
+    assert moved_by_date[days[41]]["market_vix1y"] == 99.
+    # an age equal to max_age_days is kept; one more is null with _missing = 1
+    kept, stale = by_date["2023-03-07"], by_date["2023-03-08"]
+    assert kept["market_vxslv_age_days"] == 7 and kept["market_vxslv_missing"] == 0
+    assert kept["market_vxslv"] == pytest.approx(20+days.index("2023-02-28")*.01)
+    assert stale["market_vxslv_age_days"] == 8 and stale["market_vxslv"] is None
+    assert stale["market_vxslv_missing"] == 1
+    # a date before the series starts has no prior close at all
+    first = by_date[days[32]]                                     # 2023-02-17, series starts 02-22
+    assert first["market_vxtlt"] is None and first["market_vxtlt_missing"] == 1
+    assert first["market_vxtlt_age_days"] is None
+
+
+def test_every_engineered_family_is_causal_in_the_entry_date(tmp_path, monkeypatch):
+    days = _fe_days()
+    q, last = days[46], days[50]
+    a = _fe_read(_fe_fixture(tmp_path, monkeypatch, "a"))
+    b = _fe_read(_fe_fixture(tmp_path, monkeypatch, "b", changed_after=q))
+    c = _fe_read(_fe_fixture(tmp_path, monkeypatch, "c", last=last))
+    assert a.keys() == b.keys() and set(c) < set(a) and c
+    early = [k for k in a if k[1] <= q]
+    late = [k for k in a if k[1] > q]
+    assert early and late
+    for key in early:                                  # nothing dated after q* reaches a row at q*
+        assert {n: a[key][n] for n in FE_COLUMNS[3:]} == {n: b[key][n] for n in FE_COLUMNS[3:]}
+    witness = {"variance_gap": "matched_vrp", "ohlc_shape": "range_variance_5",
+               "positioning_changes": "chain_log_volume",
+               "expanded_volatility_context": "market_vix1y"}
+    for family, field in witness.items():              # and the perturbation does bite later
+        assert any(a[k][field] != b[k][field] for k in late), family
+    for key, row in c.items():                         # dropping later sources changes no survivor
+        assert row == a[key]
+
+
+def test_positioning_lags_read_only_earlier_snapshots_and_survive_truncation():
+    dates = ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07"]
+    chain = pd.DataFrame({
+        "symbol": ["SPY"]*8, "date": [d for d in dates for _ in (0, 1)],
+        "expiration": ["2020-02-21"]*8, "strike": [95., 105.]*4, "type": ["put", "call"]*4,
+        "mark": [2.]*8, "bid": [1.9]*8, "ask": [2.1]*8, "bid_size": [10]*8, "ask_size": [12]*8,
+        "open_interest": [100, 200, 110, 220, 130, 240, 400, 800], "volume": [10, 20, 15, 25, 18, 30, 9, 9],
+        "implied_volatility": [.2]*8, "delta": [-.3, .3]*4, "gamma": [.01]*8, "vega": [.1]*8})
+    meta = pd.DataFrame({"symbol": ["SPY"]*4, "quote_date": dates, "expiry": ["2020-02-21"]*4,
+                         "chain_underlying_price": [100.]*4})
+    builder = RawChainFeatureBuilder(nodes=3, moneyness_bounds=[-.1, .1], max_node_gap=.1,
+                                     proxy_probabilities=[.1, .5, .9], min_wing_nodes=1,
+                                     max_inner_gap=.1, max_outer_gap=.2)
+    full = builder.transform(chain, meta)
+    cut = builder.transform(chain[chain.date <= dates[2]], meta[meta.quote_date <= dates[2]])
+    pd.testing.assert_frame_equal(full.iloc[:3].reset_index(drop=True), cut)
+    assert full.chain_log_lag_open_interest.iloc[3] == pytest.approx(np.log1p(370))

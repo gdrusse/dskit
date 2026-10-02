@@ -42,7 +42,9 @@ from dskit.pipeline.synthetic_nodes import SynthClip
 #: The kinds each module owns after the split — the pin that catches a
 #: class drifting back across the boundary.
 BANKING_KINDS = ("event-bank", "eligibility", "banking-report")
-FLOW_KINDS = ("filter", "event-grid", "concat", "join", "derive", "groupby", "keyby")
+FLOW_KINDS = (
+    "filter", "event-grid", "concat", "join", "derive", "groupby", "keyby", "attach-by-identity",
+)
 
 
 def _rec(instrument, contract, asof_ms, **extra):
@@ -74,6 +76,7 @@ class TestModuleHome:
         # ADR-0078, so a child's own tables can speak the document's
         # ``where`` grammar without restating it).
         assert set(kinds_flow.__all__) == {
+            "AttachByIdentity",
             "CLAUSE_OPS",
             "Concat",
             "Derive",
