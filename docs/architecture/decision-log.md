@@ -29106,14 +29106,16 @@ holidays, any run.
 
 ## ADR-0222 — Data-driven holdout and count-sized rolling folds
 
-**Status:** proposed 2026-10-01; revised after skeptic review; owner approved
-2026-10-01, conditional on a clean skeptic review (config values delegated to
-us). **Owner ruling 2026-10-01 (warm-up):** ALL selection (steps 4 feature
-selection, 5 model zoo, 6 HPO) runs ONLY on warm-up folds; scored folds are a
-clean model simulation with every choice frozen; the warm-up is multi-fold, `k`
-chosen empirically from the committed rows. Base: 1968283. **Depends on
-ADR-0214** (public `document.date_problem`): implementation starts after it
-merges; nothing here touches `document.py`. No code until the review is clean.
+**Status:** accepted 2026-10-01 under the owner's standing conditional approval
+(config values delegated to us): skeptic review clean of Critical/Major at
+917066a after four rounds (Major 3, 1, 1, 0; last round 6 Minor, 3 Nit).
+**Owner ruling 2026-10-01 (warm-up), RESOLVED here, no open question:** ALL
+selection (steps 4 feature selection, 5 model zoo, 6 HPO) runs ONLY on warm-up
+folds; scored folds are a clean model simulation with every choice frozen; the
+warm-up is multi-fold, `warmup_folds` 4 (56 weeks, 12 scored) derived from the
+committed rows below. Base: 1968283. **Depends on ADR-0214** (public
+`document.date_problem`): implementation starts after it merges; nothing here
+touches `document.py`.
 
 Step 3 takes data from steps 1-2 (the `selected_dte` cohort with its
 `available_<family>` flags); nothing derivable is typed. **Sweep** (`holdout
