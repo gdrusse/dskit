@@ -29773,3 +29773,80 @@ exists on `MixtureMLPCDF` and others, but `TorchCDF` refuses it.
    columns in `study.features` out of the network. `head_features` and
    `left_cdf_weight` stay refused.
 **Non-goals.** Per-fold DTE choice, new estimators, other encoders.
+
+## ADR-0225 — `localblobs` and `payload_files`: files already on disk enter as hashed artifacts, read back by source and stream
+
+**Status:** accepted (2026-10-02; owner ruling: every dataset a run reads is an
+onboarded source — repo `CLAUDE.md`, "Data enters through onboarding").
+**Sweep** (`localblobs payload_files artifacts latest_snapshot`): no pack
+acquires local files as `FILE` artifacts and nothing reads a source's payload
+tree by name. `verified_payload_dir` (ADR-0083) reads a tree by a PINNED
+manifest hash; `payload_files` is its by-name companion and reuses
+`read_manifest` / `snapshot_hash` / `verify_snapshot`, so no hashing or
+verification is restated.
+
+**Context.** The "Data-source debt" table in
+`children/index_options/docs/plans/README.md` lists the study inputs that still
+break the rule: the option-chain archive (per-symbol `options_YYYY.parquet`,
+`underlying_prices.parquet`), `raw_chain_features.parquet`,
+`exact_expiry_surface.parquet`, `date_expiry_lifecycle.parquet` and the prepared
+`input_panel.parquet`. Configs read them by absolute path, often into a sibling
+clone, so a result depends on files no catalog lists. The sanctioned road for
+tables is `localtables` (ADR-0076), but it imports ROWS: slow for a wide
+archive, and the columnar file the readers want is lost on the way. A parquet is
+an artifact, not a row stream, and ADR-0082 already gave onboarding the message
+for artifacts.
+
+**Decision.** (1) A tier-2 stdlib pack `dskit/onboarding/libs/localblobs.py`
+(`LocalBlobsConnector`, kind `localblobs`). One source is one stream. Knobs,
+default-deny: `path` (directory; machine-local provenance), `as_of` (the ISO
+instant the inventory is declared current, every RECORD's `effective_date`;
+declared, never read from mtimes, and refused when in the future because an
+observation about the future is a forecast), `stream` (default `files`; a
+filesystem-safe segment, the layout's own rule), `include` / `exclude` (globs
+over the POSIX relpath, `fnmatch`, so `*` crosses `/`; default every file, none
+dropped). Per matched regular file, in relpath order, it emits one `FILE`
+(the platform copies it to `payload/<stream>/<relpath>`, sub-directories kept,
+so a per-symbol archive stays `qqq/options_2012.parquet`) and one inventory
+RECORD `{relpath, size, sha256}`; the machine path rides on `FILE` only and
+never reaches bronze. The cursor is `{fingerprint, as_of, stream, include,
+exclude}`, the fingerprint being the sha256 of the sorted `(relpath, size,
+sha256)` listing: an unchanged listing under the same declaration emits one LOG
+and the same STATE (an empty pull, no snapshot), a changed one re-emits EVERY
+file so each snapshot is a complete inventory. It refuses, by name and before a
+byte moves, an empty selection (and then emits no STATE, so the cursor stays), a
+directory it cannot list (never a silently smaller inventory), a name the `FILE`
+envelope cannot carry (a `:` or `\` in a segment, invalid UTF-8; exclude it by
+glob), and a file whose size or mtime moved between its digest and its copy (the
+RECORD sha would not be the manifest's). (2) `dskit/onboarding/artifacts.py`,
+`payload_files(root, source, stream, *, verify=False)`, exported from
+`dskit.onboarding`: `root` is a path or an `OnboardingRoot`; among the committed
+snapshots of `raw/<source>/` whose manifest lists files under `<stream>/` it
+takes the latest (`acquired_at`, then the manifest file's write time because
+`acquired_at` has second precision, then the acq id) and returns `{source,
+stream, snapshot (acq id), manifest_sha256 (the snapshot's identity),
+files: relpath-within-stream -> absolute Path, sha256: relpath -> manifest
+digest}`. An unknown source, a source with no committed snapshot, a stream no
+snapshot holds files for, or an unreadable sibling manifest raises `AssetError`
+naming the problem (never a quiet fall back to an older tree); `verify=True`
+runs `verify_snapshot` first and raises with every problem listed.
+
+**Consequences.** A reader names `source` + `stream` instead of a directory, so
+a config carries no path outside the store, and the run can record
+`manifest_sha256` for exactly the bytes it read (and later pin it through
+`verified_payload_dir`). The files stay columnar: they are read in place
+(`pyarrow.parquet.read_table(path)`), never round-tripped through rows. The raw
+tree is WORM and every digest chains into the manifest, so `verify` and
+`payload_files(verify=True)` catch a flipped byte; the default lookup trusts the
+manifest and reads no payload byte, so a gate that must not trust the disk passes
+`verify=True`. The debt rows retire by `register-source --connector localblobs`
++ `acquire`, then deleting the path from the config; the derived tables
+(`raw_chain_features`, `input_panel`) are published through the same pack. Costs
+to know: every pull reads every file once to digest it (that is what makes
+"nothing new" honest); a changed listing stores the whole archive again, one
+complete snapshot per change; cursors are per mode (ADR-0014), so pick one mode
+per source; payload files under `raw/` are evidence, read them, never write
+them. **Non-goals.** A pipeline node kind that fronts `payload_files` (a child's
+adapter), retention or pruning of old snapshots, remote fetch (`huggingface` and
+the REST packs own that), and deleting or "syncing" removals — a removed file
+simply is not in the next complete inventory.

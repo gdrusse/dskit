@@ -241,6 +241,34 @@ transformers pack's `transformers-encode` / `-classify` / `-forecast`,
 ADR-0083) — weights enter content-addressed, never by hub name. Install
 `dskit[huggingface]`; `libs/huggingface.py` is the knob reference.
 
+The `localblobs` kind (ADR-0225) acquires files that already sit on this
+machine — parquet, zip, sidecar JSON — as hashed binary artifacts instead of
+rows, so a wide archive stays columnar. Knobs: `path`, a declared `as_of`
+(every RECORD's `effective_date`; never read from file times, never in the
+future), optional `stream` (default `files`), and `include` / `exclude` globs
+over the POSIX relpath (`fnmatch`: `*` crosses `/`). Per file, in relpath order:
+a `FILE` message (copied to `payload/<stream>/<relpath>`, sub-directories kept)
+and an inventory RECORD `{relpath, size, sha256}`. The cursor fingerprints the
+sorted `(relpath, size, sha256)` listing plus `as_of` and the selection, so an
+unchanged pull is empty and a changed one re-emits EVERY file (each snapshot is
+a complete inventory); an empty selection, an unreadable directory, a name the
+envelope cannot carry, or a file that changes mid-pull refuses. Pick one mode
+per source. Readers name the source and stream, never a directory:
+
+```python
+from dskit.onboarding import payload_files
+
+got = payload_files("./ob", "option-archive", "files", verify=True)
+got["files"]["qqq/options_2012.parquet"]   # absolute Path in the snapshot
+got["sha256"]["qqq/options_2012.parquet"]  # the manifest's digest
+got["manifest_sha256"]                     # the snapshot's identity — record it
+```
+
+`payload_files` resolves the latest snapshot of the source that holds files for
+the stream; `verify=True` re-hashes it first and lists every drift;
+`verified_payload_dir` is the same read keyed by a pinned manifest hash.
+`libs/localblobs.py` and `artifacts.py` are the references.
+
 ## OAuth authorization
 
 OAuth config stores environment-variable names only. For Schwab, export
@@ -340,6 +368,7 @@ dskit/onboarding/
 ├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
+├── artifacts.py       payload_files: source + stream -> the latest snapshot's acquired files and digests (ADR-0225)
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
@@ -349,6 +378,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file, fingerprint cursor (stdlib, ADR-0225)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain + index_daily (closes with dividends/splits, ADR-0187), sha256-pinned (pyarrow inside verbs, ADR-0182)

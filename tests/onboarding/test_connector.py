@@ -180,6 +180,7 @@ def test_a_spec_may_not_declare_the_reserved_keys():
         "cboe",
         "huggingface",
         "kalshi",
+        "localblobs",
         "localfiles",
         "localtables",
         "optionshist",
@@ -237,7 +238,7 @@ def test_max_backoff_is_one_name_across_every_pack():
 # `connector.backoff` and `connector.retry_after` are now the one home; the
 # scan below is what makes a seventh copy impossible.
 
-#: Every pack that retries. `localfiles`/`localtables`/`huggingface`/`alpaca`
+#: Every pack that retries. `localfiles`/`localtables`/`localblobs`/`huggingface`/`alpaca`
 #: move no wait of their own and are scanned but not expected to import.
 RETRYING_PACKS = (alpaca_quotes, cboe, kalshi, polymarket, predexon, restapi, schwab)
 

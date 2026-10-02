@@ -117,6 +117,7 @@ DEFAULT_CONNECTORS = {
     "cboe": "dskit.onboarding.libs.cboe:CboeConnector",
     "huggingface": "dskit.onboarding.libs.huggingface:HuggingFaceHubConnector",
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
+    "localblobs": "dskit.onboarding.libs.localblobs:LocalBlobsConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
     "localtables": "dskit.onboarding.libs.localtables:LocalTablesConnector",
     "optionshist": "dskit.onboarding.libs.optionshist:OptionsHistConnector",

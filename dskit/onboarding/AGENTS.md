@@ -37,7 +37,11 @@ on it without breaking its rulings (ADR-0012…0016).
   one FILE + one inventory RECORD per file, and a SELECTION cursor (sha +
   repo type + both pattern lists, so a widened `allow_patterns` at an
   unchanged sha is new content); a download matching no file refuses and
-  moves no cursor. `libs/localtables.py` is the
+  moves no cursor. `libs/localblobs.py` is the same FILE shape over files
+  already on disk (stdlib; a fingerprint cursor over the sorted
+  `(relpath, size, sha256)` listing + the declared `as_of`; a changed listing
+  re-emits every file) and `artifacts.payload_files(root, source, stream)` reads
+  the latest snapshot's files back by name (ADR-0225). `libs/localtables.py` is the
   tier-2 shape: the library (pyarrow) imported inside the verbs, only
   when a shard needs it, refused loudly when absent. `libs/predexon.py`
   is the keyed-REST shape: getter, clock, and sleeper injected through
@@ -135,6 +139,7 @@ dskit/onboarding/
 ├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
+├── artifacts.py       payload_files — source + stream -> the latest snapshot's files + digests (ADR-0225)
 ├── validate.py        Rule / ValidationSuite / _RULES / run_suite
 ├── certify.py         certify — decisions; block-cannot-certify gate
 ├── publish.py         publish_version — outbox manifests, certification-keyed
@@ -144,6 +149,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file (ADR-0225)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON tables + abstract PinnedArchiveConnector
 │   ├── optionshist.py options-dataset-hist EOD SPY/QQQ/IWM chain archive -> option_chain, sha256-pinned (pyarrow inside verbs, ADR-0182)

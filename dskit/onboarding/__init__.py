@@ -34,6 +34,7 @@ Import cost: stdlib + :mod:`dskit.assets` (ADR-0013) — nothing else.
 """
 
 from .acquire import find_active_source, run_acquisition
+from .artifacts import payload_files
 from .base import (
     MODES,
     AssetError,
@@ -109,6 +110,7 @@ __all__ = [
     "load_token",
     "onboarding_model",
     "parse_utc",
+    "payload_files",
     "publish_version",
     "read_manifest",
     "resolve_connector",
