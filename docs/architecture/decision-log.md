@@ -29106,10 +29106,14 @@ holidays, any run.
 
 ## ADR-0218 — Torch CDF CRPS and condor-wing twCRPS losses
 
-**Status:** proposed 2026-10-01 (owner direction 2026-10-01); revised
-2026-10-02 after skeptic round 1 (wing geometry is the existing `intervals`,
-no second copy). Base: b6efdfe. The owner's pre-approval applies only after a
-clean (C0/M0) Sonnet skeptic review, recorded here before any code.
+**Status:** accepted 2026-10-01 under the owner's standing conditional
+approval (clean Sonnet skeptic review), citing candidate 0fc4aa9 (base
+b6efdfe). Review ledger: round 1 (a0c13e1) not clean, C0/M1 (the wing
+geometry duplicated `intervals`); fixed in 0fc4aa9. Round 2 (0fc4aa9), both
+lenses clean C0/M0 (design-correctness; integration/test-quality), Minors
+recorded for the implementation test plan: Student seam pins and family x term
+matrix, gradient pins, the quadrature accuracy claim in item 5 (re-measure at
+pin time), `wing_metrics` config home, study-flow pin, refusal timing.
 
 A condor's expected P&L is credit - ∫F over the put wing - ∫(1-F) over the
 call wing, so training must score the CDF across whole wings, not only at
