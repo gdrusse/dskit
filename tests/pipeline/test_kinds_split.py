@@ -389,7 +389,7 @@ class TestHoldoutCutPurge:
 
 
 class TestHoldoutCutOutput:
-    def test_the_metrics_are_exactly_the_six_dates_only_values(self, ctx):
+    def test_the_metrics_are_exactly_the_dates_and_counts_values(self, ctx):
         out = run_cut(daily_rows(20), ctx, fraction=0.25)
         assert set(out["metrics"]) == {
             "holdout_start",
@@ -398,8 +398,15 @@ class TestHoldoutCutOutput:
             "holdout_weeks",
             "dev_dates",
             "purged_rows",
+            "holdout_rows",
+            "panel_rows",
         }
         assert set(out) == {"records", "metrics"}
+
+    def test_row_counts_cover_the_holdout_and_the_whole_panel(self, ctx):
+        out = run_cut(daily_rows(20), ctx, fraction=0.25)
+        assert out["metrics"]["panel_rows"] == 20
+        assert out["metrics"]["holdout_rows"] == out["metrics"]["holdout_dates"]
 
     def test_rows_come_out_sorted_by_date_then_canonical_json(self, ctx):
         rows = [

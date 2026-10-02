@@ -134,6 +134,8 @@ from dskit.pipeline.features import apply_stream_steps
 from dskit.pipeline.fitted import ApplyTransform, FittedTransform, Standardize
 from dskit.pipeline.fitted import register as _register_fitted_kinds
 from dskit.pipeline.io import load_config, save_config
+from dskit.pipeline.kinds_availability import FamilyAvailability
+from dskit.pipeline.kinds_availability import register as _register_availability_kinds
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_banking import register as _register_banking_kinds
 from dskit.pipeline.kinds_flow import (
@@ -155,7 +157,7 @@ from dskit.pipeline.kinds_split import HoldoutCut, RollingOriginPlan
 from dskit.pipeline.kinds_split import register as _register_split_kinds
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_stats import register as _register_stats_kinds
-from dskit.pipeline.kinds_table import TableFile
+from dskit.pipeline.kinds_table import HorizonPairs, TableFile
 from dskit.pipeline.kinds_table import register as _register_table_kinds
 from dskit.pipeline.trust import ReplayRun
 from dskit.pipeline.trust import register as _register_trust_kinds
@@ -205,7 +207,7 @@ from dskit.pipeline.runs import (
 #: validate and run-report as OWNED doctrine kinds, plus filter /
 #: derive / event-grid / concat / join / weekday-onehot / event-bank /
 #: eligibility / banking-report / holdout-cut / rolling-origin-plan /
-#: hpo-grid / table-file / table-write / records-write.
+#: hpo-grid / table-file / table-write / records-write / horizon-pairs.
 #:
 #: EVERY kinds module's register() must be called here: the flow verbs,
 #: the banking chain and the evaluation-protocol pair ship from three
@@ -218,6 +220,7 @@ _register_split_kinds()
 _register_search_kinds()
 _register_report_kinds()
 _register_table_kinds()
+_register_availability_kinds()
 _register_fitted_kinds()
 _register_trust_kinds()
 
@@ -233,11 +236,13 @@ __all__ = [
     "Eligibility",
     "EventBank",
     "EventGrid",
+    "FamilyAvailability",
     "Filter",
     "FittedTransform",
     "ForeachSpec",
     "GroupBy",
     "HorizonConquest",
+    "HorizonPairs",
     "HoldoutCut",
     "HpoGrid",
     "OneStandardErrorSelector",

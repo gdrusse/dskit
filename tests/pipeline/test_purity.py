@@ -290,10 +290,14 @@ def _is_journal(module):
 #: itself never reaches it: a tier-1 module naming this is still refused.
 READ_SEAM_MODULE = "dskit.onboarding.observations"
 
+#: The onboarding payload-file resolver (ADR-0225), likewise function-level and
+#: tier-2 only, so the ``ParquetRows`` pack (ADR-0228) reads a store reference.
+READ_SEAM_MODULES = (READ_SEAM_MODULE, "dskit.onboarding.artifacts")
+
 
 def _is_read_seam(module):
     """Say whether ``module`` is the sanctioned onboarding read seam."""
-    return module == READ_SEAM_MODULE
+    return module in READ_SEAM_MODULES
 
 
 def _outside_toolkit_offenders(path, package, *, pack=False):

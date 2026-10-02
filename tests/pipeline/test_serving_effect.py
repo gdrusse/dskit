@@ -77,6 +77,8 @@ KIND_EFFECTS = {
     "concat": ("pure", "pure"),
     "derive": ("pure", "pure"),
     "eligibility": ("pure", "pure"),
+    "family-availability": ("pure", "pure"),
+    "horizon-pairs": ("pure", "pure"),
     "event-bank": ("pure", "pure"),
     "event-grid": ("pure", "pure"),
     "filter": ("pure", "pure"),

@@ -1,55 +1,31 @@
-# Active handoff — 2026-10-02: exact-expiry CDF steps 1-7 built and configured
+# Active handoff — 2026-10-02: one-manifest study, QQQ and IWM run end to end
 
-Built and reviewed (two Sonnet skeptic lenses each, no Critical/Major open):
-ADR-0214 `weekday-onehot`; ADR-0217 step 1b (`attach-by-identity` +
-`ExactExpiryPanelRead`); ADR-0218 `crps`/`wing_twcrps` losses; ADR-0222
-`holdout-cut`/`rolling-origin-plan`; ADR-0223 study `fold_table` + `patience`;
-ADR-0224 `data.exact_dte` + TorchCDF `feature_indices`. Step 3-6 JSON configs
-re-reviewed after their fix commits. Nothing has run on real data yet.
-Owner decision 2026-10-02: steps 4-6 median-impute dates missing an
-admitted family inside each fold window (about 8% of QQQ dev dates); no
-complete-case filter.
+**Landed.** `python -m dskit.pipeline workflow children/index_options/configs/workflow.json [--args my.json] [--plan]`
+runs the 7-step study (target dates, features, availability, holdout and folds, forward feature
+selection, model zoo, HPO, evaluation) plus a verified report, for every ticker in `args.tickers`.
+Every project value is an arg; steps hold only references. Directions, step table, variables
+table and args skeleton: `children/index_options/docs/plans/README.md`.
+ADR-0226 `family-availability` node (+ admission), ADR-0227 runner (pins, lanes, env),
+ADR-0228 `ParquetRows` / `horizon-pairs`, ADR-0229 selection / zoo / grid hooks. ADR-0227 to 0229
+carry "accepted: owner directed the build and merge"; ratify their wording at the next review.
 
-Runbook: `children/index_options/docs/plans/README.md`. Configs:
-`children/index_options/configs/run-step{1-expiry-coverage,1b-feature-engineering,2-feature-availability,3-holdout-folds,4-feature-selection,5-model-zoo,6-hpo}.json`.
+**Verified.** QQQ and IWM ran 1 to 7 from the manifest (about 15 min, 2.6 GB, GPU). Independent
+checks recomputed target dates, panels, availability counts, fold tables (byte-identical to the
+earlier pinned QQQ and IWM fold tables), report numbers, and that the holdout is never evaluated.
+A full rerun after the genericity refactors is byte-identical to the first run (only per-fold
+timing columns differ). Results are honest and weak: the tuned MLP does not beat the empirical
+baseline (QQQ CRPS skill -2.95%, IWM -1.71%; intervals span zero; acceptance fails).
 
-## Next-session prompt: finish QQQ 7-day, steps 1 -> 7
+**Known limits.** A third ticker was proven by `--plan` only (SPY), not by a run. New families
+that are keyed tables in the store need no code; the built-in families still come from the
+child's fixed option tables, and getting new raw data into the store is a separate onboarding
+step. `tests/test_real_data.py` has 3 failures that predate this work (incomplete VIX OHLC rows
+in the store data). Not implemented: within-family elimination, PCA on continuous features, the
+25%-std tie rule, weekly block bootstrap, the shuffled-leak check.
 
-Work in WSL from `children/index_options` with the project venv, under the
-runbook's systemd-run memory caps. Run in order; stop and report at the first
-refusal. Never read the holdout.
-
-1. Step 1: `run-step1-expiry-coverage.json`, `foreach.keys` `["QQQ"]`; onboard
-   `selected.jsonl` as in the steps 1-2 runbook.
-2. Step 1b: `run-step1b-feature-engineering.json`; onboard its panel
-   (`source-feature-panel.json`, root `./pipeline_runs/feature-panel-source`).
-3. Step 2: `run-step2-feature-availability.json` with
-   `pipeline.source.params.root` = `./pipeline_runs/feature-panel-source`.
-4. Step 3: onboard step 2's `dates.jsonl` (`source-step2-dates.json`), then run
-   `run-step3-holdout-folds.json`. Record the fold table's sha256
-   (`carry.json` `fold_evidence.provenance`) and `holdout_start`
-   (`admission-and-metrics.jsonl`).
-5. Write that sha256 and `holdout_start` into `study.fold_table` of the step
-   4, 5 and 6 configs (they refuse until filled).
-6. Step 4: `python -m index_options.cdf_study configs/run-step4-feature-selection.json --stage search --partition forward_1`,
-   then `--stage select`. If a family beats `core`, add its indices to every
-   candidate's `feature_indices`, drop that family's candidate, rename the
-   group `forward_2`, set a fresh `experiment.output`, and rerun. Stop when no
-   family beats core. Rule: higher warm-up validation wins; if comparable, the
-   more stable one.
-7. Step 5: copy the final `core` indices into `run-step5-model-zoo.json` and
-   `run-step6-hpo.json` (`feature_indices`; GRU `sequence`/`context`); `--stage
-   search --partition mlp`, `--partition gru`, then `--stage select`.
-8. Step 6: set the step-5 winner's encoder in `run-step6-hpo.json`; `--stage
-   search --partition mlp`, then `--stage select`.
-9. Step 7, same step-6 config: `--stage evaluate --partition development`,
-   `--stage evaluate --partition later` (scored folds), `--stage report`.
-
-Not in the study yet (do by hand or propose an ADR): within-family
-elimination, PCA on continuous features only, the 25%-std tie rule, weekly
-block bootstrap, the shuffled-leak check. Parked: AMZN (ADR-0216 draft
-`f64a26f`), intraday `tod_columns` migration, superseded ADR drafts 0219-0221,
-codex branch `c3ff39c`.
+**Next.** Run a third ticker end to end (store data permitting); decide the open-interest
+publication clock so the liquidity and positioning families can be admitted; flatten the JSON
+cells in the report's first table; ratify ADR-0227 to 0229.
 
 # Re-entry
 

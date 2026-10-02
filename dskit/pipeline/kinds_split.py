@@ -316,8 +316,13 @@ class HoldoutCut(_DatedCohort):
                 f"the emitted rows cannot be put in a total order ({exc})"
             ) from exc
 
-    def _metrics(self, held, dev, purged):
-        """Return the dates-only metrics of one cut."""
+    @staticmethod
+    def _holdout_rows(rows, start):
+        """Count the cohort rows dated on or after ``start`` (a count, no value)."""
+        return sum(1 for r in rows if r.day >= start)
+
+    def _metrics(self, held, dev, purged, rows):
+        """Return the dates-and-counts metrics of one cut."""
         return {
             "holdout_start": held[0].isoformat(),
             "holdout_end": held[-1].isoformat(),
@@ -325,6 +330,8 @@ class HoldoutCut(_DatedCohort):
             "holdout_weeks": self._iso_weeks(held),
             "dev_dates": len({r.day for r in dev}),
             "purged_rows": purged,
+            "holdout_rows": self._holdout_rows(rows, held[0]),
+            "panel_rows": len(rows),
         }
 
     def run(self, ctx, inputs):
@@ -345,8 +352,10 @@ class HoldoutCut(_DatedCohort):
             order; ``metrics`` — ``holdout_start`` / ``holdout_end`` (ISO
             dates), ``holdout_dates`` (int), ``holdout_weeks`` (distinct
             ISO year-and-week pairs among the holdout dates), ``dev_dates``
-            (distinct dates among the emitted rows) and ``purged_rows``
-            (dev rows dropped because their label reaches the holdout).
+            (distinct dates among the emitted rows), ``purged_rows``
+            (dev rows dropped because their label reaches the holdout),
+            ``holdout_rows`` (input rows dated in the holdout) and
+            ``panel_rows`` (all input rows); the last two are counts only.
 
         Raises
         ------
@@ -367,7 +376,7 @@ class HoldoutCut(_DatedCohort):
                 f"the purge dropped {purged} row(s) whose label reaches it"
             )
         ordered = sorted(dev, key=lambda r: (r.day, self._canonical(r)))
-        metrics = self._metrics(held, dev, purged)
+        metrics = self._metrics(held, dev, purged, rows)
         self.log.info(
             "holdout-cut locked %d of %d date(s) from %s; %d dev row(s), %d purged",
             len(held),

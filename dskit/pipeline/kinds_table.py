@@ -67,18 +67,27 @@ because writing into a store other processes share is the whole job:
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import math
 import os
 import re
 from abc import abstractmethod
+from datetime import date, timedelta
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, atomic_write
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    Node,
+    atomic_write,
+    check_int_param,
+    reject_unknown_params,
+)
+from dskit.pipeline.records import price_ok
 
-__all__ = ["FileWrite", "RecordsWrite", "TableFile", "TableWrite", "register"]
+__all__ = ["FileWrite", "HorizonPairs", "RecordsWrite", "TableFile", "TableWrite", "register"]
 
 #: A hex sha256, and nothing that merely looks like one.
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -777,16 +786,201 @@ class RecordsWrite(FileWrite):
         return {"path": path, "provenance": provenance, "metrics": metrics}
 
 
+class HorizonPairs(Node):
+    """Pair each dated close with the close ``horizon_days`` later (ADR-0228).
+
+    Role ``transform``. For every input record the target day is its date plus
+    ``horizon_days`` calendar days. A target with a close settles on it; with
+    ``fallback="previous"`` a target without one settles on the latest earlier
+    day that has one, with ``"none"`` the entry is dropped. An entry whose
+    target lies past the last close, or whose settlement would be the entry
+    day itself, is dropped, never nulled. Rows come out in date order.
+
+    Parameters
+    ----------
+    params : dict
+        ``horizon_days`` (int >= 1), ``fallback`` (``"previous"`` or
+        ``"none"``), ``symbol`` (str stamped on each row), ``date_field`` and
+        ``close_field`` (input field names; the date is an ISO string),
+        ``fields`` (dict naming the output fields ``symbol``, ``date``,
+        ``settlement_date``, ``entry_close``, ``settle_close``,
+        ``terminal_return`` and ``period``; distinct, no others). All required.
+
+    Examples
+    --------
+    Weekly pairs with weekend targets settled on the prior close::
+
+        node = HorizonPairs("pairs", {
+            "horizon_days": 7, "fallback": "previous", "symbol": "AAA",
+            "date_field": "d", "close_field": "c",
+            "fields": {"symbol": "sym", "date": "entry", "settlement_date": "settle",
+                       "entry_close": "c0", "settle_close": "c1",
+                       "terminal_return": "ret", "period": "year"},
+        })
+        out = node.run(ctx, {"records": bars})
+    """
+
+    role = "transform"
+    outputs = ("records",)
+
+    _PARAMS = ("horizon_days", "fallback", "symbol", "date_field", "close_field", "fields")
+    #: The semantic output slots ``fields`` must name, once each.
+    FIELD_SLOTS = ("symbol", "date", "settlement_date", "entry_close", "settle_close",
+                   "terminal_return", "period")
+    FALLBACKS = ("previous", "none")
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"``.
+
+        Parameters
+        ----------
+        params : dict
+            Unused.
+        verified_run_evidence : dict
+            Unused.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with the declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying ``$`` references.
+
+        Returns
+        -------
+        list of str
+            One message per problem.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        horizon = params.get("horizon_days")
+        if not is_node_ref(horizon):
+            check_int_param(problems, "horizon_days", horizon, ge=1)
+        fallback = params.get("fallback")
+        if not is_node_ref(fallback) and fallback not in cls.FALLBACKS:
+            problems.append(f"fallback must be one of {list(cls.FALLBACKS)}, got {fallback!r}")
+        for name in ("symbol", "date_field", "close_field"):
+            value = params.get(name)
+            if not is_node_ref(value) and (not isinstance(value, str) or not value):
+                problems.append(f"{name} must be a non-empty string, got {value!r}")
+        fields = params.get("fields")
+        if not is_node_ref(fields):
+            problems.extend(cls._field_problems(fields))
+        return problems
+
+    @classmethod
+    def _field_problems(cls, fields):
+        """Problems with the ``fields`` mapping."""
+        if not isinstance(fields, dict):
+            return [f"fields must be a dict naming {list(cls.FIELD_SLOTS)}, got {fields!r}"]
+        problems = []
+        gap = [s for s in cls.FIELD_SLOTS if s not in fields]
+        extra = sorted(set(fields) - set(cls.FIELD_SLOTS))
+        if gap or extra:
+            problems.append(f"fields must name exactly {list(cls.FIELD_SLOTS)}; "
+                            f"missing {gap}, undeclared {extra}")
+        names = [v for v in fields.values()]
+        if not all(isinstance(v, str) and v for v in names):
+            problems.append("fields values must be non-empty strings")
+        elif len(set(names)) < len(names):
+            problems.append("fields values must be distinct output names")
+        return problems
+
+    def _closes(self, records):
+        """Date -> close, refusing a duplicate date or a non-positive close."""
+        date_field, close_field = self.params["date_field"], self.params["close_field"]
+        closes = {}
+        for index, record in enumerate(records):
+            day, close = record.get(date_field), record.get(close_field)
+            try:
+                when = date.fromisoformat(day)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"{self.key}: record {index} {date_field!r} is not an ISO date: {day!r}"
+                ) from None
+            if not price_ok(close) or isinstance(close, bool):
+                raise ValueError(
+                    f"{self.key}: record {index} ({day}) {close_field!r} must be a "
+                    f"positive finite number, got {close!r}"
+                )
+            if when in closes:
+                raise ValueError(f"{self.key}: duplicate date {day} (record {index})")
+            closes[when] = float(close)
+        return closes
+
+    def _settlement(self, target, days, last):
+        """The settlement date for ``target``, or ``None`` when the entry drops."""
+        if target > last:
+            return None
+        at = bisect.bisect_right(days, target)
+        settle = days[at - 1]
+        if settle == target or self.params["fallback"] == "previous":
+            return settle
+        return None
+
+    def run(self, ctx, inputs):
+        """Build the entry/settlement rows.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``records`` (REQUIRED): mappings with the date and close fields.
+
+        Returns
+        -------
+        dict
+            ``{"records": [...]}`` in entry-date order.
+
+        Raises
+        ------
+        ValueError
+            A non-ISO date, a duplicate date, or a non-positive close.
+        """
+        out_names = self.params["fields"]
+        closes = self._closes(inputs["records"])
+        days = sorted(closes)
+        horizon = timedelta(days=int(self.params["horizon_days"]))
+        rows = []
+        for entry in days:
+            settle = self._settlement(entry + horizon, days, days[-1]) if days else None
+            if settle is None or settle <= entry:
+                continue
+            rows.append({
+                out_names["symbol"]: self.params["symbol"],
+                out_names["date"]: entry.isoformat(),
+                out_names["settlement_date"]: settle.isoformat(),
+                out_names["entry_close"]: closes[entry],
+                out_names["settle_close"]: closes[settle],
+                out_names["terminal_return"]: math.log(closes[settle] / closes[entry]),
+                out_names["period"]: entry.year,
+            })
+        self.log.info("paired %d of %d entries", len(rows), len(days))
+        return {"records": rows}
+
+
 #: The kinds this module ships, in registration order.
 _KINDS = (
     ("table-file", TableFile),
     ("table-write", TableWrite),
     ("records-write", RecordsWrite),
+    ("horizon-pairs", HorizonPairs),
 )
 
 
 def register(registry=None):
-    """Register ``table-file``, ``table-write`` and ``records-write`` into
+    """Register ``table-file``, ``table-write``, ``records-write`` and ``horizon-pairs`` into
     ``registry``, ``owned=False``.
 
     Idempotent by SKIPPING a name already present, matching

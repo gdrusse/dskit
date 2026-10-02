@@ -26,6 +26,10 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   group, with Clark–West as a side column. Exit 0 when every row could be
   scored exactly, 3 when the walk saved no per-row loss gaps and only the
   across-fold half could be answered.
+* ``workflow <manifest.json> [--args FILE] [--from STEP] [--only STEP]
+  [--plan]`` — run a manifest of chained pipeline steps (ADR-0227): neutral
+  templates expanded per step, outputs passed downstream, hashes in
+  ``workflow.json``. Exit 0 ran, 1 refused/error, else the halting step's code.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
   document's own shape: a ``pipeline`` node map — or a ``foreach``
   section, since ``pipeline`` may be empty when one is declared
@@ -834,6 +838,13 @@ def _add_adapter_flag(parser) -> None:
     )
 
 
+def cmd_workflow(manifest, args_path, from_step, only, plan) -> int:
+    """Run (or plan) a workflow manifest; the exit code is the runner's."""
+    from dskit.pipeline.workflow import run_workflow
+
+    return run_workflow(manifest, args_path, from_step, only, plan)
+
+
 def main(argv=None) -> int:
     """Parse the command line and dispatch to one verb.
 
@@ -996,6 +1007,16 @@ def main(argv=None) -> int:
         "nodemap",
         help="the full node-map banking run against the synthetic Node set",
     )
+    flow_p = sub.add_parser(
+        "workflow", help="run a manifest of chained pipeline steps (ADR-0227)"
+    )
+    flow_p.add_argument("manifest", help="path to the workflow manifest JSON")
+    flow_p.add_argument("--args", default=None, help="JSON overlaid on manifest args")
+    flow_p.add_argument("--from", dest="from_step", default=None, help="first step")
+    flow_p.add_argument("--only", default=None, help="run just this step")
+    flow_p.add_argument(
+        "--plan", action="store_true", help="validate and print the DAG; run nothing"
+    )
     sub.add_parser("demo", help="build, round-trip, and hash a demo config")
     sub.add_parser("synthetic", help="the full staged run on the synthetic venue")
     val = sub.add_parser("validate", help="load + validate a config JSON file")
@@ -1019,6 +1040,10 @@ def main(argv=None) -> int:
     if args.command == "bar":
         return cmd_bar(
             args.summary_dir, args.registry, args.boot, args.seed, args.alpha
+        )
+    if args.command == "workflow":
+        return cmd_workflow(
+            args.manifest, args.args, args.from_step, args.only, args.plan
         )
     if args.command == "nodemap":
         return cmd_nodemap()

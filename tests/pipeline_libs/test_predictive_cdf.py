@@ -1812,6 +1812,11 @@ def test_decision_hpo_end_to_end_keeps_exclusions_and_telemetry(tmp_path):
     study.run(frame, stage="search", partition="separate", provenance=provenance)
     chosen = study.run(frame, stage="select", provenance=provenance)
     assert chosen["selection_metric"] == "decision_strike_brier"
+    rows = [json.loads(line) for line in
+            (tmp_path/"hpo/selection/candidates.jsonl").read_text().splitlines()]
+    assert {r["candidate"] for r in rows} == {"candidate"}
+    assert sum(r["winner"] for r in rows) == 1 and all(r["n_features"] > 0 for r in rows)
+    assert all(len(r["feature_names"]) == r["n_features"] for r in rows)
     for partition in ("development", "later"):
         study.run(frame, stage="evaluate", partition=partition, provenance=provenance)
     report = study.run(frame, stage="report", provenance=provenance)
@@ -1827,6 +1832,9 @@ def test_decision_hpo_end_to_end_keeps_exclusions_and_telemetry(tmp_path):
         assert values["n"] > values["eligible_n"] > 0
         assert values["decision_skill_pct"] is not None
     assert "candidate_training_nll_by_seed" not in counts[0]
+    flat = pd.read_csv(tmp_path/"hpo/evaluate/later"/ChronologicalCDFStudy.FOLD_LOSSES_FILE)
+    assert set(flat.model) == {"candidate"} and flat.validation_composite.notna().all()
+    assert (flat.epochs_run_by_seed.map(json.loads).map(len) == 1).all()
     scores = pd.read_parquet(tmp_path/"hpo/report/scores.parquet")
     scores.loc[scores.model == "candidate", ["crps", "tail_crps"]] *= 1000
     scores.loc[scores.model == "candidate", ["below_05", "above_95"]] = .99
@@ -3360,6 +3368,7 @@ def test_torch_cdf_monitors_the_composite_on_the_attached_calibration_context():
     assert min(model.monitor_losses[0]) == pytest.approx(report['composite'], rel=1e-4)
     state = model._research_state()
     assert state['patience'] == 3 and state['best_epoch_by_seed'] == model.best_epochs
+    assert state['epochs_run_by_seed'] == [len(model.losses[0])] and state['stopped_by_patience'] is True
     short = _wing_context()
     for i, record in enumerate(short):
         record['identity'] = [f'c{i}']

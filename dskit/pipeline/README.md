@@ -438,6 +438,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `holdout-cut` | transform | lock the last `ceil(fraction x dates)` dates as the holdout and purge dev rows whose label reaches it; emits dev rows + dates-only `metrics` (ADR-0215) |
 | `rolling-origin-plan` | transform | count-sized rolling-origin folds over the dev dates; the oldest `warmup_folds` are `warmup` (all selection), the rest `scored`; refuses rows on/past `holdout_start`; every knob required (ADR-0215) |
 | `attach-by-identity` | transform | a table keyed by SEVERAL fields (`identity`) -> declared column families onto a stream: exact column contract, agreed fields, per-field `withheld_fields`, explicit nulls with `_reasons`, `summary` and `provenance` (ADR-0217) |
+| `family-availability` | transform | declared field families -> per-date yes/no flags, per-family summary, dates-per-family-subset counts (superset sum, no 2^n joins) and cohort bounds; `require` conditions and `_missing`/`_age` companions by suffix params (ADR-0226); `admit {min_rate}` adds an `admission` port (rate/required per family, `admitted`) and a `complete` date flag; a `{"flag": col}` family reads an earlier yes/no column |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
 | `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
@@ -779,6 +780,9 @@ dskit/pipeline/
 ├── stages.py          journal-backed staged DAG execution and resume
 ├── event_wire.py      closed shared raw-event v1/v2 wire declarations (ADR-0169)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
+├── workflow.py        manifest runner: chained pipeline steps from neutral templates (ADR-0227)
+├── workflow_hooks.py  study strategies: candidate generators, stage sequence, collectors, no-gain rule (ADR-0229)
+├── workflow_report.py verified report from a workflow ledger: md + html + csv, refuses on hash mismatch
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
 │                      over config-declared checks + slice stability (ADR-0107)
@@ -804,8 +808,10 @@ dskit/pipeline/
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
+├── kinds_availability.py  family-availability (ADR-0226)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
-│                      tables + the FileWrite base both writers share, ADR-0085)
+│                      tables + the FileWrite base both writers share, ADR-0085;
+│                      horizon-pairs: entry/settle pairs + log return, ADR-0228)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
@@ -888,7 +894,9 @@ dskit/pipeline/
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
-│                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187)
+│                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
+│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228),
+│                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```

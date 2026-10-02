@@ -29850,3 +29850,293 @@ them. **Non-goals.** A pipeline node kind that fronts `payload_files` (a child's
 adapter), retention or pruning of old snapshots, remote fetch (`huggingface` and
 the REST packs own that), and deleting or "syncing" removals — a removed file
 simply is not in the next complete inventory.
+
+## ADR-0226 — `family-availability`: one node reads a families spec instead of 13 hand-wired nodes per family
+
+**Status:** accepted. Base ADR-0225.
+**Sweep** (`FamilyAvailability availability coverage family combinations`;
+inventory of `kinds_flow` / `kinds_table`, `libs/observations.py`,
+`dskit/onboarding/coverage.py`, `children/index_options` step 2): no node
+reduces rows to per-family availability. `derive` (cases), `groupby`,
+`keyby` and `join` (`allow_fanout`) are the verbs step 2 composes today;
+`ObservationRows` only reads a stream; `onboarding/coverage.py` is the
+acquisition coverage ledger (date ranges of a fetch), a different subject.
+Nothing to extend; the new kind reuses `records.number_ok` for finiteness.
+
+**Context.** `run-step2-feature-availability.json` carries, per family, a
+`check_*` derive (finite-and-quality cases), a `summary_*` groupby and an
+`expand_*` fan-out join, plus `universe_flags` and a chained `combinations`
+table: 13 families cost about 40 nodes, and every field name, family name and
+the count 13 sit in the graph. A new ticker or source with different families
+means editing the graph (or generating it from a template), which breaks
+"any ticker/source by config".
+
+**Decision.**
+1. **Kind `family-availability`**, class `FamilyAvailability(Node)`, tier 1
+   (stdlib only, domain-neutral) in a new `dskit/pipeline/kinds_availability.py`
+   with `register()` wired like `kinds_table`. Input port `records`.
+2. **Params (default-deny, one `_PARAMS` tuple):** `families` (required),
+   `schema_fields` (required: the panel's column names), `date_field`,
+   `group_keys` (list, e.g. the ticker), `missing_suffix`, `age_suffix`
+   (companion-column suffixes), `combinations` (`{"emit": "all"|"nonzero",
+   "max_families": int}`; `emit` defaults to `all`, matching today's table). No default names a family, field or count.
+3. **`families` schema:** `{"<family>": {"sources": [{"source","stream",
+   "relpath"}], "fields": [...], "max_age_days": n|null, "require": [{"field","op","value"}]}}`.
+   A family is available on a date when every field in `fields` is finite on
+   every row of that date, every `require` condition (`op` one of `==`, `!=`,
+   `>=`, `<=`, `>`, `<`; `field` in `schema_fields`) holds on every row, and,
+   for each such field, a `<field><missing_suffix>` column present in
+   `schema_fields` is 0 and a `<field><age_suffix>` column present is within
+   `[0, max_age_days]` (age ignored when `null`). `sources` is provenance only,
+   echoed to the output; the node never opens a stream. Unknown family key,
+   a field absent from `schema_fields`, an unknown `op`, or an empty field
+   list refuses at validation.
+4. **Outputs:** `dates` (one record per group key + date: `available_<family>`
+   yes/no, same vocabulary as today); `summary` (per family: present, finite,
+   missing row counts, distinct-date counts yes/no, first/last date);
+   `combinations` (see 5); `cohort` (dates, rows, bounds). A date whose rows
+   disagree on a family is resolved by the all-rows rule above, so a date
+   always has exactly one pattern.
+5. **Combinations without 2^n rows in memory.** Each date becomes an n-bit
+   mask; count dates per distinct mask (at most the number of dates). The
+   dates available for a combination C is the sum of counts over masks that
+   contain C: a superset-sum over a length-2^n integer array in O(n * 2^n)
+   time and one flat array, no join fan-out. `emit: "nonzero"` yields only
+   subsets with dates > 0 (plus the empty set = cohort total); `"all"`
+   reproduces today's full table, lazily. `n > max_families` refuses.
+6. **Step 2 would call it** as one node on `$checked_cohort.records` with
+   `families` and `schema_fields` supplied by `$family_contracts`-style
+   tables or inline JSON; its cohort filter, agreement and `records-write`
+   nodes stay. (Rewrite is a later slice.)
+
+**Alternatives rejected.** Template-generated configs: the graph is still
+n-wide, the generator is the same hardcoding one level up, and the identity
+hash then moves with every family edit. A child-side adapter node: capability
+belongs in dskit. Extending `derive`/`groupby`: they are per-field verbs and
+would need a loop construct, i.e. this node.
+
+**Consequences.** Families become data; step 2 shrinks from about 70 to
+about 8 nodes; combination counts become exact and cheap (8,192 ints). The
+old nodes stay until step 2 is migrated, and its tests pin parity.
+
+**Tests needed.** Validation refusals (unknown params, bad family key, field
+not in schema, bad `require` op, over `max_families`); brute-force
+parity of combination counts on random masks (mirror of the existing
+`test_step2_subset_counts_match_brute_force`) incl. the all-no date and zero
+rows; finite/NaN/inf/None/bool handling; `require` conditions (each op, row disagreement); missing-and-age companions;
+no-literal gate (family names appear in no source line); output parity against
+the step 2 config on a fixture panel; deterministic ordering; purity gate.
+
+**Deferred.** `exclude` and `role` (feature-selection concerns, steps 1b/4); migrating step 2 (and steps 1/1b/3-7); the workflow manifest
+runner; reading `sources` to verify provenance; per-family known-at clocks.
+
+**Amendment (admission, 2026-10-02).** New optional param `admit {min_rate}`
+(number in (0,1], or a node ref). When given, a new port `admission` holds one
+record per group: `dev_dates` (distinct dates), `rate_<family>` (share of dates
+the family is available), `required_<family>` (1/0 = rate >= `min_rate`, a rate
+equal to the floor admits) and `admitted` (sorted admitted names); each `dates`
+record gains `complete` yes/no (every ADMITTED family available; yes for all
+when none is admitted). Without `admit` the port is empty and `dates` is
+unchanged. A family may instead be `{"flag": <column>}`: it reads the yes/no
+column an earlier availability run wrote (any other value refuses), so step 3
+admits from step 2's `dates` without per-family nodes; `flag` excludes `fields`,
+`require` and `max_age_days`. Step 3's 52 `has_/admit_/required_/rate_` nodes
+collapse into one node.
+
+## ADR-0227 — `dskit.pipeline workflow`: one manifest runs a chain of pipeline steps
+
+**Status:** accepted 2026-10-02: the owner directed the build, verification and merge of the one-manifest workflow (ADR-0227). Base ADR-0226.
+**Sweep** (`workflow manifest chain subpipeline template expand compile`
+across origin/main, all branches and worktrees): no runner chains pipeline
+documents; `foreach` fans out one document over keys and cannot sequence
+documents, loop, or pass one document's outputs to the next. Nothing to extend.
+
+**Context.** The index_options study is seven JSON pipelines run by hand. Each
+step's inputs are edited into the next step's file (tickers, horizon, store
+references, fold-table sha256, feature indices), so a new ticker or data source
+means editing many files, and nothing records that step N read step N-1's
+output. The owner wants one entry point: every input enters in one place and
+the chain runs end to end.
+
+**Decision.**
+1. **Manifest** (JSON, `notes` allowed). `args`: every input, the only block a
+   user edits (`--args FILE` overlays it). `layout`: per step, `dir` plus one
+   filename pattern per output, built only from `{W}`, `{T}`, `{H}` (names of
+   the step's own `in` map) and `{L.<step>.<key>}` (another layout entry).
+   `registry`: per key, `template` (a neutral step document), `command` (a
+   template string) and `extends` (a registry key to inherit missing fields
+   from, or null). `steps`: ordered calls with `registry`, `in` (values
+   `$args.<path>` or `$<step>.out.<name>`), `out` names and an optional `loop`.
+   **Templates replace path-binds:** a template is an ordinary pipeline or
+   study document in which every project-varying value is `${name.path}`;
+   `name` is a key of the step's `in` map, `path` descends dicts. A string
+   that is exactly one placeholder keeps the value's JSON type; inside a longer
+   string it interpolates text; `$$` escapes a dollar; the pipeline's own
+   `$each` / `$node.port` / `$prev` (no braces) are untouched; `notes` keys are
+   copied verbatim. A placeholder with no value, or an `in` key no template
+   uses, refuses.
+2. **Validation before anything runs (refuses, exit 1):** a literal value in
+   `steps` or `layout` (only `$ref` and `{var}` forms pass), a dangling `$ref`,
+   an `out` with no layout pattern, a step with no registry entry, a
+   placeholder with no value, an `in` key no template or command uses, an unknown param.
+3. **Run:** `python -m dskit.pipeline workflow <manifest> [--args FILE]
+   [--from STEP] [--only STEP] [--plan]`. For each step the runner expands the
+   template, writes the concrete config under the step's layout directory,
+   runs the registry `command` (existing pipeline or study runner), checks
+   every declared output exists, and records step, config hash, input and
+   output sha256 and exit code in `{W}/workflow.json`. It stops at the first
+   non-zero exit (codes unchanged: 3 halted, 5 refused). A re-run skips a step
+   whose config hash and input hashes are unchanged. `--plan` validates and
+   prints the resolved DAG without running.
+4. **Hooks are named strategies, not branches:** `names_to_indices` (feature
+   names to positions against one ordered list) and `loop` (repeat a step until
+   a declared stop rule holds) are registered, subclassable objects.
+5. **Placement:** tier 1, `dskit/pipeline/workflow.py` (stdlib only,
+   domain-neutral). The child supplies only the manifest and its registry.
+   No dskit file names a ticker, a family or a feature.
+
+**Alternatives rejected.** A shell script (no validation, no hashes, drifts).
+One large pipeline JSON (`foreach` cannot loop or sequence documents, and the
+identity hash would move on every edit). Generating step configs from templates
+in the child (capability belongs in dskit).
+
+**Consequences.** One file to edit per project; every hand-copied value becomes
+a bound reference; a run is reproducible from `workflow.json`. Steps 1 and 1b-3
+still need their neutral configs (`run-step1-target-dates.json`; step 2 and 1b
+via the ADR-0226 node) before the full chain runs. Existing step configs keep
+working standalone.
+
+**Tests needed.** Each validation refusal; placeholder expansion rules;
+two-step chain on a toy pipeline passing an output file; a loop that stops; skip
+on unchanged hashes and rerun on a changed input; halt on a refused step;
+`names_to_indices` round trip; purity gate; a no-literal gate on the runner.
+
+**Deferred.** The seven-step index_options manifest content; migrating step 2
+and 1b to the ADR-0226 node; remote or parallel step execution.
+
+
+**Amendment (pins and lanes).** *Pins:* a registry entry may declare
+`pins: {name: {file, sha256, values: {key: {from, path}}}}`. After a step
+succeeds, `$step.pin.name` resolves for later steps to `{path, sha256,
+<values>}`: the output file's path and byte hash, plus dotted-path values read
+from the first record of named outputs. A pin whose file hash differs from, or
+is absent in, the ledger refuses; pinned hashes are part of the consumer's
+inputs. *Lanes:* manifest `lanes: {key, keyed}` runs the whole chain once per
+value of the args list `key`; `$lane` (or a `$lane` path segment) binds the
+value, `keyed` args objects are narrowed to the lane's key, layout patterns
+must vary by lane, ledger keys are `step@lane`, and `--only`/`--from` accept
+`step@lane` or `@lane`. `${L.step.key}` exposes resolved layout paths to
+templates.
+
+**ADR-0227 Amendment (hand-off seam, steps 1-3).** A registry entry may list
+`before` and `after` command templates and `files` (name -> template path). The
+runner expands each file like the step's own template, writes it beside the
+step's config (`<step>[_lane].<name>.json`), runs `before`, the step command,
+then `after` (a failure stops the chain and is the step's exit code), and
+records every command (phase, argv, exit code) and each file's hash in the
+ledger; a changed file re-runs the step. Command fields: `{python}`, `{dir}`,
+`{in.key}` and `{in.key.path}` (descends an object value; the path is checked in
+plan mode), `{out.key}`, `{file.name}` (`{config}` and `{round}` only in the main
+command). Steps 1, 1b and 2 use it to onboard their output file into a per-step,
+per-lane store (`init`, `register-source`, `acquire` with the `localtables`
+connector; source config = a file template), and the next step reads it back as
+source/stream by the `args.handoff` names (a stem is the stream name, a lowercase
+segment). Step 2's cohort rule: every date of the step 1b panel must be a step 1
+target date (strict join, as in step 1b, which pinned the panel's row count to the
+cohort it verified); the counts are not compared for equality because step 1 also
+lists entry dates with no expiry at the horizon. Step 3 selects and embargoes by
+the horizon H, no longer by a DTE column the dates file does not carry.
+Real run (QQQ, IWM, H=7): both fold-table sha256 equal the values pinned in
+`run-step4-feature-selection*.json`.
+**Env (2026-10-02, step 4 halted: deterministic CUDA needs a variable in the study
+process).** Top-level `env` is a `$args.<path>` reference to a flat object of
+non-empty string names to string values (else refused; dangling refuses). The
+runner merges it over `os.environ` for every command it starts; each ledger
+command records the added names and values, and a changed value changes the
+step's inputs so it reruns. No name or value lives in dskit.
+
+## ADR-0228 — `ParquetRows` and `horizon-pairs`: a price file becomes dated entry/settle pairs
+
+**Status:** accepted 2026-10-02: the owner directed the build, verification and merge of the one-manifest workflow; ratify at the next review. Base ADR-0225, ADR-0227.
+**Sweep** (`ParquetRows HorizonPairs parquet pairs`, origin/main, all branches
+and worktrees): no node reads a parquet file into records (`libs/observations.py`
+reads JSONL; `payload_files` returns paths; `dskit/assets|production/libs/parquet.py`
+are store packs); nothing pairs a dated record with the one `horizon_days` later.
+
+**Context.** The step-1 template needs, per ticker, every entry date with a known
+settlement close and ln(settle/entry), from an onboarded price parquet. Today only
+private study stages read parquet.
+
+**Decision.**
+1. `dskit/pipeline/libs/parquet.py` `ParquetRows` (tier 2, role `data`, output
+   `records`). Params (default-deny): `root`, `source`, `stream` (strs, resolved
+   by `dskit.onboarding.payload_files`), `relpath_by_key` (dict key -> relpath in
+   the stream), `key` (str, normally `$each`), `columns` (dict file column ->
+   output field). The file's sha256 is checked against the manifest digest before
+   it is parsed; a mismatch, an unknown key or a missing column refuses by name.
+   pyarrow is imported only inside `run()`. `fingerprint()` is the manifest digest.
+2. `dskit/pipeline/kinds_table.py` `HorizonPairs` (kind `horizon-pairs`, tier 1,
+   stdlib, role `transform`). Input `records`; output `records`. Params:
+   `horizon_days` (int >= 1), `fallback` (`previous` | `none`), `symbol` (str),
+   `date_field`, `close_field` (input names), `fields` (output names for
+   `symbol`, `date`, `settlement_date`, `entry_close`, `settle_close`,
+   `terminal_return`, `period`). Per record the target is date + `horizon_days`;
+   it settles on the target when that day has a close, else (`previous`) on the
+   latest earlier day with one. Entries whose target lies past the last close, or
+   whose settlement would be the entry itself, are dropped, not nulled.
+   `terminal_return` = ln(settle/entry); `period` = calendar year of the entry
+   date (int). Duplicate dates and non-positive or non-numeric closes refuse.
+**Alternatives rejected.** Reading the file in the child (capability belongs in
+dskit); a `date_field` coercion in the reader (the pairing node owns date
+parsing); nulling unsettled entries (a later filter would be needed everywhere).
+**Tests.** Reader: round trip, digest mismatch, unknown key/column, default-deny,
+no top-level pyarrow import. Pairs: weekend fallback, `none`, tail drop, duplicate
+and non-positive refusals, field names from params, validation. Real-data check
+against the prepared panel for two tickers.
+**Deferred.** Business-day horizons; a date-typed parquet column; multiple files per key.
+
+**ADR-0226 Amendment (admission count field).** The admission row's date-count field is no longer a hardcoded name: optional param `dates_count_field` (non-empty string, not a `group_keys` entry; default `dates`) names it. The step-3 template sets it explicitly; the node names no project field.
+
+
+## ADR-0229 — Study strategies for the workflow runner: candidates, stage sequence, collector, stop rule
+
+**Status:** accepted 2026-10-02: the owner directed the build, verification and merge of the one-manifest workflow; ratify at the next review. Base ADR-0227.
+**Sweep** (`CandidateGenerator StageSequence Collector StopRule candidates generate collect`, origin/main, all
+branches and worktrees): the runner has `Hook` and `StopRule` seams only; nothing generates candidate blocks
+or reads a study's selection output; `cdf_study` has no `--sequence` flag, so a stage list had no executor.
+
+**Context.** Steps 4-6 need candidate blocks per round, a command per declared stage, step outputs read from
+the study's selection files, and a forward loop that knows when to stop. Hand-copying these per ticker was
+the drift ADR-0227 removes.
+
+**Decision.** Four subclassable strategy objects in `dskit/pipeline/workflow_hooks.py` (stdlib only), each
+registered by name; every project word is an input read from args.
+1. `CandidateGenerator` (an `in` hook, abstract `candidates`/`groups`): returns its `base` args block with
+   candidates, groups, partitions (and the candidate cap) laid over it, so templates keep one placeholder root.
+   `ForwardCandidates`: the incumbent set alone, plus it with each admitted pool family, named from args;
+   `ZooCandidates`: one candidate per declared encoder over the final set; `GridCandidates`: the axes product
+   over the chosen encoder. Feature indices come from names against the ordered list (`NamesToIndices`);
+   encoder sequence rows are names, turned into subset positions. Spec locations are args (`paths`).
+2. `StageSequence` (a step's `stages`): `DeclaredSequence` turns the declared stage records into command tails
+   (flag spellings from args), expanding a wildcard into every partition of the expanded study document.
+3. `Collector` (a step's `collect`, abstract `write`): reads the study's per-candidate rows (file and field
+   names declared in args), takes the best partition winner (first wins a tie, direction from args), and writes
+   the step outputs: `ForwardCollector` the core file and one rounds row per round; `ZooCollector` the winner;
+   `GridCollector` the best candidate with its spec.
+4. `NoGainRule` (`until: no_gain`): stop when the round did not beat the incumbent by `margin`, or nothing is left.
+Runner seam (small, in `workflow.py`): hooks get a role (`value`, `stages`, `collect`); step keys `stages` and
+`collect`; the `round` runtime input; `$self.out.<name>` (a step's own output path, never hashed as an input);
+`{round}` in a looped step's layout pattern (a fresh study directory per round); `StopRule.verdict(history,
+rounds)`, defaulting to `stop`. The old `--sequence` command field is dropped.
+
+**Alternatives rejected.** Branching on step in the runner (the smell CLAUDE.md names); candidates written by
+hand per ticker (drift); a stop rule over group hashes alone (cannot see a no-gain round).
+
+**Consequences.** Steps 4-6 run from the manifest; a new family, encoder, axis or ticker is an args edit.
+The study's selection file names are pinned by a child test against the study source.
+
+**Tests.** Spec builder, each generator, sequence expansion, each collector against a fake study directory,
+the stop rule, an end-to-end loop through the runner, role/self-ref/literal refusals, a no-project-value gate.
+**Deferred.** Within-family elimination and the tie rule (not expressible in the study yet).
+
+**ADR-0226 Amendment (keyed families, owner goal 2026-10-02).** A family whose data is a table keyed by (entity, date) in an onboarded store is added by args only, under `families.keyed`: `sources` (`root`, `source`, `stream`, `key_fields`, `columns`), `fields`, `require`, optional `max_age_days`/`strict_prior`, `lookback`, `clock_note`. (1) Tier-2 transform `observation-tables` (`libs/observation_tables.py`) reads each table through `ObservationRows` and writes its columns onto an input stream by key, exact or as-of (strictly prior by default, at most `max_age_days` old, with `<field>_age_days`/`<field>_missing` companions, never imputed); an empty `tables` is a pass-through. It is not a second joiner: the step 1b `attach-by-identity` still attaches the columns to the cohort; the node only makes its `table` input carry them, because a template cannot add a node per family. (2) Core hooks in `workflow_hooks.py`: `families_spec` folds `keyed` into availability, documentation, engineered, flags, schema_fields, dates_fields and `keyed_tables`; `family_contracts`, `keyed_pool`, `keyed_cap` feed step 4; `feature_order` appends the family's fields to a ticker's recorded order (positions stay stable) or derives the whole order (start names, then every family's fields) for a ticker with none. (3) `workflow.py` `_ref_problems` accepts a hook as another hook's input. Limits: the step 4-7 study still builds its own panel from its `data` block, so a keyed family's columns reach it only once that reader also takes `keyed_tables`; the recorded per-ticker `feature_order` stays typed for index stability; per-ticker `references` and `feature_limits` are still args for a new ticker. Test: `children/index_options/tests/test_new_family.py`.

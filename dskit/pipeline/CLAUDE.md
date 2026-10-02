@@ -719,6 +719,9 @@ dskit/pipeline/
 │                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
+├── workflow.py        manifest runner: chained pipeline steps from neutral templates (ADR-0227)
+├── workflow_hooks.py  study strategies: candidate generators, stage sequence, collectors, no-gain rule (ADR-0229)
+├── workflow_report.py verified report from a workflow ledger: md + html + csv, refuses on hash mismatch
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
 │                      config-declared checks + slice stability (ADR-0107)
@@ -742,7 +745,9 @@ dskit/pipeline/
 ├── kinds_split.py     holdout-cut, rolling-origin-plan — the evaluation protocol:
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
-├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
+├── kinds_availability.py  family-availability (ADR-0226)
+├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
+│                      horizon-pairs (dated close paired with the close H days later, ADR-0228)
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
 │                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
@@ -805,7 +810,9 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib, lightgbm (a fitted volatility-
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
-│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228),
+│                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```

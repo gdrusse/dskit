@@ -3377,6 +3377,8 @@ class TorchCDF(MixtureMLPCDF):
         import torch
         state = {"encoder": self.encoder_config, "losses": self.loss_config,
                  "training_composite_by_seed": self.losses,
+                 "epochs_run_by_seed": [len(losses) for losses in self.losses],
+                 "stopped_by_patience": self.patience is not None,
                  "peak_cuda_allocated_bytes": (torch.cuda.max_memory_allocated(self.device)
                                                if self.device.startswith("cuda") else 0)}
         if self.family_config is not None:
@@ -4296,6 +4298,35 @@ class ChronologicalCDFStudy:
         return (float(100*(1-(means.candidate/means.reference).mean()))
                 if len(means) and (means.reference > 0).all() else None)
 
+    #: The flat per-fold loss table written beside ``counts.json`` (one row per
+    #: group, fold and trained model), and the research-state fields it carries.
+    FOLD_LOSSES_FILE = "fold_losses.csv"
+    LOSS_STATE_FIELDS = ("epochs_run_by_seed", "best_epoch_by_seed", "stopped_by_patience",
+                         "patience")
+    LOSS_SUFFIX, STATE_SUFFIX = "_losses", "_research_state"
+
+    @classmethod
+    def _loss_rows(cls, counts, column):
+        """Flatten counts.json into one row per (group, fold, model) with band-prefixed losses."""
+        rows = []
+        for entry in counts:
+            for key in entry:
+                if not key.endswith(cls.LOSS_SUFFIX):
+                    continue
+                name = key[:-len(cls.LOSS_SUFFIX)]
+                row = {"group": entry["group"], column: entry[column], "model": name}
+                for band, report in entry[key].items():
+                    for field, value in report.items():
+                        if field == "terms":
+                            row.update({f"{band}_{kind}": term["mean"]
+                                        for kind, term in value.items()})
+                        elif value is None or isinstance(value, (int, float, bool)):
+                            row[f"{band}_{field}"] = value
+                state = entry.get(name+cls.STATE_SUFFIX, {})
+                row.update({f: state[f] for f in cls.LOSS_STATE_FIELDS if f in state})
+                rows.append(row)
+        return rows
+
     def _loss_telemetry(self, model, imputer, baseline, baseline_imputer, fit, cal, val):
         import numpy as np
         c = self.config
@@ -4826,6 +4857,9 @@ class ChronologicalCDFStudy:
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
+        loss_rows = self._loss_rows(counts, self.plan.column)
+        if loss_rows:
+            pd.DataFrame(loss_rows).to_csv(output/self.FOLD_LOSSES_FILE, index=False)
         evidence = [{self.plan.column: split, "population": population, "label": label,
                      "digest": record["digest"],
                      "members": sorted(set(record["members"])),
@@ -5192,13 +5226,57 @@ class CDFHyperparameterStudy:
             raise ValueError("no candidate satisfies development selection guard")
         return feasible, evidence
 
+    def _candidate_rows(self, partition, names, rank, evidence, chosen):
+        """Return one row per searched candidate and variant, in declared order.
+
+        Parameters
+        ----------
+        partition : str
+            The search partition (candidate group) the names belong to.
+        names : list of str
+            Candidate names searched in the partition.
+        rank : Series
+            Mean reference-relative score per (model, variant); lower wins.
+        evidence : list of dict
+            Guard evidence rows (``model``, ``variant``, ``feasible``); empty
+            when no guard is declared, so ``guard_pass`` is None.
+        chosen : tuple of str
+            The (name, variant) the partition selected.
+
+        Returns
+        -------
+        list of dict
+            Round-free rows; the caller's loop supplies any round number.
+        """
+        features = self.base["features"]
+        passed = {(row["model"], row["variant"]): row["feasible"] for row in evidence}
+        rows = []
+        for name in names:
+            indices = self.experiment["candidates"][name]["params"].get(
+                "feature_indices") or list(range(len(features)))
+            for variant in ("raw", "calibrated"):
+                rows.append({
+                    "partition": partition, "candidate": name, "variant": variant,
+                    "n_features": len(indices),
+                    "feature_names": [features[i] for i in indices],
+                    "warmup_mean_skill": 100*(1-float(rank[(name, variant)])),
+                    "guard_pass": passed.get((name, variant)),
+                    "winner": (name, variant) == chosen})
+        return rows
+
+    @staticmethod
+    def _write_rows(path, rows):
+        from dskit.pipeline.node import atomic_write
+        text = "".join(json.dumps(row, sort_keys=True, allow_nan=False)+"\n" for row in rows)
+        atomic_write(str(path), text.encode())
+
     def _select(self, frame, identity):
         import copy
         import pandas as pd
         e, c = self.experiment, self.base
         expected = self._expected(frame, self.development)
         all_scores, controls, screen_specs, selected, variants = [], None, {}, {}, {}
-        rankings, guard_evidence = {}, {}
+        rankings, guard_evidence, candidate_rows = {}, {}, []
         for partition, names in e["search_partitions"].items():
             path = self.output/"search"/partition
             self._load(path, identity, "search", partition)
@@ -5214,6 +5292,8 @@ class CDFHyperparameterStudy:
                 scores, [(n, v) for n in names for v in ("raw", "calibrated")])
             guard_evidence[partition] = evidence
             name, variant = min(eligible, key=lambda nv: rank[nv])
+            candidate_rows.extend(self._candidate_rows(
+                partition, names, rank, evidence, (name, variant)))
             screen_specs[name] = copy.deepcopy(e["candidates"][name])
             selected[name] = copy.deepcopy(screen_specs[name])
             if not self.grouped:
@@ -5236,6 +5316,7 @@ class CDFHyperparameterStudy:
         path = self.output/"selection"
         path.mkdir(parents=True, exist_ok=False)
         self._write(path/"selected.json", payload)
+        self._write_rows(path/"candidates.jsonl", candidate_rows)
         pd.concat([controls, *all_scores], ignore_index=True).to_parquet(path/"development_scores.parquet", index=False)
         self._complete(path, identity, "select", None)
         return payload
