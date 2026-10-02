@@ -102,6 +102,17 @@
         "max_quote_age_seconds": 900
       },
       "notes": "Historical trade-close American-option proxy; finite-support completed tails are not observed. Current orphan metadata stays visible but ineligible. Numerical projection/forward diagnostics are ungated unless JSON supplies limits."
+    },
+    "panel_rows": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$panel.records"
+      },
+      "params": {
+        "path": "./pipeline_runs/option-panel/input_panel.jsonl",
+        "source": "Prepared option-panel rows (OptionCDFPanel.records) for the shared step-1/step-2 files"
+      },
+      "notes": "Persists the prepared panel as the input_panel stream that configs/source-option-panel.json imports, so the shared index_options step-1/step-2 files read AMZN unchanged. The parent directory must exist (mkdir -p pipeline_runs/option-panel) and the writer refuses to overwrite, so move the directory aside to re-prepare."
     }
   },
   "outputs": {

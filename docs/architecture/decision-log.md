@@ -29050,59 +29050,73 @@ curves fail closed on missing clocks and invalid numerical geometry.
 
 ## ADR-0214 — Generic weekday one-hot node
 
-**Status:** proposed 2026-10-01; awaiting owner approval (direction ruled
-2026-10-01). Base: aeea072. No code until approved.
+**Status:** accepted 2026-10-01. Base: 1968283.
 
-The QQQ 7-day CDF cohort is nearly all Fridays through 2020, then most
-sessions; the owner wants weekday as a feature (`quote_date`, ISO). No dskit
-node computes it (`derive` has no expressions; `ArrayMap`/`ArrayFeatures` add
-no dict field). Copies: `production.sessions.DAY_NAMES` (same tuple; production
-imports pipeline, so it repoints in a named follow-up) and intraday_equities
-`tod_columns` (`dow_mon..dow_fri`), which migrates. Staying: `replay.py:593
-_WEEKDAYS` (full names, `first_weekday` vocabulary) and `nodes.py:1492
-dow_sin`/`dow_cos` (cyclical, not one-hot).
+The QQQ 7-day CDF cohort is nearly all Fridays through 2020; the owner wants
+weekday as a feature (`quote_date`, ISO). No dskit node computes it (`derive`
+has no expressions; `ArrayMap` writes only envelope price fields;
+`ArrayFeatures` emits separate rows). Copies: `production.sessions.DAY_NAMES`
+(repointed here) and intraday_equities `tod_columns` (`dow_mon..dow_fri`;
+migration deferred, see Owner rulings). Staying:
+`children/intraday_equities/intraday_equities/replay.py:593` `_WEEKDAYS` (full
+names) and `nodes.py:1492` `dow_sin`/`dow_cos` (:1510).
 
 1. **Home.** Tier-1 kind `WeekdayOneHot` (`weekday-onehot`, `owned=False`,
-   `role="transform"`, outputs `records`/`counts`) in `kinds_flow.py`, reusing
-   `derive`'s `validate_inputs`, `_reject_unknown`, `_mapping_row` (verb
-   "derive"). The pure rule, `WEEKDAY_TAGS` and `weekday_flags`, goes in
-   `records.py` beside `number_ok`, importable without a kind file.
+   `role="transform"`, `serving_effect` `"pure"`, outputs `records`/`counts`) in
+   `kinds_flow.py`, additive: no existing kind class source is edited
+   (`fingerprint_class`, `release.py:235`, hashes class source);
+   `validate_inputs = Derive.validate_inputs`, with `_reject_unknown` and
+   `_mapping_row` (verb "derive"). The pure rule, `WEEKDAY_TAGS` and
+   `weekday_flags`, lives in `records.py` beside `number_ok`.
 2. **Input.** `date_field`: ISO `YYYY-MM-DD` string, checked by ONE public
    `document.date_problem` (`_date_problem` renamed plus an `isinstance(str)`
-   guard; it raised bare `TypeError` on `None`): publishing beats a private
-   cross-module import. `program_calendar.py:36`'s inequivalent copy is a named
-   follow-up. Dates only, no timezone knob: numbers, date-times and `YYYYMMDD`
-   are refused; an epoch-ms caller derives its local date first.
+   guard; it raised bare `TypeError` on `None`). `program_calendar.py:36`'s
+   inequivalent copy is a named follow-up. Dates only, no timezone knob:
+   numbers, date-times and `YYYYMMDD` refused; epoch-ms callers derive the date.
 3. **Output.** `int` 0/1 per `weekdays` tag, named `prefix + tag`; `baseline`
    tags may be all-zero. A weekday in neither, a bad or missing date, a
-   non-mapping row or an existing column (no `overwrite`) RAISES naming node,
-   row and field. `counts` is rows per weekday. Pure per row (`serving_effect`
-   `"pure"`); the document wires a known-at-decision field.
+   non-mapping row or an existing column RAISES naming node, row and field.
+   `counts` is rows per weekday.
 4. **One owner.** `weekday_flags(day, weekdays, baseline)` takes a `date`
-   (refuses a `datetime`), returns an `int` tuple, raises on an uncovered
-   weekday. `tod_columns` calls it once per distinct date, casts to float64
-   child-side, keeps its own `dow_` and passes baseline `sat`/`sun`. `dow_*`
-   stays byte-identical; a golden mismatch is fixed in the dskit rule, never by
-   a child fork.
+   (refuses `datetime`), returns an `int` tuple, raises on an uncovered weekday.
+   `DAY_NAMES` in `production/sessions.py` is repointed to `WEEKDAY_TAGS`.
 5. **Params.** `_PARAMS = ("baseline", "date_field", "prefix", "weekdays")`;
-   `date_field` and `prefix` required; `DEFAULT_WEEKDAYS = WEEKDAY_TAGS`,
-   `DEFAULT_BASELINE = ()`, each named once. Omitted knobs are not hashed, so
-   changing a default is breaking; a literal-restatement test pins both.
+   `date_field`, `prefix` required; `weekdays` defaults to all seven tags,
+   `baseline` to none. `validate_params` refuses overlap, duplicates, an
+   unknown tag, empty `weekdays` and empty `prefix`; one named test each.
 
-**Pins.** Registration, `__all__`, `_PARAMS`, refusals, literal defaults,
-`WEEKDAY_TAGS == DAY_NAMES`, row independence, child `dow_*` golden, QQQ census
-in `children/index_options/tests`. **Touched.** `records.py`, `document.py`,
-`kinds_flow.py` (docstrings, "seven"), `tests/pipeline`: `test_kinds_flow:1353`,
-`test_kinds_banking:45,76`, `test_serving_effect:73,415`,
-`test_toolkit_conformance`, `test_records`; pipeline docs; intraday_equities
-`features.py`, `test_feature_blocks.py`.
+**Pins.** `date_problem` direct (`None`, `5`, a `datetime`, `2026-02-30`,
+`20260105`, `"2026-01-05\n"`); new `__all__` pins; refusals, baseline zeros,
+`counts` shape, row independence; literal defaults, omitted equals
+spelled-out, `notes` hash-excluded; `WEEKDAY_TAGS == DAY_NAMES`
+(`tests/production`). QQQ census in `children/index_options/tests` over
+committed `rows.jsonl`: 1,497 rows, 508 pre-2021 (35 not Friday), no Sat/Sun,
+`counts` equal an independent `datetime` tally.
+**Touched.** `records.py` (+docstring), `document.py`, `kinds_flow.py` (class,
+`_KINDS`, "seven" docstrings), `pipeline/__init__.py`, pipeline README (:412,
+:772, :840), CLAUDE.md (:733, :783), AGENTS.md (:535, :568); `tests/pipeline`:
+`test_kinds_flow:1353`, `test_kinds_banking:45,76`,
+`test_serving_effect:73,415`, `test_toolkit_conformance` (:53, :80, probe :327
+with its own dated rows), `test_records`; `production/sessions.py`
+(`DAY_NAMES`).
 
-**Caveat.** Pre-2021 rows are all Fridays, so weekday is partly confounded with
-era. **Non-goals:** month-edge, time of day, cyclical, expiry count, instants,
-holidays, any run.
+**Caveat.** 35 of 508 pre-2021 rows are not Fridays; 2021 is Mon/Wed/Fri heavy;
+all five days from 2023; no weekend rows: weekday is partly confounded with era.
+**Non-goals:** month-edge, time of day, cyclical, instants, holidays, any run;
+`carry_fields`/`scale_features` and config wiring are child-side.
 
-**Owner question 1.** Migrate `tod_columns` in this slice (proposed) or defer?
-**Owner question 2.** Default `weekdays`: all seven (proposed) or Mon-Fri?
+**Owner rulings (2026-10-01).** Q1: migrating intraday_equities `tod_columns`
+is deferred to a named follow-up (it must call `weekday_flags`, baseline
+`sat`/`sun`, with a float64 `tobytes()` golden for the five `dow_*`). Q2:
+option (a), `weekdays` all seven, `baseline` none; seven columns sum to 1
+(collinear with an intercept) and Sat/Sun are constant zero on business days.
+Q3: `DAY_NAMES` repointed in this slice.
+
+**Implementation note.** `weekday_flags` raises `TypeError` for a non-`date`
+(a `datetime` included) and `ValueError` for an unknown tag or an uncovered
+weekday; `counts` carries all seven tags, zero where no row fell; the defaults
+are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
+`_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.
 
 ## ADR-0222 — Data-driven holdout and count-sized rolling folds
 

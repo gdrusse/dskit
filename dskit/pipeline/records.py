@@ -44,6 +44,12 @@ with a plain ``ValueError`` — the accumulate-everything ``ConfigError``
 protocol is for configs someone edits, not objects a loop constructs by
 the thousand.
 
+The module also owns the small pure rules several packages must agree
+on, each in ONE place: :func:`number_ok` and its narrowings, the cluster
+identity, and (ADR-0214) the weekday vocabulary :data:`WEEKDAY_TAGS` with
+:func:`weekday_flags`, the one-hot rule the ``weekday-onehot`` kind and
+the production session calendar both read.
+
 Import cost: stdlib only.
 """
 
@@ -51,11 +57,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date, datetime
 
 __all__ = [
     "ASOF_FIELD",
     "CLUSTER_FIELD",
     "CONTRACT_FIELD",
+    "WEEKDAY_TAGS",
     "BinaryAccounting",
     "MarkToMarketAccounting",
     "MarketRecord",
@@ -66,6 +74,7 @@ __all__ = [
     "number_ok",
     "price_ok",
     "settle_position",
+    "weekday_flags",
 ]
 
 #: The envelope field naming an observation's DECISION INSTANT — the
@@ -93,6 +102,82 @@ CONTRACT_FIELD = "contract"
 #: property), then the raw cluster field a dict row carries, then the
 #: contract. One tuple, because :func:`cluster_of` is its only reader.
 _CLUSTER_SOURCES = ("cluster", CLUSTER_FIELD, CONTRACT_FIELD)
+
+
+#: The weekday vocabulary, Monday first — indexed exactly like
+#: ``date.weekday()``. Named HERE because the weekday one-hot kind
+#: (``weekday-onehot``, ADR-0214), the production session calendar's
+#: ``days`` spelling and any child feature block are the same fact about
+#: the same calendar: two literals would be a scheduled bug the day one
+#: is respelled, and a session document's ``days`` is part of its identity.
+WEEKDAY_TAGS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def weekday_flags(day, weekdays, baseline):
+    """One-hot a calendar day against a declared set of weekday columns.
+
+    The pure rule behind the ``weekday-onehot`` kind (ADR-0214), public so
+    a child's own feature block calls it instead of restating the
+    weekday arithmetic. Fail-closed: a weekday the caller declared in
+    neither set RAISES rather than reading as an all-zero row, because a
+    silent zero row is the one a downstream model would learn from.
+
+    Parameters
+    ----------
+    day : datetime.date
+        The calendar day. A ``datetime`` is refused, not truncated: a
+        time of day carries a timezone question this rule must not
+        answer by accident.
+    weekdays : sequence of str
+        The tags that get a column, in output order; each one of
+        :data:`WEEKDAY_TAGS`. Duplicates and overlap with ``baseline``
+        are the caller's to refuse (the kind's ``validate_params`` does).
+    baseline : sequence of str
+        Tags that are lawful but get no column, so their rows are
+        all-zero (the reference level of a dummy coding). May be empty.
+
+    Returns
+    -------
+    tuple of int
+        ``1`` where the day's tag equals that column's tag, else ``0``,
+        positionally aligned with ``weekdays``.
+
+    Raises
+    ------
+    TypeError
+        When ``day`` is not a plain ``date`` (``datetime``, ``str``,
+        ``None``, numbers).
+    ValueError
+        When a tag is not in :data:`WEEKDAY_TAGS`, or when the day's own
+        tag is in neither ``weekdays`` nor ``baseline``.
+
+    Examples
+    --------
+    Monday through Friday get columns; weekends are the baseline::
+
+        weekday_flags(date(2026, 1, 5), ("mon", "tue", "wed", "thu", "fri"), ("sat", "sun"))
+        # -> (1, 0, 0, 0, 0)
+        weekday_flags(date(2026, 1, 10), ("mon", "tue", "wed", "thu", "fri"), ("sat", "sun"))
+        # -> (0, 0, 0, 0, 0)
+    """
+    if isinstance(day, datetime) or not isinstance(day, date):
+        raise TypeError(
+            f"weekday_flags needs a calendar date, got {type(day).__name__} "
+            f"{day!r} (a datetime is refused, not truncated)"
+        )
+    unknown = [tag for tag in (*weekdays, *baseline) if tag not in WEEKDAY_TAGS]
+    if unknown:
+        raise ValueError(
+            f"unknown weekday tag(s) {unknown!r}; the vocabulary is {list(WEEKDAY_TAGS)}"
+        )
+    tag = WEEKDAY_TAGS[day.weekday()]
+    if tag not in weekdays and tag not in baseline:
+        raise ValueError(
+            f"{day.isoformat()} is a {tag!r}, which is in neither weekdays "
+            f"{list(weekdays)} nor baseline {list(baseline)} — declare it "
+            "in one of them rather than read it as an all-zero row"
+        )
+    return tuple(int(tag == column) for column in weekdays)
 
 
 def number_ok(value):

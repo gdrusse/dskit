@@ -1569,77 +1569,700 @@ def test_the_cli_validates_and_plans_one_document_of_each_debit_kind(child_root)
         assert planned["nodes"]["backtest"]["class"] == cls
 
 
-def test_feature_availability_json_preserves_cohort_and_reports_missing_groups(child_root):
-    from dskit.pipeline.kinds_flow import Derive, Filter, GroupBy
-    document = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
-    graph = document["pipeline"]
-    families = graph["family_contracts"]["params"]["tables"]["families"]
-    required = {field for family in families.values() for field in family["fields"]}
-    row = {field: .1 for field in required}
-    row.update(symbol="QQQ", quote_date="2020-01-02", expiry="2020-01-09",
-               actual_calendar_dte=7, terminal_return=.1, rn_proxy_eligible=1, asof_ms=1577923200000)
-    for name in required:
-        if name.startswith("market_") or name in families["macro_context"]["fields"]:
-            row[name+"_missing"] = 0
-            row[name+"_age_days"] = 1
-    for i in range(9):
-        row[f"chain_node_{i:02d}_mask"] = 1
-    rows = [dict(row), dict(row, quote_date="2020-01-03", expiry="2020-01-10", asof_ms=1578009600000)]
-    rows[1].pop("ret_lag_0")
-    rows[1]["market_gvz_missing"] = 1
-    rows[1]["chain_node_00_mask"] = 0
-    excluded = dict(row, actual_calendar_dte=8)
-    selected = Filter("cohort", graph["cohort"]["params"]).run(None, {"records": rows+[excluded]})["records"]
-    assert len(selected) == 2
-    for key, spec in graph.items():
-        if key.startswith("check_"):
-            selected = Derive(key, spec["params"]).run(None, {"records": selected})["records"]
-    assert selected[0]["available_all_families"] == 1
-    assert selected[1]["available_return_history"] == 0
-    assert selected[1]["available_volatility_context"] == 0
-    assert selected[1]["available_chain_nodes"] == 0
-    assert selected[1]["available_implied_cdf"] == 1
-    summary = GroupBy("summary", graph["summary_return_history"]["params"]).run(
-        None, {"records": selected})["records"]
-    assert sum(r["observations"] for r in summary) == 2
-    assert {r["available_return_history"]: r["observations"] for r in summary} == {0: 1, 1: 1}
-    assert graph["row_evidence"]["params"]["expect"] == 1497
-    assert set(document["foreach"]["keys"]) == required
-    assert load_document(child_root/"configs/run-qqq-feature-availability.json").name
+# -- Steps 1-2 of the three-step data selection: two ticker/source-neutral documents ----------
+#
+# Step 1 counts, per exact calendar DTE, the entry dates with a listed expiry and a settled
+# close; step 2 reports which feature families exist on step 1's argmax-DTE dates, and the
+# distinct-date count of every combination of families. Both are JSON over existing kinds.
+
+import itertools  # noqa: E402
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
+
+STEP1 = "configs/run-step1-expiry-coverage.json"
+STEP2 = "configs/run-step2-feature-availability.json"
+SELECTION_SOURCE = "configs/source-step1-selection.json"
+#: The 13 families in the order step 2 checks and combines them, restated here (never read from
+#: the document) and pinned to its family_contracts by test_step2_family_vocabulary_agrees_everywhere.
+FAMILIES = [
+    "implied_cdf", "return_history", "realized_volatility", "ohlc_shape", "volatility_context",
+    "expanded_volatility_context", "surface_level", "surface_changes", "variance_gap",
+    "liquidity", "positioning_changes", "macro_context", "chain_nodes"]
+FLOAT_MAX = sys.float_info.max
+SOURCE_ROOT = "./pipeline_runs/cdf-horizon-source"
 
 
-def test_feature_availability_json_rejects_nonfinite_and_does_not_call_it_known_at(child_root):
-    from dskit.pipeline.kinds_flow import Derive
-    doc = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
-    params = doc["foreach"]["pipeline"]["finite_flag"]["params"]
-    params = json.loads(json.dumps(params).replace("$each", "test_feature"))
-    rows = [{}, {"test_feature": None}, {"test_feature": float("nan")},
-            {"test_feature": float("inf")}, {"test_feature": "3"}, {"test_feature": 0.}]
-    out = Derive("audit", params).run(None, {"records": rows})["records"]
-    assert [r["audit_finite"] for r in out] == [0, 0, 0, 0, 0, 1]
+def _step(child_root, name):
+    return json.loads((child_root / name).read_text())
+
+
+def _cli(argv, cwd, env=None):
+    """One CLI call from ``cwd`` with the journal root unset; the completed process."""
+    environ = {k: v for k, v in os.environ.items() if k != "DSKIT_JOURNAL_ROOT"}
+    environ.update(env or {})
+    return subprocess.run([sys.executable, "-m", *argv], cwd=cwd, env=environ,
+                          capture_output=True, text=True, timeout=300)
+
+
+def _must(done):
+    assert done.returncode == 0, (done.args, done.stdout[-800:], done.stderr[-1500:])
+    return done
+
+
+def _kind_classes():
+    from dskit.pipeline.kinds_flow import Concat, Derive, Filter, GroupBy, Join, KeyBy
+    return {"filter": Filter, "groupby": GroupBy, "keyby": KeyBy, "derive": Derive,
+            "join": Join, "concat": Concat}
+
+
+def _materialize(value, outputs, each):
+    """A node's params/inputs with ``$each`` and ``$node.port.path`` references resolved.
+
+    The mini-driver the unit tests run documents with: it honors the document's own wiring, so a
+    mis-wired port fails here exactly as it would in the runner.
+    """
+    if isinstance(value, str):
+        if value == "$each":
+            return each
+        if value.startswith("$"):
+            head, *path = value[1:].split(".")
+            found = outputs[head]
+            for part in path:
+                found = found[part]
+            return found
+        return value
+    if isinstance(value, list):
+        return [_materialize(v, outputs, each) for v in value]
+    if isinstance(value, dict):
+        return {k: _materialize(v, outputs, each) for k, v in value.items()}
+    return value
+
+
+def _run_nodes(nodes, outputs, each=None, only=None):
+    """Run the flow-kind nodes of ``nodes`` (a document's ordered node map) over ``outputs``."""
+    classes = _kind_classes()
+    for key, spec in nodes.items():
+        if spec["uses"] not in classes or (only is not None and key not in only):
+            continue
+        inputs = _materialize(spec.get("inputs", {}), outputs, each)
+        params = _materialize(spec.get("params", {}), outputs, each)
+        outputs[key] = classes[spec["uses"]](key, params).run(None, inputs)
+    return outputs
+
+
+# -- the synthetic fixture panels (never committed; built in pytest's tmp_path) ----------------
+
+#: How each family fails on a date that lacks it, restated here. A family not named breaks by
+#: nulling its first field. These exercise the three ways a family goes missing: a null, a
+#: source mask, and an observation older than the age limit.
+BREAKS = {"return_history": {"ret_lag_0": None},
+          "volatility_context": {"market_gvz_missing": 1},
+          "macro_context": {"rate_dff_age_days": 15},
+          "surface_level": {"chain_log_atm_iv": None}}
+#: Families the index panel carries as all-null columns on every date (a uniform column set).
+ENTIRELY_NULL = {"ohlc_shape", "expanded_volatility_context", "variance_gap",
+                 "positioning_changes", "surface_changes", "chain_nodes"}
+QUANTILES = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+
+
+def _satisfying(quality):
+    """Field values that pass every quality clause: an == sets, a >=/<= pair takes the lower."""
+    out = {}
+    for clause in quality:
+        if clause["op"] in ("==", ">="):
+            out.setdefault(clause["field"], clause["value"])
+    return out
+
+
+def _day(offset):
+    return (date(2020, 1, 2) + timedelta(days=offset)).isoformat()
+
+
+def _index_row(families, symbol, quote_date, expiry, dte, settled, avail, cdf="ok"):
+    """One index-shaped prepared-panel row with a uniform column set (nulls where missing)."""
+    row = {"symbol": symbol, "quote_date": quote_date, "expiry": expiry,
+           "actual_calendar_dte": dte, "terminal_return": 0.01 if settled else None}
+    for name, spec in families.items():
+        row.update(_satisfying(spec["quality_checks"]))
+        for field in spec["fields"]:
+            row[field] = None if name in ENTIRELY_NULL else 0.5
+        if name not in avail and name not in ENTIRELY_NULL and name != "implied_cdf":
+            broken = BREAKS.get(name, {spec["fields"][0]: None})
+            row.update(broken)
+    cdf_fields = families["implied_cdf"]["fields"]
+    row["rn_proxy_eligible"] = 1 if cdf == "ok" else 0
+    for field, q in zip(cdf_fields, QUANTILES):
+        row[field] = None if cdf == "null" else q
+    return row
+
+
+def _stock_row(cdf_fields, symbol, quote_date, dte, terminal, eligible, basis="trade_close",
+               reasons=()):
+    """One OptionCDFPanel.records-shaped row: CDF fields only, lists, asof_ms, price_basis."""
+    stamp = datetime.fromisoformat(quote_date).replace(tzinfo=timezone.utc)
+    row = {"symbol": symbol, "quote_date": quote_date,
+           "expiry": (stamp + timedelta(days=(dte or 40))).date().isoformat(),
+           "price_basis": basis, "terminal_return": terminal, "spot": 100.0,
+           "actual_calendar_dte": dte, "label_kind": "underlying_expiry_close",
+           "label_reasons": list(reasons), "rn_proxy_eligible": int(eligible),
+           "asof_ms": int(stamp.timestamp() * 1000), "option_rows": 9,
+           "cdf_reasons": [] if eligible else ["insufficient_wing_support"],
+           "cdf_kind": "american_option_price_proxy", "spot_basis": "completed_close"}
+    for field, q in zip(cdf_fields, QUANTILES):
+        row[field] = (q / 10) if eligible else None
+    return row
+
+
+def _index_plan():
+    """``{symbol: [(quote_date, expiry, dte, settled, avail, cdf_mode, copies)]}`` and the
+    designed answer: winner DTE per symbol, and each winner-cohort date's available families."""
+    plan, designed = {}, {}
+    # QQQ: DTE 7 has 5 settled dates (3 CDF-eligible) + a pending one; DTE 14 has 4 eligible
+    # dates (the old CDF argmax would pick 14); DTE 0 and 46 are out of range.
+    q7 = {0: {"implied_cdf", "return_history", "realized_volatility", "volatility_context",
+              "surface_level", "liquidity", "macro_context"},
+          1: {"implied_cdf", "return_history", "realized_volatility", "macro_context",
+              "liquidity"},
+          2: {"implied_cdf", "realized_volatility", "volatility_context", "liquidity",
+              "macro_context"},
+          3: {"return_history", "realized_volatility", "volatility_context", "surface_level",
+              "liquidity", "macro_context"},
+          4: {"return_history", "realized_volatility", "volatility_context", "liquidity"}}
+    modes = {3: "null", 4: "ineligible"}
+    rows = []
+    for i, avail in q7.items():
+        copies = 2 if i == 1 else 1      # one date lists two expiries at the same DTE
+        rows.append((_day(i), _day(i + 7), 7, True, avail, modes.get(i, "ok"), copies))
+    rows.append((_day(5), _day(12), 7, False, {"implied_cdf"}, "ok", 1))       # pending
+    rows += [(_day(30 + i), _day(37 + i), 14, True, {"implied_cdf", "realized_volatility"},
+              "ok", 1) for i in range(4)]
+    for dte in (0, 46):
+        rows += [(_day(60 + i), _day(60 + i + dte), dte, True, {"implied_cdf"}, "ok", 1)
+                 for i in range(8)]
+    plan["QQQ"] = rows
+    designed["QQQ"] = (7, {_day(i): a for i, a in q7.items()})
+    # SPY: DTE 7 and DTE 14 tie at 4 dates; the shorter wins. Families vary by date.
+    def varied(j):
+        return {f for i, f in enumerate(FAMILIES)
+                if (i + j) % 3 != 0 and f not in ENTIRELY_NULL}
+    rows, cohort = [], {}
+    for dte, start in ((7, 0), (14, 40), (21, 80)):
+        for j in range(4 if dte != 21 else 2):
+            avail = varied(j)
+            rows.append((_day(start + j), _day(start + j + dte), dte, True, avail,
+                         "ok" if "implied_cdf" in avail else "null", 1))
+            if dte == 7:
+                cohort[_day(start + j)] = avail
+    plan["SPY"], designed["SPY"] = rows, (7, cohort)
+    # IWM: DTE 21 has 4 dates; DTE 30 has 5 dates of which 2 are pending: 21 wins.
+    rows, cohort = [], {}
+    for dte, count, pending in ((7, 2, 0), (21, 4, 0), (30, 5, 2)):
+        for j in range(count):
+            avail = varied(j + 1)
+            settled = j >= pending
+            rows.append((_day(100 + dte + j), _day(100 + dte + j + dte), dte, settled, avail,
+                         "ok" if "implied_cdf" in avail else "null", 1))
+            if dte == 21:
+                cohort[_day(100 + dte + j)] = avail
+    plan["IWM"], designed["IWM"] = rows, (21, cohort)
+    return plan, designed
+
+
+def _index_panel(families):
+    plan, designed = _index_plan()
+    rows = []
+    for symbol, entries in plan.items():
+        for quote_date, expiry, dte, settled, avail, cdf, copies in entries:
+            for k in range(copies):
+                other = expiry if k == 0 else _day((date.fromisoformat(expiry)
+                                                    - date(2020, 1, 2)).days + 1)
+                rows.append(_index_row(families, symbol, quote_date, other, dte, settled,
+                                       avail, cdf))
+    return rows, designed
+
+
+def _stock_panel(cdf_fields):
+    """The AMZN-shaped panel and its designed answer: the winner is DTE 30 (4 settled dates),
+    where the old CDF argmax would be 42 (3 eligible dates)."""
+    rows = [_stock_row(cdf_fields, "AMZN", f"2024-04-0{i + 1}", 30, 0.01, eligible=i < 2)
+            for i in range(4)]
+    rows += [_stock_row(cdf_fields, "AMZN", f"2024-05-0{i + 1}", 42, 0.02, eligible=True)
+             for i in range(3)]
+    rows += [_stock_row(cdf_fields, "AMZN", f"2024-06-0{i + 1}", 42, None, eligible=True,
+                        reasons=["pending_or_missing_terminal_close"]) for i in range(2)]
+    rows.append(_stock_row(cdf_fields, "AMZN", "2026-09-30", 44, None, eligible=False,
+                           basis="indicative_quote"))
+    rows.append(_stock_row(cdf_fields, "AMZN", "2024-04-06", None, None, eligible=False,
+                           reasons=["non_session_entry"]))
+    return rows
+
+
+def _brute_coverage(rows, symbol):
+    """Per exact DTE 1..45: distinct settled entry dates, rows and expiries (restated here)."""
+    out = {}
+    for r in rows:
+        dte = r["actual_calendar_dte"]
+        if r["symbol"] != symbol or dte is None or not 1 <= dte <= 45 \
+                or r["terminal_return"] is None:
+            continue
+        cell = out.setdefault(dte, {"dates": set(), "rows": 0, "expiries": set()})
+        cell["dates"].add(r["quote_date"])
+        cell["rows"] += 1
+        cell["expiries"].add(r["expiry"])
+    return out
+
+
+def _winner(counts):
+    best = max(len(c["dates"]) for c in counts.values())
+    return min(d for d, c in counts.items() if len(c["dates"]) == best)
+
+
+def _ms(quote_date):
+    return int(datetime.fromisoformat(quote_date).replace(tzinfo=timezone.utc).timestamp()
+               * 1000)
+
+
+def _write_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def _read_jsonl(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+# -- (a) the two documents validate and plan -----------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [STEP1, STEP2])
+def test_step_documents_validate_and_plan(child_root, name):
+    for verb in ("validate", "plan"):
+        done = _must(_cli(["dskit.pipeline", verb, str(child_root / name)], child_root))
+    planned = json.loads(done.stdout)
+    assert "source" in planned["order"][:2]
+    assert all(planned["nodes"][key]["class"] for key in planned["order"])
+    expected = {STEP1: {"winner__qqq", "winner__spy", "winner__iwm", "selection_rows",
+                        "selection_evidence", "coverage_figure__qqq"},
+                STEP2: {"combinations__qqq", "combinations__iwm", "date_patterns__spy",
+                        "combination_evidence", "date_evidence", "step1_selection"}}[name]
+    assert expected <= set(planned["order"])
+
+
+# -- (b) step 1: no CDF anywhere; settled, listed dates per exact DTE; argmax ---------------
+
+
+def test_step1_has_no_cdf_clause_and_counts_settled_listed_dates(child_root):
+    text = (child_root / STEP1).read_text()
+    assert "rn_" not in text            # no eligibility flag, no quantile - notes included
+    doc = json.loads(text)
+    template = doc["foreach"]["pipeline"]
+    assert template["cohort"]["params"]["where"] == [
+        {"field": "symbol", "op": "==", "value": "$each"},
+        {"field": "actual_calendar_dte", "op": ">=", "value": 1},
+        {"field": "actual_calendar_dte", "op": "<=", "value": 45},
+        {"field": "terminal_return", "op": "!=", "value": None}]
+    assert list(template)[:10] == ["cohort", "coverage", "selection_group", "maximum",
+                                   "maximum_value", "maximizers", "tie_break", "selected_dte",
+                                   "winner", "coverage_figure"]
+    assert template["coverage"]["params"]["keys"] == ["symbol", "actual_calendar_dte"]
+    assert {k: v["op"] for k, v in template["coverage"]["params"]["aggregates"].items()} == {
+        "listed_dates": "nunique", "listed_forecasts": "count", "expiry_series": "nunique",
+        "first_entry_ms": "min", "last_entry_ms": "max"}
+    assert template["maximizers"]["params"]["where"][0]["field"] == "listed_dates"
+    assert template["tie_break"]["params"]["aggregates"] == {
+        "days_to_expiry": {"op": "min", "field": "actual_calendar_dte"}}
+    # the document's own chain over the designed panel, against an independent census
+    families = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]
+    panel, designed = _index_panel(families)
+    for symbol, (answer, _) in designed.items():
+        rows = [dict(r, quote_date_ms=_ms(r["quote_date"])) for r in panel]
+        out = _run_nodes(template, {"source": {"records": rows}}, each=symbol)
+        counts = _brute_coverage(panel, symbol)
+        assert {r["actual_calendar_dte"]: (r["listed_dates"], r["listed_forecasts"],
+                                           r["expiry_series"])
+                for r in out["coverage"]["records"]} == {
+            d: (len(c["dates"]), c["rows"], len(c["expiries"])) for d, c in counts.items()}
+        assert [r["actual_calendar_dte"] for r in out["winner"]["records"]] == [answer]
+        assert _winner(counts) == answer
+        assert 0 not in counts and 46 not in counts
+    # the designed traps: QQQ's old CDF argmax (14) loses to 7 now, and SPY's tie goes short
+    assert len(_brute_coverage(panel, "QQQ")[7]["dates"]) == 5
+    assert len(_brute_coverage(panel, "QQQ")[14]["dates"]) == 4
+    spy = _brute_coverage(panel, "SPY")
+    assert len(spy[7]["dates"]) == len(spy[14]["dates"]) == 4
+    assert len(_brute_coverage(panel, "IWM")[30]["dates"]) == 3   # pending rows do not count
+
+
+# -- (c) the two documents share one source and one cohort predicate -----------------------
+
+
+def test_step_files_share_source_and_cohort_predicate(child_root):
+    one, two = _step(child_root, STEP1), _step(child_root, STEP2)
+    assert one["pipeline"]["source"]["uses"] == two["pipeline"]["source"]["uses"]
+    assert one["pipeline"]["source"]["params"] == two["pipeline"]["source"]["params"]
+    assert two["pipeline"]["source"]["params"]["ts_out"] != "asof_ms"   # AMZN rows carry it
+    assert one["foreach"]["keys"] == two["foreach"]["keys"]
+    ranged = ("actual_calendar_dte",)
+    first = [c for c in one["foreach"]["pipeline"]["cohort"]["params"]["where"]
+             if c["field"] not in ranged]
+    second = [c for c in two["foreach"]["pipeline"]["cohort"]["params"]["where"]
+              if c["field"] not in ranged]
+    assert first == second == [{"field": "symbol", "op": "==", "value": "$each"},
+                               {"field": "terminal_return", "op": "!=", "value": None}]
+    dte_clauses = [c for c in two["foreach"]["pipeline"]["cohort"]["params"]["where"]
+                   if c["field"] == "actual_calendar_dte"]
+    assert [c["value"] for c in dte_clauses] == ["$selected_dte.table.all"]
+    stripped = json.loads(json.dumps(two))      # no integer DTE typed anywhere in step 2
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("field") == "actual_calendar_dte" and "value" in node:
+                assert not isinstance(node["value"], int), node
+            for key, value in node.items():
+                if key != "notes":
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(stripped)
+
+
+# -- (d) step 2: one family vocabulary, everywhere ------------------------------------------
+
+
+def test_step2_family_vocabulary_agrees_everywhere(child_root):
+    doc = _step(child_root, STEP2)
+    families = doc["pipeline"]["family_contracts"]["params"]["tables"]["families"]
+    assert list(families) == FAMILIES and FAMILIES[0] == "implied_cdf"
+    assert {"field": "rn_proxy_eligible", "op": "==", "value": 1} in \
+        families["implied_cdf"]["quality_checks"]
+    template = doc["foreach"]["pipeline"]
+    keys = list(template)
+    for prefix in ("check_", "summary_", "expand_"):
+        assert [k[len(prefix):] for k in keys if k.startswith(prefix)] == FAMILIES, prefix
+    for family, spec in families.items():
+        required = [clause for field in spec["fields"]
+                    for clause in ({"field": field, "op": ">=", "value": -FLOAT_MAX},
+                                   {"field": field, "op": "<=", "value": FLOAT_MAX})]
+        node = template[f"check_{family}"]
+        assert node["params"] == {"field": f"available_{family}", "cases": [
+            {"when": required + spec["quality_checks"], "value": "yes"},
+            {"when": [], "value": "no"}]}, family
+        assert template[f"summary_{family}"]["params"]["keys"] == [
+            "symbol", f"available_{family}"]
+        assert template[f"expand_{family}"]["params"] == {
+            "key": f"available_{family}", "how": "strict", "allow_fanout": True,
+            "tables": {family: {"yes": [{f"with_{family}": 1}, {f"with_{family}": 0}],
+                                "no": [{f"with_{family}": 0}]}}}
+    flags = [f"available_{f}" for f in FAMILIES]
+    assert template["date_patterns"]["params"]["keys"] == [
+        "symbol", "selection_group", "actual_calendar_dte", "quote_date", *flags]
+    assert template["patterns"]["params"]["keys"] == [
+        "symbol", "selection_group", "actual_calendar_dte", *flags]
+    assert template["universe_flags"]["params"]["tables"] == {
+        "all_available": {"all": {flag: "yes" for flag in flags}}}
+    assert template["combinations"]["params"]["keys"] == [
+        "symbol", "actual_calendar_dte", *[f"with_{f}" for f in FAMILIES]]
+    assert template["combinations"]["params"]["aggregates"] == {
+        "dates": {"op": "sum", "field": "pattern_dates"}}
+    # the chains are wired in the vocabulary's order
+    chain = ["checked_cohort", *[f"check_{f}" for f in FAMILIES]]
+    for before, after in zip(chain, chain[1:]):
+        assert template[after]["inputs"] == {"records": f"${before}.records"}
+    expand = ["pattern_space", *[f"expand_{f}" for f in FAMILIES]]
+    assert template["expand_implied_cdf"]["inputs"] == {"records": "$pattern_space.merged"}
+    for before, after in zip(expand[1:], expand[2:]):
+        assert template[after]["inputs"] == {"records": f"${before}.records"}
+    assert template["combinations"]["inputs"] == {"records": "$expand_chain_nodes.records"}
     assert "historical known-at certification" in doc["notes"]
-    clock = doc["pipeline"]["family_contracts"]["params"]["tables"]["families"]["macro_context"]["clock"]
-    assert "not certified" in clock
 
 
-def test_feature_gap_output_names_reasons_and_exact_identities(child_root):
-    from dskit.pipeline.kinds_flow import Derive, Filter, GroupBy
-    d = json.loads((child_root/"configs/run-qqq-feature-availability.json").read_text())
-    graph = d["foreach"]["pipeline"]
-    cases = [{}, {"x": None}, {"x": float("nan")}, {"x": "bad"}, {"x": 1.}]
-    rows = [dict(r, symbol="QQQ", quote_date=f"2020-01-{i+2:02d}",
-                 expiry=f"2020-01-{i+9:02d}") for i, r in enumerate(cases)]
-    for name in ("present_flag", "finite_flag", "gap_reason"):
-        params = json.loads(json.dumps(graph[name]["params"]).replace("$each", "x"))
-        rows = Derive(name, params).run(None, {"records": rows})["records"]
-    assert [r["audit_gap"] for r in rows] == [
-        "field_absent", "null_value", "nonnumeric_or_nonfinite",
-        "nonnumeric_or_nonfinite", "none"]
-    gaps = Filter("gaps", graph["gap_rows"]["params"]).run(None, {"records": rows})["records"]
-    compact = GroupBy("compact", graph["gap_identities"]["params"]).run(
-        None, {"records": gaps})["records"]
-    assert len(compact) == 4
-    assert {r["quote_date"] for r in compact} == {r["quote_date"] for r in rows[:4]}
-    assert all(set(r) == {"symbol", "quote_date", "expiry", "audit_gap", "observations"} for r in compact)
-    assert d["pipeline"]["feature_gap_evidence"]["params"]["path"].endswith("feature-gaps.jsonl")
-    assert d["pipeline"]["family_gap_evidence"]["params"]["path"].endswith("family-gaps.jsonl")
+# -- (e) the hand-off from step 1 to step 2 ----------------------------------------------------
+
+
+def test_selection_handoff_paths_agree(child_root):
+    import posixpath
+
+    from dskit.onboarding.connector import check_config
+    from dskit.onboarding.libs.localtables import LocalTablesConnector
+
+    one, two = _step(child_root, STEP1), _step(child_root, STEP2)
+    source = _step(child_root, SELECTION_SOURCE)
+    written = one["pipeline"]["selection_evidence"]["params"]["path"]
+    assert posixpath.normpath(posixpath.dirname(written)) == posixpath.normpath(source["path"])
+    stem = posixpath.basename(written).rsplit(".", 1)[0]
+    assert source["streams"] == [stem] and two["pipeline"]["step1_selection"]["params"][
+        "stream"] == stem
+    assert source["formats"] == [written.rsplit(".", 1)[1]]
+    assert source["effective_field"] in one["foreach"]["pipeline"]["coverage"]["params"][
+        "aggregates"]
+    assert source["effective_unit"] == "ms"
+    assert two["pipeline"]["step1_selection"]["params"]["key_fields"] == ["symbol"]
+    check_config(LocalTablesConnector(), source)
+
+
+# -- (f) step 2's combination table against a brute-force count --------------------------------
+
+
+def _checked_rows():
+    """About twelve entry dates of one ticker with varied, designed yes/no per family."""
+    import random
+
+    rng = random.Random(20261001)
+    rows = []
+    for i in range(12):
+        flags = {f"available_{f}": rng.choice(("yes", "no")) for f in FAMILIES}
+        for extra in range(2 if i in (3, 8) else 1):   # two expiries, one pattern
+            rows.append({"symbol": "QQQ", "selection_group": "all", "actual_calendar_dte": 7,
+                         "quote_date": _day(i), "expiry": _day(i + 7 + extra),
+                         "quote_date_ms": _ms(_day(i)), **flags})
+    rows[1].update({f"available_{f}": "no" for f in FAMILIES})      # an all-no date
+    return rows
+
+
+def test_step2_subset_counts_match_brute_force(child_root):
+    template = _step(child_root, STEP2)["foreach"]["pipeline"]
+    rows = _checked_rows()
+    tail = list(template)[list(template).index("date_patterns"):]
+    out = _run_nodes(template, {"check_chain_nodes": {"records": rows}}, each="QQQ", only=tail)
+    combos = out["combinations"]["records"]
+    assert len(combos) == 2 ** len(FAMILIES) == 8192
+    flags = {}
+    for r in rows:
+        flags[r["quote_date"]] = {f for f in FAMILIES if r[f"available_{f}"] == "yes"}
+    seen = set()
+    for combo in combos:
+        chosen = {f for f in FAMILIES if combo[f"with_{f}"] == 1}
+        key = tuple(combo[f"with_{f}"] for f in FAMILIES)
+        assert key not in seen
+        seen.add(key)
+        assert combo["dates"] == sum(chosen <= have for have in flags.values()), chosen
+        assert combo["symbol"] == "QQQ" and combo["actual_calendar_dte"] == 7
+    assert len(seen) == 8192
+    totals = {tuple(c[f"with_{f}"] for f in FAMILIES): c["dates"] for c in combos}
+    assert totals[(0,) * 13] == len(flags) == 12            # the cohort total
+    # no date has every family, yet the all-families subset is present, with zero, rather than
+    # missing: the zero-weight universe row is what makes every subset appear
+    assert not any(have == set(FAMILIES) for have in flags.values())
+    assert totals[(1,) * 13] == 0
+    assert len(out["patterns"]["records"]) <= 12
+
+
+def test_duplicate_pattern_date_refuses(child_root):
+    from dskit.pipeline.kinds_flow import KeyBy
+
+    params = _step(child_root, STEP2)["foreach"]["pipeline"]["one_pattern_per_date"]["params"]
+    rows = [{"quote_date": "2020-01-02", "cohort_rows": 1, "available_implied_cdf": "yes"},
+            {"quote_date": "2020-01-02", "cohort_rows": 1, "available_implied_cdf": "no"}]
+    with pytest.raises(ValueError):
+        KeyBy("one_pattern_per_date", params).run(None, {"records": rows})
+    # the same pattern on two expiries is ONE date-pattern row and does not refuse
+    one = [{"quote_date": "2020-01-02", "cohort_rows": 2}]
+    assert KeyBy("one_pattern_per_date", params).run(None, {"records": one})["table"] == {
+        "2020-01-02": 2}
+
+
+# -- (h) both documents, end to end, through the real CLIs on fixture panels --------------
+
+
+def _onboard(cwd, source, root, config, stream):
+    _must(_cli(["dskit.onboarding", "init", "--root", root], cwd))
+    _must(_cli(["dskit.onboarding", "register-source", source, "--catalog-source", source,
+                "--connector", "localtables", "--config", config, "--activate",
+                "--root", root], cwd))
+    _must(_cli(["dskit.onboarding", "acquire", "--source", source, "--stream", stream,
+                "--mode", "backfill", "--root", root], cwd))
+
+
+def _only_run(cwd, series):
+    runs = sorted((cwd / "pipeline_runs" / series / "runs").iterdir())
+    assert len(runs) == 1
+    return runs[0]
+
+
+def _write_panel(shape, child_root, cwd, families):
+    """The fixture panel in the layout the shape's runbook uses; the inline source config."""
+    if shape == "index":
+        rows, designed = _index_panel(families)
+        _write_jsonl(cwd / "pipeline_runs" / "panel-data" / "input_panel.jsonl", rows)
+        config = json.dumps({"path": "pipeline_runs/panel-data", "layout": "file",
+                             "effective_field": "quote_date", "effective_unit": "iso",
+                             "streams": ["input_panel"], "formats": ["jsonl"]})
+        return rows, designed, config
+    from dskit.pipeline.kinds_table import RecordsWrite
+    from dskit.pipeline.node import NodeContext
+
+    prep = json.loads((child_root.parent / "stock_options/configs/"
+                       "run-prepare-option-panel.json").read_text())
+    rows = _stock_panel(families["implied_cdf"]["fields"])
+    (cwd / "pipeline_runs" / "option-panel").mkdir(parents=True)
+    ctx = NodeContext(name="t", asof="2026-10-01", run_dir=str(cwd / "r"))
+    here = os.getcwd()
+    os.chdir(cwd)
+    try:
+        RecordsWrite("panel_rows", prep["pipeline"]["panel_rows"]["params"]).run(
+            ctx, {"records": rows})
+    finally:
+        os.chdir(here)
+    config = "@" + str(child_root.parent / "stock_options/configs/source-option-panel.json")
+    designed = {"AMZN": (30, {f"2024-04-0{i + 1}": ({"implied_cdf"} if i < 2 else set())
+                              for i in range(4)})}
+    return rows, designed, config
+
+
+def _step_copy(child_root, name, cwd, keys):
+    """A temporary copy of a step document whose ONLY difference is foreach.keys."""
+    original = _step(child_root, name)
+    copy_ = json.loads(json.dumps(original))
+    copy_["foreach"]["keys"] = keys
+    delta = _differences(original, copy_)
+    assert delta == {"/foreach/keys"}
+    path = cwd / ("amzn-" + name.rsplit("/", 1)[1])
+    path.write_text(json.dumps(copy_))
+    return path
+
+
+@pytest.mark.parametrize("shape", ["index", "stock"])
+def test_two_step_files_end_to_end(child_root, tmp_path, shape):
+    pytest.importorskip("matplotlib")
+    families = _step(child_root, STEP2)["pipeline"]["family_contracts"]["params"]["tables"][
+        "families"]
+    rows, designed, config = _write_panel(shape, child_root, tmp_path, families)
+    _onboard(tmp_path, "cdf-horizon-panel", SOURCE_ROOT, config, "input_panel")
+    for sub in ("step1-expiry-coverage/selection", "step2-feature-availability"):
+        (tmp_path / "pipeline_runs" / sub).mkdir(parents=True)
+    if shape == "index":
+        step1, step2 = child_root / STEP1, child_root / STEP2
+    else:
+        step1 = _step_copy(child_root, STEP1, tmp_path, ["AMZN"])
+        step2 = _step_copy(child_root, STEP2, tmp_path, ["AMZN"])
+    tickers = list(designed)
+    # -- step 1 --
+    _must(_cli(["dskit.pipeline", "run", str(step1), "--asof", "2026-10-01"], tmp_path))
+    run1 = _only_run(tmp_path, "step1-expiry-coverage")
+    carry = json.loads((run1 / "carry.json").read_text())
+    winners = {}
+    for symbol in tickers:
+        slug = symbol.lower()
+        counts = _brute_coverage(rows, symbol)
+        table = carry[f"coverage__{slug}"]["records"]
+        assert [r["actual_calendar_dte"] for r in table] == sorted(counts)   # full table kept
+        for r in table:
+            cell = counts[r["actual_calendar_dte"]]
+            assert (r["listed_dates"], r["listed_forecasts"], r["expiry_series"]) == (
+                len(cell["dates"]), cell["rows"], len(cell["expiries"]))
+            assert r["first_entry_ms"] == min(_ms(d) for d in cell["dates"])
+            assert r["last_entry_ms"] == max(_ms(d) for d in cell["dates"])
+        winner = carry[f"winner__{slug}"]["records"]
+        assert [w["actual_calendar_dte"] for w in winner] == [_winner(counts)] \
+            == [designed[symbol][0]]
+        winners[symbol] = winner[0]
+        assert (run1 / "artifacts" / f"coverage_figure__{slug}" / "coverage.png").is_file()
+    selected = _read_jsonl(tmp_path / "pipeline_runs/step1-expiry-coverage/selection/"
+                           "selected.jsonl")
+    assert sorted(r["symbol"] for r in selected) == sorted(tickers)
+    assert {r["symbol"]: r for r in selected} == winners
+    # -- the disagreeing hand-off refuses (index only; its own working directory) --
+    if shape == "index":
+        neg = tmp_path / "neg"
+        neg.mkdir()
+        _write_jsonl(neg / "pipeline_runs/panel-data/input_panel.jsonl", rows)
+        _onboard(neg, "cdf-horizon-panel", SOURCE_ROOT, config, "input_panel")
+        tampered = [dict(r, listed_dates=r["listed_dates"] + (r["symbol"] == "SPY"))
+                    for r in selected]
+        _write_jsonl(neg / "pipeline_runs/step1-expiry-coverage/selection/selected.jsonl",
+                     tampered)
+        (neg / "pipeline_runs/step2-feature-availability").mkdir(parents=True)
+        _onboard(neg, "step1-selection", "./pipeline_runs/step1-selection-source",
+                 "@" + str(child_root / SELECTION_SOURCE), "selected")
+        done = _cli(["dskit.pipeline", "run", str(step2), "--asof", "2026-10-01"], neg)
+        assert done.returncode != 0
+        assert "agreed_dte" in done.stdout + done.stderr
+        assert not (neg / "pipeline_runs/step2-feature-availability/dates.jsonl").exists()
+    # -- step 2 --
+    _onboard(tmp_path, "step1-selection", "./pipeline_runs/step1-selection-source",
+             "@" + str(child_root / SELECTION_SOURCE), "selected")
+    _must(_cli(["dskit.pipeline", "run", str(step2), "--asof", "2026-10-01"], tmp_path))
+    carry = json.loads((_only_run(tmp_path, "step2-feature-availability")
+                        / "carry.json").read_text())
+    out_dir = tmp_path / "pipeline_runs/step2-feature-availability"
+    dates = _read_jsonl(out_dir / "dates.jsonl")
+    combos = _read_jsonl(out_dir / "combinations.jsonl")
+    assert len(combos) == 8192 * len(tickers)
+    for symbol in tickers:
+        slug = symbol.lower()
+        dte, cohort = designed[symbol]
+        summary = carry[f"cohort_summary__{slug}"]["records"]
+        assert [(r["cohort_dates"], r["actual_calendar_dte"]) for r in summary] == [
+            (winners[symbol]["listed_dates"], dte)]
+        have = {d["quote_date"]: {f for f in FAMILIES if d[f"available_{f}"] == "yes"}
+                for d in dates if d["symbol"] == symbol}
+        assert set(have) == set(cohort) and len(have) == winners[symbol]["listed_dates"]
+        assert have == {d: set(a) for d, a in cohort.items()}      # the designed flags hold
+        for family in FAMILIES:
+            yes = sum(family in a for a in have.values())
+            got = {r[f"available_{family}"]: r["dates"]
+                   for r in carry[f"summary_{family}__{slug}"]["records"]}
+            assert got.get("yes", 0) == yes and got.get("no", 0) == len(have) - yes, family
+        mine = {}
+        for c in combos:
+            if c["symbol"] == symbol:
+                key = tuple(c[f"with_{f}"] for f in FAMILIES)
+                assert key not in mine
+                mine[key] = c["dates"]
+        assert len(mine) == 8192
+        for subset in itertools.product((0, 1), repeat=len(FAMILIES)):
+            chosen = {f for f, bit in zip(FAMILIES, subset) if bit}
+            assert mine[subset] == sum(chosen <= a for a in have.values()), chosen
+    if shape == "index":
+        cdf_missing = _day(3)          # a date whose CDF is absent stays in the cohort as a gap
+        flags = {d["quote_date"]: d for d in dates if d["symbol"] == "QQQ"}
+        assert flags[cdf_missing]["available_implied_cdf"] == "no"
+        assert flags[_day(4)]["available_implied_cdf"] == "no"      # ineligible: finite, flag 0
+        assert flags[_day(4)]["available_macro_context"] == "no"    # age 15 > 7
+        assert flags[_day(1)]["available_volatility_context"] == "no"   # market_gvz_missing 1
+        assert flags[_day(2)]["available_return_history"] == "no"
+        assert {f for f in FAMILIES if flags[_day(0)][f"available_{f}"] == "yes"} == \
+            designed["QQQ"][1][_day(0)]
+    else:
+        flags = {d["quote_date"]: d for d in dates}
+        assert [f for f in FAMILIES if any(d[f"available_{f}"] == "yes"
+                                           for d in flags.values())] == ["implied_cdf"]
+        totals = {tuple(c[f"with_{f}"] for f in FAMILIES): c["dates"] for c in combos}
+        assert totals[(0,) * 13] == 4 and totals[(1,) + (0,) * 12] == 2
+        assert totals[(1,) * 13] == 0
+
+
+def test_committed_qqq_cohort_weekday_census(child_root):
+    """ADR-0214: weekday over the committed cohort rows, against an independent tally.
+
+    The cohort is Friday-heavy until 2021 and carries no weekend rows, which is
+    the confound the weekday feature is meant to expose (not to remove).
+    """
+    from collections import Counter
+    from datetime import date
+    from dskit.pipeline.kinds_flow import WeekdayOneHot
+
+    path = child_root/"pipeline_runs/qqq-feature-availability/rows.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    out = WeekdayOneHot("weekday", {"date_field": "quote_date", "prefix": "dow_"}).run(
+        None, {"records": rows})
+    assert len(out["records"]) == len(rows) == 1497
+
+    # The oracle restates the vocabulary and uses isoweekday() (Monday = 1), so
+    # it shares neither the tag tuple nor date.weekday() with the node.
+    names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+    tally = Counter(names[date.fromisoformat(r["quote_date"]).isoweekday() - 1] for r in rows)
+    assert out["counts"] == {name: tally.get(name, 0) for name in names}
+    assert sum(out["counts"].values()) == 1497
+    assert out["counts"]["sat"] == out["counts"]["sun"] == 0
+
+    early = [r for r in out["records"] if r["quote_date"] < "2021-01-01"]
+    assert len(early) == 508
+    assert sum(1 for r in early if r["dow_fri"] == 0) == 35
+    for row in out["records"]:
+        assert sum(row[f"dow_{name}"] for name in names) == 1

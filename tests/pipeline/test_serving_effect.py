@@ -92,6 +92,7 @@ KIND_EFFECTS = {
     "table-write": ("forbidden", "forbidden"),
     "top-trials": ("forbidden", "forbidden"),
     "validate": ("forbidden", "forbidden"),
+    "weekday-onehot": ("pure", "pure"),
 }
 
 #: The audited classes that no toolkit registry claims a name for:

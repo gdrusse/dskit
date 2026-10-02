@@ -1,0 +1,4082 @@
+{
+  "name": "step2-feature-availability",
+  "notes": "STEP 2 of the three-step data selection: which feature families exist on the step-1 dates. Inputs are a ticker (foreach.keys), the same prepared panel as step 1, and step 1's selected.jsonl onboarded through source-step1-selection.json. The cohort is step 1's dates at step 1's selected DTE: that DTE is read from step 1's output and never typed, and the cohort refuses (agreed_dte) when its date count differs from step 1's recorded listed_dates, i.e. when the source or ticker changed between the two steps. implied_cdf is ONE of 13 families: a missing CDF, an ineligible proxy or an absent field is a gap on that date, never a cohort filter. Outputs in pipeline_runs/step2-feature-availability: dates.jsonl lists each cohort date with its available_<family> yes/no flags (the per-date gaps); combinations.jsonl has one row per subset of the 13 families, 8,192 per ticker, where with_<f>=1 means family f is in the combination and dates is the number of distinct cohort dates on which EVERY included family is yes (the all-zero row is the cohort total); carry.json holds summary_<family>__<t> (per-family counts) and cohort_summary__<t>. A date with two different availability patterns refuses rather than count twice. Memory: the fan-out is at most (distinct patterns + 1) x 2^13 rows. Finite values give no historical known-at certification: observation clocks stay in family_contracts. For AMZN only the CDF family is materialized; the others are gaps, not proof the sources are absent.",
+  "pipeline": {
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/cdf-horizon-source",
+        "source": "cdf-horizon-panel",
+        "stream": "input_panel",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "ts_field": "quote_date",
+        "ts_unit": "iso",
+        "ts_out": "quote_date_ms"
+      },
+      "notes": "THE DATA SOURCE: the onboarded prepared option panel, named by root/source/stream and resolved from the working directory. Another panel changes these values and nothing else. Both child runbooks onboard their own panel under these same names (index_options reuses its cdf-horizon-source acquisition; stock_options imports the AMZN panel there), so this file runs unchanged from either child. key_fields is the panel's row identity: rows that differ only elsewhere (AMZN rows differing only by price_basis) collide and refuse loudly instead of one being chosen silently. ts_out is quote_date_ms, not the default asof_ms, because the AMZN panel already carries asof_ms and ObservationRows refuses to overwrite a field."
+    },
+    "step1_selection": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/step1-selection-source",
+        "source": "step1-selection",
+        "stream": "selected",
+        "key_fields": [
+          "symbol"
+        ]
+      },
+      "notes": "The onboarded copy of step 1's selected.jsonl (source-step1-selection.json): one winner row per ticker. The selected DTE and its date count are read from here, so this step can never run at a typed horizon."
+    },
+    "family_contracts": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "families": {
+            "implied_cdf": {
+              "fields": [
+                "rn_q_0100",
+                "rn_q_0500",
+                "rn_q_1000",
+                "rn_q_2500",
+                "rn_q_5000",
+                "rn_q_7500",
+                "rn_q_9000",
+                "rn_q_9500",
+                "rn_q_9900"
+              ],
+              "lookback": "same entry chain",
+              "clock": "after-close reconstruction; no intraday availability claim",
+              "quality_checks": [
+                {
+                  "field": "rn_proxy_eligible",
+                  "op": "==",
+                  "value": 1
+                }
+              ]
+            },
+            "return_history": {
+              "fields": [
+                "ret_lag_0",
+                "ret_lag_1",
+                "ret_lag_2",
+                "ret_lag_3",
+                "ret_lag_4",
+                "ret_lag_5",
+                "ret_lag_6",
+                "ret_lag_7",
+                "ret_lag_8",
+                "ret_lag_9",
+                "ret_lag_10",
+                "ret_lag_11",
+                "ret_lag_12",
+                "ret_lag_13",
+                "ret_lag_14",
+                "ret_lag_15",
+                "ret_lag_16",
+                "ret_lag_17",
+                "ret_lag_18",
+                "ret_lag_19",
+                "ret_lag_20",
+                "ret_lag_21",
+                "momentum_5",
+                "momentum_22"
+              ],
+              "lookback": "22 prior exchange-session returns including entry close",
+              "clock": "backward-only daily-close reconstruction",
+              "quality_checks": []
+            },
+            "realized_volatility": {
+              "fields": [
+                "rv_1",
+                "rv_5",
+                "rv_22",
+                "rv_66",
+                "down_rv_5",
+                "down_rv_22",
+                "up_rv_5",
+                "up_rv_22"
+              ],
+              "lookback": "up to 66 exchange-session returns",
+              "clock": "backward-only daily-close reconstruction",
+              "quality_checks": []
+            },
+            "ohlc_shape": {
+              "fields": [
+                "overnight_return",
+                "intraday_return",
+                "log_high_low_range",
+                "parkinson_variance",
+                "jump_variance_proxy",
+                "range_variance_5",
+                "range_variance_22",
+                "jump_variance_5",
+                "jump_variance_22",
+                "overnight_variance_5",
+                "overnight_variance_22",
+                "intraday_variance_5",
+                "intraday_variance_22"
+              ],
+              "lookback": "up to 22 OHLC sessions plus prior close",
+              "clock": "requires full-cohort materialization from local OHLC source",
+              "quality_checks": []
+            },
+            "volatility_context": {
+              "fields": [
+                "own_iv",
+                "market_vix9d",
+                "market_vix3m",
+                "market_vix6m",
+                "market_vvix",
+                "market_skew",
+                "market_gvz"
+              ],
+              "lookback": "last observation within configured maximum age (7 calendar days)",
+              "clock": "date-level backward join; release timestamp not certified",
+              "quality_checks": [
+                {
+                  "field": "market_vix9d_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix3m_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix6m_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vvix_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_skew_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_gvz_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix9d_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix9d_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vix3m_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix3m_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vix6m_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix6m_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vvix_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vvix_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_skew_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_skew_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_gvz_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_gvz_age_days",
+                  "op": "<=",
+                  "value": 7
+                }
+              ]
+            },
+            "expanded_volatility_context": {
+              "fields": [
+                "market_vix1y",
+                "market_rvx",
+                "market_vxd",
+                "market_ovx",
+                "market_vxeem",
+                "market_vxslv",
+                "market_vxtlt"
+              ],
+              "lookback": "last observation within 7 calendar days; duplicate VXN omitted",
+              "clock": "requires full-cohort materialization and release-clock audit",
+              "quality_checks": [
+                {
+                  "field": "market_vix1y_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_rvx_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxd_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_ovx_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxeem_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxslv_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxtlt_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix1y_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix1y_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_rvx_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_rvx_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxd_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxd_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_ovx_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_ovx_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxeem_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxeem_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxslv_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxslv_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxtlt_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxtlt_age_days",
+                  "op": "<=",
+                  "value": 7
+                }
+              ]
+            },
+            "surface_level": {
+              "fields": [
+                "chain_log_atm_iv",
+                "chain_log_skew25",
+                "chain_log_curvature25"
+              ],
+              "lookback": "same entry chain",
+              "clock": "after-close reconstruction; observed quotes",
+              "quality_checks": []
+            },
+            "surface_changes": {
+              "fields": [
+                "chain_log_atm_iv_change_1",
+                "chain_log_atm_iv_change_5",
+                "chain_log_atm_iv_change_22",
+                "chain_log_skew25_change_1",
+                "chain_log_skew25_change_5",
+                "chain_log_skew25_change_22",
+                "chain_log_curvature25_change_1",
+                "chain_log_curvature25_change_5",
+                "chain_log_curvature25_change_22",
+                "term_slope_prev",
+                "term_slope_next"
+              ],
+              "lookback": "1/5/22 prior observations within expiry, not necessarily exchange sessions",
+              "clock": "same-series backward changes; term slope ordering used realized DTE, needs prospective scheduled-DTE rebuild",
+              "quality_checks": []
+            },
+            "variance_gap": {
+              "fields": [
+                "matched_implied_variance",
+                "matched_trailing_variance",
+                "matched_vrp",
+                "matched_vrp_ratio"
+              ],
+              "lookback": "same-expiry IV, scheduled sessions, prior 22-session variance",
+              "clock": "requires full-cohort materialization from existing fields",
+              "quality_checks": []
+            },
+            "liquidity": {
+              "fields": [
+                "chain_log_rel_spread",
+                "chain_log_put_call_oi",
+                "chain_log_contracts",
+                "chain_log_open_interest",
+                "chain_log_quote_depth"
+              ],
+              "lookback": "same entry snapshot",
+              "clock": "after-close snapshot proxies, not executable quotes or signed dealer positions",
+              "quality_checks": []
+            },
+            "positioning_changes": {
+              "fields": [
+                "chain_log_volume",
+                "chain_put_call_volume_imbalance",
+                "chain_volume_weighted_rel_spread",
+                "chain_log_lag_open_interest",
+                "chain_log_lag_oi_change",
+                "chain_log_delta_oi",
+                "chain_log_gamma_oi",
+                "chain_log_vega_oi"
+              ],
+              "lookback": "same snapshot plus prior same-contract open interest",
+              "clock": "requires full-cohort materialization and OI publication-clock audit",
+              "quality_checks": []
+            },
+            "macro_context": {
+              "fields": [
+                "rate_dff",
+                "rate_dgs3mo",
+                "rate_dgs10",
+                "credit_hy_oas",
+                "credit_cp_nonfinancial",
+                "credit_cp_financial",
+                "credit_cp_spread",
+                "dollar_broad",
+                "oil_wti",
+                "financial_nfci",
+                "financial_anfci"
+              ],
+              "lookback": "daily sources lagged one declared exchange session; weekly seven days; age guards",
+              "clock": "historical release/vintage not certified; finite values are not proof of entry-known availability",
+              "quality_checks": [
+                {
+                  "field": "rate_dff_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs3mo_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs10_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_hy_oas_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_nonfinancial_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_financial_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_spread_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "dollar_broad_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "oil_wti_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "financial_nfci_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "financial_anfci_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dff_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dff_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "rate_dgs3mo_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs3mo_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "rate_dgs10_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs10_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_hy_oas_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_hy_oas_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_cp_nonfinancial_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_nonfinancial_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_cp_financial_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_financial_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "dollar_broad_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "dollar_broad_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "oil_wti_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "oil_wti_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "financial_nfci_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "financial_nfci_age_days",
+                  "op": "<=",
+                  "value": 14
+                },
+                {
+                  "field": "financial_anfci_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "financial_anfci_age_days",
+                  "op": "<=",
+                  "value": 14
+                }
+              ]
+            },
+            "chain_nodes": {
+              "fields": [
+                "chain_node_00_log_moneyness",
+                "chain_node_00_iv",
+                "chain_node_00_log_rel_spread",
+                "chain_node_00_log_oi",
+                "chain_node_00_log_depth",
+                "chain_node_01_log_moneyness",
+                "chain_node_01_iv",
+                "chain_node_01_log_rel_spread",
+                "chain_node_01_log_oi",
+                "chain_node_01_log_depth",
+                "chain_node_02_log_moneyness",
+                "chain_node_02_iv",
+                "chain_node_02_log_rel_spread",
+                "chain_node_02_log_oi",
+                "chain_node_02_log_depth",
+                "chain_node_03_log_moneyness",
+                "chain_node_03_iv",
+                "chain_node_03_log_rel_spread",
+                "chain_node_03_log_oi",
+                "chain_node_03_log_depth",
+                "chain_node_04_log_moneyness",
+                "chain_node_04_iv",
+                "chain_node_04_log_rel_spread",
+                "chain_node_04_log_oi",
+                "chain_node_04_log_depth",
+                "chain_node_05_log_moneyness",
+                "chain_node_05_iv",
+                "chain_node_05_log_rel_spread",
+                "chain_node_05_log_oi",
+                "chain_node_05_log_depth",
+                "chain_node_06_log_moneyness",
+                "chain_node_06_iv",
+                "chain_node_06_log_rel_spread",
+                "chain_node_06_log_oi",
+                "chain_node_06_log_depth",
+                "chain_node_07_log_moneyness",
+                "chain_node_07_iv",
+                "chain_node_07_log_rel_spread",
+                "chain_node_07_log_oi",
+                "chain_node_07_log_depth",
+                "chain_node_08_log_moneyness",
+                "chain_node_08_iv",
+                "chain_node_08_log_rel_spread",
+                "chain_node_08_log_oi",
+                "chain_node_08_log_depth"
+              ],
+              "lookback": "same entry chain within configured moneyness gap",
+              "clock": "after-close reconstruction; all nine masks required for full-family completeness",
+              "quality_checks": [
+                {
+                  "field": "chain_node_00_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_01_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_02_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_03_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_04_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_05_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_06_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_07_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_08_mask",
+                  "op": "==",
+                  "value": 1
+                }
+              ]
+            }
+          }
+        }
+      },
+      "notes": "Hash-bound field groups, lookback requirements and clock limits. Split broad families into separately testable materialization/quality subgroups. implied_cdf also requires rn_proxy_eligible == 1: the step-2 cohort now includes dates whose proxy was rejected upstream, and a rejected proxy is an unavailable CDF."
+    },
+    "deferred_representations": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "deferred": {
+            "implied_cdf_21": {
+              "status": "not_materialized",
+              "reason": "Exact probability grid not preregistered; recompute from original chains, never interpolate nine inputs to claim 21 observations"
+            },
+            "implied_cdf_41": {
+              "status": "not_materialized",
+              "reason": "Exact probability grid not preregistered; recompute from original chains"
+            },
+            "macro_events": {
+              "status": "source_unavailable",
+              "reason": "No local historical event calendar carrying known-at timestamps"
+            }
+          }
+        }
+      }
+    },
+    "date_rows": {
+      "uses": "concat",
+      "inputs": {
+        "date_patterns__each": "$date_patterns.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "date_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$date_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/step2-feature-availability/dates.jsonl",
+        "source": "One row per cohort date and ticker with its 13 available_<family> yes/no flags: the per-date family gaps on step 1's selected dates"
+      },
+      "notes": "Refuses to overwrite and needs its parent directory; move pipeline_runs/step2-feature-availability aside to repeat."
+    },
+    "combination_rows": {
+      "uses": "concat",
+      "inputs": {
+        "combinations__each": "$combinations.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "combination_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$combination_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/step2-feature-availability/combinations.jsonl",
+        "source": "Distinct cohort dates for every one of the 2^13 family combinations, 8,192 rows per ticker; with_<f>=1 means family f is in the combination"
+      },
+      "notes": "Refuses to overwrite and needs its parent directory; move pipeline_runs/step2-feature-availability aside to repeat."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/step2-feature-availability/runs"
+  },
+  "foreach": {
+    "keys": [
+      "QQQ",
+      "SPY",
+      "IWM"
+    ],
+    "notes": "The only ticker setting, and it must match step 1's: a ticker absent from step 1's selection refuses. AMZN is [\"AMZN\"], run from children/stock_options. No per-ticker copies of this file exist or are needed.",
+    "pipeline": {
+      "selection": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$step1_selection.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's winner row from step 1."
+      },
+      "selection_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$selection.records"
+        },
+        "params": {
+          "field": "selection_group",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "selected_dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "actual_calendar_dte"
+        },
+        "notes": "The DTE step 2 runs at, read from step 1. An empty table (ticker absent from step 1) leaves a dangling reference below and the run refuses."
+      },
+      "selected_dates": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$selection_group.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "listed_dates"
+        },
+        "notes": "Step 1's recorded date count at that DTE, used only to pin this run's cohort to it."
+      },
+      "cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$selected_dte.table.all"
+            }
+          ]
+        },
+        "notes": "Step 1's cohort predicate (symbol, settled) at step 1's DTE. No feature or CDF clause may ever be added here: availability is measured on this cohort, not used to choose it."
+      },
+      "cohort_group": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$cohort.records"
+        },
+        "params": {
+          "field": "selection_group",
+          "cases": [
+            {
+              "when": [],
+              "value": "all"
+            }
+          ]
+        }
+      },
+      "cohort_summary": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$cohort_group.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "selection_group",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "cohort_dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "cohort_rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        },
+        "notes": "The cohort's own date count and bounds, retained in carry.json."
+      },
+      "agreement": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$cohort_summary.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "cohort_dates",
+              "op": "==",
+              "value": "$selected_dates.table.all"
+            }
+          ]
+        },
+        "notes": "Keeps the summary only when this run's cohort date count equals step 1's listed_dates."
+      },
+      "agreed_dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$agreement.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "actual_calendar_dte"
+        },
+        "notes": "Empty when the counts disagree, which makes the reference below dangle."
+      },
+      "checked_cohort": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$cohort_group.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$agreed_dte.table.all"
+            }
+          ]
+        },
+        "notes": "A tautology when step 1 and step 2 agree; on disagreement the dangling agreed_dte reference refuses the run, so step 2 can never describe other dates than step 1."
+      },
+      "check_implied_cdf": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$checked_cohort.records"
+        },
+        "params": {
+          "field": "available_implied_cdf",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rn_q_0100",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_0100",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_0500",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_0500",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_1000",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_1000",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_2500",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_2500",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_5000",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_5000",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_7500",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_7500",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9000",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9000",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9500",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9500",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9900",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_q_9900",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rn_proxy_eligible",
+                  "op": "==",
+                  "value": 1
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        },
+        "notes": "yes when every implied_cdf field is finite and its quality checks hold; else no. The flag tests materialized finite completeness only, never historical known-at certification."
+      },
+      "check_return_history": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_implied_cdf.records"
+        },
+        "params": {
+          "field": "available_return_history",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "ret_lag_0",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_0",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_1",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_1",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_2",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_2",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_3",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_3",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_4",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_4",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_6",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_6",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_7",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_7",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_8",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_8",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_9",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_9",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_10",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_10",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_11",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_11",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_12",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_12",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_13",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_13",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_14",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_14",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_15",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_15",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_16",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_16",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_17",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_17",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_18",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_18",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_19",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_19",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_20",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_20",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_21",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "ret_lag_21",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "momentum_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "momentum_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "momentum_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "momentum_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_realized_volatility": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_return_history.records"
+        },
+        "params": {
+          "field": "available_realized_volatility",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rv_1",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_1",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_66",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rv_66",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "down_rv_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "down_rv_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "down_rv_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "down_rv_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "up_rv_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "up_rv_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "up_rv_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "up_rv_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_ohlc_shape": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_realized_volatility.records"
+        },
+        "params": {
+          "field": "available_ohlc_shape",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "overnight_return",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "overnight_return",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_return",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_return",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "log_high_low_range",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "log_high_low_range",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "parkinson_variance",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "parkinson_variance",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_proxy",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_proxy",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "range_variance_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "range_variance_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "range_variance_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "range_variance_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "jump_variance_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "overnight_variance_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "overnight_variance_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "overnight_variance_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "overnight_variance_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_variance_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_variance_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_variance_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "intraday_variance_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_ohlc_shape.records"
+        },
+        "params": {
+          "field": "available_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "own_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "own_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix9d",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix9d",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix3m",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix3m",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix6m",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix6m",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vvix",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vvix",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_skew",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_skew",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_gvz",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_gvz",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix9d_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix3m_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix6m_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vvix_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_skew_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_gvz_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix9d_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix9d_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vix3m_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix3m_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vix6m_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix6m_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vvix_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vvix_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_skew_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_skew_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_gvz_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_gvz_age_days",
+                  "op": "<=",
+                  "value": 7
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_expanded_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_volatility_context.records"
+        },
+        "params": {
+          "field": "available_expanded_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "market_vix1y",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix1y",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_rvx",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_rvx",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxd",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxd",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_ovx",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_ovx",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxeem",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxeem",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxslv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxslv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxtlt",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vxtlt",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "market_vix1y_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_rvx_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxd_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_ovx_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxeem_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxslv_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxtlt_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix1y_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vix1y_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_rvx_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_rvx_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxd_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxd_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_ovx_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_ovx_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxeem_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxeem_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxslv_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxslv_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "market_vxtlt_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "market_vxtlt_age_days",
+                  "op": "<=",
+                  "value": 7
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_surface_level": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_expanded_volatility_context.records"
+        },
+        "params": {
+          "field": "available_surface_level",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "chain_log_atm_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_surface_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_surface_level.records"
+        },
+        "params": {
+          "field": "available_surface_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "chain_log_atm_iv_change_1",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv_change_1",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv_change_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv_change_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv_change_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_atm_iv_change_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_1",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_1",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_skew25_change_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_1",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_1",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_5",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_5",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_22",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_curvature25_change_22",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "term_slope_prev",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "term_slope_prev",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "term_slope_next",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "term_slope_next",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_variance_gap": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_surface_changes.records"
+        },
+        "params": {
+          "field": "available_variance_gap",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "matched_implied_variance",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_implied_variance",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_trailing_variance",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_trailing_variance",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_vrp",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_vrp",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_vrp_ratio",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "matched_vrp_ratio",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_liquidity": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_variance_gap.records"
+        },
+        "params": {
+          "field": "available_liquidity",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "chain_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_put_call_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_put_call_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_contracts",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_contracts",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_open_interest",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_open_interest",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_quote_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_quote_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_positioning_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_liquidity.records"
+        },
+        "params": {
+          "field": "available_positioning_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "chain_log_volume",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_volume",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_put_call_volume_imbalance",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_put_call_volume_imbalance",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_volume_weighted_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_volume_weighted_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_lag_open_interest",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_lag_open_interest",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_lag_oi_change",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_lag_oi_change",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_delta_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_delta_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_gamma_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_gamma_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_vega_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_log_vega_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_macro_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_positioning_changes.records"
+        },
+        "params": {
+          "field": "available_macro_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_dff",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dff",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dgs3mo",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dgs3mo",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dgs10",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dgs10",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_hy_oas",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_hy_oas",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_nonfinancial",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_nonfinancial",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_financial",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_financial",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "credit_cp_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "dollar_broad",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "dollar_broad",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "oil_wti",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "oil_wti",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "financial_nfci",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "financial_nfci",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "financial_anfci",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "financial_anfci",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "rate_dff_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs3mo_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs10_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_hy_oas_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_nonfinancial_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_financial_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_spread_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "dollar_broad_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "oil_wti_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "financial_nfci_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "financial_anfci_missing",
+                  "op": "==",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dff_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dff_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "rate_dgs3mo_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs3mo_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "rate_dgs10_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "rate_dgs10_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_hy_oas_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_hy_oas_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_cp_nonfinancial_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_nonfinancial_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "credit_cp_financial_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "credit_cp_financial_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "dollar_broad_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "dollar_broad_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "oil_wti_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "oil_wti_age_days",
+                  "op": "<=",
+                  "value": 7
+                },
+                {
+                  "field": "financial_nfci_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "financial_nfci_age_days",
+                  "op": "<=",
+                  "value": 14
+                },
+                {
+                  "field": "financial_anfci_age_days",
+                  "op": ">=",
+                  "value": 0
+                },
+                {
+                  "field": "financial_anfci_age_days",
+                  "op": "<=",
+                  "value": 14
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "check_chain_nodes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$check_macro_context.records"
+        },
+        "params": {
+          "field": "available_chain_nodes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "chain_node_00_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_01_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_02_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_03_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_04_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_05_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_06_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_07_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_moneyness",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_moneyness",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_iv",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_iv",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_rel_spread",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_rel_spread",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_oi",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_oi",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_depth",
+                  "op": ">=",
+                  "value": -1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_08_log_depth",
+                  "op": "<=",
+                  "value": 1.7976931348623157e+308
+                },
+                {
+                  "field": "chain_node_00_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_01_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_02_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_03_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_04_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_05_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_06_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_07_mask",
+                  "op": "==",
+                  "value": 1
+                },
+                {
+                  "field": "chain_node_08_mask",
+                  "op": "==",
+                  "value": 1
+                }
+              ],
+              "value": "yes"
+            },
+            {
+              "when": [],
+              "value": "no"
+            }
+          ]
+        }
+      },
+      "summary_implied_cdf": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_implied_cdf"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        },
+        "notes": "Per-family yes/no date counts; an absent group has zero dates."
+      },
+      "summary_return_history": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_return_history"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_realized_volatility": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_realized_volatility"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_ohlc_shape": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_ohlc_shape"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_volatility_context": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_volatility_context"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_expanded_volatility_context": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_expanded_volatility_context"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_surface_level": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_surface_level"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_surface_changes": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_surface_changes"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_variance_gap": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_variance_gap"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_liquidity": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_liquidity"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_positioning_changes": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_positioning_changes"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_macro_context": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_macro_context"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "summary_chain_nodes": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "available_chain_nodes"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            },
+            "rows": {
+              "op": "count"
+            },
+            "first_entry_ms": {
+              "op": "min",
+              "field": "quote_date_ms"
+            },
+            "last_entry_ms": {
+              "op": "max",
+              "field": "quote_date_ms"
+            }
+          }
+        }
+      },
+      "date_patterns": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$check_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "selection_group",
+            "actual_calendar_dte",
+            "quote_date",
+            "available_implied_cdf",
+            "available_return_history",
+            "available_realized_volatility",
+            "available_ohlc_shape",
+            "available_volatility_context",
+            "available_expanded_volatility_context",
+            "available_surface_level",
+            "available_surface_changes",
+            "available_variance_gap",
+            "available_liquidity",
+            "available_positioning_changes",
+            "available_macro_context",
+            "available_chain_nodes"
+          ],
+          "aggregates": {
+            "cohort_rows": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "One row per cohort date with its 13 family flags: the per-date gaps, written to dates.jsonl. Expiries on one date with the same pattern collapse into one row."
+      },
+      "one_pattern_per_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$date_patterns.records"
+        },
+        "params": {
+          "key": "quote_date",
+          "value": "cohort_rows"
+        },
+        "notes": "Refuses when a date has two different patterns: a date must count once."
+      },
+      "patterns": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$date_patterns.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "selection_group",
+            "actual_calendar_dte",
+            "available_implied_cdf",
+            "available_return_history",
+            "available_realized_volatility",
+            "available_ohlc_shape",
+            "available_volatility_context",
+            "available_expanded_volatility_context",
+            "available_surface_level",
+            "available_surface_changes",
+            "available_variance_gap",
+            "available_liquidity",
+            "available_positioning_changes",
+            "available_macro_context",
+            "available_chain_nodes"
+          ],
+          "aggregates": {
+            "pattern_dates": {
+              "op": "nunique",
+              "field": "quote_date"
+            }
+          }
+        },
+        "notes": "The distinct availability patterns and how many dates share each."
+      },
+      "universe_seed": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$patterns.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "selection_group",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "pattern_dates": {
+              "op": "count"
+            }
+          }
+        }
+      },
+      "universe_flags": {
+        "uses": "join",
+        "inputs": {
+          "records": "$universe_seed.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "how": "strict",
+          "tables": {
+            "all_available": {
+              "all": {
+                "available_implied_cdf": "yes",
+                "available_return_history": "yes",
+                "available_realized_volatility": "yes",
+                "available_ohlc_shape": "yes",
+                "available_volatility_context": "yes",
+                "available_expanded_volatility_context": "yes",
+                "available_surface_level": "yes",
+                "available_surface_changes": "yes",
+                "available_variance_gap": "yes",
+                "available_liquidity": "yes",
+                "available_positioning_changes": "yes",
+                "available_macro_context": "yes",
+                "available_chain_nodes": "yes"
+              }
+            }
+          }
+        },
+        "notes": "One extra all-yes row, given zero weight below, so every one of the 2^13 subsets appears in combinations.jsonl even when no date satisfies it."
+      },
+      "universe": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$universe_flags.records"
+        },
+        "params": {
+          "field": "pattern_dates",
+          "overwrite": true,
+          "cases": [
+            {
+              "when": [],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "pattern_space": {
+        "uses": "concat",
+        "inputs": {
+          "observed": "$patterns.records",
+          "universe": "$universe.records"
+        },
+        "params": {
+          "shape": "records",
+          "provenance": "pattern_source"
+        }
+      },
+      "expand_implied_cdf": {
+        "uses": "join",
+        "inputs": {
+          "records": "$pattern_space.merged"
+        },
+        "params": {
+          "key": "available_implied_cdf",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "implied_cdf": {
+              "yes": [
+                {
+                  "with_implied_cdf": 1
+                },
+                {
+                  "with_implied_cdf": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_implied_cdf": 0
+                }
+              ]
+            }
+          }
+        },
+        "notes": "Each pattern row fans out to the combinations it can join: a family that is yes may be in or out of a combination, one that is no can only be out. Chained over the 13 families this enumerates every subset a pattern satisfies."
+      },
+      "expand_return_history": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_implied_cdf.records"
+        },
+        "params": {
+          "key": "available_return_history",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "return_history": {
+              "yes": [
+                {
+                  "with_return_history": 1
+                },
+                {
+                  "with_return_history": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_return_history": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_realized_volatility": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_return_history.records"
+        },
+        "params": {
+          "key": "available_realized_volatility",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "realized_volatility": {
+              "yes": [
+                {
+                  "with_realized_volatility": 1
+                },
+                {
+                  "with_realized_volatility": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_realized_volatility": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_ohlc_shape": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_realized_volatility.records"
+        },
+        "params": {
+          "key": "available_ohlc_shape",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "ohlc_shape": {
+              "yes": [
+                {
+                  "with_ohlc_shape": 1
+                },
+                {
+                  "with_ohlc_shape": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_ohlc_shape": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_volatility_context": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_ohlc_shape.records"
+        },
+        "params": {
+          "key": "available_volatility_context",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "volatility_context": {
+              "yes": [
+                {
+                  "with_volatility_context": 1
+                },
+                {
+                  "with_volatility_context": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_volatility_context": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_expanded_volatility_context": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_volatility_context.records"
+        },
+        "params": {
+          "key": "available_expanded_volatility_context",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "expanded_volatility_context": {
+              "yes": [
+                {
+                  "with_expanded_volatility_context": 1
+                },
+                {
+                  "with_expanded_volatility_context": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_expanded_volatility_context": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_surface_level": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_expanded_volatility_context.records"
+        },
+        "params": {
+          "key": "available_surface_level",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "surface_level": {
+              "yes": [
+                {
+                  "with_surface_level": 1
+                },
+                {
+                  "with_surface_level": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_surface_level": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_surface_changes": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_surface_level.records"
+        },
+        "params": {
+          "key": "available_surface_changes",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "surface_changes": {
+              "yes": [
+                {
+                  "with_surface_changes": 1
+                },
+                {
+                  "with_surface_changes": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_surface_changes": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_variance_gap": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_surface_changes.records"
+        },
+        "params": {
+          "key": "available_variance_gap",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "variance_gap": {
+              "yes": [
+                {
+                  "with_variance_gap": 1
+                },
+                {
+                  "with_variance_gap": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_variance_gap": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_liquidity": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_variance_gap.records"
+        },
+        "params": {
+          "key": "available_liquidity",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "liquidity": {
+              "yes": [
+                {
+                  "with_liquidity": 1
+                },
+                {
+                  "with_liquidity": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_liquidity": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_positioning_changes": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_liquidity.records"
+        },
+        "params": {
+          "key": "available_positioning_changes",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "positioning_changes": {
+              "yes": [
+                {
+                  "with_positioning_changes": 1
+                },
+                {
+                  "with_positioning_changes": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_positioning_changes": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_macro_context": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_positioning_changes.records"
+        },
+        "params": {
+          "key": "available_macro_context",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "macro_context": {
+              "yes": [
+                {
+                  "with_macro_context": 1
+                },
+                {
+                  "with_macro_context": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_macro_context": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expand_chain_nodes": {
+        "uses": "join",
+        "inputs": {
+          "records": "$expand_macro_context.records"
+        },
+        "params": {
+          "key": "available_chain_nodes",
+          "how": "strict",
+          "allow_fanout": true,
+          "tables": {
+            "chain_nodes": {
+              "yes": [
+                {
+                  "with_chain_nodes": 1
+                },
+                {
+                  "with_chain_nodes": 0
+                }
+              ],
+              "no": [
+                {
+                  "with_chain_nodes": 0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "combinations": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$expand_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "actual_calendar_dte",
+            "with_implied_cdf",
+            "with_return_history",
+            "with_realized_volatility",
+            "with_ohlc_shape",
+            "with_volatility_context",
+            "with_expanded_volatility_context",
+            "with_surface_level",
+            "with_surface_changes",
+            "with_variance_gap",
+            "with_liquidity",
+            "with_positioning_changes",
+            "with_macro_context",
+            "with_chain_nodes"
+          ],
+          "aggregates": {
+            "dates": {
+              "op": "sum",
+              "field": "pattern_dates"
+            }
+          }
+        },
+        "notes": "Distinct dates per combination: the sum over patterns of the dates sharing a pattern, exact because each date has exactly one pattern. 8,192 rows per ticker."
+      }
+    }
+  }
+}

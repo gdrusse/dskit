@@ -41,7 +41,16 @@ from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
-from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, GroupBy, Join, KeyBy
+from dskit.pipeline.kinds_flow import (
+    Concat,
+    Derive,
+    EventGrid,
+    Filter,
+    GroupBy,
+    Join,
+    KeyBy,
+    WeekdayOneHot,
+)
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid, TopTrials
 from dskit.pipeline.kinds_stats import StatTest, Validate
@@ -66,6 +75,7 @@ TOOLKIT_NODE_KINDS = (
     ("derive", Derive),
     ("groupby", GroupBy),
     ("keyby", KeyBy),
+    ("weekday-onehot", WeekdayOneHot),
     ("table-file", TableFile),
     ("table-write", TableWrite),
     ("records-write", RecordsWrite),
@@ -94,6 +104,8 @@ TOOLKIT_ROLES = {
     "derive": "transform",
     "groupby": "transform",
     "keyby": "transform",
+    # A pure per-row projection (ADR-0214): it adds columns, never decides.
+    "weekday-onehot": "transform",
     # The table pair: the reader supplies a value (transform), the
     # writer materialises one and proves it (report) — as does the
     # stream writer beside it (ADR-0085).
@@ -362,6 +374,28 @@ def probes(tmp_path):
             params={"key": "contract", "value": "mid", "allow_fanout": False},
             required=("key", "value"),
             inputs={"records": records},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        # Weekday one-hot (ADR-0214) reads an ISO date field, which this
+        # module's envelope-shaped ``records`` do not carry, so the probe
+        # brings its own dated rows: a weekday, a Saturday (the baseline)
+        # and a second weekday, so the baseline branch runs too.
+        "weekday-onehot": NodeProbe(
+            params={
+                "date_field": "quote_date",
+                "prefix": "dow_",
+                "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+                "baseline": ["sat", "sun"],
+            },
+            required=("date_field", "prefix"),
+            inputs={
+                "records": [
+                    {"quote_date": "2026-01-05", "mid": 0.4},
+                    {"quote_date": "2026-01-10", "mid": 0.5},
+                    {"quote_date": "2026-01-09", "mid": 0.6},
+                ]
+            },
             stream_ports=("records",),
             runnable=True,
         ),

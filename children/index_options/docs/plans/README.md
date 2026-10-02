@@ -23,6 +23,75 @@ risk limits, monitoring and authority contracts, with paper evidence before
 live approval. RL hedging and deep models are optional later questions.
 Neither model sophistication nor backtest profit guarantees an edge.
 
+## Three-step data selection (owner rulings, 2026-10-01)
+
+Current direction; supersedes conflicting cohort/split wording below. Each step
+is a ticker/source-neutral JSON pipeline whose outputs feed the next; nothing
+derivable from a prior step is typed in.
+
+| Step | Inputs | Outputs |
+|---|---|---|
+| 1. Tradable dates | ticker; option-chain source; one configurable underlying-close source | dates per exact DTE 1-45 (table + chart); argmax DTE, ties to shorter |
+| 2. Feature availability | ticker; family set (implied CDF is one family); step-1 dates at the selected DTE | dates per family; dates for every non-empty family combination; per-date feature/family gaps |
+| 3. Holdout and folds | step-1 DTE and dates; step-2 availability; holdout share H (0.2), tau (0.9), train/validation sizes and retrain interval, all in dates | locked holdout dates; admitted families; training dates; fold table (train/val dates, boundaries, purge counts) |
+
+- Step 1 has no CDF filter: "available" means any option with a valid bid/ask,
+  since the MIO may select any. A missing implied CDF is a step-2 gap.
+- The holdout is locked first (last H of step-1 dates, purging earlier labels
+  that reach it) and is the final frozen MIO test.
+- A family is admitted when available on at least tau of pre-holdout dates;
+  training uses complete-case dates. Gaps are assumed random for now, though
+  surface gaps cluster in 2011-2014. Rows are weighted equally.
+- Folds keep intraday_equities' rolling-origin shape (warm-up folds, retrain
+  per fold) without its extra late periods. Windows and the retrain interval
+  count dates, so retraining follows expiry frequency; embargo = selected DTE.
+- **All selection uses the warm-up folds only.** Feature selection (step 4),
+  the model zoo (step 5) and HPO (step 6) score on the first k folds. The
+  later scored folds are a clean simulation with every choice frozen; the
+  holdout stays the final frozen MIO test. k is derived from the data (about
+  a year of warm-up validation weeks, at least 10 scored folds) and declared
+  in the step-3 config.
+- Planned features: weekday one-hot (ADR-0214) and expiry density. Pre-2021
+  entries are mostly Fridays, so weekday is partly confounded with era.
+- Status: steps 1-2 built (QQQ/SPY/IWM; AMZN waits on ADR-0216's close-bar
+  reader); real runs pending in WSL; step 3 awaits its ADR (data-driven
+  holdout and count-sized folds).
+
+### Steps 1-2 runbook
+
+Two ticker/source-neutral files: `configs/run-step1-expiry-coverage.json` and
+`configs/run-step2-feature-availability.json`. Tickers are `foreach.keys` in
+both (edit both for a subset); another panel changes only `pipeline.source.params`.
+From `children/index_options`, with PYTHONPATH, the venv and the same
+`systemd-run` 6G/no-swap/1740s prefix as the runbook below:
+
+    # reuse ./pipeline_runs/cdf-horizon-source if acquired, else run its 3 onboarding commands
+    mkdir -p pipeline_runs/step1-expiry-coverage/selection pipeline_runs/step2-feature-availability
+    python -m dskit.pipeline run configs/run-step1-expiry-coverage.json --asof 2026-10-01
+    python -m dskit.onboarding init --root ./pipeline_runs/step1-selection-source
+    python -m dskit.onboarding register-source step1-selection --catalog-source step1-selection --connector localtables --config @configs/source-step1-selection.json --activate --root ./pipeline_runs/step1-selection-source
+    python -m dskit.onboarding acquire --source step1-selection --stream selected --mode backfill --root ./pipeline_runs/step1-selection-source
+    python -m dskit.pipeline run configs/run-step2-feature-availability.json --asof 2026-10-01
+
+Read: step 1 `runs/<run>/carry.json` `coverage__<t>.records` (dates per DTE 1-45,
+full) and `winner__<t>.records`, `artifacts/coverage_figure__<t>/coverage.png`,
+`selection/selected.jsonl`. Step 2 `carry.json` `cohort_summary__<t>` and
+`summary_<f>__<t>`, `combinations.jsonl` (8,192 rows per ticker: `with_<f>=1`
+puts a family in the combination, `dates` counts dates where all of them are
+available, the all-zero row is the cohort total) and `dates.jsonl` (per-date
+family flags). Repeat: the writers refuse overwrite, so move
+`step1-expiry-coverage`, `step1-selection-source` and `step2-feature-availability`
+aside first. Cross-checks against run `cdf-horizon-coverage-2026-10-01-6ae71aa4`:
+
+- step-1 `listed_dates`/`listed_forecasts` per DTE equal its `listed_counts__<t>`;
+  any difference is unsettled rows;
+- step-2 `implied_cdf` "yes" dates equal its `coverage__<t>` `eligible_dates` at the
+  selected DTE (DTE 7: QQQ 1,497, SPY 1,879, IWM 1,377);
+- the all-zero combination row equals `cohort_dates`; each singleton row equals
+  its `summary_<f>` "yes" dates.
+
+The earlier CDF-based selector and QQQ gap runbooks below are superseded.
+
 ## Draft: Torch CDF feature families (2026-10-01)
 
 Planning only; feature choices and experiment design remain open.
