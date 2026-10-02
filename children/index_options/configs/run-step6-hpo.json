@@ -1,0 +1,945 @@
+{
+  "notes": "STEP 6 HPO: grid over hidden layers and learning rate for the step-5 winner on the warm-up folds (shown for an MLP winner; if step 5 picks GRU, swap the encoder). The selected candidate is frozen. STEP 7 (signal validation) is this same document's remaining stages, run after search: --stage select, --stage evaluate --partition development (warm-up), --stage evaluate --partition later (SCORED folds only: retrain per fold, frozen choices, holdout refused), --stage report. The report compares the winner with both baselines using the study's paired block bootstrap.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/exact_expiry_surface.parquet",
+    "lifecycle": "/home/russell/dskit-feature-research-20260927/children/index_options/pipeline_runs/exact_maturity_20260928/date_expiry_lifecycle.parquet",
+    "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+    "chain_features": "/home/russell/dskit-cdf-tail-data/children/index_options/pipeline_runs/predictive_cdf_tail_data_20260930/raw_chain_features.parquet",
+    "raw_chain": {
+      "nodes": 9,
+      "moneyness_bounds": [
+        -0.3,
+        0.3
+      ],
+      "max_node_gap": 0.04,
+      "proxy_probabilities": [
+        0.01,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        0.95,
+        0.99
+      ],
+      "min_wing_nodes": 3,
+      "max_inner_gap": 0.08,
+      "max_outer_gap": 0.12
+    },
+    "symbols": {
+      "QQQ": "VXN"
+    },
+    "market_symbols": {
+      "market_vix9d": {
+        "symbol": "VIX9D",
+        "max_age_days": 7
+      },
+      "market_vix3m": {
+        "symbol": "VIX3M",
+        "max_age_days": 7
+      },
+      "market_vix6m": {
+        "symbol": "VIX6M",
+        "max_age_days": 7
+      },
+      "market_vvix": {
+        "symbol": "VVIX",
+        "max_age_days": 7
+      },
+      "market_skew": {
+        "symbol": "SKEW",
+        "max_age_days": 7
+      },
+      "market_gvz": {
+        "symbol": "GVZ",
+        "max_age_days": 7
+      },
+      "market_vix1y": {
+        "symbol": "VIX1Y",
+        "max_age_days": 7
+      },
+      "market_vxn": {
+        "symbol": "VXN",
+        "max_age_days": 7
+      },
+      "market_rvx": {
+        "symbol": "RVX",
+        "max_age_days": 7
+      },
+      "market_vxd": {
+        "symbol": "VXD",
+        "max_age_days": 7
+      },
+      "market_ovx": {
+        "symbol": "OVX",
+        "max_age_days": 7
+      },
+      "market_vxeem": {
+        "symbol": "VXEEM",
+        "max_age_days": 7
+      },
+      "market_vxslv": {
+        "symbol": "VXSLV",
+        "max_age_days": 7
+      },
+      "market_vxtlt": {
+        "symbol": "VXTLT",
+        "max_age_days": 7
+      }
+    },
+    "fred_market_symbols": {
+      "rate_dff": {
+        "stream": "dff",
+        "field": "DFF",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs3mo": {
+        "stream": "dgs3mo",
+        "field": "DGS3MO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs10": {
+        "stream": "dgs10",
+        "field": "DGS10",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_hy_oas": {
+        "stream": "bamlh0a0hym2",
+        "field": "BAMLH0A0HYM2",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_nonfinancial": {
+        "stream": "dcpn3m",
+        "field": "DCPN3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_financial": {
+        "stream": "dcpf3m",
+        "field": "DCPF3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "dollar_broad": {
+        "stream": "dtwexbgs",
+        "field": "DTWEXBGS",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "oil_wti": {
+        "stream": "dcoilwtico",
+        "field": "DCOILWTICO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "financial_nfci": {
+        "stream": "nfci",
+        "field": "NFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      },
+      "financial_anfci": {
+        "stream": "anfci",
+        "field": "ANFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      }
+    },
+    "price_source": "optionshist-chain",
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": true,
+    "ohlc_windows": [
+      5,
+      22
+    ],
+    "matched_dte_vrp": true,
+    "decision_regions": {
+      "archive_root": "/home/russell/data/options_archives/philippdubach_full",
+      "max_chain_rows": 14000000,
+      "panel_years": [
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "clock": "after_date_close_indicative_not_executable",
+      "limits": {
+        "max_seconds": 1740,
+        "max_resident_mib": 6144
+      },
+      "chain_rule": {
+        "max_abs_log_moneyness": 0.1,
+        "min_wing_width": 1,
+        "max_wing_width": 5,
+        "max_candidates": 5000,
+        "fee_per_leg": 0.5,
+        "multiplier": 100
+      },
+      "notes": "Wing intervals = every listed put/call wing of width 1-5 dollars within |log K/S| <= 0.1 with valid side-specific quotes: the owner's 'the MIO may pick any option', bounded by strike spacing; the loss weights the union of these wings. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
+    },
+    "exact_dte": 7,
+    "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data roots point at the owner's WSL archive. Change symbols/roots/exact_dte per ticker and source."
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "own_iv",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "series_age_calendar",
+      "series_age_sessions",
+      "series_total_tenor_calendar",
+      "series_total_tenor_sessions",
+      "life_fraction_calendar",
+      "life_fraction_sessions",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_QQQ",
+      "chain_log_atm_iv",
+      "chain_log_skew25",
+      "chain_log_curvature25",
+      "chain_log_rel_spread",
+      "chain_log_put_call_oi",
+      "chain_log_contracts",
+      "chain_log_open_interest",
+      "chain_log_quote_depth",
+      "chain_has_25d_pair",
+      "chain_has_put_call_oi",
+      "actual_calendar_dte",
+      "momentum_5",
+      "momentum_22",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "market_vix9d",
+      "market_vix9d_age_days",
+      "market_vix3m",
+      "market_vix3m_age_days",
+      "market_vix6m",
+      "market_vix6m_age_days",
+      "market_vvix",
+      "market_vvix_age_days",
+      "market_skew",
+      "market_skew_age_days",
+      "market_gvz",
+      "market_gvz_age_days",
+      "chain_node_00_log_moneyness",
+      "chain_node_00_iv",
+      "chain_node_00_log_rel_spread",
+      "chain_node_00_log_oi",
+      "chain_node_00_log_depth",
+      "chain_node_00_mask",
+      "chain_node_01_log_moneyness",
+      "chain_node_01_iv",
+      "chain_node_01_log_rel_spread",
+      "chain_node_01_log_oi",
+      "chain_node_01_log_depth",
+      "chain_node_01_mask",
+      "chain_node_02_log_moneyness",
+      "chain_node_02_iv",
+      "chain_node_02_log_rel_spread",
+      "chain_node_02_log_oi",
+      "chain_node_02_log_depth",
+      "chain_node_02_mask",
+      "chain_node_03_log_moneyness",
+      "chain_node_03_iv",
+      "chain_node_03_log_rel_spread",
+      "chain_node_03_log_oi",
+      "chain_node_03_log_depth",
+      "chain_node_03_mask",
+      "chain_node_04_log_moneyness",
+      "chain_node_04_iv",
+      "chain_node_04_log_rel_spread",
+      "chain_node_04_log_oi",
+      "chain_node_04_log_depth",
+      "chain_node_04_mask",
+      "chain_node_05_log_moneyness",
+      "chain_node_05_iv",
+      "chain_node_05_log_rel_spread",
+      "chain_node_05_log_oi",
+      "chain_node_05_log_depth",
+      "chain_node_05_mask",
+      "chain_node_06_log_moneyness",
+      "chain_node_06_iv",
+      "chain_node_06_log_rel_spread",
+      "chain_node_06_log_oi",
+      "chain_node_06_log_depth",
+      "chain_node_06_mask",
+      "chain_node_07_log_moneyness",
+      "chain_node_07_iv",
+      "chain_node_07_log_rel_spread",
+      "chain_node_07_log_oi",
+      "chain_node_07_log_depth",
+      "chain_node_07_mask",
+      "chain_node_08_log_moneyness",
+      "chain_node_08_iv",
+      "chain_node_08_log_rel_spread",
+      "chain_node_08_log_oi",
+      "chain_node_08_log_depth",
+      "chain_node_08_mask",
+      "rn_proxy_eligible",
+      "rn_forward_ratio",
+      "rn_projection_distance",
+      "rn_interior_mass",
+      "rn_q_0100",
+      "rn_q_0500",
+      "rn_q_1000",
+      "rn_q_2500",
+      "rn_q_5000",
+      "rn_q_7500",
+      "rn_q_9000",
+      "rn_q_9500",
+      "rn_q_9900",
+      "rn_median",
+      "rn_iqr",
+      "rn_left_width",
+      "rn_right_width",
+      "rate_dff",
+      "rate_dff_age_days",
+      "rate_dff_missing",
+      "rate_dgs3mo",
+      "rate_dgs3mo_age_days",
+      "rate_dgs3mo_missing",
+      "rate_dgs10",
+      "rate_dgs10_age_days",
+      "rate_dgs10_missing",
+      "credit_hy_oas",
+      "credit_hy_oas_age_days",
+      "credit_hy_oas_missing",
+      "dollar_broad",
+      "dollar_broad_age_days",
+      "dollar_broad_missing",
+      "oil_wti",
+      "oil_wti_age_days",
+      "oil_wti_missing",
+      "financial_nfci",
+      "financial_nfci_age_days",
+      "financial_nfci_missing",
+      "financial_anfci",
+      "financial_anfci_age_days",
+      "financial_anfci_missing",
+      "chain_log_atm_iv_change_1",
+      "chain_log_atm_iv_change_5",
+      "chain_log_atm_iv_change_22",
+      "chain_log_skew25_change_1",
+      "chain_log_skew25_change_5",
+      "chain_log_skew25_change_22",
+      "chain_log_curvature25_change_1",
+      "chain_log_curvature25_change_5",
+      "chain_log_curvature25_change_22",
+      "term_slope_prev",
+      "term_slope_next",
+      "chain_liquidity_asymmetry",
+      "implied_minus_realized_variance",
+      "rn_mean",
+      "rn_variance",
+      "rn_skewness",
+      "rn_kurtosis",
+      "rn_left_tail_integral",
+      "rn_right_tail_integral",
+      "market_vix9d_missing",
+      "market_vix3m_missing",
+      "market_vix6m_missing",
+      "market_vvix_missing",
+      "market_skew_missing",
+      "market_gvz_missing",
+      "credit_cp_nonfinancial",
+      "credit_cp_nonfinancial_age_days",
+      "credit_cp_nonfinancial_missing",
+      "credit_cp_financial",
+      "credit_cp_financial_age_days",
+      "credit_cp_financial_missing",
+      "credit_cp_spread",
+      "credit_cp_spread_missing",
+      "overnight_return",
+      "intraday_return",
+      "log_high_low_range",
+      "parkinson_variance",
+      "jump_variance_proxy",
+      "range_variance_5",
+      "jump_variance_5",
+      "overnight_variance_5",
+      "intraday_variance_5",
+      "range_variance_22",
+      "jump_variance_22",
+      "overnight_variance_22",
+      "intraday_variance_22",
+      "matched_implied_variance",
+      "matched_trailing_variance",
+      "matched_vrp",
+      "matched_vrp_ratio",
+      "chain_log_volume",
+      "chain_put_call_volume_imbalance",
+      "chain_log_delta_oi",
+      "chain_log_gamma_oi",
+      "chain_log_vega_oi",
+      "chain_volume_weighted_rel_spread",
+      "chain_log_lag_open_interest",
+      "chain_log_lag_oi_change",
+      "market_vix1y",
+      "market_vix1y_age_days",
+      "market_vix1y_missing",
+      "market_vxn",
+      "market_vxn_age_days",
+      "market_vxn_missing",
+      "market_rvx",
+      "market_rvx_age_days",
+      "market_rvx_missing",
+      "market_vxd",
+      "market_vxd_age_days",
+      "market_vxd_missing",
+      "market_ovx",
+      "market_ovx_age_days",
+      "market_ovx_missing",
+      "market_vxeem",
+      "market_vxeem_age_days",
+      "market_vxeem_missing",
+      "market_vxslv",
+      "market_vxslv_age_days",
+      "market_vxslv_missing",
+      "market_vxtlt",
+      "market_vxtlt_age_days",
+      "market_vxtlt_missing"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "decision_context": "decision_region_context",
+    "output": "pipeline_runs/step6_hpo/unused",
+    "samples": 201,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "calibration_knots": 21,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical",
+      "option_proxy_transport"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 27,
+          "reference_index": 38,
+          "knots": 401
+        },
+        "calibrate": false
+      },
+      "option_proxy_transport": {
+        "class": "dskit.pipeline.libs.predictive_cdf:OptionImpliedTransportCDF",
+        "params": {
+          "proxy_indices": [
+            127,
+            128,
+            129,
+            130,
+            131,
+            132,
+            133,
+            134,
+            135
+          ],
+          "probabilities": [
+            0.01,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            0.75,
+            0.9,
+            0.95,
+            0.99
+          ],
+          "eligible_index": 123,
+          "condition_indices": [
+            27
+          ],
+          "reference_index": 38,
+          "knots": 401,
+          "tail_width": 4,
+          "transport_knots": 21
+        },
+        "calibrate": false
+      }
+    },
+    "decision_acceptance": {
+      "blocks": [
+        30,
+        60
+      ],
+      "min_lower_bound": 0.0,
+      "max_bias_increase": 0.01
+    },
+    "fold_table": {
+      "path": "pipeline_runs/step3-holdout-folds/fold-table.jsonl",
+      "sha256": "REPLACE_WITH_STEP3_FOLD_TABLE_SHA256",
+      "holdout_start": "REPLACE_WITH_STEP3_HOLDOUT_START",
+      "cal_n": 40,
+      "roles": [
+        "warmup",
+        "scored"
+      ]
+    },
+    "wing_metrics": true,
+    "notes": "Folds come from step 3's fold table (ADR-0222/0223): warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
+  },
+  "experiment": {
+    "output": "pipeline_runs/step6_hpo",
+    "max_candidates": 9,
+    "candidates": {
+      "mlp_h16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h32x16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h32x16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h32x16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h64x32_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h64x32_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      },
+      "mlp_h64x32_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "params": {
+          "encoder": {
+            "kind": "mlp"
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 20,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": []
+        },
+        "calibrate": false
+      }
+    },
+    "candidate_groups": {
+      "mlp": [
+        "mlp_h16_lr0.0003",
+        "mlp_h16_lr0.001",
+        "mlp_h16_lr0.003",
+        "mlp_h32x16_lr0.0003",
+        "mlp_h32x16_lr0.001",
+        "mlp_h32x16_lr0.003",
+        "mlp_h64x32_lr0.0003",
+        "mlp_h64x32_lr0.001",
+        "mlp_h64x32_lr0.003"
+      ]
+    },
+    "search_partitions": {
+      "mlp": [
+        "mlp_h16_lr0.0003",
+        "mlp_h16_lr0.001",
+        "mlp_h16_lr0.003",
+        "mlp_h32x16_lr0.0003",
+        "mlp_h32x16_lr0.001",
+        "mlp_h32x16_lr0.003",
+        "mlp_h64x32_lr0.0003",
+        "mlp_h64x32_lr0.001",
+        "mlp_h64x32_lr0.003"
+      ]
+    },
+    "task_features": {
+      "QQQ": "is_QQQ"
+    },
+    "selection_metric": "decision_wing_twcrps",
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 201,
+      "tail_points": 101,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        201,
+        401
+      ],
+      "audit_rows": 16
+    },
+    "expected_cells": {
+      "development": {
+        "QQQ": [
+          7
+        ]
+      },
+      "evaluation": {
+        "QQQ": [
+          7
+        ]
+      }
+    },
+    "notes": "Selection on warm-up folds by wing-weighted twCRPS (ADR-0218). Training: 0.1*NLL + 1.0*wing twCRPS, patience 20 on the inner cal slice is the only exit; epochs 2000 is a guard that raises if reached while still improving (ADR-0223). feature_indices = the step-4 winner's column positions in study.features (empty is refused, so an unfilled run cannot start). GRU sequence/context indices are positions WITHIN that subset: sequence = the ret_lag_21..ret_lag_0 positions (one per step), context = all other subset positions."
+  }
+}

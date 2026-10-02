@@ -7,12 +7,15 @@ one column per query. Models predict a caller-standardized scalar outcome.
 """
 
 from abc import ABC, abstractmethod
+from functools import lru_cache
 import hashlib
 import importlib
 import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.document import date_problem
+from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
 
 __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
@@ -28,6 +31,25 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
+
+# Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
+# CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
+# metric that scores it can never integrate on different grids (ADR-0218).
+_QUADRATURE_NODES = 64
+# Positive remainder terms of the Student lower-tail series (ADR-0218).
+_STUDENT_TAIL_TERMS = 64
+
+
+@lru_cache(maxsize=None)
+def _legendre_rule(n):
+    import numpy as np
+    return np.polynomial.legendre.leggauss(n)
+
+
+def _gauss_legendre(n):
+    """Return fresh copies of the n-point Gauss-Legendre nodes and weights."""
+    nodes, weights = _legendre_rule(n)
+    return nodes.copy(), weights.copy()
 
 
 class CDFThresholdAudit:
@@ -282,6 +304,37 @@ class _Curve(ABC):
     def _arrays(self):
         """Return exact numerical research state, without executable objects."""
 
+    def _quadrature_breakpoints(self):
+        """Return rowwise interior kinks the numeric rule splits at, or None."""
+        return None
+
+    def _segment_integrals(self, lower, upper, y):
+        """Integrate (F(z) - 1{y <= z})**2 over (rows, segments) bounds.
+
+        Each segment is cut at the clipped outcome and at the curve's
+        breakpoints, with ``_QUADRATURE_NODES`` Gauss-Legendre points per
+        sub-piece; a curve with unlisted kinks is a bounded approximation.
+        """
+        import numpy as np
+
+        nodes, weights = _gauss_legendre(_QUADRATURE_NODES)
+        kinks = self._quadrature_breakpoints()
+        result = np.zeros(lower.shape)
+        for s in range(lower.shape[1]):
+            low, high = lower[:, s], upper[:, s]
+            if not (high > low).any():
+                continue
+            cut = np.clip(y, low, high)
+            for start, stop, left in ((low, cut, True), (cut, high, False)):
+                edges = np.column_stack([start, stop]) if kinks is None else np.sort(
+                    np.column_stack([start, np.clip(kinks, start[:, None], stop[:, None]),
+                                     stop]), axis=1)
+                for a, b in zip(edges[:, :-1].T, edges[:, 1:].T):
+                    z = ((a+b)/2)[:, None] + ((b-a)/2)[:, None]*nodes
+                    f = self.cdf(z)
+                    result[:, s] += (b-a)/2*(((f if left else 1-f)**2)*weights).sum(1)
+        return result
+
 
 class MixtureCurve(_Curve):
     """Finite Gaussian mixture, with analytic CDF and numerical inverse.
@@ -316,6 +369,9 @@ class MixtureCurve(_Curve):
     def _arrays(self):
         return {"kind": "mixture", "weights": self.weights,
                 "means": self.means, "scales": self.scales}
+
+    def _quadrature_breakpoints(self):
+        return self.means
 
     def _standard_cdf(self, values):
         from scipy.special import ndtr
@@ -447,6 +503,27 @@ class GridCurve(_Curve):
 
     def _arrays(self):
         return {"kind": "grid", "values": self.values, "probabilities": self.probabilities}
+
+    def _segment_integrals(self, lower, upper, y):
+        """Exact rule: F is piecewise linear, so 2-point Gauss-Legendre is exact per cell."""
+        import numpy as np
+
+        offset = 1/np.sqrt(3)
+        result = np.zeros(lower.shape)
+        for row in range(lower.shape[0]):
+            for s in range(lower.shape[1]):
+                low, high = lower[row, s], upper[row, s]
+                if not high > low:
+                    continue
+                knots = self.values[row]
+                edges = np.unique(np.r_[low, high, min(max(y[row], low), high),
+                                        knots[(knots > low) & (knots < high)]])
+                mid, half = (edges[:-1]+edges[1:])/2, (edges[1:]-edges[:-1])/2
+                truth = (y[row] <= mid).astype(float)
+                for point in (mid-half*offset, mid+half*offset):
+                    f = np.interp(point, knots, self.probabilities[row], left=0, right=1)
+                    result[row, s] += (half*(f-truth)**2).sum()
+        return result
 
     def cdf(self, values):
         """Interpolate CDF queries, using zero/one outside the declared tails.
@@ -2082,6 +2159,31 @@ class NGBoostCDF(CDFEstimator):
         return MixtureCurve(np.ones((len(loc), 1)), loc[:, None], scale[:, None])
 
 
+class _PatienceStop:
+    """Early-stopping rule over a monitored loss, with best-weight restore.
+
+    One instance per fitted network. ``exhausted`` records an epoch's loss and
+    says whether ``patience`` epochs have passed without a STRICT improvement;
+    ``restore`` puts the best epoch's weights back.
+    """
+
+    def __init__(self, patience):
+        self.patience, self.history, self.best, self.best_epoch = patience, [], None, 0
+
+    def exhausted(self, loss, model):
+        import math
+        if not math.isfinite(loss):
+            raise ValueError("nonfinite monitored loss")
+        self.history.append(loss)
+        if self.best is None or loss < self.best:
+            self.best, self.best_epoch = loss, len(self.history)
+            self.state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        return len(self.history)-self.best_epoch >= self.patience
+
+    def restore(self, model):
+        model.load_state_dict(self.state)
+
+
 class MixtureMLPCDF(CDFEstimator):
     """Small Gaussian mixture MLP ensemble trained with log likelihood.
 
@@ -2099,6 +2201,13 @@ class MixtureMLPCDF(CDFEstimator):
         Hidden activation, dropout probability, and raw one-hot task columns.
         A list for hidden declares individual layer widths; an integer keeps
         the legacy two-layer architecture. Heads share only the trunk.
+    patience : int or None
+        Absent trains exactly ``epochs``. An integer >= 1 watches the training
+        objective on the calibration rows after every epoch, restores the best
+        epoch's weights and stops once ``patience`` epochs bring no strict
+        improvement. That is the only exit: ``epochs`` becomes a ceiling, and
+        reaching it first raises. The calibration rows then steer training, so
+        a PIT map fitted on them is refused by the study.
 
     Examples
     --------
@@ -2111,7 +2220,8 @@ class MixtureMLPCDF(CDFEstimator):
                  seeds=(11, 29), device="cuda", learning_rate=.001,
                  weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
                  head_features=None, deterministic=False, left_cdf_weight=0.,
-                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None):
+                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
+                 patience=None):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
@@ -2137,6 +2247,9 @@ class MixtureMLPCDF(CDFEstimator):
                  or any(type(v) is not int or v < 0 for v in feature_indices)
                  or len(set(feature_indices)) != len(feature_indices))):
             raise ValueError("invalid feature indices")
+        if patience is not None and (type(patience) is not int or patience < 1):
+            raise ValueError("invalid patience: an integer >= 1 or absent")
+        self.patience = patience
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
@@ -2217,8 +2330,7 @@ class MixtureMLPCDF(CDFEstimator):
         return self._parts(output[torch.arange(len(x), device=x.device), heads])
 
     def _logp(self, y, mu, sigma):
-        import math
-        return -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
+        return _GaussianFamily({"kind": _GaussianFamily.KIND}).log_density(y, mu, sigma)
 
     def _left_cdf_score(self, y, logw, mu, sigma):
         """Finite-grid CDF Brier score for a standardized left-tail interval."""
@@ -2234,6 +2346,41 @@ class MixtureMLPCDF(CDFEstimator):
     def _training_context(self, x):
         """Return optional immutable tensors used by subclass penalties."""
         return None
+
+    def _monitor_context(self, cal_x):
+        """Return the context the stop rule's loss reads on the calibration rows."""
+        if type(self)._training_context is not MixtureMLPCDF._training_context:
+            raise ValueError(f"{type(self).__name__} has no calibration-row context: "
+                             "patience is unsupported")
+        return None
+
+    def _monitor_set(self, cal_x, cal_y):
+        """Return the calibration rows as tensors, scaled by the TRAINING scaler."""
+        import numpy as np
+        import torch
+        heads = self._heads(cal_x)
+        if not set(heads).issubset(self.seen_heads):
+            raise ValueError("unseen head in the calibration rows")
+        return (torch.tensor(self.scaler.transform(self._features(cal_x)),
+                             dtype=torch.float32, device=self.device),
+                self._target_tensor(np.asarray(cal_y)),
+                torch.tensor(heads, dtype=torch.long, device=self.device),
+                self._monitor_context(cal_x))
+
+    def _monitor_loss(self, model, monitor):
+        """Return the training objective averaged over the calibration rows."""
+        import torch
+        xx, yy, hh, context = monitor
+        model.eval()
+        total = 0.
+        with torch.no_grad():
+            for start in range(0, len(xx), self.batch_size):
+                ix = torch.arange(start, min(start+self.batch_size, len(xx)), device=self.device)
+                logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
+                total += self._objective_loss(
+                    yy[ix], logw, mu, sigma, ix, context).item()*len(ix)
+        model.train()
+        return total/len(xx)
 
     def _extra_training_loss(self, y, logw, mu, sigma, indices, context):
         """Return an optional proper-score addend for one mini-batch."""
@@ -2263,7 +2410,8 @@ class MixtureMLPCDF(CDFEstimator):
         Parameters
         ----------
         x, y, cal_x, cal_y : array-like
-            Training and separate calibration arrays; no validation early stopping.
+            Training and separate calibration arrays. The calibration rows are
+            read only when ``patience`` is set, as the stop rule's monitor.
 
         Returns
         -------
@@ -2292,13 +2440,15 @@ class MixtureMLPCDF(CDFEstimator):
         xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
         yy = self._target_tensor(y)
         training_context = self._training_context(x)
-        self.models, self.losses = [], []
+        monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
+        self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
         for seed in self.seeds:
             torch.manual_seed(seed)
             model = self._build_module(features.shape[1])
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
+            stop = None if monitor is None else _PatienceStop(self.patience)
             for _ in range(self.epochs):
                 order = torch.randperm(len(xx), device=self.device)
                 total = 0.
@@ -2315,6 +2465,18 @@ class MixtureMLPCDF(CDFEstimator):
                     optimizer.step()
                     total += loss.item()*len(ix)
                 losses.append(total/len(xx))
+                if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
+                    break
+            else:
+                if stop is not None:
+                    raise ValueError(
+                        f"patience {self.patience} was not exhausted within epochs "
+                        f"{self.epochs}: the monitored loss may still be improving; "
+                        "raise epochs, the ceiling")
+            if stop is not None:
+                stop.restore(model)
+                self.monitor_losses.append(stop.history)
+                self.best_epochs.append(stop.best_epoch)
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
@@ -2324,10 +2486,8 @@ class MixtureMLPCDF(CDFEstimator):
             torch.cuda.empty_cache()
         return self
 
-    def _equivalence_state(self):
-        """Digest effective preprocessing and every fitted network tensor."""
-        import numpy as np
-        digest = hashlib.sha256()
+    def _equivalence_settings(self):
+        """Return the settings the equivalence digest covers."""
         settings = {"components": self.components, "hidden": self.hidden,
                     "epochs": self.epochs, "batch_size": self.batch_size,
                     "seeds": list(self.seeds), "device": self.device,
@@ -2338,10 +2498,19 @@ class MixtureMLPCDF(CDFEstimator):
                     "deterministic": self.deterministic}
         if self.feature_indices is not None:
             settings["feature_indices"] = self.feature_indices
+        if self.patience is not None:
+            settings["patience"] = self.patience
         if self.left_cdf_weight:
             settings.update(left_cdf_weight=self.left_cdf_weight,
                             left_cdf_bounds=self.left_cdf_bounds,
                             left_cdf_points=self.left_cdf_points)
+        return settings
+
+    def _equivalence_state(self):
+        """Digest effective preprocessing and every fitted network tensor."""
+        import numpy as np
+        digest = hashlib.sha256()
+        settings = self._equivalence_settings()
         digest.update(json.dumps(settings, sort_keys=True).encode())
         for name in ("mean_", "scale_", "var_"):
             value = np.asarray(getattr(self.scaler, name), dtype="<f8")
@@ -2396,7 +2565,19 @@ class DecisionRegionScores:
     Parameters
     ----------
     context : list of dict
-        Source-hashed threshold inventories, bound to caller identities.
+        Source-hashed threshold inventories, bound to caller identities. A
+        record may also carry ``intervals``: the decision wings as
+        ``[low, high]`` pairs whose endpoints are among its thresholds, in the
+        same units. Only the wing methods read them.
+
+    Attributes
+    ----------
+    METRIC_COUNTS : dict
+        Per-row metric name to the count column that says which rows count.
+    PROPER_METRICS : tuple of str
+        Metrics that are proper scores, usable as a selection metric.
+    WING_METRICS : tuple of str
+        The proper metrics that need the wing intervals.
 
     Examples
     --------
@@ -2404,11 +2585,19 @@ class DecisionRegionScores:
 
         scorer = DecisionRegionScores(context)
         scores = scorer.score(curve, outcomes)
+        wings = scorer.wing_score(curve, outcomes)  # needs ``intervals``
     """
+
+    WING_METRICS = ("decision_wing_twcrps",)
+    PROPER_METRICS = ("decision_strike_brier", *WING_METRICS)
+    METRIC_COUNTS = {"decision_strike_brier": "decision_strike_count",
+                     "decision_bias": "decision_strike_count",
+                     "decision_wing_twcrps": "decision_wing_segment_count"}
 
     def __init__(self, context):
         import numpy as np
-        self.inventory, identities = [], set()
+        self.inventory, identities, self._intervals = [], set(), []
+        self._segments = None
         for record in context:
             identity = tuple(record["identity"])
             values = np.asarray(record["thresholds"], dtype=float)
@@ -2422,6 +2611,7 @@ class DecisionRegionScores:
                 raise ValueError("invalid generic decision inventory")
             identities.add(identity)
             self.inventory.append((values, weights))
+            self._intervals.append(record.get("intervals"))
 
     def arrays(self):
         """Return padded thresholds, normalized masses and observation counts."""
@@ -2434,19 +2624,210 @@ class DecisionRegionScores:
             weights[row, :len(mass)] = mass
         return thresholds, weights, np.asarray([len(v) for v, _ in self.inventory])
 
+    def _outcomes(self, y):
+        """Return outcomes as a finite float vector paired with the inventories."""
+        import numpy as np
+        y = np.asarray(y, dtype=float)
+        if y.ndim != 1 or len(y) != len(self.inventory) or not np.isfinite(y).all():
+            raise ValueError("outcomes must be finite and paired with decision inventories")
+        return y
+
     def score(self, curve, y):
         """Return local Brier, calibration residual and eligible strike counts."""
         import numpy as np
         thresholds, weights, counts = self.arrays()
-        y = np.asarray(y, dtype=float)
-        if y.ndim != 1 or len(y) != len(counts) or not np.isfinite(y).all():
-            raise ValueError("outcomes must be finite and paired with decision inventories")
+        y = self._outcomes(y)
         error = curve.cdf(thresholds) - (y[:, None] <= thresholds)
         brier, bias = (weights * error**2).sum(1), (weights * error).sum(1)
         brier[counts == 0] = np.nan
         bias[counts == 0] = np.nan
         return {"decision_strike_brier": brier, "decision_bias": bias,
                 "decision_strike_count": counts}
+
+    @staticmethod
+    def _checked_intervals(intervals):
+        """Return ``[low, high]`` pairs as a finite (n, 2) float array or refuse."""
+        import numpy as np
+        try:
+            pairs = np.asarray(intervals, dtype=float)
+        except (TypeError, ValueError):
+            raise ValueError("invalid decision wing intervals") from None
+        if pairs.size == 0:
+            return pairs.reshape(0, 2)
+        if (pairs.ndim != 2 or pairs.shape[1] != 2 or not np.isfinite(pairs).all()
+                or (pairs[:, 0] >= pairs[:, 1]).any()):
+            raise ValueError("invalid decision wing intervals")
+        return pairs
+
+    @staticmethod
+    def wing_groups(intervals):
+        """Split decision-wing intervals by side of zero, the underlying's return.
+
+        Parameters
+        ----------
+        intervals : list of [low, high]
+            Standardized wing intervals, such as ``[[-2., -1.], [.5, 1.]]``.
+
+        Returns
+        -------
+        list
+            ``[lower, upper]``: intervals with ``high <= 0`` and with
+            ``low >= 0``, each a list of ``[low, high]`` in input order.
+
+        Raises
+        ------
+        ValueError
+            For an invalid interval, or one that straddles zero: its side is
+            not guessed.
+
+        Examples
+        --------
+        Put wings below zero, call wings above::
+
+            DecisionRegionScores.wing_groups([[-2., -1.], [.5, 1.]])
+            # -> [[[-2.0, -1.0]], [[0.5, 1.0]]]
+        """
+        pairs = DecisionRegionScores._checked_intervals(intervals)
+        if ((pairs[:, 0] < 0) & (pairs[:, 1] > 0)).any():
+            raise ValueError("decision wing interval straddles zero")
+        return [pairs[pairs[:, 1] <= 0].tolist(), pairs[pairs[:, 0] >= 0].tolist()]
+
+    @staticmethod
+    def segments_from_groups(groups):
+        """Union each group and give every non-empty group equal mass, uniform.
+
+        Parameters
+        ----------
+        groups : list of list of [low, high]
+            Interval groups; empty groups carry no mass.
+
+        Returns
+        -------
+        list of [low, high, density]
+            Sorted segments of each group's union. A group's mass is
+            ``1 / number of non-empty groups``, spread uniformly over its
+            union, so the densities integrate to one.
+
+        Raises
+        ------
+        ValueError
+            For invalid intervals or a positive-measure overlap between the
+            unions of different groups (touching is allowed).
+
+        Examples
+        --------
+        One put wing and one call wing, half the mass each::
+
+            DecisionRegionScores.segments_from_groups([[[-2., -1.]], [[1., 3.]]])
+            # -> [[-2.0, -1.0, 0.5], [1.0, 3.0, 0.25]]
+        """
+        if not isinstance(groups, (list, tuple)):
+            raise ValueError("invalid decision wing groups")
+        unions = []
+        for group in groups:
+            union = []
+            pairs = DecisionRegionScores._checked_intervals(group)
+            for low, high in sorted(map(tuple, pairs.tolist())):
+                if union and low <= union[-1][1]:
+                    union[-1][1] = max(union[-1][1], high)
+                else:
+                    union.append([low, high])
+            if union:
+                unions.append(union)
+        segments = [[low, high, 1./(len(unions)*sum(b-a for a, b in union))]
+                    for union in unions for low, high in union]
+        segments.sort()
+        if any(nxt[0] < prev[1] for prev, nxt in zip(segments, segments[1:])):
+            raise ValueError("decision wing groups overlap")
+        return segments
+
+    def _wing_segments(self):
+        """Validate once and return each record's (S, 3) low/high/density array."""
+        import numpy as np
+        if self._segments is None:
+            rows = []
+            for (cutoffs, _), intervals in zip(self.inventory, self._intervals):
+                if intervals is None:
+                    raise ValueError("decision wing intervals missing")
+                pairs = self._checked_intervals(intervals)
+                if bool(len(cutoffs)) != bool(len(pairs)):
+                    raise ValueError("decision wing intervals and thresholds must be "
+                                     "both empty or both non-empty")
+                if not np.isin(pairs, cutoffs).all():
+                    raise ValueError("decision wing endpoint is not a listed threshold")
+                rows.append(np.asarray(self.segments_from_groups(self.wing_groups(pairs)),
+                                       dtype=float).reshape(-1, 3))
+            self._segments = rows
+        return self._segments
+
+    def segment_arrays(self):
+        """Return padded wing segments and their per-record counts.
+
+        Returns
+        -------
+        tuple
+            ``(lower, upper, density, counts)``: three (records, width) float
+            arrays, zero padded (a zero-width padding segment integrates to
+            zero), and the integer segment count per record. A record with
+            no thresholds is a null region with count zero.
+
+        Raises
+        ------
+        ValueError
+            When a record lacks ``intervals``, has exactly one of thresholds
+            and intervals empty, lists an endpoint that is not among its
+            thresholds, or has an interval straddling zero.
+        """
+        import numpy as np
+        segments = self._wing_segments()
+        width = max(1, max((len(rows) for rows in segments), default=0))
+        lower = np.zeros((len(segments), width))
+        upper, density = np.zeros_like(lower), np.zeros_like(lower)
+        for row, found in enumerate(segments):
+            lower[row, :len(found)] = found[:, 0]
+            upper[row, :len(found)] = found[:, 1]
+            density[row, :len(found)] = found[:, 2]
+        return lower, upper, density, np.asarray([len(rows) for rows in segments])
+
+    def wing_score(self, curve, y):
+        """Score the CDF across whole condor wings, not only at strikes.
+
+        ``decision_wing_twcrps`` is ``sum_s d_s * int (F(z) - 1{y <= z})**2 dz``
+        over each record's wing segments (indicator-weighted CRPS). A mixture
+        curve is integrated with Gauss-Legendre cut at the outcome and at its
+        component means, a grid curve exactly, any other curve with plain
+        Gauss-Legendre (within 1e-3 relative on kinked curves).
+
+        Parameters
+        ----------
+        curve : curve
+            Rowwise forecasts paired with the records.
+        y : array-like
+            One finite outcome per record, in the thresholds' units.
+
+        Returns
+        -------
+        dict
+            ``decision_wing_twcrps`` (NaN on null regions) and
+            ``decision_wing_segment_count``; ``score`` is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For unpaired outcomes or any refusal of ``segment_arrays``.
+
+        Examples
+        --------
+        Wing score beside the strike scores::
+
+            wings = DecisionRegionScores(context).wing_score(curve, outcomes)
+        """
+        import numpy as np
+        lower, upper, density, counts = self.segment_arrays()
+        integrals = curve._segment_integrals(lower, upper, self._outcomes(y))
+        value = (density * integrals).sum(1)
+        value[counts == 0] = np.nan
+        return {"decision_wing_twcrps": value, "decision_wing_segment_count": counts}
 
 
 class _CDFMLPEncoder:
@@ -2483,7 +2864,8 @@ class _CDFGRUEncoder:
         sequence, context = config["sequence_indices"], config["context_indices"]
         flat = [v for row in sequence for v in row] + context
         if set(flat) != set(range(features)):
-            raise ValueError("GRU indices must partition all input features")
+            raise ValueError(f"GRU indices must partition the {features} model input "
+                             "features (positions within feature_indices when set)")
         class Module(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -2499,48 +2881,330 @@ class _CDFGRUEncoder:
         return Module().to(owner.device)
 
 
-class _CDFNLL:
-    @staticmethod
-    def population_count(context):
-        return len(context[0])
+class _MixtureFamily(ABC):
+    """Torch-side location-scale mixture family: density, CDF and exact CRPS.
+
+    A family names the standard distribution of every mixture component; the
+    loss terms depend only on this interface, so a new family is a subclass.
+    """
+
+    KIND = ""
+    _KEYS = frozenset({"kind"})
+
+    def __init__(self, config):
+        if (not isinstance(config, dict) or set(config) != self._KEYS
+                or config["kind"] != self.KIND):
+            raise ValueError("invalid CDF family settings")
+
+    @abstractmethod
+    def standard_cdf(self, t):
+        """Return the standard component CDF."""
+
+    @abstractmethod
+    def standard_log_cdf(self, t):
+        """Return the log of the standard component CDF."""
+
+    @abstractmethod
+    def standard_log_pdf(self, t):
+        """Return the log of the standard component density."""
+
+    @abstractmethod
+    def abs_error(self, c, mu, sigma):
+        """Return ``E|X - c|`` for a component ``X`` with location and scale."""
+
+    @abstractmethod
+    def pair_distance(self, mu, sigma):
+        """Return the (rows, K, K) matrix of ``E|X_i - X_j|``."""
+
+    @abstractmethod
+    def curve(self, weights, means, scales):
+        """Return the numpy curve of the same family."""
+
+    def log_density(self, y, mu, sigma):
+        """Return each component's log density at ``y``."""
+        return self.standard_log_pdf((y-mu)/sigma) - sigma.log()
+
+    def mixture_cdf(self, z, logw, mu, sigma):
+        """Evaluate each row's mixture CDF at ``z`` of shape (rows, ...)."""
+        shape = (z.shape[0],) + (1,)*(z.dim()-1) + (mu.shape[1],)
+        t = (z.unsqueeze(-1) - mu.reshape(shape)) / sigma.reshape(shape)
+        return (logw.exp().reshape(shape) * self.standard_cdf(t)).sum(-1)
+
+    def crps(self, y, logw, mu, sigma):
+        """Return the exact mixture CRPS: ``E|X - y| - E|X - X'| / 2``."""
+        w = logw.exp()
+        first = (w*self.abs_error(y, mu, sigma)).sum(1)
+        pairs = w.unsqueeze(2)*w.unsqueeze(1)*self.pair_distance(mu, sigma)
+        return first - .5*pairs.sum((1, 2))
+
+
+class _GaussianFamily(_MixtureFamily):
+    """Gaussian components; the legacy NLL and decision expressions, unchanged."""
+
+    KIND = "gaussian"
+
+    def standard_cdf(self, t):
+        import torch
+        return torch.special.ndtr(t)
+
+    def standard_log_cdf(self, t):
+        import torch
+        return torch.special.log_ndtr(t)
+
+    def standard_log_pdf(self, t):
+        import math
+        return -.5*t**2 - .5*math.log(2*math.pi)
+
+    def log_density(self, y, mu, sigma):
+        import math
+        return -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
 
     @staticmethod
-    def values(y, logw, mu, sigma, context):
+    def _folded_mean(m, v):
+        """Return ``E|N(m, v)|`` (Grimit et al. 2006)."""
         import math
         import torch
-        logp = -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
-        return -torch.logsumexp(logw+logp, dim=1), torch.ones(
-            len(y), dtype=torch.bool, device=y.device)
+        s = v.sqrt()
+        r = m/s
+        return 2*s*torch.exp(-.5*r*r)/math.sqrt(2*math.pi) + m*(2*torch.special.ndtr(r)-1)
+
+    def abs_error(self, c, mu, sigma):
+        return self._folded_mean(c-mu, sigma**2)
+
+    def pair_distance(self, mu, sigma):
+        return self._folded_mean(mu.unsqueeze(2)-mu.unsqueeze(1),
+                                 sigma.unsqueeze(2)**2+sigma.unsqueeze(1)**2)
+
+    def curve(self, weights, means, scales):
+        return MixtureCurve(weights, means, scales)
 
 
-class _CDFDecisionBrier:
+class _StudentFamily(_MixtureFamily):
+    """Student components with fixed integer degrees of freedom ``>= 3``.
+
+    The CDF is the exact finite series of Abramowitz and Stegun 26.7.3-4; the
+    lower tail uses the positive remainder series so it keeps relative accuracy.
+    """
+
+    KIND = "student"
+    _KEYS = frozenset({"kind", "degrees"})
+
+    def __init__(self, config):
+        import math
+        super().__init__(config)
+        nu = config["degrees"]
+        if type(nu) is not int or nu < 3:
+            raise ValueError("invalid CDF family settings")
+        self.degrees = nu
+        self._head = nu//2
+        ratio = ((lambda k: (2*k-1)/(2*k)) if nu % 2 == 0
+                 else (lambda k: 2*k/(2*k+1)))
+        self._coefficients = [1.]
+        for k in range(1, self._head+_STUDENT_TAIL_TERMS):
+            self._coefficients.append(self._coefficients[-1]*ratio(k))
+        self._log_norm = (math.lgamma((nu+1)/2) - math.lgamma(nu/2)
+                          - .5*math.log(nu*math.pi))
+        # E|X - X'| / scale for one component: 4 sqrt(nu) B(1/2, nu-1/2)
+        # / ((nu-1) B(1/2, nu/2)^2), with exactly one Gamma(1/2) in the numerator.
+        self._self_distance = 4*math.sqrt(nu)*math.exp(
+            math.lgamma(.5) + math.lgamma(nu-.5) - math.lgamma(nu)
+            - 2*(math.lgamma(.5) + math.lgamma(nu/2) - math.lgamma((nu+1)/2)))/(nu-1)
+        self._tail_mass = math.exp(math.lgamma((nu+1)/2) - math.lgamma(nu/2))/math.sqrt(math.pi)
+
     @staticmethod
-    def population_count(context):
-        return (context[1].sum(1) > 0).sum().clamp_min(1)
-
-    @staticmethod
-    def values(y, logw, mu, sigma, context):
+    def _horner(coefficients, x):
+        """Evaluate ``sum_j coefficients[j] * x**j`` by Horner's rule."""
         import torch
-        thresholds, weights = context
+        result = torch.full_like(x, coefficients[-1])
+        for coefficient in reversed(coefficients[:-1]):
+            result = result*x + coefficient
+        return result
+
+    def _series(self, t):
+        import math
+        import torch
+        nu = self.degrees
+        r = torch.rsqrt(nu + t*t)
+        s2 = nu*r*r
+        c = t*r
+        head = self._horner(self._coefficients[:self._head], s2)
+        tail = s2**self._head*self._horner(self._coefficients[self._head:], s2)
+        if nu % 2 == 0:
+            direct, lower = .5*(1+c*head), .5*(-c)*tail
+        else:
+            scale = math.sqrt(nu)*r
+            direct = .5*(1 + (2/math.pi)*(torch.atan(t/math.sqrt(nu)) + c*scale*head))
+            lower = (1/math.pi)*(-c)*scale*tail
+        return torch.where((t < 0) & (s2 < .5), lower, direct)
+
+    def standard_cdf(self, t):
+        import torch
+        if torch.is_grad_enabled() and t.requires_grad:
+            # The series is long; recompute it in backward instead of storing it.
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self._series, t, use_reentrant=False)
+        return self._series(t)
+
+    def standard_log_cdf(self, t):
+        import torch
+        return self.standard_cdf(t).clamp_min(torch.finfo(t.dtype).tiny).log()
+
+    def standard_log_pdf(self, t):
+        import torch
+        return self._log_norm - (self.degrees+1)/2*torch.log1p(t*t/self.degrees)
+
+    def abs_error(self, c, mu, sigma):
+        import torch
+        a = (c-mu)/sigma
+        nu = self.degrees
+        return sigma*(a*(2*self.standard_cdf(a)-1)
+                      + 2*torch.exp(self.standard_log_pdf(a))*(nu+a*a)/(nu-1))
+
+    def pair_distance(self, mu, sigma):
+        """Cross pairs by Gauss-Legendre over the narrower component's density."""
+        import math
+        import torch
+        nu = self.degrees
+        x, g = _gauss_legendre(_QUADRATURE_NODES)
+        phi = torch.as_tensor(x*math.pi/2, dtype=mu.dtype, device=mu.device)
+        omega = (self._tail_mass*torch.as_tensor(g*math.pi/2, dtype=mu.dtype, device=mu.device)
+                 * torch.cos(phi)**(nu-1))
+        u = math.sqrt(nu)*torch.tan(phi)
+        mi, mj = mu.unsqueeze(2), mu.unsqueeze(1)
+        si, sj = sigma.unsqueeze(2), sigma.unsqueeze(1)
+        narrow = si <= sj
+        near, near_scale = torch.where(narrow, mi, mj), torch.where(narrow, si, sj)
+        far, far_scale = torch.where(narrow, mj, mi), torch.where(narrow, sj, si)
+        points = near.unsqueeze(-1) + near_scale.unsqueeze(-1)*u
+        cross = (omega*self.abs_error(points, far.unsqueeze(-1), far_scale.unsqueeze(-1))).sum(-1)
+        same = torch.eye(mu.shape[1], dtype=torch.bool, device=mu.device)
+        return torch.where(same, self._self_distance*si.expand_as(cross), cross)
+
+    def curve(self, weights, means, scales):
+        return StudentMixtureCurve(weights, means, scales, self.degrees)
+
+
+class _CDFLossTerm(ABC):
+    """One strategy in the composite Torch CDF loss, built with its family.
+
+    ``scope`` is ``global`` (every row) or ``local`` (rows with decision
+    structure); ``context_keys`` names the context arrays ``values`` reads.
+    Every context also carries ``weights``, which fixes the row count.
+    """
+
+    scope = ""
+    context_keys = ()
+
+    def __init__(self, family):
+        self.family = family
+
+    def eligible(self, context):
+        """Return the rows the term scores; global terms score every row."""
+        import torch
+        weights = context["weights"]
+        return torch.ones(len(weights), dtype=torch.bool, device=weights.device)
+
+    def population_count(self, context):
+        """Count eligible rows in the full training context, for minibatch scaling."""
+        return self.eligible(context).sum()
+
+    @abstractmethod
+    def values(self, y, logw, mu, sigma, context):
+        """Return per-row (values, eligible) for one minibatch."""
+
+
+class _CDFNLL(_CDFLossTerm):
+    scope = "global"
+
+    def values(self, y, logw, mu, sigma, context):
+        import torch
+        logp = self.family.log_density(y, mu, sigma)
+        return -torch.logsumexp(logw+logp, dim=1), self.eligible(context)
+
+
+class _CDFCRPS(_CDFLossTerm):
+    scope = "global"
+
+    def values(self, y, logw, mu, sigma, context):
+        logw, mu, sigma = (a.to(y.dtype) for a in (logw, mu, sigma))
+        return self.family.crps(y, logw, mu, sigma), self.eligible(context)
+
+
+class _CDFDecisionBrier(_CDFLossTerm):
+    scope = "local"
+    context_keys = ("thresholds", "weights")
+
+    def eligible(self, context):
+        return context["weights"].sum(1) > 0
+
+    def values(self, y, logw, mu, sigma, context):
+        thresholds, weights = context["thresholds"], context["weights"]
         z = (thresholds[:, None, :]-mu[:, :, None])/sigma[:, :, None]
-        p = (logw.exp()[:, :, None]*torch.special.ndtr(z)).sum(1)
+        p = (logw.exp()[:, :, None]*self.family.standard_cdf(z)).sum(1)
         truth = (y <= thresholds).to(p.dtype)
-        return ((p-truth)**2*weights).sum(1), weights.sum(1) > 0
+        return ((p-truth)**2*weights).sum(1), self.eligible(context)
 
 
 class _CDFDecisionLog(_CDFDecisionBrier):
-    @staticmethod
-    def values(y, logw, mu, sigma, context):
+    def values(self, y, logw, mu, sigma, context):
         import torch
-        thresholds, weights = context
+        thresholds, weights = context["thresholds"], context["weights"]
         z = (thresholds[:, None, :]-mu[:, :, None])/sigma[:, :, None]
-        logp = torch.logsumexp(logw[:, :, None]+torch.special.log_ndtr(z), dim=1)
-        logq = torch.logsumexp(logw[:, :, None]+torch.special.log_ndtr(-z), dim=1)
-        return -(torch.where(y <= thresholds, logp, logq)*weights).sum(1), weights.sum(1) > 0
+        logp = torch.logsumexp(logw[:, :, None]+self.family.standard_log_cdf(z), dim=1)
+        logq = torch.logsumexp(logw[:, :, None]+self.family.standard_log_cdf(-z), dim=1)
+        return (-(torch.where(y <= thresholds, logp, logq)*weights).sum(1),
+                self.eligible(context))
+
+
+class _CDFWingTwCRPS(_CDFLossTerm):
+    """Threshold-weighted CRPS over the condor wings, indicator weight.
+
+    Per row ``sum_s d_s * int_{lo_s}^{hi_s} (F(z) - 1{y <= z})**2 dz``. Each
+    segment is cut at the clamped outcome and at the component means (which do
+    not carry gradient: the integrand is continuous across a cut), with
+    ``_QUADRATURE_NODES`` Gauss-Legendre points per sub-piece. Zero-width
+    sub-pieces, which are most of them, are never evaluated.
+    """
+
+    scope = "local"
+    context_keys = ("lower", "upper", "density")
+
+    def eligible(self, context):
+        return context["density"].sum(1) > 0
+
+    def values(self, y, logw, mu, sigma, context):
+        import torch
+        logw, mu, sigma = (a.to(y.dtype) for a in (logw, mu, sigma))
+        lower, upper, density = (context[k].to(y.dtype) for k in self.context_keys)
+        x, g = _gauss_legendre(_QUADRATURE_NODES)
+        nodes, weights = (torch.as_tensor(a, dtype=y.dtype, device=y.device) for a in (x, g))
+        cut = torch.minimum(torch.maximum(y, lower), upper)
+        start, stop = torch.stack([lower, cut], -1), torch.stack([cut, upper], -1)
+        kinks = mu.detach()[:, None, None, :]
+        inner = torch.minimum(torch.maximum(kinks, start.unsqueeze(-1)), stop.unsqueeze(-1))
+        edges = torch.sort(torch.cat(
+            [start.unsqueeze(-1), inner, stop.unsqueeze(-1)], -1), -1).values
+        a, b = edges[..., :-1], edges[..., 1:]
+        found = (b > a).nonzero(as_tuple=True)
+        row, segment, side = found[:3]
+        low, high = a[found], b[found]
+        z = ((low+high)/2).unsqueeze(-1) + ((high-low)/2).unsqueeze(-1)*nodes
+        f = self.family.mixture_cdf(z, logw[row], mu[row], sigma[row])
+        # Left of the outcome the error is F, right of it F - 1.
+        gap = (f-side.to(y.dtype).unsqueeze(-1))**2
+        piece = (high-low)/2*(gap*weights).sum(-1)
+        total = torch.zeros(len(y), dtype=y.dtype, device=y.device)
+        return total.index_add(0, row, density[row, segment]*piece), self.eligible(context)
 
 
 class TorchCDF(MixtureMLPCDF):
-    """Configurable encoder and composite proper scores for scalar CDFs.
+    """Configurable encoder, family and composite proper scores for scalar CDFs.
+
+    The loss is ``sum_g w_g * mean_over_all_rows(g) + sum_l w_l *
+    mean_over_eligible_rows(l)``: a global term (``nll`` or ``crps``) models
+    every date, a local term scores the dates that have decision structure and
+    never dilutes its weight on dates without it (minibatches are rescaled by
+    the full-training eligible fraction).
 
     Parameters
     ----------
@@ -2548,33 +3212,52 @@ class TorchCDF(MixtureMLPCDF):
         kind=mlp, or kind=gru with explicit oldest-to-newest sequence_indices,
         disjoint context_indices, hidden_size and num_layers.
     losses : list of dict
-        Unique kind/weight terms: nll, decision_brier, decision_log.
-        NLL and at least one decision term must have positive weights.
+        Unique ``{"kind", "weight"}`` terms, weight above zero, at least one
+        global (``nll``, ``crps``) and one local (``decision_brier``,
+        ``decision_log``, ``wing_twcrps``). ``wing_twcrps`` is the
+        indicator-weighted CRPS over the condor wings, read from each record's
+        ``intervals``.
+    family : dict or None
+        Absent means Gaussian components. ``{"kind": "student", "degrees": k}``
+        with integer ``k >= 3`` selects Student components; ``{"kind":
+        "gaussian"}`` names the default explicitly.
     settings : dict
-        Existing mixture training and output-head settings. Column selection,
-        task heads and the legacy left-tail penalty are deliberately refused.
+        Existing mixture training and output-head settings. ``feature_indices``
+        (the base class's one rule; absent = every column) picks the encoder's
+        input columns, and GRU indices are then positions WITHIN that subset.
+        Task heads and the legacy left-tail penalty are deliberately refused.
 
     Examples
     --------
-    Use a plain encoder and two proper scoring terms::
+    A plain encoder, a global CRPS term and the wing term, Student components::
 
-        model = TorchCDF(encoder={"kind": "mlp"}, losses=[
-            {"kind": "nll", "weight": 0.1},
-            {"kind": "decision_brier", "weight": 1.0}], device="cpu")
+        model = TorchCDF(encoder={"kind": "mlp"},
+                         family={"kind": "student", "degrees": 5},
+                         losses=[{"kind": "crps", "weight": 1.0},
+                                 {"kind": "wing_twcrps", "weight": 0.5}],
+                         device="cpu")
     """
 
     _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder}
-    _LOSSES = {"nll": _CDFNLL, "decision_brier": _CDFDecisionBrier,
-               "decision_log": _CDFDecisionLog}
+    _FAMILIES = {_GaussianFamily.KIND: _GaussianFamily,
+                 _StudentFamily.KIND: _StudentFamily}
+    _DEFAULT_FAMILY = _GaussianFamily.KIND
+    _LOSSES = {"nll": _CDFNLL, "crps": _CDFCRPS, "decision_brier": _CDFDecisionBrier,
+               "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS}
+    _WING_KEYS = _CDFWingTwCRPS.context_keys
 
-    def __init__(self, encoder, losses, **settings):
+    def __init__(self, encoder, losses, family=None, **settings):
         import copy
         import math
         super().__init__(**settings)
-        if self.feature_indices is not None or self.head_features or self.left_cdf_weight:
-            raise ValueError("TorchCDF uses explicit encoder columns and composite losses")
+        if self.head_features or self.left_cdf_weight:
+            raise ValueError("TorchCDF refuses head_features and left_cdf_weight: "
+                             "it uses explicit encoder columns and composite losses")
         if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
             raise ValueError("unknown CDF encoder")
+        if family is not None and (not isinstance(family, dict)
+                                   or family.get("kind") not in self._FAMILIES):
+            raise ValueError("unknown CDF family")
         if (not isinstance(losses, list) or not losses
                 or any(not isinstance(term, dict) or set(term) != {"kind", "weight"}
                        or term["kind"] not in self._LOSSES
@@ -2582,16 +3265,39 @@ class TorchCDF(MixtureMLPCDF):
                        or not math.isfinite(term["weight"]) or term["weight"] <= 0
                        for term in losses)
                 or len({term["kind"] for term in losses}) != len(losses)
-                or "nll" not in {term["kind"] for term in losses}
-                or not any(term["kind"].startswith("decision_") for term in losses)):
+                or {self._LOSSES[term["kind"]].scope for term in losses}
+                != {"global", "local"}):
             raise ValueError("invalid composite loss terms")
         self.encoder_config, self.loss_config = copy.deepcopy(encoder), copy.deepcopy(losses)
+        self.family_config = copy.deepcopy(family)
+        self.family = self._FAMILIES[
+            self._DEFAULT_FAMILY if family is None else family["kind"]](
+            self.family_config or {"kind": self._DEFAULT_FAMILY})
+        self._terms = [self._LOSSES[term["kind"]](self.family) for term in losses]
         self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
+
+    def _curve(self, weights, means, scales):
+        return self.family.curve(weights, means, scales)
+
+    def _equivalence_settings(self):
+        settings = super()._equivalence_settings()
+        if self.family_config is not None:
+            settings["family"] = self.family_config
+        return settings
+
+    def _context_arrays(self, scorer):
+        """Return the numpy context arrays the configured terms read, refusing early."""
+        arrays = dict(zip(("thresholds", "weights"), scorer.arrays()))
+        if set(self._WING_KEYS) & {k for term in self._terms for k in term.context_keys}:
+            arrays.update(zip(self._WING_KEYS, scorer.segment_arrays()))
+        return arrays
 
     def fit_decision_context(self, fit_context, cal_context):
         """Validate and attach entry-known inventories without using outcomes."""
         self._fit_context = DecisionRegionScores(fit_context)
-        DecisionRegionScores(cal_context)
+        self._context_arrays(self._fit_context)
+        self._cal_context = DecisionRegionScores(cal_context)
+        self._context_arrays(self._cal_context)
         return self
 
     def _target_tensor(self, y):
@@ -2601,25 +3307,36 @@ class TorchCDF(MixtureMLPCDF):
     def _build_module(self, features):
         return self.encoder.build(self, features)
 
-    def _training_context(self, x):
+    def _context_tensors(self, scorer, x, kind, rows):
+        """Return one row set's context as tensors, refusing an unattached or empty one."""
         import torch
-        if not hasattr(self, "_fit_context") or len(self._fit_context.inventory) != len(x):
-            raise ValueError("identity-keyed decision context was not attached")
-        thresholds, weights, counts = self._fit_context.arrays()
-        if not (counts > 0).any():
-            raise ValueError("no eligible training decision regions")
-        return tuple(torch.as_tensor(a, device=self.device) for a in (thresholds, weights))
+        if scorer is None or len(scorer.inventory) != len(x):
+            raise ValueError(f"identity-keyed {kind} context was not attached")
+        context = {key: torch.as_tensor(value, device=self.device) for key, value
+                   in self._context_arrays(scorer).items()}
+        for term_config, term in zip(self.loss_config, self._terms):
+            if not term.population_count(context) > 0:
+                raise ValueError(f"no eligible {rows} rows for {term_config['kind']}")
+        return context
+
+    def _training_context(self, x):
+        return self._context_tensors(getattr(self, "_fit_context", None), x,
+                                     "decision", "training")
+
+    def _monitor_context(self, cal_x):
+        return self._context_tensors(getattr(self, "_cal_context", None), cal_x,
+                                     "calibration", "calibration")
 
     def _objective_loss(self, y, logw, mu, sigma, indices, context):
-        local = tuple(a[indices] for a in context)
+        local = {key: value[indices] for key, value in context.items()}
+        rows = len(context["weights"])
         total = mu.sum()*0.
-        for term in self.loss_config:
-            strategy = self._LOSSES[term["kind"]]
-            values, eligible = strategy.values(y, logw, mu, sigma, local)
+        for term_config, term in zip(self.loss_config, self._terms):
+            values, eligible = term.values(y, logw, mu, sigma, local)
             # Uniform minibatches estimate the full-population objective,
             # including batches with no locally eligible observations.
-            normalization = len(context[0])/strategy.population_count(context)
-            total = total + term["weight"]*values[eligible].sum()/len(y)*normalization
+            normalization = rows/term.population_count(context)
+            total = total + term_config["weight"]*values[eligible].sum()/len(y)*normalization
         return total
 
     def loss_report(self, x, y, context):
@@ -2627,39 +3344,47 @@ class TorchCDF(MixtureMLPCDF):
         import numpy as np
         import torch
         scorer = DecisionRegionScores(context)
-        thresholds, weights, counts = scorer.arrays()
+        counts = scorer.arrays()[2]
         y = np.asarray(y, dtype=float)
         if (y.ndim != 1 or len(counts) != len(y) or len(x) != len(y)
                 or not np.isfinite(y).all()):
             raise ValueError("loss report outcomes, features and context must be paired")
+        arrays = self._context_arrays(scorer)
         curve = self.curve(x)
         total, terms = 0., {}
         # CPU float64 evaluation is bounded by the same configured mini-batch.
-        for term in self.loss_config:
+        for term_config, term in zip(self.loss_config, self._terms):
             sums, n = 0., 0
             for start in range(0, len(y), self.batch_size):
                 sl = slice(start, start+self.batch_size)
                 args = [torch.as_tensor(a[sl], dtype=torch.float64) for a in
-                        (np.asarray(y)[:, None], np.log(curve.weights), curve.means,
-                         curve.scales, thresholds, weights)]
-                values, eligible = self._LOSSES[term["kind"]].values(
-                    *args[:4], tuple(args[4:]))
+                        (y[:, None], np.log(curve.weights), curve.means, curve.scales)]
+                batch = {key: torch.as_tensor(a[sl], dtype=torch.float64)
+                         for key, a in arrays.items()}
+                values, eligible = term.values(*args, batch)
                 sums += values[eligible].sum().item()
                 n += int(eligible.sum())
             mean = sums/n if n else None
-            terms[term["kind"]] = {"mean": mean, "n": n, "weight": term["weight"]}
+            terms[term_config["kind"]] = {"mean": mean, "n": n,
+                                          "weight": term_config["weight"]}
             if mean is not None:
-                total += term["weight"]*mean
+                total += term_config["weight"]*mean
         return {"composite": total if all(t["n"] for t in terms.values()) else None,
                 "terms": terms, "n": len(y), "eligible_n": int((counts > 0).sum()),
                 "threshold_n": int(counts.sum())}
 
     def _research_state(self):
         import torch
-        return {"encoder": self.encoder_config, "losses": self.loss_config,
-                "training_composite_by_seed": self.losses,
-                "peak_cuda_allocated_bytes": (torch.cuda.max_memory_allocated(self.device)
+        state = {"encoder": self.encoder_config, "losses": self.loss_config,
+                 "training_composite_by_seed": self.losses,
+                 "peak_cuda_allocated_bytes": (torch.cuda.max_memory_allocated(self.device)
                                                if self.device.startswith("cuda") else 0)}
+        if self.family_config is not None:
+            state["family"] = self.family_config
+        if self.patience is not None:
+            state.update(patience=self.patience, best_epoch_by_seed=self.best_epochs,
+                         monitor_loss_by_seed=self.monitor_losses)
+        return state
 
 
 class DecisionWeightedMixtureMLPCDF(MixtureMLPCDF):
@@ -2796,6 +3521,8 @@ class SetMixtureCDF(MixtureMLPCDF):
         self.pooling, self.attention_heads = pooling, attention_heads
         settings.pop("feature_indices", None)
         settings.pop("head_features", None)
+        if settings.get("patience") is not None:
+            raise ValueError("SetMixtureCDF trains its own loop: patience is unsupported")
         super().__init__(feature_indices=None, head_features=None, **settings)
 
     def _validate_x(self, x):
@@ -3209,14 +3936,210 @@ class AdaptiveEmpiricalMLPBlendCDF(EmpiricalMLPBlendCDF):
         return ConvexCurve(self.empirical.curve(x), self.mlp.curve(x), weight)
 
 
+class _SplitPlan(ABC):
+    """How a study carves its bands: one subclass per config grammar.
+
+    ``column`` names the score column that carries the split id. The study
+    asks the plan for every split-shaped fact (ids, bands, the rows a split
+    evaluates), so a new grammar is a subclass, never a branch in the study.
+    """
+
+    column = ""
+
+    def __init__(self, config):
+        self.date, self.end = config["date"], config["end"]
+
+    @abstractmethod
+    def ids(self):
+        """Return the split ids one run fits, oldest first."""
+
+    @abstractmethod
+    def bands(self, frame, split, calendar):
+        """Return the (fit, calibration, evaluation) rows of one split of ``frame``."""
+
+    @abstractmethod
+    def expected(self, frame, ids):
+        """Return the rows the splits ``ids`` evaluate."""
+
+    @abstractmethod
+    def assigned(self, dates):
+        """Return the split id each evaluation date belongs to."""
+
+    @abstractmethod
+    def stage(self, ids):
+        """Return the config keys that make a study fit exactly the splits ``ids``."""
+
+    def calendar(self, frame):
+        """Return the run's date calendar, for grammars that count dates."""
+        return None
+
+    def lock(self, frame):
+        """Refuse rows the grammar forbids reading; the default forbids none."""
+
+
+class _YearPlan(_SplitPlan):
+    """Calendar years: the evaluation year, the year before it as calibration."""
+
+    column = "year"
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.years, self.development_end = config["years"], config["development_end"]
+
+    def ids(self):
+        return list(self.years)
+
+    def bands(self, frame, split, calendar):
+        return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)
+
+    def expected(self, frame, ids):
+        return frame[frame[self.date].str[:4].astype(int).isin(ids)]
+
+    def assigned(self, dates):
+        return dates.str[:4].astype(int)
+
+    def stage(self, ids):
+        return {"years": ids}
+
+
+class _FoldPlan(_SplitPlan):
+    """Count-sized folds from a pinned ``rolling-origin-plan`` table (ADR-0223).
+
+    Each fold evaluates on its validation dates, calibrates on the last
+    ``cal_n`` calendar dates of its train window and fits on the earlier ones;
+    labels are purged with ``kinds_split.label_reaches``. Warm-up rows whose
+    label reaches ``scored_start`` are dropped (ADR-0222's seam), so selection
+    never sees a label that settles inside scored evidence.
+    """
+
+    column = "fold"
+    #: The fold roles ``rolling-origin-plan`` writes; a test pins them to its constants.
+    ROLES = ("warmup", "scored")
+    _SPEC_KEYS = {"path", "sha256", "holdout_start", "cal_n", "roles", "notes"}
+    _EDGES = ("train_start", "train_end", "val_start", "val_end")
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.spec = spec = config["fold_table"]
+        self._check_spec(spec)
+        self.cal_n, self.holdout = spec["cal_n"], spec["holdout_start"]
+        rows = self._read(spec)
+        self._check_folds(rows)
+        self.folds = {row["fold"]: row for row in rows}
+        ids = sorted(self.folds)
+        self.warmup_ids = [i for i in ids if self.folds[i]["role"] == "warmup"]
+        self.scored_ids = [i for i in ids if self.folds[i]["role"] == "scored"]
+        self.scored_start = self.folds[self.scored_ids[0]]["val_start"]
+        self.development_end = max(self.warmup_ids, default=0)
+
+    def _check_spec(self, spec):
+        """Refuse a malformed ``fold_table`` block by name."""
+        if (not isinstance(spec, dict) or set(spec)-self._SPEC_KEYS
+                or (self._SPEC_KEYS-{"notes"})-set(spec)):
+            raise ValueError("invalid fold_table: needs exactly path, sha256, "
+                             "holdout_start, cal_n, roles (and optional notes)")
+        sha, roles, problems = spec["sha256"], spec["roles"], []
+        if not isinstance(spec["path"], str) or not spec["path"]:
+            problems.append("path must be a nonempty string")
+        if not (isinstance(sha, str) and len(sha) == 64
+                and all(ch in "0123456789abcdef" for ch in sha)):
+            problems.append("sha256 must be 64 lowercase hex digits")
+        if date_problem(spec["holdout_start"]):
+            problems.append("holdout_start must be an ISO date")
+        if type(spec["cal_n"]) is not int or spec["cal_n"] < 1:
+            problems.append("cal_n must be an integer >= 1")
+        if (not isinstance(roles, list) or not roles or len(set(roles)) != len(roles)
+                or not set(roles) <= set(self.ROLES)):
+            problems.append(f"roles must be a nonempty list of unique roles from {self.ROLES}")
+        if problems:
+            raise ValueError("invalid fold_table: " + "; ".join(problems))
+
+    @staticmethod
+    def _read(spec):
+        """Return the table's rows, refusing a file that is not the pinned one."""
+        raw = Path(spec["path"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != spec["sha256"]:
+            raise ValueError(f"fold table sha256 mismatch: {spec['path']} is not the pinned file")
+        return [json.loads(line) for line in raw.decode().splitlines() if line]
+
+    def _check_folds(self, rows):
+        """Refuse rows that are not plan folds, reach the holdout or misorder the roles."""
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("fold")) is not int
+                    or row.get("role") not in self.ROLES
+                    or any(date_problem(row.get(edge)) for edge in self._EDGES)
+                    or not row["train_start"] <= row["train_end"] < row["val_start"]
+                    <= row["val_end"]):
+                raise ValueError(f"fold table row is not a rolling-origin-plan fold: {row!r}")
+            if label_reaches(row["val_end"], self.holdout):
+                raise ValueError(f"fold {row['fold']} validates through {row['val_end']}, on or "
+                                 f"after holdout_start {self.holdout}")
+        roles = [row["role"] for row in sorted(rows, key=lambda row: row["fold"])]
+        if (len({row["fold"] for row in rows}) != len(rows) or "scored" not in roles
+                or roles != sorted(roles, key=self.ROLES.index)):
+            raise ValueError("fold table needs unique folds, a scored fold and every "
+                             "warmup fold before it")
+
+    def ids(self):
+        return [i for i in sorted(self.folds) if self.folds[i]["role"] in self.spec["roles"]]
+
+    def calendar(self, frame):
+        return sorted(frame[self.date].unique())
+
+    def _val(self, frame, fold):
+        """Return a fold's evaluation rows, warm-up ones cut at the scored seam."""
+        date = frame[self.date]
+        rows = (date >= fold["val_start"]) & (date <= fold["val_end"])
+        if fold["role"] == "warmup":
+            rows &= ~label_reaches(frame[self.end], self.scored_start)
+        return frame[rows]
+
+    def bands(self, frame, split, calendar):
+        fold = self.folds[split]
+        days = [d for d in calendar if fold["train_start"] <= d <= fold["train_end"]]
+        start = (days[-self.cal_n:] or [fold["train_start"]])[0]
+        date, end = frame[self.date], frame[self.end]
+        train = (date >= fold["train_start"]) & (date <= fold["train_end"])
+        return (frame[train & (date < start) & ~label_reaches(end, start)],
+                frame[train & (date >= start) & ~label_reaches(end, fold["val_start"])],
+                self._val(frame, fold))
+
+    def expected(self, frame, ids):
+        import pandas as pd
+        return pd.concat([self._val(frame, self.folds[i]) for i in ids])
+
+    def assigned(self, dates):
+        import pandas as pd
+        result = pd.Series(0, index=dates.index)
+        for number, fold in self.folds.items():
+            result[(dates >= fold["val_start"]) & (dates <= fold["val_end"])] = number
+        return result
+
+    def stage(self, ids):
+        roles = {self.folds[i]["role"] for i in ids}
+        return {"fold_table": {**self.spec, "roles": [r for r in self.ROLES if r in roles]}}
+
+    def lock(self, frame):
+        for field in (self.date, self.end):
+            late = label_reaches(frame[field], self.holdout)
+            if late.any():
+                raise ValueError(
+                    f"{field} {frame.loc[late, field].min()} is on or after holdout_start "
+                    f"{self.holdout}: the holdout is locked and is never read")
+
+
 class ChronologicalCDFStudy:
     """JSON-driven paired research, with purged training/calibration/year splits.
 
     Parameters
     ----------
     config : dict
-        Fields, features, named estimator imports, years, integration resolutions
-        and output directory. Unknown top-level keys refuse.
+        Fields, features, named estimator imports, integration resolutions and
+        output directory, and ONE split grammar: ``years`` with
+        ``development_end`` (calendar years), or ``fold_table`` (``path``,
+        ``sha256``, ``holdout_start``, ``cal_n``, ``roles``: the pinned
+        ``rolling-origin-plan`` folds of ADR-0223, whose ``roles`` pick the
+        folds this run fits). Unknown top-level keys refuse.
 
     Examples
     --------
@@ -3230,15 +4153,26 @@ class ChronologicalCDFStudy:
             "models", "years", "output", "samples", "tail_intervals", "tail_points",
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
-            "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance", "notes"}
+            "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
+            "wing_metrics", "fold_table", "notes"}
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
-                    "frozen_variants", "promotion_guard", "decision_acceptance"}
-        missing = self.KEYS-optional-set(config)
+                    "frozen_variants", "promotion_guard", "decision_acceptance",
+                    "wing_metrics", "fold_table"}
+        folds = "fold_table" in config
+        year_keys = {"years", "development_end"}
+        missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
         if unknown or missing:
             raise ValueError(f"unknown keys {unknown}; missing keys {missing}")
+        if folds and year_keys & set(config):
+            raise ValueError(f"fold_table replaces {sorted(year_keys & set(config))}: "
+                             "declare exactly one of years or fold_table")
+        if "wing_metrics" in config and (type(config["wing_metrics"]) is not bool
+                                         or (config["wing_metrics"]
+                                             and not config.get("decision_context"))):
+            raise ValueError("wing metrics must be a bool and need a decision context")
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
@@ -3249,7 +4183,8 @@ class ChronologicalCDFStudy:
             if spec["calibrate"]:
                 module, cls = spec["class"].split(":")
                 estimator = getattr(importlib.import_module(module), cls)
-                if getattr(estimator, "consumes_calibration_labels", False):
+                if (getattr(estimator, "consumes_calibration_labels", False)
+                        or spec["params"].get("patience") is not None):
                     raise ValueError("estimator consumes calibration labels; second map refused")
         frozen = config.get("frozen_variants")
         if (frozen is not None
@@ -3299,6 +4234,7 @@ class ChronologicalCDFStudy:
                     or acceptance["max_bias_increase"] < 0):
                 raise ValueError("invalid decision-only acceptance guard")
         self.config = config
+        self.plan = (_FoldPlan if folds else _YearPlan)(config)
 
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
@@ -3326,28 +4262,39 @@ class ChronologicalCDFStudy:
                 raise ValueError("decision scores missing")
             return
         keys = self.config["identity"]
+        owners = DecisionRegionScores.METRIC_COUNTS
+        counted = [metric for metric in owners if metric in scores]
+        columns = sorted({owners[metric] for metric in counted})
         reference = None
         for _, rows in scores.groupby(["model", "variant"]):
             if rows.duplicated(keys).any():
                 raise ValueError("duplicate decision score identity")
             rows = rows.sort_values(keys).reset_index(drop=True)
-            if "decision_strike_count" not in rows:
+            if any(column not in rows for column in columns):
                 raise ValueError("decision observation counts missing")
-            counts = rows.decision_strike_count
-            if (not np.isfinite(counts).all() or (counts < 0).any()
-                    or (counts != counts.astype(int)).any()):
-                raise ValueError("invalid decision counts")
-            eligible = counts > 0
-            for metric in ("decision_strike_brier", "decision_bias"):
-                if metric in rows:
-                    values = rows[metric]
-                    if (not np.isfinite(values[eligible]).all()
-                            or not values[~eligible].isna().all()):
-                        raise ValueError("decision score eligibility mismatch")
-            shape = rows[keys + ["decision_strike_count"]]
+            for column in columns:
+                counts = rows[column]
+                if (not np.isfinite(counts).all() or (counts < 0).any()
+                        or (counts != counts.astype(int)).any()):
+                    raise ValueError("invalid decision counts")
+            for metric in counted:
+                eligible, values = rows[owners[metric]] > 0, rows[metric]
+                if (not np.isfinite(values[eligible]).all()
+                        or not values[~eligible].isna().all()):
+                    raise ValueError("decision score eligibility mismatch")
+            shape = rows[keys + columns]
             if reference is not None and not shape.equals(reference):
                 raise ValueError("unpaired decision eligibility or identities")
             reference = shape
+
+    def _equal_cell_skill(self, band, candidate, reference):
+        """Return percent skill of per-row scores, equal-weighting group/horizon cells."""
+        c = self.config
+        paired = band[[c["group"], c["horizon"]]].copy()
+        paired["candidate"], paired["reference"] = candidate, reference
+        means = paired.groupby([c["group"], c["horizon"]])[["candidate", "reference"]].mean().dropna()
+        return (float(100*(1-(means.candidate/means.reference).mean()))
+                if len(means) and (means.reference > 0).all() else None)
 
     def _loss_telemetry(self, model, imputer, baseline, baseline_imputer, fit, cal, val):
         import numpy as np
@@ -3359,16 +4306,22 @@ class ChronologicalCDFStudy:
             context = self._decision_context_rows(band)
             report = model.loss_report(bx, by, context)
             scorer = DecisionRegionScores(context)
-            candidate = scorer.score(model.curve(bx), by)["decision_strike_brier"]
-            reference = scorer.score(baseline.curve(
-                baseline_imputer.transform(band[c["features"]])), by)["decision_strike_brier"]
-            paired = band[[c["group"], c["horizon"]]].copy()
-            paired["candidate"], paired["reference"] = candidate, reference
-            means = paired.groupby([c["group"], c["horizon"]])[["candidate", "reference"]].mean().dropna()
-            report["decision_skill_pct"] = (float(100*(1-(means.candidate/means.reference).mean()))
-                                            if len(means) and (means.reference > 0).all() else None)
+            curve = model.curve(bx)
+            baseline_curve = baseline.curve(baseline_imputer.transform(band[c["features"]]))
+            candidate = scorer.score(curve, by)["decision_strike_brier"]
+            reference = scorer.score(baseline_curve, by)["decision_strike_brier"]
+            report["decision_skill_pct"] = self._equal_cell_skill(band, candidate, reference)
             report["decision_brier"] = float(np.nanmean(candidate)) if report["eligible_n"] else None
             report["reference_decision_brier"] = float(np.nanmean(reference)) if report["eligible_n"] else None
+            if c.get("wing_metrics"):
+                key = DecisionRegionScores.WING_METRICS[0]
+                wing = scorer.wing_score(curve, by)[key]
+                wing_reference = scorer.wing_score(baseline_curve, by)[key]
+                report["wing_twcrps"] = float(np.nanmean(wing)) if report["eligible_n"] else None
+                report["reference_wing_twcrps"] = (
+                    float(np.nanmean(wing_reference)) if report["eligible_n"] else None)
+                report["wing_twcrps_skill_pct"] = self._equal_cell_skill(
+                    band, wing, wing_reference)
             report["scope"] = "reported_group_slice"
             report["dates"] = int(band[c["date"]].nunique())
             report["eligible_dates"] = int(band.loc[np.isfinite(candidate), c["date"]].nunique())
@@ -3400,8 +4353,9 @@ class ChronologicalCDFStudy:
             self._validate_decision_scores(scores)
         output = Path(c["output"])
         cells = [c["group"], c["horizon"]]
-        dev = scores[scores.year <= c["development_end"]]
-        later = scores[scores.year > c["development_end"]]
+        split = self.plan.column
+        dev = scores[scores[split] <= self.plan.development_end]
+        later = scores[scores[split] > self.plan.development_end]
         selection_metric = ("decision_strike_brier"
                             if "decision_strike_brier" in dev else "crps")
         dev_means = dev.groupby(cells+["model", "variant"])[selection_metric].mean().unstack(["model", "variant"])
@@ -3431,6 +4385,7 @@ class ChronologicalCDFStudy:
             metrics.insert(0, "decision_strike_brier")
             if "decision_bias" in scores:
                 metrics.append("decision_bias")
+            metrics[1:1] = [m for m in DecisionRegionScores.WING_METRICS if m in scores]
         metrics.extend(name for name in scores.columns
                        if (name.startswith("below_") or name.startswith("above_"))
                        and name not in metrics)
@@ -3452,31 +4407,33 @@ class ChronologicalCDFStudy:
                 f = f.dropna(subset=[metric])
                 records.append({"model": model, "variant": selected[model], "metric": metric,
                                 "n": len(f), "total_n": total_n, "excluded_n": total_n-len(f),
-                                "threshold_n": (int(f.decision_strike_count.sum())
-                                                if metric.startswith("decision_")
-                                                and "decision_strike_count" in f else None),
+                                "threshold_n": (int(f[DecisionRegionScores.METRIC_COUNTS[metric]].sum())
+                                                if metric in DecisionRegionScores.METRIC_COUNTS
+                                                and DecisionRegionScores.METRIC_COUNTS[metric] in f
+                                                else None),
                                 "dates": f[c["date"]].nunique(),
                                 "expiry_series": f[c["series_identity"]].drop_duplicates().shape[0],
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
-                    if metric in ("decision_strike_brier", "crps", "tail_crps", "raw_return_crps", "strike_brier", "condor_loss_mse")
+                    if metric in (*DecisionRegionScores.PROPER_METRICS, "crps", "tail_crps",
+                                  "raw_return_crps", "strike_brier", "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
             if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95",
                               "payoff_quadrature_gap"):
-                annual = picked.groupby([c["group"], "year", "model"])[metric].mean().unstack("model")
+                annual = picked.groupby([c["group"], split, "model"])[metric].mean().unstack("model")
                 annual_ratio = annual.div(annual[baseline], axis=0)
                 for model in c["models"]:
                     row = (100*(1-annual_ratio[model])).rename("skill").reset_index()
                     row["metric"], row["model"] = metric, model
                     n = (picked[picked.model == model].dropna(subset=[metric])
-                         .groupby([c["group"], "year"]).size().rename("n").reset_index())
-                    yearly_grids.append(row.merge(n, on=[c["group"], "year"],
+                         .groupby([c["group"], split]).size().rename("n").reset_index())
+                    yearly_grids.append(row.merge(n, on=[c["group"], split],
                                                   validate="one_to_one"))
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
         # paired denominators cancel in each cell's candidate/reference ratio.
-        interval_metrics = ["crps"]+(["decision_strike_brier"]
-                                      if "decision_strike_brier" in picked else [])
+        interval_metrics = ["crps"]+[m for m in DecisionRegionScores.PROPER_METRICS
+                                     if m in picked]
         for interval_metric in interval_metrics:
           for reference in c["comparison_references"]:
             base_rows = picked[picked.model == reference].set_index(keys)[interval_metric].dropna()
@@ -3597,7 +4554,7 @@ class ChronologicalCDFStudy:
         (output/"comparison.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
         pd.concat(grids, ignore_index=True).to_csv(output/"skill_by_exact_day.csv", index=False)
         pd.concat(yearly_grids, ignore_index=True).to_csv(
-            output/"skill_by_index_year.csv", index=False)
+            output/f"skill_by_index_{split}.csv", index=False)
         picked.groupby([c["group"], "model"])[metrics].mean().to_csv(output/"metrics_by_index.csv")
         later.groupby(["model", "variant"])[metrics].mean().to_csv(output/"raw_vs_calibrated.csv")
         return summary
@@ -3683,7 +4640,7 @@ class ChronologicalCDFStudy:
         return result, q
 
     def run(self, frame, diagnostic=None):
-        """Fit paired annual folds and retain row scores, counts and curves.
+        """Fit paired splits (years or fold-table folds); retain scores, counts, curves.
 
         Parameters
         ----------
@@ -3700,7 +4657,8 @@ class ChronologicalCDFStudy:
         Raises
         ------
         ValueError
-            For missing/empty bands or invalid labels/reference scales.
+            For missing/empty bands or invalid labels/reference scales, or, with a
+            fold table, a row dated or settling on or after ``holdout_start``.
         FileExistsError
             If the output directory exists; no research evidence is overwritten.
         """
@@ -3710,6 +4668,7 @@ class ChronologicalCDFStudy:
 
         c = self.config
         _validate_temporal_frame(frame, c["date"], c["end"])
+        self.plan.lock(frame)
         output = Path(c["output"])
         output.mkdir(parents=True, exist_ok=False)
         from dskit.pipeline.base import config_hash
@@ -3740,12 +4699,17 @@ class ChronologicalCDFStudy:
             raise ValueError("missing or duplicate forecast identity")
         results, counts, pooled_cache = [], [], {}
         equivalence = {}
+        calendar = self.plan.calendar(frame)
         for group, group_frame in frame.groupby(c["group"]):
-            for year in c["years"]:
-                fit, cal, val = self._split_validated(group_frame, year, c["date"], c["end"])
+            for split in self.plan.ids():
+                fit, cal, val = self.plan.bands(group_frame, split, calendar)
                 if min(len(fit), len(cal), len(val)) < 1:
-                    raise ValueError(f"empty band: {group} {year}")
-                count = {"group": group, "year": year}
+                    raise ValueError(f"empty band: {group} {split}")
+                if c.get("wing_metrics"):
+                    # Refuse malformed wing intervals before any model is fitted.
+                    for band in (fit, cal, val):
+                        DecisionRegionScores(self._decision_context_rows(band)).segment_arrays()
+                count = {"group": group, self.plan.column: split}
                 for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
                     count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
                                    "ends": band[c["end"]].nunique(),
@@ -3757,12 +4721,12 @@ class ChronologicalCDFStudy:
                                      key=lambda item: item[0] != c["reference_model"])
                 for name, spec in model_items:
                     start = time.monotonic()
-                    key = (year, name, json.dumps(spec, sort_keys=True))
+                    key = (split, name, json.dumps(spec, sort_keys=True))
                     pooled = spec.get("pooled", False)
                     new_fit = not (pooled and key in pooled_cache)
                     if new_fit:
-                        model_fit, model_cal, _ = self._split_validated(
-                            frame, year, c["date"], c["end"]) if pooled else (fit, cal, val)
+                        model_fit, model_cal, _ = self.plan.bands(
+                            frame, split, calendar) if pooled else (fit, cal, val)
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
                         for band in (model_fit, model_cal, val):
@@ -3784,7 +4748,7 @@ class ChronologicalCDFStudy:
                                 raise ValueError("equivalence model does not expose fitted state")
                             state = model._equivalence_state()
                             population = "pooled" if pooled else str(group)
-                            equivalence_key = (int(year), population, label)
+                            equivalence_key = (int(split), population, label)
                             record = equivalence.setdefault(
                                 equivalence_key, {"digest": state, "members": []})
                             if record["digest"] != state:
@@ -3825,7 +4789,7 @@ class ChronologicalCDFStudy:
                         columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
                                                       c["group"], c["date"], c["end"], c["horizon"]]))
                         part = val[columns].copy()
-                        part["year"], part["model"], part["variant"] = year, name, variant
+                        part[self.plan.column], part["model"], part["variant"] = split, name, variant
                         for metric, values in scored.items():
                             part[metric] = values
                         part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
@@ -3833,13 +4797,16 @@ class ChronologicalCDFStudy:
                             for metric, values in diagnostic(val, curve, draws).items():
                                 part[metric] = values
                         if c.get("decision_context"):
-                            for metric, values in DecisionRegionScores(
-                                    self._decision_context_rows(val)).score(curve, yv).items():
+                            scorer = DecisionRegionScores(self._decision_context_rows(val))
+                            for metric, values in scorer.score(curve, yv).items():
                                 part[metric] = values
+                            if c.get("wing_metrics"):
+                                for metric, values in scorer.wing_score(curve, yv).items():
+                                    part[metric] = values
                         results.append(part)
                         # Retain both exact grids/maps/mixtures and quadrature draws.
                         # This is numerical research evidence, not a serving artifact.
-                        if year == max(c["years"]):
+                        if split == max(self.plan.ids()):
                             np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
                                                 draws=draws.astype("float32"),
                                                 reference=val[c["reference"]].to_numpy(),
@@ -3855,15 +4822,15 @@ class ChronologicalCDFStudy:
                             model, imputer, reference_model, reference_imputer, fit, cal, val)
                     elif isinstance(model, MixtureMLPCDF):
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
-                    print(group, year, name, round(count[name+"_seconds"], 2), flush=True)
+                    print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
                 counts.append(count)
                 pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
                 (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
-        evidence = [{"year": year, "population": population, "label": label,
+        evidence = [{self.plan.column: split, "population": population, "label": label,
                      "digest": record["digest"],
                      "members": sorted(set(record["members"])),
                      "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
-                    for (year, population, label), record in sorted(equivalence.items())]
+                    for (split, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return pd.concat(results, ignore_index=True)
 
@@ -3892,6 +4859,8 @@ class CDFHyperparameterStudy:
     _COMMON_KEYS = {"output", "development_years", "label_cutoff", "max_candidates",
                     "candidates", "task_features", "resolutions", "expected_cells",
                     "search_partitions", "evaluation_partitions"}
+    #: The year-grammar keys a fold table derives (ADR-0223), refused beside one.
+    _YEAR_KEYS = {"development_years", "label_cutoff", "evaluation_partitions"}
 
     def __init__(self, config):
         import copy
@@ -3903,21 +4872,27 @@ class CDFHyperparameterStudy:
             raise ValueError("unknown HPO document keys")
         self.base, self.experiment = self.config["study"], self.config["experiment"]
         c, e = self.base, self.experiment
-        ChronologicalCDFStudy(c)
+        self.plan = ChronologicalCDFStudy(c).plan
+        folds = "fold_table" in c
+        if folds and self._YEAR_KEYS & set(e):
+            raise ValueError(f"{sorted(self._YEAR_KEYS & set(e))} are derived from the fold table")
         self.grouped = "candidate_groups" in e
-        required = self._COMMON_KEYS | ({"candidate_groups"} if self.grouped else
-                                        {"final_seeds", "screen_seed", "candidate_labels", "axes"})
+        required = ((self._COMMON_KEYS - (self._YEAR_KEYS if folds else set()))
+                    | ({"candidate_groups"} if self.grouped else
+                       {"final_seeds", "screen_seed", "candidate_labels", "axes"}))
         if set(e)-required-{"notes", "public_probes", "selection_guard", "selection_metric"} or required-set(e):
             raise ValueError("unknown or missing experiment keys")
         metric = e.get("selection_metric", "crps")
-        if metric not in ("crps", "decision_strike_brier") or (
-                metric == "decision_strike_brier" and not c.get("decision_context")):
+        proper = DecisionRegionScores.PROPER_METRICS
+        if (metric not in ("crps", *proper)
+                or (metric in proper and not c.get("decision_context"))
+                or (metric in DecisionRegionScores.WING_METRICS and not c.get("wing_metrics"))):
             raise ValueError("invalid primary selection metric")
         guard = e.get("selection_guard")
-        if metric == "decision_strike_brier" and guard is not None:
+        if metric in proper and guard is not None:
             guarded = [*guard.get("metrics", []), *guard.get("cell_improvement_metrics", []),
                        *guard.get("cell_noninferiority_metrics", [])]
-            if any(name not in ("decision_bias", "decision_strike_brier") for name in guarded):
+            if any(name not in DecisionRegionScores.METRIC_COUNTS for name in guarded):
                 raise ValueError("decision selection guards must apply at decision regions")
 
         if guard is not None:
@@ -4013,13 +4988,24 @@ class CDFHyperparameterStudy:
                 or any(type(n) is not int or n < 1 for n in r["audit_samples"])
                 or ("diagnostic" in config and r["integration_points"] != config["diagnostic"]["integration_points"])):
             raise ValueError("invalid or mixed scoring resolution")
-        dev = e["development_years"]
-        years = [y for values in e["evaluation_partitions"].values() for y in values]
-        if (not dev or len(set(dev)) != len(dev) or any(type(y) is not int for y in years+dev)
-                or max(dev) != c["development_end"] or e["label_cutoff"] != f"{max(dev)+1}-01-01"
-                or e["evaluation_partitions"].get("development") != dev
-                or len(years) != len(set(years)) or set(years) != set(c["years"])):
-            raise ValueError("development cutoff or evaluation year partition mismatch")
+        if folds:
+            plan = self.plan
+            if not plan.warmup_ids or sorted(c["fold_table"]["roles"]) != sorted(plan.ROLES):
+                raise ValueError("selection needs warmup folds and a fold_table naming both roles")
+            self.development, self.later, self.cutoff = (
+                plan.warmup_ids, plan.scored_ids, plan.scored_start)
+            self.partitions = {"development": self.development, "later": self.later}
+        else:
+            dev = e["development_years"]
+            years = [y for values in e["evaluation_partitions"].values() for y in values]
+            if (not dev or len(set(dev)) != len(dev) or any(type(y) is not int for y in years+dev)
+                    or max(dev) != c["development_end"] or e["label_cutoff"] != f"{max(dev)+1}-01-01"
+                    or e["evaluation_partitions"].get("development") != dev
+                    or len(years) != len(set(years)) or set(years) != set(c["years"])):
+                raise ValueError("development cutoff or evaluation year partition mismatch")
+            self.development, self.cutoff = dev, e["label_cutoff"]
+            self.later = [y for y in c["years"] if y > c["development_end"]]
+            self.partitions = e["evaluation_partitions"]
         if set(e["expected_cells"]) != {"development", "evaluation"}:
             raise ValueError("expected cells must declare development and evaluation")
         self.output = Path(e["output"])
@@ -4100,8 +5086,8 @@ class CDFHyperparameterStudy:
         if actual != expected:
             raise ValueError(f"{which} cell set mismatch: missing {expected-actual}, extra {actual-expected}")
 
-    def _expected(self, frame, years):
-        return frame[frame[self.base["date"]].str[:4].astype(int).isin(years)]
+    def _expected(self, frame, ids):
+        return self.plan.expected(frame, ids)
 
     def _check_scores(self, scores, expected, models):
         import numpy as np
@@ -4112,11 +5098,14 @@ class CDFHyperparameterStudy:
             raise ValueError("score model or variant inventory mismatch")
         if scores.duplicated([*c["identity"], "model", "variant"]).any():
             raise ValueError("duplicate score identity")
-        if self.experiment.get("selection_metric") == "decision_strike_brier":
+        decision_selection = (self.experiment.get("selection_metric")
+                              in DecisionRegionScores.PROPER_METRICS)
+        if decision_selection:
             ChronologicalCDFStudy(c)._validate_decision_scores(scores)
         numeric = scores.select_dtypes(include="number")
-        if self.experiment.get("selection_metric") == "decision_strike_brier":
-            numeric = numeric.drop(columns=["decision_strike_brier", "decision_bias"], errors="ignore")
+        if decision_selection:
+            numeric = numeric.drop(columns=list(DecisionRegionScores.METRIC_COUNTS),
+                                   errors="ignore")
 
         if not np.isfinite(numeric.to_numpy()).all():
             raise ValueError("nonfinite score; cells cannot be silently dropped")
@@ -4124,7 +5113,8 @@ class CDFHyperparameterStudy:
             for variant in ("raw", "calibrated"):
                 rows = scores[(scores.model == name) & (scores.variant == variant)]
                 got = rows[columns].sort_values(c["identity"]).reset_index(drop=True)
-                if not got.equals(want) or not (rows.year == rows[c["date"]].str[:4].astype(int)).all():
+                if (not got.equals(want)
+                        or not (rows[self.plan.column] == self.plan.assigned(rows[c["date"]])).all()):
                     raise ValueError("unpaired or substituted score identities/years")
 
     def _rank(self, scores):
@@ -4206,7 +5196,7 @@ class CDFHyperparameterStudy:
         import copy
         import pandas as pd
         e, c = self.experiment, self.base
-        expected = self._expected(frame, e["development_years"])
+        expected = self._expected(frame, self.development)
         all_scores, controls, screen_specs, selected, variants = [], None, {}, {}, {}
         rankings, guard_evidence = {}, {}
         for partition, names in e["search_partitions"].items():
@@ -4348,6 +5338,7 @@ class CDFHyperparameterStudy:
         if stage not in ("search", "select", "evaluate", "report") or not provenance:
             raise ValueError("invalid stage or missing provenance")
         _validate_temporal_frame(frame, c["date"], c["end"])
+        self.plan.lock(frame)
         if frame.duplicated(c["identity"]).any() or frame[c["identity"]].isna().any().any():
             raise ValueError("missing or duplicate panel identities")
         mapping = e["task_features"]
@@ -4356,10 +5347,9 @@ class CDFHyperparameterStudy:
         for group, feature in mapping.items():
             if not (frame[feature] == (frame[c["group"]] == group).astype(int)).all():
                 raise ValueError("raw one-hot task features disagree with symbol mapping")
-        dev = frame[frame[c["end"]] < e["label_cutoff"]]
-        self._check_cells(self._expected(dev, e["development_years"]), "development")
-        later_years = [y for y in c["years"] if y > c["development_end"]]
-        self._check_cells(self._expected(frame, later_years), "evaluation")
+        dev = frame[~label_reaches(frame[c["end"]], self.cutoff)]
+        self._check_cells(self._expected(dev, self.development), "development")
+        self._check_cells(self._expected(frame, self.later), "evaluation")
         identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
                     "provenance": self._digest(provenance), "inventory": self.inventory.digest,
                     "implementation": self._file_hash(__file__),
@@ -4373,7 +5363,7 @@ class CDFHyperparameterStudy:
             if partition not in e["search_partitions"]:
                 raise ValueError("unknown search partition")
             models = {**c["models"], **{n: e["candidates"][n] for n in e["search_partitions"][partition]}}
-            years, panel, samples = e["development_years"], dev, e["resolutions"]["screen_samples"]
+            years, panel, samples = self.development, dev, e["resolutions"]["screen_samples"]
             selection_hash = None
         else:
             selection, selection_hash = self._selection(identity)
@@ -4382,7 +5372,7 @@ class CDFHyperparameterStudy:
                 if partition is not None:
                     raise ValueError("report does not accept partition")
                 parts, paths = [], []
-                for name, years in e["evaluation_partitions"].items():
+                for name, years in self.partitions.items():
                     path = self.output/"evaluate"/name
                     record = self._load(path, identity, "evaluate", name)
                     if record["selection_hash"] != selection_hash:
@@ -4405,13 +5395,14 @@ class CDFHyperparameterStudy:
                 })
                 self._complete(path, identity, stage, None, selection_hash=selection_hash)
                 return result
-            if partition not in e["evaluation_partitions"]:
+            if partition not in self.partitions:
                 raise ValueError("unknown evaluation partition")
-            years = e["evaluation_partitions"][partition]
+            years = self.partitions[partition]
             panel = dev if partition == "development" else frame
             samples = e["resolutions"]["final_samples"]
         path = self.output/stage/partition
-        study = ChronologicalCDFStudy({**c, "output": str(path), "years": years, "samples": samples, "models": models})
+        study = ChronologicalCDFStudy({**c, "output": str(path), **self.plan.stage(years),
+                                       "samples": samples, "models": models})
         scores = study.run(panel, diagnostic)
         self._check_scores(scores, self._expected(panel, years), models)
         self._write(path/"data_provenance.json", provenance)

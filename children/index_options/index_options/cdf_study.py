@@ -10,6 +10,9 @@ import hashlib
 import json
 from pathlib import Path
 
+from dskit.pipeline.document import date_problem
+from dskit.pipeline.kinds_split import label_reaches
+from dskit.pipeline.node import check_int_param
 from dskit.pipeline.libs.predictive_cdf import (
     ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
     DiscreteCDFGrid, GridCurve,
@@ -1928,7 +1931,12 @@ class ExactExpiryCDFPanel:
     ----------
     config : dict
         Archive root, surface/lifecycle files, symbols, volatility-index mapping,
-        max DTE, lag/window counts and reference floor.
+        max DTE, lag/window counts and reference floor. Optional ``exact_dte``
+        (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
+        absent keeps every horizon up to ``max_dte``.
+    holdout_start : str or None
+        ISO date of a locked holdout (a fold-table study's own value). Rows
+        dated on or after it, or whose label reaches it, never enter the panel.
 
     Examples
     --------
@@ -1937,8 +1945,21 @@ class ExactExpiryCDFPanel:
         panel = ExactExpiryCDFPanel(config).read()
     """
 
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config, holdout_start=None):
+        if holdout_start is not None and date_problem(holdout_start):
+            raise ValueError("holdout_start must be an ISO date or None")
+        if "exact_dte" in config:
+            problems = []
+            check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
+            if problems:
+                raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
+        self.config, self.holdout_start = config, holdout_start
+
+    def _horizon_cohort(self, rows):
+        """Keep the rows at ``exact_dte`` when declared, else every row."""
+        if "exact_dte" not in self.config:
+            return rows
+        return rows[rows.actual_calendar_dte == self.config["exact_dte"]]
 
     @staticmethod
     def ohlc_features(prices, windows):
@@ -2255,11 +2276,19 @@ class ExactExpiryCDFPanel:
             planned_end = planned[planned.searchsorted(expiry, side="right")-1]
             rows["planned_settlement_date"] = planned_end.strftime("%Y-%m-%d")
             rows["calendar_dte"] = (pd.to_datetime(rows.planned_settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
-            rows = rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])].copy()
+            rows = self._horizon_cohort(
+                rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])]).copy()
+            locked = None
+            if self.holdout_start:
+                locked = (label_reaches(rows.quote_date, self.holdout_start)
+                          | label_reaches(rows.settlement_date, self.holdout_start))
+                rows = rows[~locked].copy()
             entry_index = sessions.get_indexer(pd.to_datetime(rows.quote_date))
             end_index = sessions.get_indexer(pd.to_datetime(rows.settlement_date))
             valid_dates = (entry_index >= 0) & (end_index >= 0)
             refused[symbol] = {"non_session_quote": int((~valid_dates).sum())}
+            if locked is not None:
+                refused[symbol]["holdout_locked"] = int(locked.sum())
             rows = rows[valid_dates].copy()
             entry_index, end_index = entry_index[valid_dates], end_index[valid_dates]
             rows["actual_sessions_to_expiry"] = end_index-entry_index
@@ -2830,7 +2859,9 @@ def _main():
         rows = builder.build_archive(meta, data["archive_root"], data["chain_features"])
         print("prepared raw-chain rows", len(rows), flush=True)
         return
-    adapter = ExactExpiryCDFPanel(config["data"])
+    fold_table = config.get("study", {}).get("fold_table")
+    adapter = ExactExpiryCDFPanel(
+        config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
     frame = adapter.read()
     provenance = {"refused": adapter.refused, "sha256": adapter.source_hashes,
                   "readers": adapter.reader_fingerprints,

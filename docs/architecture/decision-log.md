@@ -29118,6 +29118,107 @@ weekday; `counts` carries all seven tags, zero where no row fell; the defaults
 are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
 `_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.
 
+## ADR-0218 — Torch CDF CRPS and condor-wing twCRPS losses
+
+**Status:** accepted 2026-10-01 under the owner's standing conditional
+approval (clean Sonnet skeptic review), citing candidate 0fc4aa9 (base
+b6efdfe). Review ledger: round 1 (a0c13e1) not clean, C0/M1 (the wing
+geometry duplicated `intervals`); fixed in 0fc4aa9. Round 2 (0fc4aa9), both
+lenses clean C0/M0 (design-correctness; integration/test-quality), Minors
+recorded for the implementation test plan: Student seam pins and family x term
+matrix, gradient pins, the quadrature accuracy claim in item 5 (re-measure at
+pin time), `wing_metrics` config home, study-flow pin, refusal timing.
+
+A condor's expected P&L is credit - ∫F over the put wing - ∫(1-F) over the
+call wing, so training must score the CDF across whole wings, not only at
+strikes. Inventory: TorchCDF `_LOSSES` (predictive_cdf.py:2567) holds nll,
+decision_brier, decision_log; `Crps`/`ThresholdWeightedCrps`
+(distribution_scores.py:269/292) score sample sets only; `CDFThresholdAudit`
+(predictive_cdf.py:33) is a numpy fixed-grid audit. Every decision-context
+record already carries the wing pairs as `intervals`, in the same standardized
+units as `thresholds` (child builder cdf_study.py:335-349), validated at
+predictive_cdf.py:942-953 and round-tripped at cdf_study.py:2613; only
+`DecisionRegionScores` (predictive_cdf.py:2393-2424) ignores them. No Torch
+CRPS/twCRPS, interval union or Torch Student CDF exists (sweep).
+
+1. **Objective.** `L = Σ_g w_g·mean_all(g) + Σ_l λ_l·mean_E_l(l)`. Registry
+   gains `crps` (global) and `wing_twcrps` (local); terms stay unique
+   `{"kind","weight"}`, weight > 0. Each term class declares its scope;
+   at least one global and one local term are required (supersedes
+   ADR-0211's mandatory nll). ADR-0211's N/|E_l| minibatch scaling stays:
+   a null date adds only global terms and never dilutes λ.
+2. **Family.** Optional TorchCDF `family`: absent = Gaussian (named once,
+   omitted from state, so existing identities/digests are unchanged) or
+   `{"kind": "student", "degrees": k}`, integer k >= 3. Terms are strategy
+   objects built with the family; curve() returns the matching
+   MixtureCurve/StudentMixtureCurve. Existing Gaussian formulas unchanged.
+3. **Segments.** No new context key: the wing geometry is the existing
+   `intervals`, its only copy. `DecisionRegionScores.wing_groups(intervals)`
+   splits them by side of 0, the unchanged-underlying return: high <= 0 is
+   the lower (put) group, low >= 0 the upper (call) group; an interval
+   straddling 0 is refused, not guessed. `segments_from_groups(groups)` is
+   the single union owner: it unions each non-empty group and gives each
+   equal mass, uniform on its union (density > 0, Σ density·(hi-lo) = 1);
+   a condor record gets 1/2 + 1/2 (continuous form of the 1/2-1/2 strike
+   Brier), the body and outer tails 0. Refusals, raised only by wing
+   consumers (existing contexts and fixtures stay valid for every other
+   use): exactly one of `thresholds`/`intervals` empty; an interval endpoint
+   not among that record's `thresholds` (wings use listed strikes only,
+   never synthesized). Both empty is a null region.
+4. **Child.** No code change: the builder already emits `intervals`
+   (puts below spot, calls above: cdf_study.py:213-214, so sides separate by
+   sign), and contexts and HPO frame hashes are untouched (no key or flag
+   added). A builder-fed child test pins the contract: contexts from
+   `DecisionRegionContextBuilder` on a synthetic chain yield, per side, a
+   segment union equal to the union of that side's `intervals`, endpoints
+   within `thresholds`, mass 1/2 each. A later change to the wing-pair rule
+   edits the one list; this test reads it.
+5. **Math.** `wing_twcrps = Σ_s d_s ∫(F(z) - 1{y<=z})² dz`, each segment split
+   at clamp(y) (F² left, (1-F)² right) and at component means, 64-point
+   Gauss-Legendre per sub-piece. crps: Gaussian exact pair form (Grimit et
+   al. 2006); Student exact E|X_k - y| and same-component E|X - X'|, cross
+   pairs by 64-point Gauss-Legendre over the narrower component
+   (u = √ν·tan φ). Student CDF: exact integer-ν series (A&S 26.7.3-4),
+   lower tail by its positive remainder series. Measured: twCRPS <= 1e-10
+   abs at segment/scale 200 (<= 6e-6 at 1000); Student CRPS <= 4e-8 rel;
+   Student CDF <= 1e-15 abs, <= 3e-11 rel in the lower tail. One node
+   constant serves training and evaluation.
+6. **Evaluation.** `DecisionRegionScores.wing_score(curve, y)`, separate
+   from `score` (whose keys and values stay byte-identical), returns
+   `decision_wing_twcrps` (NaN on null rows) and `decision_wing_segment_count`.
+   `_Curve` owns the numpy rule (mixtures pass their means, so it equals the
+   Torch term); `GridCurve` integrates exactly; other curves use plain
+   Gauss-Legendre (<= 1e-3 rel). The study calls it only when its experiment
+   sets `wing_metrics: true` (default false, default-deny key), then adds it
+   to equal-cell skill, paired block intervals vs references and Torch
+   telemetry; `selection_metric: decision_wing_twcrps` requires the flag.
+   The metric-to-count vocabulary has one owner on `DecisionRegionScores`.
+
+**Pins.** Closed forms vs scipy quad; twCRPS/CRPS vs `ThresholdWeightedCrps`/
+`Crps` on 20,000 midpoint quantiles of the same curve; Torch term = scorer;
+batch-partition invariance; null rows add only global terms; refusals
+(straddling interval, one-sided emptiness, endpoint not a threshold);
+builder-fed side/endpoint/mass pin (item 4); `score` output, contexts and
+frame hashes unchanged without `wing_metrics`. **Touched.**
+predictive_cdf.py, test_predictive_cdf.py, child test_cdf_study.py (contract
+pin only), pipeline README/CLAUDE, this ADR. **Non-goals.** Builder or
+context changes, runs, new configs, λ tuning, feature selection,
+acceptance/promotion guards, StudentMixtureMLPCDF, non-integer Torch degrees.
+
+**Implementation record (2026-10-02, Claude Sonnet 5.5).** Measured at pin
+time (corrects item 5's prototype figures): Student CRPS vs scipy quad worst
+relative error 4e-8 for degrees >= 4 and 8e-7 for degrees 3; wing twCRPS worst
+absolute error 5e-9 at segment/scale 200 and 8e-6 at 1000 (about 1e-14 at 100,
+the realistic range); Student CDF 6e-16 absolute, 3e-11 relative in the lower
+tail. `wing_metrics` lives on the study config (a `ChronologicalCDFStudy` key
+the HPO study passes through), a strict bool needing `decision_context`.
+Refusals are early: `TorchCDF.fit_decision_context` validates both contexts
+on attach, the study validates every band before fitting when the flag is set.
+Mechanics: the Torch wing rule integrates positive-width pieces only (Student
+wing step at batch 1024, 4 segments, 3 components: 14 s dense, 1.3 s), the
+Student series is recomputed in backward, and `crps` is a template over
+`abs_error` and `pair_distance`.
+
 ## ADR-0222 — Data-driven holdout and count-sized rolling folds
 
 **Status:** accepted 2026-10-01 under the owner's standing conditional approval
@@ -29320,3 +29421,47 @@ those rows, so scored folds stay a clean simulation. Scored train windows hold
 warm-up rows lawfully (parameters refit; their labels settled before `val_start`
 by the embargo). **Non-goals:** selection consumers (steps 4-6),
 final test.
+
+## ADR-0223 — Fold-table splits and a patience stop for the Torch CDF study
+
+**Status:** proposed 2026-10-02 (owner pre-approves once review has no
+Critical/Major). Base 6394a41 + 8085997 (ADR-0222). **Sweep** (`fold_table
+patience early_stop label_reaches`): no `predictive_cdf` model monitors held-out
+rows (`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
+1. **Config.** `ChronologicalCDFStudy` takes `fold_table` XOR `years`
+   (`development_end` is refused with a table). `fold_table` = `{path, sha256,
+   holdout_start, cal_n, roles}`, all required: the plan's `records-write` file,
+   refused on sha mismatch; `holdout_start` by value; `roles` = the folds this
+   run fits. Per fold: val = its val dates, train = `[train_start, train_end]`,
+   cal = the last `cal_n` run-frame dates of train, fit = the rest, purged by
+   `label_reaches` (fit vs cal, cal vs val). Rows at/after `holdout_start`
+   (date or label) are refused; the child reader drops them first. Warm-up val
+   rows reaching `scored_start` (table-derived) drop (ADR-0222 seam). Scores
+   carry `fold`, not `year`; each fold refits.
+2. **HPO.** With a table, `development_years`, `label_cutoff` and
+   `evaluation_partitions` are refused as derived: search, selection and the
+   development evaluation use `warmup` folds only, `later` uses `scored` only.
+3. **Stop.** `MixtureMLPCDF`/`TorchCDF` gain `patience` (int >= 1; absent =
+   fixed `epochs`, digests unchanged): cal-slice objective, best-weight restore,
+   the only exit; reaching `epochs` first raises. Never the scored window;
+   `calibrate: true` with patience refuses (second map).
+**Pins.** Year configs' hashes and scores unchanged; each refusal above; roles.
+**Non-goals.** New configs, feature selection, cadence.
+
+## ADR-0224 — Exact-DTE cohort and Torch feature subset for the step 4-7 studies
+
+**Status:** accepted 2026-10-02 under the owner's standing conditional approval
+(review clean of Critical/Major at 1ea2a4b). Base c504a9f (ADR-0223). **Sweep** (`exact_dte
+feature_indices`): the panel reader has no per-horizon cohort; `feature_indices`
+exists on `MixtureMLPCDF` and others, but `TorchCDF` refuses it.
+1. **`data.exact_dte`** (int >= 1; absent = today's panel). `ExactExpiryCDFPanel`
+   keeps only rows whose `actual_calendar_dte` equals it, so step 1's winner
+   needs one `expected_cells` horizon. Validated by `check_int_param`.
+2. **`TorchCDF` `feature_indices`.** Accepted through `MixtureMLPCDF`'s one rule
+   (no restatement); absent = all features, digests unchanged. The subset is
+   taken before the encoder: GRU `sequence_indices`/`context_indices` are
+   positions WITHIN it and must partition it, else the build refuses. This
+   lets step 4 compare feature sets in one run and keeps `rn_q_*` baseline
+   columns in `study.features` out of the network. `head_features` and
+   `left_cdf_weight` stay refused.
+**Non-goals.** Per-fold DTE choice, new estimators, other encoders.
