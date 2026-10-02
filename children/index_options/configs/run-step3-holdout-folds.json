@@ -1,0 +1,1399 @@
+{
+  "name": "step3-holdout-folds",
+  "notes": "STEP 3 of the three-step data selection (ADR-0222): lock the holdout, admit the feature families, and cut the rolling-origin fold table. Input is step 2's dates.jsonl (onboarded through source-step2-dates.json) plus the same prepared panel as steps 1-2, read only for each cohort date's settlement_date. Order is the point: (1) holdout-cut locks the last 20% of the cohort's dates and purges dev rows whose label reaches it; (2) a family is admitted when available on >= tau (0.9) of dev dates, and training uses the complete-case dates; (3) rolling-origin-plan windows those dates into folds (train_n 450, val_n 40, step_n 40, the oldest warmup_folds 4 marked warmup, the rest scored) with the embargo equal to the selected DTE. Outputs in pipeline_runs/step3-holdout-folds: fold-table.jsonl (the fold table) and admission-and-metrics.jsonl (admitted families, holdout and plan metrics). The complete-case training dates are not written separately: a writer that runs before the plan could leave a stale file behind a refused run, and each fold's train window already names them. The knob values are derived in ADR-0222 from the committed QQQ rows and carried in each node's notes; nothing derivable is typed (embargo, holdout_start, tickers, dates). Selection in steps 4-6 uses warmup folds only and must drop every warm-up validation row whose label reaches plan.scored_start. Memory: the source and the panel are each read once; every other node holds at most one ticker's dates.",
+  "pipeline": {
+    "step2_dates": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/step2-dates-source",
+        "source": "step2-dates",
+        "stream": "dates",
+        "key_fields": [
+          "symbol",
+          "quote_date"
+        ],
+        "ts_field": "quote_date",
+        "ts_unit": "iso",
+        "ts_out": "quote_date_ms"
+      },
+      "notes": "Step 2's dates.jsonl onboarded through source-step2-dates.json, the way step 2 reads step 1's selected.jsonl: one row per cohort date and ticker with the 13 available_<family> yes/no flags and the selected actual_calendar_dte. key_fields is (symbol, quote_date) because step 2 refuses a date with two availability patterns, so a duplicate key here means the file was edited. ts_field is quote_date (ISO), not the ADR's asof_ms: these rows carry no asof_ms, and ts_out quote_date_ms is free because they carry no such field either. Use a fresh onboarding root whenever step 2 is re-run: acquired data is immutable."
+    },
+    "source": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "./pipeline_runs/cdf-horizon-source",
+        "source": "cdf-horizon-panel",
+        "stream": "input_panel",
+        "key_fields": [
+          "symbol",
+          "quote_date",
+          "expiry"
+        ],
+        "ts_field": "quote_date",
+        "ts_unit": "iso",
+        "ts_out": "quote_date_ms"
+      },
+      "notes": "The SAME prepared option panel steps 1-2 read, read here for ONE column step 2's dates.jsonl does not carry: settlement_date, the day each date's label is known (the holdout purge and the embargo need it as end_field). Only dates already in step 2's cohort are looked up from it; no panel row becomes a cohort row. Another panel changes only these params, exactly as in steps 1-2."
+    },
+    "columns": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "columns": {
+            "date_field": "quote_date",
+            "end_field": "settlement_date"
+          }
+        }
+      },
+      "notes": "The two column names holdout-cut and rolling-origin-plan must agree on, declared ONCE and referenced by both ($columns.merged.date_field / end_field), so the cut and the folds can never read different dates. date_field is the cohort date (entry day). end_field is settlement_date, the day the label is known: on all QQQ rows it is 7 days after the entry date, while expiry is 8-9 days out on 42 rows and would exceed the 7-day embargo and refuse (ADR-0222)."
+    },
+    "tau": {
+      "uses": "concat",
+      "params": {
+        "shape": "table",
+        "tables": {
+          "admission": {
+            "tau": 0.9
+          }
+        }
+      },
+      "notes": "tau, the family admission threshold, declared ONCE; every admit_<family> derive reads it ($tau.merged.tau). A family is admitted when it is available on at least tau of the pre-holdout dates. 0.9 admits 6 of the 13 (counting family flags only; the four aggregate available_core* flags are not families) families on the committed QQQ rows and leaves 1,096 complete-case dev dates (ADR-0222); judgment the owner may override. Gaps are assumed random for now, though surface gaps cluster in 2011-2014."
+    },
+    "fold_rows": {
+      "uses": "concat",
+      "inputs": {
+        "fold_table__each": "$fold_table.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each fold row carries its own symbol (the fold_table derive stamps it); the key check proves no ticker appears twice"
+      }
+    },
+    "fold_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$fold_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/step3-holdout-folds/fold-table.jsonl",
+        "source": "The fold table: one row per rolling-origin fold and ticker (fold, role warmup|scored, train/val start and end, date and ISO-week counts, purged), oldest first. Pin it by provenance.sha256 (metrics.sha256) and holdout_start by value; never re-cut it."
+      },
+      "notes": "Refuses to overwrite and needs its parent directory: mkdir -p pipeline_runs/step3-holdout-folds, and move that directory aside to repeat. With more than one ticker the file holds one fold-id series per ticker and each ticker has its own holdout_start, so the study's fold_table reader (unique fold ids, one holdout_start) refuses it: for a study, run with ONE foreach key (a copy of this file differing only there) and a fresh output directory."
+    },
+    "admission_rows": {
+      "uses": "concat",
+      "inputs": {
+        "protocol__each": "$protocol.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "each row carries its own symbol; the key check proves no ticker appears twice"
+      }
+    },
+    "admission_evidence": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$admission_rows.merged"
+      },
+      "params": {
+        "path": "./pipeline_runs/step3-holdout-folds/admission-and-metrics.jsonl",
+        "source": "One row per ticker: dev_dates, rate_<f> (share of dev dates on which family f is available), required_<f> (1 = admitted at tau), holdout (holdout-cut metrics: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows) and plan (rolling-origin-plan metrics: folds, scored, warmup_weeks, scored_start)"
+      },
+      "notes": "The persisted handoff values: a consumer reads holdout.holdout_start and plan.scored_start BY VALUE from here and never recomputes them (a fraction cut and an end-anchored grid both move when dates are appended). Same overwrite and parent-directory rules as fold_evidence."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/step3-holdout-folds/runs"
+  },
+  "foreach": {
+    "keys": [
+      "QQQ"
+    ],
+    "notes": "One ticker per run: the study's fold_table reader needs unique fold ids and one holdout_start, so run step 3 once per ticker (set keys to that ticker) into a fresh output directory, then point that ticker's study config at its fold table.",
+    "pipeline": {
+      "ticker_dates": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$step2_dates.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "This ticker's step-2 cohort dates. An empty result (a ticker step 2 never ran) leaves dte without an 'all' key and the run refuses at settled, the first node to read it."
+      },
+      "dte_groups": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$ticker_dates.records"
+        },
+        "params": {
+          "keys": [
+            "selection_group",
+            "actual_calendar_dte"
+          ],
+          "aggregates": {
+            "rows": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "One row per distinct DTE in the cohort: step 2 filtered to step 1's selected DTE, so there is exactly one. The keyby below refuses a second one."
+      },
+      "dte": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$dte_groups.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "actual_calendar_dte"
+        },
+        "notes": "The embargo, read from the rows' own actual_calendar_dte, which step 2 pinned to step 1's selected DTE (its agreed_dte refusal): never typed. keyby refuses a repeated key, so two DTEs in one cohort refuse instead of picking one. Calendar days to settlement is the lifetime of every label, so no label can outlive it."
+      },
+      "settled": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$source.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "symbol",
+              "op": "==",
+              "value": "$each"
+            },
+            {
+              "field": "actual_calendar_dte",
+              "op": "==",
+              "value": "$dte.table.all"
+            },
+            {
+              "field": "terminal_return",
+              "op": "!=",
+              "value": null
+            },
+            {
+              "field": "settlement_date",
+              "op": "!=",
+              "value": null
+            }
+          ]
+        },
+        "notes": "The panel rows at the cohort's DTE whose label is known (step 2's own terminal_return != null rule), kept only to read settlement_date."
+      },
+      "settlement_groups": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$settled.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "quote_date",
+            "settlement_date"
+          ],
+          "aggregates": {
+            "rows": {
+              "op": "count"
+            }
+          }
+        },
+        "notes": "One row per (date, settlement date): expiries on one date collapse here, and a date with two settlement dates yields two rows, which settlement_by_date refuses."
+      },
+      "settlement_by_date": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$settlement_groups.records"
+        },
+        "params": {
+          "key": "quote_date",
+          "value": "settlement_date"
+        },
+        "notes": "quote_date -> settlement_date. A date with two different settlement dates would make its label end ambiguous, so keyby refuses the repeated key."
+      },
+      "dated": {
+        "uses": "join",
+        "inputs": {
+          "records": "$ticker_dates.records",
+          "settlement_date": "$settlement_by_date.table"
+        },
+        "params": {
+          "key": "quote_date",
+          "how": "strict"
+        },
+        "notes": "Adds settlement_date to every cohort date. strict: a cohort date with no panel row at that DTE refuses naming the date, so the source or ticker changing between steps 2 and 3 cannot go unnoticed. This is the only join; step 2's rows lack the column and the kinds need it as end_field."
+      },
+      "cut": {
+        "uses": "holdout-cut",
+        "inputs": {
+          "records": "$dated.records"
+        },
+        "params": {
+          "date_field": "$columns.merged.date_field",
+          "end_field": "$columns.merged.end_field",
+          "fraction": 0.2
+        },
+        "notes": "Holdout FIRST, on the full cohort: the last ceil(0.2 x dates) dates are locked and only dev rows (dates before the holdout whose label settles before holdout_start) and dates-only metrics leave this node. fraction 0.2 (the owner's H) is 300 holdout dates, about 66 weeks, on the committed QQQ rows (1,497 dates); C4 needs at least 52 weeks, one annual cycle. Every node after this one reads $cut.records, never $dated, so nothing downstream can see a holdout row."
+      },
+      "has_implied_cdf": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$cut.records"
+        },
+        "params": {
+          "field": "has_implied_cdf",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_implied_cdf",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_implied_cdf",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        },
+        "notes": "has_<family>: step 2 writes each family's availability as the strings yes/no, and groupby mean needs numbers, so each family gets a 0/1 twin. Chained, one derive per family; derive is fail-closed, so any value other than yes/no (a step-2 vocabulary change) refuses instead of counting as 0. Dev rows only: the chain starts at $cut.records."
+      },
+      "has_return_history": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_implied_cdf.records"
+        },
+        "params": {
+          "field": "has_return_history",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_return_history",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_return_history",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_realized_volatility": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_return_history.records"
+        },
+        "params": {
+          "field": "has_realized_volatility",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_realized_volatility",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_realized_volatility",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_ohlc_shape": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_realized_volatility.records"
+        },
+        "params": {
+          "field": "has_ohlc_shape",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_ohlc_shape",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_ohlc_shape",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_ohlc_shape.records"
+        },
+        "params": {
+          "field": "has_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_volatility_context",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_volatility_context",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_expanded_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_volatility_context.records"
+        },
+        "params": {
+          "field": "has_expanded_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_expanded_volatility_context",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_expanded_volatility_context",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_surface_level": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_expanded_volatility_context.records"
+        },
+        "params": {
+          "field": "has_surface_level",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_surface_level",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_surface_level",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_surface_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_surface_level.records"
+        },
+        "params": {
+          "field": "has_surface_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_surface_changes",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_surface_changes",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_variance_gap": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_surface_changes.records"
+        },
+        "params": {
+          "field": "has_variance_gap",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_variance_gap",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_variance_gap",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_liquidity": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_variance_gap.records"
+        },
+        "params": {
+          "field": "has_liquidity",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_liquidity",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_liquidity",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_positioning_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_liquidity.records"
+        },
+        "params": {
+          "field": "has_positioning_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_positioning_changes",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_positioning_changes",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_macro_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_positioning_changes.records"
+        },
+        "params": {
+          "field": "has_macro_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_macro_context",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_macro_context",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "has_chain_nodes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$has_macro_context.records"
+        },
+        "params": {
+          "field": "has_chain_nodes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "available_chain_nodes",
+                  "op": "==",
+                  "value": "yes"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "available_chain_nodes",
+                  "op": "==",
+                  "value": "no"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admission": {
+        "uses": "groupby",
+        "inputs": {
+          "records": "$has_chain_nodes.records"
+        },
+        "params": {
+          "keys": [
+            "symbol",
+            "selection_group"
+          ],
+          "aggregates": {
+            "dev_dates": {
+              "op": "count"
+            },
+            "rate_implied_cdf": {
+              "op": "mean",
+              "field": "has_implied_cdf"
+            },
+            "rate_return_history": {
+              "op": "mean",
+              "field": "has_return_history"
+            },
+            "rate_realized_volatility": {
+              "op": "mean",
+              "field": "has_realized_volatility"
+            },
+            "rate_ohlc_shape": {
+              "op": "mean",
+              "field": "has_ohlc_shape"
+            },
+            "rate_volatility_context": {
+              "op": "mean",
+              "field": "has_volatility_context"
+            },
+            "rate_expanded_volatility_context": {
+              "op": "mean",
+              "field": "has_expanded_volatility_context"
+            },
+            "rate_surface_level": {
+              "op": "mean",
+              "field": "has_surface_level"
+            },
+            "rate_surface_changes": {
+              "op": "mean",
+              "field": "has_surface_changes"
+            },
+            "rate_variance_gap": {
+              "op": "mean",
+              "field": "has_variance_gap"
+            },
+            "rate_liquidity": {
+              "op": "mean",
+              "field": "has_liquidity"
+            },
+            "rate_positioning_changes": {
+              "op": "mean",
+              "field": "has_positioning_changes"
+            },
+            "rate_macro_context": {
+              "op": "mean",
+              "field": "has_macro_context"
+            },
+            "rate_chain_nodes": {
+              "op": "mean",
+              "field": "has_chain_nodes"
+            }
+          }
+        },
+        "notes": "The mean of each 0/1 flag over the PRE-HOLDOUT dates only (one row per ticker): the share of dev dates on which the family is available. The holdout never enters the admission, so which families train cannot depend on it."
+      },
+      "admit_implied_cdf": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admission.records"
+        },
+        "params": {
+          "field": "required_implied_cdf",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_implied_cdf",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_implied_cdf",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        },
+        "notes": "required_<family> = 1 when the family's dev availability rate is >= tau (declared once in the tau node), else 0. Admitted means required: a training date must have the family. Chained, one derive per family. Both outcomes are explicit cases, so an unorderable rate refuses."
+      },
+      "admit_return_history": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_implied_cdf.records"
+        },
+        "params": {
+          "field": "required_return_history",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_return_history",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_return_history",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_realized_volatility": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_return_history.records"
+        },
+        "params": {
+          "field": "required_realized_volatility",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_realized_volatility",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_realized_volatility",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_ohlc_shape": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_realized_volatility.records"
+        },
+        "params": {
+          "field": "required_ohlc_shape",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_ohlc_shape",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_ohlc_shape",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_ohlc_shape.records"
+        },
+        "params": {
+          "field": "required_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_volatility_context",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_volatility_context",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_expanded_volatility_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_volatility_context.records"
+        },
+        "params": {
+          "field": "required_expanded_volatility_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_expanded_volatility_context",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_expanded_volatility_context",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_surface_level": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_expanded_volatility_context.records"
+        },
+        "params": {
+          "field": "required_surface_level",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_surface_level",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_surface_level",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_surface_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_surface_level.records"
+        },
+        "params": {
+          "field": "required_surface_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_surface_changes",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_surface_changes",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_variance_gap": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_surface_changes.records"
+        },
+        "params": {
+          "field": "required_variance_gap",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_variance_gap",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_variance_gap",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_liquidity": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_variance_gap.records"
+        },
+        "params": {
+          "field": "required_liquidity",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_liquidity",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_liquidity",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_positioning_changes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_liquidity.records"
+        },
+        "params": {
+          "field": "required_positioning_changes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_positioning_changes",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_positioning_changes",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_macro_context": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_positioning_changes.records"
+        },
+        "params": {
+          "field": "required_macro_context",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_macro_context",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_macro_context",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "admit_chain_nodes": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_macro_context.records"
+        },
+        "params": {
+          "field": "required_chain_nodes",
+          "cases": [
+            {
+              "when": [
+                {
+                  "field": "rate_chain_nodes",
+                  "op": ">=",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 1
+            },
+            {
+              "when": [
+                {
+                  "field": "rate_chain_nodes",
+                  "op": "<",
+                  "value": "$tau.merged.tau"
+                }
+              ],
+              "value": 0
+            }
+          ]
+        }
+      },
+      "required_implied_cdf": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_implied_cdf.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_implied_cdf"
+        },
+        "notes": "The admission verdict as a one-key side table (key 'all'), so the training filter can read it as $required_<family>.table.all, the same shape as step 1's maximizers filter."
+      },
+      "required_return_history": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_return_history.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_return_history"
+        }
+      },
+      "required_realized_volatility": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_realized_volatility.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_realized_volatility"
+        }
+      },
+      "required_ohlc_shape": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_ohlc_shape.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_ohlc_shape"
+        }
+      },
+      "required_volatility_context": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_volatility_context.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_volatility_context"
+        }
+      },
+      "required_expanded_volatility_context": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_expanded_volatility_context.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_expanded_volatility_context"
+        }
+      },
+      "required_surface_level": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_surface_level.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_surface_level"
+        }
+      },
+      "required_surface_changes": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_surface_changes.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_surface_changes"
+        }
+      },
+      "required_variance_gap": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_variance_gap.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_variance_gap"
+        }
+      },
+      "required_liquidity": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_liquidity.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_liquidity"
+        }
+      },
+      "required_positioning_changes": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_positioning_changes.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_positioning_changes"
+        }
+      },
+      "required_macro_context": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_macro_context.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_macro_context"
+        }
+      },
+      "required_chain_nodes": {
+        "uses": "keyby",
+        "inputs": {
+          "records": "$admit_chain_nodes.records"
+        },
+        "params": {
+          "key": "selection_group",
+          "value": "required_chain_nodes"
+        }
+      },
+      "training": {
+        "uses": "filter",
+        "inputs": {
+          "records": "$has_chain_nodes.records"
+        },
+        "params": {
+          "where": [
+            {
+              "field": "has_implied_cdf",
+              "op": ">=",
+              "value": "$required_implied_cdf.table.all"
+            },
+            {
+              "field": "has_return_history",
+              "op": ">=",
+              "value": "$required_return_history.table.all"
+            },
+            {
+              "field": "has_realized_volatility",
+              "op": ">=",
+              "value": "$required_realized_volatility.table.all"
+            },
+            {
+              "field": "has_ohlc_shape",
+              "op": ">=",
+              "value": "$required_ohlc_shape.table.all"
+            },
+            {
+              "field": "has_volatility_context",
+              "op": ">=",
+              "value": "$required_volatility_context.table.all"
+            },
+            {
+              "field": "has_expanded_volatility_context",
+              "op": ">=",
+              "value": "$required_expanded_volatility_context.table.all"
+            },
+            {
+              "field": "has_surface_level",
+              "op": ">=",
+              "value": "$required_surface_level.table.all"
+            },
+            {
+              "field": "has_surface_changes",
+              "op": ">=",
+              "value": "$required_surface_changes.table.all"
+            },
+            {
+              "field": "has_variance_gap",
+              "op": ">=",
+              "value": "$required_variance_gap.table.all"
+            },
+            {
+              "field": "has_liquidity",
+              "op": ">=",
+              "value": "$required_liquidity.table.all"
+            },
+            {
+              "field": "has_positioning_changes",
+              "op": ">=",
+              "value": "$required_positioning_changes.table.all"
+            },
+            {
+              "field": "has_macro_context",
+              "op": ">=",
+              "value": "$required_macro_context.table.all"
+            },
+            {
+              "field": "has_chain_nodes",
+              "op": ">=",
+              "value": "$required_chain_nodes.table.all"
+            }
+          ]
+        },
+        "notes": "Complete-case training dates: a dev date stays only when every ADMITTED family is available on it (has_f >= required_f: an admitted family must be 1, a rejected one may be 0 or 1). On the committed QQQ rows this leaves 1,096 dev dates; C4 needs train_n + (warmup_folds + 10) x step_n = 450 + 14 x 40 = 1,010 of them, plus the embargo-excluded dates."
+      },
+      "plan": {
+        "uses": "rolling-origin-plan",
+        "inputs": {
+          "records": "$training.records"
+        },
+        "params": {
+          "date_field": "$columns.merged.date_field",
+          "end_field": "$columns.merged.end_field",
+          "holdout_start": "$cut.metrics.holdout_start",
+          "embargo_days": "$dte.table.all",
+          "train_n": 450,
+          "val_n": 40,
+          "step_n": 40,
+          "warmup_folds": 4
+        },
+        "notes": "Count-sized rolling folds over the training dates; all counts are DATES, not weeks. holdout_start and embargo_days are wired (the cut's metric; step 1's selected DTE as carried by the rows), never typed. val_n = step_n = 40 dates (about a 9-week minimum window, C2 >= 8) and train_n 450 dates (min 107 weeks, C3 >= 100) give 16 folds on the committed QQQ rows (C1 needs >= 10 scored). warmup_folds is the smallest k meeting C5 (warm-up validation spans >= 52 ISO weeks, every season once) that still leaves C1; ADR-0222 swept these rows: k=3: 41 weeks, 13 scored (fails C5); k=4: 56 weeks over 160 dates, 12 scored; k=5: 70, 11; k=6: 80, 10; k>=7 fails C1. So warmup_folds 4. All selection (steps 4-6) runs on role == warmup only; scored folds are the clean evidence. The plan refuses a row on or past holdout_start and a label longer than the embargo, and a ticker with too few dates (AMZN, 90) yields no fold and refuses. PROVISIONAL: these values were derived on step 2's current rows and must be re-derived, not merely re-tested, when step 2 is rebuilt; SPY and IWM have not been swept."
+      },
+      "fold_table": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$plan.records"
+        },
+        "params": {
+          "field": "symbol",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "Stamps the ticker on each fold row so several tickers can share one file. The plan's own columns are untouched, so the rows are exactly what the node emits."
+      },
+      "protocol_holdout": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$admit_chain_nodes.records"
+        },
+        "params": {
+          "field": "holdout",
+          "cases": [
+            {
+              "when": [],
+              "value": "$cut.metrics"
+            }
+          ]
+        },
+        "notes": "Attaches the holdout-cut metrics (dates only: holdout_start, holdout_end, holdout_dates, holdout_weeks, dev_dates, purged_rows) to the admission row."
+      },
+      "protocol": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$protocol_holdout.records"
+        },
+        "params": {
+          "field": "plan",
+          "cases": [
+            {
+              "when": [],
+              "value": "$plan.metrics"
+            }
+          ]
+        },
+        "notes": "Attaches the plan metrics (folds, scored, warmup_weeks, scored_start). The result is the single per-ticker row admission_evidence writes: the admitted families next to the two seams a consumer pins by value."
+      }
+    }
+  }
+}
