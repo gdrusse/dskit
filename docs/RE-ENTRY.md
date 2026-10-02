@@ -1,4 +1,59 @@
-# Active handoff — 2026-10-01: conversion and feature-gap audits delivered
+# Active handoff — 2026-10-02: exact-expiry CDF steps 1-7 built and configured
+
+Built and reviewed (two Sonnet skeptic lenses each, no Critical/Major open):
+ADR-0214 `weekday-onehot`; ADR-0217 step 1b (`attach-by-identity` +
+`ExactExpiryPanelRead`); ADR-0218 `crps`/`wing_twcrps` losses; ADR-0222
+`holdout-cut`/`rolling-origin-plan`; ADR-0223 study `fold_table` + `patience`;
+ADR-0224 `data.exact_dte` + TorchCDF `feature_indices`. Step 3-6 JSON configs
+re-reviewed after their fix commits. Nothing has run on real data yet.
+Owner decision 2026-10-02: steps 4-6 median-impute dates missing an
+admitted family inside each fold window (about 8% of QQQ dev dates); no
+complete-case filter.
+
+Runbook: `children/index_options/docs/plans/README.md`. Configs:
+`children/index_options/configs/run-step{1-expiry-coverage,1b-feature-engineering,2-feature-availability,3-holdout-folds,4-feature-selection,5-model-zoo,6-hpo}.json`.
+
+## Next-session prompt: finish QQQ 7-day, steps 1 -> 7
+
+Work in WSL from `children/index_options` with the project venv, under the
+runbook's systemd-run memory caps. Run in order; stop and report at the first
+refusal. Never read the holdout.
+
+1. Step 1: `run-step1-expiry-coverage.json`, `foreach.keys` `["QQQ"]`; onboard
+   `selected.jsonl` as in the steps 1-2 runbook.
+2. Step 1b: `run-step1b-feature-engineering.json`; onboard its panel
+   (`source-feature-panel.json`, root `./pipeline_runs/feature-panel-source`).
+3. Step 2: `run-step2-feature-availability.json` with
+   `pipeline.source.params.root` = `./pipeline_runs/feature-panel-source`.
+4. Step 3: onboard step 2's `dates.jsonl` (`source-step2-dates.json`), then run
+   `run-step3-holdout-folds.json`. Record the fold table's sha256
+   (`carry.json` `fold_evidence.provenance`) and `holdout_start`
+   (`admission-and-metrics.jsonl`).
+5. Write that sha256 and `holdout_start` into `study.fold_table` of the step
+   4, 5 and 6 configs (they refuse until filled).
+6. Step 4: `python -m index_options.cdf_study configs/run-step4-feature-selection.json --stage search --partition forward_1`,
+   then `--stage select`. If a family beats `core`, add its indices to every
+   candidate's `feature_indices`, drop that family's candidate, rename the
+   group `forward_2`, set a fresh `experiment.output`, and rerun. Stop when no
+   family beats core. Rule: higher warm-up validation wins; if comparable, the
+   more stable one.
+7. Step 5: copy the final `core` indices into `run-step5-model-zoo.json` and
+   `run-step6-hpo.json` (`feature_indices`; GRU `sequence`/`context`); `--stage
+   search --partition mlp`, `--partition gru`, then `--stage select`.
+8. Step 6: set the step-5 winner's encoder in `run-step6-hpo.json`; `--stage
+   search --partition mlp`, then `--stage select`.
+9. Step 7, same step-6 config: `--stage evaluate --partition development`,
+   `--stage evaluate --partition later` (scored folds), `--stage report`.
+
+Not in the study yet (do by hand or propose an ADR): within-family
+elimination, PCA on continuous features only, the 25%-std tie rule, weekly
+block bootstrap, the shuffled-leak check. Parked: AMZN (ADR-0216 draft
+`f64a26f`), intraday `tod_columns` migration, superseded ADR drafts 0219-0221,
+codex branch `c3ff39c`.
+
+# Re-entry
+
+## Conversion and feature-gap audits delivered (2026-10-01)
 
 AMZN conversion and both QQQ/AMZN JSON feature-gap interfaces are complete.
 Final candidate a0128bf3 passed two fresh independent lenses C0/M0/m0/N1;
@@ -31,7 +86,6 @@ cohort, inspect source release/vintage clocks, rerun gaps before feature
 selection/PCA/model training. AMZN returns/RV/OHLC need preparation; historical
 trade bars lack historical quote/IV/OI fields and current data cannot fill them.
 
-# Re-entry
 
 ## Option conversion requested; runbook independently reproduced (2026-10-01)
 

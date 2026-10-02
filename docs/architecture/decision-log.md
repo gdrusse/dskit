@@ -29121,7 +29121,7 @@ are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
 **Status:** accepted 2026-10-01 (owner chose option (a): a thin,
-project-specific child wrapper; clean Sonnet skeptic review at 142aa76 after six
+project-specific child wrapper; clean Sonnet skeptic review at a14581b after six
 rounds; revised 2026-10-02). Base: 46f3574. Owner question 1 resolved (all
 current-snapshot OI withheld; item 7). Owner ruling 2026-10-02:
 attach-by-identity graduates to dskit `kinds_flow.py`; the child keeps the
