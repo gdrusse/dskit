@@ -913,7 +913,7 @@ class AlpacaOptionFetchConnector(Connector):
                  "network and option-data access"]) from exc
 
     def discover(self, config):
-        """Describe the three normalized option streams without a vendor.
+        """Describe the two normalized option streams without a vendor.
 
         Parameters
         ----------

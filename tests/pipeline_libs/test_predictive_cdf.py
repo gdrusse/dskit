@@ -2213,3 +2213,25 @@ def test_cdf_estimator_model_refuses_calibration_consuming_estimator(tmp_path):
     })
     with pytest.raises(ValueError, match="consumes calibration labels"):
         node.run(ctx, {"rows": _model_rows()})
+
+
+def test_cdf_estimator_model_refuses_composite_cal_consumer(tmp_path):
+    from dskit.pipeline.base import TimeSplitConfig
+    from dskit.pipeline.node import NodeContext
+
+    day = 86400000
+    splits = TimeSplitConfig(train_end_ms=10 * day, val_end_ms=20 * day, test_end_ms=30 * day)
+    ctx = NodeContext(name="m", asof="2026-01-01", run_dir=str(tmp_path),
+                      splits=splits, splits_info=splits.to_obj())
+    node = CDFEstimatorModel("model", {
+        "estimator": "dskit.pipeline.libs.predictive_cdf:SemiparametricGPDTailCDF",
+        "estimator_params": {
+            "endpoint_class": "dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF",
+            "endpoint_params": {"alpha": 10, "floor": 0.02, "knots": 401},
+            "index_indices": [0],
+        },
+        "features": ["x0", "x1"],
+        "target": "label", "reference": "reference_scale",
+    })
+    with pytest.raises(ValueError, match="consumes calibration labels"):
+        node.run(ctx, {"rows": _model_rows()})

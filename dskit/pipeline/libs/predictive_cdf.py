@@ -1362,10 +1362,10 @@ def _label_free_endpoint(path, params):
     if not isinstance(path, str) or path.count(":") != 1 or not isinstance(params, dict):
         raise ValueError("invalid endpoint declaration")
     module, name = path.split(":", 1)
-    estimator = getattr(importlib.import_module(module), name)
+    estimator = getattr(importlib.import_module(module), name)(**params)
     if getattr(estimator, "consumes_calibration_labels", False):
         raise ValueError("nested endpoint cannot consume calibration labels")
-    return estimator(**params)
+    return estimator
 
 
 def _weighted_quantiles(values, probabilities, weights):
@@ -1797,10 +1797,10 @@ class TailConstrainedQuantileBlendCDF(CDFEstimator):
     @staticmethod
     def _endpoint(path, params):
         module, name = path.split(":", 1)
-        estimator = getattr(importlib.import_module(module), name)
+        estimator = getattr(importlib.import_module(module), name)(**params)
         if getattr(estimator, "consumes_calibration_labels", False):
             raise ValueError("nested endpoint cannot consume calibration labels")
-        return estimator(**params)
+        return estimator
 
     def _validate_x(self, x):
         import numpy as np
@@ -3270,8 +3270,15 @@ class ChronologicalCDFStudy:
                 raise ValueError("invalid model specification keys or pooled flag")
             if spec["calibrate"]:
                 module, cls = spec["class"].split(":")
-                estimator = getattr(importlib.import_module(module), cls)
-                if getattr(estimator, "consumes_calibration_labels", False):
+                est_cls = getattr(importlib.import_module(module), cls)
+                if getattr(est_cls, "consumes_calibration_labels", False):
+                    raise ValueError("estimator consumes calibration labels; second map refused")
+                try:
+                    instance = est_cls(**spec["params"])
+                except (TypeError, ValueError):
+                    instance = None
+                if instance is not None and getattr(
+                        instance, "consumes_calibration_labels", False):
                     raise ValueError("estimator consumes calibration labels; second map refused")
         frozen = config.get("frozen_variants")
         if (frozen is not None

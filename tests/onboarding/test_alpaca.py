@@ -313,7 +313,6 @@ def _option_config(**overrides):
         "dte_max": 45,
         "multiplier": 100,
         "status": "inactive",
-        "include_snapshots": False,
     }
     config.update(overrides)
     return config
@@ -423,20 +422,23 @@ def test_option_fetch_paginates_contracts(monkeypatch):
 
     class Paged(_FakeTradingClient):
         def __init__(self, key, secret):
-            self._pages = 0
+            self.tokens = []
 
         def get_option_contracts(self, request):
-            self._pages += 1
-            if self._pages == 1:
+            self.tokens.append(request.page_token)
+            if request.page_token is None:
                 return _FakeContractsResponse(
                     [_FakeContract("AMZN240202C00125000", "AMZN", "100", "american")],
                     next_page_token="tok")
-            return _FakeContractsResponse(
-                [_FakeContract("AMZN240202P00125000", "AMZN", "100", "american")])
+            if request.page_token == "tok":
+                return _FakeContractsResponse(
+                    [_FakeContract("AMZN240202P00125000", "AMZN", "100", "american")])
+            raise AssertionError(f"unexpected page_token {request.page_token!r}")
 
     monkeypatch.setenv("APCA_API_KEY_ID", "k")
     monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
-    monkeypatch.setattr(trading, "TradingClient", Paged)
+    client = Paged("k", "s")
+    monkeypatch.setattr(trading, "TradingClient", lambda k, s: client)
     monkeypatch.setattr(hist, "OptionHistoricalDataClient", _FakeHistoricalClient)
 
     from dskit.onboarding.libs.alpaca import AlpacaOptionFetchConnector
@@ -446,6 +448,7 @@ def test_option_fetch_paginates_contracts(monkeypatch):
     assert len(contracts) == 2
     assert {c["data"]["contract"] for c in contracts} == {
         "AMZN240202C00125000", "AMZN240202P00125000"}
+    assert client.tokens == [None, "tok"]
 
 
 def test_option_fetch_contract_is_admissible_to_the_panel(monkeypatch):
@@ -472,6 +475,4 @@ def test_option_fetch_contract_is_admissible_to_the_panel(monkeypatch):
         "max_quote_age_seconds": 900,
     })
     label = {"spot": 125.0, "entry_close_at": "2026-09-30T20:00:00+00:00"}
-    reasons = panel._admission(bar, label)
-    assert "unverified_contract_terms" not in reasons
-    assert "nonstandard_contract_terms" not in reasons
+    assert panel._admission(bar, label) == []
