@@ -29106,10 +29106,13 @@ holidays, any run.
 
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
-**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 and 2;
-awaiting owner approval. Base: 46f3574. No Python until approved and owner
-question 3 is answered; the JSON pipeline (Phase A) is not gated, the code
-(Phase B) is.
+**Status:** proposed 2026-10-01, revised 2026-10-02 after review rounds 1 to 3;
+awaiting owner approval. Base: 46f3574. Owner ruling 2026-10-02:
+attach-by-identity graduates to dskit `kinds_flow.py`; the child keeps the
+reader only. No Python until this ADR is approved; the JSON pipeline (Phase A)
+is not gated, the code (Phase B) is. AMZN is parked (owner ruling 2026-10-02):
+out of scope until its close-source ADR (ADR-0216) lands; this design serves
+SPY, QQQ and IWM.
 
 A step between step 1 (tradable dates) and step 2 (feature availability): a JSON
 pipeline whose output is a per-date panel, one row per ticker/quote_date/expiry
@@ -29152,8 +29155,14 @@ new `configs/source-feature-panel.json` (localtables, `effective_field`
 `quote_date`, `iso`) as `cdf-horizon-panel`/`input_panel` under root
 `./pipeline_runs/feature-panel-source`. Step 2 then changes one line,
 `source.params.root` (from `./pipeline_runs/cdf-horizon-source`); until the
-handoff pin passes that is a prediction. The FE config merges after the step-1/2
-rebuild.
+handoff pin passes that is a prediction. The root name is panel-neutral on
+purpose. The source node's `notes` sentence that both children onboard under the
+`cdf-horizon-source` names goes stale with the edit (notes are outside the
+identity hash). AMZN, parked, is not served by it: when unparked its runbook
+must onboard its own panel under this root (a `stock_options` runbook,
+`source-option-panel.json` note and test edit, not made here), and non-CDF
+families read `no` there, as step 2's notes already say. The FE config merges
+after the step-1/2 rebuild.
 
 1. **Two homes.** (a) **dskit, tier 1:** `AttachByIdentity` (`attach-by-identity`,
    `owned=False`, `role="transform"`, `serving_effect` `"pure"`) in
@@ -29182,11 +29191,12 @@ rebuild.
    default); `column_prefix` (columns `<prefix><family>_status`, `_reasons`);
    `families` = `{family: {fields, withheld_fields, clock_note}}`; optional
    `carried` = `{family: {fields, clock_note}}` for fields already on the
-   stream. `fields` is the family's contract columns plus those its quality
-   checks name (`market_*_age_days`, `market_*_missing`); `withheld_fields` is
-   `{field: reason}` (may be `{}`), a subset of `fields`; `clock_note` is a
-   non-empty string, hashed on purpose (a changed clock claim is a changed run).
-   A field in two families, or a family and `carried`, refuses.
+   stream (density, item 6; the OI subsets, item 7). `fields` is the family's
+   contract columns plus those its quality checks name (`market_*_age_days`,
+   `market_*_missing`); `withheld_fields` is `{field: reason}` (may be `{}`), a
+   subset of `fields`; `clock_note` is a non-empty string, hashed on purpose (a
+   changed clock claim is a changed run). A field in two families, or a family
+   and `carried`, refuses.
 4. **Attach run. Refuses:** `table` columns other than exactly `identity` +
    `agree_fields` + every `fields` (withheld too), a missing and an unclaimed
    column alike, which pins the reader's `columns` to this contract at run time;
@@ -29234,15 +29244,27 @@ rebuild.
    (`chain_log_delta_oi`, `_gamma_oi`, `_vega_oi`) **withheld**: null on every
    row, reason `oi_publication_clock_unverified` (config data, not a code
    vocabulary), until an audit shows archive `open_interest` excludes the entry
-   day's trades; lifting it is a JSON edit citing the audit. Expanded Cboe: last
-   close on a date strictly before entry (`allow_exact_matches=False`,
-   `cdf_study.py:2371`), never the entry-date close; age is entry date minus
-   that close's date, at least 1 and at most the data block's `max_age_days` (7,
-   `:2378`), else null with `_missing`; only the download vintage is uncertified
-   (a `clock_note`, not a withhold). Step 2's `>= 0` age bound is looser than the
-   node's `>= 1`; the pin below is the strict one. Nothing is imputed. Step 2's
-   flags are yes/no: a withheld, absent or null field reads `no`; the reason
-   lives in the panel and the summary.
+   day's trades; lifting it is a JSON edit citing the audit. The same entry
+   snapshot's OI feeds 11 fields of step 2's other families, which pass through
+   the stream untouched: `liquidity` `chain_log_put_call_oi` and
+   `chain_log_open_interest` (surface columns, `cdf_study.py:2095-2099`), and
+   `chain_nodes` `chain_node_00..08_log_oi` (`chosen.open_interest`, `:1781`).
+   They are `carried` as `liquidity_oi` and `chain_nodes_oi` (OI subsets of
+   those families) with `clock_note` "entry-snapshot OI; publication clock
+   unverified, same audit as positioning", echoed in `summary` and `provenance`
+   (item 5). No repo document establishes archive OI timing (grep, 2026-10-02).
+   They stay attached because withholding would read `no` on every date for all
+   of `liquidity` and `chain_nodes` on an unverified premise; if the audit finds
+   entry-day trades in OI, these 11 reach step 4 selection until withheld, and a
+   step-2 `yes` for either family does not certify OI timing (question 1).
+   Expanded Cboe: last close on a date strictly before entry
+   (`allow_exact_matches=False`, `cdf_study.py:2371`), never the entry-date
+   close; age is entry date minus that close's date, at least 1 and at most the
+   data block's `max_age_days` (7, `:2378`), else null with `_missing`; only the
+   download vintage is uncertified (a `clock_note`, not a withhold). Step 2's
+   `>= 0` age bound is looser than the node's `>= 1`; the pin below is the
+   strict one. Nothing is imputed. Step 2's flags are yes/no: a withheld, absent
+   or null field reads `no`; the reason lives in the panel and the summary.
 
 **Pins.** *Attach kind* (`tests/pipeline`): registration, `__all__`, `_PARAMS`,
 every refusal in item 4 (unclaimed column included), values equal `table`,
@@ -29275,9 +29297,16 @@ of the `market_*` entries feeding the family (all equal) and step 2's
 `market_*_age_days <=` bounds. *Config* (`tests/test_configs.py`): reader params
 equal the tail-data `data` block key by key over the node's keys; attach
 `families` `fields` equal step 2's same-named `family_contracts`; the shipped
-JSON withholds exactly the three OI x greek fields with that reason; its
-`agree_fields` include `terminal_return`, `actual_calendar_dte`, `chain_atm_iv`,
-`rv_22` and `rn_q_*`; the pipeline validates and plans. *Density:* a date with 3
+JSON withholds exactly the three OI x greek fields with that reason and carries
+`liquidity_oi` (2 fields) and `chain_nodes_oi` (`chain_node_00..08_log_oi`),
+each `fields` a subset of step 2's same-named contract; *OI completeness:* every
+field of a test-local, independently restated tuple of the contract fields
+derived from `open_interest` (the three above, the two lagged OI fields, the two
+liquidity, the nine node fields) is either withheld or in a `families`/`carried`
+entry whose `clock_note` names OI, and a contract field with an `oi` or
+`open_interest` name token outside the tuple fails; its `agree_fields` include
+`terminal_return`, `actual_calendar_dte`, `chain_atm_iv`, `rv_22` and `rn_q_*`;
+the pipeline validates and plans. *Density:* a date with 3
 in-horizon and 1 out-of-horizon expiries, plus another symbol's rows, gives 3 on
 every cohort row of that symbol; cohort-first gives 1 and fails the pin (`cohort`
 not upstream of `density`); expiries with planned DTE 13 and 14, both actual 13
@@ -29296,20 +29325,27 @@ null field; writer path and stream agree with the source config. **Touched.**
 runbook, the pipeline JSON, `configs/source-feature-panel.json`.
 
 **Rejected.** The whole mechanism as one child class (breaks the graduation
-rule; a second consumer is foreseeable; question 3). Composite keys in
-`keyby`/`join` (ADR-0086; one `keyby` and port per column is dozens of nodes and
-no audit). Graduating the formulas (re-implements tested code, byte-parity risk:
-only the plumbing graduates). A panel-only `cdf_study` CLI stage (computation
-outside a pipeline). One reader per family (a `read()` and a `data` block each).
-Pass-through columns from `read()` (FE becomes a second panel builder and step
-1's rows stop passing through). Withhold reasons as code constants (a new audit
-would edit code). Density counted on the cohort (constant 1), by actual DTE
-(label information), or called plainly entry-known (panel membership needs an
-observed settlement path). **Non-goals:** formula changes, macro, 21/41
-quantiles, AMZN, training, selection.
+rule; a second consumer is foreseeable; the owner rejected the waiver
+alternative, 2026-10-02). Withholding all 14 current-snapshot OI fields by
+default (zeroes two step-2 families on an unverified premise; question 1).
+Composite keys in `keyby`/`join` (ADR-0086; one `keyby` and port per column is
+dozens of nodes and no audit). Graduating the formulas (re-implements tested
+code, byte-parity risk: only the plumbing graduates). A panel-only `cdf_study`
+CLI stage (computation outside a pipeline). One reader per family (a `read()`
+and a `data` block each). Pass-through columns from `read()` (FE becomes a
+second panel builder and step 1's rows stop passing through). Withhold reasons
+as code constants (a new audit would edit code). Density counted on the cohort
+(constant 1), by actual DTE (label information), or called plainly entry-known
+(panel membership needs an observed settlement path). **Non-goals:** formula
+changes, macro, 21/41 quantiles, AMZN (parked), training, selection.
 
-**Owner question 1.** The three OI x greek fields: withheld as null (proposed)
-or attached labelled unverified?
+**Owner question 1.** Current-snapshot OI has 14 fields. (a) The three OI x
+greek withheld as null, the other 11 carried with the unverified-clock note
+(proposed: positioning's contract already requires the OI audit, liquidity's and
+chain_nodes' do not). (b) All 14 withheld: `carried` takes the same
+`withheld_fields` as `families` (the same loop, a small Phase B addition), and
+`liquidity` and `chain_nodes` read `no` on every date until the audit, unless
+split as in question 2. (c) All 14 attached labelled.
 **Owner question 2.** Positioning at step 2: (a) split into `positioning_verified`
 (5 fields) and `positioning_oi_exposure` (the 3 withheld) in both FE and step 2,
 so the trio cannot zero the 5 verifiable fields (14 families, 16,384
@@ -29317,8 +29353,3 @@ combinations per ticker; recommended; edits the concurrent step-2 contract,
 untouched here), or (b) one `positioning_changes` family that reads `no` on
 every date until the audit? Phase A ships (b), which matches step 2 today; (a)
 is a JSON-only change on both sides.
-**Owner question 3 (blocks Phase B).** Where does the attach and audit mechanism
-live? (a) `attach-by-identity` in dskit `kinds_flow.py` plus the thin child
-reader (proposed: standing graduation rule, ADR-0213's precedent, `stock_options`
-as second consumer); (b) one child class in `index_options`, which needs your
-explicit waiver of the graduation rule (same contract, only the home changes).
