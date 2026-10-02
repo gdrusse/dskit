@@ -699,6 +699,9 @@ on it without breaking its rulings.
   inside `run()`.
 - The synthetic `stat_test` is owned in DEMO registries only; never
   register synthetic nodes into `DEFAULT_NODE_KINDS`.
+- **`predictive_cdf._QUADRATURE_NODES` is shared by training and evaluation**:
+  the Torch wing/CRPS terms and `_Curve._segment_integrals` read it, and a test
+  pins that they agree. Change it in one place, never per side.
 
 ## Contents
 

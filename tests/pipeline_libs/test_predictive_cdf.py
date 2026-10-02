@@ -1,6 +1,7 @@
 """Independent numerical and temporal contracts for ADR-0189."""
 
 import copy
+import json
 
 import numpy as np
 import pandas as pd
@@ -1735,7 +1736,8 @@ def test_torch_loss_proper_scores_and_eligible_denominator():
     import torch
     y = torch.tensor([[0.], [9.]])
     logw, mu, sigma = torch.zeros((2, 1)), torch.zeros((2, 1), requires_grad=True), torch.ones((2, 1))
-    context = (torch.zeros((2, 1)), torch.tensor([[1.], [0.]]))
+    context = {"thresholds": torch.zeros((2, 1)),
+               "weights": torch.tensor([[1.], [0.]])}
     model = predictive_cdf.TorchCDF(
         encoder={"kind": "mlp"}, losses=[{"kind": "nll", "weight": .1},
                                        {"kind": "decision_brier", "weight": 2.},
@@ -1882,7 +1884,7 @@ def test_decision_threshold_precision_at_equality_and_neighbors(threshold, direc
     target = model._target_tensor(np.array([y]))
     context = model._training_context(np.zeros((1, 1)))
     loss_class = predictive_cdf._CDFDecisionBrier if loss_kind == "brier" else predictive_cdf._CDFDecisionLog
-    values, eligible = loss_class.values(
+    values, eligible = loss_class(model.family).values(
         target, torch.zeros((1,1)), torch.tensor([[threshold-1.2815515655446004]]),
         torch.ones((1,1)), context)
     assert eligible.item()
@@ -1939,14 +1941,17 @@ def test_torch_gru_refuses_invalid_feature_partitions(defect):
             device="cpu")
         model._build_module(4)
 
-@pytest.mark.parametrize("local_kind", ["decision_brier", "decision_log"])
-def test_torch_composite_gradient_is_invariant_to_batch_eligibility(local_kind):
+@pytest.mark.parametrize("global_kind", ["nll", "crps"])
+@pytest.mark.parametrize("local_kind", ["decision_brier", "decision_log", "wing_twcrps"])
+def test_torch_composite_gradient_is_invariant_to_batch_eligibility(local_kind, global_kind):
     import torch
     model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=[
-        {"kind": "nll", "weight": .1}, {"kind": local_kind, "weight": 1.}],
+        {"kind": global_kind, "weight": .1}, {"kind": local_kind, "weight": 1.}],
         device="cpu")
-    context = (torch.zeros((4, 1), dtype=torch.float64),
-               torch.tensor([[1.], [0.], [0.], [0.]], dtype=torch.float64))
+    column = lambda *values: torch.tensor([[v] for v in values], dtype=torch.float64)
+    context = {"thresholds": column(0., 0., 0., 0.), "weights": column(1., 0., 0., 0.),
+               "lower": column(-.5, 0., 0., 0.), "upper": column(.5, 0., 0., 0.),
+               "density": column(1., 0., 0., 0.)}
     def evaluate(partitions):
         mean = torch.tensor(0., requires_grad=True)
         total = mean*0
@@ -1978,6 +1983,773 @@ def test_torch_loss_report_refuses_unpaired_feature_rows_before_prediction():
     with pytest.raises(ValueError, match="paired"):
         model.loss_report(np.zeros((3, 1)), np.zeros(2), context)
 
+
+
+# ---- ADR-0218: CRPS and condor-wing twCRPS ---------------------------------
+
+_GAUSSIAN = {"kind": "gaussian"}
+_STUDENT = {"kind": "student", "degrees": 5}
+
+
+def _family(name, degrees=5):
+    if name == "gaussian":
+        return predictive_cdf._GaussianFamily(dict(_GAUSSIAN))
+    return predictive_cdf._StudentFamily({"kind": "student", "degrees": degrees})
+
+
+def _family_curve(name, w, m, s, degrees=5):
+    if name == "gaussian":
+        return MixtureCurve(w, m, s)
+    return predictive_cdf.StudentMixtureCurve(w, m, s, degrees=degrees)
+
+
+def _draw_mixture(rows=4, comps=3, seed=5):
+    rng = np.random.default_rng(seed)
+    w = rng.dirichlet(np.ones(comps), rows)
+    m = rng.normal(0, 1.2, (rows, comps))
+    s = np.exp(rng.uniform(np.log(.15), np.log(1.5), (rows, comps)))
+    return w, m, s, rng.normal(0, 1.5, rows)
+
+
+def _reference_cdf(name, w, m, s, degrees=5):
+    from scipy.special import ndtr, stdtr
+
+    def cdf(z):
+        c = (z-m)/s
+        return float((w*(ndtr(c) if name == "gaussian" else stdtr(degrees, c))).sum())
+    return cdf
+
+
+def _quad(function, lo, hi, knots=()):
+    from scipy.integrate import quad
+    if not hi > lo:
+        return 0.
+    inside = sorted(k for k in knots if lo < k < hi)
+    return quad(function, lo, hi, points=inside or None, limit=500,
+                epsabs=1e-13, epsrel=1e-12)[0]
+
+
+def _reference_wing(name, w, m, s, y, segments):
+    cdf = _reference_cdf(name, w, m, s)
+    total = 0.
+    for lo, hi, density in segments:
+        cut = min(max(y, lo), hi)
+        total += density*(_quad(lambda z: cdf(z)**2, lo, cut, m)
+                          + _quad(lambda z: (1-cdf(z))**2, cut, hi, m))
+    return total
+
+
+def _reference_crps(name, w, m, s, y, degrees=5):
+    cdf = _reference_cdf(name, w, m, s, degrees)
+    return (_quad(lambda z: cdf(z)**2, -np.inf, y)
+            + _quad(lambda z: (1-cdf(z))**2, y, np.inf))
+
+
+def _wing_record(name, thresholds, intervals):
+    n = len(thresholds)
+    return {"identity": [name], "thresholds": thresholds,
+            "weights": [1./n]*n if n else [], "intervals": intervals}
+
+
+def _wing_context():
+    return [
+        _wing_record("a", [-1.2, -.8, .6, 1.], [[-1.2, -.8], [.6, 1.]]),
+        _wing_record("b", [-1.5, -1., -.7, .5, .9, 1.4],
+                     [[-1.5, -1.], [-1., -.7], [.5, .9], [.9, 1.4]]),
+        _wing_record("c", [-2., -1.5, -1., .4, .8],
+                     [[-2., -1.], [-1.5, -1.], [.4, .8]]),
+        _wing_record("null", [], []),
+    ]
+
+
+# Hand-derived from the records above: each side's union carries mass 1/2,
+# uniform on that union, so density = 1/(2 * union length).
+_WING_SEGMENTS = [
+    [(-1.2, -.8, 1.25), (.6, 1., 1.25)],
+    [(-1.5, -.7, .625), (.5, 1.4, .5/.9)],
+    [(-2., -1., .5), (.4, .8, 1.25)],
+    [],
+]
+
+
+def _torch_context(scorer):
+    import torch
+    lower, upper, density, _ = scorer.segment_arrays()
+    thresholds, weights, _ = scorer.arrays()
+    return {key: torch.as_tensor(value, dtype=torch.float64) for key, value in
+            dict(lower=lower, upper=upper, density=density,
+                 thresholds=thresholds, weights=weights).items()}
+
+
+def test_wing_vocabulary_has_one_owner_and_matches_scorer_outputs():
+    owner = predictive_cdf.DecisionRegionScores
+    scorer = owner(_wing_context())
+    curve = MixtureCurve(*[a[:4] for a in _draw_mixture(4)[:3]])
+    produced = {*scorer.score(curve, np.zeros(4)), *scorer.wing_score(curve, np.zeros(4))}
+    assert produced == {*owner.METRIC_COUNTS, *owner.METRIC_COUNTS.values()}
+    assert set(owner.PROPER_METRICS) <= set(owner.METRIC_COUNTS)
+    assert set(owner.WING_METRICS) <= set(owner.PROPER_METRICS)
+    assert "decision_strike_brier" in owner.PROPER_METRICS
+    assert set(scorer.wing_score(curve, np.zeros(4))) == {
+        *owner.WING_METRICS, *(owner.METRIC_COUNTS[m] for m in owner.WING_METRICS)}
+
+
+def test_wing_groups_split_by_side_of_zero_and_refuse_straddling_intervals():
+    owner = predictive_cdf.DecisionRegionScores
+    lower, upper = owner.wing_groups([[-2., -1.], [.5, 1.], [-1., 0.], [0., .2]])
+    assert lower == [[-2., -1.], [-1., 0.]] and upper == [[.5, 1.], [0., .2]]
+    assert owner.wing_groups([]) == [[], []]
+    with pytest.raises(ValueError, match="straddl"):
+        owner.wing_groups([[-1., 1.]])
+
+
+def test_segments_from_groups_unions_each_group_and_splits_mass_evenly():
+    owner = predictive_cdf.DecisionRegionScores
+    got = owner.segments_from_groups([[[-2., -1.], [-1.5, -1.], [-1., -.5]], [[.4, .8]]])
+    assert got == [[-2., -.5, pytest.approx(1/(2*1.5))], [.4, .8, pytest.approx(1/(2*.4))]]
+    assert sum(d*(hi-lo) for lo, hi, d in got) == pytest.approx(1.)
+    assert owner.segments_from_groups([[], [[.4, .8]]]) == [[.4, .8, pytest.approx(2.5)]]
+    assert owner.segments_from_groups([]) == [] == owner.segments_from_groups([[], []])
+    touching = owner.segments_from_groups([[[0., 1.]], [[1., 2.]]])
+    assert [row[:2] for row in touching] == [[0., 1.], [1., 2.]]
+    with pytest.raises(ValueError, match="overlap"):
+        owner.segments_from_groups([[[0., 1.]], [[.9, 2.]]])
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda r: r.pop("intervals"), "intervals"),
+    (lambda r: r.update(intervals=[]), "both empty or both"),
+    (lambda r: r.update(thresholds=[], weights=[]), "both empty or both"),
+    (lambda r: r.update(intervals=[[-1.2, .6]]), "straddl"),
+    (lambda r: r.update(intervals=[[-1.2, -.79]]), "listed threshold"),
+    (lambda r: r.update(intervals=[[-.8, -1.2]]), "invalid"),
+    (lambda r: r.update(intervals=[[-1.2, float("nan")]]), "invalid"),
+    (lambda r: r.update(intervals=[[-1.2]]), "invalid"),
+])
+def test_wing_consumers_refuse_bad_intervals_but_other_uses_stay_valid(mutate, match):
+    record = _wing_context()[0]
+    mutate(record)
+    scorer = predictive_cdf.DecisionRegionScores([record])
+    scorer.arrays()
+    curve = MixtureCurve([[1.]], [[0.]], [[1.]])
+    if record.get("thresholds"):
+        scorer.score(curve, [0.])
+    with pytest.raises(ValueError, match=match):
+        scorer.segment_arrays()
+    with pytest.raises(ValueError, match=match):
+        scorer.wing_score(curve, [0.])
+
+
+def test_segment_arrays_derive_from_intervals_without_mutating_contexts():
+    context = _wing_context()
+    before = copy.deepcopy(context)
+    lower, upper, density, counts = predictive_cdf.DecisionRegionScores(context).segment_arrays()
+    assert context == before
+    assert counts.tolist() == [2, 2, 2, 0] and lower.shape == (4, 2)
+    for row, expected in enumerate(_WING_SEGMENTS):
+        for column, (lo, hi, d) in enumerate(expected):
+            assert (lower[row, column], upper[row, column]) == (lo, hi)
+            assert density[row, column] == pytest.approx(d)
+        assert (density[row, len(expected):] == 0).all()
+        assert (upper-lower)[row, len(expected):].tolist() == [0.]*(2-len(expected))
+        assert (density*(upper-lower)).sum(1)[row] == pytest.approx(1. if expected else 0.)
+
+
+def test_all_null_context_pads_to_one_empty_segment_and_scores_nan():
+    scorer = predictive_cdf.DecisionRegionScores([_wing_record("n", [], [])])
+    lower, upper, density, counts = scorer.segment_arrays()
+    assert lower.shape == (1, 1) and counts.tolist() == [0]
+    result = scorer.wing_score(MixtureCurve([[1.]], [[0.]], [[1.]]), [0.])
+    assert np.isnan(result["decision_wing_twcrps"]).all()
+    assert result["decision_wing_segment_count"].tolist() == [0]
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_wing_twcrps_matches_quadrature_scorer_and_sample_rule(name):
+    torch = pytest.importorskip("torch")
+    from dskit.pipeline.distribution_scores import SampleDistribution, ThresholdWeightedCrps
+    w, m, s, y = _draw_mixture(rows=4)
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context())
+    curve = _family_curve(name, w, m, s)
+    got = scorer.wing_score(curve, y)
+    assert got["decision_wing_segment_count"].tolist() == [2, 2, 2, 0]
+    assert np.isnan(got["decision_wing_twcrps"][3])
+    value = got["decision_wing_twcrps"][:3]
+    reference = [_reference_wing(name, w[i], m[i], s[i], y[i], _WING_SEGMENTS[i])
+                 for i in range(3)]
+    np.testing.assert_allclose(value, reference, rtol=0, atol=1e-10)
+    # Torch term and evaluation-side scorer are one quantity on one CDF.
+    family = _family(name)
+    term = predictive_cdf._CDFWingTwCRPS(family)
+    tensors = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+    values, eligible = term.values(*tensors, _torch_context(scorer))
+    assert eligible.tolist() == [True, True, True, False]
+    np.testing.assert_allclose(values.numpy()[:3], value, rtol=0, atol=1e-10)
+    # The sample-set twCRPS on the same curve's midpoint quantiles agrees.
+    quantiles = curve.quantile((np.arange(20000)+.5)/20000)
+    for i in range(3):
+        sample = sum(d*ThresholdWeightedCrps([[lo, hi]]).score(
+            SampleDistribution(quantiles[i]), y[i]) for lo, hi, d in _WING_SEGMENTS[i])
+        assert value[i] == pytest.approx(sample, abs=1e-6)
+
+
+# Measured at pin time against scipy quad (200 mixtures): Gaussian 1e-15,
+# Student nu=3 8e-7, nu=5 2e-8, nu=8 9e-11 worst relative error.
+@pytest.mark.parametrize("name,degrees,rtol", [
+    ("gaussian", 5, 1e-12), ("student", 3, 1e-5), ("student", 5, 2e-7), ("student", 8, 1e-8)])
+def test_crps_matches_quadrature_and_evaluation_side_crps(name, degrees, rtol):
+    torch = pytest.importorskip("torch")
+    from dskit.pipeline.distribution_scores import Crps, SampleDistribution
+    w, m, s, y = _draw_mixture(rows=4, comps=4, seed=8)
+    y[0] = m[0, 0]  # at a component mean: the diagonal/kink case
+    tensors = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+    got = _family(name, degrees).crps(*tensors).numpy()
+    reference = [_reference_crps(name, w[i], m[i], s[i], y[i], degrees) for i in range(len(y))]
+    np.testing.assert_allclose(got, reference, rtol=rtol, atol=0)
+    quantiles = _family_curve(name, w, m, s, degrees).quantile((np.arange(20000)+.5)/20000)
+    sample = [Crps().score(SampleDistribution(quantiles[i]), y[i]) for i in range(len(y))]
+    np.testing.assert_allclose(got, sample, rtol=0, atol=2e-5)
+
+
+@pytest.mark.parametrize("degrees", [3, 4, 5, 8, 9, 30, 31])
+def test_student_cdf_series_matches_scipy_and_gradient_is_the_density(degrees):
+    torch = pytest.importorskip("torch")
+    from scipy.special import stdtr
+    from scipy.stats import t as student
+    family = _family("student", degrees)
+    t = np.r_[-np.logspace(-3, 8, 300)[::-1], 0., np.logspace(-3, 8, 300)]
+    got = family.standard_cdf(torch.tensor(t, dtype=torch.float64)).numpy()
+    want = stdtr(degrees, t)
+    assert np.max(np.abs(got-want)) <= 1e-14
+    lower = t < 0
+    assert np.max(np.abs(got[lower]-want[lower])/want[lower]) <= 1e-9
+    grid = np.r_[np.linspace(-40, 40, 321), 0., -np.sqrt(degrees), np.sqrt(degrees)]
+    x = torch.tensor(grid, dtype=torch.float64, requires_grad=True)
+    family.standard_cdf(x).sum().backward()
+    np.testing.assert_allclose(x.grad.numpy(), student.pdf(grid, degrees),
+                               rtol=1e-9, atol=1e-14)
+    log_pdf = family.standard_log_pdf(torch.tensor(grid, dtype=torch.float64)).numpy()
+    np.testing.assert_allclose(log_pdf, student.logpdf(grid, degrees), rtol=1e-12)
+    log_cdf = family.standard_log_cdf(torch.tensor(t, dtype=torch.float64)).numpy()
+    np.testing.assert_allclose(log_cdf, np.log(want), rtol=1e-9, atol=1e-13)
+
+
+def test_gaussian_family_keeps_the_legacy_density_and_cdf_expressions():
+    torch = pytest.importorskip("torch")
+    import math
+    y = torch.tensor([[.3], [-1.]], dtype=torch.float64)
+    mu = torch.tensor([[0., .5], [.2, -.4]], dtype=torch.float64)
+    sigma = torch.tensor([[1., 2.], [.5, 1.5]], dtype=torch.float64)
+    legacy = -.5*((y-mu)/sigma)**2 - sigma.log() - .5*math.log(2*math.pi)
+    family = _family("gaussian")
+    assert torch.equal(family.log_density(y, mu, sigma), legacy)
+    model = MixtureMLPCDF(device="cpu")
+    assert torch.equal(model._logp(y, mu, sigma), legacy)
+    t = torch.linspace(-3, 3, 7, dtype=torch.float64)
+    assert torch.equal(family.standard_cdf(t), torch.special.ndtr(t))
+    assert torch.equal(family.standard_log_cdf(t), torch.special.log_ndtr(t))
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_node_constant_is_one_owner_for_training_and_evaluation(name, monkeypatch):
+    torch = pytest.importorskip("torch")
+    w, m, s, y = _draw_mixture(rows=3)
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context()[:3])
+    curve = _family_curve(name, w, m, s)
+    tensors = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+
+    def both():
+        term = predictive_cdf._CDFWingTwCRPS(_family(name))
+        values, _ = term.values(*tensors, _torch_context(scorer))
+        return values.numpy(), scorer.wing_score(curve, y)["decision_wing_twcrps"]
+
+    fine = both()
+    np.testing.assert_allclose(*fine, rtol=0, atol=1e-10)
+    monkeypatch.setattr(predictive_cdf, "_QUADRATURE_NODES", 1)
+    coarse = both()
+    np.testing.assert_allclose(*coarse, rtol=0, atol=1e-10)
+    assert np.max(np.abs(coarse[0]-fine[0])) > 1e-6
+    nodes, weights = predictive_cdf._gauss_legendre(5)
+    assert len(nodes) == len(weights) == 5 and weights.sum() == pytest.approx(2.)
+    nodes[:] = 0.
+    assert predictive_cdf._gauss_legendre(5)[0].any()
+
+
+def test_grid_curve_wing_integral_is_exact_for_piecewise_linear_and_atoms():
+    uniform = GridCurve([[0., 1.]], [[0., 1.]])
+    # y inside: int_.2^.3 z^2 + int_.3^.7 (1-z)^2
+    inside = (.3**3-.2**3)/3 + ((1-.3)**3-(1-.7)**3)/3
+    got = uniform._segment_integrals(np.array([[.2]]), np.array([[.7]]), np.array([.3]))
+    assert got[0, 0] == pytest.approx(inside, abs=1e-15)
+    atom = GridCurve([[0., .5, .5, 1.]], [[0., 0., 1., 1.]])
+    assert atom._segment_integrals(
+        np.array([[.2]]), np.array([[.8]]), np.array([.6]))[0, 0] == pytest.approx(.1)
+    # y outside the segment on either side; zero-width padding contributes nothing.
+    left = uniform._segment_integrals(np.array([[.2, 0.]]), np.array([[.7, 0.]]), np.array([-1.]))
+    assert left[0].tolist() == [pytest.approx(((1-.2)**3-(1-.7)**3)/3), 0.]
+    right = uniform._segment_integrals(np.array([[.2]]), np.array([[.7]]), np.array([5.]))
+    assert right[0, 0] == pytest.approx((.7**3-.2**3)/3)
+    kinked = GridCurve([[-1., 0., 2.]], [[0., .25, 1.]])
+    got = kinked._segment_integrals(np.array([[-.5]]), np.array([[1.5]]), np.array([.5]))[0, 0]
+    cdf = lambda z: float(np.interp(z, [-1., 0., 2.], [0., .25, 1.]))
+    reference = (_quad(lambda z: cdf(z)**2, -.5, .5, [0.])
+                 + _quad(lambda z: (1-cdf(z))**2, .5, 1.5, [0.]))
+    assert got == pytest.approx(reference, abs=1e-12)
+
+
+# Measured at pin time: segment/scale 200 gives worst abs error 5e-9 (Gaussian)
+# and 1e-10 (Student); at 1000 it is 8e-6. Standardized wings are far wider
+# than min_scale allows, so training sits many orders below these bounds.
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_wing_twcrps_stays_accurate_for_components_narrow_against_the_segment(name):
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(1)
+    term = predictive_cdf._CDFWingTwCRPS(_family(name))
+    context = {"lower": torch.tensor([[-10.]]), "upper": torch.tensor([[0.]]),
+               "density": torch.tensor([[1.]])}
+    for _ in range(6):
+        w, m = rng.dirichlet(np.ones(3)), rng.uniform(-11, 1, 3)
+        s, y = np.r_[.05, rng.uniform(.05, 2, 2)], rng.uniform(-11, 1)
+        got = term.values(
+            torch.tensor([[y]], dtype=torch.float64), torch.tensor(np.log(w))[None],
+            torch.tensor(m)[None], torch.tensor(s)[None], context)[0].item()
+        want = _reference_wing(name, w, m, s, y, [(-10., 0., 1.)])
+        assert abs(got-want) <= 5e-8
+
+
+def _dense_wing(curve, lower, upper, y, points=200_000):
+    """Midpoint-rule reference, valid for any curve with a rowwise cdf."""
+    out = np.zeros(len(y))
+    for i in range(len(y)):
+        cut = min(max(y[i], lower), upper)
+        for lo, hi, left in ((lower, cut, True), (cut, upper, False)):
+            if hi <= lo:
+                continue
+            z = lo + (np.arange(points)+.5)*(hi-lo)/points
+            f = np.interp(z, *curve_grid(curve, i, lo, hi))
+            out[i] += ((f if left else 1-f)**2).mean()*(hi-lo)
+    return out
+
+
+def curve_grid(curve, row, lo, hi, points=400_001):
+    z = np.linspace(lo, hi, points)
+    queries = np.broadcast_to(z, (len(curve.cdf([[0.]])), points))
+    return z, curve.cdf(queries)[row]
+
+
+def test_other_curves_use_documented_gauss_legendre_with_bounded_error():
+    w, m, s, y = _draw_mixture(rows=3)
+    base = MixtureCurve(w, m, s)
+    other = MixtureCurve(w[::-1].copy(), m[::-1].copy(), s[::-1].copy())
+    pit = np.array([.05, .2, .35, .5, .65, .9])
+    curves = {"convex": ConvexCurve(base, other, .3),
+              "calibrated": CalibratedCurve(base, pit, 5),
+              "beta": predictive_cdf.BetaTransformedCurve(base, 1.7, .8)}
+    lower, upper = np.full((3, 1), -2.), np.full((3, 1), -.4)
+    for name, curve in curves.items():
+        got = curve._segment_integrals(lower, upper, y)[:, 0]
+        want = _dense_wing(curve, -2., -.4, y)
+        np.testing.assert_allclose(got, want, rtol=1e-3, err_msg=name)
+
+
+def test_grid_curve_wing_integral_matches_a_dense_rule_on_random_curves():
+    rng = np.random.default_rng(4)
+    values = np.sort(rng.normal(size=(4, 7)), 1)
+    values[1, 3] = values[1, 4]  # an atom
+    probabilities = np.sort(rng.uniform(size=(4, 7)), 1)
+    probabilities[:, 0], probabilities[:, -1] = 0., 1.
+    curve = GridCurve(values, probabilities)
+    y = rng.normal(size=4)
+    got = curve._segment_integrals(np.full((4, 1), -1.5), np.full((4, 1), .9), y)[:, 0]
+    want = _dense_wing(curve, -1.5, .9, y)
+    np.testing.assert_allclose(got, want, rtol=1e-5)
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_wing_and_crps_gradients_match_finite_differences(name):
+    torch = pytest.importorskip("torch")
+    w, m, s, y = _draw_mixture(rows=2, comps=2, seed=2)
+    family = _family(name)
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context()[:2])
+    context = _torch_context(scorer)
+    yy = torch.tensor(y[:, None], dtype=torch.float64)
+    inputs = [torch.tensor(a, dtype=torch.float64, requires_grad=True)
+              for a in (np.log(w), m, s)]
+    wing = predictive_cdf._CDFWingTwCRPS(family)
+    assert torch.autograd.gradcheck(
+        lambda logw, mu, sigma: wing.values(yy, logw, mu, sigma, context)[0],
+        inputs, eps=1e-6, atol=1e-6, rtol=1e-5)
+    assert torch.autograd.gradcheck(
+        lambda logw, mu, sigma: family.crps(yy, logw, mu, sigma), inputs,
+        eps=1e-6, atol=1e-6, rtol=1e-5)
+
+
+def test_losses_registry_adds_crps_and_wing_with_declared_scopes():
+    registry = predictive_cdf.TorchCDF._LOSSES
+    assert {"nll", "crps", "decision_brier", "decision_log", "wing_twcrps"} <= set(registry)
+    assert {k: registry[k].scope for k in registry} == {
+        "nll": "global", "crps": "global", "decision_brier": "local",
+        "decision_log": "local", "wing_twcrps": "local"}
+    assert registry["wing_twcrps"].context_keys == ("lower", "upper", "density")
+    assert registry["decision_brier"].context_keys == ("thresholds", "weights")
+    assert registry["nll"].context_keys == () == registry["crps"].context_keys
+
+
+@pytest.mark.parametrize("losses", [
+    [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": .5}],
+    [{"kind": "crps", "weight": 1.}, {"kind": "decision_log", "weight": .5}],
+    [{"kind": "nll", "weight": 1.}, {"kind": "crps", "weight": 1.},
+     {"kind": "decision_brier", "weight": .5}, {"kind": "wing_twcrps", "weight": .5}],
+])
+def test_torch_cdf_requires_one_global_and_one_local_term_not_a_named_nll(losses):
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu")
+    assert [t["kind"] for t in model.loss_config] == [t["kind"] for t in losses]
+
+
+@pytest.mark.parametrize("losses", [
+    [{"kind": "nll", "weight": 1.}, {"kind": "crps", "weight": 1.}],
+    [{"kind": "decision_brier", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}],
+    [{"kind": "wing_twcrps", "weight": 1.}],
+    [{"kind": "nll", "weight": 1.}, {"kind": "wing_twcrps", "weight": 0.}],
+    [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.},
+     {"kind": "wing_twcrps", "weight": 1.}],
+    [{"kind": "crps", "weight": 1., "lambda": 2}, {"kind": "wing_twcrps", "weight": 1.}],
+])
+def test_torch_cdf_refuses_missing_scope_zero_weight_duplicates_and_extra_keys(losses):
+    with pytest.raises(ValueError, match="composite loss"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu")
+
+
+@pytest.mark.parametrize("family", [
+    {"kind": "student"}, {"kind": "student", "degrees": 2},
+    {"kind": "student", "degrees": 5.}, {"kind": "student", "degrees": 5.5},
+    {"kind": "student", "degrees": True}, {"kind": "student", "degrees": "5"},
+    {"kind": "gaussian", "degrees": 5}, {"kind": "cauchy"}, {}, "student", [],
+])
+def test_torch_cdf_family_is_default_deny(family):
+    with pytest.raises(ValueError, match="family"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, family=family, losses=[
+            {"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}],
+            device="cpu")
+
+
+def test_torch_cdf_family_selects_curve_and_keeps_default_state_unchanged():
+    losses = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.}]
+    default = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu")
+    named = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu",
+                                    family=dict(_GAUSSIAN))
+    student = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=losses, device="cpu",
+                                      family=dict(_STUDENT))
+    assert default.family_config is None and named.family_config == _GAUSSIAN
+    assert student.family_config == _STUDENT
+    args = ([[1.]], [[0.]], [[1.]])
+    assert type(default._curve(*args)) is MixtureCurve
+    assert type(named._curve(*args)) is MixtureCurve
+    curve = student._curve(*args)
+    assert type(curve) is predictive_cdf.StudentMixtureCurve and curve.degrees == 5
+    # Digest settings: byte-identical to the legacy literal unless a family is configured.
+    assert default._equivalence_settings() == {
+        "components": 3, "hidden": (32, 32), "epochs": 20, "batch_size": 1024,
+        "seeds": [11, 29], "device": "cpu", "learning_rate": .001,
+        "weight_decay": .01, "min_scale": .1, "activation": "tanh", "dropout": 0.,
+        "head_features": (), "deterministic": False}
+    assert "family" not in default._equivalence_settings()
+    assert named._equivalence_settings()["family"] == _GAUSSIAN
+    assert student._equivalence_settings()["family"] == _STUDENT
+    for model in (default, named, student):
+        model.losses = []  # unfitted: the research state only adds the configuration
+    assert "family" not in default._research_state()
+    assert student._research_state()["family"] == _STUDENT
+    assert MixtureMLPCDF(device="cpu")._equivalence_settings() == default._equivalence_settings()
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_wing_term_null_rows_add_only_global_terms_and_keep_lambda_undiluted(name):
+    torch = pytest.importorskip("torch")
+    family_config = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    model = predictive_cdf.TorchCDF(
+        encoder={"kind": "mlp"}, family=family_config, device="cpu",
+        losses=[{"kind": "crps", "weight": .7}, {"kind": "wing_twcrps", "weight": .3}])
+    context = _wing_context()
+    model.fit_decision_context(context, context)
+    training = model._training_context(np.zeros((4, 1)))
+    w, m, s, y = _draw_mixture(rows=4)
+    tensors = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+    family = _family(name)
+    crps = family.crps(*tensors).numpy()
+    wing = np.array([_reference_wing(name, w[i], m[i], s[i], y[i], _WING_SEGMENTS[i])
+                     for i in range(3)])
+    # A minibatch of {eligible row 0, null row 3}: lambda is scaled by N/|E|, never by batch.
+    ix = torch.tensor([0, 3])
+    batch = [t[ix] for t in tensors]
+    got = model._objective_loss(*batch, ix, training).item()
+    expected = .7*crps[[0, 3]].mean() + .3*wing[0]/2*4/3
+    assert got == pytest.approx(expected, rel=1e-6)
+    # An all-null batch contributes the global term only.
+    null_only = model._objective_loss(*[t[[3]] for t in tensors], torch.tensor([3]), training)
+    assert null_only.item() == pytest.approx(.7*crps[3], rel=1e-9)
+
+
+def test_wing_term_refuses_missing_intervals_when_the_context_is_attached():
+    model = predictive_cdf.TorchCDF(
+        encoder={"kind": "mlp"}, device="cpu",
+        losses=[{"kind": "nll", "weight": 1.}, {"kind": "wing_twcrps", "weight": .5}])
+    good = _wing_context()
+    bare = [{k: v for k, v in r.items() if k != "intervals"} for r in good]
+    with pytest.raises(ValueError, match="intervals"):
+        model.fit_decision_context(bare, good)
+    with pytest.raises(ValueError, match="intervals"):
+        model.fit_decision_context(good, bare)
+    straddle = copy.deepcopy(good)
+    straddle[0]["intervals"] = [[-1.2, .6]]
+    with pytest.raises(ValueError, match="straddl"):
+        model.fit_decision_context(straddle, good)
+    model.fit_decision_context(good, good)
+    model._training_context(np.zeros((4, 1)))
+    with pytest.raises(ValueError, match="no eligible training rows for wing_twcrps"):
+        model.fit_decision_context([good[3]], [good[3]])
+        model._training_context(np.zeros((1, 1)))
+    # Without a wing term the same bare contexts remain valid.
+    plain = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, device="cpu", losses=[
+        {"kind": "nll", "weight": 1.}, {"kind": "decision_brier", "weight": 1.}])
+    plain.fit_decision_context(bare, bare)
+    plain._training_context(np.zeros((4, 1)))
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+@pytest.mark.parametrize("kind", ["nll", "crps", "decision_brier", "decision_log", "wing_twcrps"])
+def test_every_family_and_term_has_finite_gradients_and_independent_reference(name, kind):
+    torch = pytest.importorskip("torch")
+    from scipy.stats import norm, t as student
+    w, m, s, y = _draw_mixture(rows=3)
+    family = _family(name)
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context()[:3])
+    context = _torch_context(scorer)
+    mu = torch.tensor(m, dtype=torch.float64, requires_grad=True)
+    sigma = torch.tensor(s, dtype=torch.float64, requires_grad=True)
+    logw = torch.tensor(np.log(w), dtype=torch.float64, requires_grad=True)
+    term = predictive_cdf.TorchCDF._LOSSES[kind](family)
+    values, eligible = term.values(torch.tensor(y[:, None]), logw, mu, sigma, context)
+    assert eligible.tolist() == [True]*3
+    values.sum().backward()
+    assert all(torch.isfinite(t.grad).all() and t.grad.abs().sum() > 0
+               for t in (mu, sigma, logw))
+    dist = norm if name == "gaussian" else student(5)
+    cdf = lambda z: (w[:, None, :]*(dist.cdf((np.asarray(z)[:, :, None]-m[:, None, :])
+                                              / s[:, None, :]))).sum(2)
+    if kind == "nll":
+        pdf = (w*dist.pdf((y[:, None]-m)/s)/s).sum(1)
+        want = -np.log(pdf)
+    elif kind == "crps":
+        want = [_reference_crps(name, w[i], m[i], s[i], y[i]) for i in range(3)]
+    elif kind == "wing_twcrps":
+        want = [_reference_wing(name, w[i], m[i], s[i], y[i], _WING_SEGMENTS[i])
+                for i in range(3)]
+    else:
+        thresholds, weights, _ = scorer.arrays()
+        p = cdf(thresholds)
+        truth = (y[:, None] <= thresholds)
+        want = (((p-truth)**2*weights).sum(1) if kind == "decision_brier" else
+                -((np.where(truth, np.log(p), np.log(1-p)))*weights).sum(1))
+    np.testing.assert_allclose(values.detach().numpy(), want, rtol=1e-7, atol=1e-9)
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_torch_cdf_wing_and_crps_train_report_and_curve_end_to_end(name):
+    torch = pytest.importorskip("torch")
+    family = dict(_GAUSSIAN if name == "gaussian" else _STUDENT)
+    context = _wing_context() + _wing_context()
+    for i, record in enumerate(context):
+        record["identity"] = [str(i)]
+    x = np.random.default_rng(1).normal(size=(8, 3))
+    y = np.linspace(-1.5, 1.5, 8)
+    model = predictive_cdf.TorchCDF(
+        encoder={"kind": "mlp"}, family=family, components=2, hidden=[4], epochs=2,
+        batch_size=4, seeds=[3], device="cpu", deterministic=True,
+        losses=[{"kind": "crps", "weight": 1.}, {"kind": "nll", "weight": .1},
+                {"kind": "wing_twcrps", "weight": .5}])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert np.isfinite(model.losses).all()
+    curve = model.curve(x)
+    assert type(curve) is (MixtureCurve if name == "gaussian"
+                           else predictive_cdf.StudentMixtureCurve)
+    report = model.loss_report(x, y, context)
+    assert set(report["terms"]) == {"crps", "nll", "wing_twcrps"}
+    assert report["terms"]["crps"]["n"] == 8 and report["terms"]["wing_twcrps"]["n"] == 6
+    assert report["eligible_n"] == 6 and report["threshold_n"] == 2*(4+6+5)
+    assert report["composite"] == pytest.approx(sum(
+        t["mean"]*t["weight"] for t in report["terms"].values()))
+    scorer = predictive_cdf.DecisionRegionScores(context)
+    wing = scorer.wing_score(curve, y)["decision_wing_twcrps"]
+    assert report["terms"]["wing_twcrps"]["mean"] == pytest.approx(np.nanmean(wing), rel=1e-9)
+    bare = [{k: v for k, v in r.items() if k != "intervals"} for r in context]
+    with pytest.raises(ValueError, match="intervals"):
+        model.loss_report(x, y, bare)
+
+
+def test_gaussian_default_training_loss_is_unchanged_by_the_family_seam():
+    """Legacy decision objective reproduced from its documented formula."""
+    torch = pytest.importorskip("torch")
+    from scipy.stats import norm
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, device="cpu", losses=[
+        {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 2.},
+        {"kind": "decision_log", "weight": 3.}])
+    context = _wing_context()
+    model.fit_decision_context(context, context)
+    training = model._training_context(np.zeros((4, 1)))
+    w, m, s, y = _draw_mixture(rows=4)
+    ix = torch.tensor([0, 1, 3])
+    tensors = [torch.tensor(a, dtype=torch.float64)[ix] for a in (y[:, None], np.log(w), m, s)]
+    got = model._objective_loss(*tensors, ix, training).item()
+    thresholds, weights, _ = predictive_cdf.DecisionRegionScores(context).arrays()
+    nll = -np.log((w*norm.pdf((y[:, None]-m)/s)/s).sum(1))
+    p = np.stack([(w[i, :, None]*norm.cdf((thresholds[i]-m[i][:, None])/s[i][:, None])).sum(0)
+                  for i in range(4)])
+    truth = y[:, None] <= thresholds
+    brier = ((p-truth)**2*weights).sum(1)
+    log = -((np.where(truth, np.log(p), np.log(1-p)))*weights).sum(1)
+    batch = [0, 1, 3]
+    expected = (.1*nll[batch].mean() + 2*brier[[0, 1]].sum()/3*4/3
+                + 3*log[[0, 1]].sum()/3*4/3)
+    assert got == pytest.approx(expected, rel=1e-6)
+
+
+# --- study wiring: wing_metrics ------------------------------------------------
+
+def _wing_hpo_fixture(tmp_path):
+    config, frame = _decision_hpo_fixture(tmp_path)
+    contexts = []
+    for row in frame.itertuples():
+        eligible = not row.date.endswith("01")
+        contexts.append(
+            {"identity": [row.unit, row.date, row.expiry],
+             "thresholds": [-.6, -.3, .3, .6] if eligible else [],
+             "weights": [.25]*4 if eligible else [],
+             "intervals": [[-.6, -.3], [.3, .6]] if eligible else []})
+    frame["context"] = contexts
+    config["study"]["wing_metrics"] = True
+    config["experiment"]["candidates"]["candidate"]["params"]["losses"] = [
+        {"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.},
+        {"kind": "wing_twcrps", "weight": .5}]
+    return config, frame
+
+
+@pytest.mark.parametrize("value", [1, "yes", None, 0.])
+def test_wing_metrics_flag_is_a_strict_bool(tmp_path, value):
+    config, _ = _wing_hpo_fixture(tmp_path)
+    config["study"]["wing_metrics"] = value
+    with pytest.raises(ValueError, match="wing"):
+        ChronologicalCDFStudy(config["study"])
+
+
+def test_wing_metrics_requires_decision_context_and_selection_requires_the_flag(tmp_path):
+    config, _ = _wing_hpo_fixture(tmp_path)
+    del config["study"]["decision_context"], config["study"]["decision_acceptance"]
+    with pytest.raises(ValueError, match="wing"):
+        ChronologicalCDFStudy(config["study"])
+    config, _ = _wing_hpo_fixture(tmp_path)
+    config["experiment"]["selection_metric"] = "decision_wing_twcrps"
+    CDFHyperparameterStudy(copy.deepcopy(config))
+    config["study"]["wing_metrics"] = False
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy(copy.deepcopy(config))
+    del config["study"]["wing_metrics"]
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy(copy.deepcopy(config))
+
+
+def test_without_wing_metrics_scores_contexts_and_config_are_unchanged(tmp_path):
+    config, frame = _decision_hpo_fixture(tmp_path)
+    before = copy.deepcopy(frame["context"].tolist())
+    scores = ChronologicalCDFStudy(config["study"]).run(frame)
+    assert not any("wing" in column for column in scores.columns)
+    assert frame["context"].tolist() == before
+    assert "wing_metrics" not in ChronologicalCDFStudy(config["study"]).to_obj()
+
+
+def test_decision_selection_guards_accept_only_the_decision_vocabulary(tmp_path):
+    config, _ = _wing_hpo_fixture(tmp_path)
+    e = config["experiment"]
+    e["selection_metric"] = "decision_wing_twcrps"
+    e["selection_guard"] = {"reference": "reference", "variant": "raw",
+                            "metrics": ["decision_bias"],
+                            "cell_improvement_metrics": ["decision_wing_twcrps"],
+                            "target": 0., "tolerance": 0.}
+    CDFHyperparameterStudy(copy.deepcopy(config))
+    e["selection_guard"]["metrics"] = ["crps"]
+    with pytest.raises(ValueError, match="decision regions"):
+        CDFHyperparameterStudy(copy.deepcopy(config))
+
+
+@pytest.mark.parametrize("family", [None, {"kind": "student", "degrees": 5}])
+def test_wing_hpo_end_to_end_reports_pairs_and_telemetry(tmp_path, family):
+    config, frame = _wing_hpo_fixture(tmp_path)
+    config["experiment"]["selection_metric"] = "decision_wing_twcrps"
+    if family:
+        config["experiment"]["candidates"]["candidate"]["params"]["family"] = family
+    study = CDFHyperparameterStudy(config)
+    provenance = {"fixture": "wing"}
+    identity = config["study"]["identity"]
+    hash_before = study._frame_hash(frame, identity)
+    study.run(frame, stage="search", partition="separate", provenance=provenance)
+    chosen = study.run(frame, stage="select", provenance=provenance)
+    assert chosen["selection_metric"] == "decision_wing_twcrps"
+    for partition in ("development", "later"):
+        study.run(frame, stage="evaluate", partition=partition, provenance=provenance)
+    report = study.run(frame, stage="report", provenance=provenance)
+    assert study._frame_hash(frame, identity) == hash_before
+    wing = next(r for r in report["metrics"] if r["model"] == "candidate"
+                and r["metric"] == "decision_wing_twcrps")
+    strike = next(r for r in report["metrics"] if r["model"] == "candidate"
+                  and r["metric"] == "decision_strike_brier")
+    assert wing["n"] == strike["n"] == 8 and wing["excluded_n"] == 2
+    assert wing["threshold_n"] == 16 and strike["threshold_n"] == 32
+    assert wing["equal_cell_skill"] is not None
+    pairs = [r for r in report["paired_block_intervals"]
+             if r["metric"] == "decision_wing_twcrps"]
+    assert pairs and {r["model"] for r in pairs} >= {"candidate"}
+    scores = pd.read_parquet(tmp_path/"hpo/report/scores.parquet")
+    assert scores.decision_wing_segment_count.isin([0, 2]).all()
+    assert scores.loc[scores.decision_wing_segment_count == 0, "decision_wing_twcrps"].isna().all()
+    counts = json.loads((tmp_path/"hpo/evaluate/later/counts.json").read_text())
+    for band in ("training", "calibration", "validation"):
+        values = counts[0]["candidate_losses"][band]
+        assert values["wing_twcrps"] > 0 and values["reference_wing_twcrps"] > 0
+        assert "wing_twcrps_skill_pct" in values and "wing_twcrps" in values["terms"]
+        assert values["terms"]["wing_twcrps"]["n"] == values["eligible_n"]
+
+
+def test_study_refuses_bad_wing_context_before_fitting_any_model(tmp_path):
+    config, frame = _wing_hpo_fixture(tmp_path)
+    row = next(i for i, record in enumerate(frame.context) if record["thresholds"])
+    frame.at[row, "context"] = {**frame.at[row, "context"], "intervals": [[-.6, -.2]]}
+    study = ChronologicalCDFStudy(config["study"])
+    with pytest.raises(ValueError, match="listed threshold"):
+        study.run(frame)
+    assert not (tmp_path/"unused/scores.parquet").exists()
+
+
+def test_decision_score_pairing_covers_wing_counts_and_eligibility(tmp_path):
+    config, frame = _wing_hpo_fixture(tmp_path)
+    models = {"candidate": config["experiment"]["candidates"]["candidate"],
+              **config["study"]["models"]}
+    study = ChronologicalCDFStudy({**config["study"], "models": models})
+    scores = study.run(frame)
+    study._validate_decision_scores(scores)
+    counted = scores.decision_wing_segment_count > 0
+    broken = scores.copy()
+    row = broken[(broken.model == "reference") & counted].index[0]
+    broken.loc[row, "decision_wing_segment_count"] = 0
+    with pytest.raises(ValueError):
+        study._validate_decision_scores(broken)
+    broken = scores.copy()
+    row = broken[(broken.model == "candidate") & counted].index[0]
+    broken.loc[row, "decision_wing_twcrps"] = np.nan
+    with pytest.raises(ValueError, match="eligibility"):
+        study._validate_decision_scores(broken)
+    broken = scores.drop(columns="decision_wing_segment_count")
+    with pytest.raises(ValueError, match="counts missing"):
+        study._validate_decision_scores(broken)
 
 
 def test_option_conversion_nodes_exist():

@@ -29190,3 +29190,17 @@ predictive_cdf.py, test_predictive_cdf.py, child test_cdf_study.py (contract
 pin only), pipeline README/CLAUDE, this ADR. **Non-goals.** Builder or
 context changes, runs, new configs, λ tuning, feature selection,
 acceptance/promotion guards, StudentMixtureMLPCDF, non-integer Torch degrees.
+
+**Implementation record (2026-10-02, Claude Sonnet 5.5).** Measured at pin
+time (corrects item 5's prototype figures): Student CRPS vs scipy quad worst
+relative error 4e-8 for degrees >= 4 and 8e-7 for degrees 3; wing twCRPS worst
+absolute error 5e-9 at segment/scale 200 and 8e-6 at 1000 (about 1e-14 at 100,
+the realistic range); Student CDF 6e-16 absolute, 3e-11 relative in the lower
+tail. `wing_metrics` lives on the study config (a `ChronologicalCDFStudy` key
+the HPO study passes through), a strict bool needing `decision_context`.
+Refusals are early: `TorchCDF.fit_decision_context` validates both contexts
+on attach, the study validates every band before fitting when the flag is set.
+Mechanics: the Torch wing rule integrates positive-width pieces only (Student
+wing step at batch 1024, 4 segments, 3 components: 14 s dense, 1.3 s), the
+Student series is recomputed in backward, and `crps` is a template over
+`abs_error` and `pair_distance`.

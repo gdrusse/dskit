@@ -306,16 +306,29 @@ not finite unbounded price moments. Public Gaussian defaults remain unchanged.
 ADR-0211 adds `TorchCDF` in this pack: JSON `encoder` selects `mlp`
 or `gru`; GRU `sequence_indices` lists oldest-to-newest per-step column
 groups and `context_indices` partitions the remaining input columns.
-`losses` declares positive `kind`/`weight` terms: `nll`,
-`decision_brier`, `decision_log`. NLL plus at least one local term is
-required. No instrument or index is encoded in this estimator.
+`losses` declares positive `kind`/`weight` terms: global `nll`, `crps`;
+local `decision_brier`, `decision_log`, `wing_twcrps` (ADR-0218). One global
+and one local term are required. Optional `family` is `{"kind": "student",
+"degrees": k}` (integer `k >= 3`); absent means Gaussian components.
+No instrument or index is encoded in this estimator.
 `DecisionRegionScores` consumes caller-bound threshold/weight inventories;
 the domain adapter owns the source clock and listed-wing eligibility.
-Local loss means divide by eligible rows, while NLL uses all rows. Minibatch
-local sums use the full training eligibility fraction, so sparse or empty
-eligible batches cannot silently dilute the configured local weights.
+Local loss means divide by eligible rows, while global terms use all rows.
+Minibatch local sums use the full training eligibility fraction, so sparse or
+empty eligible batches cannot silently dilute the configured local weights.
+`wing_twcrps` is the indicator-weighted CRPS over the condor wings, read from
+each record's existing `intervals` (no extra key): the put side (high <= 0) and
+call side (low >= 0) each take half the mass, uniform on the union of their
+intervals; the body and outer tails get none. Endpoints must be listed
+thresholds, intervals may not straddle zero, and thresholds and intervals are
+both empty (a null date: global terms only) or both not; wing consumers refuse
+otherwise. `DecisionRegionScores.wing_score` is the matching metric.
 
 For decision HPO, set `experiment.selection_metric=decision_strike_brier`.
+`study.wing_metrics=true` (needs `decision_context`) adds `decision_wing_twcrps`
+to scores, equal-cell skill, paired intervals and Torch telemetry, and allows it
+as `selection_metric`; mixtures integrate by Gauss-Legendre cut at the outcome
+and component means, grid curves exactly, other curves within 1e-3 relative.
 The standard search/select/evaluate/report CLI freezes development selection
 before later evaluation. `study.decision_acceptance` declares interval blocks,
 minimum local skill lower bound, and maximum equal-cell absolute local bias
