@@ -29450,8 +29450,8 @@ rows (`libs/torch.py` patience is Node-bound); `label_reaches` is imported.
 
 ## ADR-0224 — Exact-DTE cohort and Torch feature subset for the step 4-7 studies
 
-**Status:** proposed 2026-10-02 (owner pre-approves once review has no
-Critical/Major). Base c504a9f (ADR-0223). **Sweep** (`exact_dte
+**Status:** accepted 2026-10-02 under the owner's standing conditional approval
+(review clean of Critical/Major at 1ea2a4b). Base c504a9f (ADR-0223). **Sweep** (`exact_dte
 feature_indices`): the panel reader has no per-horizon cohort; `feature_indices`
 exists on `MixtureMLPCDF` and others, but `TorchCDF` refuses it.
 1. **`data.exact_dte`** (int >= 1; absent = today's panel). `ExactExpiryCDFPanel`
