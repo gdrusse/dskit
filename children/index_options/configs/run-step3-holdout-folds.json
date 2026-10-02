@@ -58,7 +58,7 @@
           }
         }
       },
-      "notes": "tau, the family admission threshold, declared ONCE; every admit_<family> derive reads it ($tau.merged.tau). A family is admitted when it is available on at least tau of the pre-holdout dates. 0.9 admits 10 of the 13 families on the committed QQQ rows and leaves 1,096 complete-case dev dates (ADR-0222); judgment the owner may override. Gaps are assumed random for now, though surface gaps cluster in 2011-2014."
+      "notes": "tau, the family admission threshold, declared ONCE; every admit_<family> derive reads it ($tau.merged.tau). A family is admitted when it is available on at least tau of the pre-holdout dates. 0.9 admits 6 of the 13 (counting family flags only; the four aggregate available_core* flags are not families) families on the committed QQQ rows and leaves 1,096 complete-case dev dates (ADR-0222); judgment the owner may override. Gaps are assumed random for now, though surface gaps cluster in 2011-2014."
     },
     "fold_rows": {
       "uses": "concat",
@@ -110,11 +110,9 @@
   },
   "foreach": {
     "keys": [
-      "QQQ",
-      "SPY",
-      "IWM"
+      "QQQ"
     ],
-    "notes": "The only ticker setting, and it must match step 2's: a ticker absent from step 2's dates refuses at settled, the first node that reads $dte.table.all. The values in this file are derived on QQQ; a ticker with too few complete-case dates refuses in plan and fails the run, so narrow the keys for a subset. AMZN is [\"AMZN\"], run from children/stock_options (90 dates: the plan refuses).",
+    "notes": "One ticker per run: the study's fold_table reader needs unique fold ids and one holdout_start, so run step 3 once per ticker (set keys to that ticker) into a fresh output directory, then point that ticker's study config at its fold table.",
     "pipeline": {
       "ticker_dates": {
         "uses": "filter",
