@@ -1,0 +1,57 @@
+{
+  "name": "option-universe-300-rank",
+  "notes": "ADR-0235: choose the next 300 optionable US stocks by total option-contract volume over the last 20 sessions, excluding the 117 already pulled. Reads the chain_volume stream acquired through configs/source-option-activity.json, ranks with TrailingRank, and writes configs/option_universe_300.json (ordered `tickers` plus the `ranking` rows with their 20-session volume). The pull config symbols come from that file, never typed. Run from children/index_options after the activity acquisition: python -m dskit.pipeline run configs/run-option-universe-300-rank.json --asof 2026-10-03. The writer refuses to overwrite: move the old file first or set overwrite.",
+  "pipeline": {
+    "chain_volume": {
+      "uses": "dskit.pipeline.libs.observations:ObservationRows",
+      "params": {
+        "root": "/home/russell/data/stock_options/option-universe-300-ranking",
+        "source": "option-activity",
+        "stream": "chain_volume",
+        "key_fields": [
+          "symbol",
+          "session"
+        ]
+      },
+      "notes": "Per-underlying, per-session total option volume (and count of contracts that traded) from the activity pull. A symbol missing from a session did not trade that day. The root is the machine store root (the established convention for onboarding store paths in these configs); change it per machine."
+    },
+    "rank": {
+      "uses": "dskit.pipeline.kinds_rank:TrailingRank",
+      "inputs": {
+        "records": "$chain_volume.records"
+      },
+      "params": {
+        "entity_field": "symbol",
+        "window_field": "session",
+        "value_field": "volume",
+        "window": 20,
+        "aggregate": "sum",
+        "top_n": 300,
+        "require_top_n": true,
+        "exclude_file": "configs/stock_universe.json",
+        "exclude_key": "tickers",
+        "entities_key": "tickers",
+        "rows_key": "ranking",
+        "exclude": [
+          "DXYZ"
+        ]
+      },
+      "notes": "window must equal the sessions the activity pull totalled (20); the node refuses a shorter history. The exclusion list is the 117-stock universe already pulled (stock_universe.json), read from its file so it is stated once. require_top_n turns a thin candidate pool into a refusal rather than a short universe. exclude lists tickers the name filter missed (DXYZ is a closed-end fund that read as a company); it adds to the file exclusions."
+    },
+    "universe_file": {
+      "uses": "table-write",
+      "inputs": {
+        "table": "$rank.table"
+      },
+      "params": {
+        "path": "configs/option_universe_300.json",
+        "source": "TrailingRank over 20 sessions of chain_volume (option-activity), top 300 excluding stock_universe.json",
+        "expect": 2
+      },
+      "notes": "expect counts the two top-level entries, tickers and ranking. The pull source config reads `tickers` from this file."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs/option-universe-300-rank/runs"
+  }
+}

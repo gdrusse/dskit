@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import PROTOCOL, Connector, backoff
 
 from .localtables import PinnedArchiveConnector
 
@@ -32,8 +32,13 @@ __all__ = [
     "DEFAULT_SECRET_ENV",
     "LIVE_MODE",
     "TIMEFRAME_UNITS",
+    "ACTIVITY_STREAMS",
+    "OPTION_CONTRACT_STREAM",
+    "OPTION_BAR_STREAM",
     "AlpacaBarsConnector",
+    "AlpacaOptionActivityConnector",
     "AlpacaOptionArchiveConnector",
+    "AlpacaOptionFetchConnector",
     "bar_timeframe",
     "resolve_credentials",
 ]
@@ -315,7 +320,7 @@ class AlpacaBarsConnector(Connector):
             )
         amount, unit = timeframe
         return {
-            "symbols": list(symbols),
+            "symbols": symbols,
             "start": start,
             "end": end,
             "feed": feed,
@@ -711,3 +716,897 @@ class AlpacaOptionArchiveConnector(PinnedArchiveConnector):
         readers = {"contracts": self._contracts, "bars": self._bars,
                    "snapshots": self._snapshots}
         return readers[stream](raw)
+
+
+OPTION_CONTRACT_STREAM = "contracts"
+OPTION_BAR_STREAM = "bars"
+_OPTION_STREAMS = (OPTION_CONTRACT_STREAM, OPTION_BAR_STREAM)
+_OPTION_STREAM_KEYS = {
+    OPTION_CONTRACT_STREAM: ("contract",),
+    OPTION_BAR_STREAM: ("contract", "quote_date"),
+}
+_DEFAULT_OPTION_MULTIPLIER = 100
+_DEFAULT_OPTION_STATUS = "inactive"
+_DEFAULT_MAX_SYMBOLS_PER_REQUEST = 100
+
+
+class _AlpacaOptionTransport(Connector):
+    """Shared Alpaca option-connector plumbing: credentials, timeout, retry.
+
+    Parameters
+    ----------
+    None
+        Abstract; subclasses declare ``spec``, ``discover`` and ``read``.
+
+    Examples
+    --------
+    Subclass it for a connector that talks to the option endpoints::
+
+        class MyOptionPull(_AlpacaOptionTransport):
+            ...
+    """
+
+    @staticmethod
+    def _symbols_knob(config, errors, required):
+        """Resolve ``symbols`` or ``symbols_file`` + ``symbols_key`` to a list (or None).
+
+        Exactly one source may be declared. A file is JSON holding the list
+        under ``symbols_key``. Its path expands ``~`` and ``$VAR`` and must
+        then be absolute (a working-directory-relative path would name a
+        different file per launch directory), and ``symbols_sha256`` (sha256
+        of the file's bytes) is REQUIRED and verified, so the stored source
+        config pins the list itself and an edited file refuses instead of
+        mixing two lists inside one source.
+        """
+        import hashlib
+        import json
+        import os
+
+        listed = config.get("symbols")
+        path, key = config.get("symbols_file"), config.get("symbols_key")
+        digest = config.get("symbols_sha256")
+        if path is None and digest is not None:
+            errors.append("config.symbols_sha256 needs symbols_file")
+        if listed is not None and (path is not None or key is not None):
+            errors.append("config.symbols excludes symbols_file/symbols_key")
+        elif (path is None) != (key is None):
+            errors.append("config.symbols_file and config.symbols_key go together")
+        elif path is not None:
+            if not isinstance(digest, str) or not digest:
+                errors.append("config.symbols_file requires config.symbols_sha256")
+                return None
+            try:
+                path = os.path.expandvars(os.path.expanduser(path))
+                if not os.path.isabs(path):
+                    errors.append("config.symbols_file must be absolute after ~ and "
+                                  "$VAR expansion")
+                    return None
+                with open(path, "rb") as handle:
+                    raw = handle.read()
+                doc = json.loads(raw.decode("utf-8"))
+            except (OSError, TypeError, ValueError) as exc:
+                errors.append(f"config.symbols_file unreadable: {exc}")
+                return None
+            if hashlib.sha256(raw).hexdigest() != digest:
+                errors.append(f"config.symbols_sha256 does not match {path}: the "
+                              "list changed since this config was written")
+                return None
+            listed = doc.get(key) if isinstance(doc, dict) else None
+            if listed is None:
+                errors.append(f"config.symbols_key {key!r} not found in {path}")
+                return None
+        if listed is None and not required:
+            return None
+        if (not isinstance(listed, (list, tuple)) or not listed
+                or any(not isinstance(x, str) or not x for x in listed)
+                or len(set(listed)) != len(listed)):
+            errors.append("config.symbols must be a non-empty list of distinct symbols")
+            return None
+        return list(listed)
+
+    @staticmethod
+    def _transport_knobs(config, errors):
+        """Validate the timeout, retry and credential-name knobs shared by every option pull."""
+        timeout = config.get("request_timeout_seconds", 60)
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or timeout < 1):
+            errors.append("config.request_timeout_seconds must be a positive number")
+        max_retries = config.get("max_retries", 5)
+        if (isinstance(max_retries, bool) or not isinstance(max_retries, int)
+                or max_retries < 1):
+            errors.append("config.max_retries must be an int >= 1")
+        key_env = config.get("key_env", DEFAULT_KEY_ENV)
+        secret_env = config.get("secret_env", DEFAULT_SECRET_ENV)
+        for name, value in (("key_env", key_env), ("secret_env", secret_env)):
+            if not isinstance(value, str) or not value:
+                errors.append(f"config.{name} must be a non-empty env-var name")
+        return {"request_timeout_seconds": timeout, "max_retries": max_retries,
+                "key_env": key_env, "secret_env": secret_env}
+
+    def _credentials(self, knobs):
+        """Resolve the named key pair at the vendor boundary."""
+        return resolve_credentials(knobs)
+
+    @staticmethod
+    def _set_socket_timeout(seconds):
+        import socket
+        previous = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(seconds)
+        return previous
+
+    @staticmethod
+    def _restore_socket_timeout(previous):
+        import socket
+        socket.setdefaulttimeout(previous)
+
+    def _contract_client(self, key, secret):
+        from alpaca.trading.client import TradingClient
+        return TradingClient(key, secret)
+
+    def _vendor(self, knobs, call):
+        """Run one vendor call, retrying timeouts with exponential backoff."""
+        import time
+
+        for attempt in range(1, knobs["max_retries"] + 1):
+            try:
+                return call()
+            except AssetError:
+                raise
+            except Exception:
+                if attempt == knobs["max_retries"]:
+                    raise
+                time.sleep(backoff(attempt))
+
+
+class AlpacaOptionFetchConnector(_AlpacaOptionTransport):
+    """Fetch Alpaca option contracts and daily trade bars.
+
+    Replicates the AMZN historical pull (ADR-0213) for a config-declared
+    ``symbols`` list: inactive contracts from the option-contracts endpoint and
+    daily trade bars over the per-expiry DTE window. Emits the same
+    ``contracts``/``bars`` stream vocabulary and row fields as
+    :class:`AlpacaOptionArchiveConnector`, so the stock-options panel flow
+    consumes fetched rows identically to a pinned archive. Current indicative
+    quotes/snapshots are a separate pull (as they were in the archive) and are
+    out of scope here; the free tier returns trade bars only, so fills stay out
+    of scope too.
+
+    Credential material is named by environment variables (``key_env`` /
+    ``secret_env``), never held in config. Heavy imports stay inside methods.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Declare the pull without importing the SDK::
+
+        connector = AlpacaOptionFetchConnector()
+        streams = connector.discover({
+            "symbols": ["AMZN", "MSFT"],
+            "start": "2024-02-01",
+            "end": "2026-09-30",
+            "dte_min": 30, "dte_max": 45,
+        })
+    """
+
+    def spec(self):
+        """Declare the default-deny Alpaca option-fetch configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
+        return {"params": {
+            "symbols": {
+                "notes": "Non-empty list of underlying symbols to pull; or "
+                         "declare symbols_file + symbols_key instead.",
+            },
+            "symbols_file": {
+                "notes": "JSON file holding the symbol list under symbols_key "
+                         "(path relative to the working directory), so a "
+                         "ranking output drives the pull without restating it. "
+                         "Absolute after ~/$VAR expansion; needs symbols_sha256.",
+            },
+            "symbols_key": {"notes": "Key of the list inside symbols_file."},
+            "symbols_sha256": {"notes": "REQUIRED with symbols_file: sha256 of the file's "
+                                        "bytes; a changed file refuses."},
+            "start": {
+                "required": True,
+                "notes": "Earliest ISO date (inclusive) for contract expiration.",
+            },
+            "end": {
+                "notes": "Optional INCLUSIVE ISO upper bound on contract expiration.",
+            },
+            "dte_min": {
+                "notes": "Fewest days-to-expiry a bar is fetched for; default 30.",
+            },
+            "dte_max": {
+                "notes": "Most days-to-expiry a bar is fetched for; default 45.",
+            },
+            "multiplier": {
+                "notes": f"Standard contract multiplier gate; default "
+                         f"{_DEFAULT_OPTION_MULTIPLIER}.",
+            },
+            "status": {
+                "notes": f"Contract status filter; default {_DEFAULT_OPTION_STATUS!r}.",
+            },
+            "feed": {
+                "notes": "Option data feed (opra | indicative); default indicative.",
+            },
+            "timeframe": {
+                "notes": "Bar interval [amount, unit]; default [1, 'Day'].",
+            },
+            "max_symbols_per_request": {
+                "notes": "Bar symbols per request; default "
+                         f"{_DEFAULT_MAX_SYMBOLS_PER_REQUEST}.",
+            },
+            "request_timeout_seconds": {
+                "notes": "Per-request socket timeout; default 60. A hung "
+                         "provider response fails fast instead of stalling "
+                         "the pull.",
+            },
+            "max_retries": {
+                "notes": "Retries per vendor request on timeout/connection "
+                         "failure, with exponential backoff; default 5.",
+            },
+            "key_env": {
+                "secret": True,
+                "notes": f"Environment variable naming the Alpaca key; "
+                         f"default {DEFAULT_KEY_ENV}.",
+            },
+            "secret_env": {
+                "secret": True,
+                "notes": f"Environment variable naming the Alpaca secret; "
+                         f"default {DEFAULT_SECRET_ENV}.",
+            },
+        }}
+
+    def resolve_knobs(self, config):
+        """Resolve and validate every knob, defaulting optional ones."""
+        errors = []
+        symbols = self._symbols_knob(config, errors, required=True)
+        start = config.get("start")
+        if not isinstance(start, str) or not start:
+            errors.append("config.start must be an ISO date string")
+        end = config.get("end", "")
+        if end and (not isinstance(end, str) or not end):
+            errors.append("config.end must be an ISO date string or absent")
+        dte_min = config.get("dte_min", 30)
+        dte_max = config.get("dte_max", 45)
+        for name, value in (("dte_min", dte_min), ("dte_max", dte_max)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append(f"config.{name} must be an int >= 1")
+        if not isinstance(dte_min, bool) and not isinstance(dte_max, bool) \
+                and isinstance(dte_min, int) and isinstance(dte_max, int) \
+                and dte_min > dte_max:
+            errors.append("config.dte_min must not exceed config.dte_max")
+        multiplier = config.get("multiplier", _DEFAULT_OPTION_MULTIPLIER)
+        if (isinstance(multiplier, bool) or not isinstance(multiplier, int)
+                or multiplier < 1):
+            errors.append("config.multiplier must be a positive int")
+        status = config.get("status", _DEFAULT_OPTION_STATUS)
+        if not isinstance(status, str) or not status:
+            errors.append("config.status must be a non-empty string")
+        timeframe = config.get("timeframe", [1, "Day"])
+        errors.extend(_timeframe_problems(timeframe))
+        max_symbols = config.get("max_symbols_per_request",
+                                 _DEFAULT_MAX_SYMBOLS_PER_REQUEST)
+        if (isinstance(max_symbols, bool) or not isinstance(max_symbols, int)
+                or max_symbols < 1):
+            errors.append("config.max_symbols_per_request must be a positive int")
+        transport = self._transport_knobs(config, errors)
+        if errors:
+            raise AssetError(errors)
+        return {
+            "symbols": list(symbols),
+            "start": start,
+            "end": end or None,
+            "dte_min": dte_min,
+            "dte_max": dte_max,
+            "multiplier": multiplier,
+            "status": status,
+            "feed": config.get("feed", "indicative"),
+            "timeframe": list(timeframe),
+            "max_symbols_per_request": max_symbols,
+            **transport,
+        }
+
+    def check(self, config):
+        """Validate config, credentials, and one authenticated probe.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AssetError
+            If config, credentials, SDK loading, or the probe fails.
+        """
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import GetOptionContractsRequest
+
+            client = TradingClient(key, secret)
+            client.get_option_contracts(GetOptionContractsRequest(
+                underlying_symbols=knobs["symbols"][:1],
+                status=knobs["status"], limit=1))
+        except Exception as exc:
+            raise AssetError(
+                ["Alpaca option-contracts probe failed; check credentials, "
+                 "network and option-data access"]) from exc
+
+    def discover(self, config):
+        """Describe the two normalized option streams without a vendor.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        list
+            One stream declaration per option stream.
+
+        Raises
+        ------
+        AssetError
+            If config values are invalid.
+        """
+        self.resolve_knobs(config)
+        out = []
+        for stream in _OPTION_STREAMS:
+            out.append({
+                "stream": stream,
+                "schema": {"fields": []},
+                "primary_key": list(_OPTION_STREAM_KEYS[stream]),
+            })
+        return out
+
+    def read(self, config, streams, state, mode):
+        """Emit schemas, normalized records and one checkpoint.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+        streams : list
+            Requested streams.
+        state : dict
+            Prior mode-keyed connector checkpoint; ``{}`` on first pull.
+        mode : str
+            ``backfill`` or ``live``.
+
+        Yields
+        ------
+        dict
+            Onboarding protocol messages.
+
+        Raises
+        ------
+        AssetError
+            If arguments, config, or the vendor request fail.
+        """
+        if not isinstance(state, dict):
+            raise AssetError([f"state must be a dict, got {state!r}"])
+        if not isinstance(streams, list) or not streams:
+            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
+        if mode not in MODES:
+            raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
+        unknown = [s for s in streams if s not in _OPTION_STREAMS]
+        if unknown:
+            raise AssetError([f"unknown stream(s) {unknown}; discovered: "
+                              f"{list(_OPTION_STREAMS)}"])
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        for stream in streams:
+            yield {
+                "protocol": PROTOCOL, "type": "SCHEMA",
+                "stream": stream, "schema": {"fields": []},
+            }
+        previous_timeout = self._set_socket_timeout(knobs["request_timeout_seconds"])
+        try:
+            contracts = self._eligible_contracts(key, secret, knobs)
+            if OPTION_CONTRACT_STREAM in streams:
+                yield from self._contracts(contracts)
+            if OPTION_BAR_STREAM in streams:
+                yield from self._bars(key, secret, knobs, contracts)
+        except AssetError:
+            raise
+        except Exception as exc:
+            raise AssetError(
+                ["Alpaca option request failed or timed out; check network and "
+                 f"provider access ({exc})"]) from exc
+        finally:
+            self._restore_socket_timeout(previous_timeout)
+        new_state = {k: dict(v) for k, v in state.items()}
+        new_state.setdefault("last_pull", {})["at"] = datetime.now(
+            timezone.utc).isoformat()
+        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+    def _eligible_contracts(self, key, secret, knobs):
+        """Return the contract dicts that pass the DTE/multiplier/root gates."""
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        client = self._contract_client(key, secret)
+        result = {}
+        for symbol in knobs["symbols"]:
+            page_token = None
+            while True:
+                request = GetOptionContractsRequest(
+                    underlying_symbols=[symbol], status=knobs["status"],
+                    expiration_date_gte=knobs["start"],
+                    expiration_date_lte=knobs["end"],
+                    limit=1000, page_token=page_token)
+                response = self._vendor(knobs, lambda: client.get_option_contracts(request))
+                for contract in response.option_contracts or []:
+                    item = AlpacaOptionArchiveConnector._identity(contract.symbol)
+                    size = AlpacaOptionArchiveConnector._number(contract.size)
+                    if (size is None or size != float(knobs["multiplier"])
+                            or item["root_symbol"] != symbol):
+                        continue
+                    if (item["expiry"] != str(contract.expiration_date)
+                            or item["strike"] != float(contract.strike_price)):
+                        continue
+                    item.update(symbol=contract.underlying_symbol,
+                                multiplier=size,
+                                contract_size=size,
+                                style=getattr(contract.style, "value", contract.style),
+                                contract_terms_status="metadata_present",
+                                effective_at=datetime.now(timezone.utc).replace(
+                                    microsecond=0).isoformat())
+                    result[item["contract"]] = item
+                page_token = response.next_page_token
+                if not page_token:
+                    break
+        return result
+
+    def _contracts(self, contracts):
+        """Emit the normalized contract stream."""
+        for contract, item in sorted(contracts.items()):
+            yield {
+                "protocol": PROTOCOL, "type": "RECORD",
+                "stream": OPTION_CONTRACT_STREAM,
+                "effective_date": item["effective_at"],
+                "kind": "observation",
+                "data": item,
+            }
+
+    def _bars(self, key, secret, knobs, contracts):
+        """Emit normalized daily trade bars over each expiry's DTE window."""
+        from datetime import date, timedelta as _td
+
+        from alpaca.data.enums import OptionsFeed
+        from alpaca.data.historical import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionBarsRequest
+
+        client = OptionHistoricalDataClient(key, secret)
+        by_expiry = {}
+        for item in contracts.values():
+            by_expiry.setdefault(item["expiry"], []).append(item["contract"])
+        for expiry, symbols in sorted(by_expiry.items()):
+            exp = date.fromisoformat(expiry)
+            start = exp - _td(days=knobs["dte_max"])
+            end = exp - _td(days=knobs["dte_min"])
+            for offset in range(0, len(symbols), knobs["max_symbols_per_request"]):
+                batch = symbols[offset:offset + knobs["max_symbols_per_request"]]
+                bars = self._vendor(knobs, lambda: client.get_option_bars(OptionBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=bar_timeframe(tuple(knobs["timeframe"])),
+                    start=start, end=end,
+                    feed=OptionsFeed(knobs["feed"]))))
+                for contract in batch:
+                    base = contracts[contract]
+                    for bar in bars.data.get(contract, []):
+                        yield self._bar_record(base, bar)
+
+    def _bar_record(self, base, bar):
+        stamp = bar.timestamp.astimezone(timezone.utc)
+        number = AlpacaOptionArchiveConnector._number
+        row = dict(base)
+        row.update(effective_at=stamp.isoformat(), source_timestamp=stamp.isoformat(),
+                   quote_date=stamp.date().isoformat(), quote_timestamp=None,
+                   price_basis="trade_close", timestamp_basis="session_label",
+                   bid=None, ask=None, bid_size=None, ask_size=None,
+                   implied_volatility=None, open_interest=None)
+        for target, value in (("open", bar.open), ("high", bar.high),
+                              ("low", bar.low), ("close", bar.close),
+                              ("volume", bar.volume),
+                              ("trade_count", bar.trade_count),
+                              ("vwap", bar.vwap)):
+            row[target] = number(value)
+        valid = (all(row[k] is not None for k in ("open", "high", "low", "close", "volume"))
+                 and 0 < row["low"] <= min(row["open"], row["close"])
+                 <= max(row["open"], row["close"]) <= row["high"]
+                 and row["volume"] >= 0)
+        row["mark"] = row["close"] if valid else None
+        row["observation_reasons"] = [] if valid else ["invalid_trade_bar"]
+        return {
+            "protocol": PROTOCOL, "type": "RECORD",
+            "stream": OPTION_BAR_STREAM,
+            "effective_date": stamp.isoformat(),
+            "kind": "observation",
+            "data": row,
+        }
+
+
+UNDERLYING_STREAM = "underlyings"
+ACTIVITY_STREAM = "chain_volume"
+ACTIVITY_STREAMS = (UNDERLYING_STREAM, ACTIVITY_STREAM)
+_ACTIVITY_KEYS = {UNDERLYING_STREAM: ("symbol",),
+                  ACTIVITY_STREAM: ("symbol", "session")}
+_DEFAULT_ACTIVITY_ATTRIBUTE = "has_options"
+_DEFAULT_ASSET_CLASS = "us_equity"
+_DEFAULT_ASSET_STATUS = "active"
+_DEFAULT_CONTRACT_STATUSES = ("active", "inactive")
+_CALENDAR_SPAN_PER_SESSION = 3
+
+
+class AlpacaOptionActivityConnector(_AlpacaOptionTransport):
+    """List optionable underlyings and total their option volume per session.
+
+    Two streams. ``underlyings`` is every asset the trading API tags with
+    ``attribute`` (default ``has_options``), optionally minus names matching
+    ``exclude_name_regex``. ``chain_volume`` is, per underlying and trading
+    session, the summed volume and the count of contracts that traded, taken
+    over every contract of the underlying that was live in the window (the
+    ``contract_statuses`` listings with expiry on or after the first session,
+    so contracts that expired inside the window are counted). The window is the
+    last ``sessions`` sessions of the exchange calendar up to ``end``.
+
+    Contracts whose root differs from the underlying (adjusted-after-corporate
+    action roots) are skipped, as in :class:`AlpacaOptionFetchConnector`.
+    Volume is the chosen option feed's daily trade-bar volume; the default
+    ``indicative`` feed is a subset of OPRA trades, so levels are partial while
+    the ranking they support is what the pull is for.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Declare a 20-session activity pull without importing the SDK::
+
+        connector = AlpacaOptionActivityConnector()
+        streams = connector.discover({"sessions": 20, "end": "2026-10-02"})
+    """
+
+    def spec(self):
+        """Declare the default-deny activity configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
+        return {"params": {
+            "sessions": {"required": True,
+                         "notes": "Most recent exchange sessions to total (int >= 1)."},
+            "end": {"notes": "Inclusive ISO date the window ends on; default today (UTC). "
+                             "Pin it so a re-run totals the same sessions."},
+            "symbols": {"notes": "Optional non-empty list restricting the underlyings "
+                                 "(a sample or a re-pull); default every listed asset."},
+            "symbols_file": {"notes": "Alternative to symbols: JSON file holding the list "
+                                      "under symbols_key (absolute after ~/$VAR expansion)."},
+            "symbols_key": {"notes": "Key of the list inside symbols_file."},
+            "symbols_sha256": {"notes": "REQUIRED with symbols_file: sha256 of the file's "
+                                        "bytes; a changed file refuses."},
+            "attribute": {"notes": "Trading-API asset attribute that marks an optionable "
+                                   f"asset; default {_DEFAULT_ACTIVITY_ATTRIBUTE!r}."},
+            "asset_class": {"notes": f"Asset class listed; default {_DEFAULT_ASSET_CLASS!r}."},
+            "asset_status": {"notes": f"Asset status listed; default {_DEFAULT_ASSET_STATUS!r}."},
+            "exclude_name_regex": {"notes": "Optional regex; assets whose name matches are "
+                                            "dropped (Alpaca has no ETF flag, so a project "
+                                            "that wants stocks only states its own pattern)."},
+            "contract_statuses": {"notes": "Contract statuses listed per underlying; default "
+                                           f"{list(_DEFAULT_CONTRACT_STATUSES)}. Include "
+                                           "inactive to count contracts that expired in the window."},
+            "feed": {"notes": "Option data feed (opra | indicative); default indicative."},
+            "max_symbols_per_request": {"notes": "Bar symbols per request; default "
+                                                 f"{_DEFAULT_MAX_SYMBOLS_PER_REQUEST}."},
+            "request_timeout_seconds": {"notes": "Per-request socket timeout; default 60."},
+            "max_retries": {"notes": "Retries per vendor request with backoff; default 5."},
+            "key_env": {"secret": True, "notes": f"Env var naming the key; default {DEFAULT_KEY_ENV}."},
+            "secret_env": {"secret": True,
+                           "notes": f"Env var naming the secret; default {DEFAULT_SECRET_ENV}."},
+        }}
+
+    @staticmethod
+    def _text_knob(config, name, default, errors):
+        """Return a non-empty string knob or record an error."""
+        value = config.get(name, default)
+        if not isinstance(value, str) or not value:
+            errors.append(f"config.{name} must be a non-empty string")
+        return value
+
+    def resolve_knobs(self, config):
+        """Resolve and validate every knob, defaulting optional ones.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        dict
+            The resolved knobs.
+
+        Raises
+        ------
+        AssetError
+            Naming every unusable or unknown knob.
+        """
+        import re
+        from datetime import date
+
+        errors = []
+        unknown = sorted(set(config) - set(self.spec()["params"]) - {"notes"})
+        if unknown:
+            errors.append(f"unknown config key(s) {unknown}")
+        sessions = config.get("sessions")
+        if isinstance(sessions, bool) or not isinstance(sessions, int) or sessions < 1:
+            errors.append("config.sessions must be an int >= 1")
+        end = config.get("end")
+        if end is not None:
+            try:
+                date.fromisoformat(end)
+            except (TypeError, ValueError):
+                errors.append("config.end must be an ISO date string or absent")
+        symbols = self._symbols_knob(config, errors, required=False)
+        pattern = config.get("exclude_name_regex")
+        if pattern is not None:
+            try:
+                re.compile(pattern)
+            except (TypeError, re.error):
+                errors.append("config.exclude_name_regex must be a valid regex string")
+        statuses = config.get("contract_statuses", list(_DEFAULT_CONTRACT_STATUSES))
+        if (not isinstance(statuses, (list, tuple)) or not statuses
+                or any(not isinstance(x, str) or not x for x in statuses)):
+            errors.append("config.contract_statuses must be a non-empty list of strings")
+        batch = config.get("max_symbols_per_request", _DEFAULT_MAX_SYMBOLS_PER_REQUEST)
+        if isinstance(batch, bool) or not isinstance(batch, int) or batch < 1:
+            errors.append("config.max_symbols_per_request must be a positive int")
+        knobs = {
+            "sessions": sessions, "end": end,
+            "symbols": symbols,
+            "attribute": self._text_knob(config, "attribute", _DEFAULT_ACTIVITY_ATTRIBUTE, errors),
+            "asset_class": self._text_knob(config, "asset_class", _DEFAULT_ASSET_CLASS, errors),
+            "asset_status": self._text_knob(config, "asset_status", _DEFAULT_ASSET_STATUS, errors),
+            "feed": self._text_knob(config, "feed", "indicative", errors),
+            "exclude_name_regex": pattern,
+            "contract_statuses": list(statuses) if isinstance(statuses, (list, tuple)) else statuses,
+            "max_symbols_per_request": batch,
+            **self._transport_knobs(config, errors),
+        }
+        if errors:
+            raise AssetError(errors)
+        return knobs
+
+    def check(self, config):
+        """Validate config, credentials and one authenticated asset probe.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        None
+            Silence means the provider answered.
+
+        Raises
+        ------
+        AssetError
+            If config, credentials, SDK loading, or the probe fails.
+        """
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        try:
+            self._contract_client(key, secret).get_clock()
+        except Exception as exc:
+            raise AssetError(
+                ["Alpaca trading probe failed; check credentials and network"]) from exc
+
+    def discover(self, config):
+        """Describe the two activity streams without a vendor.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+
+        Returns
+        -------
+        list
+            One declaration per stream.
+
+        Raises
+        ------
+        AssetError
+            If config values are invalid.
+        """
+        self.resolve_knobs(config)
+        return [{"stream": name, "schema": {"fields": []},
+                 "primary_key": list(_ACTIVITY_KEYS[name])}
+                for name in ACTIVITY_STREAMS]
+
+    def read(self, config, streams, state, mode):
+        """Emit schemas, the requested streams' records and one checkpoint.
+
+        Parameters
+        ----------
+        config : dict
+            Connector configuration.
+        streams : list
+            Requested streams from ``underlyings`` / ``chain_volume``.
+        state : dict
+            Prior checkpoint; ``{}`` on first pull.
+        mode : str
+            ``backfill`` or ``live``.
+
+        Yields
+        ------
+        dict
+            Onboarding protocol messages.
+
+        Raises
+        ------
+        AssetError
+            If arguments, config, calendar or the vendor request fail.
+        """
+        if not isinstance(state, dict):
+            raise AssetError([f"state must be a dict, got {state!r}"])
+        if not isinstance(streams, list) or not streams:
+            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
+        if mode not in MODES:
+            raise AssetError([f"mode must be one of {MODES}, got {mode!r}"])
+        unknown = [s for s in streams if s not in ACTIVITY_STREAMS]
+        if unknown:
+            raise AssetError([f"unknown stream(s) {unknown}; discovered: "
+                              f"{list(ACTIVITY_STREAMS)}"])
+        knobs = self.resolve_knobs(config)
+        key, secret = self._credentials(knobs)
+        for stream in streams:
+            yield {"protocol": PROTOCOL, "type": "SCHEMA", "stream": stream,
+                   "schema": {"fields": []}}
+        previous = self._set_socket_timeout(knobs["request_timeout_seconds"])
+        try:
+            yield from self._emit(knobs, key, secret, streams)
+        except AssetError:
+            raise
+        except Exception as exc:
+            raise AssetError(
+                ["Alpaca activity request failed or timed out; check network "
+                 f"and provider access ({exc})"]) from exc
+        finally:
+            self._restore_socket_timeout(previous)
+        new_state = {k: dict(v) for k, v in state.items()}
+        new_state.setdefault("last_pull", {})["at"] = datetime.now(
+            timezone.utc).isoformat()
+        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+
+    def _emit(self, knobs, key, secret, streams):
+        """Yield the requested streams' RECORD messages."""
+        client = self._contract_client(key, secret)
+        assets = self._underlyings(client, knobs)
+        if UNDERLYING_STREAM in streams:
+            stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            for row in assets:
+                yield self._record(UNDERLYING_STREAM, stamp, row)
+        if ACTIVITY_STREAM in streams:
+            sessions = self._sessions(client, knobs)
+            for row in self._chain_volume(client, key, secret, knobs, assets, sessions):
+                yield self._record(ACTIVITY_STREAM, f"{row['session']}T00:00:00+00:00", row)
+
+    @staticmethod
+    def _record(stream, effective, data):
+        return {"protocol": PROTOCOL, "type": "RECORD", "stream": stream,
+                "effective_date": effective, "kind": "observation", "data": data}
+
+    def _underlyings(self, client, knobs):
+        """Return the listed, name-filtered underlyings sorted by symbol."""
+        import re
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.trading.requests import GetAssetsRequest
+
+        request = GetAssetsRequest(
+            status=AssetStatus(knobs["asset_status"]),
+            asset_class=AssetClass(knobs["asset_class"]),
+            attributes=knobs["attribute"])
+        assets = self._vendor(knobs, lambda: client.get_all_assets(request))
+        drop = knobs["exclude_name_regex"]
+        drop = re.compile(drop) if drop else None
+        only = None if knobs["symbols"] is None else set(knobs["symbols"])
+        rows = {}
+        for asset in assets:
+            if only is not None and asset.symbol not in only:
+                continue
+            if drop is not None and drop.search(asset.name or ""):
+                continue
+            exchange = getattr(asset.exchange, "value", asset.exchange)
+            rows[asset.symbol] = {"symbol": asset.symbol, "name": asset.name,
+                                  "exchange": exchange}
+        return [rows[s] for s in sorted(rows)]
+
+    def _sessions(self, client, knobs):
+        """Return the last ``sessions`` exchange-session dates up to ``end``, ascending."""
+        from datetime import date
+        from alpaca.trading.requests import GetCalendarRequest
+
+        end = date.fromisoformat(knobs["end"]) if knobs["end"] else datetime.now(
+            timezone.utc).date()
+        span = timedelta(days=knobs["sessions"] * _CALENDAR_SPAN_PER_SESSION)
+        request = GetCalendarRequest(start=end - span, end=end)
+        days = self._vendor(knobs, lambda: client.get_calendar(request))
+        dates = sorted({day.date for day in days if day.date <= end})
+        if len(dates) < knobs["sessions"]:
+            raise AssetError([f"calendar returned {len(dates)} sessions up to {end}, "
+                              f"fewer than sessions={knobs['sessions']}"])
+        return dates[-knobs["sessions"]:]
+
+    def _contract_symbols(self, client, knobs, symbol, first):
+        """Return the sorted live-in-window contract symbols of one underlying."""
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        found = set()
+        for status in knobs["contract_statuses"]:
+            page_token = None
+            while True:
+                request = GetOptionContractsRequest(
+                    underlying_symbols=[symbol], status=status,
+                    expiration_date_gte=first, limit=1000, page_token=page_token)
+                response = self._vendor(
+                    knobs, lambda: client.get_option_contracts(request))
+                found.update(c.symbol for c in response.option_contracts or []
+                             if c.root_symbol == symbol)
+                page_token = response.next_page_token
+                if not page_token:
+                    break
+        return sorted(found)
+
+    def _chain_volume(self, client, key, secret, knobs, assets, sessions):
+        """Yield one total row per underlying and session that traded."""
+        from alpaca.data.enums import OptionsFeed
+        from alpaca.data.historical import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionBarsRequest
+
+        data = OptionHistoricalDataClient(key, secret)
+        window = {d.isoformat() for d in sessions}
+        timeframe = bar_timeframe((1, "Day"))
+        batch = knobs["max_symbols_per_request"]
+        for asset in assets:
+            symbol = asset["symbol"]
+            contracts = self._contract_symbols(client, knobs, symbol, sessions[0])
+            totals = {}
+            for offset in range(0, len(contracts), batch):
+                names = contracts[offset:offset + batch]
+                bars = self._vendor(knobs, lambda: data.get_option_bars(OptionBarsRequest(
+                    symbol_or_symbols=names, timeframe=timeframe,
+                    start=sessions[0], end=sessions[-1] + timedelta(days=1),
+                    feed=OptionsFeed(knobs["feed"]))))
+                for series in bars.data.values():
+                    for bar in series:
+                        day = bar.timestamp.astimezone(timezone.utc).date().isoformat()
+                        if day in window and bar.volume:
+                            volume, traded = totals.get(day, (0.0, 0))
+                            totals[day] = (volume + float(bar.volume), traded + 1)
+            for day in sorted(totals):
+                volume, traded = totals[day]
+                yield {"symbol": symbol, "session": day, "volume": volume,
+                       "contracts_traded": traded}

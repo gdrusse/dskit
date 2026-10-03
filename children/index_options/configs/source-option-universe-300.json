@@ -1,0 +1,22 @@
+{
+  "symbols_file": "$INDEX_OPTIONS_ROOT/configs/option_universe_300.json",
+  "symbols_key": "tickers",
+  "start": "2024-02-01",
+  "end": "2026-09-30",
+  "dte_min": 30,
+  "dte_max": 45,
+  "multiplier": 100,
+  "status": "inactive",
+  "feed": "indicative",
+  "timeframe": [
+    1,
+    "Day"
+  ],
+  "max_symbols_per_request": 100,
+  "key_env": "APCA_API_KEY_ID",
+  "secret_env": "APCA_API_SECRET_KEY",
+  "request_timeout_seconds": 60,
+  "max_retries": 6,
+  "notes": "ADR-0235 pull of the 300 next-most option-active US stocks, mirroring option-universe-100 (same window, DTE 30-45, inactive contracts, daily trade bars, indicative feed). The symbol list is read from $INDEX_OPTIONS_ROOT/configs/option_universe_300.json (written by run-option-universe-300-rank.json), never typed here; symbols_file must be absolute after $VAR expansion (export INDEX_OPTIONS_ROOT=<this child's root>) and symbols_sha256 pins the file, so a regenerated ranking refuses until the hash is updated deliberately. Store root: /home/russell/data/stock_options/option-universe-300. Run with the Alpaca keys and INDEX_OPTIONS_ROOT exported: python -m dskit.onboarding init --root ROOT; register-source options --catalog-source options --connector dskit.onboarding.libs.alpaca:AlpacaOptionFetchConnector --config @configs/source-option-universe-300.json --activate --root ROOT; acquire --source options --stream contracts --mode backfill --root ROOT; then --stream bars (rerun the same command to resume).",
+  "symbols_sha256": "7bc4639cc56b0b0470f38a09126b1517fc43cb871bcef83325bf45646eab9139"
+}

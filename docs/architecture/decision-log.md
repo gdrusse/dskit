@@ -29118,6 +29118,56 @@ weekday; `counts` carries all seven tags, zero where no row fell; the defaults
 are the single names `_DEFAULT_WEEKDAYS` (is `WEEKDAY_TAGS`) and
 `_DEFAULT_BASELINE` (`()`) in `kinds_flow.py`.
 
+## ADR-0216 — Alpaca multi-ticker option fetch connector (proposed, 2026-10-01)
+
+*Landing note: brought verbatim from codex/index-options-iterative-validation with ADR-0235, which cites it; it lands there with the connector itself.*
+
+**Status: proposed.** ADR-0213 ships `AlpacaOptionArchiveConnector`, which only
+READS SHA-256-pinned saved archives; the AMZN pull itself was external and
+uncommitted. To build the candidate-ticker universe we need the pull to be a
+first-class, configurable acquisition. Base: `9a859fea`.
+
+### Smallest extension
+
+Add `AlpacaOptionFetchConnector` (a `Connector`) to
+`dskit/onboarding/libs/alpaca.py`. It fetches, for a config-declared
+`symbols` list, inactive option contracts (paginated) and daily trade bars over
+each expiry's DTE window (`dte_min`/`dte_max`), and emits the SAME
+`contracts`/`bars` streams and row fields as `AlpacaOptionArchiveConnector`, so
+the stock-options panel flow consumes fetched rows identically to a pinned
+archive. Current indicative quotes/snapshots are a separate pull (as they were
+in the archive) and out of scope. No new package.
+
+### Contracts
+
+- Credential material is named by environment variables (`key_env`/
+  `secret_env`, default `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY`); secret
+  material never enters config, stores, or hashes.
+- The root/status/DTE gates replicate ADR-0213's: only `root_symbol == symbol`,
+  `status` (default `inactive`) contracts whose `size == multiplier` (default
+  100) are admitted; bars are fetched over `expiry - dte_max .. expiry -
+  dte_min`. The trading API returns `size` but not the archive's separate
+  `multiplier` field, so the contract's multiplier is recorded from `size`
+  (equal for standard contracts) with `contract_terms_status="metadata_present"`.
+  The archive's ~6% `multiplier=0` (unreported) exclusion is not reproducible
+  from this endpoint — a documented divergence, not a silent one.
+- The free tier returns trade bars only (no bid/ask quotes); `price_basis`
+  is `trade_close` and fills stay out of scope, exactly as the archive
+  connector records.
+- Heavy SDK imports stay inside methods; the pack stays importable without
+  alpaca-py.
+
+### Approved file/API manifest
+
+- Extend `dskit/onboarding/libs/alpaca.py` with `AlpacaOptionFetchConnector`
+  (and the option stream-name constants).
+- Add `children/stock_options/configs/source-option-fetch.json` (the
+  configurable symbol list, window and DTE).
+- Extend `tests/onboarding/test_alpaca.py` with mocked no-network
+  contract/bar emission and non-standard-multiplier refusal tests.
+- Update the `dskit/onboarding` AGENTS.md/README.md inventory lines for
+  `libs/alpaca.py`.
+
 ## ADR-0217 — Feature-engineering step: generic attach kind and exact-expiry panel reader
 
 **Status:** accepted 2026-10-01 (owner chose option (a): a thin,
@@ -30245,3 +30295,21 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Consequences.** A multi-million-row stream reduces in about 4 GB. Moneyness holds across splits except around spin-off adjusters.
 
 **Tests.** `iter_stream` equals `scan_stream` winners, projection, tie refusal, changed member, `member_digest`; `ObservationStreamRows` refusals, fingerprint pin; `AsTradedClose` hand-computed with a 10:1 and a 1.25 ratio; pipeline test with a split fixture checking moneyness and a non-null straddle across it.
+
+## ADR-0235 — Alpaca optionable-underlyings stream, 20-session chain-volume ranking, and the 300-stock option pull
+
+**Status:** accepted: owner directed 2026-10-03. Extends ADR-0216 (`AlpacaOptionFetchConnector`) and ADR-0233/0234 (framework-only pulls).
+**Sweep** (`AlpacaOptionActivityConnector chain_volume underlyings has_options`, `TrailingRank kinds_rank trailing_rank top_n`, origin/main, all branches and worktrees): no near matches; the only ranking code is a private `_top` in production monitors.
+
+**Context.** Choose 300 more US stocks (not the 117 in `stock_universe.json`) with the most option activity, then pull their option history like the 117.
+
+**Decision.**
+1. `AlpacaOptionActivityConnector` (`libs/alpaca.py`): stream `underlyings` = trading-API assets tagged `has_options` (verified live: `attributes=has_options` and `options_enabled` return the same 6315 active us_equity assets; the tag is `has_options`), minus names matching `exclude_name_regex` (Alpaca has no ETF flag); stream `chain_volume` = per underlying and session, summed option volume and contracts traded, over the last `sessions` calendar sessions up to a pinned `end`. Contracts are listed `active` and `inactive` (expiry on or after the first session) so contracts that expired in the window count; adjusted-root contracts are skipped; bars are multi-symbol daily (100 per request). Shared plumbing moved to `_AlpacaOptionTransport`; both option connectors gain `symbols_file` + `symbols_key` + `symbols_sha256` so a ranking output drives a pull: the file must be absolute after `~`/`$VAR` expansion, its hash is REQUIRED and verified, so an edited list refuses instead of mixing two lists in one source.
+2. `dskit.pipeline.kinds_rank:TrailingRank` (by import path): top `top_n` entities by an aggregate (`sum|mean|max|min|count`) of `value_field` over the last `window` distinct `window_field` values, exclusions inline or from a JSON file, ties by entity ascending.
+3. Configs under `children/index_options/configs/`: `source-option-activity.json`, `run-option-universe-300-rank.json` (writes `option_universe_300.json`), `source-option-universe-300.json` (the pull, mirroring option-universe-100).
+
+**Alternatives rejected.** A stock dollar-volume prefilter (measured unnecessary: the whole optionable list ranks in 84 min); chain snapshots (today's bar only); typing the symbol list into the pull config.
+
+**Consequences / risks.** Volume is the `indicative` feed's trade bars, a subset of OPRA: levels are partial, the ranking is what is used. Name-regex ETF filtering is heuristic. A regenerated ranking refuses the pull until `symbols_sha256` is updated deliberately. Funds the regex misses (DXYZ) go in the rank node's `exclude`. ADR-0216 is brought into this log verbatim (it lands with ADR-0235).
+
+**Tests.** Recorded-fake connector tests (filtering, per-session sums, window, both statuses, batching, short calendar, default-deny, symbols file) and `TrailingRank` tests (window, ties, exclusion, aggregates, refusals).

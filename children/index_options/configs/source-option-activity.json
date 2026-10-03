@@ -1,0 +1,16 @@
+{
+  "sessions": 20,
+  "end": "2026-10-02",
+  "attribute": "has_options",
+  "asset_class": "us_equity",
+  "asset_status": "active",
+  "exclude_name_regex": "(?i)\\b(ETF|ETN|Trust|Fund|Index|Shares|ProShares|Direxion|iShares|SPDR|Invesco|VanEck|WisdomTree|Vanguard|Leveraged|Ultra|Warrant|Rights?|Units?|Notes?|Preferred|Depositary)\\b",
+  "contract_statuses": ["active", "inactive"],
+  "feed": "indicative",
+  "max_symbols_per_request": 100,
+  "key_env": "APCA_API_KEY_ID",
+  "secret_env": "APCA_API_SECRET_KEY",
+  "request_timeout_seconds": 60,
+  "max_retries": 6,
+  "notes": "ADR-0235: optionable US stocks and their per-session total option volume over the last 20 exchange sessions up to `end` (pinned so a re-run totals the same sessions). Streams: underlyings, chain_volume. Alpaca has no ETF flag, so exclude_name_regex drops names that read as funds, trusts, notes, units, warrants or preferreds; widen or narrow it here, never in code. Contracts are listed active AND inactive so weeklies that expired inside the window still count. Feed `indicative` is a subset of OPRA trades: levels are partial, the ranking is what this pull is for. Register: python -m dskit.onboarding register-source option-activity --catalog-source option-activity --connector dskit.onboarding.libs.alpaca:AlpacaOptionActivityConnector --config @configs/source-option-activity.json --activate --root <root>; then acquire --source option-activity --stream underlyings|chain_volume --mode backfill. Credentials are the named environment variables, never config."
+}

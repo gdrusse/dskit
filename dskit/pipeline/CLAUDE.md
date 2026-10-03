@@ -748,6 +748,7 @@ dskit/pipeline/
 │                      holdout locked first, count-sized rolling folds, warm-up vs
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
+├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
 │                      horizon-pairs (dated close paired with the close H days later, ADR-0228)
 ├── kinds_stats.py     owned validate + stat_test

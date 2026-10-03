@@ -1,0 +1,2106 @@
+{
+  "ranking": [
+    {
+      "rank": 1,
+      "sessions": 20,
+      "symbol": "SPCX",
+      "volume_sum": 19066470.0
+    },
+    {
+      "rank": 2,
+      "sessions": 20,
+      "symbol": "SOFI",
+      "volume_sum": 6146135.0
+    },
+    {
+      "rank": 3,
+      "sessions": 20,
+      "symbol": "CRWV",
+      "volume_sum": 5583194.0
+    },
+    {
+      "rank": 4,
+      "sessions": 20,
+      "symbol": "GME",
+      "volume_sum": 5390553.0
+    },
+    {
+      "rank": 5,
+      "sessions": 20,
+      "symbol": "SNDK",
+      "volume_sum": 4299908.0
+    },
+    {
+      "rank": 6,
+      "sessions": 20,
+      "symbol": "BE",
+      "volume_sum": 3252419.0
+    },
+    {
+      "rank": 7,
+      "sessions": 20,
+      "symbol": "BMNR",
+      "volume_sum": 3054639.0
+    },
+    {
+      "rank": 8,
+      "sessions": 20,
+      "symbol": "CIFR",
+      "volume_sum": 3040717.0
+    },
+    {
+      "rank": 9,
+      "sessions": 20,
+      "symbol": "WULF",
+      "volume_sum": 2866202.0
+    },
+    {
+      "rank": 10,
+      "sessions": 20,
+      "symbol": "NOK",
+      "volume_sum": 2831203.0
+    },
+    {
+      "rank": 11,
+      "sessions": 20,
+      "symbol": "RKLB",
+      "volume_sum": 2489284.0
+    },
+    {
+      "rank": 12,
+      "sessions": 20,
+      "symbol": "PCG",
+      "volume_sum": 2403418.0
+    },
+    {
+      "rank": 13,
+      "sessions": 20,
+      "symbol": "TSM",
+      "volume_sum": 2371766.0
+    },
+    {
+      "rank": 14,
+      "sessions": 20,
+      "symbol": "WBD",
+      "volume_sum": 2245206.0
+    },
+    {
+      "rank": 15,
+      "sessions": 20,
+      "symbol": "AMC",
+      "volume_sum": 2224491.0
+    },
+    {
+      "rank": 16,
+      "sessions": 20,
+      "symbol": "NU",
+      "volume_sum": 2165658.0
+    },
+    {
+      "rank": 17,
+      "sessions": 20,
+      "symbol": "ONDS",
+      "volume_sum": 1975204.0
+    },
+    {
+      "rank": 18,
+      "sessions": 20,
+      "symbol": "ASTS",
+      "volume_sum": 1958725.0
+    },
+    {
+      "rank": 19,
+      "sessions": 20,
+      "symbol": "CRCL",
+      "volume_sum": 1804499.0
+    },
+    {
+      "rank": 20,
+      "sessions": 20,
+      "symbol": "AAL",
+      "volume_sum": 1800543.0
+    },
+    {
+      "rank": 21,
+      "sessions": 20,
+      "symbol": "IONQ",
+      "volume_sum": 1488566.0
+    },
+    {
+      "rank": 22,
+      "sessions": 20,
+      "symbol": "RKT",
+      "volume_sum": 1456185.0
+    },
+    {
+      "rank": 23,
+      "sessions": 20,
+      "symbol": "HPE",
+      "volume_sum": 1447541.0
+    },
+    {
+      "rank": 24,
+      "sessions": 20,
+      "symbol": "APLD",
+      "volume_sum": 1436374.0
+    },
+    {
+      "rank": 25,
+      "sessions": 20,
+      "symbol": "HIMS",
+      "volume_sum": 1359857.0
+    },
+    {
+      "rank": 26,
+      "sessions": 20,
+      "symbol": "LULU",
+      "volume_sum": 1331007.0
+    },
+    {
+      "rank": 27,
+      "sessions": 20,
+      "symbol": "CCL",
+      "volume_sum": 1320068.0
+    },
+    {
+      "rank": 28,
+      "sessions": 20,
+      "symbol": "NVO",
+      "volume_sum": 1306766.0
+    },
+    {
+      "rank": 29,
+      "sessions": 20,
+      "symbol": "PSKY",
+      "volume_sum": 1271706.0
+    },
+    {
+      "rank": 30,
+      "sessions": 20,
+      "symbol": "SNAP",
+      "volume_sum": 1214111.0
+    },
+    {
+      "rank": 31,
+      "sessions": 20,
+      "symbol": "AI",
+      "volume_sum": 1160366.0
+    },
+    {
+      "rank": 32,
+      "sessions": 20,
+      "symbol": "AGNC",
+      "volume_sum": 1115755.0
+    },
+    {
+      "rank": 33,
+      "sessions": 20,
+      "symbol": "SMR",
+      "volume_sum": 1081658.0
+    },
+    {
+      "rank": 34,
+      "sessions": 20,
+      "symbol": "OKLO",
+      "volume_sum": 1040079.0
+    },
+    {
+      "rank": 35,
+      "sessions": 20,
+      "symbol": "BB",
+      "volume_sum": 1039015.0
+    },
+    {
+      "rank": 36,
+      "sessions": 20,
+      "symbol": "EOSE",
+      "volume_sum": 1029206.0
+    },
+    {
+      "rank": 37,
+      "sessions": 20,
+      "symbol": "AAOI",
+      "volume_sum": 1020518.0
+    },
+    {
+      "rank": 38,
+      "sessions": 20,
+      "symbol": "U",
+      "volume_sum": 976829.0
+    },
+    {
+      "rank": 39,
+      "sessions": 20,
+      "symbol": "LITE",
+      "volume_sum": 976242.0
+    },
+    {
+      "rank": 40,
+      "sessions": 20,
+      "symbol": "WDC",
+      "volume_sum": 931736.0
+    },
+    {
+      "rank": 41,
+      "sessions": 20,
+      "symbol": "RGTI",
+      "volume_sum": 929152.0
+    },
+    {
+      "rank": 42,
+      "sessions": 20,
+      "symbol": "CLSK",
+      "volume_sum": 925948.0
+    },
+    {
+      "rank": 43,
+      "sessions": 20,
+      "symbol": "ASST",
+      "volume_sum": 917074.0
+    },
+    {
+      "rank": 44,
+      "sessions": 20,
+      "symbol": "PBR",
+      "volume_sum": 895337.0
+    },
+    {
+      "rank": 45,
+      "sessions": 20,
+      "symbol": "DKNG",
+      "volume_sum": 887142.0
+    },
+    {
+      "rank": 46,
+      "sessions": 20,
+      "symbol": "PATH",
+      "volume_sum": 882756.0
+    },
+    {
+      "rank": 47,
+      "sessions": 20,
+      "symbol": "GPRO",
+      "volume_sum": 879893.0
+    },
+    {
+      "rank": 48,
+      "sessions": 20,
+      "symbol": "APP",
+      "volume_sum": 874583.0
+    },
+    {
+      "rank": 49,
+      "sessions": 20,
+      "symbol": "GLW",
+      "volume_sum": 873198.0
+    },
+    {
+      "rank": 50,
+      "sessions": 20,
+      "symbol": "TTD",
+      "volume_sum": 869648.0
+    },
+    {
+      "rank": 51,
+      "sessions": 20,
+      "symbol": "CORZ",
+      "volume_sum": 859769.0
+    },
+    {
+      "rank": 52,
+      "sessions": 20,
+      "symbol": "OPEN",
+      "volume_sum": 857162.0
+    },
+    {
+      "rank": 53,
+      "sessions": 20,
+      "symbol": "RDDT",
+      "volume_sum": 845790.0
+    },
+    {
+      "rank": 54,
+      "sessions": 20,
+      "symbol": "CVNA",
+      "volume_sum": 842435.0
+    },
+    {
+      "rank": 55,
+      "sessions": 20,
+      "symbol": "FCX",
+      "volume_sum": 790594.0
+    },
+    {
+      "rank": 56,
+      "sessions": 20,
+      "symbol": "CMG",
+      "volume_sum": 788606.0
+    },
+    {
+      "rank": 57,
+      "sessions": 20,
+      "symbol": "XP",
+      "volume_sum": 788006.0
+    },
+    {
+      "rank": 58,
+      "sessions": 20,
+      "symbol": "CLF",
+      "volume_sum": 764004.0
+    },
+    {
+      "rank": 59,
+      "sessions": 20,
+      "symbol": "VST",
+      "volume_sum": 759424.0
+    },
+    {
+      "rank": 60,
+      "sessions": 20,
+      "symbol": "QBTS",
+      "volume_sum": 750340.0
+    },
+    {
+      "rank": 61,
+      "sessions": 20,
+      "symbol": "PURR",
+      "volume_sum": 748614.0
+    },
+    {
+      "rank": 62,
+      "sessions": 20,
+      "symbol": "JBLU",
+      "volume_sum": 747469.0
+    },
+    {
+      "rank": 63,
+      "sessions": 20,
+      "symbol": "USAR",
+      "volume_sum": 746310.0
+    },
+    {
+      "rank": 64,
+      "sessions": 20,
+      "symbol": "CBRS",
+      "volume_sum": 744564.0
+    },
+    {
+      "rank": 65,
+      "sessions": 20,
+      "symbol": "NVTS",
+      "volume_sum": 730225.0
+    },
+    {
+      "rank": 66,
+      "sessions": 20,
+      "symbol": "VKTX",
+      "volume_sum": 718256.0
+    },
+    {
+      "rank": 67,
+      "sessions": 20,
+      "symbol": "KHC",
+      "volume_sum": 717861.0
+    },
+    {
+      "rank": 68,
+      "sessions": 20,
+      "symbol": "SOUN",
+      "volume_sum": 714010.0
+    },
+    {
+      "rank": 69,
+      "sessions": 20,
+      "symbol": "DAL",
+      "volume_sum": 701695.0
+    },
+    {
+      "rank": 70,
+      "sessions": 20,
+      "symbol": "ACHR",
+      "volume_sum": 640117.0
+    },
+    {
+      "rank": 71,
+      "sessions": 20,
+      "symbol": "SLS",
+      "volume_sum": 639652.0
+    },
+    {
+      "rank": 72,
+      "sessions": 20,
+      "symbol": "FSLR",
+      "volume_sum": 631690.0
+    },
+    {
+      "rank": 73,
+      "sessions": 20,
+      "symbol": "TEM",
+      "volume_sum": 630495.0
+    },
+    {
+      "rank": 74,
+      "sessions": 20,
+      "symbol": "VRT",
+      "volume_sum": 628908.0
+    },
+    {
+      "rank": 75,
+      "sessions": 20,
+      "symbol": "KEEL",
+      "volume_sum": 618881.0
+    },
+    {
+      "rank": 76,
+      "sessions": 20,
+      "symbol": "ONON",
+      "volume_sum": 607948.0
+    },
+    {
+      "rank": 77,
+      "sessions": 20,
+      "symbol": "LCID",
+      "volume_sum": 607501.0
+    },
+    {
+      "rank": 78,
+      "sessions": 20,
+      "symbol": "MDB",
+      "volume_sum": 592166.0
+    },
+    {
+      "rank": 79,
+      "sessions": 20,
+      "symbol": "FIG",
+      "volume_sum": 583936.0
+    },
+    {
+      "rank": 80,
+      "sessions": 20,
+      "symbol": "HPQ",
+      "volume_sum": 581558.0
+    },
+    {
+      "rank": 81,
+      "sessions": 20,
+      "symbol": "VALE",
+      "volume_sum": 565438.0
+    },
+    {
+      "rank": 82,
+      "sessions": 20,
+      "symbol": "OWL",
+      "volume_sum": 563484.0
+    },
+    {
+      "rank": 83,
+      "sessions": 20,
+      "symbol": "COHR",
+      "volume_sum": 560905.0
+    },
+    {
+      "rank": 84,
+      "sessions": 20,
+      "symbol": "ALAB",
+      "volume_sum": 559820.0
+    },
+    {
+      "rank": 85,
+      "sessions": 20,
+      "symbol": "DVN",
+      "volume_sum": 545262.0
+    },
+    {
+      "rank": 86,
+      "sessions": 20,
+      "symbol": "FRO",
+      "volume_sum": 541703.0
+    },
+    {
+      "rank": 87,
+      "sessions": 20,
+      "symbol": "RBLX",
+      "volume_sum": 539904.0
+    },
+    {
+      "rank": 88,
+      "sessions": 20,
+      "symbol": "BSX",
+      "volume_sum": 538444.0
+    },
+    {
+      "rank": 89,
+      "sessions": 20,
+      "symbol": "ZS",
+      "volume_sum": 537420.0
+    },
+    {
+      "rank": 90,
+      "sessions": 20,
+      "symbol": "BIDU",
+      "volume_sum": 524975.0
+    },
+    {
+      "rank": 91,
+      "sessions": 20,
+      "symbol": "AG",
+      "volume_sum": 520913.0
+    },
+    {
+      "rank": 92,
+      "sessions": 20,
+      "symbol": "HTZ",
+      "volume_sum": 513486.0
+    },
+    {
+      "rank": 93,
+      "sessions": 20,
+      "symbol": "RIG",
+      "volume_sum": 510477.0
+    },
+    {
+      "rank": 94,
+      "sessions": 20,
+      "symbol": "VG",
+      "volume_sum": 501708.0
+    },
+    {
+      "rank": 95,
+      "sessions": 20,
+      "symbol": "MP",
+      "volume_sum": 500259.0
+    },
+    {
+      "rank": 96,
+      "sessions": 20,
+      "symbol": "FSLY",
+      "volume_sum": 497940.0
+    },
+    {
+      "rank": 97,
+      "sessions": 20,
+      "symbol": "AXTI",
+      "volume_sum": 496539.0
+    },
+    {
+      "rank": 98,
+      "sessions": 20,
+      "symbol": "SBET",
+      "volume_sum": 495013.0
+    },
+    {
+      "rank": 99,
+      "sessions": 20,
+      "symbol": "QUBT",
+      "volume_sum": 484416.0
+    },
+    {
+      "rank": 100,
+      "sessions": 20,
+      "symbol": "SIRI",
+      "volume_sum": 482364.0
+    },
+    {
+      "rank": 101,
+      "sessions": 20,
+      "symbol": "FISV",
+      "volume_sum": 479171.0
+    },
+    {
+      "rank": 102,
+      "sessions": 20,
+      "symbol": "FRMI",
+      "volume_sum": 478840.0
+    },
+    {
+      "rank": 103,
+      "sessions": 20,
+      "symbol": "HL",
+      "volume_sum": 476303.0
+    },
+    {
+      "rank": 104,
+      "sessions": 20,
+      "symbol": "IBRX",
+      "volume_sum": 469662.0
+    },
+    {
+      "rank": 105,
+      "sessions": 20,
+      "symbol": "TE",
+      "volume_sum": 462037.0
+    },
+    {
+      "rank": 106,
+      "sessions": 20,
+      "symbol": "ON",
+      "volume_sum": 459030.0
+    },
+    {
+      "rank": 107,
+      "sessions": 20,
+      "symbol": "IOVA",
+      "volume_sum": 453145.0
+    },
+    {
+      "rank": 108,
+      "sessions": 20,
+      "symbol": "FIGR",
+      "volume_sum": 445798.0
+    },
+    {
+      "rank": 109,
+      "sessions": 20,
+      "symbol": "GLXY",
+      "volume_sum": 438658.0
+    },
+    {
+      "rank": 110,
+      "sessions": 20,
+      "symbol": "BX",
+      "volume_sum": 423473.0
+    },
+    {
+      "rank": 111,
+      "sessions": 20,
+      "symbol": "JOBY",
+      "volume_sum": 423005.0
+    },
+    {
+      "rank": 112,
+      "sessions": 20,
+      "symbol": "CCJ",
+      "volume_sum": 421736.0
+    },
+    {
+      "rank": 113,
+      "sessions": 20,
+      "symbol": "MO",
+      "volume_sum": 419658.0
+    },
+    {
+      "rank": 114,
+      "sessions": 20,
+      "symbol": "CHWY",
+      "volume_sum": 416538.0
+    },
+    {
+      "rank": 115,
+      "sessions": 20,
+      "symbol": "VFC",
+      "volume_sum": 416521.0
+    },
+    {
+      "rank": 116,
+      "sessions": 20,
+      "symbol": "QXO",
+      "volume_sum": 408044.0
+    },
+    {
+      "rank": 117,
+      "sessions": 20,
+      "symbol": "FPS",
+      "volume_sum": 407479.0
+    },
+    {
+      "rank": 118,
+      "sessions": 20,
+      "symbol": "LYFT",
+      "volume_sum": 406357.0
+    },
+    {
+      "rank": 119,
+      "sessions": 20,
+      "symbol": "DOW",
+      "volume_sum": 404515.0
+    },
+    {
+      "rank": 120,
+      "sessions": 20,
+      "symbol": "BKNG",
+      "volume_sum": 403397.0
+    },
+    {
+      "rank": 121,
+      "sessions": 20,
+      "symbol": "CELH",
+      "volume_sum": 401829.0
+    },
+    {
+      "rank": 122,
+      "sessions": 20,
+      "symbol": "ANET",
+      "volume_sum": 401721.0
+    },
+    {
+      "rank": 123,
+      "sessions": 20,
+      "symbol": "HUT",
+      "volume_sum": 399106.0
+    },
+    {
+      "rank": 124,
+      "sessions": 20,
+      "symbol": "PLUG",
+      "volume_sum": 397029.0
+    },
+    {
+      "rank": 125,
+      "sessions": 20,
+      "symbol": "EQT",
+      "volume_sum": 392671.0
+    },
+    {
+      "rank": 126,
+      "sessions": 20,
+      "symbol": "PL",
+      "volume_sum": 389434.0
+    },
+    {
+      "rank": 127,
+      "sessions": 20,
+      "symbol": "NN",
+      "volume_sum": 389244.0
+    },
+    {
+      "rank": 128,
+      "sessions": 20,
+      "symbol": "MDT",
+      "volume_sum": 386861.0
+    },
+    {
+      "rank": 129,
+      "sessions": 20,
+      "symbol": "UAL",
+      "volume_sum": 386686.0
+    },
+    {
+      "rank": 130,
+      "sessions": 20,
+      "symbol": "RDW",
+      "volume_sum": 386299.0
+    },
+    {
+      "rank": 131,
+      "sessions": 20,
+      "symbol": "UUUU",
+      "volume_sum": 383156.0
+    },
+    {
+      "rank": 132,
+      "sessions": 20,
+      "symbol": "BBAI",
+      "volume_sum": 382520.0
+    },
+    {
+      "rank": 133,
+      "sessions": 20,
+      "symbol": "LQDA",
+      "volume_sum": 377681.0
+    },
+    {
+      "rank": 134,
+      "sessions": 20,
+      "symbol": "ENPH",
+      "volume_sum": 377534.0
+    },
+    {
+      "rank": 135,
+      "sessions": 20,
+      "symbol": "ACN",
+      "volume_sum": 368184.0
+    },
+    {
+      "rank": 136,
+      "sessions": 20,
+      "symbol": "NUAI",
+      "volume_sum": 365948.0
+    },
+    {
+      "rank": 137,
+      "sessions": 20,
+      "symbol": "AFRM",
+      "volume_sum": 362911.0
+    },
+    {
+      "rank": 138,
+      "sessions": 20,
+      "symbol": "KR",
+      "volume_sum": 362739.0
+    },
+    {
+      "rank": 139,
+      "sessions": 20,
+      "symbol": "TMC",
+      "volume_sum": 362184.0
+    },
+    {
+      "rank": 140,
+      "sessions": 20,
+      "symbol": "LUNR",
+      "volume_sum": 357083.0
+    },
+    {
+      "rank": 141,
+      "sessions": 20,
+      "symbol": "XYZ",
+      "volume_sum": 356373.0
+    },
+    {
+      "rank": 142,
+      "sessions": 20,
+      "symbol": "B",
+      "volume_sum": 352043.0
+    },
+    {
+      "rank": 143,
+      "sessions": 20,
+      "symbol": "UPST",
+      "volume_sum": 349645.0
+    },
+    {
+      "rank": 144,
+      "sessions": 20,
+      "symbol": "QS",
+      "volume_sum": 333835.0
+    },
+    {
+      "rank": 145,
+      "sessions": 20,
+      "symbol": "LEN",
+      "volume_sum": 331221.0
+    },
+    {
+      "rank": 146,
+      "sessions": 20,
+      "symbol": "RXRX",
+      "volume_sum": 328053.0
+    },
+    {
+      "rank": 147,
+      "sessions": 20,
+      "symbol": "M",
+      "volume_sum": 327797.0
+    },
+    {
+      "rank": 148,
+      "sessions": 20,
+      "symbol": "RCAT",
+      "volume_sum": 325643.0
+    },
+    {
+      "rank": 149,
+      "sessions": 20,
+      "symbol": "CDE",
+      "volume_sum": 324511.0
+    },
+    {
+      "rank": 150,
+      "sessions": 20,
+      "symbol": "RUN",
+      "volume_sum": 324187.0
+    },
+    {
+      "rank": 151,
+      "sessions": 20,
+      "symbol": "AKAM",
+      "volume_sum": 321415.0
+    },
+    {
+      "rank": 152,
+      "sessions": 20,
+      "symbol": "STM",
+      "volume_sum": 321191.0
+    },
+    {
+      "rank": 153,
+      "sessions": 20,
+      "symbol": "AEO",
+      "volume_sum": 320101.0
+    },
+    {
+      "rank": 154,
+      "sessions": 20,
+      "symbol": "ABUS",
+      "volume_sum": 317428.0
+    },
+    {
+      "rank": 155,
+      "sessions": 20,
+      "symbol": "CYPH",
+      "volume_sum": 316245.0
+    },
+    {
+      "rank": 156,
+      "sessions": 20,
+      "symbol": "GEV",
+      "volume_sum": 307369.0
+    },
+    {
+      "rank": 157,
+      "sessions": 20,
+      "symbol": "OSCR",
+      "volume_sum": 307338.0
+    },
+    {
+      "rank": 158,
+      "sessions": 20,
+      "symbol": "NEM",
+      "volume_sum": 304580.0
+    },
+    {
+      "rank": 159,
+      "sessions": 20,
+      "symbol": "PTON",
+      "volume_sum": 303017.0
+    },
+    {
+      "rank": 160,
+      "sessions": 20,
+      "symbol": "CLOV",
+      "volume_sum": 302940.0
+    },
+    {
+      "rank": 161,
+      "sessions": 20,
+      "symbol": "UEC",
+      "volume_sum": 295936.0
+    },
+    {
+      "rank": 162,
+      "sessions": 20,
+      "symbol": "OKTA",
+      "volume_sum": 293748.0
+    },
+    {
+      "rank": 163,
+      "sessions": 20,
+      "symbol": "APO",
+      "volume_sum": 291892.0
+    },
+    {
+      "rank": 164,
+      "sessions": 20,
+      "symbol": "DJT",
+      "volume_sum": 285544.0
+    },
+    {
+      "rank": 165,
+      "sessions": 20,
+      "symbol": "HAL",
+      "volume_sum": 284201.0
+    },
+    {
+      "rank": 166,
+      "sessions": 20,
+      "symbol": "LUMN",
+      "volume_sum": 281855.0
+    },
+    {
+      "rank": 167,
+      "sessions": 20,
+      "symbol": "AUR",
+      "volume_sum": 280559.0
+    },
+    {
+      "rank": 168,
+      "sessions": 20,
+      "symbol": "AS",
+      "volume_sum": 275352.0
+    },
+    {
+      "rank": 169,
+      "sessions": 20,
+      "symbol": "TTWO",
+      "volume_sum": 274548.0
+    },
+    {
+      "rank": 170,
+      "sessions": 20,
+      "symbol": "CPNG",
+      "volume_sum": 274535.0
+    },
+    {
+      "rank": 171,
+      "sessions": 20,
+      "symbol": "ZETA",
+      "volume_sum": 272745.0
+    },
+    {
+      "rank": 172,
+      "sessions": 20,
+      "symbol": "ECHO",
+      "volume_sum": 272588.0
+    },
+    {
+      "rank": 173,
+      "sessions": 20,
+      "symbol": "S",
+      "volume_sum": 271233.0
+    },
+    {
+      "rank": 174,
+      "sessions": 20,
+      "symbol": "NLY",
+      "volume_sum": 268793.0
+    },
+    {
+      "rank": 175,
+      "sessions": 20,
+      "symbol": "AA",
+      "volume_sum": 267377.0
+    },
+    {
+      "rank": 176,
+      "sessions": 20,
+      "symbol": "SPCE",
+      "volume_sum": 267255.0
+    },
+    {
+      "rank": 177,
+      "sessions": 20,
+      "symbol": "RARE",
+      "volume_sum": 267001.0
+    },
+    {
+      "rank": 178,
+      "sessions": 20,
+      "symbol": "PCT",
+      "volume_sum": 266755.0
+    },
+    {
+      "rank": 179,
+      "sessions": 20,
+      "symbol": "DHT",
+      "volume_sum": 266573.0
+    },
+    {
+      "rank": 180,
+      "sessions": 20,
+      "symbol": "PINS",
+      "volume_sum": 266091.0
+    },
+    {
+      "rank": 181,
+      "sessions": 20,
+      "symbol": "BP",
+      "volume_sum": 262506.0
+    },
+    {
+      "rank": 182,
+      "sessions": 20,
+      "symbol": "MOS",
+      "volume_sum": 256044.0
+    },
+    {
+      "rank": 183,
+      "sessions": 20,
+      "symbol": "INFQ",
+      "volume_sum": 247618.0
+    },
+    {
+      "rank": 184,
+      "sessions": 20,
+      "symbol": "MGM",
+      "volume_sum": 239736.0
+    },
+    {
+      "rank": 185,
+      "sessions": 20,
+      "symbol": "NRG",
+      "volume_sum": 238706.0
+    },
+    {
+      "rank": 186,
+      "sessions": 20,
+      "symbol": "APH",
+      "volume_sum": 237318.0
+    },
+    {
+      "rank": 187,
+      "sessions": 20,
+      "symbol": "CLS",
+      "volume_sum": 233790.0
+    },
+    {
+      "rank": 188,
+      "sessions": 20,
+      "symbol": "FCEL",
+      "volume_sum": 231187.0
+    },
+    {
+      "rank": 189,
+      "sessions": 20,
+      "symbol": "RCL",
+      "volume_sum": 231143.0
+    },
+    {
+      "rank": 190,
+      "sessions": 20,
+      "symbol": "GIS",
+      "volume_sum": 230609.0
+    },
+    {
+      "rank": 191,
+      "sessions": 20,
+      "symbol": "TJX",
+      "volume_sum": 230465.0
+    },
+    {
+      "rank": 192,
+      "sessions": 20,
+      "symbol": "WYNN",
+      "volume_sum": 229114.0
+    },
+    {
+      "rank": 193,
+      "sessions": 20,
+      "symbol": "WOLF",
+      "volume_sum": 229081.0
+    },
+    {
+      "rank": 194,
+      "sessions": 20,
+      "symbol": "SMMT",
+      "volume_sum": 225010.0
+    },
+    {
+      "rank": 195,
+      "sessions": 20,
+      "symbol": "WMB",
+      "volume_sum": 221646.0
+    },
+    {
+      "rank": 196,
+      "sessions": 20,
+      "symbol": "TMUS",
+      "volume_sum": 221446.0
+    },
+    {
+      "rank": 197,
+      "sessions": 20,
+      "symbol": "EIX",
+      "volume_sum": 220388.0
+    },
+    {
+      "rank": 198,
+      "sessions": 20,
+      "symbol": "RUM",
+      "volume_sum": 220209.0
+    },
+    {
+      "rank": 199,
+      "sessions": 20,
+      "symbol": "MCHP",
+      "volume_sum": 219949.0
+    },
+    {
+      "rank": 200,
+      "sessions": 20,
+      "symbol": "CAVA",
+      "volume_sum": 219932.0
+    },
+    {
+      "rank": 201,
+      "sessions": 20,
+      "symbol": "SEDG",
+      "volume_sum": 215683.0
+    },
+    {
+      "rank": 202,
+      "sessions": 20,
+      "symbol": "AVAV",
+      "volume_sum": 215679.0
+    },
+    {
+      "rank": 203,
+      "sessions": 20,
+      "symbol": "DKS",
+      "volume_sum": 213696.0
+    },
+    {
+      "rank": 204,
+      "sessions": 20,
+      "symbol": "CEG",
+      "volume_sum": 211891.0
+    },
+    {
+      "rank": 205,
+      "sessions": 20,
+      "symbol": "UMC",
+      "volume_sum": 211509.0
+    },
+    {
+      "rank": 206,
+      "sessions": 20,
+      "symbol": "KLAR",
+      "volume_sum": 210480.0
+    },
+    {
+      "rank": 207,
+      "sessions": 20,
+      "symbol": "KTOS",
+      "volume_sum": 209700.0
+    },
+    {
+      "rank": 208,
+      "sessions": 20,
+      "symbol": "CIEN",
+      "volume_sum": 209357.0
+    },
+    {
+      "rank": 209,
+      "sessions": 20,
+      "symbol": "AEHR",
+      "volume_sum": 207283.0
+    },
+    {
+      "rank": 210,
+      "sessions": 20,
+      "symbol": "UAA",
+      "volume_sum": 206498.0
+    },
+    {
+      "rank": 211,
+      "sessions": 20,
+      "symbol": "ZM",
+      "volume_sum": 205008.0
+    },
+    {
+      "rank": 212,
+      "sessions": 20,
+      "symbol": "WHR",
+      "volume_sum": 200864.0
+    },
+    {
+      "rank": 213,
+      "sessions": 20,
+      "symbol": "LUV",
+      "volume_sum": 200627.0
+    },
+    {
+      "rank": 214,
+      "sessions": 20,
+      "symbol": "ORBS",
+      "volume_sum": 200525.0
+    },
+    {
+      "rank": 215,
+      "sessions": 20,
+      "symbol": "CARR",
+      "volume_sum": 198374.0
+    },
+    {
+      "rank": 216,
+      "sessions": 20,
+      "symbol": "GLND",
+      "volume_sum": 196515.0
+    },
+    {
+      "rank": 217,
+      "sessions": 20,
+      "symbol": "O",
+      "volume_sum": 192704.0
+    },
+    {
+      "rank": 218,
+      "sessions": 20,
+      "symbol": "GEO",
+      "volume_sum": 189827.0
+    },
+    {
+      "rank": 219,
+      "sessions": 20,
+      "symbol": "TEVA",
+      "volume_sum": 189644.0
+    },
+    {
+      "rank": 220,
+      "sessions": 20,
+      "symbol": "BTG",
+      "volume_sum": 187578.0
+    },
+    {
+      "rank": 221,
+      "sessions": 20,
+      "symbol": "ENVX",
+      "volume_sum": 186964.0
+    },
+    {
+      "rank": 222,
+      "sessions": 20,
+      "symbol": "SERV",
+      "volume_sum": 184854.0
+    },
+    {
+      "rank": 223,
+      "sessions": 20,
+      "symbol": "WEN",
+      "volume_sum": 182163.0
+    },
+    {
+      "rank": 224,
+      "sessions": 20,
+      "symbol": "KMI",
+      "volume_sum": 179708.0
+    },
+    {
+      "rank": 225,
+      "sessions": 20,
+      "symbol": "ALLY",
+      "volume_sum": 178828.0
+    },
+    {
+      "rank": 226,
+      "sessions": 20,
+      "symbol": "TOST",
+      "volume_sum": 176993.0
+    },
+    {
+      "rank": 227,
+      "sessions": 20,
+      "symbol": "MELI",
+      "volume_sum": 175529.0
+    },
+    {
+      "rank": 228,
+      "sessions": 20,
+      "symbol": "LOW",
+      "volume_sum": 175435.0
+    },
+    {
+      "rank": 229,
+      "sessions": 20,
+      "symbol": "ALHC",
+      "volume_sum": 175379.0
+    },
+    {
+      "rank": 230,
+      "sessions": 20,
+      "symbol": "IOT",
+      "volume_sum": 174816.0
+    },
+    {
+      "rank": 231,
+      "sessions": 20,
+      "symbol": "EXE",
+      "volume_sum": 172104.0
+    },
+    {
+      "rank": 232,
+      "sessions": 20,
+      "symbol": "BBY",
+      "volume_sum": 171462.0
+    },
+    {
+      "rank": 233,
+      "sessions": 20,
+      "symbol": "GAP",
+      "volume_sum": 166533.0
+    },
+    {
+      "rank": 234,
+      "sessions": 20,
+      "symbol": "DASH",
+      "volume_sum": 165403.0
+    },
+    {
+      "rank": 235,
+      "sessions": 20,
+      "symbol": "TRIP",
+      "volume_sum": 164348.0
+    },
+    {
+      "rank": 236,
+      "sessions": 20,
+      "symbol": "TLRY",
+      "volume_sum": 163283.0
+    },
+    {
+      "rank": 237,
+      "sessions": 20,
+      "symbol": "UMAC",
+      "volume_sum": 163216.0
+    },
+    {
+      "rank": 238,
+      "sessions": 20,
+      "symbol": "FTNT",
+      "volume_sum": 162803.0
+    },
+    {
+      "rank": 239,
+      "sessions": 20,
+      "symbol": "CAG",
+      "volume_sum": 162797.0
+    },
+    {
+      "rank": 240,
+      "sessions": 20,
+      "symbol": "STLA",
+      "volume_sum": 162439.0
+    },
+    {
+      "rank": 241,
+      "sessions": 20,
+      "symbol": "KSS",
+      "volume_sum": 159289.0
+    },
+    {
+      "rank": 242,
+      "sessions": 20,
+      "symbol": "NVAX",
+      "volume_sum": 157523.0
+    },
+    {
+      "rank": 243,
+      "sessions": 20,
+      "symbol": "APA",
+      "volume_sum": 155262.0
+    },
+    {
+      "rank": 244,
+      "sessions": 20,
+      "symbol": "KGC",
+      "volume_sum": 153961.0
+    },
+    {
+      "rank": 245,
+      "sessions": 20,
+      "symbol": "LMND",
+      "volume_sum": 153898.0
+    },
+    {
+      "rank": 246,
+      "sessions": 20,
+      "symbol": "SOC",
+      "volume_sum": 153571.0
+    },
+    {
+      "rank": 247,
+      "sessions": 20,
+      "symbol": "WU",
+      "volume_sum": 152509.0
+    },
+    {
+      "rank": 248,
+      "sessions": 20,
+      "symbol": "ACMR",
+      "volume_sum": 151455.0
+    },
+    {
+      "rank": 249,
+      "sessions": 20,
+      "symbol": "DOCU",
+      "volume_sum": 151224.0
+    },
+    {
+      "rank": 250,
+      "sessions": 20,
+      "symbol": "SNPS",
+      "volume_sum": 150030.0
+    },
+    {
+      "rank": 251,
+      "sessions": 20,
+      "symbol": "FRVO",
+      "volume_sum": 149584.0
+    },
+    {
+      "rank": 252,
+      "sessions": 20,
+      "symbol": "SG",
+      "volume_sum": 147667.0
+    },
+    {
+      "rank": 253,
+      "sessions": 20,
+      "symbol": "PACB",
+      "volume_sum": 145463.0
+    },
+    {
+      "rank": 254,
+      "sessions": 20,
+      "symbol": "CVE",
+      "volume_sum": 144056.0
+    },
+    {
+      "rank": 255,
+      "sessions": 20,
+      "symbol": "KOD",
+      "volume_sum": 142523.0
+    },
+    {
+      "rank": 256,
+      "sessions": 20,
+      "symbol": "BROS",
+      "volume_sum": 140500.0
+    },
+    {
+      "rank": 257,
+      "sessions": 20,
+      "symbol": "ALB",
+      "volume_sum": 140147.0
+    },
+    {
+      "rank": 258,
+      "sessions": 20,
+      "symbol": "SPOT",
+      "volume_sum": 138795.0
+    },
+    {
+      "rank": 259,
+      "sessions": 20,
+      "symbol": "AMKR",
+      "volume_sum": 138195.0
+    },
+    {
+      "rank": 260,
+      "sessions": 20,
+      "symbol": "KKR",
+      "volume_sum": 137699.0
+    },
+    {
+      "rank": 261,
+      "sessions": 20,
+      "symbol": "SHOE",
+      "volume_sum": 137436.0
+    },
+    {
+      "rank": 262,
+      "sessions": 20,
+      "symbol": "FLNC",
+      "volume_sum": 136801.0
+    },
+    {
+      "rank": 263,
+      "sessions": 20,
+      "symbol": "LAC",
+      "volume_sum": 136577.0
+    },
+    {
+      "rank": 264,
+      "sessions": 20,
+      "symbol": "XE",
+      "volume_sum": 136125.0
+    },
+    {
+      "rank": 265,
+      "sessions": 20,
+      "symbol": "OUST",
+      "volume_sum": 135513.0
+    },
+    {
+      "rank": 266,
+      "sessions": 20,
+      "symbol": "CPB",
+      "volume_sum": 134173.0
+    },
+    {
+      "rank": 267,
+      "sessions": 20,
+      "symbol": "ASX",
+      "volume_sum": 134021.0
+    },
+    {
+      "rank": 268,
+      "sessions": 20,
+      "symbol": "BRUN",
+      "volume_sum": 133839.0
+    },
+    {
+      "rank": 269,
+      "sessions": 20,
+      "symbol": "P",
+      "volume_sum": 133167.0
+    },
+    {
+      "rank": 270,
+      "sessions": 20,
+      "symbol": "TER",
+      "volume_sum": 132979.0
+    },
+    {
+      "rank": 271,
+      "sessions": 20,
+      "symbol": "NAT",
+      "volume_sum": 132074.0
+    },
+    {
+      "rank": 272,
+      "sessions": 20,
+      "symbol": "PLAY",
+      "volume_sum": 131080.0
+    },
+    {
+      "rank": 273,
+      "sessions": 20,
+      "symbol": "PAAS",
+      "volume_sum": 130885.0
+    },
+    {
+      "rank": 274,
+      "sessions": 20,
+      "symbol": "WRBY",
+      "volume_sum": 129740.0
+    },
+    {
+      "rank": 275,
+      "sessions": 20,
+      "symbol": "TTAN",
+      "volume_sum": 129337.0
+    },
+    {
+      "rank": 276,
+      "sessions": 20,
+      "symbol": "CHTR",
+      "volume_sum": 128212.0
+    },
+    {
+      "rank": 277,
+      "sessions": 20,
+      "symbol": "LNG",
+      "volume_sum": 127339.0
+    },
+    {
+      "rank": 278,
+      "sessions": 20,
+      "symbol": "PM",
+      "volume_sum": 127180.0
+    },
+    {
+      "rank": 279,
+      "sessions": 20,
+      "symbol": "TWLO",
+      "volume_sum": 126518.0
+    },
+    {
+      "rank": 280,
+      "sessions": 20,
+      "symbol": "W",
+      "volume_sum": 126114.0
+    },
+    {
+      "rank": 281,
+      "sessions": 20,
+      "symbol": "BYND",
+      "volume_sum": 125641.0
+    },
+    {
+      "rank": 282,
+      "sessions": 20,
+      "symbol": "AMPX",
+      "volume_sum": 125628.0
+    },
+    {
+      "rank": 283,
+      "sessions": 20,
+      "symbol": "CAPR",
+      "volume_sum": 125340.0
+    },
+    {
+      "rank": 284,
+      "sessions": 20,
+      "symbol": "FLY",
+      "volume_sum": 124702.0
+    },
+    {
+      "rank": 285,
+      "sessions": 20,
+      "symbol": "HUM",
+      "volume_sum": 123604.0
+    },
+    {
+      "rank": 286,
+      "sessions": 20,
+      "symbol": "NNE",
+      "volume_sum": 123345.0
+    },
+    {
+      "rank": 287,
+      "sessions": 20,
+      "symbol": "CNC",
+      "volume_sum": 123316.0
+    },
+    {
+      "rank": 288,
+      "sessions": 20,
+      "symbol": "LVS",
+      "volume_sum": 123196.0
+    },
+    {
+      "rank": 289,
+      "sessions": 20,
+      "symbol": "RBRK",
+      "volume_sum": 121457.0
+    },
+    {
+      "rank": 290,
+      "sessions": 20,
+      "symbol": "MAT",
+      "volume_sum": 120775.0
+    },
+    {
+      "rank": 291,
+      "sessions": 20,
+      "symbol": "RXT",
+      "volume_sum": 119702.0
+    },
+    {
+      "rank": 292,
+      "sessions": 20,
+      "symbol": "GTLB",
+      "volume_sum": 118912.0
+    },
+    {
+      "rank": 293,
+      "sessions": 20,
+      "symbol": "EXPE",
+      "volume_sum": 118808.0
+    },
+    {
+      "rank": 294,
+      "sessions": 20,
+      "symbol": "GEMI",
+      "volume_sum": 118195.0
+    },
+    {
+      "rank": 295,
+      "sessions": 20,
+      "symbol": "EPD",
+      "volume_sum": 118075.0
+    },
+    {
+      "rank": 296,
+      "sessions": 20,
+      "symbol": "TEAM",
+      "volume_sum": 117240.0
+    },
+    {
+      "rank": 297,
+      "sessions": 20,
+      "symbol": "MBLY",
+      "volume_sum": 117146.0
+    },
+    {
+      "rank": 298,
+      "sessions": 20,
+      "symbol": "UAMY",
+      "volume_sum": 115533.0
+    },
+    {
+      "rank": 299,
+      "sessions": 20,
+      "symbol": "PBF",
+      "volume_sum": 113353.0
+    },
+    {
+      "rank": 300,
+      "sessions": 20,
+      "symbol": "PDSB",
+      "volume_sum": 112999.0
+    }
+  ],
+  "tickers": [
+    "SPCX",
+    "SOFI",
+    "CRWV",
+    "GME",
+    "SNDK",
+    "BE",
+    "BMNR",
+    "CIFR",
+    "WULF",
+    "NOK",
+    "RKLB",
+    "PCG",
+    "TSM",
+    "WBD",
+    "AMC",
+    "NU",
+    "ONDS",
+    "ASTS",
+    "CRCL",
+    "AAL",
+    "IONQ",
+    "RKT",
+    "HPE",
+    "APLD",
+    "HIMS",
+    "LULU",
+    "CCL",
+    "NVO",
+    "PSKY",
+    "SNAP",
+    "AI",
+    "AGNC",
+    "SMR",
+    "OKLO",
+    "BB",
+    "EOSE",
+    "AAOI",
+    "U",
+    "LITE",
+    "WDC",
+    "RGTI",
+    "CLSK",
+    "ASST",
+    "PBR",
+    "DKNG",
+    "PATH",
+    "GPRO",
+    "APP",
+    "GLW",
+    "TTD",
+    "CORZ",
+    "OPEN",
+    "RDDT",
+    "CVNA",
+    "FCX",
+    "CMG",
+    "XP",
+    "CLF",
+    "VST",
+    "QBTS",
+    "PURR",
+    "JBLU",
+    "USAR",
+    "CBRS",
+    "NVTS",
+    "VKTX",
+    "KHC",
+    "SOUN",
+    "DAL",
+    "ACHR",
+    "SLS",
+    "FSLR",
+    "TEM",
+    "VRT",
+    "KEEL",
+    "ONON",
+    "LCID",
+    "MDB",
+    "FIG",
+    "HPQ",
+    "VALE",
+    "OWL",
+    "COHR",
+    "ALAB",
+    "DVN",
+    "FRO",
+    "RBLX",
+    "BSX",
+    "ZS",
+    "BIDU",
+    "AG",
+    "HTZ",
+    "RIG",
+    "VG",
+    "MP",
+    "FSLY",
+    "AXTI",
+    "SBET",
+    "QUBT",
+    "SIRI",
+    "FISV",
+    "FRMI",
+    "HL",
+    "IBRX",
+    "TE",
+    "ON",
+    "IOVA",
+    "FIGR",
+    "GLXY",
+    "BX",
+    "JOBY",
+    "CCJ",
+    "MO",
+    "CHWY",
+    "VFC",
+    "QXO",
+    "FPS",
+    "LYFT",
+    "DOW",
+    "BKNG",
+    "CELH",
+    "ANET",
+    "HUT",
+    "PLUG",
+    "EQT",
+    "PL",
+    "NN",
+    "MDT",
+    "UAL",
+    "RDW",
+    "UUUU",
+    "BBAI",
+    "LQDA",
+    "ENPH",
+    "ACN",
+    "NUAI",
+    "AFRM",
+    "KR",
+    "TMC",
+    "LUNR",
+    "XYZ",
+    "B",
+    "UPST",
+    "QS",
+    "LEN",
+    "RXRX",
+    "M",
+    "RCAT",
+    "CDE",
+    "RUN",
+    "AKAM",
+    "STM",
+    "AEO",
+    "ABUS",
+    "CYPH",
+    "GEV",
+    "OSCR",
+    "NEM",
+    "PTON",
+    "CLOV",
+    "UEC",
+    "OKTA",
+    "APO",
+    "DJT",
+    "HAL",
+    "LUMN",
+    "AUR",
+    "AS",
+    "TTWO",
+    "CPNG",
+    "ZETA",
+    "ECHO",
+    "S",
+    "NLY",
+    "AA",
+    "SPCE",
+    "RARE",
+    "PCT",
+    "DHT",
+    "PINS",
+    "BP",
+    "MOS",
+    "INFQ",
+    "MGM",
+    "NRG",
+    "APH",
+    "CLS",
+    "FCEL",
+    "RCL",
+    "GIS",
+    "TJX",
+    "WYNN",
+    "WOLF",
+    "SMMT",
+    "WMB",
+    "TMUS",
+    "EIX",
+    "RUM",
+    "MCHP",
+    "CAVA",
+    "SEDG",
+    "AVAV",
+    "DKS",
+    "CEG",
+    "UMC",
+    "KLAR",
+    "KTOS",
+    "CIEN",
+    "AEHR",
+    "UAA",
+    "ZM",
+    "WHR",
+    "LUV",
+    "ORBS",
+    "CARR",
+    "GLND",
+    "O",
+    "GEO",
+    "TEVA",
+    "BTG",
+    "ENVX",
+    "SERV",
+    "WEN",
+    "KMI",
+    "ALLY",
+    "TOST",
+    "MELI",
+    "LOW",
+    "ALHC",
+    "IOT",
+    "EXE",
+    "BBY",
+    "GAP",
+    "DASH",
+    "TRIP",
+    "TLRY",
+    "UMAC",
+    "FTNT",
+    "CAG",
+    "STLA",
+    "KSS",
+    "NVAX",
+    "APA",
+    "KGC",
+    "LMND",
+    "SOC",
+    "WU",
+    "ACMR",
+    "DOCU",
+    "SNPS",
+    "FRVO",
+    "SG",
+    "PACB",
+    "CVE",
+    "KOD",
+    "BROS",
+    "ALB",
+    "SPOT",
+    "AMKR",
+    "KKR",
+    "SHOE",
+    "FLNC",
+    "LAC",
+    "XE",
+    "OUST",
+    "CPB",
+    "ASX",
+    "BRUN",
+    "P",
+    "TER",
+    "NAT",
+    "PLAY",
+    "PAAS",
+    "WRBY",
+    "TTAN",
+    "CHTR",
+    "LNG",
+    "PM",
+    "TWLO",
+    "W",
+    "BYND",
+    "AMPX",
+    "CAPR",
+    "FLY",
+    "HUM",
+    "NNE",
+    "CNC",
+    "LVS",
+    "RBRK",
+    "MAT",
+    "RXT",
+    "GTLB",
+    "EXPE",
+    "GEMI",
+    "EPD",
+    "TEAM",
+    "MBLY",
+    "UAMY",
+    "PBF",
+    "PDSB"
+  ]
+}

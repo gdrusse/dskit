@@ -385,7 +385,7 @@ dskit/onboarding/
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
-│   ├── alpaca.py      Alpaca stock bars + pinned saved option archives
+│   ├── alpaca.py      Alpaca stock bars, option fetch + activity ranking feeds, pinned option archives
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)

@@ -184,6 +184,10 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-store-option-archive-pins.json",
         "configs/source-store-option-archive.json",
         "configs/source-stock-daily.json", "configs/stock_universe.json",
+        # ADR-0235: the 300-stock option universe (activity pull, ranking run, ranking output,
+        # and the option-history pull whose symbols are read from that output).
+        "configs/source-option-activity.json", "configs/run-option-universe-300-rank.json",
+        "configs/option_universe_300.json", "configs/source-option-universe-300.json",
         "configs/stocks-long.json", "configs/stocks-long-features.json",
         "configs/stocks-opt.json", "configs/stocks-opt-features.json",
         "index_options/stock_bars.py", "tests/test_stock_bars.py",
@@ -239,8 +243,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the 21 steps 1-6 and onboarding-store files = 374, plus ADR-0226/0229's workflow
     # (workflow.json, 11 templates, 7 tests, 4 fixtures, 1 archive doc) = 24 new = 398,
     # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
-    # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417
-    assert len(actual) == 418
+    # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417, plus 1 more = 418,
+    # plus ADR-0235's four option-universe-300 configs = 422
+    assert len(actual) == 422
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
