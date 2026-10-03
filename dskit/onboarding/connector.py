@@ -83,6 +83,7 @@ __all__ = [
     "backoff",
     "check_config",
     "check_message",
+    "read_pinned_json",
     "resolve_connector",
     "retry_after",
     "safe_url",
@@ -382,6 +383,61 @@ def _file_relpath_problems(value):
         return [f"FILE.relpath may not hold ':' in a segment (a drive or alternate-stream "
                 f"escape on some platforms), got {value!r}"]
     return []
+
+
+def read_pinned_json(config, errors, file_knob, digest_knob):
+    """Read the JSON file a config names, verified against its pinned sha256.
+
+    The single owner of the pinned-file rule (alpaca ``symbols_file``,
+    httpblobs ``entities_file``). The path expands ``~`` and ``$VAR`` and must
+    then be absolute (a relative path would name a different file per launch
+    directory); the digest knob is REQUIRED with the file and must equal the
+    sha256 of the file's bytes, so an edited file refuses instead of mixing two
+    lists inside one source.
+
+    Parameters
+    ----------
+    config : dict
+        The connector config.
+    errors : list of str
+        Problems are appended here.
+    file_knob, digest_knob : str
+        Config keys holding the path and the sha256 hex digest.
+
+    Returns
+    -------
+    object or None
+        The parsed JSON document, or None when ``file_knob`` is unset or a
+        problem was appended.
+    """
+    import hashlib
+    import json
+    import os
+
+    path, digest = config.get(file_knob), config.get(digest_knob)
+    if path is None:
+        if digest is not None:
+            errors.append(f"config.{digest_knob} needs {file_knob}")
+        return None
+    if not isinstance(digest, str) or not digest:
+        errors.append(f"config.{file_knob} requires config.{digest_knob}")
+        return None
+    try:
+        path = os.path.expandvars(os.path.expanduser(path))
+        if not os.path.isabs(path):
+            errors.append(f"config.{file_knob} must be absolute after ~ and $VAR expansion")
+            return None
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        doc = json.loads(raw.decode("utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        errors.append(f"config.{file_knob} unreadable: {exc}")
+        return None
+    if hashlib.sha256(raw).hexdigest() != digest:
+        errors.append(f"config.{digest_knob} does not match {path}: the "
+                      "list changed since this config was written")
+        return None
+    return doc
 
 
 def resolve_connector(ref):

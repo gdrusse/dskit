@@ -30277,6 +30277,8 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 
 **Tests.** Fake local HTTP server: fetch and quoting, headers, throttle spacing, retry then success, exhausted retries (no STATE), 404 refusal, transform and its failure, raw sidecar, cache hits (no network, no wait), universe file, unchanged-declaration no-op, real acquisition with manifest and verify.
 
+**Amendment (2026-10-03, review finding).** `entities_file` was read at run time with no pin, so an edited universe silently reused the source identity. Now `entities_sha256` (sha256 of the file bytes) is REQUIRED with `entities_file`, the path must be absolute after `~`/`$VAR` expansion, and a mismatch refuses at validate and acquire. The rule has one owner, `connector.read_pinned_json`, shared with alpaca `symbols_file`/`symbols_sha256` (moved there, not copied). `source-stock-daily.json` and `source-stock-daily-300.json` carry the pin; the 300-ticker source `stock-daily-bars-300` (universe `option_universe_300.json`) is onboarded the same way.
+
 ## ADR-0234 — Streaming observation read (`iter_stream`, `ObservationStreamRows`) and the as-traded close (`AsTradedClose`)
 
 **Status:** accepted 2026-10-03 by owner direction (autonomous stock-lane build), like ADR-0230 to 0233. Extends ADR-0037 (read seam) and ADR-0231 (bar features).

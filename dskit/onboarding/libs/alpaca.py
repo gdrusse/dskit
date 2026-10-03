@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector, backoff
+from ..connector import PROTOCOL, Connector, backoff, read_pinned_json
 
 from .localtables import PinnedArchiveConnector
 
@@ -758,38 +758,19 @@ class _AlpacaOptionTransport(Connector):
         config pins the list itself and an edited file refuses instead of
         mixing two lists inside one source.
         """
-        import hashlib
-        import json
-        import os
-
         listed = config.get("symbols")
         path, key = config.get("symbols_file"), config.get("symbols_key")
-        digest = config.get("symbols_sha256")
-        if path is None and digest is not None:
+        if path is None and config.get("symbols_sha256") is not None:
             errors.append("config.symbols_sha256 needs symbols_file")
         if listed is not None and (path is not None or key is not None):
             errors.append("config.symbols excludes symbols_file/symbols_key")
         elif (path is None) != (key is None):
             errors.append("config.symbols_file and config.symbols_key go together")
         elif path is not None:
-            if not isinstance(digest, str) or not digest:
-                errors.append("config.symbols_file requires config.symbols_sha256")
-                return None
-            try:
-                path = os.path.expandvars(os.path.expanduser(path))
-                if not os.path.isabs(path):
-                    errors.append("config.symbols_file must be absolute after ~ and "
-                                  "$VAR expansion")
-                    return None
-                with open(path, "rb") as handle:
-                    raw = handle.read()
-                doc = json.loads(raw.decode("utf-8"))
-            except (OSError, TypeError, ValueError) as exc:
-                errors.append(f"config.symbols_file unreadable: {exc}")
-                return None
-            if hashlib.sha256(raw).hexdigest() != digest:
-                errors.append(f"config.symbols_sha256 does not match {path}: the "
-                              "list changed since this config was written")
+            problems = []
+            doc = read_pinned_json(config, problems, "symbols_file", "symbols_sha256")
+            if doc is None:
+                errors.extend(problems)
                 return None
             listed = doc.get(key) if isinstance(doc, dict) else None
             if listed is None:

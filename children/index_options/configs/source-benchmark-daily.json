@@ -1,7 +1,8 @@
 {
   "url_template": "https://query1.finance.yahoo.com/v8/finance/chart/{entity}?period1=1451606400&period2=1790812800&interval=1d&events=div,split",
-  "entities_file": "configs/benchmark_universe.json",
+  "entities_file": "$INDEX_OPTIONS_ROOT/configs/benchmark_universe.json",
   "entities_key": "tickers",
+  "entities_sha256": "9fca1e1c6639b7a75581c40de04885612f5078d6c5ac1d65ffbf99759c72025b",
   "relpath_template": "{entity_lower}/underlying_prices.parquet",
   "raw_relpath_template": "_raw/{entity}.json",
   "transform": "index_options.stock_bars:StockDailyBars",
@@ -14,5 +15,5 @@
   "max_retries": 4,
   "as_of": "2026-10-03T15:45:00+00:00",
   "stream": "files",
-  "notes": "Registration input, not a run input: the market benchmark's daily bars, pulled exactly as the stock universe's (source-stock-daily.json: same transform, same split-adjusted basis, same <t>/underlying_prices.parquet layout) but from its own entity list, configs/benchmark_universe.json, so the benchmark never enters the study universe. Why a separate source: the archive's SPY series (philippdubach-options) ends 2025-12-12 while the stock bars run to the as_of date, so market-relative features would be null for the last months. No cache_dir: a fresh pull over the network (0.6 s throttle). Register: python -m dskit.onboarding register-source benchmark-daily-bars --catalog-source benchmark-daily-bars --connector httpblobs --config @configs/source-benchmark-daily.json --activate --root <store root>; then acquire --source benchmark-daily-bars --stream files --mode backfill."
+  "notes": "Registration input, not a run input: the market benchmark's daily bars, pulled exactly as the stock universe's (source-stock-daily.json: same transform, same split-adjusted basis, same <t>/underlying_prices.parquet layout) but from its own entity list, configs/benchmark_universe.json, so the benchmark never enters the study universe. Why a separate source: the archive's SPY series (philippdubach-options) ends 2025-12-12 while the stock bars run to the as_of date, so market-relative features would be null for the last months. No cache_dir: a fresh pull over the network (0.6 s throttle). Register: python -m dskit.onboarding register-source benchmark-daily-bars --catalog-source benchmark-daily-bars --connector httpblobs --config @configs/source-benchmark-daily.json --activate --root <store root>; then acquire --source benchmark-daily-bars --stream files --mode backfill. entities_file is absolute after $VAR expansion (export INDEX_OPTIONS_ROOT=<this child's root>) and entities_sha256 pins it (ADR-0233 amendment)."
 }

@@ -41,6 +41,9 @@ Config knobs (default-deny, per ``spec()``):
   it.
 - Path knobs (``entities_file``, ``cache_dir``) expand ``~`` and ``$VAR``
   (an unset variable refuses), so a config carries no machine path.
+  ``entities_file`` must be absolute after expansion and is pinned by the
+  REQUIRED ``entities_sha256`` (``connector.read_pinned_json``, shared with
+  alpaca's ``symbols_file``): an edited universe refuses.
 - ``entities`` — distinct non-empty strings; or, instead,
   ``entities_file`` (a JSON file, machine-local like ``localblobs``'s
   ``path``) with ``entities_key`` (dot-path to the list inside it; omit when
@@ -90,6 +93,7 @@ from ..connector import (
     Connector,
     _file_relpath_problems,
     backoff,
+    read_pinned_json,
     retry_after,
     safe_url,
 )
@@ -123,6 +127,7 @@ _KNOBS = {
     "url_template": "http(s) URL holding {entity} (URL-quoted) and optionally {entity_lower}.",
     "entities": "Distinct non-empty strings, one request each (or entities_file).",
     "entities_file": "JSON file holding the entity list instead of entities.",
+    "entities_sha256": "REQUIRED with entities_file: sha256 of the file's bytes; a changed file refuses.",
     "entities_key": "Dot-path to the list inside entities_file; omit when the file is the list.",
     "relpath_template": "POSIX relpath of the stored file; names {entity} or {entity_lower}.",
     "as_of": "ISO instant the pull is declared current (not in the future); re-pull by changing it.",
@@ -298,17 +303,16 @@ class HttpBlobsConnector(Connector):
             problems.append("give exactly one of config.entities and config.entities_file")
             return []
         if path is not None:
-            try:
-                with open(_expand(path), encoding="utf-8") as fh:
-                    inline = json.load(fh)
-            except (OSError, TypeError, ValueError) as exc:
-                problems.append(f"config.entities_file {path!r} is not readable JSON: {exc}")
+            inline = read_pinned_json(config, problems, "entities_file", "entities_sha256")
+            if inline is None:
                 return []
             for part in (config.get("entities_key") or "").split("."):
                 if part:
                     inline = inline.get(part) if isinstance(inline, dict) else None
         elif config.get("entities_key") is not None:
             problems.append("config.entities_key needs entities_file")
+        if path is None and config.get("entities_sha256") is not None:
+            problems.append("config.entities_sha256 needs entities_file")
         if not (isinstance(inline, list) and inline
                 and all(isinstance(e, str) and e for e in inline)):
             problems.append(f"the entity list must be a non-empty list of strings, got {inline!r}")

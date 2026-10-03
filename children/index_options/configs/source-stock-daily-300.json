@@ -1,0 +1,21 @@
+{
+  "url_template": "https://query1.finance.yahoo.com/v8/finance/chart/{entity}?period1=1451606400&period2=1790812800&interval=1d&events=div,split",
+  "entities_file": "$INDEX_OPTIONS_ROOT/configs/option_universe_300.json",
+  "entities_key": "tickers",
+  "entities_sha256": "7bc4639cc56b0b0470f38a09126b1517fc43cb871bcef83325bf45646eab9139",
+  "relpath_template": "{entity_lower}/underlying_prices.parquet",
+  "raw_relpath_template": "_raw/{entity}.json",
+  "cache_dir": "$STOCK_DAILY_300_RAW_ROOT",
+  "transform": "index_options.stock_bars:StockDailyBars",
+  "transform_params": {},
+  "headers": {
+    "User-Agent": "dskit-research-bot/1.0 (daily bars audit)"
+  },
+  "throttle_s": 0.6,
+  "timeout": 30,
+  "max_retries": 4,
+  "as_of": "2026-10-03T15:45:00+00:00",
+  "stream": "files",
+  "notes": "Registration input, not a run input: daily bars for the 300 option-universe tickers, same recipe as source-stock-daily.json (ADR-0233 httpblobs; basis, transform, window 2016-01-01 .. 2026-10-01 and IRREGULAR-split flags are described there). The entity list is read from configs/option_universe_300.json key tickers (the rank output; never restated here); entities_file is absolute after $VAR expansion (export INDEX_OPTIONS_ROOT=<this child's root>) and entities_sha256 pins the file, so an edited universe refuses until the hash is updated deliberately. cache_dir is $STOCK_DAILY_300_RAW_ROOT, a separate raw root from the 116-ticker pull. max_refused 15 allows delisted or no-data tickers to land as refused inventory rows (the run records which and why); lower it once the real refusal count is known. Register: python -m dskit.onboarding register-source stock-daily-bars-300 --catalog-source stock-daily-bars-300 --connector httpblobs --config @configs/source-stock-daily-300.json --activate --root <store root>; then acquire --source stock-daily-bars-300 --stream files --mode backfill.",
+  "max_refused": 15
+}

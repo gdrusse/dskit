@@ -182,24 +182,72 @@ def _universe(tmp_path, doc):
     return str(path)
 
 
+def _pinned(path):
+    return {"entities_file": path,
+            "entities_sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()}
+
+
 def test_entities_come_from_a_universe_file_by_key_or_whole(server, config, tmp_path):
     cfg = {k: v for k, v in config.items() if k != "entities"}
     keyed = _universe(tmp_path, {"meta": {"tickers": ["AAA", "BBB"]}, "other": 1})
-    msgs = _read(HttpBlobsConnector(), {**cfg, "entities_file": keyed, "entities_key": "meta.tickers"})
+    msgs = _read(HttpBlobsConnector(), {**cfg, **_pinned(keyed), "entities_key": "meta.tickers"})
     assert [f["relpath"] for f in _by(msgs, "FILE")] == ["aaa/payload.json", "bbb/payload.json"]
     whole = _universe(tmp_path, ["BBB"])
-    assert len(_by(_read(HttpBlobsConnector(), {**cfg, "entities_file": whole}), "FILE")) == 1
+    assert len(_by(_read(HttpBlobsConnector(), {**cfg, **_pinned(whole)}), "FILE")) == 1
 
 
 @pytest.mark.parametrize("doc, key", [({"a": []}, "a"), ({"a": ["x"]}, "missing"), ("str", None),
                                       ({"a": ["x", "x"]}, "a")])
 def test_a_bad_universe_file_refuses(config, tmp_path, doc, key):
     cfg = {k: v for k, v in config.items() if k != "entities"}
-    cfg["entities_file"] = _universe(tmp_path, doc)
+    cfg.update(_pinned(_universe(tmp_path, doc)))
     if key:
         cfg["entities_key"] = key
     with pytest.raises(AssetError):
         HttpBlobsConnector().check(cfg)
+
+
+def _file_cfg(config, tmp_path, doc=("AAA", "BBB")):
+    cfg = {k: v for k, v in config.items() if k != "entities"}
+    cfg.update(_pinned(_universe(tmp_path, list(doc))))
+    return cfg
+
+
+def test_entities_file_requires_its_hash(config, tmp_path):
+    cfg = _file_cfg(config, tmp_path)
+    del cfg["entities_sha256"]
+    with pytest.raises(AssetError, match="entities_sha256"):
+        HttpBlobsConnector().check(cfg)
+
+
+def test_entities_sha256_needs_entities_file(config):
+    with pytest.raises(AssetError, match="entities_sha256 needs"):
+        HttpBlobsConnector().check({**config, "entities_sha256": "0" * 64})
+
+
+def test_a_changed_entities_file_refuses_at_check_and_read(server, config, tmp_path):
+    cfg = _file_cfg(config, tmp_path)
+    HttpBlobsConnector().check(cfg)
+    open(cfg["entities_file"], "w").write(json.dumps(["AAA", "CCC"]))
+    with pytest.raises(AssetError, match="does not match"):
+        HttpBlobsConnector().check(cfg)
+    with pytest.raises(AssetError, match="does not match"):
+        _read(HttpBlobsConnector(), cfg)
+
+
+def test_a_relative_entities_file_refuses(config, tmp_path, monkeypatch):
+    cfg = _file_cfg(config, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cfg["entities_file"] = "universe.json"
+    with pytest.raises(AssetError, match="absolute"):
+        HttpBlobsConnector().check(cfg)
+
+
+def test_entities_file_expands_vars_before_the_absolute_rule(config, tmp_path, monkeypatch):
+    cfg = _file_cfg(config, tmp_path)
+    monkeypatch.setenv("DSKIT_UNIVERSE_DIR", str(tmp_path))
+    cfg["entities_file"] = "$DSKIT_UNIVERSE_DIR/universe.json"
+    HttpBlobsConnector().check(cfg)
 
 
 def test_discover_names_the_stream_and_inventory_schema(config):
