@@ -1,0 +1,3196 @@
+{
+  "notes": "Standalone cdf_study (ADR-0190 stages) for the pooled per-ticker-heads model over NVDA, META, TSLA, MU, MSTR. Built from the workflow's expanded step-6 config of the top5-opt NVDA lane. Run from children/index_options: python -m index_options.cdf_study configs/run-pooled-heads-top5.json --stage search --partition <each of experiment.search_partitions>, then --stage select, --stage evaluate --partition development, --stage evaluate --partition later, --stage report (env CUBLAS_WORKSPACE_CONFIG=:4096:8, OMP/OPENBLAS threads 1). Folds: configs/run-pooled-heads-top5-folds.json.",
+  "data": {
+    "root": "/home/russell/data/index_options/ob",
+    "surface": null,
+    "lifecycle": null,
+    "archive_root": {
+      "source": "philippdubach-options",
+      "stream": "files"
+    },
+    "chain_features": null,
+    "raw_chain": null,
+    "symbols": {
+      "NVDA": "VIX",
+      "META": "VIX",
+      "TSLA": "VIX",
+      "MU": "VIX",
+      "MSTR": "VIX"
+    },
+    "market_symbols": {
+      "market_vix9d": {
+        "symbol": "VIX9D",
+        "max_age_days": 7
+      },
+      "market_vix3m": {
+        "symbol": "VIX3M",
+        "max_age_days": 7
+      },
+      "market_vix6m": {
+        "symbol": "VIX6M",
+        "max_age_days": 7
+      },
+      "market_vvix": {
+        "symbol": "VVIX",
+        "max_age_days": 7
+      },
+      "market_skew": {
+        "symbol": "SKEW",
+        "max_age_days": 7
+      },
+      "market_gvz": {
+        "symbol": "GVZ",
+        "max_age_days": 7
+      },
+      "market_vix1y": {
+        "symbol": "VIX1Y",
+        "max_age_days": 7
+      },
+      "market_vxn": {
+        "symbol": "VXN",
+        "max_age_days": 7
+      },
+      "market_rvx": {
+        "symbol": "RVX",
+        "max_age_days": 7
+      },
+      "market_vxd": {
+        "symbol": "VXD",
+        "max_age_days": 7
+      },
+      "market_ovx": {
+        "symbol": "OVX",
+        "max_age_days": 7
+      },
+      "market_vxeem": {
+        "symbol": "VXEEM",
+        "max_age_days": 7
+      },
+      "market_vxslv": {
+        "symbol": "VXSLV",
+        "max_age_days": 7
+      },
+      "market_vxtlt": {
+        "symbol": "VXTLT",
+        "max_age_days": 7
+      }
+    },
+    "fred_market_symbols": {
+      "rate_dff": {
+        "stream": "dff",
+        "field": "DFF",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs3mo": {
+        "stream": "dgs3mo",
+        "field": "DGS3MO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "rate_dgs10": {
+        "stream": "dgs10",
+        "field": "DGS10",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_hy_oas": {
+        "stream": "bamlh0a0hym2",
+        "field": "BAMLH0A0HYM2",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_nonfinancial": {
+        "stream": "dcpn3m",
+        "field": "DCPN3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "credit_cp_financial": {
+        "stream": "dcpf3m",
+        "field": "DCPF3M",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "dollar_broad": {
+        "stream": "dtwexbgs",
+        "field": "DTWEXBGS",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "oil_wti": {
+        "stream": "dcoilwtico",
+        "field": "DCOILWTICO",
+        "lag_sessions": 1,
+        "max_age_days": 7
+      },
+      "financial_nfci": {
+        "stream": "nfci",
+        "field": "NFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      },
+      "financial_anfci": {
+        "stream": "anfci",
+        "field": "ANFCI",
+        "lag_days": 7,
+        "max_age_days": 14
+      }
+    },
+    "price_source": {
+      "source": "stock-daily-bars",
+      "stream": "files",
+      "relpath": {
+        "NVDA": "nvda/underlying_prices.parquet",
+        "META": "meta/underlying_prices.parquet",
+        "TSLA": "tsla/underlying_prices.parquet",
+        "MU": "mu/underlying_prices.parquet",
+        "MSTR": "mstr/underlying_prices.parquet"
+      },
+      "columns": {
+        "close": "close",
+        "date": "date",
+        "dividend_amount": "dividend_amount",
+        "high": "high",
+        "low": "low",
+        "open": "open",
+        "split_coefficient": "split_coefficient",
+        "volume": "volume"
+      },
+      "window": {
+        "field": "date",
+        "end": "2026-08-25"
+      }
+    },
+    "iv_source": "cboe-index-wide",
+    "since": "2007-01-01",
+    "max_dte": 45,
+    "lags": 22,
+    "windows": [
+      1,
+      5,
+      22,
+      66
+    ],
+    "feature_gap_days": 7,
+    "reference_floor": 0.001,
+    "spot_tolerance": 0.02,
+    "surface_features": null,
+    "ohlc_windows": [
+      5,
+      22
+    ],
+    "matched_dte_vrp": null,
+    "reference_window": 22,
+    "change_lags": [
+      1,
+      5,
+      22
+    ],
+    "directional_windows": [
+      5,
+      22
+    ],
+    "periods_per_year": 252,
+    "calendar": "XNYS",
+    "calendar_pad_days": 30,
+    "dividend_field": "dividend_amount",
+    "reader": "price_calendar",
+    "keyed_tables": {
+      "key": [
+        "symbol",
+        "quote_date"
+      ],
+      "tables": {
+        "market_relative": {
+          "root": "/home/russell/data/index_options/ob",
+          "source": "stock-daily-features-r2",
+          "stream": "stock_daily_features",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "mr_beta": "mr_beta",
+            "mr_corr": "mr_corr",
+            "mr_rel_1d": "mr_rel_1d",
+            "mr_rel_22d": "mr_rel_22d",
+            "mr_rel_5d": "mr_rel_5d"
+          },
+          "max_age_days": 4,
+          "strict_prior": false
+        },
+        "option_trades": {
+          "root": "/home/russell/data/index_options/ob",
+          "source": "stock-option-trade-features-r2",
+          "stream": "stock_option_trade_features",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "ot_atm_straddle_ratio": "ot_atm_straddle_ratio",
+            "ot_log_call_put_ratio": "ot_log_call_put_ratio",
+            "ot_log_total_volume": "ot_log_total_volume",
+            "ot_log_trade_count": "ot_log_trade_count",
+            "ot_n_strikes": "ot_n_strikes",
+            "ot_put_share": "ot_put_share",
+            "ot_vw_log_moneyness": "ot_vw_log_moneyness"
+          },
+          "max_age_days": 4,
+          "strict_prior": false
+        },
+        "volume_liquidity": {
+          "root": "/home/russell/data/index_options/ob",
+          "source": "stock-daily-features-r2",
+          "stream": "stock_daily_features",
+          "key_fields": [
+            "symbol",
+            "quote_date"
+          ],
+          "columns": {
+            "vl_amihud": "vl_amihud",
+            "vl_log_dollar_volume": "vl_log_dollar_volume",
+            "vl_log_volume": "vl_log_volume",
+            "vl_log_volume_ratio": "vl_log_volume_ratio"
+          },
+          "max_age_days": 4,
+          "strict_prior": false
+        }
+      },
+      "age_suffix": "_age_days",
+      "missing_suffix": "_missing"
+    },
+    "corporate_actions": {
+      "max_abs_jump": 0.4,
+      "max_dividend_yield": 0.05,
+      "windows": {
+        "NVDA": [],
+        "META": [],
+        "TSLA": [],
+        "MU": [],
+        "MSTR": []
+      }
+    },
+    "exact_dte": 31,
+    "notes": "Five stocks pooled in one study. exact_dte 31 = the pooled argmax DTE over the five tickers' pulled option-trade bars (scratchpad memo_counts.json: 76,870 of 688,084 bars at DTE 31; ties to the shorter DTE; the pull covered DTE 30-45 only), set by hand from the pooled argmax because no value_from hook exists. Full price history (window end only, stocks-opt.json's end) so the long history is the warm-up; option-trade features exist only from 2024-01-19 and are missing (with *_missing flags, median-imputed by the study) before. Reader, columns, corporate actions and keyed tables as stocks-opt.json / stocks-*-features.json."
+  },
+  "diagnostic": {
+    "strikes_z": [
+      -2,
+      -1,
+      1,
+      2
+    ],
+    "integration_points": 101
+  },
+  "study": {
+    "features": [
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "reference_scale",
+      "is_NVDA",
+      "is_META",
+      "is_TSLA",
+      "is_MU",
+      "is_MSTR",
+      "ret_lag_0",
+      "ret_lag_1",
+      "ret_lag_2",
+      "ret_lag_3",
+      "ret_lag_4",
+      "ret_lag_5",
+      "ret_lag_6",
+      "ret_lag_7",
+      "ret_lag_8",
+      "ret_lag_9",
+      "ret_lag_10",
+      "ret_lag_11",
+      "ret_lag_12",
+      "ret_lag_13",
+      "ret_lag_14",
+      "ret_lag_15",
+      "ret_lag_16",
+      "ret_lag_17",
+      "ret_lag_18",
+      "ret_lag_19",
+      "ret_lag_20",
+      "ret_lag_21",
+      "momentum_5",
+      "momentum_22",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "overnight_return",
+      "intraday_return",
+      "log_high_low_range",
+      "parkinson_variance",
+      "jump_variance_proxy",
+      "range_variance_5",
+      "range_variance_22",
+      "jump_variance_5",
+      "jump_variance_22",
+      "overnight_variance_5",
+      "overnight_variance_22",
+      "intraday_variance_5",
+      "intraday_variance_22",
+      "own_iv",
+      "market_vix9d",
+      "market_vix3m",
+      "market_vix6m",
+      "market_vvix",
+      "market_skew",
+      "market_gvz",
+      "market_vix1y",
+      "market_rvx",
+      "market_vxd",
+      "market_ovx",
+      "market_vxeem",
+      "market_vxslv",
+      "market_vxtlt",
+      "rate_dff",
+      "rate_dgs3mo",
+      "rate_dgs10",
+      "credit_hy_oas",
+      "credit_cp_nonfinancial",
+      "credit_cp_financial",
+      "credit_cp_spread",
+      "dollar_broad",
+      "oil_wti",
+      "financial_nfci",
+      "financial_anfci",
+      "mr_rel_1d",
+      "mr_rel_5d",
+      "mr_rel_22d",
+      "mr_beta",
+      "mr_corr",
+      "mr_rel_1d_age_days",
+      "mr_rel_5d_age_days",
+      "mr_rel_22d_age_days",
+      "mr_beta_age_days",
+      "mr_corr_age_days",
+      "mr_rel_1d_missing",
+      "mr_rel_5d_missing",
+      "mr_rel_22d_missing",
+      "mr_beta_missing",
+      "mr_corr_missing",
+      "ot_log_call_put_ratio",
+      "ot_put_share",
+      "ot_log_total_volume",
+      "ot_log_trade_count",
+      "ot_n_strikes",
+      "ot_vw_log_moneyness",
+      "ot_atm_straddle_ratio",
+      "ot_log_call_put_ratio_age_days",
+      "ot_put_share_age_days",
+      "ot_log_total_volume_age_days",
+      "ot_log_trade_count_age_days",
+      "ot_n_strikes_age_days",
+      "ot_vw_log_moneyness_age_days",
+      "ot_atm_straddle_ratio_age_days",
+      "ot_log_call_put_ratio_missing",
+      "ot_put_share_missing",
+      "ot_log_total_volume_missing",
+      "ot_log_trade_count_missing",
+      "ot_n_strikes_missing",
+      "ot_vw_log_moneyness_missing",
+      "ot_atm_straddle_ratio_missing",
+      "vl_log_volume",
+      "vl_log_volume_ratio",
+      "vl_log_dollar_volume",
+      "vl_amihud",
+      "vl_log_volume_age_days",
+      "vl_log_volume_ratio_age_days",
+      "vl_log_dollar_volume_age_days",
+      "vl_amihud_age_days",
+      "vl_log_volume_missing",
+      "vl_log_volume_ratio_missing",
+      "vl_log_dollar_volume_missing",
+      "vl_amihud_missing"
+    ],
+    "group": "symbol",
+    "date": "quote_date",
+    "end": "settlement_date",
+    "horizon": "actual_calendar_dte",
+    "target": "terminal_return",
+    "reference": "reference_scale",
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "series_identity": [
+      "symbol",
+      "expiry"
+    ],
+    "output": "pipeline_runs/pooled-heads-top5/study/unused",
+    "samples": 201,
+    "tail_intervals": [
+      [
+        -2.5,
+        -0.5
+      ],
+      [
+        0.5,
+        2.5
+      ]
+    ],
+    "tail_points": 101,
+    "calibration_knots": 21,
+    "reference_model": "horizon_empirical",
+    "comparison_references": [
+      "horizon_empirical"
+    ],
+    "bootstrap": {
+      "blocks": [
+        30,
+        60
+      ],
+      "replicates": 1000,
+      "seed": 829
+    },
+    "models": {
+      "horizon_empirical": {
+        "class": "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF",
+        "params": {
+          "horizon_index": 0,
+          "reference_index": 5,
+          "knots": 401
+        },
+        "calibrate": false
+      }
+    },
+    "fold_table": {
+      "path": "pipeline_runs/pooled-heads-top5/fold-table-pooled-h31.jsonl",
+      "sha256": "944227da6f9a1c0fd015ef2e7e62c73ba9fde921fd559a6345e55c3dde45d492",
+      "holdout_start": "2026-01-30",
+      "cal_n": 40,
+      "roles": [
+        "warmup",
+        "scored"
+      ],
+      "notes": "From run-pooled-heads-top5-folds.json: one expanding warm-up fold before the options window, nine expanding scored folds inside it; holdout from 2026-01-30 never evaluated."
+    },
+    "wing_metrics": false,
+    "notes": "Folds come from step 3's fold table (ADR-0222/0223), which carries date boundaries and complete-case counts only: the study slices every panel row inside a fold's boundaries and median-imputes the dates missing an admitted family (about 8% of QQQ dev dates), so training is NOT complete-case. Owner decision 2026-10-02 (option A): median imputation is ACCEPTED and no complete-case filter will be built. Warm-up folds for search, selection and the development evaluation; scored folds only for the frozen 'later' evaluation; the holdout is refused by the study. cal_n = 40 dates (one validation window) is the inner slice of each training window used ONLY for patience early stopping (never the scored window). Replace path/sha256/holdout_start with the values printed by the step-3 run for this ticker/source/expiry. Baselines: horizon_empirical = the historical (empirical) return CDF fitted on each fold's training rows (signal = beat it); option_proxy_transport = the option-implied CDF from the entry chain's rn_q quantiles (market edge = beat it)."
+  },
+  "experiment": {
+    "output": "pipeline_runs/pooled-heads-top5/study",
+    "max_candidates": 24,
+    "candidates": {
+      "mlp_heads_base_h16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h32x16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h32x16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h32x16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h64x32_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h64x32_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_base_h64x32_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "gru_pooled_base_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      },
+      "gru_pooled_base_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      },
+      "gru_pooled_base_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      },
+      "mlp_heads_options_h16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h32x16_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h32x16_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h32x16_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h64x32_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h64x32_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "mlp_heads_options_h64x32_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:MixtureMLPCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "components": 3,
+          "hidden": [
+            64,
+            32
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ],
+          "head_features": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "gru_pooled_options_lr0.0003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.0003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      },
+      "gru_pooled_options_lr0.001": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.001,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      },
+      "gru_pooled_options_lr0.003": {
+        "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+        "calibrate": false,
+        "pooled": true,
+        "params": {
+          "encoder": {
+            "kind": "gru",
+            "hidden_size": 16,
+            "num_layers": 1,
+            "sequence_indices": [
+              [
+                32
+              ],
+              [
+                31
+              ],
+              [
+                30
+              ],
+              [
+                29
+              ],
+              [
+                28
+              ],
+              [
+                27
+              ],
+              [
+                26
+              ],
+              [
+                25
+              ],
+              [
+                24
+              ],
+              [
+                23
+              ],
+              [
+                22
+              ],
+              [
+                21
+              ],
+              [
+                20
+              ],
+              [
+                19
+              ],
+              [
+                18
+              ],
+              [
+                17
+              ],
+              [
+                16
+              ],
+              [
+                15
+              ],
+              [
+                14
+              ],
+              [
+                13
+              ],
+              [
+                12
+              ],
+              [
+                11
+              ]
+            ],
+            "context_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60
+            ]
+          },
+          "losses": [
+            {
+              "kind": "nll",
+              "weight": 0.1
+            },
+            {
+              "kind": "wing_twcrps",
+              "weight": 1.0
+            }
+          ],
+          "components": 3,
+          "hidden": [
+            32,
+            16
+          ],
+          "epochs": 2000,
+          "patience": 6,
+          "batch_size": 512,
+          "seeds": [
+            11
+          ],
+          "learning_rate": 0.003,
+          "device": "cuda",
+          "deterministic": true,
+          "feature_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120
+          ]
+        }
+      }
+    },
+    "candidate_groups": {
+      "mlp_heads_base": [
+        "mlp_heads_base_h16_lr0.0003",
+        "mlp_heads_base_h16_lr0.001",
+        "mlp_heads_base_h16_lr0.003",
+        "mlp_heads_base_h32x16_lr0.0003",
+        "mlp_heads_base_h32x16_lr0.001",
+        "mlp_heads_base_h32x16_lr0.003",
+        "mlp_heads_base_h64x32_lr0.0003",
+        "mlp_heads_base_h64x32_lr0.001",
+        "mlp_heads_base_h64x32_lr0.003"
+      ],
+      "gru_pooled_base": [
+        "gru_pooled_base_lr0.0003",
+        "gru_pooled_base_lr0.001",
+        "gru_pooled_base_lr0.003"
+      ],
+      "mlp_heads_options": [
+        "mlp_heads_options_h16_lr0.0003",
+        "mlp_heads_options_h16_lr0.001",
+        "mlp_heads_options_h16_lr0.003",
+        "mlp_heads_options_h32x16_lr0.0003",
+        "mlp_heads_options_h32x16_lr0.001",
+        "mlp_heads_options_h32x16_lr0.003",
+        "mlp_heads_options_h64x32_lr0.0003",
+        "mlp_heads_options_h64x32_lr0.001",
+        "mlp_heads_options_h64x32_lr0.003"
+      ],
+      "gru_pooled_options": [
+        "gru_pooled_options_lr0.0003",
+        "gru_pooled_options_lr0.001",
+        "gru_pooled_options_lr0.003"
+      ]
+    },
+    "search_partitions": {
+      "mlp_heads_base": [
+        "mlp_heads_base_h16_lr0.0003",
+        "mlp_heads_base_h16_lr0.001",
+        "mlp_heads_base_h16_lr0.003",
+        "mlp_heads_base_h32x16_lr0.0003",
+        "mlp_heads_base_h32x16_lr0.001",
+        "mlp_heads_base_h32x16_lr0.003",
+        "mlp_heads_base_h64x32_lr0.0003",
+        "mlp_heads_base_h64x32_lr0.001",
+        "mlp_heads_base_h64x32_lr0.003"
+      ],
+      "gru_pooled_base": [
+        "gru_pooled_base_lr0.0003",
+        "gru_pooled_base_lr0.001",
+        "gru_pooled_base_lr0.003"
+      ],
+      "mlp_heads_options": [
+        "mlp_heads_options_h16_lr0.0003",
+        "mlp_heads_options_h16_lr0.001",
+        "mlp_heads_options_h16_lr0.003",
+        "mlp_heads_options_h32x16_lr0.0003",
+        "mlp_heads_options_h32x16_lr0.001",
+        "mlp_heads_options_h32x16_lr0.003",
+        "mlp_heads_options_h64x32_lr0.0003",
+        "mlp_heads_options_h64x32_lr0.001",
+        "mlp_heads_options_h64x32_lr0.003"
+      ],
+      "gru_pooled_options": [
+        "gru_pooled_options_lr0.0003",
+        "gru_pooled_options_lr0.001",
+        "gru_pooled_options_lr0.003"
+      ]
+    },
+    "task_features": {
+      "NVDA": "is_NVDA",
+      "META": "is_META",
+      "TSLA": "is_TSLA",
+      "MU": "is_MU",
+      "MSTR": "is_MSTR"
+    },
+    "selection_metric": "crps",
+    "resolutions": {
+      "screen_samples": 101,
+      "final_samples": 201,
+      "tail_points": 101,
+      "integration_points": 101,
+      "audit_samples": [
+        101,
+        201,
+        401
+      ],
+      "audit_rows": 16
+    },
+    "expected_cells": {
+      "development": {
+        "NVDA": [
+          31
+        ],
+        "META": [
+          31
+        ],
+        "TSLA": [
+          31
+        ],
+        "MU": [
+          31
+        ],
+        "MSTR": [
+          31
+        ]
+      },
+      "evaluation": {
+        "NVDA": [
+          31
+        ],
+        "META": [
+          31
+        ],
+        "TSLA": [
+          31
+        ],
+        "MU": [
+          31
+        ],
+        "MSTR": [
+          31
+        ]
+      }
+    },
+    "notes": "Pooled per-ticker-heads HPO (owner design 2026-10-03). MLP candidates: MixtureMLPCDF, pooled true (one fit on all five tickers' fold rows), head_features = the is_<T> one-hot positions (shared trunk, one mixture head per ticker); MixtureMLPCDF trains by likelihood (NLL), not TorchCDF's 0.1 NLL + wing twCRPS, because TorchCDF refuses heads. GRU candidates: TorchCDF, pooled true, with is_<T> as plain context inputs (TorchCDF refuses head_features). Grids mirror workflow args.hpo (hidden x learning_rate; GRU hidden_size 16, head [32,16]). Two feature groups per architecture: base = the 38-name core every per-ticker run kept plus the 4 volume_liquidity names; options = base plus the 7 option-trade features and their _missing flags. Selection and the acceptance intervals use plain CRPS; tail_crps is reported alongside."
+  }
+}

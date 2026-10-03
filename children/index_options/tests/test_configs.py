@@ -114,6 +114,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/run-predictive-cdf-decision-loss-zoo.json",
         "configs/run-predictive-cdf-downside.json",
         "configs/run-predictive-cdf-guard-aware.json", "configs/run-predictive-cdf-hpo.json",
+        "configs/run-pooled-heads-top5.json", "configs/run-pooled-heads-top5-folds.json",
         "configs/run-predictive-cdf-methods.json",
         "configs/run-predictive-cdf-option-surface.json",
         "configs/run-predictive-cdf-qqq-torch-smoke.json",
@@ -248,7 +249,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
     # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417, plus 1 more = 418,
     # plus ADR-0235's four option-universe-300 configs + the 300-stock bars source and daily-features overlay = 425
-    assert len(actual) == 425
+    assert len(actual) == 427
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
