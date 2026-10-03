@@ -138,6 +138,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/memos/2026-09-29-predictive-cdf-option-surface.md",
         "docs/memos/2026-09-29-risk-neutral-cdf-architecture-comparison.md",
         "docs/memos/2026-09-30-actual-listed-wing-paired-audit.md",
+        "docs/memos/2026-10-03-stock-universe-feature-and-data-counts.md",
         "docs/memos/2026-09-30-causal-decision-region-calibration-and-robust-condor.md",
         "docs/memos/2026-09-30-center-only-conditioned-transport.md",
         "docs/memos/2026-09-30-decision-region-loss-zoo-design.md",
@@ -239,7 +240,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     # (workflow.json, 11 templates, 7 tests, 4 fixtures, 1 archive doc) = 24 new = 398,
     # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
     # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417
-    assert len(actual) == 417
+    assert len(actual) == 418
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

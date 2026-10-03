@@ -1,3 +1,26 @@
+# Active handoff — 2026-10-03: 116-stock universe built and merged; steps 1-3 not yet run
+
+**Landed (`fe4600f1` on main).** The study runs on stocks from the same manifest:
+price-calendar panel reader (ADR-0230), keyed bar-feature tables with `AsTradedClose`
+(ADR-0231, 0234), `httpblobs` connector + `stock-daily-bars` (ADR-0233), lane patterns,
+stacked `--args`, `workflow-batch` and rollup (ADR-0232 + amendment). Overlays
+`children/index_options/configs/stocks-{long,opt}.json` + `-features.json` plan 116 lanes.
+QQQ/IWM expanded configs are byte-identical to before. Every package passed a skeptic
+review with no open Critical/Major; open Minors: price-calendar drops of non-session
+expiries are uncounted; overlays repeat the store root path given in the base manifest.
+
+**Data counts.** `children/index_options/docs/memos/2026-10-03-stock-universe-feature-and-data-counts.md`
+(per ticker and expiry: daily features 299,025 rows, option-trade features 74,079 rows,
+4,439,385 option-trade bars, DTE 31-45).
+
+**Next.** Owner asked to run every ticker through steps 1-3 only (no training) to see
+feature availability by date and expiry: add a generic `--through STEP` to `workflow` and
+`workflow-batch`, a cross-ticker availability rollup, then run both universes (launch was
+blocked by a tool permission check this session; ask the owner to approve). No ticker has
+run steps 4-7 on stocks: the AAPL pilot stopped at step 6 on a since-fixed command bug.
+Known failures also on main: 3 `test_real_data.py`, `test_lightgbm_extra_is_declared_and_covered_by_all`;
+`test_folds_really_run_at_the_same_time` is a timing flake.
+
 # Active handoff — 2026-10-02: one-manifest study, QQQ and IWM run end to end
 
 **Landed.** `python -m dskit.pipeline workflow children/index_options/configs/workflow.json [--args my.json] [--plan]`
