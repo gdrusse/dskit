@@ -30161,6 +30161,8 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 
 **Tests.** Frame-hash pin for the existing reader; synthetic price file with split and spin-off days (refusal counts, window arg); keyed columns present in the panel; unknown `reader` refused; `surface` required without `reader`.
 
+**ADR-0230 Amendment (price window, 2026-10-03).** The derived panel `price_source` also carries step 1's `price_source.window` when it is set (emitted only when set, so QQQ/IWM expansions are unchanged). `PriceCalendarCDFPanel` cuts ENTRY dates to the window and cuts price records after `end` (settlement then follows step 1: no close past `end`), but keeps records before `start` so lag windows and features at the first entry use their lookback. The cut is `ParquetRows.cut`, the one window rule; `window.field` must be `date`. Tests: hook carries/omits the window; windowed panel equals the full panel filtered to the window; first-entry lags use pre-window records; step 1b cohort equals step 1's target dates.
+
 ## ADR-0231 — `libs/bar_features.py`: `DailyBarFeatures` and `TradeBarFeatures`, with leak rules
 
 **Status:** accepted 2026-10-03: the owner directed an autonomous build of the stock lane; ratify at the next review. Extends ADR-0226 (keyed families).

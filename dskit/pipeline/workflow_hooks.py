@@ -1166,7 +1166,8 @@ class ReaderOptions(Hook):
     ``exact_dte`` is the horizon (set only when a ``reader`` is selected); ``keyed_tables`` is
     the families block's keyed tables with their key and companion naming (set only when a keyed
     family is declared); with a reader, ``price_source`` is the step-1 price source's own
-    ``source``/``stream``/lane ``relpath`` plus the declared ``columns`` map (without one it is
+    ``source``/``stream``/lane ``relpath``, the declared ``columns`` map and step 1's ``window`` when
+    set (without a reader it is
     the feature source's value, untouched); ``corporate_actions`` gets this lane's ``windows``.
     None of those is declared twice, and declaring a derived one is refused.
 
@@ -1258,8 +1259,11 @@ class ReaderOptions(Hook):
         if prices.get("root") != inputs["root"]:
             raise WorkflowError(f"price_source.root {prices.get('root')!r} differs from "
                                 f"feature_sources.root {inputs['root']!r}")
-        return {"source": prices["source"], "stream": prices["stream"],
-                "relpath": prices["relpath"], "columns": columns}
+        derived = {"source": prices["source"], "stream": prices["stream"],
+                   "relpath": prices["relpath"], "columns": columns}
+        if prices.get("window") is not None:   # emitted only when set: a null leaves no key
+            derived["window"] = prices["window"]
+        return derived
 
 
 class FamilyContracts(FamiliesSpec):

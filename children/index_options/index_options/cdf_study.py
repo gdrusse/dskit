@@ -3090,7 +3090,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     config : dict
         The base keys, with ``reader`` ``"price_calendar"``, ``exact_dte`` (required),
         ``price_source`` ``{source, stream, relpath {symbol: file}, columns {file column:
-        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). Optional
+        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). ``price_source``
+        may carry ``window`` (``ParquetRows``' block, ``field`` a mapped field): ENTRY dates
+        are cut to it, price records before ``start`` stay for the features' lookback, and
+        records after ``end`` are cut, so settlement follows step 1's rule. Optional
         ``corporate_actions`` (a :class:`CorporateActionRule` spec) drops rows whose feature or
         label span holds an event, counted in ``refused[symbol]["corporate_action_path"]``.
     holdout_start : str or None
@@ -3125,6 +3128,14 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
               and isinstance(source.get("columns"), dict)
               and set(source["columns"].values()) <= set(PRICE_FIELDS)
               and set(_PRICE_REQUIRED) <= set(source["columns"].values()))
+        if ok:
+            from dskit.pipeline.libs.parquet import ParquetRows
+
+            window = source.get("window")
+            problems += [f"price_source.{p}" for p in ParquetRows.window_problems(
+                window, source["columns"])]
+            if isinstance(window, dict) and window.get("field") not in (None, "date"):
+                problems.append("price_source.window.field must be 'date', the panel's date field")
         if not ok:
             problems.append("price_source must be {source, stream, relpath {symbol: file}, columns "
                             "{file column: field}} writing fields from "
@@ -3151,14 +3162,21 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
 
         c = self.config
         self._records, self._events = {}, {}
-        frames = [pd.DataFrame({"symbol": symbol,
-                                "quote_date": sorted({r["date"] for r in self._price_records(symbol)})})
+        frames = [pd.DataFrame({"symbol": symbol, "quote_date": self._entry_dates(symbol)})
                   for symbol in c["symbols"]]
         meta = pd.concat(frames, ignore_index=True)
         meta["expiry"] = (pd.to_datetime(meta.quote_date)
                           + pd.Timedelta(days=c["exact_dte"])).dt.strftime("%Y-%m-%d")
         meta["first_seen_date"] = meta.quote_date
         return self._within_horizon(meta, c["max_dte"], self.conventions["calendar_pad_days"])
+
+    def _entry_dates(self, symbol):
+        """Return the symbol's price dates inside ``price_source.window`` (all without one)."""
+        from dskit.pipeline.libs.parquet import ParquetRows
+
+        window = self.config["price_source"].get("window")
+        dated = [{"date": r["date"]} for r in self._price_records(symbol)]
+        return sorted({r["date"] for r in ParquetRows.cut(dated, window)})
 
     def _price_records(self, symbol):
         """Read the symbol's price file once per read, project it and note its event days."""
@@ -3177,13 +3195,21 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         c, source = self.config, self.config["price_source"]
         reader = ParquetRows("prices", {
             "root": c["root"], "source": source["source"], "stream": source["stream"],
-            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"]})
+            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"],
+            "window": self._end_window(source.get("window"))})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
         if repeated:
             raise ValueError(f"{symbol}: price file repeats date(s) {repeated[:3]}")
         return rows, reader.fingerprint()
+
+    @staticmethod
+    def _end_window(window):
+        """Return ``window`` without its ``start`` (records before it feed lookback), or None."""
+        if not window or not window.get("end"):
+            return None
+        return {"field": window["field"], "end": window["end"]}
 
     @staticmethod
     def _stamp(date):

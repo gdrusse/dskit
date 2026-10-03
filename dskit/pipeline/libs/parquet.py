@@ -99,11 +99,11 @@ class ParquetRows(Node):
                     problems.append("columns maps two file columns to one output field")
             elif not isinstance(value, str) or not value:
                 problems.append(f"{name} is required: a non-empty string, got {value!r}")
-        problems += cls._window_problems(params.get("window"), params.get("columns"))
+        problems += cls.window_problems(params.get("window"), params.get("columns"))
         return problems
 
     @classmethod
-    def _window_problems(cls, window, columns):
+    def window_problems(cls, window, columns):
         """Problems with the optional ``window`` block, empty when none or absent."""
         if window is None or is_node_ref(window):
             return []
@@ -168,9 +168,9 @@ class ParquetRows(Node):
                 h.update(block)
         return h.hexdigest() == digest
 
-    def _day(self, value):
+    @staticmethod
+    def _day(value, field):
         """Return a date, datetime or ISO text field as a ``datetime.date``, else raise."""
-        field = self.params["window"]["field"]
         if isinstance(value, datetime.datetime):
             return value.date()
         if isinstance(value, datetime.date):
@@ -179,12 +179,37 @@ class ParquetRows(Node):
             return datetime.datetime.fromisoformat(value).date()
         except (TypeError, ValueError):
             raise ValueError(
-                f"{self.key}: window field {field!r} holds {value!r}, not a date or ISO text"
+                f"window field {field!r} holds {value!r}, not a date or ISO text"
             ) from None
 
     def _windowed(self, records):
-        """Keep the records whose date field lies inside ``window``; all without one."""
-        window = self.params.get("window")
+        """Keep the records inside the declared ``window``; all without one."""
+        try:
+            return self.cut(records, self.params.get("window"))
+        except ValueError as error:
+            raise ValueError(f"{self.key}: {error}") from None
+
+    @classmethod
+    def cut(cls, records, window):
+        """Keep the records whose date field lies inside ``window``: the one window rule.
+
+        Parameters
+        ----------
+        records : list of dict
+            Rows carrying ``window["field"]``.
+        window : dict or None
+            A validated ``window`` block (see the class); None or empty keeps all.
+
+        Returns
+        -------
+        list of dict
+            The kept rows, in order.
+
+        Raises
+        ------
+        ValueError
+            A date field holds a value that is not a date or ISO text.
+        """
         if not window:
             return records
         field = window["field"]
@@ -196,7 +221,7 @@ class ParquetRows(Node):
         for record in records:
             if record[field] is None:
                 continue
-            day = self._day(record[field])
+            day = cls._day(record[field], field)
             if (start is None or day >= start) and (end is None or day <= end):
                 kept.append(record)
         return kept

@@ -124,6 +124,7 @@
       "*": "{lane_lower}/underlying_prices.parquet"
     },
     "window": {
+      "field": "date",
       "start": "2024-01-18",
       "end": "2026-08-25"
     }

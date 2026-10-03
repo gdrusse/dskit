@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from dskit.pipeline.libs.observation_tables import ObservationTables
+from dskit.pipeline.libs.parquet import ParquetRows
 from index_options import cdf_study
 from index_options.cdf_study import ExactExpiryCDFPanel, PriceCalendarCDFPanel, panel_class
 from index_options.nodes import ExactExpiryPanelRead
@@ -441,3 +442,64 @@ def test_an_unhashable_or_non_string_reader_is_refused_cleanly(reader):
     assert any("reader" in p for p in cdf_study.panel_reader_problems({"reader": reader}))
     with pytest.raises(ValueError, match="reader"):
         panel_class({"reader": reader})
+
+
+# -- price_source.window: entries only, features keep their lookback (ADR-0230) ---------------
+
+WINDOW_START, WINDOW_END = DATES[40], DATES[100]
+
+
+def _window(**over):
+    return {"field": "date", "start": WINDOW_START, "end": WINDOW_END, **over}
+
+
+def _with_window(make, window):
+    table = _price_table()
+    config_source = {"source": "prices", "stream": "files",
+                     "relpath": {"AAA": "aaa/p.parquet"}, "columns": COLUMNS, "window": window}
+    return make(table, price_source=config_source)
+
+
+def test_a_windowed_panel_is_the_full_panel_cut_to_entries_and_settlements_inside_it(make):
+    full = make().read()
+    frame = _with_window(make, _window()).read()
+    kept = full[(full.quote_date >= WINDOW_START) & (full.settlement_date <= WINDOW_END)]
+    pd.testing.assert_frame_equal(frame, kept.reset_index(drop=True))
+    assert frame.quote_date.min() >= WINDOW_START and frame.settlement_date.max() <= WINDOW_END
+    assert len(frame) > 0
+
+
+def test_features_of_the_first_windowed_entry_use_records_before_the_window_start(make):
+    frame = _with_window(make, _window()).read()
+    first = frame.iloc[0]
+    assert first.quote_date >= WINDOW_START
+    closes = [CLOSE[d] for d in DATES if d <= first.quote_date][-6:]
+    expected = [math.log(b/a) for a, b in zip(closes, closes[1:])]
+    assert first.ret_lag_0 == pytest.approx(expected[-1])
+    assert first.ret_lag_4 == pytest.approx(expected[0])
+    assert frame.rv_5.notna().all()
+
+
+def test_a_start_only_and_an_end_only_window_each_cut_one_side(make):
+    full = make().read()
+    start_only = _with_window(make, {"field": "date", "start": WINDOW_START}).read()
+    end_only = _with_window(make, {"field": "date", "end": WINDOW_END}).read()
+    pd.testing.assert_frame_equal(
+        start_only, full[full.quote_date >= WINDOW_START].reset_index(drop=True))
+    pd.testing.assert_frame_equal(
+        end_only, full[full.settlement_date <= WINDOW_END].reset_index(drop=True))
+
+
+def test_the_windowed_cohort_equals_step_1s_target_dates(make):
+    """Step 1 = ParquetRows window then HorizonPairs; step 1b must list the same entry dates."""
+    from dskit.pipeline.kinds_table import HorizonPairs
+
+    cut = ParquetRows.cut(_price_table().to_dict("records"), _window())
+    step1 = HorizonPairs("pairs", {
+        "horizon_days": HORIZON, "fallback": "previous", "symbol": "AAA", "date_field": "date",
+        "close_field": "close", "fields": {
+            "symbol": "s", "date": "d", "settlement_date": "x", "entry_close": "c0",
+            "settle_close": "c1", "terminal_return": "r", "period": "p"}}
+    ).run(None, {"records": cut})["records"]
+    listed = [r["d"] for r in step1 if _expiry(r["d"]) == _settlement(r["d"])]
+    assert _with_window(make, _window()).read().quote_date.tolist() == listed

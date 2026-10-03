@@ -148,3 +148,28 @@ def test_a_reader_asks_the_panel_for_a_cohort_of_the_identity_and_agreed_columns
     want = attach["identity"] + attach["agree_fields"]
     assert _panel_params(_flow({"panel_options": OPTIONS}))["cohort_columns"] == want
     assert "cohort_columns" not in _panel_params(_flow())
+
+
+# -- price_source.window reaches the derived panel price_source (ADR-0230) ----------------------
+
+WINDOW = {"field": "date", "start": "2024-01-18", "end": "2026-08-25"}
+
+
+def _prices(flow_overlay):
+    return _panel_params(_flow({"panel_options": OPTIONS, **flow_overlay}))["price_source"]
+
+
+def test_the_step_1_window_is_carried_into_the_derived_panel_price_source():
+    base = _flow().all_args["price_source"]
+    assert _prices({"price_source": {**base, "window": WINDOW}})["window"] == WINDOW
+
+
+def test_a_null_window_leaves_the_derived_panel_price_source_without_a_window_key():
+    assert "window" not in _prices({})
+
+
+@pytest.mark.parametrize("step", ["step4", "step5", "step6"])
+def test_the_window_reaches_each_study_data_block(step):
+    base = _flow().all_args["price_source"]
+    flow = _flow({"panel_options": OPTIONS, "price_source": {**base, "window": WINDOW}})
+    assert flow.expanded(step, False, 0)["data"]["price_source"]["window"] == WINDOW
