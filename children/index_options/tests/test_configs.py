@@ -182,6 +182,10 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/source-store-exact-expiry-tables.json",
         "configs/source-store-option-archive-pins.json",
         "configs/source-store-option-archive.json",
+        "configs/source-stock-daily.json", "configs/stock_universe.json",
+        "configs/stocks-long.json", "configs/stocks-long-features.json",
+        "configs/stocks-opt.json", "configs/stocks-opt-features.json",
+        "index_options/stock_bars.py", "tests/test_stock_bars.py",
         "configs/source-store-raw-chain-features.json", "index_options/datafiles.py",
         "tests/test_config_data_sources.py", "tests/test_datafiles.py",
         # ADR-0226, ADR-0229: the 7-step workflow for arbitrary tickers/families:
@@ -189,6 +193,14 @@ def test_exact_manifest_and_agent_parity(child_root):
         # step3 (holdout/folds), step4 (forward selection), step5 (zoo), step6 (HPO),
         # step7 (evaluate + report). Template configs, workflow.json, tests, fixtures.
         "configs/workflow.json",
+        "configs/workflow-features.json", "configs/benchmark_universe.json",
+        "configs/source-benchmark-daily.json", "tests/test_stock_features.py",
+        "tests/test_panel_options.py", "tests/test_panel_refactor_pin.py",
+        "tests/test_price_calendar_panel.py",
+        "configs/templates/features-stock-daily.json",
+        "configs/templates/features-stock-option-trades.json",
+        "configs/templates/source-features-daily.json",
+        "configs/templates/source-features-trades.json",
         "configs/templates/step1-target-dates.json",
         "configs/templates/step1b-feature-engineering.json",
         "configs/templates/step2-feature-availability.json",
@@ -224,8 +236,10 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus ADR-0196's ledger_studies.py and its test = 264, plus ADR-0197's 10 documents and
     # test_debit_backtest.py = 275, plus the 78 files origin/main gained after ADR-0197 = 353,
     # plus the 21 steps 1-6 and onboarding-store files = 374, plus ADR-0226/0229's workflow
-    # (workflow.json, 11 templates, 7 tests, 4 fixtures, 1 archive doc) = 24 new = 398
-    assert len(actual) == 398
+    # (workflow.json, 11 templates, 7 tests, 4 fixtures, 1 archive doc) = 24 new = 398,
+    # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
+    # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417
+    assert len(actual) == 417
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -2561,6 +2575,20 @@ def test_step1b_withholds_exactly_the_open_interest_fields_and_computes_the_prio
     for name in ("liquidity_oi", "chain_nodes_oi", "oi_panel_columns"):
         assert "publication clock" in carried[name]["clock_note"] and "audit" in carried[name][
             "clock_note"]
+
+
+def test_dropping_liquidity_and_chain_nodes_keeps_carried_fields_inside_the_schema(child_root):
+    from dskit.pipeline.workflow_hooks import FamiliesSpec
+
+    manifest = json.loads((child_root / "configs" / "workflow.json").read_text())
+    spec = {**manifest["args"]["families"], "drop": ["liquidity", "chain_nodes"]}
+    whole = FamiliesSpec().apply({"spec": manifest["args"]["families"]})
+    got = FamiliesSpec().apply({"spec": spec})
+    assert set(whole["carried"]) - set(got["carried"]) == {"liquidity_oi", "chain_nodes_oi"}
+    for name, entry in got["carried"].items():
+        inside = {f in whole["schema_fields"] for f in entry["fields"]}
+        assert {f in got["schema_fields"] for f in entry["fields"]} == inside, name
+    assert not {"liquidity", "chain_nodes"} & set(got["availability"])
 
 
 def test_step1b_every_open_interest_named_column_is_withheld_or_a_prior_observation(child_root):

@@ -269,6 +269,16 @@ the stream; `verify=True` re-hashes it first and lists every drift;
 `verified_payload_dir` is the same read keyed by a pinned manifest hash.
 `libs/localblobs.py` and `artifacts.py` are the references.
 
+The `httpblobs` kind (ADR-0233) is the network twin: one HTTP GET per entity
+(`url_template` with `{entity}`, entities inline or from `entities_file` +
+`entities_key`), each response a hashed `FILE` at `relpath_template` plus an
+inventory RECORD `{entity, status, http_status, relpath, size, sha256,
+raw_sha256, origin, reason}`. `throttle_s`, `timeout`, `max_retries` and static
+`headers` are knobs; a 4xx or a failed `transform` is a recorded `refused` row,
+exhausted retries abort with no cursor. `transform` (`pkg.module:Class`) reshapes
+a response in your code, `raw_relpath_template` keeps the raw bytes, and
+`cache_dir` re-derives from raw responses already on disk without the network.
+
 ## OAuth authorization
 
 OAuth config stores environment-variable names only. For Schwab, export
@@ -341,6 +351,8 @@ tamper-shaped store. `stream_digest` fingerprints without ever
 building the whole-snapshot string, byte-identical to
 `sha256(json.dumps(records, sort_keys=True))`.
 
+`iter_stream(root, source, stream, key_fields, fields, ...)` is the lazy sibling for a stream too large to hold: the same winner rule and intake gates, two passes, one compact entry per KEY (not per record), yields only the winners cut to `fields` (unsorted; `members=` pins the acquisitions read). Pipeline wrapper: `dskit.pipeline.libs.observations:ObservationStreamRows` (by import path).
+
 An acquired FILE tree (a model, ADR-0082) is read back by CONTENT:
 
 ```python
@@ -378,6 +390,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file, fingerprint cursor (stdlib, ADR-0225)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)

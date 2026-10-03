@@ -53,12 +53,12 @@ import re
 import stat
 from datetime import datetime, timezone
 
-from .base import AssetError, _check_segment, _raise_if, parse_utc
+from .base import AssetError, _check_segment, _raise_if, file_digest, parse_utc
 from .codec import iter_text_lines, resolve_stream_file
 from .layout import OnboardingRoot
 from .snapshot import find_snapshot_dir, verify_snapshot
 
-__all__ = ["scan_stream", "stream_dir", "stream_digest", "stream_members",
+__all__ = ["iter_stream", "member_digest", "scan_stream", "stream_dir", "stream_digest", "stream_members",
            "verified_payload_dir"]
 
 #: The spelling of a snapshot's identity — the 64-hex sha256 of its
@@ -290,133 +290,40 @@ def stream_members(root, source, stream):
     return tuple(members)
 
 
-def scan_stream(root, source, stream, key_fields, ts_field=None,
-                ts_out="asof_ms", shared_fields=(), since_ms=None,
-                keep_values=None, admit=None, as_of_acquisition_ms=None):
-    """One deduplicated snapshot of a source's observation stream.
+def member_digest(root, source, stream, members=None):
+    """Content identity of a stream's member files, chunked, never the rows.
 
     Parameters
     ----------
-    root : str
-        The onboarding root (the directory holding ``observations/``).
-    source : str
-        The registered source name.
-    stream : str
-        The stream name; resolves ``<stream>.jsonl`` or
-        ``<stream>.jsonl.gz`` per acquisition dir (ADR-0036 — loud on
-        ambiguity, squats, and mid-stream corruption).
-    key_fields : sequence of str
-        The ``data`` fields forming the dedup key. For one key, the row
-        with the LATEST ``acquired_at`` INSTANT wins — stamps are
-        parsed (``parse_utc``), never string-compared, so an offset
-        spelling ranks by chronology and two spellings of one instant
-        are one level; an unparseable stamp — the empty string
-        included — refuses, and a truly ABSENT one reads as the
-        earliest possible instant. A tie AT THE WINNING
-        instant dedups quietly when the data serializes identically (an
-        at-least-once re-pull; equality is the canonical dump, never
-        coercing Python ``==``) and refuses when it differs — no
-        bitemporal winner exists and scan order must never pick one. A
-        tie a LATER acquisition supersedes is history, never a refusal.
-        A NaN key value refuses at intake (it breaks total order
-        without raising). Key identity is CANONICAL, never coercing
-        Python ``==``: ``1``, ``1.0``, and ``true`` are three distinct
-        keys. Adjudication compares instants at millisecond
-        resolution — sub-ms-apart stamps collapse to one level (loud
-        direction only: identical data dedups, differing data
-        refuses; the second-precision writer can never mint them).
-    ts_field : str, optional
-        A ``data`` field holding an ISO date/datetime (naive values are
-        UTC — the ``parse_utc`` convention). When declared, each record
-        gains ``ts_out`` = its epoch milliseconds, added IN PLACE —
-        computed in exact integer arithmetic (never the float
-        ``timestamp()`` round-trip), so exact-ms stamps are exact in
-        every era and a sub-millisecond remainder floors.
-    ts_out : str
-        Name of the derived epoch-ms field (default ``"asof_ms"`` —
-        what split filters cut on). Refuses to overwrite: a record
-        already carrying it is an error, never a silent clobber.
-    shared_fields : sequence of str
-        Fields whose string VALUES repeat heavily across rows (e.g. a
-        symbol); each collapses to one canonical copy. Never declare a
-        unique-per-row field — the memo would outweigh the savings.
-    since_ms : int, optional
-        An INCLUSIVE lower bound on ``ts_out``, applied AT INTAKE:
-        a record below it is never deduped, never kept, never sorted.
-        The bound a caller applies to the returned list costs the full
-        snapshot first — measured on the equities bar store, the whole
-        16.0M-record tape allocates 12.3 GB before a start-date filter
-        drops 17.6% of it. Requires ``ts_field``; ``ts_out`` is
-        therefore derived at intake rather than at drain, and the
-        refusals that names it now name the offending ``path:line``.
-    keep_values : dict, optional
-        Field name -> the values of that field to READ. A record whose
-        value is absent from its collection is skipped at intake, on
-        the same grounds and with the same saving: a cohort of six
-        symbols must not pay for the twelve the store happens to hold.
-        Identity is canonical, as everywhere else here (``1``, ``1.0``
-        and ``true`` are three values), so an allow-list is matched
-        through :func:`_key_part`.
-    admit : callable, optional
-        ``admit(data, stamp)`` for each record that cleared the three
-        declared bounds (``since_ms``, ``keep_values`` and
-        ``as_of_acquisition_ms``), where ``stamp`` is its ``ts_out``
-        (``None`` without ``ts_field``). Returning a false value drops
-        the record AT INTAKE. It is the bound for a rule this function
-        cannot spell — a derived one, such as "regular trading hours
-        only", which no field carries. It may add its derived field to
-        ``data``, which is that record's own dict and becomes the
-        emitted record; adding one is how a caller pays for the
-        derivation once instead of once here and once downstream.
-        It must be pure in the sense that matters to a store: the same
-        record must always get the same verdict, or the snapshot stops
-        being a function of the bytes on disk. Dropping a record here
-        does NOT relax the refusals above it — every line is still
-        parsed and its key fields still checked.
-    as_of_acquisition_ms : int, optional
-        An INCLUSIVE upper bound on a record's ``acquired_at`` — the
-        READ VINTAGE (ADR-0154) — applied AT INTAKE beside ``since_ms``
-        and on the same grounds: a record above it is never deduped,
-        never kept, never sorted, and never offered to ``admit``. The
-        winner per key becomes the latest value AS OF THAT VINTAGE
-        rather than the latest value outright, so a 2015 bar revised in
-        2026 reads as its 2015 self to a run simulating 2015. It bounds
-        ENVELOPE metadata, so — unlike ``since_ms`` — it needs no
-        ``ts_field``, and its stamps are the ones the dedup already
-        parses (``parse_utc``), never string-compared. Applied BEFORE
-        adjudication, so the tie rule above is unchanged and simply
-        evaluated within the vintage: a differing tie a later
-        acquisition supersedes is history at the later vintage and a
-        live, winner-less refusal at the earlier one. An ABSENT
-        ``acquired_at`` reads as the earliest possible instant and
-        therefore ALWAYS passes a vintage bound. A bound below every
-        stamped record reads truthfully empty; a negative one refuses,
-        since no acquisition is pre-epoch.
+    root, source, stream : str
+        As :func:`stream_members`.
+    members : sequence of str, optional
+        Acquisition dir names to include (default all).
 
     Returns
     -------
-    list of dict
-        The winning ``data`` dicts themselves (single copy — treat the
-        stream as read-only downstream), deterministically ordered by
-        ``(ts_out, *key_fields)`` when ``ts_field`` is declared, else
-        by ``key_fields``.
+    str
+        Hex sha256 over each member's dir name and its file digest, in
+        dir-name order.
 
     Raises
     ------
     AssetError
-        Accumulating parameter problems; naming the path (and line) for
-        store-side refusals.
-    Exception
-        Whatever a caller-supplied ``admit`` callback itself raises —
-        it is called unguarded once a record clears the two intake
-        bounds, so a callback that is not actually pure/exception-free
-        is not shielded.
+        As :func:`stream_members`.
     """
-    _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
-                             ts_out, shared_fields, since_ms, keep_values,
-                             admit, as_of_acquisition_ms))
-    key_fields = tuple(key_fields)
-    shared_fields = tuple(shared_fields)
+    import hashlib
+
+    wanted = None if members is None else set(members)
+    base, digest = stream_dir(root, source), hashlib.sha256()
+    for name, file, _size, _mtime in stream_members(root, source, stream):
+        if wanted is None or name in wanted:
+            digest.update(name.encode())
+            digest.update(file_digest(os.path.join(base, name, file)).encode())
+    return digest.hexdigest()
+
+
+def _read_plan(root, source, keep_values):
+    """Return ``(base, entries, allow)``: the source dir, its sorted members, the canonical intake allow-list."""
     # Canonical membership, matching the dedup key's own identity rule.
     allow = (
         ()
@@ -437,12 +344,13 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         entries = sorted(os.listdir(base))
     except OSError as exc:
         raise AssetError([f"cannot list {base}: {exc}"]) from exc
+    return base, entries, allow
 
-    best = {}  # key tuple -> (acquired_ms, data)
-    conflicts = {}  # key tuple -> (acquired_ms, "path:line", spelling)
+
+def _intake(base, entries, stream, key_fields, ts_field, ts_out, since_ms,
+            allow, admit, as_of_acquisition_ms):
+    """Yield ``(path, line, data, when, acquired, stamp)`` per row that clears every intake gate."""
     instants = {}  # acquired_at spelling -> epoch ms (one per acquisition)
-    shared = {}  # one canonical copy per repeated string
-    _share = shared.setdefault
     for name in entries:
         directory = os.path.join(base, name)
         # The writer only ever puts a stream INSIDE an acquisition dir —
@@ -585,6 +493,144 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 continue
             if admit is not None and not admit(data, stamp):
                 continue
+            yield path, n, data, when, acquired, stamp
+
+
+def scan_stream(root, source, stream, key_fields, ts_field=None,
+                ts_out="asof_ms", shared_fields=(), since_ms=None,
+                keep_values=None, admit=None, as_of_acquisition_ms=None):
+    """One deduplicated snapshot of a source's observation stream.
+
+    Parameters
+    ----------
+    root : str
+        The onboarding root (the directory holding ``observations/``).
+    source : str
+        The registered source name.
+    stream : str
+        The stream name; resolves ``<stream>.jsonl`` or
+        ``<stream>.jsonl.gz`` per acquisition dir (ADR-0036 — loud on
+        ambiguity, squats, and mid-stream corruption).
+    key_fields : sequence of str
+        The ``data`` fields forming the dedup key. For one key, the row
+        with the LATEST ``acquired_at`` INSTANT wins — stamps are
+        parsed (``parse_utc``), never string-compared, so an offset
+        spelling ranks by chronology and two spellings of one instant
+        are one level; an unparseable stamp — the empty string
+        included — refuses, and a truly ABSENT one reads as the
+        earliest possible instant. A tie AT THE WINNING
+        instant dedups quietly when the data serializes identically (an
+        at-least-once re-pull; equality is the canonical dump, never
+        coercing Python ``==``) and refuses when it differs — no
+        bitemporal winner exists and scan order must never pick one. A
+        tie a LATER acquisition supersedes is history, never a refusal.
+        A NaN key value refuses at intake (it breaks total order
+        without raising). Key identity is CANONICAL, never coercing
+        Python ``==``: ``1``, ``1.0``, and ``true`` are three distinct
+        keys. Adjudication compares instants at millisecond
+        resolution — sub-ms-apart stamps collapse to one level (loud
+        direction only: identical data dedups, differing data
+        refuses; the second-precision writer can never mint them).
+    ts_field : str, optional
+        A ``data`` field holding an ISO date/datetime (naive values are
+        UTC — the ``parse_utc`` convention). When declared, each record
+        gains ``ts_out`` = its epoch milliseconds, added IN PLACE —
+        computed in exact integer arithmetic (never the float
+        ``timestamp()`` round-trip), so exact-ms stamps are exact in
+        every era and a sub-millisecond remainder floors.
+    ts_out : str
+        Name of the derived epoch-ms field (default ``"asof_ms"`` —
+        what split filters cut on). Refuses to overwrite: a record
+        already carrying it is an error, never a silent clobber.
+    shared_fields : sequence of str
+        Fields whose string VALUES repeat heavily across rows (e.g. a
+        symbol); each collapses to one canonical copy. Never declare a
+        unique-per-row field — the memo would outweigh the savings.
+    since_ms : int, optional
+        An INCLUSIVE lower bound on ``ts_out``, applied AT INTAKE:
+        a record below it is never deduped, never kept, never sorted.
+        The bound a caller applies to the returned list costs the full
+        snapshot first — measured on the equities bar store, the whole
+        16.0M-record tape allocates 12.3 GB before a start-date filter
+        drops 17.6% of it. Requires ``ts_field``; ``ts_out`` is
+        therefore derived at intake rather than at drain, and the
+        refusals that names it now name the offending ``path:line``.
+    keep_values : dict, optional
+        Field name -> the values of that field to READ. A record whose
+        value is absent from its collection is skipped at intake, on
+        the same grounds and with the same saving: a cohort of six
+        symbols must not pay for the twelve the store happens to hold.
+        Identity is canonical, as everywhere else here (``1``, ``1.0``
+        and ``true`` are three values), so an allow-list is matched
+        through :func:`_key_part`.
+    admit : callable, optional
+        ``admit(data, stamp)`` for each record that cleared the three
+        declared bounds (``since_ms``, ``keep_values`` and
+        ``as_of_acquisition_ms``), where ``stamp`` is its ``ts_out``
+        (``None`` without ``ts_field``). Returning a false value drops
+        the record AT INTAKE. It is the bound for a rule this function
+        cannot spell — a derived one, such as "regular trading hours
+        only", which no field carries. It may add its derived field to
+        ``data``, which is that record's own dict and becomes the
+        emitted record; adding one is how a caller pays for the
+        derivation once instead of once here and once downstream.
+        It must be pure in the sense that matters to a store: the same
+        record must always get the same verdict, or the snapshot stops
+        being a function of the bytes on disk. Dropping a record here
+        does NOT relax the refusals above it — every line is still
+        parsed and its key fields still checked.
+    as_of_acquisition_ms : int, optional
+        An INCLUSIVE upper bound on a record's ``acquired_at`` — the
+        READ VINTAGE (ADR-0154) — applied AT INTAKE beside ``since_ms``
+        and on the same grounds: a record above it is never deduped,
+        never kept, never sorted, and never offered to ``admit``. The
+        winner per key becomes the latest value AS OF THAT VINTAGE
+        rather than the latest value outright, so a 2015 bar revised in
+        2026 reads as its 2015 self to a run simulating 2015. It bounds
+        ENVELOPE metadata, so — unlike ``since_ms`` — it needs no
+        ``ts_field``, and its stamps are the ones the dedup already
+        parses (``parse_utc``), never string-compared. Applied BEFORE
+        adjudication, so the tie rule above is unchanged and simply
+        evaluated within the vintage: a differing tie a later
+        acquisition supersedes is history at the later vintage and a
+        live, winner-less refusal at the earlier one. An ABSENT
+        ``acquired_at`` reads as the earliest possible instant and
+        therefore ALWAYS passes a vintage bound. A bound below every
+        stamped record reads truthfully empty; a negative one refuses,
+        since no acquisition is pre-epoch.
+
+    Returns
+    -------
+    list of dict
+        The winning ``data`` dicts themselves (single copy — treat the
+        stream as read-only downstream), deterministically ordered by
+        ``(ts_out, *key_fields)`` when ``ts_field`` is declared, else
+        by ``key_fields``.
+
+    Raises
+    ------
+    AssetError
+        Accumulating parameter problems; naming the path (and line) for
+        store-side refusals.
+    Exception
+        Whatever a caller-supplied ``admit`` callback itself raises —
+        it is called unguarded once a record clears the two intake
+        bounds, so a callback that is not actually pure/exception-free
+        is not shielded.
+    """
+    _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
+                             ts_out, shared_fields, since_ms, keep_values,
+                             admit, as_of_acquisition_ms))
+    key_fields = tuple(key_fields)
+    shared_fields = tuple(shared_fields)
+    base, entries, allow = _read_plan(root, source, keep_values)
+    best = {}  # key tuple -> (acquired_ms, data)
+    conflicts = {}  # key tuple -> (acquired_ms, "path:line", spelling)
+    shared = {}  # one canonical copy per repeated string
+    _share = shared.setdefault
+    for path, n, data, when, acquired, stamp in _intake(
+            base, entries, stream, key_fields, ts_field, ts_out, since_ms,
+            allow, admit, as_of_acquisition_ms):
             # json.loads mints fresh key strings for every line; on a
             # 2M-row stream those duplicates are gigabytes. Rebuild each
             # record on the canonical copies (the fresh ones free
@@ -671,6 +717,147 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
              f"{(ts_out,) + key_fields if ts_field else key_fields}: {exc}"]
         ) from exc
     return records
+
+
+def iter_stream(root, source, stream, key_fields, fields, ts_field=None,
+                ts_out="asof_ms", since_ms=None, keep_values=None,
+                admit=None, as_of_acquisition_ms=None, members=None):
+    """Lazily yield the deduplicated snapshot of a stream, projected to ``fields``.
+
+    The streaming sibling of :func:`scan_stream` for a stream too large
+    to hold as records: the SAME intake gates, canonical key identity and
+    bitemporal winner rule (latest ``acquired_at`` instant; an identical
+    tie dedups quietly; a differing tie at the winning instant refuses),
+    but memory is one compact entry per KEY (instant, line ordinal, data
+    hash), never one record. Two passes over the files: the first picks
+    each key's winning line, the second yields only winners, each cut to
+    ``fields``. Every refusal that needs the whole stream (a differing
+    tie) is raised before the first row is yielded.
+
+    Parameters
+    ----------
+    root, source, stream, key_fields, ts_field, ts_out, since_ms, keep_values, admit, as_of_acquisition_ms
+        As :func:`scan_stream`.
+    fields : sequence of str
+        Non-empty ``data`` fields each yielded row keeps; a winner
+        lacking one refuses naming ``path:line``. ``ts_out`` is added
+        when ``ts_field`` is declared.
+    members : sequence of str, optional
+        Acquisition directory names to read (default all): how a caller
+        pins the read to the inventory it fingerprinted, so a later
+        acquisition cannot leak in between.
+
+    Returns
+    -------
+    generator of dict
+        One row per winning key, in acquisition then file order (NOT
+        sorted: a consumer that needs an order sorts or declares its
+        input presorted by construction).
+
+    Raises
+    ------
+    AssetError
+        Accumulating request problems; naming ``path:line`` for
+        store-side refusals.
+
+    Examples
+    --------
+    Read closes of one symbol without materializing the stream::
+
+        rows = iter_stream("./ob", "alpaca", "bars", ("symbol", "ts"),
+                           ("symbol", "ts", "close"),
+                           keep_values={"symbol": ["AAPL"]})
+        first = next(rows)
+        # -> {"symbol": "AAPL", "ts": "...", "close": 100.0}
+    """
+    key_fields, fields = tuple(key_fields), tuple(fields)
+    problems = _scan_problems(root, source, stream, key_fields, ts_field,
+                              ts_out, (), since_ms, keep_values, admit,
+                              as_of_acquisition_ms)
+    if not fields or not all(isinstance(f, str) and f for f in fields):
+        problems.append(f"fields must be a non-empty list of field names, got {fields!r}")
+    if ts_field is not None and ts_out in fields:
+        problems.append(f"fields names {ts_out!r}, the derived ts_out field")
+    _raise_if(problems)
+    base, entries, allow = _read_plan(root, source, keep_values)
+    if members is not None:
+        wanted = set(members)
+        entries = [e for e in entries if e in wanted]
+    args = (base, entries, stream, key_fields, ts_field, ts_out, since_ms,
+            allow, admit, as_of_acquisition_ms)
+    return _winning_rows(args, key_fields, fields, ts_field, ts_out)
+
+
+def _winner_key(path, n, data, key_fields):
+    """Return the canonical dedup key of an intake row, refusing unhashable key values."""
+    key = tuple(_key_part(data[f]) for f in key_fields)
+    try:
+        hash(key)
+    except TypeError as exc:
+        raise AssetError([f"{path}:{n}: key fields {list(key_fields)} are not hashable here: {exc}"]) from exc
+    return key
+
+
+def _pick_winners(args, key_fields):
+    """First pass: map key -> (instant, ordinal, data hash), refusing a differing tie at a winner."""
+    best, conflicts, ordinals = {}, {}, {}
+    for path, n, data, when, acquired, _stamp in _intake(*args):
+        key = _winner_key(path, n, data, key_fields)
+        if path not in ordinals:
+            ordinals[path] = (len(ordinals), _member_stat(path))
+        ordinal = (ordinals[path][0], n)
+        try:
+            digest = hash(json.dumps(data, sort_keys=True))
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise AssetError([f"{path}:{n}: tie comparison failed — data is not JSON-serializable: {exc}"]) from exc
+        held = best.get(key)
+        if held is None or when > held[0]:
+            best[key] = (when, ordinal, digest)
+        elif when == held[0] and digest != held[2]:
+            prev = conflicts.get(key)
+            if prev is None or when > prev[0]:
+                conflicts[key] = (when, f"{path}:{n}", acquired)
+    tie_problems = sorted(
+        f"{where}: two rows for key {_key_display(key)!r} share the winning "
+        f"acquired_at instant ({spelling!r}) with differing data — no "
+        "bitemporal winner; refusing"
+        for key, (when_c, where, spelling) in conflicts.items()
+        if when_c == best[key][0])
+    if tie_problems:
+        raise AssetError(tie_problems)
+    return best, ordinals
+
+
+def _member_stat(path):
+    """Return a member file's (size, mtime_ns), the identity pass two re-checks."""
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+    return info.st_size, info.st_mtime_ns
+
+
+def _winning_rows(args, key_fields, fields, ts_field, ts_out):
+    """Yield the winners; the first next() runs pass one, then pass two streams them."""
+    best, ordinals = _pick_winners(args, key_fields)
+    checked = set()
+    for path, n, data, _when, _acquired, stamp in _intake(*args):
+        if path not in checked:
+            if path not in ordinals or _member_stat(path) != ordinals[path][1]:
+                raise AssetError([f"{path}: changed between the two passes of iter_stream; refusing"])
+            checked.add(path)
+        key = _winner_key(path, n, data, key_fields)
+        if key not in best or best[key][1] != (ordinals[path][0], n):
+            if key not in best:
+                raise AssetError([f"{path}:{n}: a key appeared that pass one never saw; refusing"])
+            continue
+        missing = [f for f in fields if f not in data]
+        if missing:
+            raise AssetError([f"{path}:{n}: data is missing projected field(s) {missing}"])
+        row = {f: data[f] for f in fields}
+        if stamp is not None:
+            row[ts_out] = stamp
+        yield row
 
 
 def stream_digest(records) -> str:

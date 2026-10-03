@@ -71,6 +71,7 @@ from ..connector import (
     PROTOCOL,
     Connector,
     backoff,
+    safe_url,
 )
 
 __all__ = ["RestApiConnector"]
@@ -108,12 +109,6 @@ _PAGINATION_KEYS = {
     "page": ("strategy", "param", "start", "size_param", "page_size"),
     "offset": ("strategy", "offset_param", "limit_param", "page_size"),
 }
-
-
-def _safe(url):
-    """A URL fit for an error message: query string stripped, because a
-    param-injected credential must never leak through an exception."""
-    return url.split("?", 1)[0]
 
 
 def _pluck(obj, path):
@@ -377,16 +372,16 @@ class RestApiConnector(Connector):
                 continue
             if not 200 <= status < 300:
                 raise AssetError(
-                    [f"{label}: HTTP {status} from {_safe(url)}: {body[:200]!r}"]
+                    [f"{label}: HTTP {status} from {safe_url(url)}: {body[:200]!r}"]
                 )
             try:
                 return json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, ValueError) as exc:
                 raise AssetError(
-                    [f"{label}: response from {_safe(url)} is not JSON: {exc}"]
+                    [f"{label}: response from {safe_url(url)} is not JSON: {exc}"]
                 ) from exc
         raise AssetError(
-            [f"{label}: giving up on {_safe(url)} after "
+            [f"{label}: giving up on {safe_url(url)} after "
              f"{cfg['max_retries'] + 1} attempt(s) — last failure: {last}"]
         )
 
@@ -471,7 +466,7 @@ class RestApiConnector(Connector):
                             ("http://", "https://")):
                         raise AssetError(
                             [f"{label}: without pagination.param the token must "
-                             f"be an absolute next URL, got {_safe(str(token))!r}"]
+                             f"be an absolute next URL, got {safe_url(str(token))!r}"]
                         )
                     # A next URL encodes the server's own query; only the
                     # credential (when param-carried) must ride along.

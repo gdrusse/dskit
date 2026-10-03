@@ -10,7 +10,7 @@
     "symbols": "${V}",
     "market_symbols": "${M}",
     "fred_market_symbols": "${G.fred}",
-    "price_source": "${F.price_source}",
+    "price_source": "${P.price_source}",
     "iv_source": "${F.iv_source}",
     "since": "${G.since}",
     "max_dte": "${G.max_dte}",
@@ -29,14 +29,10 @@
     "calendar": "${G.calendar}",
     "calendar_pad_days": "${G.calendar_pad_days}",
     "dividend_field": "${F.dividend_field}",
-    "decision_regions": {
-      "archive_root": "${F.archive_root}",
-      "max_chain_rows": "${regions.max_chain_rows}",
-      "panel_years": "${regions.panel_years}",
-      "clock": "${regions.clock}",
-      "limits": "${regions.limits}",
-      "chain_rule": "${regions.chain_rule}"
-    },
+    "reader?": "${P.reader}",
+    "keyed_tables?": "${P.keyed_tables}",
+    "corporate_actions?": "${P.corporate_actions}",
+    "decision_regions?": "${regions}",
     "exact_dte": "${H}",
     "notes": "exact_dte = step 1's selected exact expiry for this ticker (QQQ: 7); data.root is the onboarding store; surface, lifecycle, chain_features, archive_root and decision_regions.archive_root are store references (source, stream and, for a file, relpath, resolved against data.root; add manifest_sha256 to pin a snapshot). Change symbols/exact_dte per ticker, or the references to read another onboarded source. decision_regions (the block refuses its own notes key): Wing region = for each side, the span from the lowest to the highest quotable strike within |log K/S| <= 0.1 (puts: lowest valid ask to highest valid bid; calls: lowest valid bid to highest valid ask), every strike in between included, no wing-width limit (owner ruling 2026-10-02: the whole region matters and a width cap only created holes and an enumeration blow-up); the loss weights each side's span. panel_years spans the whole archive (2011-2025) so every warm-up and scored fold has strike regions; the holdout is dropped before contexts are built."
   },
@@ -61,7 +57,7 @@
       "${S.symbol}",
       "${S.expiry}"
     ],
-    "decision_context": "${S.decision_context}",
+    "decision_context?": "${S.decision_context}",
     "output": "${L.step6.study_output}",
     "samples": "${resolutions.samples}",
     "tail_intervals": "${resolutions.tail_intervals}",
@@ -71,7 +67,7 @@
     "comparison_references": "${references.comparison}",
     "bootstrap": "${bootstrap}",
     "models": "${references.models}",
-    "decision_acceptance": "${acceptance}",
+    "decision_acceptance?": "${acceptance}",
     "fold_table": {
       "path": "${fold_table.path}",
       "sha256": "${fold_table.sha256}",

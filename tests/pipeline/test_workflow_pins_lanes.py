@@ -393,3 +393,47 @@ def test_a_lane_keyed_object_missing_from_keyed_is_a_named_refusal(laned):
     lines = []
     assert run(tmp, manifest, lines=lines) == 1
     assert any("args.extra" in str(x) and "lanes.keyed" in str(x) for x in lines), lines
+
+
+# -- a failing lane halts only itself ------------------------------------------
+
+
+FAIL_CODE = 3
+FAIL_LANE = "yy"
+
+
+@pytest.fixture
+def one_lane_fails(laned):
+    """The ``laned`` manifest with the failing lane first, its step s1 exiting non-zero."""
+    tmp, manifest = laned
+    (tmp / "emit.py").write_text(
+        EMIT.replace("table, meta, who = sys.argv[1:4]",
+                     f"table, meta, who = sys.argv[1:4]\nif who == {FAIL_LANE!r}: sys.exit({FAIL_CODE})"))
+    manifest["args"].update(names=[FAIL_LANE, "x"], sizes={FAIL_LANE: 2, "x": 1})
+    return tmp, manifest
+
+
+def test_one_lane_per_invocation_lets_the_others_finish_after_a_lane_halts(one_lane_fails):
+    tmp, manifest = one_lane_fails
+    assert run(tmp, manifest, only=f"@{FAIL_LANE}") == FAIL_CODE
+    assert not (tmp / "w" / "s2" / f"seen-{FAIL_LANE}.json").exists()
+    assert run(tmp, manifest, only="@x") == 0
+    assert (tmp / "w" / "s2" / "seen-x.json").exists()
+    steps = ledger(tmp)
+    assert steps[f"s1@{FAIL_LANE}"]["exit_code"] == FAIL_CODE and "s2@yy" not in steps
+    assert steps["s2@x"]["exit_code"] == 0
+
+
+def test_a_failed_lane_stops_its_own_chain_at_the_failed_step(one_lane_fails):
+    tmp, manifest = one_lane_fails
+    lines = []
+    assert run(tmp, manifest, only=f"@{FAIL_LANE}", lines=lines) == FAIL_CODE
+    assert [x for x in lines if str(x).startswith("halted")] == [
+        f"halted at s1@{FAIL_LANE} (exit {FAIL_CODE})"]
+    assert not (tmp / "w" / "s2").exists()
+
+
+def test_a_whole_run_stops_at_the_first_failed_lane_so_the_rest_need_their_own_call(one_lane_fails):
+    tmp, manifest = one_lane_fails
+    assert run(tmp, manifest) == FAIL_CODE
+    assert not (tmp / "w" / "s1" / "table-x.jsonl").exists()

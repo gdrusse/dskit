@@ -30140,3 +30140,106 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Deferred.** Within-family elimination and the tie rule (not expressible in the study yet).
 
 **ADR-0226 Amendment (keyed families, owner goal 2026-10-02).** A family whose data is a table keyed by (entity, date) in an onboarded store is added by args only, under `families.keyed`: `sources` (`root`, `source`, `stream`, `key_fields`, `columns`), `fields`, `require`, optional `max_age_days`/`strict_prior`, `lookback`, `clock_note`. (1) Tier-2 transform `observation-tables` (`libs/observation_tables.py`) reads each table through `ObservationRows` and writes its columns onto an input stream by key, exact or as-of (strictly prior by default, at most `max_age_days` old, with `<field>_age_days`/`<field>_missing` companions, never imputed); an empty `tables` is a pass-through. It is not a second joiner: the step 1b `attach-by-identity` still attaches the columns to the cohort; the node only makes its `table` input carry them, because a template cannot add a node per family. (2) Core hooks in `workflow_hooks.py`: `families_spec` folds `keyed` into availability, documentation, engineered, flags, schema_fields, dates_fields and `keyed_tables`; `family_contracts`, `keyed_pool`, `keyed_cap` feed step 4; `feature_order` appends the family's fields to a ticker's recorded order (positions stay stable) or derives the whole order (start names, then every family's fields) for a ticker with none. (3) `workflow.py` `_ref_problems` accepts a hook as another hook's input. Limits: the step 4-7 study still builds its own panel from its `data` block, so a keyed family's columns reach it only once that reader also takes `keyed_tables`; the recorded per-ticker `feature_order` stays typed for index stability; per-ticker `references` and `feature_limits` are still args for a new ticker. Test: `children/index_options/tests/test_new_family.py`.
+
+
+## ADR-0230 — Price-calendar panel reader: `data.reader`, `keyed_tables`, `corporate_actions` (keyed families reach steps 4-7)
+
+**Status:** accepted 2026-10-03: the owner directed an autonomous build of the stock lane (about 116 tickers); ratify at the next review. Extends ADR-0226 and ADR-0227.
+**Sweep** (`PriceCalendarCDFPanel price_calendar data.reader keyed_tables corporate_actions`, origin/main, all branches and worktrees): `ExactExpiryCDFPanel.read` is the only step 4-7 reader; no reader works without a surface and lifecycle; `corporate_actions` has no owner.
+
+**Context.** Steps 4-7 re-read the panel from the template `data` block, not the step 1b panel. That block has no keyed tables, so every `families.keyed` family is missing from steps 4-7 (the ADR-0226 limit). A stock has no option surface, so the same reader cannot run on a price file alone. `IndexCloseRows` refuses `split_coefficient != 1`, yet 32 of 116 stock files carry flags (their close is already split-adjusted).
+
+**Decision.**
+1. Optional `data.reader` (default absent = the current class; `price_calendar` = the new one), validated default-deny in `ExactExpiryPanelRead` and in `cdf_study._main`. `surface` and `lifecycle` become required only when `reader` is absent. The 1b, 4 and 6 templates gain `reader` from an arg; the key is omitted when the arg is null, so existing hashes do not move.
+2. `PriceCalendarCDFPanel` (a subclass in `cdf_study.py`): `read()` is split into hooks with no behavior change (`_meta_rows`, `_spot_check`, `_price_records`, `_source_names` and, added, `_source_hashes`, `_path_exclusions`, `_attach_keyed`); the subclass overrides about ten hooks: one row per symbol price date, `expiry = date + exact_dte` (a non-session expiry settles on the last session before it), `first_seen_date = quote_date`, no spot check; it reads the price file through `ParquetRows` and strips `split_coefficient` before projection (no `split_policy` knob exists: the close is taken as given). Sessions, labels, rv, lags, ohlc and market series are reused as is.
+3. Optional `data.keyed_tables`, same shape as `families.keyed_tables`, applied at the end of `read()` through the `ObservationTables` code (called, not copied) and fed from the same hook output as 1b's panel keyed tables. Absent = no-op.
+4. Optional `data.corporate_actions` (`max_dividend_yield`, `max_abs_jump`, per-symbol `windows`): a day is an event if dividend/close reaches the yield bound, or the absolute log return reaches the jump bound AND the day carries a split coefficient != 1 (an unflagged spin-off jump is NOT detected; declare it as a window), or it lies in a declared window. An entry whose feature lookback (derived from the lags, windows and ohlc windows, counted in price records) or label span holds an event is refused and counted in `refused[symbol]`. Every number is an arg.
+
+**Alternatives rejected.** A second panel builder beside the first (drift); patching the step 4-7 data block per family by hand; trusting close without an event rule (spin-off jumps enter labels).
+
+**Consequences.** A keyed family added by args reaches the study. QQQ and IWM stay byte-identical; a test hashes the panel frame before and after the hook extraction.
+
+**Tests.** Frame-hash pin for the existing reader; synthetic price file with split and spin-off days (refusal counts, window arg); keyed columns present in the panel; unknown `reader` refused; `surface` required without `reader`.
+
+## ADR-0231 — `libs/bar_features.py`: `DailyBarFeatures` and `TradeBarFeatures`, with leak rules
+
+**Status:** accepted 2026-10-03: the owner directed an autonomous build of the stock lane; ratify at the next review. Extends ADR-0226 (keyed families).
+**Sweep** (`DailyBarFeatures TradeBarFeatures bar_features volume amihud market_relative`, origin/main, all branches and worktrees): no node derives volume, liquidity, benchmark-relative or option-trade-bar features from bars.
+
+**Context.** Stock families beyond price need rows keyed by (entity, date): volume and liquidity, benchmark-relative return, and option trade-bar summaries. These are generic bar transforms; the project supplies only the names and windows.
+
+**Decision.** New tier-2 pack `dskit/pipeline/libs/bar_features.py` (pandas named only inside `run()`), two nodes, default-deny params, every column name, window and benchmark an arg.
+1. `DailyBarFeatures` (inputs: bars, optional benchmark bars). Volume/liquidity family: log volume, log volume over its trailing mean, log dollar volume, Amihud (absolute return over dollar volume, trailing mean). Market-relative family: return minus the benchmark's over declared horizons, trailing beta and correlation. Windows and horizons are lists in params; a column is emitted only when its block is declared.
+2. `TradeBarFeatures` (input: option trade bars; streamed in chunks, never held as a dict): per (symbol, date) log call/put volume ratio, log total volume, log trade count, traded-strike count, volume-weighted log strike over close, nearest-the-money call+put vwap over close (null unless both traded at the same expiry), put volume share. It needs only the close of that date. Its `lookback` note states the window it sees (the bars' DTE band).
+3. Leak rules: same-day columns use only data at or before the date (a trailing window includes the date, never later); a leak test asserts a value at t is unchanged when bars after t are altered. `TradeBarFeatures` defaults to `strict_prior: true` (bars of t-1 serve date t) because daily bar timestamps carry an unproven clock; an arg flips it to same-day, refused unless a `clock_note` is given.
+4. Output rows feed `observation-tables` (ADR-0226) through the `localtables` onboarding path; the child holds only the JSON build config and ticker list.
+
+**Alternatives rejected.** Feature code in the child (a second project would redo it); one node with a mode switch (a branch where a subclass belongs); same-day trade bars by default (unproven clock).
+
+**Consequences.** Three stock families are config-only. Nulls are never imputed; the study's availability rules treat them as missing.
+
+**Tests.** Hand-computed toy bars for each column; leak test per node; null rules (one-sided quotes, no benchmark date); chunked read equals one pass; unknown-param and `clock_note` refusals; purity gate (no top-level pandas).
+
+## ADR-0232 — Workflow batch runner, per-ticker rollup verdict, `families.drop`, referenced-only reference models, null acceptance
+
+**Status:** accepted 2026-10-03: the owner directed an autonomous build of the stock lane; ratify at the next review. Extends ADR-0227 and ADR-0229.
+**Sweep** (`workflow-batch workflow_batch rollup families.drop referenced-only acceptance null`, origin/main, all branches and worktrees): `_execute_all` halts at the first failed step and there is no multi-lane driver; `FamiliesSpec` has no way to remove a family; `ReferenceIndices` resolves every declared model; no rollup spec in `workflow_report`.
+
+**Context.** About 116 lanes must run from one manifest without one bad lane stopping the rest. A stock lane has no option families, no decision regions, and no option-proxy reference models, and its verdict is a skill statement, not a decision acceptance. `_merge` cannot delete a key, so an overlay cannot remove an inherited family or reference model.
+
+**Decision.**
+1. `dskit.pipeline workflow-batch` (`dskit/pipeline/workflow_batch.py`, stdlib only): manifest, tickers file, `--jobs N`; one process per lane with its own `work_dir/<lane>` (its own ledger, so no races); continue on failure; one retry on exit 1; writes `batch.json` (lane, exit code, halting step, seconds). Lane names and counts are inputs.
+2. Rollup: `workflow_report` gains a spec (`args.rollup`) writing `rollup.csv/html/md`: per lane, CRPS skill against the named reference, paired block-bootstrap intervals, fold counts, admitted families, failure status. Verdict: accepted iff the skill interval lower bound exceeds `rollup.min_lower_bound` for every block in `rollup.blocks`, read from each lane's comparison file. Bound, blocks and reference name are args.
+3. `families.drop: [..]` (generic, consumed by `FamiliesSpec`, `FamilyContracts`, `KeyedPool` and `FeatureOrder`): lists inherited families to remove; a name not declared is refused.
+4. `ReferenceIndices` resolves only the models named by `model` or `comparison` and omits the rest; unreferenced models are never resolved, so one not applicable to a lane cannot refuse it.
+5. Null acceptance: the template emits `decision_acceptance`, `decision_regions` and `regions` only when set; `acceptance: null` is accepted with `selection.metric` `crps`. Optional step-1 `price_source.window {start, end}` filters dates; absent leaves dates unchanged.
+
+**Alternatives rejected.** A shell loop over lanes (no ledger-per-lane, no failure table); one process for all lanes (a crash loses all); deleting keys through `_merge` (changes its contract for every document).
+
+**Consequences.** A lane failure is a row, not a halt. QQQ and IWM manifests are unchanged (absent keys are no-ops).
+
+**Tests.** Batch with a failing lane (others finish, retry once, `batch.json` fields), per-lane ledger isolation, rollup verdict at the bound, `families.drop` through each consumer and the unknown-name refusal, unreferenced model not resolved, null acceptance omits blocks, window filter, QQQ plan hash unchanged.
+
+**ADR-0232 Amendment (stock lane, 2026-10-03).** (1) Lane patterns: a `lanes.keyed` object may carry a `"*"` entry; a string value is formatted with `{lane}` and `{lane_lower}` (any other placeholder is refused), other values are copied, and an explicit entry for a lane wins over the pattern. So 116 tickers need no per-ticker entries. (2) `--args` is repeatable (`load_overlays`): overlays merge in order, a later file wins key by key. (3) `families.drop` removes by the name a family carries (built-in or keyed). (4) Cohort routing goes through the `reader_options` hook (`panel_options`, `corporate_windows`; keys null by default and omitted, so QQQ/IWM hashes hold). (5) `decision_context` is optional in the CDF loss: when absent every row gets the configured `tail_intervals` as fixed wings and their endpoints, equally weighted, as its strike inventory. (6) The `price_calendar` panel keeps only rows whose expiry is a session. (7) Steps 6 and 7 pass their stage flags only through the stages hook; the commands no longer carry `{in.sequence}`/`{in.stages}` (a list there rendered as one stray argument), so both steps' `in` maps are identical. Tests: `test_workflow_lane_patterns.py`, `test_workflow_pins_lanes.py`, `test_predictive_cdf.py`, `test_step7_report.py`.
+
+## ADR-0233 — `httpblobs`: one HTTP GET per entity becomes a hashed file in the store
+
+**Status:** accepted 2026-10-03 by owner direction ("everything goes in the framework: no ad hoc pull scripts"). Extends ADR-0082 (FILE messages) and ADR-0225 (`localblobs`).
+**Sweep** (`yahoo daily bars chart connector`, `httpblobs httpfiles HttpBlobsConnector http_fetch entity_fetch throttle`, origin/main, all branches and worktrees): `libs/yahoo.py` only reads PINNED archives (no network); `restapi` parses JSON records, it does not keep payload bytes or fetch per entity; `localblobs` copies local files. No per-entity fetcher exists.
+
+**Context.** Daily bars for 116 stocks were pulled with an ad hoc script into a directory outside the store, so the bytes had no manifest, no verify and no registered source.
+
+**Decision.**
+1. `dskit/onboarding/libs/httpblobs.py` (stdlib only, kind `httpblobs`): config declares `url_template` (`{entity}` URL-quoted), the entities (inline, or `entities_file` + `entities_key` so a project's universe lives in one args file), `relpath_template`, `as_of`, `throttle_s`, `timeout`, `max_retries`, static `headers`.
+2. Each response is a FILE (`payload/<stream>/<relpath>`, Merkle-hashed, `verify`-able) plus one inventory RECORD `{entity, status, http_status, relpath, size, sha256, raw_sha256, origin, reason}`. A 4xx or a transform failure is a recorded `refused` row and the pull goes on; 429/5xx/network errors retry with the shared `backoff`/`retry_after`, and exhaustion aborts with no STATE.
+3. Optional `transform` (`pkg.module:Class`, `Class(params, as_of).transform(entity, body) -> bytes`) reshapes a response in the caller's code; `raw_relpath_template` keeps the raw response beside it; `cache_dir` is a read-through cache of raw responses (re-derive without the network, resume). Throttle waits only between real requests.
+4. Cursor: digest of the whole declaration; unchanged declaration = LOG + same STATE, no network. Re-pull by changing `as_of`.
+5. Hardening (skeptic review, same day): only 404/410 are per-entity refusals and `max_refused` (default 0) caps them; other non-2xx statuses abort. Cache/network origin is a LOG, never a hashed record field. `cache_dir` is trusted as-is (no hash or freshness check; an `as_of` bump over a stale cache re-derives old bytes). Optional `max_bytes`; redirects must stay on the request host. Template placeholders and relpath file/directory clashes are validated; path knobs expand `~` and `$VAR` so configs hold no machine path. `safe_url` has one owner in `connector.py` (restapi, polymarket, httpblobs import it). A transform may expose `note(entity, body)` for the RECORD `note`.
+6. First use: `children/index_options` source `stock-daily-bars` (`stock_bars.StockDailyBars` reshapes Yahoo chart JSON to the archive `underlying_prices` schema, laid out `<t>/underlying_prices.parquet`). Basis (owner ruling, corrected after review): open/high/low/close and volume are Yahoo's split-adjusted values stored as given (volume is continuous across a split, e.g. AAPL 2020-08-28 187,630,000 and 2020-08-31 225,702,700; `close*volume` is a split-adjusted dollar volume); `split_coefficient` and `dividend_amount` are informational; no as-traded column (the response has none and the file keeps the reference columns); irregular split ratios (spin-offs) are flagged in the RECORD `note`.
+
+**Verification (2026-10-03).** Stored daily volume over the sum of regular-session minute-bar volume across splits: AAPL 2020-08-27/28/31 1.06/1.22/1.12, NVDA 2024-06-06/07/10 1.10/1.13/1.11, TSLA 2022-08-23/24/25 1.05/1.08/1.08 (all within 0.9-1.3x; daily includes extended-hours and auction volume).
+
+**Alternatives rejected.** Extending `restapi` (record-oriented, no file payloads); a Yahoo-specific connector (domain code in the pack); keeping the script (no hash chain, no refusal record).
+
+**Consequences.** One pack serves any per-entity HTTP source. The URL pattern and reshaping are config and child code.
+
+**Tests.** Fake local HTTP server: fetch and quoting, headers, throttle spacing, retry then success, exhausted retries (no STATE), 404 refusal, transform and its failure, raw sidecar, cache hits (no network, no wait), universe file, unchanged-declaration no-op, real acquisition with manifest and verify.
+
+## ADR-0234 — Streaming observation read (`iter_stream`, `ObservationStreamRows`) and the as-traded close (`AsTradedClose`)
+
+**Status:** accepted 2026-10-03 by owner direction (autonomous stock-lane build), like ADR-0230 to 0233. Extends ADR-0037 (read seam) and ADR-0231 (bar features).
+**Sweep** (`iter_stream stream_rows streaming_scan`, `streaming_observation_rows scan_stream_iter stream_winners`, origin/main, all branches and worktrees): only a private `_iter_stream` in a diagnostics tool, which does not dedup; no node derives an as-traded close.
+
+**Context.** The option-trade bar stream holds 4.4M rows (3.8 GB JSONL); `scan_stream` holds every winning row. Option strikes are as traded while the stock bars' closes are split-adjusted at the data's end, so strike-versus-close moneyness is off by ln(ratio) before a split and moves when a later split arrives.
+
+**Decision.**
+1. `dskit.onboarding.observations.iter_stream(...)`: the lazy sibling of `scan_stream`. Same intake gates, canonical key identity and winner rule (shared `_intake`); pass one keeps one compact entry per key (instant, line ordinal, data hash) and refuses a differing tie at a winner before any row is yielded; pass two yields only winners cut to `fields`, unsorted. Pass two refuses (AssetError) a member whose size or mtime changed, or a key pass one never saw. `members=` pins the acquisitions read. `member_digest(root, source, stream, members)` gives the chunked content identity (one home, built on `file_digest`).
+2. `dskit.pipeline.libs.observations:ObservationStreamRows` (by import path, not in `NODE_KINDS`: conformance assumes snapshot-pinned rows). No `ts_field`, `ts_out`, `since_ms`, `shared_fields`, `ts_unit`; a subclass overriding `admit`/`project` or setting `reuse_snapshot` is refused; `serving_contract` refuses (no watermark). `fingerprint` is `member_digest`; `run` refuses a stream moved since the fingerprint and reads only the fingerprinted members.
+3. `AsTradedClose` (kind `as-traded-close`, `libs/bar_features.py`): as-traded close = adjusted close times the product of the entity's split ratios dated strictly after the row, point in time on the strike basis; optional flag where a later ratio is not a whole `n` or `1/n` (a spin-off booked as a split), for which the basis is only approximate. The trade table feeds `TradeBarFeatures` this close as the underlying.
+4. Documented limits: log volume levels in the daily table are shifted by ln(ratio) before a split (hindsight adjustment; dollar volume is invariant); strict mode drops bars labelled outside the underlying calendar (Saturday labels); the straddle ratio is null on sparse days.
+
+**Alternatives rejected.** Raising `scan_stream`'s memory limit; a child-side reader (capability belongs in dskit); using the adjusted close and correcting strikes (needs hindsight and the same ratios).
+
+**Consequences.** A multi-million-row stream reduces in about 4 GB. Moneyness holds across splits except around spin-off adjusters.
+
+**Tests.** `iter_stream` equals `scan_stream` winners, projection, tie refusal, changed member, `member_digest`; `ObservationStreamRows` refusals, fingerprint pin; `AsTradedClose` hand-computed with a 10:1 and a 1.25 ratio; pipeline test with a split fixture checking moneyness and a non-null straddle across it.

@@ -20,6 +20,7 @@ from dskit.onboarding import libs
 from dskit.onboarding.libs import (
     alpaca_quotes,
     cboe,
+    httpblobs,
     kalshi,
     polymarket,
     predexon,
@@ -240,7 +241,7 @@ def test_max_backoff_is_one_name_across_every_pack():
 
 #: Every pack that retries. `localfiles`/`localtables`/`localblobs`/`huggingface`/`alpaca`
 #: move no wait of their own and are scanned but not expected to import.
-RETRYING_PACKS = (alpaca_quotes, cboe, kalshi, polymarket, predexon, restapi, schwab)
+RETRYING_PACKS = (alpaca_quotes, cboe, httpblobs, kalshi, polymarket, predexon, restapi, schwab)
 
 
 def _two(node):
@@ -313,7 +314,7 @@ def test_every_retrying_pack_binds_the_one_owner():
     # still have the attribute — identity proves it BINDS the contract's.
     for pack in RETRYING_PACKS:
         assert pack.backoff is connector.backoff, pack.__name__
-    for pack in (cboe, kalshi, polymarket, predexon):
+    for pack in (cboe, httpblobs, kalshi, polymarket, predexon):
         assert pack.retry_after is connector.retry_after, pack.__name__
 
 
@@ -321,6 +322,7 @@ def test_the_backoff_base_has_one_name():
     # restapi keeps `_BACKOFF` as its documented test seam, but the VALUE is
     # the contract's — an alias, never a second 0.5.
     assert restapi._BACKOFF is connector.DEFAULT_BACKOFF_S
+    assert httpblobs._BACKOFF is connector.DEFAULT_BACKOFF_S
     # Restated on purpose: an assertion sourced from its subject asserts nothing.
     assert connector.DEFAULT_BACKOFF_S == 0.5
 

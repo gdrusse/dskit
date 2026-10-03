@@ -68,18 +68,18 @@ def _problems():
     return []
 
 
-def test_step7_mirrors_step6_inputs_except_the_stage_list():
-    six, seven = MANIFEST["steps"]["step6"]["in"], MANIFEST["steps"]["step7"]["in"]
-    assert {k: v for k, v in six.items() if k != "sequence"} == {
-        k: v for k, v in seven.items() if k != "stages"}
-    assert seven["stages"] == "$args.evaluate.stages"
+def test_step7_mirrors_step6_inputs_exactly():
+    # the stage lists reach the command through each step's stages hook, not through `in`
+    assert MANIFEST["steps"]["step6"]["in"] == MANIFEST["steps"]["step7"]["in"]
 
 
-def test_step7_reuses_the_step6_template_and_command_takes_the_stage_list():
+def test_step7_reuses_the_step6_template_and_the_stage_hook_supplies_the_stage_flags():
     flow = wf.Workflow(copy.deepcopy(MANIFEST), str(CONFIGS), None, "QQQ")
     assert flow.entry("step7")["template"] == flow.entry("step6")["template"]
-    assert "{in.stages}" in flow.entry("step7")["command"]
-    assert "{in.sequence}" in flow.entry("step6")["command"]
+    # the stages hook appends each stage's flags, so the command holds no stage text of its own
+    for step in ("step6", "step7"):
+        assert "{in." not in flow.entry(step)["command"]
+        assert flow.steps[step]["stages"]["hook"] == "declared_sequence"
 
 
 def test_step7_outputs_sit_inside_the_shared_study_directory():

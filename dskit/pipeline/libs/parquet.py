@@ -15,6 +15,7 @@ passes its key and the document never types a file name twice.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 
 from dskit.pipeline.document import is_node_ref
@@ -38,7 +39,15 @@ class ParquetRows(Node):
         ``root`` (str, onboarding root), ``source`` (str), ``stream`` (str),
         ``relpath_by_key`` (dict, key -> relpath within the stream), ``key``
         (str, normally ``$each``), ``columns`` (non-empty dict, file column ->
-        output field). All required.
+        output field). All required. Optional ``window`` (dict or None):
+        ``field`` (an output field of ``columns``, the date), ``start`` and
+        ``end`` (ISO ``YYYY-MM-DD``, inclusive, at least one) keep only the
+        rows whose date lies inside; absent or None keeps every row. Bounds must
+        be exactly ``YYYY-MM-DD``; the field's values (date, datetime or ISO
+        text) are parsed, never sliced, and a value that is none refuses the run.
+        The window cuts the stream and nothing more: an ``end`` that must leave
+        room for a horizon is the caller's to set (``horizon-pairs`` drops the
+        entry dates whose target lies past the last close).
 
     Examples
     --------
@@ -56,7 +65,9 @@ class ParquetRows(Node):
     role = "data"
     outputs = ("records",)
 
-    _PARAMS = ("root", "source", "stream", "relpath_by_key", "key", "columns")
+    _REQUIRED = ("root", "source", "stream", "relpath_by_key", "key", "columns")
+    _PARAMS = _REQUIRED + ("window",)
+    _WINDOW_KEYS = ("field", "start", "end")
 
     @classmethod
     def validate_params(cls, params):
@@ -74,7 +85,7 @@ class ParquetRows(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        for name in cls._PARAMS:
+        for name in cls._REQUIRED:
             value = params.get(name)
             if is_node_ref(value):
                 continue
@@ -88,6 +99,35 @@ class ParquetRows(Node):
                     problems.append("columns maps two file columns to one output field")
             elif not isinstance(value, str) or not value:
                 problems.append(f"{name} is required: a non-empty string, got {value!r}")
+        problems += cls._window_problems(params.get("window"), params.get("columns"))
+        return problems
+
+    @classmethod
+    def _window_problems(cls, window, columns):
+        """Problems with the optional ``window`` block, empty when none or absent."""
+        if window is None or is_node_ref(window):
+            return []
+        if not isinstance(window, dict) or not window:
+            return [f"window must be a non-empty dict, got {window!r}"]
+        problems = [f"window: unknown key {k!r}" for k in window if k not in cls._WINDOW_KEYS]
+        field = window.get("field")
+        if not isinstance(field, str) or not field:
+            problems.append(f"window.field is required: an output field, got {field!r}")
+        elif isinstance(columns, dict) and field not in columns.values():
+            problems.append(f"window.field {field!r} is not an output field of columns")
+        bounds = {k: window[k] for k in ("start", "end") if window.get(k) is not None}
+        if not bounds:
+            problems.append("window needs a start or an end")
+        parsed = {}
+        for name, value in bounds.items():
+            try:
+                parsed[name] = datetime.date.fromisoformat(value)
+                if parsed[name].isoformat() != value:
+                    raise ValueError(value)
+            except (TypeError, ValueError):
+                problems.append(f"window.{name} must be an ISO date YYYY-MM-DD, got {value!r}")
+        if {"start", "end"} <= set(parsed) and parsed["start"] > parsed["end"]:
+            problems.append("window.start is after window.end")
         return problems
 
     def _resolve(self):
@@ -128,6 +168,39 @@ class ParquetRows(Node):
                 h.update(block)
         return h.hexdigest() == digest
 
+    def _day(self, value):
+        """Return a date, datetime or ISO text field as a ``datetime.date``, else raise."""
+        field = self.params["window"]["field"]
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+        try:
+            return datetime.datetime.fromisoformat(value).date()
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{self.key}: window field {field!r} holds {value!r}, not a date or ISO text"
+            ) from None
+
+    def _windowed(self, records):
+        """Keep the records whose date field lies inside ``window``; all without one."""
+        window = self.params.get("window")
+        if not window:
+            return records
+        field = window["field"]
+        start, end = (
+            datetime.date.fromisoformat(window[k]) if window.get(k) else None
+            for k in ("start", "end")
+        )
+        kept = []
+        for record in records:
+            if record[field] is None:
+                continue
+            day = self._day(record[field])
+            if (start is None or day >= start) and (end is None or day <= end):
+                kept.append(record)
+        return kept
+
     def run(self, ctx, inputs):
         """Read the verified file and project the declared columns.
 
@@ -167,6 +240,7 @@ class ParquetRows(Node):
         data = {out: table.column(src).to_pylist() for src, out in columns.items()}
         names = list(data)
         records = [dict(zip(names, row)) for row in zip(*data.values())]
+        records = self._windowed(records)
         self.log.info("read %d row(s) of %s", len(records), rel)
         return {"records": records}
 

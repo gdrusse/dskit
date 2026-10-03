@@ -31,6 +31,7 @@ from dskit.pipeline.libs.observations import (
     NODE_KINDS,
     TS_UNITS,
     ObservationRows,
+    ObservationStreamRows,
     register,
 )
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, NodeKindRegistry
@@ -565,6 +566,83 @@ class TestPackShape:
         register(private)  # second call skips, never shadows
         cls, owned = private.get("observations")
         assert cls is ObservationRows and owned is False
+
+
+class TestObservationStreamRows:
+    def _node(self, root, **over):
+        return ObservationStreamRows("s", _params(root.root, fields=["sym", "value"], ts_field=..., **over))
+
+    def test_streams_projected_rows_like_the_snapshot(self, tmp_path):
+        root = _root(tmp_path)
+        out = self._node(root).run(_ctx(tmp_path), {})["records"]
+        assert not isinstance(out, list)
+        assert iter(out) is not out
+        got = sorted((r["sym"], r["value"]) for r in out)
+        want = sorted((r["sym"], r["value"]) for r in
+                      ObservationRows("o", _params(root.root)).run(_ctx(tmp_path), {})["records"])
+        assert got == want
+
+    def test_fields_are_required_and_default_deny(self, tmp_path):
+        bad = ObservationStreamRows.validate_params(_params("x"))
+        assert any("fields" in p for p in bad)
+        assert any("shared_fields" in p for p in
+                   ObservationStreamRows.validate_params(_params("x", fields=["a"], shared_fields=["a"])))
+
+    def test_fingerprint_reads_content(self, tmp_path):
+        root = _root(tmp_path)
+        node = self._node(root)
+        first = node.fingerprint()
+        assert first == self._node(root).fingerprint()
+        _rewrite_first_value(_members(root)[0])
+        assert self._node(root).fingerprint()["sha256"] != first["sha256"]
+
+
+    @pytest.mark.parametrize("knob", ["ts_field", "ts_out", "since_ms"])
+    def test_knobs_it_cannot_honor_are_refused(self, knob):
+        value = 5 if knob == "since_ms" else "date"
+        assert ObservationStreamRows.validate_params(_params("x", fields=["sym"], **{knob: value}))
+
+    def test_it_cannot_be_served(self):
+        with pytest.raises(ValueError, match="cannot be served"):
+            ObservationStreamRows.serving_contract(_params("x", fields=["sym"]), {})
+
+    @pytest.mark.parametrize("hook", ["admit", "project"])
+    def test_an_overridden_hook_it_cannot_honor_refuses_at_run(self, tmp_path, hook):
+        root = _root(tmp_path)
+
+        class Hooked(ObservationStreamRows):
+            def admit(self):
+                return lambda data, stamp: True
+
+            def project(self, records):
+                return records
+
+        params = {k: v for k, v in _params(root.root, fields=["sym"]).items() if k != "ts_field"}
+        with pytest.raises(ValueError, match="cannot honor"):
+            Hooked("s", params).run(_ctx(tmp_path), {})
+
+    def test_keep_values_is_an_intake_allow_list(self, tmp_path):
+        root = _root(tmp_path)
+        node = self._node(root, keep_values={"sym": ["A"]})
+        assert {r["sym"] for r in node.run(_ctx(tmp_path), {})["records"]} == {"A"}
+        assert ObservationStreamRows.validate_params(
+            _params("x", fields=["sym"], keep_values={"sym": []}))
+
+    def test_run_refuses_a_stream_moved_since_fingerprint(self, tmp_path):
+        root = _root(tmp_path)
+        node = self._node(root)
+        node.fingerprint()
+        _rewrite_first_value(_members(root)[0])
+        with pytest.raises(ValueError, match="changed between"):
+            node.run(_ctx(tmp_path), {})
+
+    def test_run_is_pinned_to_the_fingerprinted_members(self, tmp_path):
+        root = _root(tmp_path)
+        node = self._node(root)
+        node.fingerprint()
+        _write_rows(_data_file(tmp_path), [GROWTH], mode="a")
+        assert _acquire(root)["records"] == 1
+        assert sum(1 for _ in node.run(_ctx(tmp_path), {})["records"]) == len(ROWS)
 
 
 # ---------------------------------------------------------------------------

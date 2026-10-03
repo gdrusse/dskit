@@ -328,6 +328,10 @@
     },
     "H": 7,
     "regions": {
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
       "max_chain_rows": 14000000,
       "panel_years": [
         2011,
@@ -1052,6 +1056,13 @@
         "warmup",
         "scored"
       ]
+    },
+    "P": {
+      "reader": null,
+      "exact_dte": null,
+      "keyed_tables": null,
+      "corporate_actions": null,
+      "price_source": "optionshist-chain"
     }
   },
   "step5": {
@@ -1278,6 +1289,10 @@
     },
     "H": 7,
     "regions": {
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
       "max_chain_rows": 14000000,
       "panel_years": [
         2011,
@@ -1999,6 +2014,13 @@
         "warmup",
         "scored"
       ]
+    },
+    "P": {
+      "reader": null,
+      "exact_dte": null,
+      "keyed_tables": null,
+      "corporate_actions": null,
+      "price_source": "optionshist-chain"
     }
   },
   "step6": {
@@ -2225,6 +2247,10 @@
     },
     "H": 7,
     "regions": {
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
       "max_chain_rows": 14000000,
       "panel_years": [
         2011,
@@ -3496,6 +3522,13 @@
         "warmup",
         "scored"
       ]
+    },
+    "P": {
+      "reader": null,
+      "exact_dte": null,
+      "keyed_tables": null,
+      "corporate_actions": null,
+      "price_source": "optionshist-chain"
     }
   }
 }

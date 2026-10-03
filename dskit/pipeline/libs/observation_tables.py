@@ -27,7 +27,7 @@ from datetime import date
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param, reject_unknown_params
 
-__all__ = ["AGE_SUFFIX", "MISSING_SUFFIX", "NODE_KINDS", "ObservationTables", "register"]
+__all__ = ["AGE_SUFFIX", "MISSING_SUFFIX", "NODE_KINDS", "ObservationTables", "iso_day", "register"]
 
 #: The ONE spelling of the as-of companions' suffixes, read by validation and run alike.
 AGE_SUFFIX = "_age_days"
@@ -41,7 +41,7 @@ def _names_ok(value):
     return isinstance(value, list) and bool(value) and all(isinstance(v, str) and v for v in value)
 
 
-def _day(value, where):
+def iso_day(value, where):
     """Return the ISO date a key cell holds, or raise naming ``where``."""
     try:
         return date.fromisoformat(str(value)[:10])
@@ -177,7 +177,7 @@ class ObservationTables(Node):
         groups = {}
         for row in rows:
             groups.setdefault(tuple(row[f] for f in fields[:-1]), []).append(
-                (_day(row[fields[-1]], f"{self.key}.{name}"), row))
+                (iso_day(row[fields[-1]], f"{self.key}.{name}"), row))
         for entries in groups.values():
             entries.sort(key=lambda pair: pair[0])
         days = {group: [d for d, _ in entries] for group, entries in groups.items()}
@@ -186,7 +186,7 @@ class ObservationTables(Node):
             group = groups.get(tuple(values[:-1]))
             if not group:
                 return None, None
-            at = _day(values[-1], f"{self.key}.{name} stream row")
+            at = iso_day(values[-1], f"{self.key}.{name} stream row")
             cut = (bisect_left if strict else bisect_right)(days[tuple(values[:-1])], at)
             if cut == 0:
                 return None, None

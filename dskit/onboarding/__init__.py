@@ -60,6 +60,7 @@ from .default_model import onboarding_model
 from .layout import OnboardingRoot
 from .leads import LeadGrid
 from .observations import (
+    iter_stream,
     scan_stream,
     stream_dir,
     stream_digest,
@@ -119,6 +120,7 @@ __all__ = [
     "run_watch",
     "save_state",
     "save_token",
+    "iter_stream",
     "scan_stream",
     "snapshot_hash",
     "stream_dir",

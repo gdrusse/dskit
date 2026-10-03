@@ -48,6 +48,7 @@ __all__ = [
     "SOURCE_BINDING_KIND",
     "TS_UNITS",
     "ObservationRows",
+    "ObservationStreamRows",
     "register",
 ]
 
@@ -591,6 +592,184 @@ class ObservationRows(Node):
         records = self._scan()
         self.log.info("emitting %d observation record(s)", len(records))
         return {"records": records}
+
+
+class _Replayable:
+    """A lazy row source: each ``iter()`` calls the factory for a fresh generator."""
+
+    def __init__(self, factory):
+        self._factory = factory
+
+    def __iter__(self):
+        return self._factory()
+
+
+class ObservationStreamRows(ObservationRows):
+    """Emit a deduplicated observation stream LAZILY, projected to declared fields.
+
+    The streaming sibling of :class:`ObservationRows` for a stream too big
+    to hold (millions of bars): the same winner rule through
+    ``dskit.onboarding.observations.iter_stream``, but ``run`` hands
+    downstream a lazy re-iterable of rows cut to ``fields``, so memory is one
+    compact entry per key. The output re-reads the store per iteration and is unsorted
+    (acquisition then file order); a consumer that needs an order must
+    not assume one. ``fingerprint`` hashes the stream members' bytes (no
+    row count: counting would cost the pass it avoids holding).
+
+    Parameters
+    ----------
+    params : dict
+        As :class:`ObservationRows` minus ``shared_fields`` and
+        ``ts_unit`` (ISO only), plus ``fields`` (non-empty list of str,
+        REQUIRED): the ``data`` fields each row keeps; ``keep_values``
+        (dict, optional): ``{field: [allowed values]}``, an intake
+        allow-list applied before dedup (e.g. the entities wanted).
+
+    Examples
+    --------
+    Stream option-bar rows without holding them::
+
+        node = ObservationStreamRows("bars", {
+            "root": "./ob", "source": "options", "stream": "bars",
+            "key_fields": ["contract", "quote_date"],
+            "fields": ["symbol", "quote_date", "volume"]})
+        rows = node.run(ctx, {})["records"]  # re-iterable, lazy
+    """
+
+    #: ``ts_field``/``ts_out``/``since_ms``/``shared_fields``/``ts_unit`` are refused by
+    #: omission: the stream is unsorted and unstamped, so no instant is derived.
+    _PARAMS = tuple(n for n in ObservationRows._PARAMS
+                    if n not in ("shared_fields", "ts_unit", "ts_field", "ts_out", "since_ms")) + (
+        "fields", "keep_values")
+
+    #: Hooks of the snapshot class this lazy read cannot honor; a subclass overriding one is refused.
+    _UNHONORED_HOOKS = ("admit", "project", "ts_unit", "shared_fields")
+
+    @classmethod
+    def validate_params(cls, params):
+        """List problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The base problems plus a bad ``fields``.
+        """
+        problems = super().validate_params(params)
+        fields = params.get("fields")
+        if not isinstance(fields, (list, tuple)) or not fields or any(not _ok_name(f) for f in fields):
+            problems.append(f"fields is required: a non-empty list of field names, got {fields!r}")
+        keep = params.get("keep_values")
+        if keep is not None and not (
+                isinstance(keep, dict) and keep
+                and all(_ok_name(k) and isinstance(v, (list, tuple)) and v for k, v in keep.items())):
+            problems.append(f"keep_values must be a non-empty map of field -> non-empty list, got {keep!r}")
+        return problems
+
+    def keep_values(self):
+        """Give the intake allow-list ``{field: values}``, or ``None``."""
+        return self.params.get("keep_values")
+
+    @classmethod
+    def serving_contract(cls, params, verified_run_evidence):
+        """Refuse: a lazy unsorted stream has no event instant to serve by.
+
+        Parameters
+        ----------
+        params : dict
+            Unused.
+        verified_run_evidence : dict
+            Unused.
+
+        Raises
+        ------
+        ValueError
+            Always.
+        """
+        raise ValueError("observation stream rows cannot be served: no ts_field, no watermark")
+
+    def _refuse_unhonored(self):
+        """Refuse a subclass that overrides a snapshot hook this read cannot honor."""
+        bad = [h for h in self._UNHONORED_HOOKS
+               if getattr(type(self), h) is not getattr(ObservationRows, h)]
+        if bad or type(self).reuse_snapshot:
+            raise ValueError(
+                f"{self.key}: ObservationStreamRows cannot honor {bad or ['reuse_snapshot']}: "
+                "it streams winners, it builds no snapshot")
+
+    def _content_sha256(self, names):
+        """Hash the named members through the read seam's own digest."""
+        from dskit.onboarding.observations import member_digest
+
+        return member_digest(self.root(), self.source(), self.stream(), names)
+
+    def fingerprint(self):
+        """Answer the stream's content identity without reading it into memory.
+
+        Returns
+        -------
+        dict
+            ``{"kind", "members", "sha256"}``: sha256 over each member's
+            name and bytes, read in chunks; memoized per instance, and it
+            pins the members the run will read.
+        """
+        self._refuse_unhonored()
+        if getattr(self, "_fp", None) is None:
+            self._members = tuple(m[0] for m in self._store_token())
+            self._fp = {"kind": type(self).__name__, "members": list(self._members),
+                        "sha256": self._content_sha256(self._members)}
+        return self._fp
+
+    def _verify_unchanged(self):
+        """Refuse a run whose pinned members moved since ``fingerprint()``: a lazy read cannot pin content."""
+        if self._content_sha256(self._members) != self._fp["sha256"]:
+            raise ValueError(
+                f"{self.key}: the stream changed between fingerprint and run - a lazy read "
+                "cannot pin content, so the run identity would not describe the rows read")
+
+    def run(self, ctx, inputs):
+        """Return the lazy projected stream.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            Empty: role ``data`` takes no inputs.
+
+        Returns
+        -------
+        dict
+            ``{"records": rows}``: a re-iterable that re-reads the store
+            on each ``iter()`` (each pass holds one entry per key, never
+            the rows).
+
+        Raises
+        ------
+        ValueError
+            A subclass overrides a hook this read cannot honor, or the
+            stream moved since ``fingerprint()``.
+        """
+        from dskit.onboarding.observations import iter_stream
+
+        self._refuse_unhonored()
+        if getattr(self, "_fp", None) is not None:
+            self._verify_unchanged()
+        members = getattr(self, "_members", None)
+        if members is None:
+            members = tuple(m[0] for m in self._store_token())
+
+        def rows():
+            return iter_stream(
+                self.root(), self.source(), self.stream(), key_fields=self.key_fields(),
+                fields=tuple(self.params["fields"]), keep_values=self.keep_values(),
+                as_of_acquisition_ms=self.as_of_acquisition_ms(), members=members)
+
+        return {"records": _Replayable(rows)}
 
 
 #: The pack's kinds.

@@ -977,11 +977,13 @@ PANEL_READ_KEYS = {
     "lags", "windows", "feature_gap_days", "reference_floor", "spot_tolerance", "chain_features",
     "raw_chain", "market_symbols", "fred_market_symbols", "surface_features", "ohlc_windows",
     "matched_dte_vrp", "columns", "reference_window", "change_lags", "directional_windows",
-    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
+    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field",
+    "exact_dte", "reader", "keyed_tables", "corporate_actions", "cohort_columns"}
 PANEL_READ_REQUIRED = PANEL_READ_KEYS - {
     "chain_features", "raw_chain", "market_symbols", "fred_market_symbols", "surface_features",
     "ohlc_windows", "matched_dte_vrp", "reference_window", "change_lags", "directional_windows",
-    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
+    "periods_per_year", "calendar", "calendar_pad_days", "dividend_field", "exact_dte", "reader",
+    "keyed_tables", "corporate_actions", "cohort_columns"}
 
 
 def _panel_read_params(**over):
@@ -1030,7 +1032,7 @@ def stub_panel(monkeypatch):
 
 def test_the_panel_reader_declares_its_role_ports_and_forbids_serving():
     assert ExactExpiryPanelRead.role == "data"
-    assert ExactExpiryPanelRead.outputs == ("records", "provenance")
+    assert ExactExpiryPanelRead.outputs == ("records", "provenance", "cohort")
     assert ExactExpiryPanelRead.serving_effect({}, {}) == "forbidden"
     assert "ExactExpiryPanelRead" in __import__("index_options.nodes", fromlist=["x"]).__all__
 
@@ -1040,7 +1042,9 @@ def test_the_panel_readers_params_are_the_tail_data_read_keys_plus_columns(child
     study_conventions = {"reference_window", "change_lags", "directional_windows",
                          "periods_per_year", "calendar", "calendar_pad_days", "dividend_field"}
     assert set(ExactExpiryPanelRead._PARAMS) == PANEL_READ_KEYS == (
-        set(data) - {"archive_root"} | {"columns"} | study_conventions)   # frozen tail config omits them
+        set(data) - {"archive_root"} | {"columns"} | study_conventions   # frozen tail config omits them
+        | {"exact_dte", "reader", "keyed_tables", "corporate_actions",   # ADR-0230 additions
+           "cohort_columns"})
     assert set(ExactExpiryPanelRead._PARAMS) & {"decision_regions", "macro_event_calendars"} == set()
 
 
@@ -1115,3 +1119,22 @@ def test_the_panel_reader_takes_a_store_reference_or_a_path_and_refuses_a_malfor
     node = ExactExpiryPanelRead("panel", _panel_read_params(**{name: good}))
     node.run(None, {})
     assert stub_panel.configs[-1][name] == good          # handed to the adapter unchanged
+
+
+def test_cohort_columns_add_a_second_port_of_those_columns_and_stay_out_of_the_reader_config(stub_panel):
+    node = ExactExpiryPanelRead("panel", _panel_read_params(cohort_columns=["symbol", "quote_date"]))
+    out = node.run(None, {})
+    assert out["cohort"] == [{"symbol": "QQQ", "quote_date": "2020-01-02"},
+                             {"symbol": "QQQ", "quote_date": "2020-01-03"}]
+    assert len(out["records"]) == 2 and "a" in out["records"][0]
+    assert "cohort_columns" not in stub_panel.configs[0]
+
+
+def test_without_cohort_columns_the_cohort_port_is_empty(stub_panel):
+    assert ExactExpiryPanelRead("panel", _panel_read_params()).run(None, {})["cohort"] == []
+
+
+def test_a_cohort_column_the_read_lacks_refuses_by_name(stub_panel):
+    node = ExactExpiryPanelRead("panel", _panel_read_params(cohort_columns=["nope"]))
+    with pytest.raises(ValueError, match="nope"):
+        node.run(None, {})

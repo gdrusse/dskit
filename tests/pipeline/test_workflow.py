@@ -203,6 +203,23 @@ def test_placeholder_names_lists_roots_outside_notes():
     assert wf.placeholder_names(doc) == {"T", "S", "k"}
 
 
+def test_an_optional_key_is_emitted_only_when_its_value_is_not_null():
+    doc = {"a?": "${S.n}", "b?": "${S.z}", "c": "${S.z}", "n": {"d?": "${S.z}", "e?": "${k}"}}
+    assert wf.expand(doc, VALUES) == {"a": 4, "c": None, "n": {"e": 7}}
+
+
+def test_an_optional_key_still_refuses_a_placeholder_with_no_value():
+    with pytest.raises(wf.WorkflowError):
+        wf.expand({"a?": "${nope}"}, VALUES)
+
+
+def test_an_optional_key_keeps_falsy_values_and_inside_lists():
+    values = {"zero": 0, "off": False, "empty": []}
+    assert wf.expand({"l": [{"a?": "${zero}", "b?": "${off}", "c?": "${empty}"}]}, values) == {
+        "l": [{"a": 0, "b": False, "c": []}]
+    }
+
+
 # -- validation refusals ------------------------------------------------------
 
 
@@ -632,3 +649,13 @@ def test_cli_dispatches_workflow(proj, capsys):
     assert main(["workflow", write(tmp, manifest), "--plan"]) == 0
     assert "s1" in capsys.readouterr().out
     assert main(["workflow", str(tmp / "nope.json")]) == 1
+
+
+def test_a_key_and_its_optional_twin_in_one_object_are_refused():
+    with pytest.raises(wf.WorkflowError, match="both"):
+        wf.expand({"a": 1, "a?": "${k}"}, VALUES)
+
+
+def test_a_key_that_is_only_the_marker_is_refused():
+    with pytest.raises(wf.WorkflowError, match="marker"):
+        wf.expand({"?": "${k}"}, VALUES)

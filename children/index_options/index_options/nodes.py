@@ -2631,13 +2631,17 @@ class ExactExpiryPanelRead(Node):
         The tail-data ``read()`` keys except ``archive_root`` (the
         ``prepare`` stage's) and the ones ``read()`` ignores here
         (``decision_regions``, ``macro_event_calendars``: refused), plus
-        ``columns``, the frame columns to emit. Required: ``root surface
-        lifecycle symbols price_source iv_source since max_dte lags windows
-        feature_gap_days reference_floor spot_tolerance columns``; optional:
+        ``columns``, the frame columns to emit. Required: ``root symbols price_source
+        iv_source since max_dte lags windows feature_gap_days reference_floor
+        spot_tolerance columns``, plus ``surface`` and ``lifecycle`` unless ``reader`` is
+        set; optional:
         ``chain_features raw_chain market_symbols fred_market_symbols
         surface_features ohlc_windows matched_dte_vrp reference_window change_lags
         directional_windows periods_per_year calendar calendar_pad_days dividend_field``
-        (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`).
+        (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`)
+        and, ADR-0230, ``exact_dte`` (keep one horizon), ``reader`` (``price_calendar``
+        builds the panel from a price file alone), ``keyed_tables`` and
+        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`).
 
     Examples
     --------
@@ -2654,15 +2658,18 @@ class ExactExpiryPanelRead(Node):
     """
 
     role = "data"
-    outputs = ("records", "provenance")
-    _REQUIRED = ("columns", "feature_gap_days", "iv_source", "lags", "lifecycle", "max_dte",
-                 "price_source", "reference_floor", "root", "since", "spot_tolerance", "surface",
+    outputs = ("records", "provenance", "cohort")
+    _REQUIRED = ("columns", "feature_gap_days", "iv_source", "lags", "max_dte",
+                 "price_source", "reference_floor", "root", "since", "spot_tolerance",
                  "symbols", "windows")
+    #: ``surface`` and ``lifecycle`` are required only while no ``reader`` is selected (ADR-0230).
+    _SURFACE_REQUIRED = ("lifecycle", "surface")
     _OPTIONAL = ("calendar", "calendar_pad_days", "chain_features", "change_lags",
-                 "directional_windows", "dividend_field", "fred_market_symbols",
-                 "market_symbols", "matched_dte_vrp", "ohlc_windows", "periods_per_year",
-                 "raw_chain", "reference_window", "surface_features")
-    _PARAMS = _REQUIRED + _OPTIONAL
+                 "cohort_columns", "corporate_actions", "directional_windows", "dividend_field", "exact_dte",
+                 "fred_market_symbols", "keyed_tables", "market_symbols", "matched_dte_vrp",
+                 "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
+                 "surface_features")
+    _PARAMS = _SURFACE_REQUIRED + _REQUIRED + _OPTIONAL
 
     def __init__(self, key, params=None, **kwargs):
         super().__init__(key, params, **kwargs)
@@ -2685,8 +2692,13 @@ class ExactExpiryPanelRead(Node):
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         problems += [f"{name} is required" for name in cls._REQUIRED if name not in params]
+        if params.get("reader") is None:
+            problems += [f"{name} is required (no reader selected)"
+                         for name in cls._SURFACE_REQUIRED if params.get(name) is None]
         owner = _CondorBacktestBase           # the distinct-list rule has one home (ADR-0195)
         owner._distinct_list_problems(problems, params, "columns", owner._name_ok, "names")
+        if "cohort_columns" in params:
+            owner._distinct_list_problems(problems, params, "cohort_columns", owner._name_ok, "names")
         symbols = params.get("symbols")
         if "symbols" in params and (
                 not isinstance(symbols, dict) or not symbols
@@ -2696,10 +2708,14 @@ class ExactExpiryPanelRead(Node):
             if knob in params:
                 check_int_param(problems, knob, params[knob], ge=1)
         for name in ("surface", "lifecycle", "chain_features"):
-            if name in params:
+            if params.get(name) is not None:
                 problems += entry_problems(name, params[name])
-        from .cdf_study import panel_convention_problems   # the one owner of the convention rules
+        if "exact_dte" in params:
+            check_int_param(problems, "exact_dte", params["exact_dte"], ge=1)
+        # the one owners of the convention and reader-selection rules
+        from .cdf_study import panel_convention_problems, panel_reader_problems
         problems += panel_convention_problems(params)
+        problems += panel_reader_problems(params)
         return problems
 
     @classmethod
@@ -2720,17 +2736,26 @@ class ExactExpiryPanelRead(Node):
 
     def _read(self):
         """Read the panel once and keep ``columns`` as plain Python rows."""
-        from .cdf_study import ExactExpiryCDFPanel
+        from .cdf_study import panel_class
 
         columns = self.params["columns"]
-        adapter = ExactExpiryCDFPanel({k: v for k, v in self.params.items() if k != "columns"})
+        config = {k: v for k, v in self.params.items() if k not in self._NODE_ONLY}
+        adapter = panel_class(config)(config)
         frame = adapter.read()
+        cohort = self.params.get("cohort_columns")
+        return {"records": self._rows(frame, columns), "provenance": adapter.provenance(),
+                "cohort": self._rows(frame, cohort) if cohort else []}
+
+    #: Node params the reader's own config never sees (they only shape what the node emits).
+    _NODE_ONLY = ("columns", "cohort_columns")
+
+    def _rows(self, frame, columns):
+        """Return ``columns`` of the frame as plain rows (NaN as None), refusing a missing one."""
         missing = [name for name in columns if name not in frame.columns]
         if missing:
             raise ValueError(f"{self.key}: the panel read has no column(s) {missing}")
         kept = frame[columns].astype(object)
-        records = kept.where(frame[columns].notna(), None).to_dict("records")
-        return {"records": records, "provenance": adapter.provenance()}
+        return kept.where(frame[columns].notna(), None).to_dict("records")
 
     def _snapshot_once(self):
         """Return the one read both ``fingerprint`` and ``run`` serve."""
@@ -2773,4 +2798,5 @@ class ExactExpiryPanelRead(Node):
             When ``columns`` names a column the read does not produce.
         """
         snapshot = self._snapshot_once()
-        return {"records": snapshot["records"], "provenance": snapshot["provenance"]}
+        return {"records": snapshot["records"], "provenance": snapshot["provenance"],
+                "cohort": snapshot["cohort"]}

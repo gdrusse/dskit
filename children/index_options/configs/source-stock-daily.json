@@ -1,0 +1,20 @@
+{
+  "url_template": "https://query1.finance.yahoo.com/v8/finance/chart/{entity}?period1=1451606400&period2=1790812800&interval=1d&events=div,split",
+  "entities_file": "configs/stock_universe.json",
+  "entities_key": "tickers",
+  "relpath_template": "{entity_lower}/underlying_prices.parquet",
+  "raw_relpath_template": "_raw/{entity}.json",
+  "cache_dir": "$STOCK_DAILY_RAW_ROOT",
+  "transform": "index_options.stock_bars:StockDailyBars",
+  "transform_params": {},
+  "headers": {
+    "User-Agent": "dskit-research-bot/1.0 (daily bars audit)"
+  },
+  "throttle_s": 0.6,
+  "timeout": 30,
+  "max_retries": 4,
+  "as_of": "2026-10-03T15:45:00+00:00",
+  "stream": "files",
+  "notes": "Registration input, not a run input: daily bars for the stock universe (ADR-0233 httpblobs). One Yahoo chart request per ticker in configs/stock_universe.json (entities_file + entities_key; the universe is never restated here); the child transform index_options.stock_bars:StockDailyBars reshapes each response to the archive-style underlying_prices schema laid out as <t>/underlying_prices.parquet, so a price_source relpath works as for philippdubach-options. Basis: everything is Yahoo's SPLIT-ADJUSTED data stored as given: open/high/low/close show no jump on a split day, volume is Yahoo's split-adjusted volume (continuous across a split, never rescaled), so close*volume is a split-adjusted dollar volume (not as-traded); adjusted_close is split+dividend adjusted; split_coefficient and dividend_amount are informational. Each record's note lists the splits and flags IRREGULAR ratios (Yahoo labels some spin-offs as splits, e.g. DHR, GE, HON). The untouched response is kept at _raw/<T>.json. Paths carry no machine location: entities_file is relative to the working directory (run from the child root) and cache_dir is $STOCK_DAILY_RAW_ROOT, the directory holding the raw responses of an earlier pull (reuse re-derives the parquet without Yahoo; unset it to re-pull over the network with a 0.6 s throttle and backoff retries; the cache is trusted as-is, so bumping as_of with a stale cache re-derives old bytes). HES is delisted and answers 404: one refusal is allowed (max_refused 1) and lands as a refused inventory row. period1/period2 (2016-01-01 .. 2026-10-01 UTC) live in url_template; a changed declaration (as_of, window, universe) re-pulls. Register: python -m dskit.onboarding register-source stock-daily-bars --catalog-source stock-daily-bars --connector httpblobs --config @configs/source-stock-daily.json --activate --root <store root>; then acquire --source stock-daily-bars --stream files --mode backfill.",
+  "max_refused": 1
+}

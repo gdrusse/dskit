@@ -35,7 +35,7 @@
         "raw_chain": "${C}",
         "symbols": "${V}",
         "market_symbols": "${M}",
-        "price_source": "${F.price_source}",
+        "price_source": "${P.price_source}",
         "iv_source": "${F.iv_source}",
         "since": "${G.since}",
         "max_dte": "${G.max_dte}",
@@ -54,6 +54,10 @@
         "calendar": "${G.calendar}",
         "calendar_pad_days": "${G.calendar_pad_days}",
         "dividend_field": "${F.dividend_field}",
+        "reader?": "${P.reader}",
+        "exact_dte?": "${P.exact_dte}",
+        "corporate_actions?": "${P.corporate_actions}",
+        "cohort_columns?": "${P.cohort_columns}",
         "columns": "${families.columns}"
       },
       "notes": "The panel reader (an existing node, no formula restated), run once for every ticker and narrowed to families.columns: the identity, agreed and engineered columns. Its columns must equal what the attach node expects, or the attach refuses. F holds the store references (source, stream, relpath) resolved against F.root, V maps each ticker to its volatility index, C is the chain-proxy limits, M the market series, G the limits and windows the lookback windows."
@@ -185,7 +189,7 @@
       "cohort": {
         "uses": "filter",
         "inputs": {
-          "records": "$source.records"
+          "records": "${P.cohort}"
         },
         "params": {
           "where": [
@@ -256,7 +260,7 @@
       "horizon_rows": {
         "uses": "filter",
         "inputs": {
-          "records": "$source.records"
+          "records": "${P.cohort}"
         },
         "params": {
           "where": [

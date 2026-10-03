@@ -15,7 +15,8 @@
       "date": "bar_date",
       "close": "bar_close"
     },
-    "fallback": "previous"
+    "fallback": "previous",
+    "window": null
   },
   "H": 7,
   "S": {

@@ -23,7 +23,9 @@ from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
-__all__ = ["ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS", "panel_convention_problems",
+__all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
+           "OPTION_SOURCE_KEYS", "PRICE_FIELDS", "PriceCalendarCDFPanel", "READERS",
+           "panel_class", "panel_convention_problems", "panel_reader_problems",
            "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
@@ -2070,6 +2072,188 @@ def panel_convention_problems(config):
     return problems
 
 
+#: Panel-config keys that name an option surface; the calendar reader has none, so each must
+#: be absent, null, empty or false there.
+OPTION_SOURCE_KEYS = ("surface", "lifecycle", "chain_features", "raw_chain", "surface_features",
+                      "matched_dte_vrp", "decision_regions", "macro_event_calendars")
+
+#: The price-envelope vocabulary a ``price_source.columns`` map must write into (the field names
+#: ``IndexCloseRows`` projects); ``date`` and ``close`` are required, ``split_coefficient`` is read
+#: only to recognise corporate-action days and never reaches the envelope.
+PRICE_FIELDS = ("date", "close", "open", "high", "low", "volume", "dividend_amount",
+                "split_coefficient")
+_PRICE_REQUIRED = ("date", "close")
+_CALENDAR_READER = "price_calendar"
+_KEYED_KEYS = ("key", "tables", "age_suffix", "missing_suffix")
+_ACTION_KEYS = ("max_dividend_yield", "max_abs_jump", "windows")
+
+
+class CorporateActionRule:
+    """Declare which price days are corporate-action events and test a path against them.
+
+    A day is an event when its dividend over its close reaches ``max_dividend_yield``, when its
+    absolute log return reaches ``max_abs_jump`` AND its split coefficient is not 1, or when it
+    lies in a window declared for the symbol. A row is excluded when an event falls from the
+    first session its features read through the settlement session.
+
+    Parameters
+    ----------
+    spec : dict
+        Optional ``max_dividend_yield`` (number > 0), ``max_abs_jump`` (number > 0) and
+        ``windows`` (``{symbol: [[from, to], ...]}``, ISO dates, from <= to). Empty
+        means no event is ever declared.
+
+    Examples
+    --------
+    Declare a yield bound and one window::
+
+        rule = CorporateActionRule({"max_dividend_yield": 0.05,
+                                    "windows": {"AAA": [["2023-02-01", "2023-02-03"]]}})
+        dates = rule.event_dates("AAA", records)
+    """
+
+    def __init__(self, spec):
+        problems = self.problems(spec)
+        if problems:
+            raise ValueError("; ".join(problems))
+        self.spec = dict(spec)
+
+    @staticmethod
+    def problems(spec):
+        """List what is wrong with a ``corporate_actions`` declaration.
+
+        Parameters
+        ----------
+        spec : dict
+            The candidate declaration.
+
+        Returns
+        -------
+        list of str
+            Every problem; empty when usable.
+        """
+        from dskit.pipeline.records import number_ok
+
+        if not isinstance(spec, dict):
+            return [f"corporate_actions must be an object, got {spec!r}"]
+        problems = [f"corporate_actions: unknown key {k!r}" for k in spec if k not in _ACTION_KEYS]
+        for name in ("max_dividend_yield", "max_abs_jump"):
+            if name in spec and not (number_ok(spec[name]) and spec[name] > 0):
+                problems.append(f"corporate_actions.{name} must be a number > 0, got {spec[name]!r}")
+        windows = spec.get("windows", {})
+        if not isinstance(windows, dict):
+            return problems + ["corporate_actions.windows must be {symbol: [[from, to], ...]}"]
+        for symbol, spans in windows.items():
+            ok = isinstance(spans, list) and all(
+                isinstance(w, list) and len(w) == 2 and not any(date_problem(d) for d in w)
+                and w[0] <= w[1] for w in spans)
+            if not ok:
+                problems.append(f"corporate_actions.windows[{symbol!r}] must be a list of "
+                                "[from, to] ISO date pairs with from <= to")
+        return problems
+
+    def event_dates(self, symbol, records):
+        """Return the sorted ISO dates of a symbol's events.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker.
+        records : list of dict
+            Oldest-first rows with ``date``, ``close`` and, when present,
+            ``dividend_amount`` and ``split_coefficient``.
+
+        Returns
+        -------
+        list of str
+            Event dates, deduplicated; declared windows are not expanded here.
+        """
+        import math
+        from dskit.pipeline.records import price_ok
+
+        yield_bound, jump_bound = (self.spec.get(k) for k in ("max_dividend_yield", "max_abs_jump"))
+        found, previous = set(), None
+        for row in records:
+            coefficient = row.get("split_coefficient")
+            if (not price_ok(row["close"])
+                    or (coefficient is not None and not price_ok(coefficient))):
+                raise ValueError(f"{symbol} {row['date']}: close {row['close']!r} and split "
+                                 f"coefficient {coefficient!r} must be positive numbers")
+            dividend = row.get("dividend_amount")
+            if yield_bound is not None and dividend is not None and dividend/row["close"] >= yield_bound:
+                found.add(row["date"])
+            if (jump_bound is not None and previous is not None and coefficient not in (None, 1)
+                    and abs(math.log(row["close"]/previous)) >= jump_bound):
+                found.add(row["date"])
+            previous = row["close"]
+        return sorted(found)
+
+    def excluded(self, symbol, event_dates, sessions, start_index, end_index):
+        """Say which rows have an event on their feature or label span.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker (selects its declared windows).
+        event_dates : list of str
+            The symbol's detected events (see :meth:`event_dates`).
+        sessions : DatetimeIndex
+            The exchange sessions the indices refer to.
+        start_index, end_index : ndarray of int
+            Each row's first session position the features read and its settlement position.
+
+        Returns
+        -------
+        ndarray of bool
+            True where the row must be dropped.
+        """
+        import numpy as np
+        import pandas as pd
+
+        flagged = np.zeros(len(sessions), dtype=int)
+        # an event dated off-session counts on the next session, never silently nowhere
+        positions = sessions.searchsorted(pd.to_datetime(list(event_dates)))
+        flagged[positions[positions < len(sessions)]] = 1
+        for first, last in self.spec.get("windows", {}).get(symbol, []):
+            flagged[(sessions >= pd.Timestamp(first)) & (sessions <= pd.Timestamp(last))] = 1
+        cumulative = np.r_[0, np.cumsum(flagged)]
+        return cumulative[np.asarray(end_index)+1]-cumulative[np.asarray(start_index)] > 0
+
+
+def panel_reader_problems(config):
+    """List what is wrong with the reader-selection keys of a panel config (ADR-0230).
+
+    Parameters
+    ----------
+    config : dict
+        A panel config. ``reader`` (optional, null = absent) names the panel class in
+        ``READERS``; that class's :meth:`ExactExpiryCDFPanel.reader_problems` judges the rest
+        (``keyed_tables``, ``corporate_actions``, and whatever the reader requires or refuses).
+
+    Returns
+    -------
+    list of str
+        Every problem; empty when the keys are usable.
+    """
+    reader = config.get("reader")
+    if reader is None:
+        return _BASE_PANEL.reader_problems(config)
+    if not isinstance(reader, str) or reader not in READERS:
+        return [f"reader must be one of {sorted(READERS)} or absent, got {reader!r}"]
+    return READERS[reader].reader_problems(config)
+
+
+def _keyed_problems(spec, root):
+    """Problems with one ``keyed_tables`` block, the table rules being ``ObservationTables``'."""
+    from dskit.pipeline.libs.observation_tables import ObservationTables
+
+    if not isinstance(spec, dict):
+        return [f"keyed_tables must be an object, got {spec!r}"]
+    problems = [f"keyed_tables: unknown key {k!r}" for k in spec if k not in _KEYED_KEYS]
+    inner = ObservationTables.validate_params({"root": root or "root", **spec})
+    return problems+[f"keyed_tables: {p}" for p in inner if "unknown param" not in p]
+
+
 class ExactExpiryCDFPanel:
     """Join observed listed expiries to complete exchange-session price paths.
 
@@ -2105,7 +2289,43 @@ class ExactExpiryCDFPanel:
             check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
             if problems:
                 raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
+        problems = type(self).reader_problems(config)
+        if problems:
+            raise ValueError("; ".join(problems))
         self.config, self.holdout_start = config, holdout_start
+
+    #: The ``reader`` value that selects this class (``None``: the key is absent).
+    READER = None
+
+    @classmethod
+    def reader_problems(cls, config):
+        """List what is wrong with the reader keys of a config for THIS panel class.
+
+        Parameters
+        ----------
+        config : dict
+            A panel config.
+
+        Returns
+        -------
+        list of str
+            Every problem: a ``reader`` this class is not, a malformed ``keyed_tables`` block,
+            a ``corporate_actions`` the class does not accept (see :meth:`action_problems`).
+        """
+        problems = []
+        if config.get("reader") != cls.READER:
+            problems.append(f"reader {config.get('reader')!r} does not select {cls.__name__} "
+                            f"(its reader is {cls.READER!r})")
+        if config.get("keyed_tables") is not None:
+            problems += _keyed_problems(config["keyed_tables"], config.get("root"))
+        if config.get("corporate_actions") is not None:
+            problems += cls.action_problems(config["corporate_actions"])
+        return problems
+
+    @classmethod
+    def action_problems(cls, spec):
+        """Problems with a ``corporate_actions`` declaration (the base class takes none)."""
+        return ["corporate_actions needs a reader that supports it"]
 
     def _resolve_conventions(self):
         """Return the convention keys (declared or frozen), refusing a malformed set."""
@@ -2449,6 +2669,177 @@ class ExactExpiryCDFPanel:
         self.market_coverage = coverage
         return frame
 
+    def _meta_rows(self, files):
+        """Return the symbol/quote-date/expiry rows the panel is built over.
+
+        Parameters
+        ----------
+        files : DataFiles
+            The store resolver of this read.
+
+        Returns
+        -------
+        DataFrame
+            Surface joined to lifecycle (and chain features), cut to the cohort horizon.
+        """
+        import pandas as pd
+
+        c = self.config
+        surface = pd.read_parquet(files.path(c["surface"]))
+        lifecycle = pd.read_parquet(files.path(c["lifecycle"]))
+        keys = ["symbol", "quote_date", "expiry"]
+        meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
+        if c.get("chain_features"):
+            chain_features = pd.read_parquet(files.path(c["chain_features"]))
+            meta = meta.merge(chain_features, on=keys, validate="one_to_one")
+        if c.get("surface_features", False):
+            meta = self.add_surface_features(meta)
+        return self._within_horizon(meta, c["max_dte"], self.conventions["calendar_pad_days"])
+
+    def _price_records(self, symbol):
+        """Read one symbol's daily closes and record the reader's fingerprint.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker.
+
+        Returns
+        -------
+        list of dict
+            Oldest-first price envelopes (``date``, ``close``, ``asof_ms`` and more).
+        """
+        import pandas as pd
+
+        c = self.config
+        price_reader = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"],
+                                           "since_ms": int(pd.Timestamp(c["since"]).timestamp()*1000),
+                                           "symbol": symbol})
+        prices = price_reader.run(None, {})["records"]
+        self.reader_fingerprints[symbol] = price_reader.fingerprint()
+        return prices
+
+    def _spot_check(self, symbol, rows):
+        """Refuse a symbol whose close disagrees with the option snapshot's underlying.
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker.
+        rows : DataFrame
+            The symbol's rows with ``spot`` and ``chain_underlying_price``.
+
+        Raises
+        ------
+        ValueError
+            When any row's relative disagreement exceeds ``spot_tolerance``.
+        """
+        # Reader refuses split coefficients !=1. Archive spot is a separate consistency check.
+        mismatch = abs(rows.spot/rows.chain_underlying_price-1)
+        if (mismatch > self.config["spot_tolerance"]).any():
+            raise ValueError(f"{symbol}: close/option-snapshot disagreement {mismatch.max()}")
+
+    def _path_exclusions(self, symbol, entry_index, end_index, sessions, refused):
+        """Say which complete-path rows to keep (all of them in the base reader).
+
+        Parameters
+        ----------
+        symbol : str
+            The ticker.
+        entry_index, end_index : ndarray of int
+            Each row's entry and settlement session positions.
+        sessions : DatetimeIndex
+            The exchange sessions the positions refer to.
+        refused : dict
+            The symbol's exclusion counts; a subclass records what it drops here.
+
+        Returns
+        -------
+        ndarray of bool
+            True for each row kept.
+        """
+        import numpy as np
+
+        return np.ones(len(entry_index), dtype=bool)
+
+    def _attach_keyed(self, frame):
+        """Write the declared keyed tables onto the frame (no ``keyed_tables``: unchanged).
+
+        The matching, as-of rule, companions and store reads are ``ObservationTables``'s own,
+        so a keyed family means the same here as in step 1b.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            The finished panel.
+
+        Returns
+        -------
+        DataFrame
+            ``frame`` with the tables' columns added.
+
+        Raises
+        ------
+        ValueError
+            When a table would write a column the panel already has.
+        """
+        import pandas as pd
+        from dskit.pipeline.libs.observation_tables import ObservationTables
+
+        spec = self.config.get("keyed_tables")
+        if not spec or not spec["tables"]:
+            return frame
+        key = list(spec["key"])
+        node = ObservationTables("keyed", {"root": self.config.get("root"), **spec})
+        out = node.run(None, {"records": frame[key].to_dict("records")})
+        added = pd.DataFrame(out["records"]).drop(columns=key)
+        clash = sorted(set(added) & set(frame))
+        if clash:
+            raise ValueError(f"keyed_tables would overwrite panel column(s) {clash}")
+        self.keyed_provenance = out["provenance"]["tables"]
+        self.source_hashes.update({f"keyed:{name}": t["sha256"]
+                                   for name, t in self.keyed_provenance.items()})
+        frame = frame.copy()
+        for name in added:
+            frame[name] = added[name].to_numpy()
+        return frame
+
+    def _source_names(self):
+        """Name the config keys whose files are hashed into the provenance.
+
+        Returns
+        -------
+        list of str
+            Config keys holding a store reference.
+        """
+        return ["surface", "lifecycle"]+(["chain_features"] if self.config.get("chain_features") else [])
+
+    def _source_hashes(self, files):
+        """Return the sha256 of every source file this read consumed.
+
+        Parameters
+        ----------
+        files : DataFiles
+            The store resolver of this read.
+
+        Returns
+        -------
+        dict
+            Source name to digest.
+
+        Raises
+        ------
+        ValueError
+            When a declared raw-chain file lacks its source hash manifest.
+        """
+        c = self.config
+        hashes = {name: files.sha256(c[name]) for name in self._source_names()}
+        if c.get("chain_features"):
+            if not files.has(c["chain_features"], ".sources.json"):
+                raise ValueError("raw-chain source hash manifest is missing")
+            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], ".sources.json")
+        return hashes
+
     def read(self):
         """Construct raw-price terminal log returns and backward-only inputs.
 
@@ -2471,16 +2862,8 @@ class ExactExpiryCDFPanel:
         self.conventions = self._resolve_conventions()
         conv = self.conventions
         files = self.data_files = DataFiles(c.get("root"))
-        surface = pd.read_parquet(files.path(c["surface"]))
-        lifecycle = pd.read_parquet(files.path(c["lifecycle"]))
-        keys = ["symbol", "quote_date", "expiry"]
-        meta = surface.merge(lifecycle, on=keys, validate="one_to_one")
-        if c.get("chain_features"):
-            chain_features = pd.read_parquet(files.path(c["chain_features"]))
-            meta = meta.merge(chain_features, on=keys, validate="one_to_one")
-        if c.get("surface_features", False):
-            meta = self.add_surface_features(meta)
-        meta = self._within_horizon(meta, c["max_dte"], conv["calendar_pad_days"])
+        self.reader_fingerprints = {}
+        meta = self._meta_rows(files)
         pad = pd.Timedelta(days=conv["calendar_pad_days"])
         first_day = pd.to_datetime(pd.concat([meta.quote_date, meta.first_seen_date])).min()
         calendar = xc.get_calendar(conv["calendar"], start=first_day-pad,
@@ -2491,13 +2874,8 @@ class ExactExpiryCDFPanel:
         planned = pd.bdate_range(sessions[0], sessions[-1], freq="C",
                                  holidays=calendar.regular_holidays.holidays(sessions[0], sessions[-1]))
         panels, refused = [], {}
-        self.reader_fingerprints = {}
         for symbol, iv_symbol in c["symbols"].items():
-            price_reader = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"],
-                                               "since_ms": int(pd.Timestamp(c["since"]).timestamp()*1000),
-                                               "symbol": symbol})
-            prices = price_reader.run(None, {})["records"]
-            self.reader_fingerprints[symbol] = price_reader.fingerprint()
+            prices = self._price_records(symbol)
             price_frame = pd.DataFrame(prices).set_index("date")
             ohlc = None
             if c.get("ohlc_windows"):
@@ -2543,13 +2921,13 @@ class ExactExpiryCDFPanel:
             refused[symbol]["incomplete_path"] = int((~complete).sum())
             rows = rows[complete].copy()
             entry_index, end_index = entry_index[complete], end_index[complete]
+            keep = self._path_exclusions(symbol, entry_index, end_index, sessions, refused[symbol])
+            rows = rows[keep].copy()
+            entry_index, end_index = entry_index[keep], end_index[keep]
             rows["spot"] = closes.to_numpy()[entry_index]
             rows["terminal_price"] = closes.to_numpy()[end_index]
             rows["terminal_return"] = np.log(rows.terminal_price/rows.spot)
-            # Reader refuses split coefficients !=1. Archive spot is a separate consistency check.
-            mismatch = abs(rows.spot/rows.chain_underlying_price-1)
-            if (mismatch > c["spot_tolerance"]).any():
-                raise ValueError(f"{symbol}: close/option-snapshot disagreement {mismatch.max()}")
+            self._spot_check(symbol, rows)
             common = {"fields": ["close"], "max_gap": c["feature_gap_days"]*86400000,
                       "carry_fields": ["date"], "require_fields": [], "drop_incomplete": False}
             rv = RealizedVolFeatures("rv", {**common, "windows": c["windows"]}).run(None, {"records": prices})["rows"]
@@ -2599,13 +2977,7 @@ class ExactExpiryCDFPanel:
             refused[symbol]["iv_for_train_only_imputation"] = int(rows.own_iv.isna().sum())
             panels.append(rows[good])
         self.refused = refused
-        source_names = ["surface", "lifecycle"]+(["chain_features"] if c.get("chain_features") else [])
-        self.source_hashes = {name: files.sha256(c[name]) for name in source_names}
-        if c.get("chain_features"):
-            if not files.has(c["chain_features"], ".sources.json"):
-                raise ValueError("raw-chain source hash manifest is missing")
-            self.source_hashes["chain_feature_sources"] = files.sha256(
-                c["chain_features"], ".sources.json")
+        self.source_hashes = self._source_hashes(files)
         result = pd.concat(panels, ignore_index=True)
         for symbol in c["symbols"]:
             result[f"is_{symbol}"] = (result.symbol == symbol).astype(int)
@@ -2668,7 +3040,7 @@ class ExactExpiryCDFPanel:
             self.source_hashes.update({f"decision_chain:{path}": digest
                                        for path, digest in
                                        builder.provenance["sources"].items()})
-        return result
+        return self._attach_keyed(result)
 
     def provenance(self):
         """Describe what the last ``read()`` consumed and which code read it.
@@ -2698,7 +3070,202 @@ class ExactExpiryCDFPanel:
         files = getattr(self, "data_files", None)
         if files is not None and files.provenance():
             result["store"] = files.provenance()
+        if getattr(self, "keyed_provenance", None):
+            result["keyed_tables"] = self.keyed_provenance
         return result
+
+
+class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
+    """Build the panel from one daily price file per symbol, with no option surface (ADR-0230).
+
+    One row per price date: ``expiry`` is the date plus ``exact_dte`` calendar days and
+    ``first_seen_date`` is the date itself. Labels, session alignment, path completeness,
+    returns, volatility, lags, OHLC, market series, keyed tables and the holdout lock are the
+    base class's own code; the subclass overrides about ten hooks (meta rows, price records, spot check, source names and hashes, path exclusions, horizon cohort, reader and action problems). Prices are read through ``ParquetRows``
+    (the store file reader step 1 uses) and projected by ``IndexCloseRows.project``; the close is
+    taken as given: ``split_coefficient`` is stripped before projection and used only to flag events, the file's close being already split-adjusted.
+
+    Parameters
+    ----------
+    config : dict
+        The base keys, with ``reader`` ``"price_calendar"``, ``exact_dte`` (required),
+        ``price_source`` ``{source, stream, relpath {symbol: file}, columns {file column:
+        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). Optional
+        ``corporate_actions`` (a :class:`CorporateActionRule` spec) drops rows whose feature or
+        label span holds an event, counted in ``refused[symbol]["corporate_action_path"]``.
+    holdout_start : str or None
+        ISO date of a locked holdout, as in the base class.
+
+    Examples
+    --------
+    Read a one-ticker price-only panel::
+
+        panel = PriceCalendarCDFPanel({
+            "root": "./ob", "reader": "price_calendar", "symbols": {"AAA": "VOL"},
+            "price_source": {"source": "prices", "stream": "files",
+                             "relpath": {"AAA": "aaa/prices.parquet"},
+                             "columns": {"date": "date", "close": "close"}},
+            "iv_source": "indexes", "since": "2016-01-01", "max_dte": 45, "exact_dte": 7,
+            "lags": 22, "windows": [1, 5, 22], "feature_gap_days": 7,
+            "reference_floor": 0.001, "spot_tolerance": 0.02}).read()
+    """
+
+    READER = _CALENDAR_READER
+
+    @classmethod
+    def reader_problems(cls, config):
+        """Add what the price-calendar reader requires (``exact_dte``, ``price_source``) and refuses."""
+        problems = super().reader_problems(config)
+        exact = config.get("exact_dte")
+        if type(exact) is not int or exact < 1:
+            problems.append(f"exact_dte is required by reader {cls.READER!r}: an int >= 1, got {exact!r}")
+        source = config.get("price_source")
+        ok = (isinstance(source, dict) and isinstance(source.get("source"), str)
+              and isinstance(source.get("stream"), str) and isinstance(source.get("relpath"), dict)
+              and isinstance(source.get("columns"), dict)
+              and set(source["columns"].values()) <= set(PRICE_FIELDS)
+              and set(_PRICE_REQUIRED) <= set(source["columns"].values()))
+        if not ok:
+            problems.append("price_source must be {source, stream, relpath {symbol: file}, columns "
+                            "{file column: field}} writing fields from "
+                            f"{PRICE_FIELDS} (including {_PRICE_REQUIRED}), got {source!r}")
+        problems += [f"{name} is an option-surface key; reader {cls.READER!r} has none"
+                     for name in OPTION_SOURCE_KEYS if config.get(name) not in (None, {}, False)]
+        return problems
+
+    @classmethod
+    def action_problems(cls, spec):
+        """Problems with a ``corporate_actions`` declaration (:class:`CorporateActionRule`'s rules)."""
+        return CorporateActionRule.problems(spec)
+
+    def __init__(self, config, holdout_start=None):
+        config = {k: v for k, v in config.items()
+                  if not (k in OPTION_SOURCE_KEYS and v in (None, {}, False))}
+        super().__init__(config, holdout_start)
+        actions = config.get("corporate_actions")
+        self.action_rule = None if actions is None else CorporateActionRule(actions)
+
+    def _meta_rows(self, files):
+        """Return one row per symbol price date, expiring ``exact_dte`` days later."""
+        import pandas as pd
+
+        c = self.config
+        self._records, self._events = {}, {}
+        frames = [pd.DataFrame({"symbol": symbol,
+                                "quote_date": sorted({r["date"] for r in self._price_records(symbol)})})
+                  for symbol in c["symbols"]]
+        meta = pd.concat(frames, ignore_index=True)
+        meta["expiry"] = (pd.to_datetime(meta.quote_date)
+                          + pd.Timedelta(days=c["exact_dte"])).dt.strftime("%Y-%m-%d")
+        meta["first_seen_date"] = meta.quote_date
+        return self._within_horizon(meta, c["max_dte"], self.conventions["calendar_pad_days"])
+
+    def _price_records(self, symbol):
+        """Read the symbol's price file once per read, project it and note its event days."""
+        if symbol not in self._records:
+            raw, fingerprint = self._file_rows(symbol)
+            self.reader_fingerprints[symbol] = fingerprint
+            self._records[symbol] = self._project(symbol, raw)   # refuses bad prices first
+            if self.action_rule is not None:
+                self._events[symbol] = self.action_rule.event_dates(symbol, raw)
+        return self._records[symbol]
+
+    def _file_rows(self, symbol):
+        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint."""
+        from dskit.pipeline.libs.parquet import ParquetRows
+
+        c, source = self.config, self.config["price_source"]
+        reader = ParquetRows("prices", {
+            "root": c["root"], "source": source["source"], "stream": source["stream"],
+            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"]})
+        rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
+        dates = [r["date"] for r in rows]
+        repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
+        if repeated:
+            raise ValueError(f"{symbol}: price file repeats date(s) {repeated[:3]}")
+        return rows, reader.fingerprint()
+
+    @staticmethod
+    def _stamp(date):
+        """Return a date's UTC-midnight milliseconds, the stamp every daily row carries."""
+        from dskit.onboarding.base import parse_utc
+
+        return int(parse_utc(date).timestamp()*1000)
+
+    def _project(self, symbol, raw):
+        """Project file rows to price envelopes by the index reader's own rules."""
+        c = self.config
+        owner = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"]["source"],
+                                          "symbol": symbol})
+        stamped = [{**{k: v for k, v in r.items() if k != "split_coefficient"},
+                    "symbol": symbol, "asof_ms": self._stamp(r["date"])} for r in raw]
+        return owner.project(stamped)
+
+    def _path_exclusions(self, symbol, entry_index, end_index, sessions, refused):
+        """Drop rows whose feature or label span holds a declared corporate-action event.
+
+        The features read the last ``lookback`` price RECORDS up to the entry, so the span starts
+        at the date of the record ``lookback - 1`` records before the entry record, however many
+        sessions that is.
+        """
+        import numpy as np
+
+        if self.action_rule is None:
+            return super()._path_exclusions(symbol, entry_index, end_index, sessions, refused)
+        c = self.config
+        lookback = max([c["lags"], *c["windows"], *(c.get("ohlc_windows") or [])])
+        dates = np.array(sorted(r["date"] for r in self._records[symbol]))
+        entry_date = sessions[entry_index].strftime("%Y-%m-%d").to_numpy()
+        first = np.maximum(np.searchsorted(dates, entry_date)-lookback+1, 0)
+        start = sessions.searchsorted(dates[first].astype("datetime64[ns]"))
+        drop = self.action_rule.excluded(symbol, self._events[symbol], sessions, start, end_index)
+        refused["corporate_action_path"] = int(drop.sum())
+        return ~drop
+
+    def _spot_check(self, symbol, rows):
+        """Do nothing: there is no option snapshot to compare the close with."""
+
+    def _source_names(self):
+        """Name no config file: the price files are hashed through their reader fingerprints."""
+        return []
+
+    def _source_hashes(self, files):
+        """Return each price file's manifest digest, from the fingerprint that read it."""
+        return {f"price:{symbol}": self.reader_fingerprints[symbol]["sha256"]
+                for symbol in self.config["symbols"]}
+
+
+#: The base class, bound at import so the reader rules never follow a rebinding of its name.
+_BASE_PANEL = ExactExpiryCDFPanel
+
+#: The panel classes ``data.reader`` can select; absent selects ``ExactExpiryCDFPanel``.
+READERS = {_CALENDAR_READER: PriceCalendarCDFPanel}
+
+
+def panel_class(config):
+    """Return the panel class a config's ``reader`` key selects.
+
+    Parameters
+    ----------
+    config : dict
+        A panel config; ``reader`` absent or null selects ``ExactExpiryCDFPanel``.
+
+    Returns
+    -------
+    type
+        The panel class.
+
+    Raises
+    ------
+    ValueError
+        When ``reader`` names no entry of ``READERS``.
+    """
+    reader = config.get("reader")
+    if reader is None:
+        return ExactExpiryCDFPanel
+    if not isinstance(reader, str) or reader not in READERS:
+        raise ValueError(f"reader must be one of {sorted(READERS)} or absent, got {reader!r}")
+    return READERS[reader]
 
 
 class CondorCDFDiagnostic:
@@ -3129,7 +3696,7 @@ def _main():
         print("prepared raw-chain rows", len(rows), flush=True)
         return
     fold_table = config.get("study", {}).get("fold_table")
-    adapter = ExactExpiryCDFPanel(
+    adapter = panel_class(config["data"])(
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
     frame = adapter.read()
     provenance = adapter.provenance()

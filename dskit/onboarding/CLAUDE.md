@@ -149,6 +149,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file (ADR-0225)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON tables + abstract PinnedArchiveConnector

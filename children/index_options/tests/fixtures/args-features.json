@@ -394,6 +394,15 @@
         "dates": "dates"
       },
       "effective_unit": "iso"
+    },
+    "P": {
+      "reader": null,
+      "exact_dte": null,
+      "keyed_tables": null,
+      "corporate_actions": null,
+      "price_source": "optionshist-chain",
+      "cohort": "$source.records",
+      "cohort_columns": null
     }
   },
   "step2": {

@@ -3,13 +3,10 @@
 Each template under ``configs/templates`` is a normal document in which every
 project-varying value is a ``${name.path}`` placeholder; ``fixtures/args-study.json``
 holds the QQQ values, and expanding one with the other must deep-equal the
-checked-in ``run-step*.json`` (``notes`` excluded).  The expander here is the
-reference for the fixed placeholder syntax, not the production runner.
+checked-in ``run-step*.json`` (``notes`` excluded).  The expander is the production one.
 """
 
-import copy
 import json
-import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -27,44 +24,18 @@ STEPS = {
     "step5": "step5-model-zoo",
     "step6": "step6-hpo",
 }
-_TOKEN = re.compile(r"\$\$|\$\{([A-Za-z_][\w.]*)\}")
-_ONE = re.compile(r"\$\{([A-Za-z_][\w.]*)\}")
 
 
 def expand(template, args):
-    """Expand ``${name.path}`` placeholders; refuse missing and unused names."""
-    used = set()
+    """Expand with the production expander; refuse missing (ValueError) and unused names."""
+    from dskit.pipeline.workflow import WorkflowError, expand as production, placeholder_names
 
-    def lookup(path):
-        root, *rest = path.split(".")
-        if root not in args:
-            raise ValueError(f"placeholder ${{{path}}} has no value")
-        used.add(root)
-        value = args[root]
-        for part in rest:
-            if not isinstance(value, dict) or part not in value:
-                raise ValueError(f"placeholder ${{{path}}} has no value")
-            value = value[part]
-        return copy.deepcopy(value)
-
-    def text(value):
-        return value if isinstance(value, str) else json.dumps(value)
-
-    def walk(node):
-        if isinstance(node, dict):
-            return {k: (v if k == "notes" else walk(v)) for k, v in node.items()}
-        if isinstance(node, list):
-            return [walk(v) for v in node]
-        if not isinstance(node, str):
-            return node
-        whole = _ONE.fullmatch(node)
-        if whole:
-            return lookup(whole.group(1))
-        return _TOKEN.sub(lambda m: "$" if m.group(0) == "$$" else text(lookup(m.group(1))), node)
-
-    out = walk(template)
-    if set(args) - used:
-        raise ValueError(f"unused in keys: {sorted(set(args) - used)}")
+    try:
+        out = production(template, args)
+    except WorkflowError as err:
+        raise ValueError(str(err)) from None
+    if set(args) - placeholder_names(template):
+        raise ValueError(f"unused in keys: {sorted(set(args) - placeholder_names(template))}")
     return out
 
 
@@ -367,3 +338,94 @@ def test_the_selection_pool_is_declared_in_the_family_availability_block():
     assert set(MANIFEST["args"]["selection"]["pool"]) <= set(families)
     assert set(MANIFEST["args"]["core"]["families"]) <= set(families)
     assert MANIFEST["args"]["selection"]["stop"]["rule"] == "no_gain"
+
+
+# -- stock-lane nulls: acceptance and decision regions are optional keys (ADR-0232) ----------------------
+
+NULLABLE = ("step4", "step5", "step6")
+
+
+def _expanded(step, **over):
+    return expand(_template(step), {**_args(step), **over})
+
+
+@pytest.mark.parametrize("step", NULLABLE)
+def test_null_acceptance_and_regions_leave_their_keys_out_of_the_study_document(step):
+    doc = _expanded(step, acceptance=None, regions=None)
+    assert "decision_acceptance" not in doc["study"] and "decision_regions" not in doc["data"]
+    full = _expanded(step)
+    assert "decision_acceptance" in full["study"] and "decision_regions" in full["data"]
+
+
+@pytest.mark.parametrize("step", NULLABLE)
+def test_only_the_two_nulled_keys_differ_from_the_full_document(step):
+    full, bare = _expanded(step), _expanded(step, acceptance=None, regions=None)
+    del full["study"]["decision_acceptance"], full["data"]["decision_regions"]
+    assert strip_notes(full) == strip_notes(bare)
+
+
+def test_the_study_accepts_a_document_without_acceptance(tmp_path):
+    from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+
+    study = _expanded("step4", acceptance=None, regions=None)["study"]
+    study = {k: v for k, v in study.items() if k != "fold_table"}
+    study.update(years=[2020, 2021], development_end=2020)
+    assert ChronologicalCDFStudy(study).config["reference_model"] == study["reference_model"]
+    with pytest.raises(ValueError, match="acceptance"):
+        ChronologicalCDFStudy({**study, "decision_acceptance": {"blocks": [30]}})
+
+
+@pytest.mark.parametrize("step", NULLABLE)
+def test_the_regions_arg_carries_the_archive_root_the_study_data_block_names(step):
+    args = _args(step)
+    assert args["regions"]["archive_root"] == args["F"]["archive_root"]
+
+
+def test_the_manifest_regions_arg_names_the_same_archive_root_as_the_feature_sources():
+    manifest = json.loads((CONFIGS / "workflow.json").read_text())["args"]
+    assert manifest["decision_regions"]["archive_root"] == manifest["feature_sources"]["archive_root"]
+
+
+#: Expanded-config hashes of the recorded index lanes (notes stripped, keys sorted, plan-mode values, deferred outputs fixed)
+#: from before the stock-lane hooks; a change that moves one has changed what QQQ/IWM compute.
+RECORDED_LANES = ("QQQ", "IWM")
+RECORDED_STEPS = ("step1", "step1b", "step2", "step3", "step4", "step5", "step6", "step7", "report")
+
+RECORDED_HASHES = {
+    "IWM/report": "51fca722ee4267a6",
+    "IWM/step1": "1da151f3c50bcc45",
+    "IWM/step1b": "98e8153484abb94b",
+    "IWM/step2": "0cb70a6aea5da783",
+    "IWM/step3": "9464736bee71c4f0",
+    "IWM/step4": "bba673ce31dd59a1",
+    "IWM/step5": "f351f5d612877328",
+    "IWM/step6": "3f083c7740961b49",
+    "IWM/step7": "3f083c7740961b49",
+    "QQQ/report": "e0abef83f6757a6c",
+    "QQQ/step1": "45c7481789f15ce7",
+    "QQQ/step1b": "fd9e07163fe41595",
+    "QQQ/step2": "c73da015e76b2793",
+    "QQQ/step3": "b58fa1fa15d1e648",
+    "QQQ/step4": "25276399a201594e",
+    "QQQ/step5": "42d1cc1d983d1ea4",
+    "QQQ/step6": "ddf362de45cf40aa",
+    "QQQ/step7": "ddf362de45cf40aa",
+}
+
+
+def _lane_hashes():
+    import hashlib
+    from dskit.pipeline.workflow import lane_flows
+
+    manifest = json.loads((CONFIGS / "workflow.json").read_text())
+    out = {}
+    for flow in lane_flows(manifest, str(CONFIGS), None):
+        for step in RECORDED_STEPS:
+            doc = flow.expanded(step, False, 0)
+            text = json.dumps(strip_notes(doc), sort_keys=True, default=lambda _: "DEFERRED")
+            out[f"{flow.lane}/{step}"] = hashlib.sha256(text.encode()).hexdigest()[:16]
+    return out
+
+
+def test_the_recorded_lanes_expand_to_the_same_configs_as_before_the_stock_hooks():
+    assert _lane_hashes() == RECORDED_HASHES

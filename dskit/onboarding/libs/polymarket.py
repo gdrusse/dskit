@@ -90,7 +90,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff, retry_after
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff, retry_after, safe_url
 
 __all__ = [
     "ARCHIVE_EVENT_TYPES",
@@ -194,11 +194,6 @@ _LIST_KNOBS = ("series_slugs", "slugs", "token_ids", "hours")
 
 
 # -- small pure helpers -----------------------------------------------------
-
-
-def _safe(url):
-    """Strip the query string off a URL bound for an error message."""
-    return url.split("?", 1)[0]
 
 
 def _join(base, path):
@@ -634,7 +629,7 @@ class _Client:
             except urllib.error.HTTPError as exc:  # before OSError: it IS one
                 if exc.code not in _RETRY_STATUSES:
                     raise AssetError(
-                        [f"{label}: HTTP {exc.code} from {_safe(url)}"]
+                        [f"{label}: HTTP {exc.code} from {safe_url(url)}"]
                     ) from exc
                 last = f"HTTP {exc.code}"
                 delay = retry_after(exc.headers, backoff(attempt + 1))
@@ -643,7 +638,7 @@ class _Client:
             if attempt < retries:
                 self._connector.sleep(delay)
         raise AssetError(
-            [f"{label}: giving up on {_safe(url)} after {retries + 1} attempt(s) — "
+            [f"{label}: giving up on {safe_url(url)} after {retries + 1} attempt(s) — "
              f"last failure: {last}"]
         )
 
@@ -980,7 +975,7 @@ class PolymarketConnector(Connector):
         try:
             return json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
-            raise AssetError([f"response from {_safe(url)} is not JSON: {exc}"]) from exc
+            raise AssetError([f"response from {safe_url(url)} is not JSON: {exc}"]) from exc
 
     def download(self, repo, path, token):
         """Fetch one archive file from a Hugging Face dataset repository.

@@ -1,0 +1,96 @@
+{
+  "name": "features-stock-daily",
+  "notes": "NEUTRAL TEMPLATE (workflow step `daily`): the volume/liquidity and market-relative feature table of a stock universe, one row per (entity, date), from the daily bars alone. Every project value is a ${name.path} placeholder filled from the step's `in` map: T the entity list, B the bar source (store reference, per-entity relpath, `columns` file column -> output field, `fields` the roles naming those outputs), M the benchmark (one entity's close series, same shape plus `symbol`), Q the key field names (entity, date), F the feature declarations handed unchanged to the DailyBarFeatures node (windows, output names), W the work dir, L the output locations, stream the table's name. Same-day by design: the row at date t uses t's own bar, so the consumer attaches it with a same-day (strict_prior false) keyed table, valid because the entry decision is taken at the close that defines t's bar. The benchmark must cover every bar date it should be relative to: a date with no benchmark close gives null features, never a fill. The output is the keyed table a families.keyed source reads: key fields Q.entity and Q.date, one column per declared feature, null where undefined (window not yet full, zero volume). LEVELS ACROSS SPLITS: volumes and closes are split-adjusted at the data's end, so vl_log_volume (a level) is shifted by ln(ratio) for rows before a later split (hindsight adjustment); the ratio, return, beta and correlation features are unaffected, and vl_log_dollar_volume is invariant, so prefer it where a level is needed across splits.",
+  "pipeline": {
+    "bars": {
+      "uses": "concat",
+      "inputs": {
+        "bars__each": "$tagged.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${Q.entity}",
+        "provenance_waiver": "each row carries its own entity field; the key check proves no entity appears twice"
+      },
+      "notes": "All entities' bars in one stream, entity order = the foreach order."
+    },
+    "benchmark_rows": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "${M.root}",
+        "source": "${M.source}",
+        "stream": "${M.stream}",
+        "relpath_by_key": "${M.relpath}",
+        "key": "${M.symbol}",
+        "columns": "${M.columns}"
+      },
+      "notes": "The benchmark's daily closes through the store (manifest sha256 checked), keyed by its own symbol."
+    },
+    "features": {
+      "uses": "dskit.pipeline.libs.bar_features:DailyBarFeatures",
+      "inputs": {
+        "bars": "$bars.merged",
+        "benchmark": "$benchmark_rows.records"
+      },
+      "params": {
+        "entity_field": "${Q.entity}",
+        "date_field": "${Q.date}",
+        "close_field": "${B.fields.close}",
+        "volume_field": "${B.fields.volume}",
+        "benchmark_date_field": "${M.fields.date}",
+        "benchmark_close_field": "${M.fields.close}",
+        "volume_liquidity": "${F.volume_liquidity}",
+        "market_relative": "${F.market_relative}"
+      },
+      "notes": "Trailing windows count each entity's own consecutive bars; log returns; benchmark aligned by date. Windows and output names are F's, never typed here."
+    },
+    "table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$features.records"
+      },
+      "params": {
+        "path": "${L.daily.table}",
+        "source": "Daily-bar volume/liquidity and market-relative features per (entity, date), same-day; read as a keyed table (families.keyed)"
+      },
+      "notes": "The hand-off file. The writer refuses to overwrite and the parent directory must exist, so a repeat run moves the work dir aside first."
+    }
+  },
+  "outputs": {
+    "run_root": "${W}"
+  },
+  "foreach": {
+    "keys": "${T}",
+    "notes": "One read per entity; the entity is the only per-entity setting and arrives as the foreach key.",
+    "pipeline": {
+      "prices": {
+        "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+        "params": {
+          "root": "${B.root}",
+          "source": "${B.source}",
+          "stream": "${B.stream}",
+          "relpath_by_key": "${B.relpath}",
+          "key": "$each",
+          "columns": "${B.columns}"
+        },
+        "notes": "This entity's bar file through the store; B.columns maps file columns to the fields the feature node reads."
+      },
+      "tagged": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$prices.records"
+        },
+        "params": {
+          "field": "${Q.entity}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "Adds the entity field from the foreach key (the file carries none under a project-neutral name). The single empty-when case is the declared catch-all."
+      }
+    }
+  }
+}

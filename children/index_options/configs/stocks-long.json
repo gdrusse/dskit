@@ -1,0 +1,296 @@
+{
+  "notes": "Stock lane overlay (ADR-0230..0233), layered over workflow.json via --args. stocks-long: universe A, 2016-2026 price history. Per-ticker values are one pattern over the lane ('*' with {lane}/{lane_lower}); nothing is typed per ticker except the ticker list, which a pin test ties to configs/stock_universe.json minus the refused HES. Reader price_calendar: one row per price date, no option surface, so option-surface families are dropped (families.drop), the option reference model is left unreferenced, and acceptance/decision_regions are null (the verdict is the per-ticker CRPS rollup vs horizon_empirical). selection.metric crps because the decision loss needs decision_regions. DHR carries explicit windows on its two spin-off days (2016-07-05 Fortive, 2023-10-02 Veralto); the dividend-yield/jump rule would catch them too. The option-surface inputs (feature_sources.surface/lifecycle/chain_features, chain_proxy, surface_features, matched_dte_vrp) are null: the price_calendar reader refuses them. families.attach.agree_fields drops chain_atm_iv and rn_q_*: a stock panel has no option surface to agree on. families.columns is the base list without chain_atm_iv (the reader of a stock panel has no such column); the dropped families' fields are removed from it by families.drop. families.drop also names the carried entry oi_panel_columns (option open-interest panel columns). settlement_date, spot, terminal_price and reference_scale join agree_fields and columns: a stock cohort is the reader's own rows (no prepared option panel to supply them), and step 3 reads settlement_date from the step 1b panel. feature_limits.wing_metrics is false: the wing metrics read decision_regions context, which a stock lane has none of (the wing_twcrps training loss does not need it). feature_order.names is empty so the hook derives the order (core names, task feature, family fields): the recorded QQQ/IWM list names option-chain columns a stock panel lacks. panel_schema.decision_context is null: with no decision_regions the study config carries no decision_context key (templates mark it optional).",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "GOOG",
+    "META",
+    "TSLA",
+    "AVGO",
+    "AMD",
+    "NFLX",
+    "ADBE",
+    "CRM",
+    "ORCL",
+    "INTC",
+    "CSCO",
+    "QCOM",
+    "TXN",
+    "MU",
+    "AMAT",
+    "LRCX",
+    "KLAC",
+    "MRVL",
+    "ADI",
+    "SMCI",
+    "ARM",
+    "DELL",
+    "PLTR",
+    "SNOW",
+    "COIN",
+    "HOOD",
+    "UBER",
+    "ABNB",
+    "SHOP",
+    "PYPL",
+    "NOW",
+    "INTU",
+    "PANW",
+    "CRWD",
+    "DDOG",
+    "NET",
+    "MSTR",
+    "MARA",
+    "RIOT",
+    "IBM",
+    "JPM",
+    "BAC",
+    "WFC",
+    "C",
+    "GS",
+    "MS",
+    "AXP",
+    "V",
+    "MA",
+    "SCHW",
+    "BLK",
+    "CME",
+    "COF",
+    "USB",
+    "PNC",
+    "XOM",
+    "CVX",
+    "COP",
+    "SLB",
+    "EOG",
+    "OXY",
+    "PSX",
+    "VLO",
+    "MPC",
+    "LLY",
+    "UNH",
+    "JNJ",
+    "MRK",
+    "PFE",
+    "ABBV",
+    "TMO",
+    "ABT",
+    "BMY",
+    "AMGN",
+    "GILD",
+    "ISRG",
+    "VRTX",
+    "REGN",
+    "CVS",
+    "ELV",
+    "DHR",
+    "MRNA",
+    "COST",
+    "WMT",
+    "TGT",
+    "HD",
+    "MCD",
+    "NKE",
+    "SBUX",
+    "DIS",
+    "CMCSA",
+    "PEP",
+    "KO",
+    "PG",
+    "BA",
+    "CAT",
+    "DE",
+    "GE",
+    "HON",
+    "UPS",
+    "FDX",
+    "LMT",
+    "RTX",
+    "F",
+    "GM",
+    "RIVN",
+    "T",
+    "VZ",
+    "NEE",
+    "SO",
+    "DUK"
+  ],
+  "price_source": {
+    "source": "stock-daily-bars",
+    "relpath": {
+      "*": "{lane_lower}/underlying_prices.parquet"
+    },
+    "window": null
+  },
+  "panel_options": {
+    "reader": "price_calendar",
+    "columns": {
+      "date": "date",
+      "open": "open",
+      "high": "high",
+      "low": "low",
+      "close": "close",
+      "volume": "volume",
+      "dividend_amount": "dividend_amount",
+      "split_coefficient": "split_coefficient"
+    },
+    "corporate_actions": {
+      "max_dividend_yield": 0.05,
+      "max_abs_jump": 0.4
+    }
+  },
+  "corporate_windows": {
+    "*": [],
+    "DHR": [
+      [
+        "2016-07-05",
+        "2016-07-05"
+      ],
+      [
+        "2023-10-02",
+        "2023-10-02"
+      ]
+    ]
+  },
+  "vol_index": {
+    "*": "VIX"
+  },
+  "feature_limits": {
+    "task_features": {
+      "*": "is_{lane}"
+    },
+    "surface_features": null,
+    "matched_dte_vrp": null,
+    "wing_metrics": false
+  },
+  "families": {
+    "drop": [
+      "implied_cdf",
+      "surface_level",
+      "surface_changes",
+      "variance_gap",
+      "liquidity",
+      "positioning_changes",
+      "chain_nodes",
+      "oi_panel_columns"
+    ],
+    "attach": {
+      "agree_fields": [
+        "terminal_return",
+        "actual_calendar_dte",
+        "calendar_dte",
+        "sessions_to_expiry",
+        "rv_22",
+        "settlement_date",
+        "spot",
+        "terminal_price",
+        "reference_scale"
+      ]
+    },
+    "columns": [
+      "symbol",
+      "quote_date",
+      "expiry",
+      "terminal_return",
+      "actual_calendar_dte",
+      "calendar_dte",
+      "sessions_to_expiry",
+      "settlement_date",
+      "spot",
+      "terminal_price",
+      "reference_scale",
+      "rv_22",
+      "overnight_return",
+      "intraday_return",
+      "log_high_low_range",
+      "parkinson_variance",
+      "jump_variance_proxy",
+      "range_variance_5",
+      "range_variance_22",
+      "jump_variance_5",
+      "jump_variance_22",
+      "overnight_variance_5",
+      "overnight_variance_22",
+      "intraday_variance_5",
+      "intraday_variance_22",
+      "market_vix1y",
+      "market_rvx",
+      "market_vxd",
+      "market_ovx",
+      "market_vxeem",
+      "market_vxslv",
+      "market_vxtlt",
+      "market_vix1y_missing",
+      "market_rvx_missing",
+      "market_vxd_missing",
+      "market_ovx_missing",
+      "market_vxeem_missing",
+      "market_vxslv_missing",
+      "market_vxtlt_missing",
+      "market_vix1y_age_days",
+      "market_rvx_age_days",
+      "market_vxd_age_days",
+      "market_ovx_age_days",
+      "market_vxeem_age_days",
+      "market_vxslv_age_days",
+      "market_vxtlt_age_days"
+    ]
+  },
+  "core": {
+    "families": [
+      "return_history",
+      "realized_volatility"
+    ],
+    "names": [
+      "calendar_dte",
+      "sessions_to_expiry",
+      "log_calendar_dte",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "reference_scale"
+    ]
+  },
+  "references": {
+    "model": "horizon_empirical",
+    "comparison": [
+      "horizon_empirical"
+    ]
+  },
+  "acceptance": null,
+  "decision_regions": null,
+  "selection": {
+    "metric": "crps",
+    "pool": [
+      "ohlc_shape",
+      "volatility_context",
+      "expanded_volatility_context",
+      "macro_context"
+    ]
+  },
+  "split": {
+    "holdout_fraction": 0.2,
+    "tau": 0.9,
+    "folds": {
+      "train_n": 750,
+      "val_n": 60,
+      "step_n": 60,
+      "warmup_folds": 4
+    }
+  },
+  "work_dir": "./pipeline_runs/stocks-long",
+  "feature_sources": {
+    "surface": null,
+    "lifecycle": null,
+    "chain_features": null
+  },
+  "chain_proxy": null,
+  "feature_order": {
+    "names": []
+  },
+  "panel_schema": {
+    "decision_context": null
+  }
+}

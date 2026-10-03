@@ -87,3 +87,27 @@ def test_template_plans_clean(template, args, tmp_path):
                          capture_output=True, text=True, cwd=CHILD)
     assert run.returncode == 0, run.stdout + run.stderr
     assert json.loads(run.stdout)["order"]
+
+
+WINDOW = {"field": "bar_date", "start": "2024-01-18", "end": "2026-08-25"}
+
+
+def test_a_null_window_leaves_the_reader_params_as_they_were(template, args):
+    params = expand(template, args)["foreach"]["pipeline"]["prices"]["params"]
+    assert "window" not in params
+
+
+def test_a_window_arg_reaches_the_reader_and_plans_clean(template, args, tmp_path):
+    args = {**args, "U": {**args["U"], "window": WINDOW}}
+    out = expand(template, args)
+    assert out["foreach"]["pipeline"]["prices"]["params"]["window"] == WINDOW
+    doc = tmp_path / "step1.json"
+    doc.write_text(json.dumps(out))
+    run = subprocess.run([sys.executable, "-m", "dskit.pipeline", "plan", str(doc)],
+                         capture_output=True, text=True, cwd=CHILD)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_the_window_field_is_a_field_the_reader_emits(args):
+    """A window on a field the reader does not emit would refuse at plan time (pinned here too)."""
+    assert WINDOW["field"] in args["U"]["columns"].values()

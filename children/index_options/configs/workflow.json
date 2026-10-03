@@ -24,6 +24,7 @@
         "close": "close"
       },
       "fallback": "previous",
+      "window": null,
       "relpath": {
         "QQQ": "qqq/underlying_prices.parquet",
         "IWM": "iwm/underlying_prices.parquet"
@@ -74,6 +75,17 @@
       "price_source": "optionshist-chain",
       "dividend_field": "dividend_amount",
       "iv_source": "cboe-index-wide"
+    },
+    "panel_options": {
+      "notes": "Optional panel-reader knobs, each null by default so a null key is left out of the expanded config and QQQ/IWM hashes do not move (ADR-0230). reader: null = the option-surface reader, price_calendar = one row per price date from the price file alone. columns: {file column: field} for that file, fields from the price vocabulary (date, close, open, high, low, volume, dividend_amount, split_coefficient); required with a reader. corporate_actions: {max_dividend_yield, max_abs_jump} (a jump counts only on a day with split_coefficient != 1; an unflagged spin-off must be declared as a window); its per-ticker windows come from corporate_windows. DERIVED by the reader_options hook and refused if declared here: exact_dte (= horizon), keyed_tables (= the families.keyed tables with keyed_key and keyed_naming), and, with a reader, the panel's price_source (= price_source.source/stream/relpath, so the store root must equal feature_sources.root). Pinned by tests/test_panel_options.py (including DECLARED = these keys).",
+      "reader": null,
+      "columns": null,
+      "corporate_actions": null
+    },
+    "corporate_windows": {
+      "notes": "Declared corporate-action exclusion windows, {ticker: [[from, to], ...]} with ISO dates (an empty list: none). Lane-keyed (lanes.keyed), so a new ticker adds its own entry; read only when panel_options.corporate_actions is set.",
+      "QQQ": [],
+      "IWM": []
     },
     "vol_index": {
       "QQQ": "VXN",
@@ -275,7 +287,7 @@
       "drop_own_index": false
     },
     "families": {
-      "notes": "ONE families spec, consumed unchanged by the step templates through placeholders: availability (step 2: per family fields plus require conditions, the family-availability node's own shape), schema_fields (step 2: the 1b panel's columns), engineered/carried/attach/columns/pending (step 1b: what the panel reader emits and the attach node merges), flags/dates_fields (step 3: the yes/no columns step 2 wrote and their file's columns). The lists that repeat a fact are pinned by tests/test_workflow_pins.py (every availability field of an engineered family is among its engineered fields, the rest being the <field>_missing and <field>_age_days companions; columns equal identity + agreed + engineered + companions; flags are available_<family>; every availability field is in schema_fields). documentation holds the prose lookback/clock per family, kept out of availability because the node denies unknown keys. ADDING A FAMILY WITH NO CODE: put it under keyed (family -> sources [{root, source, stream, key_fields [entity field, date field in the stored table], columns {stored column: panel field}}], fields (the availability fields), require, optional max_age_days (as-of match strictly before the entry date, with <field>_age_days and <field>_missing companions) and strict_prior, lookback, clock_note, optional withheld_fields). The families_spec hook folds it into availability, documentation, engineered, flags, schema_fields, dates_fields and keyed_tables; keyed_pool and keyed_cap add it to the forward pool and cap; feature_order appends its fields (and companions) to the recorded order, or derives the whole order (core names, then every family's fields) for a ticker with no recorded one. keyed_key names the entity and date fields (pinned equal to panel_schema symbol and quote_date) and keyed_naming the companion suffixes. Limit: the step 4-7 study still builds its own panel (data block), so a keyed family's columns reach it only once that reader also takes keyed tables.",
+      "notes": "ONE families spec, consumed unchanged by the step templates through placeholders: availability (step 2: per family fields plus require conditions, the family-availability node's own shape), schema_fields (step 2: the 1b panel's columns), engineered/carried/attach/columns/pending (step 1b: what the panel reader emits and the attach node merges), flags/dates_fields (step 3: the yes/no columns step 2 wrote and their file's columns). The lists that repeat a fact are pinned by tests/test_workflow_pins.py (every availability field of an engineered family is among its engineered fields, the rest being the <field>_missing and <field>_age_days companions; columns equal identity + agreed + engineered + companions; flags are available_<family>; every availability field is in schema_fields). documentation holds the prose lookback/clock per family, kept out of availability because the node denies unknown keys. ADDING A FAMILY WITH NO CODE: put it under keyed (family -> sources [{root, source, stream, key_fields [entity field, date field in the stored table], columns {stored column: panel field}}], fields (the availability fields), require, optional max_age_days (as-of match strictly before the entry date, with <field>_age_days and <field>_missing companions) and strict_prior, lookback, clock_note, optional withheld_fields). The families_spec hook folds it into availability, documentation, engineered, flags, schema_fields, dates_fields and keyed_tables; keyed_pool and keyed_cap add it to the forward pool and cap; feature_order appends its fields (and companions) to the recorded order, or derives the whole order (core names, then every family's fields) for a ticker with no recorded one. keyed_key names the entity and date fields (pinned equal to panel_schema symbol and quote_date) and keyed_naming the companion suffixes. Steps 4 to 6 build their own panel from the data block; the reader_options hook derives that block's keyed_tables from this same keyed declaration (ADR-0230), so a keyed family's columns reach them with no second declaration. REMOVING A FAMILY: an args overlay cannot delete a key, so list the names under drop (built-in or keyed); every consumer (families_spec, family_contracts, keyed_pool, keyed_cap, feature_order, market_series) then ignores them and the fields only they used leave schema_fields and columns, their flags leave dates_fields. The shared core.names and a recorded feature_order are typed lists and are NOT trimmed: drop their entries in the overlay too.",
       "availability": {
         "implied_cdf": {
           "fields": [
@@ -2109,6 +2121,10 @@
       "notes": "Step 6 already ran search and select, so step 7 starts at evaluate (select would refuse to overwrite the frozen selection). development = warm-up folds, later = scored folds only (frozen choices, holdout refused)."
     },
     "decision_regions": {
+      "archive_root": {
+        "source": "philippdubach-options",
+        "stream": "files"
+      },
       "max_chain_rows": 14000000,
       "panel_years": [
         2011,
@@ -2475,12 +2491,12 @@
     "step6": {
       "template": "templates/step6-hpo.json",
       "extends": "step4",
-      "command": "{python} -m index_options.cdf_study {config} {in.sequence}"
+      "command": "{python} -m index_options.cdf_study {config}"
     },
     "step7": {
       "extends": "step6",
-      "command": "{python} -m index_options.cdf_study {config} {in.stages}",
-      "notes": "Reuses step 6's template: step 7 is the same study document's later stages. Shared output directory: the template's experiment.output is ${L.step6.output}, so step 7 reads step 6's search and selection there and writes evaluate/ and report/ beside them. The stage list is args.evaluate.stages, passed as in.stages (the command flag {in.stages} is that same list)."
+      "command": "{python} -m index_options.cdf_study {config}",
+      "notes": "Reuses step 6's template: step 7 is the same study document's later stages. Shared output directory: the template's experiment.output is ${L.step6.output}, so step 7 reads step 6's search and selection there and writes evaluate/ and report/ beside them. The stage list is args.evaluate.stages; the stages hook turns it into the command's flags (the command text itself carries none)."
     },
     "report": {
       "template": "templates/report-spec.json",
@@ -2551,7 +2567,18 @@
           "hook": "families_spec",
           "spec": "$args.families"
         },
-        "F": "$args.feature_sources"
+        "F": "$args.feature_sources",
+        "P": {
+          "hook": "reader_options",
+          "options": "$args.panel_options",
+          "horizon": "$args.horizon",
+          "spec": "$args.families",
+          "lane": "$lane",
+          "windows": "$args.corporate_windows",
+          "prices": "$args.price_source",
+          "feature_price": "$args.feature_sources.price_source",
+          "root": "$args.feature_sources.root"
+        }
       },
       "out": [
         "panel",
@@ -2672,6 +2699,17 @@
         "H": "$args.horizon",
         "W": "$args.work_dir",
         "F": "$args.feature_sources",
+        "P": {
+          "hook": "reader_options",
+          "options": "$args.panel_options",
+          "horizon": "$args.horizon",
+          "spec": "$args.families",
+          "lane": "$lane",
+          "windows": "$args.corporate_windows",
+          "prices": "$args.price_source",
+          "feature_price": "$args.feature_sources.price_source",
+          "root": "$args.feature_sources.root"
+        },
         "V": "$args.vol_index",
         "windows": "$args.feature_windows",
         "G": {
@@ -2699,7 +2737,11 @@
             "start": "$args.core"
           }
         },
-        "regions": "$args.decision_regions",
+        "regions": {
+          "hook": "agreeing_block",
+          "block": "$args.decision_regions",
+          "with": "$args.feature_sources"
+        },
         "features": {
           "hook": "feature_order",
           "order": "$args.feature_order",
@@ -2783,6 +2825,17 @@
         "H": "$args.horizon",
         "W": "$args.work_dir",
         "F": "$args.feature_sources",
+        "P": {
+          "hook": "reader_options",
+          "options": "$args.panel_options",
+          "horizon": "$args.horizon",
+          "spec": "$args.families",
+          "lane": "$lane",
+          "windows": "$args.corporate_windows",
+          "prices": "$args.price_source",
+          "feature_price": "$args.feature_sources.price_source",
+          "root": "$args.feature_sources.root"
+        },
         "V": "$args.vol_index",
         "windows": "$args.feature_windows",
         "G": {
@@ -2810,7 +2863,11 @@
             "start": "$args.core"
           }
         },
-        "regions": "$args.decision_regions",
+        "regions": {
+          "hook": "agreeing_block",
+          "block": "$args.decision_regions",
+          "with": "$args.feature_sources"
+        },
         "features": {
           "hook": "feature_order",
           "order": "$args.feature_order",
@@ -2889,6 +2946,17 @@
         "H": "$args.horizon",
         "W": "$args.work_dir",
         "F": "$args.feature_sources",
+        "P": {
+          "hook": "reader_options",
+          "options": "$args.panel_options",
+          "horizon": "$args.horizon",
+          "spec": "$args.families",
+          "lane": "$lane",
+          "windows": "$args.corporate_windows",
+          "prices": "$args.price_source",
+          "feature_price": "$args.feature_sources.price_source",
+          "root": "$args.feature_sources.root"
+        },
         "V": "$args.vol_index",
         "windows": "$args.feature_windows",
         "G": {
@@ -2916,7 +2984,11 @@
             "start": "$args.core"
           }
         },
-        "regions": "$args.decision_regions",
+        "regions": {
+          "hook": "agreeing_block",
+          "block": "$args.decision_regions",
+          "with": "$args.feature_sources"
+        },
         "features": {
           "hook": "feature_order",
           "order": "$args.feature_order",
@@ -2948,8 +3020,7 @@
           "paths": "$args.study_io.paths",
           "final": "$step4.out.core"
         },
-        "folds": "$args.fold_use",
-        "sequence": "$args.hpo.run.sequence"
+        "folds": "$args.fold_use"
       },
       "out": [
         "best",
@@ -2999,6 +3070,17 @@
         "H": "$args.horizon",
         "W": "$args.work_dir",
         "F": "$args.feature_sources",
+        "P": {
+          "hook": "reader_options",
+          "options": "$args.panel_options",
+          "horizon": "$args.horizon",
+          "spec": "$args.families",
+          "lane": "$lane",
+          "windows": "$args.corporate_windows",
+          "prices": "$args.price_source",
+          "feature_price": "$args.feature_sources.price_source",
+          "root": "$args.feature_sources.root"
+        },
         "V": "$args.vol_index",
         "windows": "$args.feature_windows",
         "G": {
@@ -3026,7 +3108,11 @@
             "start": "$args.core"
           }
         },
-        "regions": "$args.decision_regions",
+        "regions": {
+          "hook": "agreeing_block",
+          "block": "$args.decision_regions",
+          "with": "$args.feature_sources"
+        },
         "features": {
           "hook": "feature_order",
           "order": "$args.feature_order",
@@ -3059,8 +3145,7 @@
           "final": "$step4.out.core"
         },
         "folds": "$args.fold_use",
-        "T": "$lane",
-        "stages": "$args.evaluate.stages"
+        "T": "$lane"
       },
       "out": [
         "development",
@@ -3106,7 +3191,8 @@
     "keyed": [
       "price_source.relpath",
       "vol_index",
-      "feature_limits.task_features"
+      "feature_limits.task_features",
+      "corporate_windows"
     ]
   }
 }

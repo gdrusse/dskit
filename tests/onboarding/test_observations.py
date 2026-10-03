@@ -13,6 +13,7 @@ import pytest
 from dskit.assets.base import AssetError
 from dskit.onboarding.codec import open_text_writer
 from dskit.onboarding.observations import (
+    iter_stream,
     scan_stream,
     stream_digest,
     stream_dir,
@@ -1110,3 +1111,100 @@ class TestVerifiedPayloadDir:
 
         assert ob.verified_payload_dir is verified_payload_dir
         assert "verified_payload_dir" in ob.__all__
+
+
+class TestIterStream:
+    """iter_stream: the lazy, projected read with scan_stream's dedup semantics."""
+
+    @staticmethod
+    def _two_vintages(root):
+        _write(root, "acq-0001", [
+            _row("AAPL", "2026-01-05T14:30:00+00:00", 100.0),
+            _row("AAPL", "2026-01-05T14:31:00+00:00", 101.0),
+            _row("AAPL", "2026-01-05T14:31:00+00:00", 101.0),
+            _row("MSFT", "2026-01-05T14:30:00+00:00", 7.0),
+        ])
+        _write(root, "acq-0002", [
+            _row("AAPL", "2026-01-05T14:31:00+00:00", 555.0,
+                 acquired="2026-01-07T00:00:00+00:00"),
+        ])
+
+    def _lazy(self, root, **over):
+        kwargs = dict(source="alpaca", stream="bars", key_fields=("symbol", "ts"),
+                      fields=("symbol", "ts", "close"), ts_field="ts")
+        kwargs.update(over)
+        return iter_stream(root, **kwargs)
+
+    def test_same_winners_as_scan_stream(self, tmp_path):
+        root = str(tmp_path)
+        self._two_vintages(root)
+        got = sorted(self._lazy(root), key=lambda r: (r["asof_ms"], r["symbol"]))
+        want = [{k: r[k] for k in ("symbol", "ts", "close", "asof_ms")} for r in _scan(root)]
+        assert got == want
+        assert [r["close"] for r in got] == [100.0, 7.0, 555.0]
+
+    def test_is_lazy_and_projects_only_the_fields(self, tmp_path):
+        root = str(tmp_path)
+        self._two_vintages(root)
+        it = self._lazy(root, fields=("close",), ts_field=None)
+        assert iter(it) is it
+        assert all(set(r) == {"close"} for r in it)
+
+    def test_missing_projected_field_refuses(self, tmp_path):
+        root = str(tmp_path)
+        self._two_vintages(root)
+        with pytest.raises(AssetError, match="nope"):
+            list(self._lazy(root, fields=("nope",)))
+
+    def test_a_differing_tie_refuses_before_any_row(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "acq-0001", [
+            _row("AAPL", "2026-01-05T14:30:00+00:00", 100.0),
+            _row("AAPL", "2026-01-05T14:30:00+00:00", 101.0),
+        ])
+        with pytest.raises(AssetError, match="winning"):
+            next(self._lazy(root))
+
+    def test_intake_bounds_apply(self, tmp_path):
+        root = str(tmp_path)
+        self._two_vintages(root)
+        rows = list(self._lazy(root, keep_values={"symbol": ["MSFT"]}))
+        assert [r["symbol"] for r in rows] == ["MSFT"]
+
+    def test_bad_request_refuses(self, tmp_path):
+        with pytest.raises(AssetError):
+            list(self._lazy(str(tmp_path), fields=()))
+
+    def test_a_member_changed_between_the_passes_refuses(self, tmp_path):
+        root = str(tmp_path)
+        self._two_vintages(root)
+        later = os.path.join(root, "observations", "alpaca", "acq-0002", "bars.jsonl")
+        calls = []
+
+        def admit(data, stamp):
+            calls.append(1)
+            if len(calls) == 6:     # first row of pass two: the second member is not yet opened
+                with open(later, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(_row("MSFT", "2026-01-05T14:40:00+00:00", 9.0)) + "\n")
+            return True
+
+        with pytest.raises(AssetError, match="changed between"):
+            list(self._lazy(root, admit=admit))
+
+    def test_a_field_equal_to_ts_out_refuses(self, tmp_path):
+        with pytest.raises(AssetError, match="ts_out"):
+            list(self._lazy(str(tmp_path), fields=("asof_ms",)))
+
+
+def test_member_digest_moves_with_content_and_honors_members(tmp_path):
+    from dskit.onboarding.observations import member_digest
+
+    root = str(tmp_path)
+    path = _write(root, "acq-0001", [_row("AAPL", "2026-01-05T14:30:00+00:00", 1.0)])
+    _write(root, "acq-0002", [_row("AAPL", "2026-01-05T14:31:00+00:00", 2.0)])
+    full = member_digest(root, "alpaca", "bars")
+    first = member_digest(root, "alpaca", "bars", ["acq-0001"])
+    assert full != first
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("\n")
+    assert member_digest(root, "alpaca", "bars", ["acq-0001"]) != first

@@ -1,0 +1,230 @@
+{
+  "notes": "Builds the two keyed feature tables of the stock study from onboarded stores and hands them off as jsonl files, for onboarding as sources (README, 'Stock feature tables'). Run: python -m dskit.pipeline workflow configs/workflow-features.json [--plan] [--only daily|trades] [--args FILE]. Edit only args; layout and registry hold patterns and references. The entity list, per-entity file names and store roots come from an args overlay (the stock universe overlay supplies tickers and bars.relpath); the defaults below are a 3-entity pilot. daily needs the stock bars and a benchmark series covering the bar dates; trades needs the option-trade bar stream and the same bars. The benchmark is its own store source (benchmark-daily-bars, from configs/source-benchmark-daily.json) because the archive's series ends before the bars do. Each step also registers its table as an onboarding source (args.targets) and acquires it; see the README section 'Stock feature tables'. Store roots default to relative placeholders (./ob, ./option-bars/root): an args overlay supplies the real ones, nothing machine-specific is typed here.",
+  "args": {
+    "notes": "Pinned agreements (tests/test_stock_features.py): schema.entity/date equal options.fields.entity/date (the trade table's key fields are the option stream's); the output names are the family field names of families.keyed (the universe overlay), so a rename here is a rename there.",
+    "run_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1"
+    },
+    "tickers": [
+      "AAPL",
+      "MSFT",
+      "NVDA"
+    ],
+    "A": "2026-10-03",
+    "work_dir": "./pipeline_runs/stock-features",
+    "schema": {
+      "entity": "symbol",
+      "date": "quote_date"
+    },
+    "bars": {
+      "root": "./ob",
+      "source": "stock-daily-bars",
+      "stream": "files",
+      "columns": {
+        "date": "quote_date",
+        "close": "close",
+        "volume": "volume",
+        "split_coefficient": "split"
+      },
+      "fields": {
+        "date": "quote_date",
+        "close": "close",
+        "volume": "volume",
+        "split": "split"
+      },
+      "relpath": {
+        "AAPL": "aapl/underlying_prices.parquet",
+        "MSFT": "msft/underlying_prices.parquet",
+        "NVDA": "nvda/underlying_prices.parquet"
+      }
+    },
+    "benchmark": {
+      "symbol": "SPY",
+      "root": "./ob",
+      "source": "benchmark-daily-bars",
+      "stream": "files",
+      "relpath": {
+        "SPY": "spy/underlying_prices.parquet"
+      },
+      "columns": {
+        "date": "date",
+        "close": "close"
+      },
+      "fields": {
+        "date": "date",
+        "close": "close"
+      }
+    },
+    "daily_features": {
+      "volume_liquidity": {
+        "window": 22,
+        "fields": {
+          "log_volume": "vl_log_volume",
+          "log_volume_ratio": "vl_log_volume_ratio",
+          "log_dollar_volume": "vl_log_dollar_volume",
+          "amihud": "vl_amihud"
+        }
+      },
+      "market_relative": {
+        "windows": [
+          1,
+          5,
+          22
+        ],
+        "relative_field": "mr_rel_{window}d",
+        "beta_window": 66,
+        "beta_field": "mr_beta",
+        "corr_field": "mr_corr"
+      }
+    },
+    "options": {
+      "root": "./option-bars/root",
+      "source": "options",
+      "stream": "bars",
+      "key_fields": [
+        "contract",
+        "quote_date"
+      ],
+      "fields": {
+        "entity": "symbol",
+        "date": "quote_date",
+        "right": "type",
+        "strike": "strike",
+        "size": "volume",
+        "price": "vwap",
+        "expiry": "expiry"
+      },
+      "projection": [
+        "symbol",
+        "quote_date",
+        "type",
+        "strike",
+        "volume",
+        "vwap",
+        "expiry"
+      ],
+      "call_values": [
+        "call"
+      ],
+      "put_values": [
+        "put"
+      ],
+      "keep_values": {
+        "symbol": [
+          "AAPL",
+          "MSFT",
+          "NVDA"
+        ]
+      }
+    },
+    "trade_features": {
+      "moneyness_band": 0.05,
+      "strict_prior": true,
+      "clock_note": null,
+      "presorted": false,
+      "fields": {
+        "log_call_put_ratio": "ot_log_call_put_ratio",
+        "put_share": "ot_put_share",
+        "log_total_volume": "ot_log_total_volume",
+        "log_trade_count": "ot_log_trade_count",
+        "n_strikes": "ot_n_strikes",
+        "vw_log_moneyness": "ot_vw_log_moneyness",
+        "atm_straddle_ratio": "ot_atm_straddle_ratio"
+      }
+    },
+    "tables": {
+      "daily": "stock_daily_features",
+      "trades": "stock_option_trade_features"
+    },
+    "targets": {
+      "notes": "Where each table is onboarded: the store (root), the source name registered for it, and the localtables knobs (layout file: the table file's stem is its stream name, so tables.<step> must be a lowercase segment). Registered and acquired by the step's after commands, so a first run of a step creates the source; re-running into a store that already holds the source needs a new source name or a fresh store.",
+      "root": "./ob",
+      "layout": "file",
+      "mode": "backfill",
+      "formats": [
+        "jsonl"
+      ],
+      "effective_unit": "iso",
+      "daily": "stock-daily-features",
+      "trades": "stock-option-trade-features"
+    },
+    "as_traded": {
+      "output_field": "close_as_traded",
+      "irregular_field": "close_as_traded_approx",
+      "irregular_tolerance": 1e-06
+    }
+  },
+  "env": "$args.run_env",
+  "layout": {
+    "daily": {
+      "dir": "{W}/daily",
+      "table": "{L.daily.dir}/{stream}.jsonl"
+    },
+    "trades": {
+      "dir": "{W}/trades",
+      "table": "{L.trades.dir}/{stream}.jsonl"
+    }
+  },
+  "registry": {
+    "daily": {
+      "template": "templates/features-stock-daily.json",
+      "extends": null,
+      "command": "{python} -m dskit.pipeline run {config} --asof {in.A}",
+      "notes": "Pipeline-style step: the as-of date is the A input (it names the run only; the bars carry their own dates).",
+      "files": {
+        "source": "templates/source-features-daily.json"
+      },
+      "after": [
+        "{python} -m dskit.onboarding register-source {in.source} --catalog-source {in.source} --connector localtables --config @{file.source} --activate --root {in.target.root}",
+        "{python} -m dskit.onboarding acquire --source {in.source} --stream {in.stream} --mode {in.target.mode} --root {in.target.root}"
+      ]
+    },
+    "trades": {
+      "template": "templates/features-stock-option-trades.json",
+      "extends": "daily",
+      "files": {
+        "source": "templates/source-features-trades.json"
+      }
+    }
+  },
+  "steps": {
+    "daily": {
+      "registry": "daily",
+      "in": {
+        "T": "$args.tickers",
+        "B": "$args.bars",
+        "M": "$args.benchmark",
+        "Q": "$args.schema",
+        "F": "$args.daily_features",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "stream": "$args.tables.daily",
+        "target": "$args.targets",
+        "source": "$args.targets.daily"
+      },
+      "out": [
+        "table"
+      ]
+    },
+    "trades": {
+      "registry": "trades",
+      "in": {
+        "T": "$args.tickers",
+        "B": "$args.bars",
+        "O": "$args.options",
+        "Q": "$args.schema",
+        "F": "$args.trade_features",
+        "W": "$args.work_dir",
+        "A": "$args.A",
+        "stream": "$args.tables.trades",
+        "target": "$args.targets",
+        "source": "$args.targets.trades",
+        "R": "$args.as_traded"
+      },
+      "out": [
+        "table"
+      ]
+    }
+  }
+}

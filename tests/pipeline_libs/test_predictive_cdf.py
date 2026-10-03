@@ -3438,3 +3438,37 @@ def test_fold_table_pooled_models_fit_once_per_fold_on_the_pooled_bands(tmp_path
     assert len(_SpyCDF.seen) == len(plan['records'])  # once per fold, not per group and fold
     for train_t, monitor_t in _SpyCDF.seen:
         assert max(train_t) < min(monitor_t)
+
+
+WINGS = [[-2.5, -.5], [.5, 2.5]]
+
+
+def _context_study(**config):
+    study = object.__new__(predictive_cdf.ChronologicalCDFStudy)
+    study.config = {"identity": ["symbol", "day"], "tail_intervals": WINGS, **config}
+    return study
+
+
+def _context_frame(**extra):
+    import pandas as pd
+    return pd.DataFrame({"symbol": ["A", "A"], "day": ["d1", "d2"], **extra})
+
+
+def test_without_a_declared_decision_context_each_row_gets_the_configured_wings():
+    rows = _context_study()._decision_context_rows(_context_frame())
+    assert rows == [{"identity": ("A", day), "thresholds": [-2.5, -.5, .5, 2.5],
+                     "weights": [.25]*4, "intervals": WINGS} for day in ("d1", "d2")]
+    assert predictive_cdf.DecisionRegionScores(rows).arrays()[2].tolist() == [4, 4]
+
+
+def test_a_declared_decision_context_missing_from_the_frame_still_refuses():
+    with pytest.raises(ValueError, match="lacks frozen context"):
+        _context_study(decision_context="ctx")._decision_context_rows(_context_frame())
+
+
+def test_the_fixed_wing_context_trains_the_composite_loss():
+    rows = _context_study()._decision_context_rows(_context_frame())
+    model = predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, device="cpu",
+                                    losses=[{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}])
+    model.fit_decision_context(rows, rows)
+    assert model._training_context(np.zeros((2, 1)))["weights"].shape[0] == 2

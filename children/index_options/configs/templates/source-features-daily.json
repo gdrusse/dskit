@@ -1,0 +1,11 @@
+{
+  "path": "${L.daily.dir}",
+  "layout": "${target.layout}",
+  "effective_field": "${Q.date}",
+  "effective_unit": "${target.effective_unit}",
+  "streams": [
+    "${stream}"
+  ],
+  "formats": "${target.formats}",
+  "notes": "Onboarding source config (localtables) for the daily feature table, written beside the step's config by the runner and passed to register-source. path is the directory holding the table file (and the step's expanded config, which `formats` and `streams` keep out), streams the one stream it carries, effective_field the entry date every row has. Template, not a typed config: the values come from the args and the layout."
+}

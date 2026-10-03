@@ -1,0 +1,97 @@
+{
+  "name": "mlp_h32x16_lr0.001",
+  "spec": {
+    "class": "dskit.pipeline.libs.predictive_cdf:TorchCDF",
+    "calibrate": false,
+    "params": {
+      "encoder": {
+        "kind": "mlp"
+      },
+      "losses": [
+        {
+          "kind": "nll",
+          "weight": 0.1
+        },
+        {
+          "kind": "wing_twcrps",
+          "weight": 1.0
+        }
+      ],
+      "components": 3,
+      "hidden": [
+        32,
+        16
+      ],
+      "epochs": 2000,
+      "patience": 6,
+      "batch_size": 512,
+      "seeds": [
+        11
+      ],
+      "learning_rate": 0.001,
+      "device": "cuda",
+      "deterministic": true,
+      "feature_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        40,
+        41,
+        42,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        59,
+        61,
+        63,
+        65,
+        67,
+        210,
+        211,
+        212,
+        213
+      ]
+    },
+    "notes": "The base candidate spec every study candidate starts from; generators set the feature subset and encoder at the paths in handoff.paths."
+  }
+}

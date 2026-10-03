@@ -722,6 +722,8 @@ dskit/pipeline/
 ├── workflow.py        manifest runner: chained pipeline steps from neutral templates (ADR-0227)
 ├── workflow_hooks.py  study strategies: candidate generators, stage sequence, collectors, no-gain rule (ADR-0229)
 ├── workflow_report.py verified report from a workflow ledger: md + html + csv, refuses on hash mismatch
+├── workflow_batch.py  workflow-batch: one workflow process per lane, parallel, retry, resume, batch.json
+├── workflow_rollup.py cross-lane table (csv + sortable html): skill intervals, verdict, failures
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
 │                      config-declared checks + slice stability (ADR-0107)
@@ -812,6 +814,7 @@ dskit/pipeline/
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
 │                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228),
+│                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file

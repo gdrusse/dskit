@@ -1,0 +1,6 @@
+{
+  "notes": "Benchmark entities for the market-relative features; one symbol, read by the benchmark-daily-bars source through entities_file/entities_key. Not part of the stock universe (configs/stock_universe.json), so it is never a study ticker.",
+  "tickers": [
+    "SPY"
+  ]
+}

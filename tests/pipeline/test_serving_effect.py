@@ -38,6 +38,7 @@ from dskit.pipeline import fitted, kinds_banking, kinds_stats, synthetic_nodes
 from dskit.pipeline import libs
 from dskit.pipeline import node as node_module
 from dskit.pipeline.base import import_ref
+from dskit.pipeline.libs.bar_features import DailyBarFeatures, TradeBarFeatures
 from dskit.pipeline.libs.observations import ObservationRows
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, NodeContext, TrainableNode
 
@@ -104,6 +105,8 @@ KIND_EFFECTS = {
 #: ``observations`` and the ``FeatureSelector`` family are wired by import
 #: path, and the synthetic set registers only into private/demo registries.
 CLASS_EFFECTS = {
+    DailyBarFeatures: ("pure", "pure"),
+    TradeBarFeatures: ("pure", "pure"),
     ObservationRows: ("entry_read", "entry_read"),
     fitted.FeatureSelector: ("forbidden", "release_read"),
     SKLEARN_SELECT: ("forbidden", "release_read"),
@@ -146,6 +149,8 @@ PURE_AUDITED_CLASSES = (
     kinds_stats.StatTest,
     kinds_banking.EventBank,
     kinds_banking.Eligibility,
+    DailyBarFeatures,
+    TradeBarFeatures,
 )
 
 #: The pack trainables that are still UNAUDITED, by class ref: each

@@ -1,0 +1,113 @@
+{
+  "notes": "Layered on stocks-opt.json (--args A --args B): adds the keyed feature families built by workflow-features.json (stock-daily-features / stock-option-trade-features sources, onboarded as localfiles stores). Declared separately so the base overlay plans before those tables exist; the families are admitted by step 3 like any other. Source/stream/field names must agree with workflow-features.json args.tables and daily_features/trade_features fields.",
+  "families": {
+    "keyed": {
+      "volume_liquidity": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-features-r2",
+            "stream": "stock_daily_features",
+            "key_fields": [
+              "symbol",
+              "quote_date"
+            ],
+            "columns": {
+              "vl_log_volume": "vl_log_volume",
+              "vl_log_volume_ratio": "vl_log_volume_ratio",
+              "vl_log_dollar_volume": "vl_log_dollar_volume",
+              "vl_amihud": "vl_amihud"
+            }
+          }
+        ],
+        "fields": [
+          "vl_log_volume",
+          "vl_log_volume_ratio",
+          "vl_log_dollar_volume",
+          "vl_amihud"
+        ],
+        "max_age_days": 4,
+        "strict_prior": false,
+        "lookback": "22-session trailing volume windows ending at the entry date's own bar",
+        "clock_note": "same-day: the entry decision is taken at the close that defines the bar, so the bar is known"
+      },
+      "market_relative": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-features-r2",
+            "stream": "stock_daily_features",
+            "key_fields": [
+              "symbol",
+              "quote_date"
+            ],
+            "columns": {
+              "mr_rel_1d": "mr_rel_1d",
+              "mr_rel_5d": "mr_rel_5d",
+              "mr_rel_22d": "mr_rel_22d",
+              "mr_beta": "mr_beta",
+              "mr_corr": "mr_corr"
+            }
+          }
+        ],
+        "fields": [
+          "mr_rel_1d",
+          "mr_rel_5d",
+          "mr_rel_22d",
+          "mr_beta",
+          "mr_corr"
+        ],
+        "max_age_days": 4,
+        "strict_prior": false,
+        "lookback": "1/5/22-session return minus the benchmark's, 66-session beta and correlation to it, all ending at the entry date's close",
+        "clock_note": "same-day close, as volume_liquidity"
+      },
+      "option_trades": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-option-trade-features-r2",
+            "stream": "stock_option_trade_features",
+            "key_fields": [
+              "symbol",
+              "quote_date"
+            ],
+            "columns": {
+              "ot_log_call_put_ratio": "ot_log_call_put_ratio",
+              "ot_put_share": "ot_put_share",
+              "ot_log_total_volume": "ot_log_total_volume",
+              "ot_log_trade_count": "ot_log_trade_count",
+              "ot_n_strikes": "ot_n_strikes",
+              "ot_vw_log_moneyness": "ot_vw_log_moneyness",
+              "ot_atm_straddle_ratio": "ot_atm_straddle_ratio"
+            }
+          }
+        ],
+        "fields": [
+          "ot_log_call_put_ratio",
+          "ot_put_share",
+          "ot_log_total_volume",
+          "ot_log_trade_count",
+          "ot_n_strikes",
+          "ot_vw_log_moneyness",
+          "ot_atm_straddle_ratio"
+        ],
+        "max_age_days": 4,
+        "strict_prior": false,
+        "lookback": "per (symbol, date) reduction of the PRIOR trading day's DTE 30-45 option trade bars (the shift is in the table)",
+        "clock_note": "same-day join of a table that already carries its own strict-prior shift (TradeBarFeatures strict mode: each row holds the PRIOR session's bars), so a second shift here would lag the feature twice"
+      }
+    }
+  },
+  "selection": {
+    "pool": [
+      "ohlc_shape",
+      "volatility_context",
+      "expanded_volatility_context",
+      "macro_context",
+      "volume_liquidity",
+      "market_relative",
+      "option_trades"
+    ]
+  }
+}

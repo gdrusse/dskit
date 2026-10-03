@@ -85,6 +85,7 @@ __all__ = [
     "check_message",
     "resolve_connector",
     "retry_after",
+    "safe_url",
 ]
 
 #: The envelope protocol this platform speaks. A connector emitting a
@@ -115,6 +116,7 @@ DEFAULT_CONNECTORS = {
     "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
     "alpaca_quotes": "dskit.onboarding.libs.alpaca_quotes:AlpacaQuoteMinutesConnector",
     "cboe": "dskit.onboarding.libs.cboe:CboeConnector",
+    "httpblobs": "dskit.onboarding.libs.httpblobs:HttpBlobsConnector",
     "huggingface": "dskit.onboarding.libs.huggingface:HuggingFaceHubConnector",
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localblobs": "dskit.onboarding.libs.localblobs:LocalBlobsConnector",
@@ -515,6 +517,25 @@ def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
             break
         wait *= 2
     return min(wait, MAX_BACKOFF_S)
+
+
+def safe_url(url):
+    """Strip the query string from a URL so it is fit for an error message.
+
+    The one owner for every pack: a credential carried in a query parameter
+    must never leak through an exception.
+
+    Parameters
+    ----------
+    url : str
+        The URL, possibly with a query string.
+
+    Returns
+    -------
+    str
+        ``url`` up to its first ``?``.
+    """
+    return url.split("?", 1)[0]
 
 
 def retry_after(headers, fallback):

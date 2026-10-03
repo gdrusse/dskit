@@ -35,6 +35,8 @@ from abc import ABC, abstractmethod
 
 __all__ = [
     "WorkflowError",
+    "load_json",
+    "load_overlays",
     "Hook",
     "MissingInput",
     "NamesToIndices",
@@ -69,6 +71,7 @@ NOTES_KEY = "notes"
 HOOK_KEY = "hook"
 RULE_KEY = "rule"
 JOIN_TEXT = "_"
+NULLABLE_SUFFIX = "?"
 DEFERRED_TEXT = "?"
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -98,6 +101,8 @@ ENTRY_KEYS = {
     "template", "command", "extends", "pins", FILES_KEY, *PHASE_KEYS, NOTES_KEY,
 }
 LANES_KEYS = {"key", "keyed", NOTES_KEY}
+LANE_PATTERN_KEY = "*"
+LANE_PATTERN_FIELDS = ("lane", "lane_lower")
 PIN_KEYS = {"file", "sha256", "values", NOTES_KEY}
 PIN_VALUE_KEYS = {"from", "path"}
 PIN_RESERVED = {PIN_PATH_KEY, PIN_HASH_KEY}
@@ -199,7 +204,9 @@ def expand(doc, values):
     object
         A new document. A string that is exactly one placeholder takes the
         value's JSON type; others interpolate text; ``$$`` becomes ``$``;
-        ``notes`` keys are copied verbatim.
+        ``notes`` keys are copied verbatim. A key ending in ``?`` is optional:
+        it is written without the ``?`` and left out when its expanded value
+        is None, so a null arg adds nothing (and moves no hash).
 
     Raises
     ------
@@ -212,17 +219,39 @@ def expand(doc, values):
 
         expand({"a": "${T}", "b": "x-${k}"}, {"T": [1, 2], "k": 7})
         # -> {'a': [1, 2], 'b': 'x-7'}
+
+    Leave out an optional key whose value is null::
+
+        expand({"a?": "${n}", "b?": "${k}"}, {"n": None, "k": 7})
+        # -> {'b': 7}
     """
     if isinstance(doc, str):
         return _expand_string(doc, values)
     if isinstance(doc, list):
         return [expand(item, values) for item in doc]
     if isinstance(doc, dict):
-        return {
-            key: copy.deepcopy(val) if key == NOTES_KEY else expand(val, values)
-            for key, val in doc.items()
-        }
+        return _expand_dict(doc, values)
     return doc
+
+
+def _expand_dict(doc, values):
+    """Expand a mapping, dropping each optional key whose value comes out None."""
+    out = {}
+    for key, val in doc.items():
+        if key == NOTES_KEY:
+            out[key] = copy.deepcopy(val)
+            continue
+        nullable = key.endswith(NULLABLE_SUFFIX)
+        name = key.removesuffix(NULLABLE_SUFFIX) if nullable else key
+        if nullable and (not name or name in doc):
+            raise WorkflowError(
+                f"nullable key {key!r}: needs a name before the marker and no "
+                f"plain twin {name!r} beside it (both would claim one key)"
+            )
+        found = expand(val, values)
+        if not (nullable and found is None):
+            out[name] = found
+    return out
 
 
 def placeholder_names(doc):
@@ -590,6 +619,7 @@ class Workflow:
         self.base_dir = base_dir
         merged = _merge(self.manifest.get("args") or {}, args or {})
         self.all_args = merged if isinstance(merged, dict) else {}
+        self._expand_lane_patterns()
         self.lane = lane
         self.args = self._narrowed() if lane is not None else self.all_args
         self.layout = self._mapping("layout")
@@ -618,6 +648,46 @@ class Workflow:
     def step_key(self, name):
         """Return the ledger key of a step: the name, or ``name@lane`` in a lane."""
         return name if self.lane is None else f"{name}{LANE_SEP}{self.lane}"
+
+    def _expand_lane_patterns(self):
+        """Fill each ``lanes.keyed`` object's ``*`` pattern into one entry per lane, then drop it.
+
+        A string pattern is formatted with ``{lane}`` and ``{lane_lower}``; any other value is
+        copied. An explicit entry for a lane wins over the pattern.
+        """
+        spec = self.lane_spec() or {}
+        values = self.lane_values()
+        for dotted in spec.get("keyed") or []:
+            try:
+                node = _walk_args(self.all_args, str(dotted).split("."))
+            except WorkflowError:
+                continue
+            if not isinstance(node, dict) or LANE_PATTERN_KEY not in node:
+                continue
+            pattern = node.pop(LANE_PATTERN_KEY)
+            folded = {str(lane).lower(): lane for lane in values}
+            strays = sorted(str(k) for k in node
+                            if k not in values and str(k).lower() in folded)
+            if strays:
+                raise WorkflowError(
+                    f"lanes: keyed {dotted} has entries that miss a lane only by case "
+                    f"beside its {LANE_PATTERN_KEY!r} pattern: {strays}")
+            for lane in values:
+                if lane not in node:
+                    node[lane] = self._from_pattern(dotted, pattern, lane)
+
+    @staticmethod
+    def _from_pattern(dotted, pattern, lane):
+        """Return the pattern's value for one lane, refusing an unknown placeholder."""
+        if not isinstance(pattern, str):
+            return copy.deepcopy(pattern)
+        fields = {"lane": lane, "lane_lower": lane.lower()}
+        try:
+            return pattern.format(**fields)
+        except (KeyError, IndexError, ValueError) as err:
+            raise WorkflowError(
+                f"lanes: keyed {dotted} pattern {pattern!r} may use only "
+                f"{list(LANE_PATTERN_FIELDS)}: {err!r}") from err
 
     def _narrowed(self):
         """Return the args with every ``lanes.keyed`` object cut to this lane's key."""
@@ -1730,7 +1800,40 @@ def _check_upstream(selected):
                 )
 
 
-def _load(path, what):
+def load_overlays(paths):
+    """Return the args overlays merged in order (a later file wins key by key).
+
+    Parameters
+    ----------
+    paths : str, list of str or None
+        One overlay path, several, or none.
+
+    Returns
+    -------
+    dict
+        The deep-merged overlay; ``{}`` for none.
+
+    Raises
+    ------
+    WorkflowError
+        A file is unreadable or not JSON.
+
+    Examples
+    --------
+    Layer a feature overlay over a base overlay::
+
+        load_overlays(["stocks-long.json", "stocks-long-features.json"])
+    """
+    if not paths:
+        return {}
+    merged = {}
+    for path in [paths] if isinstance(paths, str) else paths:
+        merged = _merge(merged, load_json(path, "args"))
+    return merged
+
+
+def load_json(path, what):
+    """Return the JSON a file holds; raise WorkflowError naming ``what`` when unreadable."""
     try:
         with open(path, encoding=ENCODING) as handle:
             return json.load(handle)
@@ -1759,8 +1862,8 @@ def run_workflow(
     ----------
     manifest_path : str
         The manifest JSON.
-    args_path : str, optional
-        A JSON object overlaid on the manifest's ``args``.
+    args_path : str or list of str, optional
+        JSON object file(s) overlaid on the manifest's ``args``, merged in order.
     from_step : str, optional
         Run this step and every later one. ``step@lane`` limits it to one
         lane; ``@lane`` is that lane's whole chain.
@@ -1786,8 +1889,8 @@ def run_workflow(
         # -> 0
     """
     try:
-        manifest = _load(manifest_path, "manifest")
-        overlay = _load(args_path, "args") if args_path else None
+        manifest = load_json(manifest_path, "manifest")
+        overlay = load_overlays(args_path) or None
         base = os.path.dirname(os.path.abspath(manifest_path))
         flows = lane_flows(manifest, base, overlay)
         selected = _select(flows, from_step, only)

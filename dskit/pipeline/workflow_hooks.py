@@ -57,12 +57,14 @@ __all__ = [
     "KeyedFamilies",
     "FamiliesSpec",
     "FamilyContracts",
+    "ReaderOptions",
     "KeyedPool",
     "KeyedCap",
     "FeatureOrder",
     "HorizonLimits",
     "MarketSeries",
     "ReferenceIndices",
+    "AgreeingBlock",
 ]
 
 ENCODING = "utf-8"
@@ -76,6 +78,15 @@ PATH_KEYS = (
     "context_indices",
 )
 DIRECTIONS = ("max", "min")
+DROP_KEY = "drop"
+#: Where step 1b's cohort rows come from: the prepared panel without a reader, else the reader's
+#: own rows (a price-calendar lane has no prepared option panel). Both are port references.
+COHORT_PREPARED = "$source.records"
+COHORT_READER = "$panel.cohort"
+POOL_WHERE = "the selection pool"
+CORE_WHERE = "core.families"
+MODEL_KEY = "model"
+COMPARISON_KEY = "comparison"
 
 
 # -- small shared helpers ------------------------------------------------------
@@ -896,6 +907,9 @@ class KeyedFamilies:
         optional ``require``, ``max_age_days``, ``strict_prior``, ``withheld_fields``,
         and ``lookback``/``clock_note`` text), ``keyed_key``, ``keyed_naming``, and the
         built-in ``availability`` and ``schema_fields`` the new names must not collide with.
+        Optional ``drop`` (list of distinct names: a built-in or keyed family, or a carried entry): families
+        removed after everything folds, so an args overlay can take one out (an overlay
+        cannot delete a key). A name no family declares is refused.
 
     Examples
     --------
@@ -922,14 +936,36 @@ class KeyedFamilies:
         self.keyed = spec.get("keyed") or {}
         if not isinstance(self.keyed, dict):
             raise WorkflowError("families.keyed must be an object")
+        self.drop = self._drop_names()
+        self.keyed = {n: fam for n, fam in self.keyed.items() if n not in self.drop}
         if self.keyed:
             self._check_globals()
             for name, fam in self.keyed.items():
                 self._check_family(name, fam)
 
+    def _drop_names(self):
+        """Return the ``drop`` list, refusing a non-list, a repeat or an undeclared name."""
+        names = self.spec.get(DROP_KEY)
+        if names is None:
+            return []
+        known = (set(self.spec.get("availability") or ()) | set(self.keyed)
+                 | set(self.spec.get("carried") or ()))
+        if (not isinstance(names, list) or not all(isinstance(n, str) for n in names)
+                or len(set(names)) != len(names)):
+            raise WorkflowError("families.drop must be a list of distinct family names")
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise WorkflowError(f"families.drop names {unknown}, which no family declares")
+        return list(names)
+
     def names(self):
-        """Return the keyed family names in declaration order."""
+        """Return the keyed family names in declaration order, minus the dropped."""
         return list(self.keyed)
+
+    def availability(self):
+        """Return the spec's own ``availability`` block without the dropped families."""
+        return {n: c for n, c in (self.spec.get("availability") or {}).items()
+                if n not in self.drop}
 
     def _check_globals(self):
         key, naming = self.spec.get("keyed_key"), self.spec.get("keyed_naming")
@@ -1050,7 +1086,55 @@ class KeyedFamilies:
             dates.append(FLAG_PREFIX + name)
         out["schema_fields"], out["dates_fields"] = schema, dates
         out["keyed_tables"] = self.tables()
+        return self._without_dropped(out)
+
+    def _without_dropped(self, out):
+        """Remove the dropped families, and the fields and flags only they used, from ``out``."""
+        if not self.drop:
+            return out
+        gone = {f for n in self.drop for f in self._used(out, n)}
+        flags = {out["flags"][n]["flag"] for n in self.drop if n in out["flags"]}
+        for part in ("availability", "documentation", "engineered", "flags", "keyed"):
+            out[part] = {n: v for n, v in (out.get(part) or {}).items() if n not in self.drop}
+        gone -= {f for n in out["availability"] for f in self._used(out, n)}
+        if "carried" in out:
+            named = {n: v for n, v in out["carried"].items() if n not in self.drop}
+            out["carried"] = self._carried(named, gone)
+        for part in ("schema_fields", "columns"):
+            if part in out:
+                out[part] = [f for f in out[part] if f not in gone]
+        out["dates_fields"] = [f for f in out["dates_fields"] if f not in flags]
         return out
+
+    @staticmethod
+    def _carried(carried, gone):
+        """Return the ``carried`` entries minus those wholly gone; refuse a partly gone one."""
+        kept = {}
+        for name, entry in (carried or {}).items():
+            fields = list(entry.get("fields") or ())
+            hit = [f for f in fields if f in gone]
+            if hit and len(hit) < len(fields):
+                raise WorkflowError(
+                    f"families.drop removes {hit} but carried.{name} also holds "
+                    f"{[f for f in fields if f not in gone]}: split or drop it")
+            if not hit:
+                kept[name] = entry
+        return kept
+
+    def refuse_dropped(self, names, where):
+        """Raise when ``names`` (a pool or core family list) names a dropped family."""
+        named = [n for n in names or () if n in self.drop]
+        if named:
+            raise WorkflowError(f"{where} names dropped families {named}: remove them there too")
+
+    @staticmethod
+    def _used(out, name):
+        """Return every field a family's contract and engineered block name."""
+        contract = (out.get("availability") or {}).get(name) or {}
+        engineered = (out.get("engineered") or {}).get(name) or {}
+        return (list(contract.get("fields") or ())
+                + [r["field"] for r in contract.get("require") or ()]
+                + list(engineered.get("fields") or ()))
 
 
 class FamiliesSpec(Hook):
@@ -1074,6 +1158,108 @@ class FamiliesSpec(Hook):
     def apply(self, inputs):
         """Return the merged families block."""
         return KeyedFamilies(inputs["spec"]).merged()
+
+
+class ReaderOptions(Hook):
+    """The optional panel-reader knobs, with everything that repeats another arg derived from it.
+
+    ``exact_dte`` is the horizon (set only when a ``reader`` is selected); ``keyed_tables`` is
+    the families block's keyed tables with their key and companion naming (set only when a keyed
+    family is declared); with a reader, ``price_source`` is the step-1 price source's own
+    ``source``/``stream``/lane ``relpath`` plus the declared ``columns`` map (without one it is
+    the feature source's value, untouched); ``corporate_actions`` gets this lane's ``windows``.
+    None of those is declared twice, and declaring a derived one is refused.
+
+    The declared names are the reader vocabulary of the panel readers this toolkit's child
+    packages ship (``reader``, ``corporate_actions``, ``columns``); a project with other options
+    adds a hook, it does not reuse this one. ``tests/test_panel_options.py`` pins ``DECLARED``
+    to the manifest's ``panel_options`` keys.
+
+    Parameters
+    ----------
+    None
+        Inputs ``options`` (dict of the ``DECLARED`` keys; null means unset), ``horizon`` (int),
+        ``spec`` (the families block), ``lane`` (str), ``windows`` (``{lane: [[from, to], ...]}``),
+        ``prices`` (the step-1 price source: ``root``, ``source``, ``stream``, ``relpath``),
+        ``feature_price`` (the feature sources' ``price_source`` value) and ``root`` (the feature
+        sources' store root, which must equal ``prices.root`` when a reader is set).
+
+    Raises
+    ------
+    WorkflowError
+        ``options`` declares a derived or unknown knob, ``corporate_actions`` carries its own
+        ``windows``, a reader has no ``columns``, or the two store roots differ.
+
+    Examples
+    --------
+    No reader selected, no keyed family::
+
+        ReaderOptions().apply({"options": {}, "horizon": 7, "spec": {"keyed": {}, "availability": {}},
+                               "lane": "A", "windows": {}, "prices": {}, "feature_price": "src",
+                               "root": "r"})
+        # -> {'reader': None, 'corporate_actions': None, 'exact_dte': None, 'keyed_tables': None, 'price_source': 'src'}
+    """
+
+    params = ("options", "horizon", "spec", "lane", "windows", "prices", "feature_price", "root")
+    DECLARED = ("reader", "corporate_actions", "columns")
+
+    def apply(self, inputs):
+        """Return the five knobs (unset ones None) and the cohort port reference."""
+        options = inputs["options"] or {}
+        stray = sorted(set(options) - set(self.DECLARED) - {NOTES_KEY})
+        if stray:
+            raise WorkflowError(f"panel options {stray} are derived or unknown; declare only "
+                                f"{list(self.DECLARED)}")
+        reader = options.get("reader")
+        return {"reader": reader, "corporate_actions": self._actions(options, inputs),
+                "exact_dte": None if reader is None else inputs["horizon"],
+                "keyed_tables": self._keyed(inputs["spec"]),
+                "price_source": self._price_source(options, inputs),
+                "cohort": COHORT_PREPARED if reader is None else COHORT_READER,
+                "cohort_columns": self._cohort_columns(inputs["spec"], reader)}
+
+    @staticmethod
+    def _cohort_columns(spec, reader):
+        """Return the identity plus agreed fields (what a cohort row holds), or None w/o a reader."""
+        if reader is None:
+            return None
+        attach = KeyedFamilies(spec).merged()["attach"]
+        return list(attach["identity"]) + list(attach["agree_fields"])
+
+    @staticmethod
+    def _keyed(spec):
+        """Return the keyed-tables block of the families spec, or None when none is declared."""
+        merged = KeyedFamilies(spec).merged()
+        if not merged["keyed_tables"]:
+            return None
+        return {"key": merged["keyed_key"], "tables": merged["keyed_tables"],
+                "age_suffix": merged["keyed_naming"]["age"],
+                "missing_suffix": merged["keyed_naming"]["missing"]}
+
+    @staticmethod
+    def _actions(options, inputs):
+        """Return the corporate-action spec with this lane's windows, or None when unset."""
+        spec = options.get("corporate_actions")
+        if spec is None:
+            return None
+        if "windows" in spec:
+            raise WorkflowError("corporate_actions.windows is the lane-keyed arg corporate_windows, "
+                                "not part of the declaration")
+        return {**spec, "windows": {inputs["lane"]: (inputs["windows"] or {}).get(inputs["lane"], [])}}
+
+    @staticmethod
+    def _price_source(options, inputs):
+        """Return the feature price source: the step-1 file reference plus ``columns`` under a reader."""
+        if options.get("reader") is None:
+            return inputs["feature_price"]
+        prices, columns = inputs["prices"] or {}, options.get("columns")
+        if not columns:
+            raise WorkflowError("a reader needs panel_options.columns {file column: field}")
+        if prices.get("root") != inputs["root"]:
+            raise WorkflowError(f"price_source.root {prices.get('root')!r} differs from "
+                                f"feature_sources.root {inputs['root']!r}")
+        return {"source": prices["source"], "stream": prices["stream"],
+                "relpath": prices["relpath"], "columns": columns}
 
 
 class FamilyContracts(FamiliesSpec):
@@ -1116,8 +1302,9 @@ class KeyedPool(Hook):
 
     def apply(self, inputs):
         """Return the pool, base order first."""
-        pool = list(inputs["base"])
-        return pool + [n for n in KeyedFamilies(inputs["spec"]).names() if n not in pool]
+        keyed, pool = KeyedFamilies(inputs["spec"]), list(inputs["base"])
+        keyed.refuse_dropped(pool, POOL_WHERE)
+        return pool + [n for n in keyed.names() if n not in pool]
 
 
 class KeyedCap(Hook):
@@ -1140,8 +1327,9 @@ class KeyedCap(Hook):
 
     def apply(self, inputs):
         """Return the cap plus the number of keyed families outside the typed pool."""
-        pool = set(inputs["pool"])
-        return inputs["base"] + sum(n not in pool for n in KeyedFamilies(inputs["spec"]).names())
+        keyed, pool = KeyedFamilies(inputs["spec"]), set(inputs["pool"])
+        keyed.refuse_dropped(pool, POOL_WHERE)
+        return inputs["base"] + sum(n not in pool for n in keyed.names())
 
 
 class FeatureOrder(Hook):
@@ -1180,13 +1368,14 @@ class FeatureOrder(Hook):
     def apply(self, inputs):
         """Return the lane's feature order."""
         keyed = KeyedFamilies(inputs["spec"])
+        keyed.refuse_dropped(inputs["start"].get(inputs["labels"].get("families")), CORE_WHERE)
         order = inputs.get("order") or {}
         task = self._task(inputs)
         slot = order.get("slot")
         names = [task if name == slot else name for name in order.get("names") or ()]
         wanted = list(inputs["start"][inputs["labels"]["names"]])
         wanted += [task] if task else []
-        for contract in (inputs["spec"].get("availability") or {}).values():
+        for contract in keyed.availability().values():
             wanted += contract["fields"]
         wanted += [f for n in keyed.names() for f in keyed.features(n)]
         return names + [f for f in dict.fromkeys(wanted) if f not in names]
@@ -1294,7 +1483,7 @@ class MarketSeries(Hook):
         def of_series(field):
             return field == name or str(field).startswith(name + "_")
 
-        for family, contract in (inputs["spec"].get("availability") or {}).items():
+        for family, contract in KeyedFamilies(inputs["spec"]).availability().items():
             used = list(contract["fields"]) + [q["field"] for q in contract.get("require") or ()]
             if any(of_series(f) for f in used):
                 raise WorkflowError(f"market series {name} duplicates the lane's own index but family {family} requires it")
@@ -1307,7 +1496,10 @@ class ReferenceIndices(Hook):
 
     The block's ``resolve`` object maps a name param (a feature name, or a list of them) to
     the index param the model class takes; the hook swaps each, in place, using the
-    :class:`NamesToIndices` strategy, and drops ``resolve`` from the result.
+    :class:`NamesToIndices` strategy, and drops ``resolve`` from the result. Only the
+    models ``model`` and ``comparison`` name are resolved and kept (declaration order);
+    every model not named is REMOVED from the result, so one a lane does not use cannot
+    refuse it. Naming an undeclared model is refused.
 
     Parameters
     ----------
@@ -1336,9 +1528,25 @@ class ReferenceIndices(Hook):
         """Return the block with every declared name param replaced by its position(s)."""
         refs = copy.deepcopy(inputs["references"])
         resolve = {k: v for k, v in (refs.pop("resolve", None) or {}).items() if k != NOTES_KEY}
-        for model, spec in (refs.get("models") or {}).items():
+        models = refs.get("models") or {}
+        named = self._named(refs, models)
+        refs["models"] = {m: spec for m, spec in models.items() if m in named}
+        for model, spec in refs["models"].items():
             spec["params"] = self._resolved(model, spec.get("params") or {}, resolve, inputs["order"])
         return refs
+
+    @staticmethod
+    def _named(refs, models):
+        """Return the set of model names ``model`` and ``comparison`` use, each declared."""
+        comparison = refs.get(COMPARISON_KEY) or []
+        if not isinstance(comparison, list) or not all(isinstance(n, str) for n in comparison):
+            raise WorkflowError("references comparison must be a list of model names")
+        wanted = [refs.get(MODEL_KEY)] + comparison
+        wanted = [name for name in wanted if name is not None]
+        missing = [name for name in wanted if name not in models]
+        if missing:
+            raise WorkflowError(f"reference models {missing} are named but not declared in models")
+        return set(wanted)
 
     @staticmethod
     def _resolved(model, params, resolve, order):
@@ -1354,6 +1562,48 @@ class ReferenceIndices(Hook):
             found = NamesToIndices().apply({"names": names, "order": order})
             out[resolve[key]] = found[0] if isinstance(value, str) else found
         return out
+
+
+class AgreeingBlock(Hook):
+    """A study block with its notes removed, checked against the source it shares keys with.
+
+    A template can pass a whole args block to a study document that refuses unknown keys, so
+    prose must not travel with it. Every key the block shares with ``with`` must hold the same
+    value there (one fact typed twice, refused when an overlay lets the copies drift). A
+    None block stays None, so a nullable template key can leave it out.
+
+    Parameters
+    ----------
+    None
+        Inputs ``block`` (an object or None) and ``with`` (an object holding the source's values).
+
+    Raises
+    ------
+    WorkflowError
+        ``block`` is not an object or None, or a shared key differs.
+
+    Examples
+    --------
+    Strip notes and check one shared key::
+
+        AgreeingBlock().apply({"block": {"root": 1, "notes": "x"}, "with": {"root": 1}})
+        # -> {'root': 1}
+    """
+
+    params = ("block", "with")
+
+    def apply(self, inputs):
+        """Return the notes-free copy of ``block``, or None."""
+        block, other = inputs["block"], inputs["with"]
+        if block is None:
+            return None
+        if not isinstance(block, dict) or not isinstance(other, dict):
+            raise WorkflowError("agreeing block: block and with must be objects")
+        for key in sorted(set(block) & set(other) - {NOTES_KEY}):
+            if block[key] != other[key]:
+                raise WorkflowError(
+                    f"agreeing block: {key!r} is {block[key]!r} here but {other[key]!r} in its source")
+        return {k: copy.deepcopy(v) for k, v in block.items() if k != NOTES_KEY}
 
 
 # -- stop rule --------------------------------------------------------------------
@@ -1395,10 +1645,12 @@ register_hook("zoo_collector", ZooCollector())
 register_hook("grid_collector", GridCollector())
 register_hook("families_spec", FamiliesSpec())
 register_hook("family_contracts", FamilyContracts())
+register_hook("reader_options", ReaderOptions())
 register_hook("keyed_pool", KeyedPool())
 register_hook("keyed_cap", KeyedCap())
 register_hook("feature_order", FeatureOrder())
 register_hook("horizon_limits", HorizonLimits())
 register_hook("market_series", MarketSeries())
 register_hook("reference_indices", ReferenceIndices())
+register_hook("agreeing_block", AgreeingBlock())
 register_stop_rule("no_gain", NoGainRule())

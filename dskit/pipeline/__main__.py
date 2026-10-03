@@ -26,6 +26,9 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   group, with Clark–West as a side column. Exit 0 when every row could be
   scored exactly, 3 when the walk saved no per-row loss gaps and only the
   across-fold half could be answered.
+* ``workflow-batch <manifest.json> --root DIR [--args FILE] [--parallel K]
+  [--retry R] [--lanes-per-batch N] [--only-lanes L ...] [--mem-limit-mb M]``
+  one ``workflow`` subprocess per lane, own work dir, resumable, ``batch.json``.
 * ``workflow <manifest.json> [--args FILE] [--from STEP] [--only STEP]
   [--plan]`` — run a manifest of chained pipeline steps (ADR-0227): neutral
   templates expanded per step, outputs passed downstream, hashes in
@@ -1011,11 +1014,19 @@ def main(argv=None) -> int:
         "workflow", help="run a manifest of chained pipeline steps (ADR-0227)"
     )
     flow_p.add_argument("manifest", help="path to the workflow manifest JSON")
-    flow_p.add_argument("--args", default=None, help="JSON overlaid on manifest args")
+    flow_p.add_argument("--args", action="append", default=None,
+                        help="JSON overlaid on manifest args; repeat to layer files in order")
     flow_p.add_argument("--from", dest="from_step", default=None, help="first step")
     flow_p.add_argument("--only", default=None, help="run just this step")
     flow_p.add_argument(
         "--plan", action="store_true", help="validate and print the DAG; run nothing"
+    )
+    from dskit.pipeline.workflow_batch import add_arguments as add_batch_arguments
+
+    add_batch_arguments(
+        sub.add_parser(
+            "workflow-batch", help="run each lane of a lane manifest as its own process"
+        )
     )
     sub.add_parser("demo", help="build, round-trip, and hash a demo config")
     sub.add_parser("synthetic", help="the full staged run on the synthetic venue")
@@ -1041,6 +1052,10 @@ def main(argv=None) -> int:
         return cmd_bar(
             args.summary_dir, args.registry, args.boot, args.seed, args.alpha
         )
+    if args.command == "workflow-batch":
+        from dskit.pipeline.workflow_batch import run_cli
+
+        return run_cli(args)
     if args.command == "workflow":
         return cmd_workflow(
             args.manifest, args.args, args.from_step, args.only, args.plan

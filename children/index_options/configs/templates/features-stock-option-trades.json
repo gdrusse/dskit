@@ -1,0 +1,121 @@
+{
+  "name": "features-stock-option-trades",
+  "notes": "NEUTRAL TEMPLATE (workflow step `trades`): the option-trade feature table of a stock universe, one row per (entity, entry date), reduced from daily option-trade bars with the TradeBarFeatures node. Placeholders from the step's `in` map: T the entity list, B the underlying bar source (the calendar and closes; same shape as the daily template's, plus the split-ratio role B.fields.split), R the as-traded close derivation (output_field, irregular_field, irregular_tolerance), Q the key field names, O the option-bar stream (store reference, dedup `key_fields`, `fields` naming the stream's entity, date, right, strike, size, price and expiry fields, `call_values`/`put_values` the right field's spellings, `entities` the allow-list applied at intake), F the feature declarations (TradeBarFeatures `fields` map, `moneyness_band`, `strict_prior`, `clock_note`, `presorted`), W work dir, L locations, stream the table's name. CLOCK: TradeBarFeatures defaults to strict_prior, labelling the features of the latest trade date before t with t, so an entry at t never sees t's bars (the daily bar timestamps are session labels and the clock is unproven); F.strict_prior false is accepted only with a written F.clock_note, and then the label is the bar's own date. The label is therefore the ENTRY date, the table is read with a same-day (strict_prior false) keyed match. Trade bars cover only the contracts the stream holds (a DTE window, recorded in the family's `lookback`), not the whole chain. MEMORY: the stream is read lazily (observation-stream: one compact entry per (contract, date) key, never the rows) and reduced as it streams, holding one cell per traded (entity, date, expiry, strike, side) unless F.presorted is true. Output: key fields O.fields.entity and O.fields.date, one column per F.fields output, null where undefined; dates strict mode drops (no later entry in the calendar) are in the run's dropped_dates output. STRIKE BASIS: moneyness and the straddle band compare option strikes (as traded) with the as-traded close rebuilt by AsTradedClose, so they hold across splits; before a spin-off booked as a split (non-whole ratio) the basis is approximate. SPARSITY: the straddle ratio is null when no in-band strike has both a call and a put traded in one expiry (about 8% of rows on the real universe), a property of thin trade data, not an error. SATURDAY BARS: bars labelled on a day outside the underlying calendar (a Saturday, e.g. 2024-06-01) have no later entry date and are dropped in strict mode (listed in dropped_dates).",
+  "pipeline": {
+    "bars": {
+      "uses": "concat",
+      "inputs": {
+        "bars__each": "$tagged.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "${Q.entity}",
+        "provenance_waiver": "each row carries its own entity field; the key check proves no entity appears twice"
+      },
+      "notes": "The underlying closes of every entity: the entry calendar and the moneyness reference."
+    },
+    "option_bars": {
+      "uses": "dskit.pipeline.libs.observations:ObservationStreamRows",
+      "params": {
+        "root": "${O.root}",
+        "source": "${O.source}",
+        "stream": "${O.stream}",
+        "key_fields": "${O.key_fields}",
+        "fields": "${O.projection}",
+        "keep_values": "${O.keep_values}"
+      },
+      "notes": "The option-trade bar stream through the onboarding read seam, deduplicated by O.key_fields, projected to O.projection, restricted at intake to the entity list. Lazy: no row list is built."
+    },
+    "features": {
+      "uses": "dskit.pipeline.libs.bar_features:TradeBarFeatures",
+      "inputs": {
+        "trades": "$option_bars.records",
+        "underlying": "$as_traded.records"
+      },
+      "params": {
+        "entity_field": "${O.fields.entity}",
+        "date_field": "${O.fields.date}",
+        "right_field": "${O.fields.right}",
+        "strike_field": "${O.fields.strike}",
+        "size_field": "${O.fields.size}",
+        "price_field": "${O.fields.price}",
+        "expiry_field": "${O.fields.expiry}",
+        "call_values": "${O.call_values}",
+        "put_values": "${O.put_values}",
+        "underlying_entity_field": "${Q.entity}",
+        "underlying_date_field": "${Q.date}",
+        "underlying_close_field": "${R.output_field}",
+        "moneyness_band": "${F.moneyness_band}",
+        "strict_prior": "${F.strict_prior}",
+        "presorted": "${F.presorted}",
+        "fields": "${F.fields}",
+        "clock_note?": "${F.clock_note}"
+      },
+      "notes": "Reduces to one row per (entity, date); the clock rule is in this template's notes. The underlying is the AS-TRADED close (as_traded node), the calendar and the moneyness reference on the strike basis."
+    },
+    "table": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$features.records"
+      },
+      "params": {
+        "path": "${L.trades.table}",
+        "source": "Option-trade-bar features per (entity, entry date), strict-prior clock; read as a keyed table (families.keyed)"
+      },
+      "notes": "The hand-off file; refuses to overwrite."
+    },
+    "as_traded": {
+      "uses": "dskit.pipeline.libs.bar_features:AsTradedClose",
+      "inputs": {
+        "bars": "$bars.merged"
+      },
+      "params": {
+        "entity_field": "${Q.entity}",
+        "date_field": "${Q.date}",
+        "close_field": "${B.fields.close}",
+        "split_field": "${B.fields.split}",
+        "output_field": "${R.output_field}",
+        "irregular_field": "${R.irregular_field}",
+        "irregular_tolerance": "${R.irregular_tolerance}"
+      },
+      "notes": "Option strikes are AS TRADED, but the bars' closes are split-adjusted at the data's end, so moneyness against them is off by ln(ratio) before a split (and the offset moves when a later split arrives). This node rebuilds the point-in-time as-traded close (close x later split ratios), the strike basis. A spin-off the vendor books as a split (a non-whole ratio) leaves the basis approximate before it: R.irregular_field marks those rows on this node's output; the trade table does not carry the flag."
+    }
+  },
+  "outputs": {
+    "run_root": "${W}"
+  },
+  "foreach": {
+    "keys": "${T}",
+    "notes": "One price read per entity.",
+    "pipeline": {
+      "prices": {
+        "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+        "params": {
+          "root": "${B.root}",
+          "source": "${B.source}",
+          "stream": "${B.stream}",
+          "relpath_by_key": "${B.relpath}",
+          "key": "$each",
+          "columns": "${B.columns}"
+        },
+        "notes": "This entity's bar file through the store."
+      },
+      "tagged": {
+        "uses": "derive",
+        "inputs": {
+          "records": "$prices.records"
+        },
+        "params": {
+          "field": "${Q.entity}",
+          "cases": [
+            {
+              "when": [],
+              "value": "$each"
+            }
+          ]
+        },
+        "notes": "Adds the entity field from the foreach key; the empty-when case is the declared catch-all."
+      }
+    }
+  }
+}

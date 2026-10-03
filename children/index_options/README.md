@@ -586,3 +586,34 @@ assumptions and state that the existing American charge does not simulate share
 assignment. This child remains index-only; the source and reuse audit is in
 docs/plans/README.md. A0626-A0629 retain the audit trail created here before the
 stock-options child existed.
+
+## Stock feature tables (workflow-features)
+
+Two keyed tables for the stock study, built by the framework and onboarded as store sources
+(`configs/workflow-features.json`; templates `features-stock-daily.json`,
+`features-stock-option-trades.json`). `daily` -> source `stock-daily-features` stream
+`stock_daily_features`: volume/liquidity (22-bar) and market-relative (1/5/22-bar, 66-bar
+beta/corr vs SPY) features, same-day. `trades` -> source `stock-option-trade-features` stream
+`stock_option_trade_features`: option-trade features, strict-prior (the row dated t holds t-1's
+trades), DTE 30-45 window only. Attach both as `families.keyed` with `strict_prior: false`.
+
+```bash
+# once: the benchmark (the archive's SPY ends 2025-12-12; Yahoo SPY matches it to 4e-8 on 2502 shared days)
+python -m dskit.onboarding register-source benchmark-daily-bars --catalog-source benchmark-daily-bars --connector httpblobs --config @configs/source-benchmark-daily.json --activate --root <store>
+python -m dskit.onboarding acquire --source benchmark-daily-bars --stream files --mode backfill --root <store>
+# build + onboard both tables (the steps register-source and acquire their own output)
+python -m dskit.pipeline workflow configs/workflow-features.json --args <overlay: store roots, tickers, bars.relpath, options.keep_values, targets> [--only daily|trades]
+```
+
+Trades streams the 4.4M-bar stream (`ObservationStreamRows`, `iter_stream`): about 2.5 min and
+3.8 GB peak for 116 entities. A re-run needs a fresh work dir and a new source name or store.
+
+Basis and limits. Option strikes are as traded, so the trades step rebuilds an as-traded close
+(`AsTradedClose`: adjusted close times later split ratios) as the moneyness reference; spin-off
+adjusters the vendor books as splits (GE, HON, FDX, CMCSA, DHR) leave moneyness approximate before
+them. In the daily table `vl_log_volume` is a level shifted by ln(ratio) before a split (hindsight
+adjustment): use `vl_log_dollar_volume` (invariant) where a level is needed across splits. Strict mode
+drops bars labelled on a non-session day (e.g. Saturday 2024-06-01, 1,227 rows). The remaining null
+share of `ot_atm_straddle_ratio` is sparsity (no in-band strike with both sides traded). Store roots in
+the manifest are relative placeholders; supply real ones in an overlay. `source-benchmark-daily.json`
+carries `period2` and `as_of` as configuration (change them to extend the pull).

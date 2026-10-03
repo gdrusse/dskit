@@ -4243,8 +4243,20 @@ class ChronologicalCDFStudy:
         return self.config
 
     def _decision_context_rows(self, frame):
-        """Return context only after binding every record to its frame identity."""
+        """Return context only after binding every record to its frame identity.
+
+        No ``decision_context`` declared: every row gets the configured ``tail_intervals`` as
+        its wing intervals and their distinct endpoints, equally weighted, as its strike
+        inventory (the loss requires the two together), so the composite loss (one global and
+        one local term) trains on fixed wings of the normalized return.
+        """
         field = self.config.get("decision_context")
+        if field is None:
+            wings = [list(pair) for pair in self.config["tail_intervals"]]
+            edges = sorted({float(edge) for pair in wings for edge in pair})
+            return [{"identity": tuple(row), "thresholds": edges,
+                     "weights": [1./len(edges)]*len(edges), "intervals": wings}
+                    for row in frame[self.config["identity"]].itertuples(index=False, name=None)]
         if not field or field not in frame:
             raise ValueError("decision-aware model lacks frozen context")
         context = frame[field].tolist()

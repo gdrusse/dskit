@@ -655,3 +655,201 @@ def test_a_reference_name_missing_from_the_order_or_given_twice_is_refused():
     both = {**FREFS, "models": {"m": {"params": {"pos": "a", "position": 0}}}}
     with pytest.raises(wf.WorkflowError, match="both"):
         wh.ReferenceIndices().apply({"references": both, "order": ["a"]})
+
+
+# -- families.drop: remove inherited families ---------------------------------------------------------
+
+DKEYED = {"sources": [{"root": "r", "source": "s", "stream": "t", "key_fields": ["sym", "day"],
+                       "columns": {"x": "k_x"}}],
+          "fields": ["k_x"], "lookback": "one day", "clock_note": "prior close"}
+
+
+def _dspec(**given):
+    spec = {
+        "availability": {"fam_a": {"fields": ["a1", "a2"], "require": [{"field": "a_gate"}]},
+                         "fam_b": {"fields": ["b1"], "require": []}},
+        "documentation": {"fam_a": {"lookback": "x", "clock": "y"}, "fam_b": {"lookback": "x", "clock": "y"}},
+        "engineered": {"fam_a": {"fields": ["a1", "a_gate"], "withheld_fields": {}, "clock_note": "c"}},
+        "flags": {"fam_a": {"flag": "available_fam_a"}, "fam_b": {"flag": "available_fam_b"}},
+        "schema_fields": ["sym", "day", "a1", "a2", "a_gate", "b1"],
+        "dates_fields": ["sym", "day", "available_fam_a", "available_fam_b"],
+        "columns": ["sym", "day", "a1", "a_gate", "b1"],
+        "keyed": {"fam_k": DKEYED}, "keyed_key": ["sym", "day"],
+        "keyed_naming": {"age": "_age", "missing": "_gone"},
+    }
+    spec.update(given)
+    return spec
+
+
+def test_a_dropped_builtin_family_leaves_every_derived_list():
+    got = wh.FamiliesSpec().apply({"spec": _dspec(drop=["fam_a"])})
+    assert list(got["availability"]) == ["fam_b", "fam_k"]
+    assert list(got["documentation"]) == ["fam_b", "fam_k"]
+    assert list(got["flags"]) == ["fam_b", "fam_k"] and "fam_a" not in got["engineered"]
+    assert got["schema_fields"] == ["sym", "day", "b1", "k_x"]
+    assert got["dates_fields"] == ["sym", "day", "available_fam_b", "available_fam_k"]
+    assert got["columns"] == ["sym", "day", "b1"]
+
+
+def test_a_dropped_keyed_family_is_not_folded_in_at_all():
+    got = wh.FamiliesSpec().apply({"spec": _dspec(drop=["fam_k"])})
+    assert "fam_k" not in got["availability"] and got["keyed_tables"] == {}
+    assert "k_x" not in got["schema_fields"] and got["dates_fields"][-1] == "available_fam_b"
+
+
+def test_a_field_another_family_still_uses_survives_the_drop():
+    spec = _dspec(drop=["fam_a"])
+    spec["availability"]["fam_b"]["fields"] = ["b1", "a2"]
+    got = wh.FamiliesSpec().apply({"spec": spec})
+    assert "a2" in got["schema_fields"] and "a1" not in got["schema_fields"]
+
+
+def test_without_drop_the_merged_block_is_unchanged_and_the_input_is_untouched():
+    spec = _dspec()
+    before = json.dumps(spec, sort_keys=True)
+    got = wh.FamiliesSpec().apply({"spec": spec})
+    assert list(got["availability"]) == ["fam_a", "fam_b", "fam_k"]
+    assert json.dumps(spec, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("bad", ["fam_a", ["ghost"], [1], ["fam_a", "fam_a"]],
+                         ids=["not_a_list", "unknown", "not_a_name", "twice"])
+def test_a_drop_that_is_not_a_list_of_declared_distinct_families_is_refused(bad):
+    with pytest.raises(wf.WorkflowError, match="families.drop"):
+        wh.FamiliesSpec().apply({"spec": _dspec(drop=bad)})
+
+
+def test_family_contracts_pool_cap_order_and_series_all_honour_the_drop():
+    spec = _dspec(drop=["fam_a", "fam_k"])
+    assert list(wh.FamilyContracts().apply({"spec": spec})) == ["fam_b"]
+    assert wh.KeyedPool().apply({"base": ["fam_b"], "spec": spec}) == ["fam_b"]
+    assert wh.KeyedCap().apply({"base": 3, "pool": ["fam_b"], "spec": spec}) == 3
+    got = wh.FeatureOrder().apply({"order": None, "task": None, "lane": "T", "spec": spec,
+                                   "start": {"names": ["c1"]}, "labels": {"names": "names"}})
+    assert got == ["c1", "b1"]
+    series = wh.MarketSeries().apply({"series": {"a_gate": {"symbol": "XV"}}, "own": {"T": "XV"},
+                                      "lane": "T", "drop": True, "spec": spec, "order": []})
+    assert series == {}                                  # fam_a no longer requires the series
+
+
+def test_an_undropped_keyed_family_still_reaches_pool_cap_and_order():
+    spec = _dspec(drop=["fam_a"])
+    assert wh.KeyedPool().apply({"base": [], "spec": spec}) == ["fam_k"]
+    assert wh.KeyedCap().apply({"base": 1, "pool": [], "spec": spec}) == 2
+    got = wh.FeatureOrder().apply({"order": None, "task": None, "lane": "T", "spec": spec,
+                                   "start": {"names": []}, "labels": {"names": "names"}})
+    assert got == ["b1", "k_x"]
+
+
+# -- ReferenceIndices resolves only the models it names ------------------------------------------------
+
+def _two_models(**given):
+    refs = {"model": "m", "resolve": {"pos": "position"},
+            "models": {"m": {"class": "k", "params": {"pos": "b"}},
+                       "other": {"class": "k", "params": {"pos": "not_in_order"}}}}
+    refs.update(given)
+    return wh.ReferenceIndices().apply({"references": refs, "order": ["a", "b"]})
+
+
+def test_a_model_no_field_names_is_neither_resolved_nor_kept():
+    got = _two_models()
+    assert list(got["models"]) == ["m"] and got["models"]["m"]["params"] == {"position": 1}
+
+
+def test_the_comparison_list_names_models_too_and_models_keep_their_declared_order():
+    refs = {"model": "m", "comparison": ["other", "m"], "resolve": {"pos": "position"},
+            "models": {"m": {"params": {"pos": "a"}}, "x": {"params": {"pos": "ghost"}},
+                       "other": {"params": {"pos": "b"}}}}
+    got = wh.ReferenceIndices().apply({"references": refs, "order": ["a", "b"]})
+    assert list(got["models"]) == ["m", "other"] and "x" not in got["models"]
+    assert got["comparison"] == ["other", "m"]
+
+
+def test_a_named_model_that_is_not_declared_is_refused():
+    with pytest.raises(wf.WorkflowError, match="ghost"):
+        _two_models(comparison=["ghost"])
+
+
+def test_a_named_model_still_refuses_a_name_missing_from_the_order():
+    with pytest.raises(wf.WorkflowError, match="not in the ordered list"):
+        _two_models(comparison=["other"])
+
+
+# -- review round: carried entries, dangling names, type refusals, agreeing blocks ---------------------
+
+def _carried_spec(**given):
+    spec = _dspec(carried={
+        "a_extra": {"fields": ["a1"], "withheld_fields": {}, "clock_note": "c"},
+        "mixed": {"fields": ["a2", "b1"], "withheld_fields": {}, "clock_note": "c"},
+        "free": {"fields": ["free_col"], "withheld_fields": {}, "clock_note": "c"},
+    })
+    spec.update(given)
+    return spec
+
+
+def test_a_carried_entry_whose_fields_are_all_gone_leaves_with_its_family():
+    spec = _carried_spec(drop=["fam_a"])
+    spec["carried"].pop("mixed")
+    got = wh.FamiliesSpec().apply({"spec": spec})
+    assert list(got["carried"]) == ["free"]
+
+
+def test_a_carried_entry_only_partly_dropped_is_refused_by_name():
+    with pytest.raises(wf.WorkflowError, match="carried.*mixed"):
+        wh.FamiliesSpec().apply({"spec": _carried_spec(drop=["fam_a"])})
+
+
+def test_carried_fields_stay_a_subset_of_schema_fields_after_a_drop():
+    spec = _carried_spec(drop=["fam_a"])
+    spec["carried"].pop("mixed")
+    got = wh.FamiliesSpec().apply({"spec": spec})
+    fields = {f for entry in got["carried"].values() for f in entry["fields"]}
+    assert fields - {"free_col"} <= set(got["schema_fields"])
+
+
+def test_a_pool_or_core_family_naming_a_dropped_family_is_refused():
+    spec = _dspec(drop=["fam_a"])
+    with pytest.raises(wf.WorkflowError, match="selection pool.*fam_a"):
+        wh.KeyedPool().apply({"base": ["fam_a"], "spec": spec})
+    with pytest.raises(wf.WorkflowError, match="selection pool.*fam_a"):
+        wh.KeyedCap().apply({"base": 2, "pool": ["fam_a"], "spec": spec})
+    with pytest.raises(wf.WorkflowError, match="core.*fam_a"):
+        wh.FeatureOrder().apply({"order": None, "task": None, "lane": "T", "spec": spec,
+                                 "start": {"names": [], "families": ["fam_a"]},
+                                 "labels": {"names": "names", "families": "families"}})
+
+
+@pytest.mark.parametrize("bad", [[["x"]], [{}], "fam_a"], ids=["list", "dict", "str"])
+def test_a_drop_with_an_unhashable_or_wrong_typed_name_is_a_named_refusal(bad):
+    with pytest.raises(wf.WorkflowError, match="families.drop"):
+        wh.FamiliesSpec().apply({"spec": _dspec(drop=bad)})
+
+
+@pytest.mark.parametrize("comparison", ["m", [["m"]], 5], ids=["string", "unhashable", "number"])
+def test_a_comparison_that_is_not_a_list_of_names_is_a_named_refusal(comparison):
+    with pytest.raises(wf.WorkflowError, match="comparison"):
+        wh.ReferenceIndices().apply({"references": {**FREFS, "comparison": comparison},
+                                     "order": ["a", "b", "c"]})
+
+
+def test_an_agreeing_block_passes_through_without_notes_and_none_stays_none():
+    block = {"a": 1, "b": 2, "notes": "prose"}
+    got = wh.AgreeingBlock().apply({"block": block, "with": {"a": 1, "z": 9}})
+    assert got == {"a": 1, "b": 2} and "notes" in block
+    assert wh.AgreeingBlock().apply({"block": None, "with": {"a": 1}}) is None
+
+
+def test_an_agreeing_block_refuses_a_shared_key_that_differs():
+    with pytest.raises(wf.WorkflowError, match="'a'"):
+        wh.AgreeingBlock().apply({"block": {"a": 1}, "with": {"a": 2}})
+
+
+def test_a_carried_entry_can_be_dropped_by_its_own_name():
+    got = wh.FamiliesSpec().apply({"spec": _carried_spec(drop=["free"])})
+    assert "free" not in got["carried"] and "a_extra" in got["carried"]
+    assert "fam_a" in got["availability"]
+
+
+def test_a_dropped_carried_name_must_exist():
+    with pytest.raises(wf.WorkflowError, match="ghost"):
+        wh.FamiliesSpec().apply({"spec": _carried_spec(drop=["ghost"])})
