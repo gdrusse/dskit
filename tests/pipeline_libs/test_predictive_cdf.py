@@ -3881,9 +3881,10 @@ def test_boosted_cdf_gives_every_task_its_own_bin_however_rare():
                      min_data_in_leaf=20)
     model.fit_decision_context(context, context).fit(x, y, x, y)
     design = model._design(x, model._heads(x))
-    assert model._task_bins(design).feature_num_bin(1) == 301  # 300 tasks + missing
-    plain = lightgbm.Dataset(design, categorical_feature=[1],
-                             params=model._dataset_params(design)).construct()
+    params = model._dataset_params(design)
+    assert params["bin_construct_sample_cnt"] == len(design)+1  # every row + the missing row
+    assert model._task_bins(design, params).feature_num_bin(1) == 301  # 300 tasks + missing
+    plain = lightgbm.Dataset(design, categorical_feature=[1], params=params).construct()
     assert plain.feature_num_bin(1) < 301  # LightGBM alone folds a rare task away
     few = np.repeat(np.arange(4), [2, 60, 60, 60])
     xf = np.column_stack([rng.normal(size=len(few)), np.eye(4)[few]])
@@ -3893,20 +3894,42 @@ def test_boosted_cdf_gives_every_task_its_own_bin_however_rare():
             short, short).fit(xf, rng.normal(size=len(few)), xf, rng.normal(size=len(few)))
 
 
-def test_boosted_cdf_stops_when_lightgbm_reports_no_split_left(monkeypatch):
+def test_three_row_tasks_are_binned_whatever_the_lightgbm_seed():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(12)
+    tasks = np.repeat(np.arange(5), [3, 40, 40, 40, 40])
+    x = np.column_stack([rng.normal(size=len(tasks)), np.eye(5)[tasks]])
+    y = rng.normal(size=len(tasks))
+    context = _zoo_context(len(tasks))
+    for seed in range(40):  # sampling n of n + 1 rows used to drop a row ~1/n of the time
+        _boosted(n_estimators=1, seed=seed, head_features=[1, 2, 3, 4, 5],
+                 feature_indices=[0]).fit_decision_context(context, context).fit(x, y, x, y)
+
+
+@pytest.mark.parametrize("patience", [None, 50])
+def test_boosted_cdf_stops_when_lightgbm_reports_no_split_left(monkeypatch, patience):
     pytest.importorskip("torch")
     lightgbm = pytest.importorskip("lightgbm")
     calls, original = [], lightgbm.Booster.update
 
     def update(self, train_set=None, fobj=None):
-        calls.append(original(self, train_set=train_set, fobj=fobj))
-        return len(calls) >= 3
+        original(self, train_set=train_set, fobj=fobj)
+        calls.append(1)
+        if len(calls) < 3:
+            return False
+        self.rollback_one_iter()  # as LightGBM does: the finished round keeps no tree
+        return True
     monkeypatch.setattr(lightgbm.Booster, "update", update)
     x, y = _hetero_rows(200, 9)
     context = _zoo_context(200)
-    model = _boosted(n_estimators=10).fit_decision_context(context, context).fit(x, y, x, y)
-    assert len(calls) == 3 and model.rounds == model.booster.current_iteration() == 3
-    assert model._research_state()["best_round"] == 3
+    model = _boosted(n_estimators=100, patience=patience)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    state = model._research_state()
+    assert len(calls) == 3 and model.booster.current_iteration() == 2
+    assert state["rounds_run"] == 2 and state["no_split_left"] is True
+    assert state["stopped_by_patience"] is False
+    assert state["best_round"] == (2 if patience is None else model.rounds) <= 2
 
 
 def test_boosted_cdf_refuses_a_design_lightgbm_cannot_split():
@@ -3935,6 +3958,68 @@ def test_boosted_cdf_stops_on_the_calibration_composite_and_keeps_the_best_round
     with pytest.raises(ValueError, match="patience"):
         _boosted(n_estimators=2, patience=5).fit_decision_context(
             context, cal_context).fit(x, y, xc, yc)
+
+
+def test_boosted_cdf_heads_with_patience_monitor_the_categorical_calibration_rows():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(13)
+    tasks, cal_tasks = np.arange(300) % 3, np.arange(90) % 3
+    x = np.column_stack([rng.normal(size=300), np.eye(3)[tasks]])
+    xc = np.column_stack([rng.normal(size=90), np.eye(3)[cal_tasks]])
+    y = rng.normal(size=300)*(1+tasks)
+    yc = rng.normal(size=90)*(1+cal_tasks)
+    context, cal_context = _zoo_context(300), _zoo_context(90, "c")
+    model = _boosted(n_estimators=300, learning_rate=.3, patience=3, head_features=[1, 2, 3],
+                     feature_indices=[0])
+    model.fit_decision_context(context, cal_context).fit(x, y, xc, yc)
+    state = model._research_state()
+    assert state["stopped_by_patience"] is True and state["no_split_left"] is False
+    assert min(state["monitor_loss_by_round"]) == pytest.approx(
+        model.loss_report(xc, yc, cal_context)["composite"], rel=1e-7)
+    unseen = xc.copy()
+    unseen[:, 1:] = [0, 0, 1]
+    only = np.column_stack([x[:, 0], np.eye(3)[np.zeros(300, dtype=int)]])
+    with pytest.raises(ValueError, match="unseen head in the calibration rows"):
+        _boosted(patience=3, head_features=[1, 2, 3], feature_indices=[0]).fit_decision_context(
+            context, cal_context).fit(only, y, unseen, yc)
+
+
+@pytest.mark.parametrize("family", [None, {"kind": "student", "degrees": 3},
+                                    {"kind": "student", "degrees": 5}])
+def test_boosted_start_matches_the_sample_variance_and_refuses_a_narrow_one(family):
+    torch = pytest.importorskip("torch")
+    y = np.random.default_rng(14).standard_t(4, size=500)*1.7
+    model = _boosted(components=3, family=family)
+    start = model._moment_start(y)
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(start[None, :]))
+    w, m, s = logw.exp().numpy()[0], mu.numpy()[0], sigma.numpy()[0]
+    np.testing.assert_allclose(w, 1/3)
+    np.testing.assert_allclose(m, np.quantile(y, [1/6, .5, 5/6]))
+    variance = (w*(s**2*model.family.variance_factor + m**2)).sum() - (w*m).sum()**2
+    assert variance == pytest.approx(y.var(), rel=1e-9)
+    with pytest.raises(ValueError, match="min_scale"):
+        model._moment_start(np.linspace(-.01, .01, 50))
+
+
+def test_cnn_receptive_field_spans_one_plus_kernel_minus_one_times_the_dilations():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1)
+    encoder = {"kind": "cnn", "sequence_indices": [[7], [6], [5], [4], [3], [2], [1]],
+               "context_indices": [0], "channels": 3, "kernel_size": 2, "dilations": [1, 2],
+               "pooling": "last"}
+    module = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, components=2,
+                                     hidden=[4], device="cpu")._build_module(8)
+    x = torch.randn(4, 8)
+    with torch.no_grad():
+        base = module(x)
+        reach = []
+        for column in range(1, 8):  # newest step is column 1, oldest column 7
+            moved = x.clone()
+            moved[:, column] += 3.
+            reach.append(not torch.allclose(base, module(moved)))
+    assert reach == [True]*4 + [False]*3  # 1 + (2-1)*(1+2) = 4 newest steps
 
 
 def _weighted_hpo_fixture(tmp_path):
@@ -4033,6 +4118,38 @@ def test_weighted_crps_needs_a_study_tail_weight_and_the_same_training_weight(tm
         ChronologicalCDFStudy(matched)  # decision wings would replace tail_intervals
     losses[:] = [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 4.}]
     CDFHyperparameterStudy(config)  # no tail_crps term: nothing to pin
+
+
+def test_tail_crps_refuses_overlapping_tail_intervals_but_not_touching_ones(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    study = {**config["study"], "models": {"m": config["experiment"]["candidates"]["candidate"]}}
+    with pytest.raises(ValueError, match="overlapping"):
+        ChronologicalCDFStudy({**study, "tail_intervals": [[-2., -1.], [-1.5, -.5]]})
+    ChronologicalCDFStudy({**study, "tail_intervals": [[-2., -1.], [-1., -.5]]})
+
+
+def test_weighted_crps_picks_development_variants_and_yields_to_a_decision_metric(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    c = {**config["study"], "tail_weight": 1.}
+    c["models"] = {**c["models"], "candidate": {
+        **config["experiment"]["candidates"]["candidate"], "calibrate": True}}
+    scores = ChronologicalCDFStudy(c).run(frame)
+    candidate = scores.model == "candidate"
+    # Raw wins plain crps; calibrated wins crps + tail_crps.
+    scores.loc[candidate & (scores.variant == "raw"), ["crps", "tail_crps"]] = [1., 5.]
+    scores.loc[candidate & (scores.variant == "calibrated"), ["crps", "tail_crps"]] = [2., 1.]
+    scores["weighted_crps"] = scores.crps + scores.tail_crps
+    weighted = ChronologicalCDFStudy(c).summarize(scores)
+    assert weighted["selection_metric"] == "weighted_crps"
+    assert weighted["selected_variants_from_development"]["candidate"] == "calibrated"
+    plain = {k: v for k, v in c.items() if k != "tail_weight"}
+    assert ChronologicalCDFStudy(plain).summarize(scores)[
+        "selected_variants_from_development"]["candidate"] == "raw"
+    scores["decision_strike_brier"] = np.where(
+        candidate & (scores.variant == "calibrated"), .5, .1)
+    decided = ChronologicalCDFStudy(c).summarize(scores)
+    assert decided["selection_metric"] == "decision_strike_brier"
+    assert decided["selected_variants_from_development"]["candidate"] == "raw"
 
 
 def test_plain_crps_studies_score_no_weighted_column(tmp_path):

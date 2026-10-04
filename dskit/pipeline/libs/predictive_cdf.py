@@ -3712,19 +3712,22 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         return np.column_stack([features, heads]) if self.head_features else features
 
     def _dataset_params(self, design):
-        """Return the dataset parameters: the booster's plus exact, unsampled binning.
+        """Return the parameters every dataset of a fit on ``design`` shares.
 
         A dataset's construction (binning, the ``min_data_in_leaf`` feature
-        pre-filter) reads only its own parameters, never the booster's.
+        pre-filter) reads only its own parameters, never the booster's. Binning
+        samples every row (plus the task reference's one missing-task row), and
+        all datasets carry the same values, so none overrides its reference.
         """
-        params = {**self._booster_params(), "bin_construct_sample_cnt": len(design)}
+        rows = len(design) + bool(self.head_features)
+        params = {**self._booster_params(), "bin_construct_sample_cnt": rows}
         if not self.head_features:
             return {**params, "max_bin": self.max_bin}
         tasks = len(self.head_features)+1  # every task plus the missing-value bin
         return {**params, "max_bin_by_feature": [self.max_bin]*(design.shape[1]-1) + [
             max(self.max_bin, tasks)]}
 
-    def _task_bins(self, design):
+    def _task_bins(self, design, params):
         """Return a binning reference that gives every training task its own bin.
 
         LightGBM bins a categorical column into a missing-value bin plus at
@@ -3742,7 +3745,7 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         missing[0, -1] = np.nan
         binning = lightgbm.Dataset(
             np.vstack([design, missing]), categorical_feature=[design.shape[1]-1],
-            free_raw_data=False, params=self._dataset_params(design)).construct()
+            free_raw_data=False, params=params).construct()
         bins = binning.feature_num_bin(design.shape[1]-1)
         if bins and bins != len(self.seen_heads)+1:
             raise ValueError(
@@ -3750,14 +3753,14 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                 "task needs at least min_data_in_bin (default 3) training rows")
         return binning
 
-    def _dataset(self, design, y, reference):
+    def _dataset(self, design, y, reference, params):
         """Return a LightGBM dataset starting every row at the constant start."""
         import lightgbm
         import numpy as np
         return lightgbm.Dataset(
             design, label=y, init_score=np.tile(self.start, (len(design), 1)),
             categorical_feature=[design.shape[1]-1] if self.head_features else "auto",
-            reference=reference, free_raw_data=False, params=self._dataset_params(design))
+            reference=reference, free_raw_data=False, params=params)
 
     def _moment_start(self, y):
         """Return the constant raw start row: quantile means, variance-matched scale."""
@@ -3887,7 +3890,9 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         target, context = self._target_tensor(y), self._training_context(x)
         self.start = self._moment_start(y)
         design = self._design(x, heads)
-        train = self._dataset(design, y, self._task_bins(design) if self.head_features else None)
+        params = self._dataset_params(design)
+        reference = self._task_bins(design, params) if self.head_features else None
+        train = self._dataset(design, y, reference, params)
         booster = lightgbm.Booster(params=self._booster_params(), train_set=train)
         stop = monitor = None
         if self.patience is not None:
@@ -3895,16 +3900,20 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
             if not set(cal_heads).issubset(self.seen_heads):
                 raise ValueError("unseen head in the calibration rows")
             cal_y = np.asarray(cal_y, dtype=float)
-            booster.add_valid(self._dataset(self._design(cal_x, cal_heads), cal_y, train),
-                              "calibration")
+            booster.add_valid(self._dataset(self._design(cal_x, cal_heads), cal_y, train,
+                                            params), "calibration")
             monitor = (self._target_tensor(cal_y), self._monitor_context(cal_x))
             stop = _RoundPatienceStop(self.patience)
-        self.losses = []
+        self.losses, self.no_split_left, self.patience_exhausted = [], False, False
         for _ in range(self.n_estimators):
-            # A finished booster (no split left) stops: its monitored loss cannot change.
-            if self._boost(booster, target, context) or (
-                    stop is not None
-                    and stop.exhausted(self._monitor_round(booster, monitor), None)):
+            if self._boost(booster, target, context):
+                # LightGBM keeps no tree from a round with no split left, and the
+                # monitored loss can no longer change: drop the round and stop.
+                self.losses.pop()
+                self.no_split_left = True
+                break
+            if stop is not None and stop.exhausted(self._monitor_round(booster, monitor), None):
+                self.patience_exhausted = True
                 break
         else:
             if stop is not None:
@@ -3974,7 +3983,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         # (its objective call); monitor_loss_by_round[r] is scored AFTER it.
         state = {"losses": self.loss_config, "training_composite_by_round": self.losses,
                  "rounds_run": len(self.losses), "best_round": self.rounds,
-                 "stopped_by_patience": self.patience is not None,
+                 "stopped_by_patience": self.patience_exhausted,
+                 "no_split_left": self.no_split_left,
                  "start": [float(v) for v in self.start]}
         if self.family_config is not None:
             state["family"] = self.family_config
@@ -4864,7 +4874,8 @@ class ChronologicalCDFStudy:
             ``crps`` and ``tail_crps`` at weights in the ratio 1 : ``tail_weight``
             (any common scale is the same objective), or when a
             ``decision_context`` is declared: its wings, not ``tail_intervals``,
-            would then be the loss's intervals.
+            would then be the loss's intervals; or when ``tail_intervals``
+            overlap (the loss integrates their union, the metric each one).
         """
         import math
         weight = config["tail_weight"]
@@ -4879,6 +4890,11 @@ class ChronologicalCDFStudy:
             if config.get("decision_context"):
                 raise ValueError(f"{name} trains on tail_crps under a decision_context: its "
                                  "wings, not tail_intervals, would be integrated")
+            pairs = sorted(DecisionRegionScores._checked_intervals(
+                config["tail_intervals"]).tolist())
+            if any(b[0] < a[1] for a, b in zip(pairs, pairs[1:])):
+                raise ValueError(f"{name} trains on tail_crps over overlapping tail_intervals: "
+                                 "the loss integrates their union, tail_crps each interval")
             if (set(terms) != {"crps", "tail_crps"}
                     or any(type(terms[k]) not in (int, float) for k in terms)
                     or not math.isclose(terms["tail_crps"], weight*terms["crps"], rel_tol=1e-9)):
