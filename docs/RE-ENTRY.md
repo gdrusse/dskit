@@ -1,3 +1,26 @@
+# Active handoff — 2026-10-04: 300 more stocks pulled; pooled-heads study run
+
+**Landed on main (through `524928e0`).** Window fix for the price-calendar panel (`fbb111c9`).
+300 more stocks ranked by 20-session option chain volume (ADR-0235, `TrailingRank`,
+`AlpacaOptionActivityConnector`; ADR-0216 fetch connector landed with it), list pinned by sha256
+(`configs/option_universe_300.json`). Their data: option bars (store
+`/home/russell/data/stock_options/option-universe-300`: 3.11M contracts, 4.69M bars, DTE 30-45,
+2024-02..2026-09), daily bars `stock-daily-bars-300`, features `stock-daily-features-300`
+(614,133 rows) and `stock-option-trade-features-300` (154,980 rows; straddle null 23.9%, thin names).
+Every entity/symbol list file a source reads now needs its sha256 (`connector.read_pinned_json`).
+
+**Models.** Top-5 (NVDA META TSLA MU MSTR) per-ticker runs: 2016+ all rejected; 2024+ window
+accepted NVDA/MSTR/META but review found it partly artifact (weak 120-date baseline, 2 volatile
+folds). Pooled study `configs/run-pooled-heads-top5.json` (horizon 31 = pooled argmax DTE, set by
+hand; MLP per-ticker heads, pooled GRU; expanding train from 2016, scored in the options window):
+no model reliably beats the empirical baseline; only MU pooled GRU at 60-date blocks [+0.1, +4.0];
+option features made every ticker worse. Two Haiku checks: no leak.
+
+**Next.** Owner's design: one pooled model per DTE across tickers with per-ticker heads. Gaps:
+TorchCDF (GRU) refuses `head_features`; selection rests on one 30-date warm-up fold; per-ticker
+results are CSVs, not workflow-style reports; no `value_from` hook (horizon set by hand);
+accept/reject uses plain CRPS, not tail-weighted. Extend the pooled study to the 300 + 116.
+
 # Active handoff — 2026-10-03: 116-stock universe built and merged; steps 1-3 not yet run
 
 **Landed (`fe4600f1` on main).** The study runs on stocks from the same manifest:
