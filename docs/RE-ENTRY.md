@@ -21,6 +21,12 @@ TorchCDF (GRU) refuses `head_features`; selection rests on one 30-date warm-up f
 results are CSVs, not workflow-style reports; no `value_from` hook (horizon set by hand);
 accept/reject uses plain CRPS, not tail-weighted. Extend the pooled study to the 300 + 116.
 
+**Review status.** Every merged piece passed a Sonnet/Haiku skeptic loop with zero open
+Critical/Major (final round 2026-10-04 on 75fe8896). Open Minors: lane-pattern typo check
+catches case-only typos only; `symbols_file` configs get `resolve_knobs` but not `check_config`
+in `test_source_pins.py`; that test reads repo configs, not store records;
+`features-300.json` and stock overlays carry the absolute store root (established convention).
+
 # Active handoff — 2026-10-03: 116-stock universe built and merged; steps 1-3 not yet run
 
 **Landed (`fe4600f1` on main).** The study runs on stocks from the same manifest:
