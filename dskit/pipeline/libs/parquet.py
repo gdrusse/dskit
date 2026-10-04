@@ -11,6 +11,10 @@ import the purity gate keeps out of the core) is imported only inside
 
 Which file is a per-key lookup (``relpath_by_key``), so a ``foreach`` chain
 passes its key and the document never types a file name twice.
+
+``ParquetFrameCache`` (ADR-0236 amendment) is the pack's other half: one built
+DataFrame kept as parquet under a caller-named identity, so a multi-stage study
+builds an expensive panel once and every later stage reuses it.
 """
 
 from __future__ import annotations
@@ -21,10 +25,19 @@ import hashlib
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
-__all__ = ["NODE_KINDS", "ParquetRows", "register"]
+__all__ = ["NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
 
 #: Bytes per hashing read; a price file is small, an options file is not.
 _CHUNK = 1 << 20
+
+
+def _sha256(path):
+    """Return the sha256 hex digest of a file, read in chunks: this pack's one hashing rule."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(_CHUNK), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 class ParquetRows(Node):
@@ -162,11 +175,7 @@ class ParquetRows(Node):
     @staticmethod
     def _verified_bytes_ok(path, digest):
         """Say whether the file at ``path`` hashes to ``digest``."""
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for block in iter(lambda: fh.read(_CHUNK), b""):
-                h.update(block)
-        return h.hexdigest() == digest
+        return _sha256(path) == digest
 
     @staticmethod
     def _day(value, field):
@@ -268,6 +277,167 @@ class ParquetRows(Node):
         records = self._windowed(records)
         self.log.info("read %d row(s) of %s", len(records), rel)
         return {"records": records}
+
+
+class ParquetFrameCache:
+    """Keep one built DataFrame on disk per identity, and reuse it while the identity holds.
+
+    A memo, never a data source (ADR-0236 amendment): the caller's identity
+    names everything the frame is a function of (its config, the store tokens
+    of what it read, the code and environment that built it), so a reuse is
+    the frame a rebuild would give. One slot per directory: a build under a
+    new identity replaces the old frame. Every caller, the building one
+    included, gets the frame and payload read back from disk, so a reuse and
+    a build can never differ in dtype or JSON shape.
+
+    Parameters
+    ----------
+    directory : str or Path
+        The slot: ``frame.parquet`` and ``record.json`` (the identity, the
+        frame's sha256 and the caller's JSON payload).
+
+    Examples
+    --------
+    Build a panel once per data identity::
+
+        cache = ParquetFrameCache("runs/study/panel-cache")
+        frame, payload, reused = cache.load_or_build(
+            lambda: {"config": digest, "store": token}, lambda: (build(), {"rows": 3}))
+    """
+
+    FRAME, RECORD = "frame.parquet", "record.json"
+
+    def __init__(self, directory):
+        from pathlib import Path
+        self.directory = Path(directory)
+
+    @staticmethod
+    def _canonical(identity):
+        """Return the identity's canonical JSON, the one form two identities compare in."""
+        import json
+        return json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+    def load(self, identity):
+        """Return ``(frame, payload)`` stored under ``identity``, or None.
+
+        Parameters
+        ----------
+        identity : dict
+            JSON-serializable.
+
+        Returns
+        -------
+        tuple or None
+            None when the slot is empty, holds another identity, or its
+            frame no longer hashes to the recorded digest.
+        """
+        import json
+
+        import pandas as pd
+
+        record, frame = self.directory/self.RECORD, self.directory/self.FRAME
+        if not (record.is_file() and frame.is_file()):
+            return None
+        stored = json.loads(record.read_text())
+        if (stored.get("identity") != self._canonical(identity)
+                or _sha256(frame) != stored.get("frame_sha256")):
+            return None
+        return pd.read_parquet(frame), stored["payload"]
+
+    def store(self, identity, frame, payload):
+        """Replace the slot with ``frame`` and ``payload`` under ``identity``.
+
+        Parameters
+        ----------
+        identity : dict
+            JSON-serializable.
+        frame : DataFrame
+            Written as parquet without its index.
+        payload : dict
+            JSON-serializable; stored and returned as JSON gives it back.
+        """
+        import json
+        import os
+
+        from dskit.pipeline.node import atomic_write
+
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory/self.RECORD).unlink(missing_ok=True)  # never a record over a new frame
+        partial = self.directory/(self.FRAME+".partial")
+        frame.to_parquet(partial, index=False)
+        os.replace(partial, self.directory/self.FRAME)
+        atomic_write(str(self.directory/self.RECORD), json.dumps({
+            "identity": self._canonical(identity),
+            "frame_sha256": _sha256(self.directory/self.FRAME),
+            "rows": int(len(frame)), "payload": payload}, indent=1, allow_nan=False).encode())
+
+    def load_or_build(self, identity, build):
+        """Return the stored frame for the current identity, building and storing it if absent.
+
+        Parameters
+        ----------
+        identity : callable
+            Returns the JSON identity; asked before and after a build, and a
+            build during which it moved is returned but never stored.
+        build : callable
+            Returns ``(frame, payload)``.
+
+        Returns
+        -------
+        tuple
+            ``(frame, payload, reused)``.
+        """
+        import json
+
+        before = identity()
+        held = self.load(before)
+        if held is not None:
+            return (*held, True)
+        frame, payload = build()
+        if self._canonical(identity()) != self._canonical(before):
+            return frame, json.loads(json.dumps(payload)), False
+        self.store(before, frame, payload)
+        return (*self.load(before), False)
+
+    @staticmethod
+    def code_digest(*packages):
+        """Return a sha256 over every ``.py`` file of the given packages, by path and bytes.
+
+        Parameters
+        ----------
+        *packages : module
+            Packages (or modules) whose directory holds the code that builds a frame.
+
+        Returns
+        -------
+        str
+            A hex digest that moves with any edit of that code.
+        """
+        from pathlib import Path
+
+        digest = hashlib.sha256()
+        for package in packages:
+            top = Path(package.__file__).parent
+            for path in sorted(top.rglob("*.py")):
+                digest.update(f"{package.__name__}/{path.relative_to(top).as_posix()}\n".encode())
+                digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest()
+
+    @staticmethod
+    def environment():
+        """Return the interpreter version and every installed distribution's version.
+
+        Returns
+        -------
+        dict
+            ``python`` and the sorted ``distributions`` (``name==version``).
+        """
+        import sys
+        from importlib.metadata import distributions
+
+        return {"python": sys.version,
+                "distributions": sorted({f"{d.metadata['Name']}=={d.version}"
+                                         for d in distributions()})}
 
 
 #: The pack's kinds.

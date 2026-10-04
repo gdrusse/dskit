@@ -907,7 +907,7 @@ dskit/pipeline/
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
-│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228),
+│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment)
 ├── README.md          this file

@@ -183,6 +183,77 @@ def test_a_drifted_file_refuses(store, tmp_path):
         node.run(_ctx(tmp_path), {})
 
 
+# -- ParquetFrameCache (ADR-0236 amendment): build a frame once per identity ----------------------
+
+def _builder(calls, frame=None):
+    import pandas as pd
+
+    def build():
+        calls.append(1)
+        built = pd.DataFrame({"a": [1, 2], "b": ["x", None]}) if frame is None else frame
+        return built, {"rows": len(built), "pair": (1, 2), 3: "int key"}
+    return build
+
+
+def test_a_frame_is_built_once_and_reused_while_its_identity_holds(tmp_path):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    frame, payload, hit = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert (hit, calls) == (False, [1])
+    assert payload == {"rows": 2, "pair": [1, 2], "3": "int key"}  # what a reuse will return
+    again, reused, hit = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert (hit, calls, reused) == (True, [1], payload)
+    pd.testing.assert_frame_equal(frame, again)  # a build hands back the stored frame too
+
+
+def test_a_moved_identity_rebuilds_into_the_one_slot(tmp_path):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    other = pd.DataFrame({"a": [7]})
+    frame, _, hit = cache.load_or_build(lambda: {"v": 2}, _builder(calls, other))
+    assert not hit and calls == [1, 1] and frame.a.tolist() == [7]
+    _, _, hit = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert not hit and calls == [1, 1, 1]  # one slot: the first identity was replaced
+    assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == ["frame.parquet",
+                                                                        "record.json"]
+
+
+def test_a_frame_file_that_no_longer_matches_its_digest_is_rebuilt(tmp_path):
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    stored = tmp_path / "cache" / "frame.parquet"
+    stored.write_bytes(stored.read_bytes() + b"\0")
+    _, _, hit = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert not hit and calls == [1, 1]
+
+
+def test_an_identity_that_moves_during_the_build_is_not_stored(tmp_path):
+    cache, calls, ticks = pack.ParquetFrameCache(tmp_path / "cache"), [], itertools.count()
+    frame, _, hit = cache.load_or_build(lambda: {"v": next(ticks)}, _builder(calls))
+    assert not hit and len(frame) == 2 and not (tmp_path / "cache").exists()
+
+
+def test_the_code_digest_and_environment_name_what_built_a_frame(tmp_path):
+    import types
+    package = types.ModuleType("pkg")
+    package.__file__ = str(tmp_path / "pkg" / "__init__.py")
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    module = tmp_path / "pkg" / "sub" / "rule.py"
+    module.write_text("LIMIT = 1\n")
+    (tmp_path / "pkg" / "notes.txt").write_text("not code")
+    first = pack.ParquetFrameCache.code_digest(package)
+    assert pack.ParquetFrameCache.code_digest(package) == first and len(first) == 64
+    (tmp_path / "pkg" / "notes.txt").write_text("still not code")
+    assert pack.ParquetFrameCache.code_digest(package) == first
+    module.write_text("LIMIT = 2\n")
+    assert pack.ParquetFrameCache.code_digest(package) != first
+    environment = pack.ParquetFrameCache.environment()
+    assert environment["python"] and any(d.startswith("pyarrow==")
+                                         for d in environment["distributions"])
+
+
 def test_pyarrow_is_imported_only_inside_run():
     tree = ast.parse(Path(pack.__file__).read_text())
     for node in tree.body:

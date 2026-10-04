@@ -3444,6 +3444,11 @@ def test_the_pooled_zoo_reads_each_ticker_from_its_own_universe_sources(child_ro
     cells = doc["experiment"]["expected_cells"]
     assert set(cells["evaluation"]) <= set(doc["data"]["symbols"])
     assert set(cells["development"]) <= set(cells["evaluation"]) | set(doc["data"]["symbols"])
+    # Owner option B (2026-10-04): a ticker enters a fold once its fit band holds 40 rows.
+    # Measured on the smoke panel under that rule: 375 development and 393 evaluation cells
+    # (15 recent listings never reach 40 fit rows before the last scored fold).
+    assert doc["study"]["min_task_fit_rows"] == 40
+    assert (len(cells["development"]), len(cells["evaluation"])) == (375, 393)
 
 
 def test_every_pooled_candidate_trains_on_the_selection_metric_with_ticker_heads(child_root):

@@ -30,7 +30,8 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel",
+           "DEFAULT_MIN_TASK_FIT_ROWS"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -38,6 +39,9 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
 _QUADRATURE_NODES = 64
 # Positive remainder terms of the Student lower-tail series (ADR-0218).
 _STUDENT_TAIL_TERMS = 64
+#: A study's ``min_task_fit_rows`` when it declares none: a group is evaluated in a
+#: split once its fit band holds one row (ADR-0236 amendment).
+DEFAULT_MIN_TASK_FIT_ROWS = 1
 
 
 @lru_cache(maxsize=None)
@@ -4567,12 +4571,21 @@ class _SplitPlan(ABC):
     ``column`` names the score column that carries the split id. The study
     asks the plan for every split-shaped fact (ids, bands, the rows a split
     evaluates), so a new grammar is a subclass, never a branch in the study.
+
+    Task admission (ADR-0236 amendment, owner option B) is every grammar's:
+    a group WAITS in a split while its fit band holds fewer than
+    ``min_task_fit_rows`` rows, and its calibration and evaluation rows are
+    then dropped for every model alike (its fit rows stay); an admitted group
+    with no evaluation row has nothing to score in that split.
     """
 
     column = ""
+    #: The three band names, in ``bands`` order, as the admission ledger counts them.
+    BANDS = ("fit", "calibration", "evaluation")
 
     def __init__(self, config):
-        self.date, self.end = config["date"], config["end"]
+        self.date, self.end, self.group = config["date"], config["end"], config["group"]
+        self.min_task_fit_rows = config.get("min_task_fit_rows", DEFAULT_MIN_TASK_FIT_ROWS)
 
     @abstractmethod
     def ids(self):
@@ -4583,8 +4596,78 @@ class _SplitPlan(ABC):
         """Return the (fit, calibration, evaluation) rows of one split of ``frame``."""
 
     @abstractmethod
+    def evaluation(self, frame, split):
+        """Return the evaluation rows of one split of ``frame``, before admission."""
+
+    def band_counts(self, frame, split, calendar):
+        """Return each group's row count in each band of one split.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            The run's rows; only the group, date and end columns are read.
+        split : int
+            One split id.
+        calendar : list or None
+            The run's calendar (see :meth:`calendar`).
+
+        Returns
+        -------
+        DataFrame
+            One row per group holding a row in any band, one int column per
+            :attr:`BANDS` name, sorted by group.
+        """
+        import pandas as pd
+        narrow = frame[list(dict.fromkeys([self.group, self.date, self.end]))]
+        counts = pd.DataFrame({name: band[self.group].value_counts() for name, band in
+                               zip(self.BANDS, self.bands(narrow, split, calendar))},
+                              columns=list(self.BANDS))
+        return counts.fillna(0).astype(int).sort_index()
+
+    def waiting(self, counts):
+        """Return the groups of :meth:`band_counts` whose fit band is below the minimum."""
+        return set(counts.index[counts["fit"] < self.min_task_fit_rows])
+
+    def admission(self, counts, split):
+        """Return the ledger rows of the groups one split does not evaluate.
+
+        Parameters
+        ----------
+        counts : DataFrame
+            :meth:`band_counts` of the split.
+        split : int
+            The split id the rows name.
+
+        Returns
+        -------
+        list of dict
+            Per group, in group order: ``reason`` (``waiting``: fit band below
+            ``min_task_fit_rows``, its calibration and evaluation rows dropped;
+            ``no_evaluation_rows``: admitted, nothing to score), the three band
+            counts and the rows dropped from each of the last two.
+        """
+        rows, waiting = [], self.waiting(counts)
+        for group, n in counts.iterrows():
+            if group not in waiting and n["evaluation"]:
+                continue
+            dropped = group in waiting
+            rows.append({"group": group, self.column: split,
+                         "reason": "waiting" if dropped else "no_evaluation_rows",
+                         "fit_rows": int(n["fit"]), "calibration_rows": int(n["calibration"]),
+                         "evaluation_rows": int(n["evaluation"]),
+                         "dropped_calibration_rows": int(n["calibration"]) if dropped else 0,
+                         "dropped_evaluation_rows": int(n["evaluation"]) if dropped else 0})
+        return rows
+
     def expected(self, frame, ids):
-        """Return the rows the splits ``ids`` evaluate."""
+        """Return the rows the splits ``ids`` evaluate: every admitted group's evaluation rows."""
+        import pandas as pd
+        calendar, parts = self.calendar(frame), []
+        for split in ids:
+            rows = self.evaluation(frame, split)
+            waiting = self.waiting(self.band_counts(frame, split, calendar))
+            parts.append(rows[~rows[self.group].isin(waiting)])
+        return pd.concat(parts)
 
     @abstractmethod
     def assigned(self, dates):
@@ -4617,8 +4700,8 @@ class _YearPlan(_SplitPlan):
     def bands(self, frame, split, calendar):
         return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)
 
-    def expected(self, frame, ids):
-        return frame[frame[self.date].str[:4].astype(int).isin(ids)]
+    def evaluation(self, frame, split):
+        return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)[2]
 
     def assigned(self, dates):
         return dates.str[:4].astype(int)
@@ -4711,9 +4794,9 @@ class _FoldPlan(_SplitPlan):
     def calendar(self, frame):
         return sorted(frame[self.date].unique())
 
-    def _val(self, frame, fold):
+    def evaluation(self, frame, split):
         """Return a fold's evaluation rows, warm-up ones cut at the scored seam."""
-        date = frame[self.date]
+        fold, date = self.folds[split], frame[self.date]
         rows = (date >= fold["val_start"]) & (date <= fold["val_end"])
         if fold["role"] == "warmup":
             rows &= ~label_reaches(frame[self.end], self.scored_start)
@@ -4727,11 +4810,7 @@ class _FoldPlan(_SplitPlan):
         train = (date >= fold["train_start"]) & (date <= fold["train_end"])
         return (frame[train & (date < start) & ~label_reaches(end, start)],
                 frame[train & (date >= start) & ~label_reaches(end, fold["val_start"])],
-                self._val(frame, fold))
-
-    def expected(self, frame, ids):
-        import pandas as pd
-        return pd.concat([self._val(frame, self.folds[i]) for i in ids])
+                self.evaluation(frame, split))
 
     def assigned(self, dates):
         import pandas as pd
@@ -4779,17 +4858,19 @@ class ChronologicalCDFStudy:
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
             "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
-            "wing_metrics", "fold_table", "tail_weight", "notes"}
+            "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows", "notes"}
     #: The per-row ``crps + tail_weight * tail_crps`` column, scored (and the
     #: development selection and paired intervals extended to it) only when
     #: ``tail_weight`` is declared (ADR-0236).
     WEIGHTED_METRIC = "weighted_crps"
+    #: The task-admission ledger every run writes beside ``counts.json`` (ADR-0236 amendment).
+    ADMISSION_FILE = "admission.json"
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
                     "frozen_variants", "promotion_guard", "decision_acceptance",
-                    "wing_metrics", "fold_table", "tail_weight"}
+                    "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows"}
         folds = "fold_table" in config
         year_keys = {"years", "development_end"}
         missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
@@ -4808,6 +4889,9 @@ class ChronologicalCDFStudy:
             if type(weight) not in (int, float) or not math.isfinite(weight) or weight <= 0:
                 raise ValueError("tail_weight must be a finite number above zero")
             self._pin_tail_weight(config)
+        minimum = config.get("min_task_fit_rows", DEFAULT_MIN_TASK_FIT_ROWS)
+        if type(minimum) is not int or minimum < 1:
+            raise ValueError("min_task_fit_rows must be an integer >= 1")
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
@@ -4815,12 +4899,8 @@ class ChronologicalCDFStudy:
                     or ("equivalence" in spec and (not isinstance(spec["equivalence"], str)
                                                    or not spec["equivalence"]))):
                 raise ValueError("invalid model specification keys or pooled flag")
-            if spec["calibrate"]:
-                module, cls = spec["class"].split(":")
-                estimator = getattr(importlib.import_module(module), cls)
-                if (getattr(estimator, "consumes_calibration_labels", False)
-                        or spec["params"].get("patience") is not None):
-                    raise ValueError("estimator consumes calibration labels; second map refused")
+            if spec["calibrate"] and self._consumes_calibration(spec):
+                raise ValueError("estimator consumes calibration labels; second map refused")
         frozen = config.get("frozen_variants")
         if (frozen is not None
                 and (set(frozen) != set(config["models"])
@@ -4874,6 +4954,50 @@ class ChronologicalCDFStudy:
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
         return self.config
+
+    @staticmethod
+    def _consumes_calibration(spec):
+        """Say whether a model's fit reads its calibration rows' labels (a monitor or a map)."""
+        module, cls = spec["class"].split(":")
+        estimator = getattr(importlib.import_module(module), cls)
+        return bool(getattr(estimator, "consumes_calibration_labels", False)
+                    or spec["params"].get("patience") is not None)
+
+    def _reads_group_calibration(self, spec):
+        """Say whether a model needs the group's own calibration rows in a split.
+
+        A calibrated variant maps through them; a per-group (unpooled) fit that
+        consumes calibration labels monitors on them. A pooled fit monitors on the
+        pooled calibration slice, never one group's.
+        """
+        return spec["calibrate"] or (not spec.get("pooled", False)
+                                     and self._consumes_calibration(spec))
+
+    def _admission(self, frame, calendar):
+        """Return each split's band counts and write the run's admission ledger."""
+        counts = {split: self.plan.band_counts(frame, split, calendar) for split in self.plan.ids()}
+        rows = [row for split, n in counts.items() for row in self.plan.admission(n, split)]
+        ledger = {"min_task_fit_rows": self.plan.min_task_fit_rows, "split": self.plan.column,
+                  "not_evaluated": rows,
+                  "dropped_rows": {
+                      "calibration": sum(r["dropped_calibration_rows"] for r in rows),
+                      "evaluation": sum(r["dropped_evaluation_rows"] for r in rows)}}
+        (Path(self.config["output"])/self.ADMISSION_FILE).write_text(
+            json.dumps(ledger, indent=2, default=int))
+        return counts
+
+    def _evaluated(self, counts, group):
+        """Say whether a group is admitted in a split and holds an evaluation row there."""
+        return (group in counts.index and group not in self.plan.waiting(counts)
+                and counts.at[group, "evaluation"] > 0)
+
+    @staticmethod
+    def _transform(imputer, band, features):
+        """Impute a band's features; an empty band gives an empty matrix, not a refusal."""
+        import numpy as np
+        if band.empty:
+            return np.empty((0, len(features)))
+        return imputer.transform(band[features])
 
     @staticmethod
     def _pin_tail_weight(config):
@@ -5021,6 +5145,9 @@ class ChronologicalCDFStudy:
         c = self.config
         result = {}
         for label, band in (("training", fit), ("calibration", cal), ("validation", val)):
+            if band.empty:  # an admitted group's calibration band may be (ADR-0236 amendment)
+                result[label] = {"n": 0, "scope": "reported_group_slice", "dates": 0}
+                continue
             bx = imputer.transform(band[c["features"]])
             by = (band[c["target"]]/band[c["reference"]]).to_numpy()
             context = self._decision_context_rows(band)
@@ -5424,15 +5551,23 @@ class ChronologicalCDFStudy:
         results, counts, pooled_cache = [], [], {}
         equivalence = {}
         calendar = self.plan.calendar(frame)
+        admitted = self._admission(frame, calendar)
         for group, group_frame in frame.groupby(c["group"]):
             for split in self.plan.ids():
+                if not self._evaluated(admitted[split], group):
+                    continue  # waiting, or nothing to score: in the admission ledger
                 fit, cal, val = self.plan.bands(group_frame, split, calendar)
-                if min(len(fit), len(cal), len(val)) < 1:
-                    raise ValueError(f"empty band: {group} {split}")
+                if cal.empty:
+                    readers = [n for n, s in c["models"].items() if self._reads_group_calibration(s)]
+                    if readers:
+                        raise ValueError(f"empty calibration band: {group} {split}, which "
+                                         f"{readers} read")
                 if c.get("wing_metrics"):
                     # Refuse malformed wing intervals before any model is fitted.
                     for band in (fit, cal, val):
-                        DecisionRegionScores(self._decision_context_rows(band)).segment_arrays()
+                        if len(band):
+                            DecisionRegionScores(
+                                self._decision_context_rows(band)).segment_arrays()
                 count = {"group": group, self.plan.column: split}
                 for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
                     count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
@@ -5449,8 +5584,13 @@ class ChronologicalCDFStudy:
                     pooled = spec.get("pooled", False)
                     new_fit = not (pooled and key in pooled_cache)
                     if new_fit:
-                        model_fit, model_cal, _ = self.plan.bands(
-                            frame, split, calendar) if pooled else (fit, cal, val)
+                        if pooled:
+                            model_fit, model_cal, _ = self.plan.bands(frame, split, calendar)
+                            # A waiting group's fit rows train; its monitor rows wait.
+                            model_cal = model_cal[~model_cal[c["group"]].isin(
+                                self.plan.waiting(admitted[split]))]
+                        else:
+                            model_fit, model_cal = fit, cal
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
                         for band in (model_fit, model_cal, val):
@@ -5462,7 +5602,7 @@ class ChronologicalCDFStudy:
                                 self._decision_context_rows(model_fit),
                                 self._decision_context_rows(model_cal))
                         model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
-                                  imputer.transform(model_cal[c["features"]]),
+                                  self._transform(imputer, model_cal, c["features"]),
                                   (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
                         if hasattr(model, "fit_context"):
                             model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
@@ -5487,7 +5627,7 @@ class ChronologicalCDFStudy:
                         model, imputer, fit_count = pooled_cache[key]
                     for band in (cal, val):
                         model._validate_x(band[c["features"]].to_numpy())
-                    xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
+                    xc, xv = [self._transform(imputer, b, c["features"]) for b in (cal, val)]
                     count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
                     if hasattr(model, "curve_decision_context"):
                         raw = model.curve_decision_context(
@@ -6154,7 +6294,7 @@ class CDFHyperparameterStudy:
             if stage == "report":
                 if partition is not None:
                     raise ValueError("report does not accept partition")
-                parts, paths = [], []
+                parts, paths, admission = [], [], {}
                 for name, years in self.partitions.items():
                     path = self.output/"evaluate"/name
                     record = self._load(path, identity, "evaluate", name)
@@ -6164,11 +6304,14 @@ class CDFHyperparameterStudy:
                     self._check_scores(part, self._expected(dev if name == "development" else frame, years), models)
                     parts.append(part)
                     paths.append(path)
+                    admission[name] = json.loads(
+                        (path/ChronologicalCDFStudy.ADMISSION_FILE).read_text())
                 scores = pd.concat(parts, ignore_index=True)
                 path = self.output/"report"
                 path.mkdir(parents=True, exist_ok=False)
                 study = ChronologicalCDFStudy({**c, "output": str(path), "models": models})
                 result = study.summarize(scores, selection["variants"])
+                self._write(path/ChronologicalCDFStudy.ADMISSION_FILE, admission)
                 scores.to_parquet(path/"scores.parquet", index=False)
                 self._write(path/"convergence.json", self._audit(paths, frame, diagnostic))
                 self._write(path/"public_probes.json", {

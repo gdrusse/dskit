@@ -129,7 +129,7 @@ dskit/onboarding/
 ├── __init__.py        public surface (curated re-exports only, no logic)
 ├── base.py            assets re-exports + durable writes + file_digest + parse_utc
 ├── default_model.py   the ratified P2 model as data (pin: a8775903...)
-├── layout.py          OnboardingRoot — every path; create-exactly-once
+├── layout.py          OnboardingRoot — every path; create-exactly-once; content_token / files_token (memo keys)
 ├── connector.py       Connector ABC, envelope checks, config default-deny, resolve
 ├── state.py           load_state / save_state — (source, stream, mode) cursors
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)

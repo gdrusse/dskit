@@ -24,7 +24,8 @@ from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
-           "OPTION_SOURCE_KEYS", "PRICE_FIELDS", "PriceCalendarCDFPanel", "READERS",
+           "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PRICE_FIELDS", "PriceCalendarCDFPanel",
+           "READERS",
            "panel_class", "panel_convention_problems", "panel_reader_problems",
            "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
@@ -2084,6 +2085,8 @@ PRICE_FIELDS = ("date", "close", "open", "high", "low", "volume", "dividend_amou
                 "split_coefficient")
 _PRICE_REQUIRED = ("date", "close")
 _CALENDAR_READER = "price_calendar"
+#: Where an HPO experiment keeps the panel its first stage built, under ``experiment.output``.
+PANEL_CACHE_DIR = "panel-cache"
 _KEYED_KEYS = ("key", "tables", "age_suffix", "missing_suffix")
 _ACTION_KEYS = ("max_dividend_yield", "max_abs_jump", "windows")
 
@@ -3074,6 +3077,92 @@ class ExactExpiryCDFPanel:
             result["keyed_tables"] = self.keyed_provenance
         return result
 
+    def _locations(self):
+        """Return the store roots and the existing filesystem paths this config names.
+
+        Every ``root`` value, at any depth, is a store root (a run config's one
+        absolute-path convention); any other string naming an existing file or
+        directory is a data path (a legacy entry). The whole config is walked, so a
+        key added later is covered without editing this; the working directory and
+        its parents are never a data path.
+
+        Returns
+        -------
+        tuple of list
+            Sorted absolute roots, and sorted absolute paths that are not roots.
+        """
+        import os
+
+        roots, paths, here = set(), set(), os.path.abspath(os.curdir)
+
+        def walk(value, key):
+            if isinstance(value, dict):
+                for name, item in value.items():
+                    if name != "notes":
+                        walk(item, name)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, key)
+            elif isinstance(value, str) and value:
+                where = os.path.abspath(value)
+                if key == "root":
+                    roots.add(where)
+                elif os.path.exists(where) and os.path.commonpath([where, here]) != where:
+                    paths.add(where)
+
+        walk(self.config, None)
+        return sorted(roots), sorted(paths-roots)
+
+    def cache_identity(self):
+        """Return everything this panel's read is a function of (ADR-0236 amendment).
+
+        Returns
+        -------
+        dict
+            ``reader`` (the class), ``config`` (the config's identity hash),
+            ``holdout_start``, ``code`` (every module of dskit and of this package),
+            ``environment`` (interpreter and installed distributions), ``stores`` (each
+            named root's content token) and ``paths`` (a stat token over every other
+            existing path the config names).
+        """
+        import sys
+        from types import SimpleNamespace
+
+        import dskit
+        from dskit.onboarding import OnboardingRoot, files_token
+        from dskit.pipeline.base import config_hash
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+
+        roots, paths = self._locations()
+        return {"reader": f"{type(self).__module__}:{type(self).__qualname__}",
+                "config": config_hash(SimpleNamespace(to_obj=lambda: self.config), exclude=()),
+                "holdout_start": self.holdout_start,
+                "code": ParquetFrameCache.code_digest(dskit, sys.modules[__package__]),
+                "environment": ParquetFrameCache.environment(),
+                "stores": {root: OnboardingRoot(root).content_token() for root in roots},
+                "paths": files_token(paths)}
+
+    def cached_read(self, directory):
+        """Return ``(read(), provenance())``, reusing the panel a same-identity read stored.
+
+        Parameters
+        ----------
+        directory : str or Path
+            The cache slot (a :class:`~dskit.pipeline.libs.parquet.ParquetFrameCache`).
+
+        Returns
+        -------
+        tuple
+            The panel and its provenance as stored, so the building call and every
+            reuse hand a study the same frame and the same dict.
+        """
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+
+        frame, provenance, reused = ParquetFrameCache(directory).load_or_build(
+            self.cache_identity, lambda: (self.read(), self.provenance()))
+        print("panel", "reused" if reused else "built", frame.shape, flush=True)
+        return frame, provenance
+
 
 class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     """Build the panel from one daily price file per symbol, with no option surface (ADR-0230).
@@ -3758,12 +3847,13 @@ def _main():
     fold_table = config.get("study", {}).get("fold_table")
     adapter = panel_class(config["data"])(
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
-    frame = adapter.read()
-    provenance = adapter.provenance()
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:
         if not args.stage:
             parser.error("HPO requires an explicit --stage")
+        # Every stage reads the panel the first one built (ADR-0236 amendment).
+        frame, provenance = adapter.cached_read(
+            Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
         CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
                                             partition=args.partition, provenance=provenance)
         if config.get("data", {}).get("decision_regions"):
@@ -3772,6 +3862,8 @@ def _main():
         return
     if args.stage or args.partition:
         parser.error("stage/partition require an experiment document")
+    frame = adapter.read()
+    provenance = adapter.provenance()
     output = Path(config["study"]["output"])
     if output.exists():
         raise FileExistsError(output)

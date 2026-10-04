@@ -3447,6 +3447,166 @@ def test_fold_table_pooled_models_fit_once_per_fold_on_the_pooled_bands(tmp_path
         assert max(train_t) < min(monitor_t)
 
 
+# ---- ADR-0236 amendment (owner option B, 2026-10-04): a task enters once seen ----------------
+
+LATE = '2020-01-24'  # fold 1's val_start: B lists here, so folds 1-2 hold no B fit row
+
+
+def _late_rows(start=LATE, missing=()):
+    """Group A on every day; group B only from ``start``, and never on the ``missing`` days."""
+    return [r for r in _fold_rows(groups=('A', 'B'))
+            if r['unit'] == 'A' or (r['date'] >= start and r['date'] not in missing)]
+
+
+def _restated_bands(fold, days, ends, seam, cal_n=5):
+    """A fold's fit, calibration and evaluation dates, restated from ADR-0223's rule."""
+    train = [d for d in days if fold['train_start'] <= d <= fold['train_end']]
+    tail = train[-cal_n:]
+    fit = [d for d in train[:-cal_n] if ends[d] < tail[0]]
+    cal = [d for d in tail if ends[d] < fold['val_start']]
+    val = [d for d in days if fold['val_start'] <= d <= fold['val_end']]
+    if fold['role'] == 'warmup':
+        val = [d for d in val if ends[d] < seam]
+    return fit, cal, val
+
+
+class _TaskSpyCDF(HorizonEmpiricalCDF):
+    """Records the task flag (the last input) of every fit and monitor row it is given."""
+    seen = []
+
+    def fit(self, x, y, cal_x, cal_y):
+        type(self).seen.append((set(np.array(x)[:, -1]), set(np.array(cal_x)[:, -1])))
+        return super().fit(x, y, cal_x, cal_y)
+
+
+def _admission_config(tmp_path, spec, minimum=None, calibrate=False):
+    config = _fold_config(tmp_path, spec)
+    config['features'] = ['h', 'scale', 't', 'is_B']
+    config['models']['reference']['calibrate'] = calibrate
+    config['models']['spy'] = {'class': 'dskit.pipeline.libs.predictive_cdf:_TaskSpyCDF',
+                               'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+                               'calibrate': False, 'pooled': True}
+    if minimum is not None:
+        config['min_task_fit_rows'] = minimum
+    return config
+
+
+@pytest.mark.parametrize(('minimum', 'waits'), [(None, [1, 2]), (1, [1, 2]), (4, [1, 2, 3])])
+def test_a_late_task_waits_until_its_fit_band_holds_min_task_fit_rows(
+        tmp_path, monkeypatch, minimum, waits):
+    rows = _late_rows()
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    _TaskSpyCDF.seen = []
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, minimum)).run(frame)
+    days, ends = sorted(frame.date.unique()), dict(zip(frame.date, frame.end))
+    late = set(frame[frame.unit == 'B'].date)
+    seam, floor = plan['metrics']['scored_start'], minimum or 1
+    want, ledger = [], json.loads((tmp_path/'out/admission.json').read_text())
+    assert len(_TaskSpyCDF.seen) == len(plan['records'])  # the pooled fit still runs once a fold
+    for fold, (fit_flags, monitor_flags) in zip(plan['records'], _TaskSpyCDF.seen):
+        fit, cal, val = [[d for d in band if d in late]
+                         for band in _restated_bands(fold, days, ends, seam)]
+        joined = len(fit) >= floor
+        got = scores[(scores.fold == fold['fold']) & (scores.unit == 'B')]
+        assert set(got.date) == (set(val) if joined else set()), fold['fold']
+        assert set(got.model) == ({'reference', 'spy'} if joined and val else set())
+        assert (1 in monitor_flags) == (joined and bool(cal))   # the monitor waits too
+        assert (1 in fit_flags) == bool(fit)                    # its fit rows never do
+        if not joined:
+            want.append({'group': 'B', 'fold': fold['fold'], 'reason': 'waiting',
+                         'fit_rows': len(fit), 'calibration_rows': len(cal),
+                         'evaluation_rows': len(val), 'dropped_calibration_rows': len(cal),
+                         'dropped_evaluation_rows': len(val)})
+    assert [w['fold'] for w in want] == waits                   # the fixture exercises the rule
+    assert ledger == {'min_task_fit_rows': floor, 'split': 'fold', 'not_evaluated': want,
+                      'dropped_rows': {
+                          'calibration': sum(w['dropped_calibration_rows'] for w in want),
+                          'evaluation': sum(w['dropped_evaluation_rows'] for w in want)}}
+    assert not (scores.unit == 'A').groupby(scores.fold).sum().eq(0).any()  # A never waits
+
+
+@pytest.mark.parametrize('value', [0, -1, True, 1.5, '4', None])
+def test_min_task_fit_rows_is_an_integer_of_at_least_one(tmp_path, value):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    config['min_task_fit_rows'] = value
+    with pytest.raises(ValueError, match='min_task_fit_rows'):
+        ChronologicalCDFStudy(config)
+    config['min_task_fit_rows'] = 1
+    ChronologicalCDFStudy(config)
+
+
+def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibration_is_scored(
+        tmp_path, monkeypatch):
+    # B misses 01-28..02-02: fold 2 holds no B evaluation row; fold 3 holds no B calibration row.
+    missing = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01', '2020-02-02'}
+    rows = _late_rows(start='2020-01-01', missing=missing)
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    _TaskSpyCDF.seen = []
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    b = scores[scores.unit == 'B']
+    assert 2 not in set(b.fold) and set(b[b.fold == 3].date) == {
+        '2020-02-03', '2020-02-04', '2020-02-05', '2020-02-06', '2020-02-07'}
+    counts = json.loads((tmp_path/'out/counts.json').read_text())
+    entry = next(c for c in counts if c['group'] == 'B' and c['fold'] == 3)
+    assert entry['cal']['n'] == 0 and entry['val']['n'] == 5
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['not_evaluated'] == [{
+        'group': 'B', 'fold': 2, 'reason': 'no_evaluation_rows', 'fit_rows': 14,
+        'calibration_rows': 5, 'evaluation_rows': 0, 'dropped_calibration_rows': 0,
+        'dropped_evaluation_rows': 0}]
+    calibrated = _admission_config(tmp_path, spec, 4, calibrate=True)
+    calibrated['output'] = str(tmp_path/'calibrated')
+    with pytest.raises(ValueError, match='empty calibration band: B 3'):
+        ChronologicalCDFStudy(calibrated).run(frame)
+
+
+def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    study = dict(config['study'], output=str(tmp_path/'years'))
+    frame = frame[(frame.unit == 'A') | (frame.date >= '2016-01-01')]
+    scores = ChronologicalCDFStudy(study).run(frame)
+    assert set(scores[scores.unit == 'B'].year) == {2019}
+    ledger = json.loads((tmp_path/'years/admission.json').read_text())
+    assert ledger['not_evaluated'] == [{
+        'group': 'B', 'year': 2017, 'reason': 'waiting', 'fit_rows': 0,
+        'calibration_rows': 5, 'evaluation_rows': 5, 'dropped_calibration_rows': 5,
+        'dropped_evaluation_rows': 5}]
+
+
+def test_hpo_expected_cells_stage_outputs_and_report_carry_the_admission(tmp_path):
+    config, _, plan = _fold_hpo_fixture(tmp_path)
+    rows = _late_rows()
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config['study']['min_task_fit_rows'] = 4
+    config['experiment']['expected_cells'] = {'development': {'A': [1]},
+                                              'evaluation': {'A': [1], 'B': [1]}}
+    study = CDFHyperparameterStudy(config)
+    provenance = {'sources': {'test': 'pinned'}}
+    for stage, partition in (('search', 'separate'), ('select', None),
+                             ('evaluate', 'development'), ('evaluate', 'later'),
+                             ('report', None)):
+        study.run(frame, stage=stage, partition=partition, provenance=provenance)
+    search = json.loads((tmp_path/'hpo/search/separate/admission.json').read_text())
+    assert [(r['group'], r['fold']) for r in search['not_evaluated']] == [('B', 1)]
+    report = json.loads((tmp_path/'hpo/report/admission.json').read_text())
+    assert {name: [(r['group'], r['fold'], r['reason']) for r in part['not_evaluated']]
+            for name, part in report.items()} == {
+        'development': [('B', 1, 'waiting')],
+        'later': [('B', 2, 'waiting'), ('B', 3, 'waiting')]}
+    later = pd.read_parquet(tmp_path/'hpo/evaluate/later/scores.parquet')
+    assert set(later[later.unit == 'B'].fold) == {4, 5, 6}
+    config['experiment']['expected_cells']['development']['B'] = [1]
+    config['experiment']['output'] = str(tmp_path/'hpo-stale-cells')
+    with pytest.raises(ValueError, match='development cell set mismatch'):
+        CDFHyperparameterStudy(config).run(frame, stage='search', partition='separate',
+                                           provenance=provenance)
+
+
 WINGS = [[-2.5, -.5], [.5, 2.5]]
 
 

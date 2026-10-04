@@ -57,7 +57,7 @@ from .connector import (
 )
 from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
-from .layout import OnboardingRoot
+from .layout import OnboardingRoot, files_token
 from .leads import LeadGrid
 from .observations import (
     iter_stream,
@@ -104,6 +104,7 @@ __all__ = [
     "check_message",
     "dir_digest",
     "file_digest",
+    "files_token",
     "find_active_source",
     "find_snapshot_dir",
     "load_state",

@@ -27,6 +27,8 @@ Import cost: stdlib + :mod:`dskit.assets` + this package.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 
 from dskit.assets.model import AssetModel
@@ -42,10 +44,46 @@ from .base import (
 )
 from .default_model import onboarding_model
 
-__all__ = ["OnboardingRoot"]
+__all__ = ["OnboardingRoot", "READ_SUBDIRS", "files_token"]
 
 #: The top-level directories ``create`` builds — the whole P2 estate.
 _SUBDIRS = ("store", "raw", "observations", "forecasts", "state", "published")
+#: The directories whose committed files a read consumes: snapshots, rows, forecasts.
+READ_SUBDIRS = ("raw", "observations", "forecasts")
+
+
+def files_token(paths) -> str:
+    """Return a digest of every file under ``paths`` by path, size and modification time.
+
+    A directory is walked (links are not followed into); a missing path
+    is recorded as missing. Nothing is opened: the token is cheap, and it
+    moves when a file is added, removed, resized or touched, which for
+    write-once acquisitions is every change a reader could see.
+
+    Parameters
+    ----------
+    paths : iterable of str
+        Files or directories; their order does not matter.
+
+    Returns
+    -------
+    str
+        A sha256 hex digest.
+    """
+    digest = hashlib.sha256()
+    for top in sorted({os.path.abspath(p) for p in paths}):
+        entries = [[top, None, None]] if not os.path.exists(top) else []
+        walk = os.walk(top) if os.path.isdir(top) else [(os.path.dirname(top), [],
+                                                         [os.path.basename(top)])]
+        for folder, dirs, files in walk:
+            dirs.sort()
+            for name in sorted(files):
+                path = os.path.join(folder, name)
+                if os.path.exists(path):
+                    stat = os.stat(path)
+                    entries.append([path, stat.st_size, stat.st_mtime_ns])
+        digest.update(json.dumps(entries).encode() + b"\n")
+    return digest.hexdigest()
 
 
 class OnboardingRoot:
@@ -189,6 +227,22 @@ class OnboardingRoot:
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)
+
+    def content_token(self) -> str:
+        """Return a token that moves whenever a read of this root could read something new.
+
+        The key of a memo built from the root's acquisitions (a cached
+        panel, ADR-0236 amendment): equal tokens mean no snapshot was
+        added, removed or touched since. Only directory entries are read.
+
+        Returns
+        -------
+        str
+            :func:`files_token` over the root's :data:`READ_SUBDIRS`;
+            ``state/``, ``published/`` and ``store/`` are bookkeeping no
+            read consumes, so they never move it.
+        """
+        return files_token(os.path.join(self.root, sub) for sub in READ_SUBDIRS)
 
     # -- path helpers: every path in the estate comes from here ------------
 

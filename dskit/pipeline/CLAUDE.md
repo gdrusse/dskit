@@ -818,7 +818,7 @@ dskit/pipeline/
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228),
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment)
 ├── README.md          user-facing docs

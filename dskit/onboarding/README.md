@@ -370,7 +370,7 @@ dskit/onboarding/
 ├── __init__.py        public surface: OnboardingRoot, Connector, run_acquisition, ...
 ├── base.py            reuse from assets (hash, errors) + fsync durability + parse_utc
 ├── default_model.py   the ratified P2 model as data (hash-pinned to the ADR doc)
-├── layout.py          OnboardingRoot: every path in the estate
+├── layout.py          OnboardingRoot: every path in the estate; content_token / files_token (memo keys, ADR-0236 amendment)
 ├── connector.py       Connector ABC, message envelope, check_config, resolve_connector
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set

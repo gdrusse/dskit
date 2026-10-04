@@ -597,7 +597,7 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228)
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment)
 ├── README.md          user-facing docs
 └── AGENTS.md          this file
 ```

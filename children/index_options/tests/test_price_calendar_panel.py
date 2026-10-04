@@ -178,6 +178,47 @@ def test_the_provenance_names_the_price_file_hash(make):
     assert panel.provenance()["sha256"] == {"price:AAA": finger["sha256"]}
 
 
+# -- the panel cache (ADR-0236 amendment): one build per data identity, reused by every stage ------
+
+def test_a_cached_read_is_built_once_and_reused_until_an_input_moves(
+        make, tmp_path, blob_store, monkeypatch):
+    config = make().config                  # acquires the price source once
+    cache, built, read = tmp_path/"panel-cache", [], PriceCalendarCDFPanel.read
+    monkeypatch.setattr(PriceCalendarCDFPanel, "read", lambda self: built.append(1) or read(self))
+
+    def stage(data=config, holdout=None):
+        return PriceCalendarCDFPanel(data, holdout_start=holdout).cached_read(cache)
+
+    frame, provenance = stage()
+    again, provenance_again = stage()
+    assert built == [1] and provenance_again == provenance
+    pd.testing.assert_frame_equal(again, frame)
+    pd.testing.assert_frame_equal(frame, read(PriceCalendarCDFPanel(config)))  # it IS the read
+    stage({**config, "lags": 6})            # a data-config change rebuilds
+    assert built == [1, 1]
+    locked, _ = stage(holdout=DATES[80])    # so does a holdout, whose rows it never serves
+    assert built == [1, 1, 1]
+    assert (locked.quote_date < DATES[80]).all() and (locked.settlement_date < DATES[80]).all()
+    assert stage(holdout=DATES[80]) and built == [1, 1, 1]
+    folder = tmp_path/"prices-src"
+    _price_table(close={DATES[50]: CLOSE[DATES[50]]*1.01}).to_parquet(folder/"aaa"/"p.parquet")
+    blob_store.add("prices", folder)        # a new snapshot of a read source rebuilds
+    moved, _ = stage(holdout=DATES[80])
+    assert built == [1, 1, 1, 1]
+    assert moved.loc[moved.quote_date == DATES[50], "spot"].tolist() == pytest.approx(
+        [CLOSE[DATES[50]]*1.01])
+
+
+def test_a_cached_read_keys_on_every_store_root_and_existing_path_the_config_names(make, tmp_path):
+    panel = make()
+    legacy = tmp_path/"legacy.parquet"
+    legacy.write_bytes(b"x")
+    table = {"root": str(tmp_path/"elsewhere"), "path": str(legacy), "relpath": "a/b.parquet"}
+    roots, paths = PriceCalendarCDFPanel({**panel.config, "extra": table})._locations()
+    assert roots == sorted({panel.config["root"], str(tmp_path/"elsewhere")})
+    assert paths == [str(legacy)]           # a store relpath names no file here
+
+
 # -- per-symbol price sources (ADR-0236): disjoint universes in separate onboarded sources --------
 
 def _second_source(tmp_path, blob_store, table):

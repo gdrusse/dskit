@@ -5,7 +5,47 @@ import os
 import pytest
 
 from dskit.assets.base import AssetError
-from dskit.onboarding import OnboardingRoot
+from dskit.onboarding import OnboardingRoot, files_token
+
+
+def _put(path, text="a\n"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_content_token_moves_with_every_committed_file_and_only_those(tmp_path):
+    # ADR-0236 amendment: the key of a memo built from a root's acquisitions.
+    ob, base = OnboardingRoot.create(str(tmp_path / "ob")), tmp_path / "ob"
+    first = ob.content_token()
+    assert ob.content_token() == first
+    for sub in ("state", "published", "store"):
+        _put(base / sub / "x" / "noise.json")
+    assert ob.content_token() == first  # cursors, outbox and catalog are not read data
+    seen = [first]
+    member = _put(base / "observations" / "src" / "20260101T000000Z-backfill-a" / "bars.jsonl")
+    seen.append(ob.content_token())  # a new acquisition
+    stat = member.stat()
+    os.utime(member, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000))
+    seen.append(ob.content_token())  # a touched member
+    _put(base / "raw" / "src" / "20260102T000000Z-backfill-b" / "manifest.json")
+    seen.append(ob.content_token())
+    _put(base / "forecasts" / "src" / "20260103T000000Z-backfill-c" / "f.jsonl")
+    seen.append(ob.content_token())
+    member.unlink()
+    seen.append(ob.content_token())  # a removed member
+    assert len(set(seen)) == len(seen)
+
+
+def test_files_token_walks_directories_and_names_a_missing_path(tmp_path):
+    table = _put(tmp_path / "a.parquet")
+    folder = tmp_path / "archive"
+    deep = _put(folder / "x" / "y.bin")
+    first = files_token([str(table), str(folder)])
+    assert files_token([str(folder), str(table)]) == first  # a set of paths, not a sequence
+    deep.write_text("longer\n")
+    assert files_token([str(table), str(folder)]) != first
+    assert files_token([str(tmp_path / "gone")]) != files_token([])  # absence is a state too
 
 
 def test_create_builds_the_whole_estate(tmp_path):
