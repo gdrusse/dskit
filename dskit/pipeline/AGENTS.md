@@ -502,6 +502,10 @@ on it without breaking its rulings.
   inside `run()`.
 - The synthetic `stat_test` is owned in DEMO registries only; never
   register synthetic nodes into `DEFAULT_NODE_KINDS`.
+- **`wing_twcrps` is NOT the study's `tail_crps`** (ADR-0236): it weighs each
+  wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
+  Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
+  `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
 
 ## Contents
 

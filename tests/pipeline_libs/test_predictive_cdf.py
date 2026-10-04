@@ -1696,13 +1696,16 @@ def test_decision_hpo_ranks_local_score_not_global_crps(tmp_path):
     assert rank[("candidate", "raw")] == pytest.approx(.5)
 
 
-@pytest.mark.parametrize("kind", ["mlp", "gru"])
+@pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
 def test_torch_cdf_encoders_are_row_local_and_calibration_does_not_train(kind):
     torch = pytest.importorskip("torch")
     torch.set_num_threads(1)
-    encoder = {"kind": "mlp"} if kind == "mlp" else {
-        "kind": "gru", "sequence_indices": [[2], [1], [0]],
-        "context_indices": [3], "hidden_size": 4, "num_layers": 1}
+    sequence = {"sequence_indices": [[2], [1], [0]], "context_indices": [3]}
+    encoder = {"mlp": {"kind": "mlp"},
+               "gru": {"kind": "gru", **sequence, "hidden_size": 4, "num_layers": 1},
+               "lstm": {"kind": "lstm", **sequence, "hidden_size": 4, "num_layers": 1},
+               "cnn": {"kind": "cnn", **sequence, "channels": 3, "kernel_size": 2,
+                       "dilations": [1, 2], "pooling": "last"}}[kind]
     losses = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.},
               {"kind": "decision_log", "weight": .2}]
     x = np.random.default_rng(1).normal(size=(6, 4))
@@ -1726,8 +1729,8 @@ def test_torch_cdf_encoders_are_row_local_and_calibration_does_not_train(kind):
     assert report["composite"] == pytest.approx(sum(
         term["mean"]*term["weight"] for term in report["terms"].values()))
     assert np.isfinite(report["composite"])
-    # Genuine ordered sequence: flipping lag columns alters the fitted GRU forecast.
-    if kind == "gru":
+    # Genuine ordered sequence: flipping lag columns alters a fitted sequence forecast.
+    if kind != "mlp":
         changed = x.copy()
         changed[:, :3] = changed[:, :3][:, ::-1]
         assert not np.allclose(model.curve(changed).cdf([0]), model.curve(x).cdf([0]))
@@ -1753,7 +1756,7 @@ def test_torch_loss_proper_scores_and_eligible_denominator():
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda e,terms: e.update(kind="lstm"),
+    lambda e,terms: e.update(kind="transformer"),
     lambda e,terms: e.update(unknown=1),
     lambda e,terms: terms.append(dict(terms[0])),
     lambda e,terms: terms[0].update(weight=-1),
@@ -2002,11 +2005,14 @@ def test_torch_cdf_feature_subset_refuses_mixed_encoder_positions_and_bad_indice
         _subset_fit({"kind": "mlp"}, [0, 0], x, y)
     with pytest.raises(ValueError, match="feature indices outside input"):
         _subset_fit({"kind": "mlp"}, [0, 9], x, y)
-    # Head routing and the legacy left-tail penalty stay refused beside the subset.
-    for refused in ({"head_features": [0, 1]}, {"left_cdf_weight": .5}):
-        with pytest.raises(ValueError, match="head_features and left_cdf_weight"):
-            predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
-                                    feature_indices=[2, 3], device="cpu", **refused)
+    # The legacy left-tail penalty stays refused beside the subset (ADR-0236 lifts
+    # the head refusal; a head column inside the subset is refused instead).
+    with pytest.raises(ValueError, match="left_cdf_weight"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
+                                feature_indices=[2, 3], device="cpu", left_cdf_weight=.5)
+    with pytest.raises(ValueError, match="excluded from feature_indices"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
+                                feature_indices=[2, 3], device="cpu", head_features=[3, 4])
 
 
 @pytest.mark.parametrize("global_kind", ["nll", "crps"])
@@ -2457,8 +2463,9 @@ def test_losses_registry_adds_crps_and_wing_with_declared_scopes():
     assert {"nll", "crps", "decision_brier", "decision_log", "wing_twcrps"} <= set(registry)
     assert {k: registry[k].scope for k in registry} == {
         "nll": "global", "crps": "global", "decision_brier": "local",
-        "decision_log": "local", "wing_twcrps": "local"}
+        "decision_log": "local", "wing_twcrps": "local", "tail_crps": "local"}
     assert registry["wing_twcrps"].context_keys == ("lower", "upper", "density")
+    assert registry["tail_crps"].context_keys == registry["wing_twcrps"].context_keys
     assert registry["decision_brier"].context_keys == ("thresholds", "weights")
     assert registry["nll"].context_keys == () == registry["crps"].context_keys
 
@@ -3472,3 +3479,489 @@ def test_the_fixed_wing_context_trains_the_composite_loss():
                                     losses=[{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}])
     model.fit_decision_context(rows, rows)
     assert model._training_context(np.zeros((2, 1)))["weights"].shape[0] == 2
+
+
+# ---- ADR-0236: the pooled zoo -- heads, lstm/cnn, tail_crps, BoostedTorchCDF,
+# ---- and the weighted_crps selection metric ---------------------------------
+
+_ZOO_LOSSES = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+_ZOO_SEQUENCE = {"sequence_indices": [[2], [1], [0]], "context_indices": [3]}
+_ZOO_ENCODERS = {
+    "mlp": {"kind": "mlp"},
+    "gru": {"kind": "gru", **_ZOO_SEQUENCE, "hidden_size": 4, "num_layers": 1},
+    "lstm": {"kind": "lstm", **_ZOO_SEQUENCE, "hidden_size": 4, "num_layers": 2},
+    "cnn": {"kind": "cnn", **_ZOO_SEQUENCE, "channels": 3, "kernel_size": 2,
+            "dilations": [1, 2], "pooling": "last"},
+}
+
+
+def _zoo_context(n, prefix="r"):
+    """The study's own rows with no decision_context: every row gets the fixed WINGS."""
+    frame = pd.DataFrame({"symbol": ["A"]*n, "day": [f"{prefix}{i}" for i in range(n)]})
+    return _context_study()._decision_context_rows(frame)
+
+
+def _zoo_torch(kind, **settings):
+    return predictive_cdf.TorchCDF(
+        encoder=copy.deepcopy(_ZOO_ENCODERS[kind]), losses=_ZOO_LOSSES, **{
+            "components": 2, "hidden": [4], "epochs": 3, "batch_size": 6, "seeds": [7],
+            "device": "cpu", "deterministic": True, **settings})
+
+
+@pytest.mark.parametrize(("kind", "digest"), [
+    ("mlp", "2a54fe5bbcf143aae3133d9ec3daf605898ff583d029a6d0662bc2cb2d1979d3"),
+    ("gru", "92b5fe465fa7aad250bfa02188dccb1d8860c539c04150a4e6270c6649692038")])
+def test_torch_cdf_without_heads_fits_byte_identically_to_before_the_zoo(kind, digest):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    encoder = {"kind": "mlp"} if kind == "mlp" else {
+        "kind": "gru", "sequence_indices": [[2], [1], [0]], "context_indices": [3, 4],
+        "hidden_size": 4, "num_layers": 1}
+    x = np.random.default_rng(5).normal(size=(12, 5))
+    y = np.random.default_rng(6).normal(size=12)
+    context = [{"identity": [str(i)], "thresholds": [-2.5, -.5, .5, 2.5], "weights": [.25]*4,
+                "intervals": WINGS} for i in range(12)]
+    model = predictive_cdf.TorchCDF(
+        encoder=encoder, components=2, hidden=[4], epochs=3, batch_size=5, seeds=[7],
+        device="cpu", deterministic=True,
+        losses=[{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    # Recorded on base f9f2f905, before heads, lstm/cnn and the recurrent base
+    # existed (CPU, one thread): every fitted tensor is unchanged.
+    assert model._equivalence_state() == digest
+
+
+@pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
+def test_torch_cdf_task_heads_share_one_encoder_and_route_each_row_to_its_head(kind):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    rng = np.random.default_rng(2)
+    tasks = np.arange(18) % 3
+    x = np.column_stack([rng.normal(size=(18, 4)), np.eye(3)[tasks]])
+    y = rng.normal(size=18)*(1+tasks)
+    context = _zoo_context(18)
+    model = _zoo_torch(kind, feature_indices=[0, 1, 2, 3], head_features=[4, 5, 6])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    last = [m for m in model.models[0].modules() if isinstance(m, torch.nn.Linear)][-1]
+    assert last.out_features == 3*2*3  # one 3K-wide mixture head per task
+    probe = np.repeat(x[:1], 3, axis=0)
+    probe[:, 4:] = np.eye(3)
+    curves = model.curve(probe).cdf([-.5, .5])
+    assert not np.allclose(curves[0], curves[1]) and not np.allclose(curves[1], curves[2])
+    np.testing.assert_allclose(model.curve(probe[1:2]).cdf([-.5, .5])[0], curves[1], atol=1e-7)
+    assert model.seen_heads == {0, 1, 2}
+    assert model._equivalence_settings()["head_features"] == (4, 5, 6)
+    assert model._research_state()["head_features"] == [4, 5, 6]
+
+
+def test_torch_cdf_without_heads_keeps_its_research_state_unchanged():
+    model = _zoo_torch("mlp")
+    model.losses = []
+    assert "head_features" not in model._research_state()
+
+
+def test_torch_cdf_heads_refuse_task_columns_as_plain_inputs_and_unseen_tasks():
+    pytest.importorskip("torch")
+    for extra in ({"head_features": [2, 3]},
+                  {"head_features": [2, 3], "feature_indices": [0, 1, 2]}):
+        with pytest.raises(ValueError, match="excluded from feature_indices"):
+            _zoo_torch("mlp", **extra)
+    with pytest.raises(ValueError, match="left_cdf_weight"):
+        _zoo_torch("mlp", left_cdf_weight=.5)
+    x = np.column_stack([np.linspace(-1, 1, 6), np.ones(6), np.zeros(6)])
+    y = np.linspace(-1, 1, 6)
+    context = _zoo_context(6)
+    model = _zoo_torch("mlp", feature_indices=[0], head_features=[1, 2])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    with pytest.raises(ValueError, match="unseen head"):
+        model.curve(np.array([[0., 0., 1.]]))
+
+
+def test_lstm_encoder_is_the_recurrent_base_with_an_lstm_cell():
+    torch = pytest.importorskip("torch")
+    lstm = _zoo_torch("lstm")._build_module(4)
+    assert type(lstm.rnn) is torch.nn.LSTM
+    assert (lstm.rnn.hidden_size, lstm.rnn.num_layers, lstm.rnn.input_size) == (4, 2, 1)
+    assert type(_zoo_torch("gru")._build_module(4).rnn) is torch.nn.GRU
+    for encoder in (predictive_cdf._CDFGRUEncoder, predictive_cdf._CDFLSTMEncoder):
+        assert issubclass(encoder, predictive_cdf._CDFRecurrentEncoder)
+
+
+@pytest.mark.parametrize(("pooling", "reaches_oldest"), [("last", False), ("mean", True)])
+def test_cnn_encoder_is_causal_and_its_pooling_sets_the_receptive_field(pooling, reaches_oldest):
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    encoder = {"kind": "cnn", "sequence_indices": [[5], [4], [3], [2], [1]],
+               "context_indices": [0], "channels": 3, "kernel_size": 2, "dilations": [1],
+               "pooling": pooling}
+    module = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, components=2,
+                                     hidden=[4], device="cpu")._build_module(6)
+    x = torch.randn(4, 6)
+    oldest, newest = x.clone(), x.clone()
+    oldest[:, 5] += 3.
+    newest[:, 1] += 3.
+    with torch.no_grad():
+        base, old, new = module(x), module(oldest), module(newest)
+    assert not torch.allclose(base, new)
+    assert torch.allclose(base, old) is (not reaches_oldest)
+    assert [conv.dilation for conv in module.convs] == [(1,)]
+    assert [conv.in_channels for conv in module.convs] == [1]
+
+
+_CNN = _ZOO_ENCODERS["cnn"]
+_LSTM = _ZOO_ENCODERS["lstm"]
+
+
+@pytest.mark.parametrize("encoder", [
+    {k: v for k, v in _LSTM.items() if k != "num_layers"},
+    {**_LSTM, "num_layers": 0}, {**_LSTM, "hidden_size": 2.},
+    {**_LSTM, "context_indices": [2]}, {**_LSTM, "sequence_indices": [[2], [1]]},
+    {**_CNN, "kernel_size": 0}, {**_CNN, "channels": 0}, {**_CNN, "dilations": []},
+    {**_CNN, "dilations": [1, 0]}, {**_CNN, "dilations": [1.]}, {**_CNN, "dilations": 2},
+    {**_CNN, "pooling": "max"}, {**_CNN, "stride": 1}, {**_CNN, "kernel_size": True},
+    {**_CNN, "sequence_indices": [[2], [1, 0]]}, {**_CNN, "context_indices": [4]},
+])
+def test_lstm_and_cnn_encoders_refuse_invalid_settings_and_partitions(encoder):
+    pytest.importorskip("torch")
+    with pytest.raises(ValueError):
+        predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES,
+                                device="cpu")._build_module(4)
+
+
+@pytest.mark.parametrize("kind", ["lstm", "cnn"])
+def test_sequence_encoders_fit_deterministically_on_cuda(kind, monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    rng = np.random.default_rng(8)
+    x, y = rng.normal(size=(24, 4)), rng.normal(size=24)
+    context = _zoo_context(24)
+
+    def fit():
+        model = _zoo_torch(kind, device="cuda")
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert fit()._equivalence_state() == fit()._equivalence_state()
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_tail_crps_term_is_the_studys_tail_crps_with_unit_weight_on_each_wing(name):
+    torch = pytest.importorskip("torch")
+    w, m, s, y = _draw_mixture(rows=4)
+    family = _family(name)
+    args = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+    fixed = _torch_context(predictive_cdf.DecisionRegionScores(_zoo_context(4)))
+    tail, eligible = predictive_cdf._CDFTailCRPS(family).values(*args, fixed)
+    wing, _ = predictive_cdf._CDFWingTwCRPS(family).values(*args, fixed)
+    assert eligible.tolist() == [True]*4
+    # Two 2-wide wings: the normalized wing term spreads 1/4 per unit length.
+    np.testing.assert_allclose(tail.numpy(), 4*wing.numpy(), rtol=1e-12)
+    metric = ChronologicalCDFStudy.scores(_family_curve(name, w, m, s), y, 11, WINGS,
+                                          20000)[0]["tail_crps"]
+    np.testing.assert_allclose(tail.numpy(), metric, rtol=0, atol=1e-4)
+    # Merged and touching wings: unit weight on each union segment, by quadrature.
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context())
+    values, eligible = predictive_cdf._CDFTailCRPS(family).values(*args, _torch_context(scorer))
+    want = [_reference_wing(name, w[i], m[i], s[i], y[i],
+                            [(lo, hi, 1.) for lo, hi, _ in _WING_SEGMENTS[i]]) for i in range(3)]
+    np.testing.assert_allclose(values.numpy()[:3], want, rtol=1e-7, atol=1e-9)
+    assert eligible.tolist() == [True, True, True, False]
+
+
+def _boosted(**settings):
+    return predictive_cdf.BoostedTorchCDF(**{
+        "losses": copy.deepcopy(_ZOO_LOSSES), "components": 2, "device": "cpu",
+        "n_estimators": 20, "num_leaves": 4, "min_data_in_leaf": 5, "learning_rate": .2,
+        **settings})
+
+
+def _hetero_rows(n, seed):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-1, 1, size=(n, 2))
+    return x, rng.normal(size=n)*np.exp(x[:, 0])
+
+
+def _composite_of(model, curve, x, y, context):
+    """The model's loss_report composite for an arbitrary curve on the same rows."""
+    proxy = copy.copy(model)
+    proxy.curve = lambda _: curve
+    return proxy.loss_report(x, y, context)["composite"]
+
+
+@pytest.mark.parametrize("family", [None, {"kind": "student", "degrees": 5}])
+def test_boosted_objective_is_the_composite_with_exact_gradient_and_hessian(family):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 7
+    model = _boosted(family=family, batch_size=3)  # three chunks: per-chunk scaling is exact
+    context = _zoo_context(n)
+    model.fit_decision_context(context, context)
+    rng = np.random.default_rng(4)
+    x, y, raw = np.zeros((n, 1)), rng.normal(size=n)*1.3, rng.normal(size=(n, 6))*.4
+    target, training = model._target_tensor(y), model._training_context(x)
+    total, grad, hess = model._raw_composite(raw, target, training, True)
+    assert grad.shape == hess.shape == raw.shape
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(raw))
+    curve = model._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    # The objective IS TorchCDF's composite, in LightGBM's sum-over-rows form.
+    assert total == pytest.approx(n*_composite_of(model, curve, x, y, context), rel=1e-9)
+
+    def at(i, j, step):
+        moved = raw.copy()
+        moved[i, j] += step
+        return model._raw_composite(moved, target, training, False)[0]
+    for i, j in [(0, 0), (1, 2), (4, 3), (6, 5), (2, 1), (5, 4)]:
+        assert grad[i, j] == pytest.approx((at(i, j, 1e-6)-at(i, j, -1e-6))/2e-6,
+                                           rel=1e-5, abs=1e-8)
+        assert hess[i, j] == pytest.approx((at(i, j, 1e-4)-2*total+at(i, j, -1e-4))/1e-8,
+                                           rel=1e-3, abs=1e-5)
+
+
+def test_boosted_step_floors_the_hessian_and_records_the_training_composite():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 5
+    model = _boosted(components=1, hessian_floor=.25)
+    context = _zoo_context(n)
+    model.fit_decision_context(context, context)
+    rng = np.random.default_rng(1)
+    y, raw = rng.normal(size=n), rng.normal(size=(n, 3))*.3
+    target, training = model._target_tensor(y), model._training_context(np.zeros((n, 1)))
+    total, grad, hess = model._raw_composite(raw, target, training, True)
+    assert (hess[:, 0] == 0).all()  # one component: its logit never moves the loss
+    model.losses = []
+    step_grad, step_hess = model._boosting_step(raw, target, training)
+    np.testing.assert_array_equal(step_grad, grad)
+    np.testing.assert_array_equal(step_hess, np.maximum(hess, .25))
+    assert model.losses == [pytest.approx(total/n)]
+
+
+def test_boosted_cdf_learns_heteroscedastic_scale_and_beats_the_best_constant_mixture():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(600, 1)
+    xv, yv = _hetero_rows(400, 2)
+    context, held = _zoo_context(600), _zoo_context(400, "v")
+    # 20 small rounds: measured held-out 1.074 against the truth's 1.061 and the
+    # best constant's 1.142; past ~20 rounds 600 rows overfit (patience's job).
+    model = _boosted(n_estimators=20, learning_rate=.1, num_leaves=2, min_data_in_leaf=20)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert len(model.losses) == 20 and model.losses[-1] < .9*model.losses[0]
+    target, training = model._target_tensor(y), model._training_context(x)
+    theta = torch.tensor(model.start[None, :], requires_grad=True)
+    optimizer = torch.optim.Adam([theta], lr=.05)
+    for _ in range(300):
+        optimizer.zero_grad()
+        logw, mu, sigma = model._parts(theta.expand(len(y), -1))
+        model._objective_loss(target, logw, mu, sigma, torch.arange(len(y)), training).backward()
+        optimizer.step()
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(theta.detach().expand(len(yv), -1))
+    constant = model._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    boosted = model.loss_report(xv, yv, held)["composite"]
+    assert boosted < .97*_composite_of(model, constant, xv, yv, held)
+    q = model.curve(np.array([[-.9, 0.], [.9, 0.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 1.5*(q[0, 1]-q[0, 0])
+
+
+def test_boosted_cdf_round_trips_through_its_text_model_and_refits_identically():
+    torch = pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(200, 3)
+    context = _zoo_context(200)
+
+    def fit(seed):
+        model = _boosted(seed=seed, feature_fraction=.5)
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    model, again, other = fit(5), fit(5), fit(6)
+    assert model._equivalence_state() == again._equivalence_state()
+    assert model._equivalence_state() != other._equivalence_state()
+    raw = lightgbm.Booster(model_str=model.booster_text).predict(x, raw_score=True) + model.start
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(raw))
+    restored = MixtureCurve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    grid = [-2., -.3, 0., .4, 2.]
+    np.testing.assert_array_equal(restored.cdf(grid), model.curve(x).cdf(grid))
+    settings = model._equivalence_settings()
+    assert settings["seed"] == 5 and settings["losses"] == _ZOO_LOSSES
+    assert settings["head_features"] == () and "family" not in settings
+    state = json.loads(json.dumps(model._research_state()))
+    assert state["rounds_run"] == state["best_round"] == 20
+    assert state["stopped_by_patience"] is False and len(state["start"]) == 6
+
+
+@pytest.mark.parametrize("edit", [
+    {"components": 0}, {"n_estimators": 0}, {"num_leaves": 1}, {"num_leaves": True},
+    {"min_data_in_leaf": 0}, {"learning_rate": 0.}, {"learning_rate": float("nan")},
+    {"learning_rate": True}, {"feature_fraction": 0.}, {"feature_fraction": 1.5},
+    {"lambda_l2": -1.}, {"seed": -1}, {"seed": 1.5}, {"num_threads": 0},
+    {"hessian_floor": 0.}, {"hessian_floor": float("inf")}, {"min_scale": 0.},
+    {"batch_size": 0}, {"device": "tpu"}, {"device": 0}, {"deterministic": 1},
+    {"patience": 0}, {"head_features": [0, 0]}, {"feature_indices": []},
+    {"head_features": [1, 2]}, {"head_features": [1, 2], "feature_indices": [0, 1]},
+    {"losses": [{"kind": "crps", "weight": 1.}]}, {"family": {"kind": "cauchy"}},
+])
+def test_boosted_cdf_refuses_bad_knobs(edit):
+    with pytest.raises(ValueError):
+        _boosted(**edit)
+
+
+def test_boosted_cdf_runs_its_loss_on_cuda_deterministically_and_like_cpu(monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    x, y = _hetero_rows(300, 7)
+    context = _zoo_context(300)
+
+    def fit(device):
+        model = _boosted(device=device, deterministic=True, n_estimators=5)
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    first, second, cpu = fit("cuda"), fit("cuda"), fit("cpu")
+    assert first._equivalence_state() == second._equivalence_state()
+    np.testing.assert_allclose(first.curve(x).cdf([-1., 0., 1.]), cpu.curve(x).cdf([-1., 0., 1.]),
+                               atol=1e-6)
+
+
+def test_boosted_cdf_is_default_deny():
+    with pytest.raises(TypeError):
+        _boosted(max_depth=3)
+
+
+def test_boosted_cdf_collapses_task_heads_to_one_native_categorical_column():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(6)
+    tasks = np.arange(400) % 2
+    x = np.column_stack([rng.normal(size=400), np.eye(2)[tasks]])
+    y = rng.normal(size=400)*np.where(tasks == 0, .4, 2.)
+    context = _zoo_context(400)
+    model = _boosted(n_estimators=40, learning_rate=.1, head_features=[1, 2],
+                     feature_indices=[0], min_data_in_leaf=10)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    design = model._design(x, model._heads(x))
+    assert design.shape == (400, 2) and set(design[:, 1]) == {0., 1.}
+    splits = json.dumps(model.booster.dump_model()["tree_info"])
+    assert '"decision_type": "=="' in splits  # a native categorical split on the task
+    q = model.curve(np.array([[0., 1., 0.], [0., 0., 1.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 2*(q[0, 1]-q[0, 0])
+    assert model._equivalence_settings()["head_features"] == (1, 2)
+    only = _boosted(n_estimators=2, head_features=[1, 2], feature_indices=[0])
+    first = tasks == 0
+    only.fit_decision_context(context[:200], context[:200]).fit(
+        x[first], y[first], x[first], y[first])
+    with pytest.raises(ValueError, match="unseen head"):
+        only.curve(x[~first][:1])
+
+
+def test_boosted_cdf_stops_on_the_calibration_composite_and_keeps_the_best_round():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(300, 4)
+    xc, yc = _hetero_rows(100, 5)
+    context, cal_context = _zoo_context(300), _zoo_context(100, "c")
+    model = _boosted(n_estimators=300, learning_rate=.3, num_leaves=8, patience=3)
+    model.fit_decision_context(context, cal_context).fit(x, y, xc, yc)
+    state = model._research_state()
+    assert state["stopped_by_patience"] is True and state["patience"] == 3
+    assert state["best_round"] + 3 == state["rounds_run"] < 300
+    assert len(state["monitor_loss_by_round"]) == state["rounds_run"]
+    assert min(state["monitor_loss_by_round"]) == pytest.approx(
+        model.loss_report(xc, yc, cal_context)["composite"], rel=1e-7)
+    with pytest.raises(ValueError, match="patience"):
+        _boosted(n_estimators=2, patience=5).fit_decision_context(
+            context, cal_context).fit(x, y, xc, yc)
+
+
+def _weighted_hpo_fixture(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    e, c = config["experiment"], config["study"]
+    # A column that varies within each unit: LightGBM refuses a design of
+    # constants. Ten training rows a fit: the dataset must carry min_data_in_leaf.
+    frame["z"] = np.cos(np.arange(len(frame)))
+    c["features"] = [*c["features"], "z"]
+    for key in ("final_seeds", "screen_seed", "candidate_labels", "axes"):
+        e.pop(key)
+    e["candidate_groups"] = e["search_partitions"]
+    e["selection_metric"] = "weighted_crps"
+    c["tail_weight"] = 1.
+    e["candidates"]["candidate"] = {
+        "class": "dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF",
+        "params": {"losses": copy.deepcopy(_ZOO_LOSSES), "components": 1,
+                   "n_estimators": 3, "num_leaves": 2, "min_data_in_leaf": 2,
+                   "device": "cpu"},
+        "calibrate": False}
+    return config, frame
+
+
+def test_weighted_crps_selects_reports_and_accepts_on_crps_plus_weighted_tail(tmp_path):
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    config, frame = _weighted_hpo_fixture(tmp_path)
+    config["study"]["tail_weight"] = 2.5
+    config["experiment"]["candidates"]["candidate"]["params"]["losses"][1]["weight"] = 2.5
+    study = CDFHyperparameterStudy(config)
+    provenance = {"fixture": "weighted"}
+    scores = study.run(frame, stage="search", partition="separate", provenance=provenance)
+    np.testing.assert_allclose(scores.weighted_crps, scores.crps+2.5*scores.tail_crps)
+    complete = json.loads((tmp_path/"hpo/search/separate/complete.json").read_text())
+    assert "lightgbm" in complete["identity"]["dependencies"]
+    chosen = study.run(frame, stage="select", provenance=provenance)
+    assert chosen["selection_metric"] == "weighted_crps"
+    for partition in ("development", "later"):
+        study.run(frame, stage="evaluate", partition=partition, provenance=provenance)
+    report = study.run(frame, stage="report", provenance=provenance)
+    assert report["selection_metric"] == "weighted_crps"
+    assert {r["metric"] for r in report["paired_block_intervals"]} == {"crps", "weighted_crps"}
+    weighted = next(r for r in report["metrics"]
+                    if r["model"] == "candidate" and r["metric"] == "weighted_crps")
+    assert weighted["equal_cell_skill"] is not None
+    counts = json.loads((tmp_path/"hpo/evaluate/later/counts.json").read_text())
+    assert counts[0]["candidate_losses"]["validation"]["composite"] > 0
+    flat = pd.read_csv(tmp_path/"hpo/evaluate/later"/ChronologicalCDFStudy.FOLD_LOSSES_FILE)
+    assert {"rounds_run", "best_round"} <= set(flat.columns)
+
+
+def test_weighted_hpo_ranks_crps_plus_tail_not_plain_crps(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    study = CDFHyperparameterStudy(config)
+    rows = [dict(unit="A", h=1, model=name, variant=variant, crps=crps, tail_crps=tail,
+                 weighted_crps=crps+tail)
+            for name, crps, tail in [("reference", .2, .3), ("candidate", .25, .1)]
+            for variant in ("raw", "calibrated")]
+    assert study._rank(pd.DataFrame(rows))[("candidate", "raw")] == pytest.approx(.35/.5)
+
+
+def test_weighted_crps_needs_a_study_tail_weight_and_the_same_training_weight(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    for bad in (0., -1., True, "1", float("nan")):
+        broken = copy.deepcopy(config)
+        broken["study"]["tail_weight"] = bad
+        with pytest.raises(ValueError, match="tail_weight"):
+            CDFHyperparameterStudy(broken)
+    missing = copy.deepcopy(config)
+    del missing["study"]["tail_weight"]
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy(missing)
+    losses = config["experiment"]["candidates"]["candidate"]["params"]["losses"]
+    for drifted in ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 2.}],
+                    [{"kind": "nll", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]):
+        losses[:] = drifted
+        with pytest.raises(ValueError, match="tail_weight"):
+            CDFHyperparameterStudy(config)
+    losses[:] = [{"kind": "crps", "weight": 2.}, {"kind": "tail_crps", "weight": 2.}]
+    CDFHyperparameterStudy(config)  # the same objective at another overall scale
+    losses[:] = [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 4.}]
+    CDFHyperparameterStudy(config)  # no tail_crps term: nothing to pin
+
+
+def test_plain_crps_studies_score_no_weighted_column(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    scores = ChronologicalCDFStudy(config["study"]).run(frame)
+    assert "weighted_crps" not in scores
+    summary = ChronologicalCDFStudy({**config["study"], "output": str(tmp_path/"unused")}
+                                    ).summarize(scores)
+    assert summary["selection_metric"] == "crps"
+    assert {r["metric"] for r in summary["paired_block_intervals"]} == {"crps"}

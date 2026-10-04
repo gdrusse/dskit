@@ -702,6 +702,10 @@ on it without breaking its rulings.
 - **`predictive_cdf._QUADRATURE_NODES` is shared by training and evaluation**:
   the Torch wing/CRPS terms and `_Curve._segment_integrals` read it, and a test
   pins that they agree. Change it in one place, never per side.
+- **`wing_twcrps` is NOT the study's `tail_crps`** (ADR-0236): it weighs each
+  wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
+  Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
+  `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
 
 ## Contents
 

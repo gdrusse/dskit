@@ -29,7 +29,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
-           "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores",
+           "DiscreteCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
@@ -2177,89 +2177,78 @@ class _PatienceStop:
         self.history.append(loss)
         if self.best is None or loss < self.best:
             self.best, self.best_epoch = loss, len(self.history)
-            self.state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            self.state = self._snapshot(model)
         return len(self.history)-self.best_epoch >= self.patience
+
+    def _snapshot(self, model):
+        """Return a copy of the weights ``restore`` puts back."""
+        return {k: v.detach().clone() for k, v in model.state_dict().items()}
 
     def restore(self, model):
         model.load_state_dict(self.state)
 
 
-class MixtureMLPCDF(CDFEstimator):
-    """Small Gaussian mixture MLP ensemble trained with log likelihood.
+class _RoundPatienceStop(_PatienceStop):
+    """The same rule over boosting rounds: the best round count IS the state."""
 
-    Parameters
-    ----------
-    components, hidden, epochs, batch_size : int
-        Component count, two-layer width, passes and batch size.
-    seeds : list of int
-        Independently fitted networks, averaged as a mixture, never best-seed selected.
-    device : str
-        Explicit torch device. CUDA failure refuses instead of silently using CPU.
-    learning_rate, weight_decay, min_scale : float
-        Optimizer controls and positive standardized scale floor.
-    activation, dropout, head_features : str, float, list or None
-        Hidden activation, dropout probability, and raw one-hot task columns.
-        A list for hidden declares individual layer widths; an integer keeps
-        the legacy two-layer architecture. Heads share only the trunk.
-    patience : int or None
-        Absent trains exactly ``epochs``. An integer >= 1 watches the training
-        objective on the calibration rows after every epoch, restores the best
-        epoch's weights and stops once ``patience`` epochs bring no strict
-        improvement. That is the only exit: ``epochs`` becomes a ceiling, and
-        reaching it first raises. The calibration rows then steer training, so
-        a PIT map fitted on them is refused by the study.
+    def _snapshot(self, model):
+        """Keep nothing: the booster is truncated at ``best_epoch`` rounds."""
+        return None
+
+
+#: The positive standardized scale floor of every mixture parameter transform.
+_MIN_SCALE = .1
+
+
+class _MixtureParameterCDF(CDFEstimator):
+    """Estimator predicting ``3 * components`` raw mixture parameters per row.
+
+    Owns what the network and boosted mixtures share: task-head routing from
+    raw one-hot columns (``head_features``), the plain-input column pick
+    (``feature_indices``), the raw-to-mixture transform (log-softmax weights,
+    means, softplus scales above ``min_scale``) and the deterministic context.
+    Subclasses set ``head_features`` (tuple), ``feature_indices`` (tuple or
+    None), ``min_scale``, ``device`` and ``deterministic``.
 
     Examples
     --------
-    Three-component CPU research candidate::
+    A concrete member::
 
         model = MixtureMLPCDF(components=3, device="cpu")
     """
 
-    def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
-                 seeds=(11, 29), device="cuda", learning_rate=.001,
-                 weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
-                 head_features=None, deterministic=False, left_cdf_weight=0.,
-                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
-                 patience=None):
-        import math
-        widths = [hidden, hidden] if type(hidden) is int else hidden
-        if (not isinstance(widths, (list, tuple)) or not widths
-                or any(type(v) is not int or v <= 0 for v in [components, epochs, batch_size, *widths])
-                or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
-                or min(learning_rate, min_scale) <= 0 or weight_decay < 0
-                or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
-                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)
-                or type(deterministic) is not bool):
-            raise ValueError("invalid mixture training parameters")
+    @staticmethod
+    def _checked_heads(head_features):
+        """Return head positions as a tuple, refusing empty, repeated or negative ones."""
         if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
                 or any(type(v) is not int or v < 0 for v in head_features)):
             raise ValueError("invalid head feature positions")
-        if (isinstance(left_cdf_weight, bool) or not math.isfinite(left_cdf_weight)
-                or left_cdf_weight < 0 or not isinstance(left_cdf_bounds, (list, tuple))
-                or len(left_cdf_bounds) != 2
-                or any(isinstance(v, bool) or not math.isfinite(v) for v in left_cdf_bounds)
-                or left_cdf_bounds[0] >= left_cdf_bounds[1] or left_cdf_bounds[1] > 0
-                or type(left_cdf_points) is not int or left_cdf_points < 2):
-            raise ValueError("invalid left CDF training parameters")
+        return tuple(head_features or ())
+
+    @staticmethod
+    def _checked_indices(feature_indices):
+        """Return the input column pick as a tuple or None, refusing a malformed one."""
         if (feature_indices is not None and
                 (not isinstance(feature_indices, (list, tuple)) or not feature_indices
                  or any(type(v) is not int or v < 0 for v in feature_indices)
                  or len(set(feature_indices)) != len(feature_indices))):
             raise ValueError("invalid feature indices")
+        return None if feature_indices is None else tuple(feature_indices)
+
+    @staticmethod
+    def _checked_patience(patience):
+        """Return patience, refusing anything but an integer >= 1 or None."""
         if patience is not None and (type(patience) is not int or patience < 1):
             raise ValueError("invalid patience: an integer >= 1 or absent")
-        self.patience = patience
-        self.components, self.hidden, self.epochs = components, tuple(widths), epochs
-        self.batch_size, self.seeds, self.device = batch_size, seeds, device
-        self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
-        self.activation, self.dropout = activation, dropout
-        self.head_features = tuple(head_features or ())
-        self.deterministic = deterministic
-        self.left_cdf_weight = float(left_cdf_weight)
-        self.left_cdf_bounds = tuple(float(v) for v in left_cdf_bounds)
-        self.left_cdf_points = left_cdf_points
-        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
+        return patience
+
+    def _refuse_head_inputs(self):
+        """Refuse task columns that would also enter the model as plain inputs."""
+        if self.head_features and (self.feature_indices is None
+                                   or set(self.head_features) & set(self.feature_indices)):
+            raise ValueError(f"{type(self).__name__} head_features must be excluded from "
+                             "feature_indices: a task column routes its head and is never "
+                             "a plain input")
 
     def _deterministic_context(self):
         from contextlib import contextmanager
@@ -2312,9 +2301,91 @@ class MixtureMLPCDF(CDFEstimator):
             raise ValueError("feature indices outside input")
         return x if self.feature_indices is None else x[:, self.feature_indices]
 
+    def _parts(self, output):
+        import torch
+
+        logits, means, raw_scale = output.chunk(3, dim=1)
+        return (torch.log_softmax(logits, dim=1), means,
+                torch.nn.functional.softplus(raw_scale) + self.min_scale)
+
+
+class MixtureMLPCDF(_MixtureParameterCDF):
+    """Small Gaussian mixture MLP ensemble trained with log likelihood.
+
+    Parameters
+    ----------
+    components, hidden, epochs, batch_size : int
+        Component count, two-layer width, passes and batch size.
+    seeds : list of int
+        Independently fitted networks, averaged as a mixture, never best-seed selected.
+    device : str
+        Explicit torch device. CUDA failure refuses instead of silently using CPU.
+    learning_rate, weight_decay, min_scale : float
+        Optimizer controls and positive standardized scale floor.
+    activation, dropout, head_features : str, float, list or None
+        Hidden activation, dropout probability, and raw one-hot task columns.
+        A list for hidden declares individual layer widths; an integer keeps
+        the legacy two-layer architecture. Heads share only the trunk.
+    patience : int or None
+        Absent trains exactly ``epochs``. An integer >= 1 watches the training
+        objective on the calibration rows after every epoch, restores the best
+        epoch's weights and stops once ``patience`` epochs bring no strict
+        improvement. That is the only exit: ``epochs`` becomes a ceiling, and
+        reaching it first raises. The calibration rows then steer training, so
+        a PIT map fitted on them is refused by the study.
+
+    Examples
+    --------
+    Three-component CPU research candidate::
+
+        model = MixtureMLPCDF(components=3, device="cpu")
+    """
+
+    def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
+                 seeds=(11, 29), device="cuda", learning_rate=.001,
+                 weight_decay=.01, min_scale=_MIN_SCALE, activation="tanh", dropout=0.,
+                 head_features=None, deterministic=False, left_cdf_weight=0.,
+                 left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
+                 patience=None):
+        import math
+        widths = [hidden, hidden] if type(hidden) is int else hidden
+        if (not isinstance(widths, (list, tuple)) or not widths
+                or any(type(v) is not int or v <= 0 for v in [components, epochs, batch_size, *widths])
+                or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
+                or min(learning_rate, min_scale) <= 0 or weight_decay < 0
+                or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
+                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)
+                or type(deterministic) is not bool):
+            raise ValueError("invalid mixture training parameters")
+        head_features = self._checked_heads(head_features)
+        if (isinstance(left_cdf_weight, bool) or not math.isfinite(left_cdf_weight)
+                or left_cdf_weight < 0 or not isinstance(left_cdf_bounds, (list, tuple))
+                or len(left_cdf_bounds) != 2
+                or any(isinstance(v, bool) or not math.isfinite(v) for v in left_cdf_bounds)
+                or left_cdf_bounds[0] >= left_cdf_bounds[1] or left_cdf_bounds[1] > 0
+                or type(left_cdf_points) is not int or left_cdf_points < 2):
+            raise ValueError("invalid left CDF training parameters")
+        feature_indices = self._checked_indices(feature_indices)
+        self.patience = self._checked_patience(patience)
+        self.components, self.hidden, self.epochs = components, tuple(widths), epochs
+        self.batch_size, self.seeds, self.device = batch_size, seeds, device
+        self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
+        self.activation, self.dropout = activation, dropout
+        self.head_features = head_features
+        self.deterministic = deterministic
+        self.left_cdf_weight = float(left_cdf_weight)
+        self.left_cdf_bounds = tuple(float(v) for v in left_cdf_bounds)
+        self.left_cdf_points = left_cdf_points
+        self.feature_indices = feature_indices
+
+    def _activation(self):
+        """Return the configured hidden activation's torch module class."""
+        import torch
+        return {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
+
     def _build_module(self, features):
         import torch
-        activation = {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
+        activation = self._activation()
         layers = []
         for width in self.hidden:
             layers.extend([torch.nn.Linear(features, width), activation()])
@@ -2396,13 +2467,6 @@ class MixtureMLPCDF(CDFEstimator):
 
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
-
-    def _parts(self, output):
-        import torch
-
-        logits, means, raw_scale = output.chunk(3, dim=1)
-        return (torch.log_softmax(logits, dim=1), means,
-                torch.nn.functional.softplus(raw_scale) + self.min_scale)
 
     def fit(self, x, y, cal_x, cal_y):
         """Train with train-only scaling, fixed epochs and explicit seeds.
@@ -2839,38 +2903,76 @@ class _CDFMLPEncoder:
         return MixtureMLPCDF._build_module(owner, features)
 
 
-class _CDFGRUEncoder:
+class _CDFSequenceEncoder(ABC):
+    """Sequence-plus-context encoder feeding the owner's mixture head(s).
+
+    ``sequence_indices`` lists the steps oldest to newest, each a list of the
+    same width (the per-step channels); ``context_indices`` are plain columns
+    joined after the sequence summary. Together they partition the model
+    inputs (positions within ``feature_indices`` when it is set). A member
+    names its extra settings in ``_SETTINGS``, validates them in
+    ``_settings_ok`` and builds the torch module in ``_module``.
+    """
+
+    NAME = ""
+    _SETTINGS = ()
+
     def __init__(self, config):
-        required = {"kind", "sequence_indices", "context_indices", "hidden_size", "num_layers"}
-        if set(config) != required:
-            raise ValueError("invalid GRU encoder settings")
+        if set(config) != {"kind", "sequence_indices", "context_indices", *self._SETTINGS}:
+            raise ValueError(f"invalid {self.NAME} encoder settings")
         sequence, context = config["sequence_indices"], config["context_indices"]
         if (not isinstance(sequence, list) or not sequence
                 or any(not isinstance(row, list) or not row for row in sequence)
                 or len({len(row) for row in sequence}) != 1
                 or not isinstance(context, list)):
-            raise ValueError("invalid GRU sequence/context indices")
+            raise ValueError(f"invalid {self.NAME} sequence/context indices")
         flat = [v for row in sequence for v in row] + context
         if (any(type(v) is not int or v < 0 for v in flat)
                 or len(set(flat)) != len(flat)
-                or any(type(config[k]) is not int or config[k] < 1
-                       for k in ("hidden_size", "num_layers"))):
-            raise ValueError("invalid GRU dimensions or duplicate indices")
+                or not self._settings_ok(config)):
+            raise ValueError(f"invalid {self.NAME} dimensions or duplicate indices")
         self.config = config
 
+    @abstractmethod
+    def _settings_ok(self, config):
+        """Return whether the member's own settings are valid."""
+
+    @abstractmethod
+    def _module(self, owner, sequence, context):
+        """Return the torch module, before it is moved to the owner's device."""
+
     def build(self, owner, features):
-        import torch
         config = self.config
         sequence, context = config["sequence_indices"], config["context_indices"]
         flat = [v for row in sequence for v in row] + context
         if set(flat) != set(range(features)):
-            raise ValueError(f"GRU indices must partition the {features} model input "
+            raise ValueError(f"{self.NAME} indices must partition the {features} model input "
                              "features (positions within feature_indices when set)")
+        return self._module(owner, sequence, context).to(owner.device)
+
+
+class _CDFRecurrentEncoder(_CDFSequenceEncoder):
+    """Recurrent encoder: the last step's hidden state joins the context.
+
+    ``CELL`` names the ``torch.nn`` recurrent class; ``hidden_size`` and
+    ``num_layers`` are its width and depth.
+    """
+
+    CELL = ""
+    _SETTINGS = ("hidden_size", "num_layers")
+
+    def _settings_ok(self, config):
+        return all(type(config[k]) is int and config[k] >= 1 for k in self._SETTINGS)
+
+    def _module(self, owner, sequence, context):
+        import torch
+        config, cell = self.config, getattr(torch.nn, self.CELL)
+
         class Module(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.rnn = torch.nn.GRU(len(sequence[0]), config["hidden_size"],
-                                        config["num_layers"], batch_first=True)
+                self.rnn = cell(len(sequence[0]), config["hidden_size"],
+                                config["num_layers"], batch_first=True)
                 self.head = MixtureMLPCDF._build_module(
                     owner, config["hidden_size"] + len(context))
 
@@ -2878,7 +2980,60 @@ class _CDFGRUEncoder:
                 sequence_output, _ = self.rnn(x[:, sequence])
                 return self.head(torch.cat(
                     [sequence_output[:, -1], x[:, context]], dim=1))
-        return Module().to(owner.device)
+        return Module()
+
+
+class _CDFGRUEncoder(_CDFRecurrentEncoder):
+    NAME = CELL = "GRU"
+
+
+class _CDFLSTMEncoder(_CDFRecurrentEncoder):
+    NAME = CELL = "LSTM"
+
+
+class _CDFCNNEncoder(_CDFSequenceEncoder):
+    """Causal dilated 1-D convolution over the steps, pooled, joined with context.
+
+    ``channels`` filters per layer, one layer per entry of ``dilations``, each
+    left-padded by ``(kernel_size - 1) * dilation`` so a step sees only itself
+    and older steps; the owner's ``activation`` follows every layer.
+    ``pooling`` ``last`` keeps the newest step (receptive field
+    ``1 + (kernel_size - 1) * sum(dilations)`` steps), ``mean`` averages all.
+    """
+
+    NAME = "CNN"
+    _SETTINGS = ("channels", "kernel_size", "dilations", "pooling")
+    _POOLING = {"last": lambda h: h[:, :, -1], "mean": lambda h: h.mean(-1)}
+
+    def _settings_ok(self, config):
+        dilations = config["dilations"]
+        return (all(type(config[k]) is int and config[k] >= 1 for k in ("channels", "kernel_size"))
+                and isinstance(dilations, list) and bool(dilations)
+                and all(type(d) is int and d >= 1 for d in dilations)
+                and isinstance(config["pooling"], str) and config["pooling"] in self._POOLING)
+
+    def _module(self, owner, sequence, context):
+        import torch
+        config = self.config
+        kernel, dilations = config["kernel_size"], config["dilations"]
+        widths = [len(sequence[0])] + [config["channels"]]*len(dilations)
+        pool, activation = self._POOLING[config["pooling"]], owner._activation()
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.convs = torch.nn.ModuleList(
+                    torch.nn.Conv1d(a, b, kernel, dilation=d)
+                    for a, b, d in zip(widths, widths[1:], dilations))
+                self.activation = activation()
+                self.head = MixtureMLPCDF._build_module(owner, widths[-1] + len(context))
+
+            def forward(self, x):
+                h = x[:, sequence].transpose(1, 2)
+                for conv, d in zip(self.convs, dilations):
+                    h = self.activation(conv(torch.nn.functional.pad(h, ((kernel-1)*d, 0))))
+                return self.head(torch.cat([pool(h), x[:, context]], dim=1))
+        return Module()
 
 
 class _MixtureFamily(ABC):
@@ -2890,6 +3045,8 @@ class _MixtureFamily(ABC):
 
     KIND = ""
     _KEYS = frozenset({"kind"})
+    #: A component's variance divided by its squared scale.
+    variance_factor = 1.
 
     def __init__(self, config):
         if (not isinstance(config, dict) or set(config) != self._KEYS
@@ -2996,6 +3153,7 @@ class _StudentFamily(_MixtureFamily):
         if type(nu) is not int or nu < 3:
             raise ValueError("invalid CDF family settings")
         self.degrees = nu
+        self.variance_factor = nu/(nu-2)
         self._head = nu//2
         ratio = ((lambda k: (2*k-1)/(2*k)) if nu % 2 == 0
                  else (lambda k: 2*k/(2*k+1)))
@@ -3172,10 +3330,15 @@ class _CDFWingTwCRPS(_CDFLossTerm):
     def eligible(self, context):
         return context["density"].sum(1) > 0
 
+    def _segment_weights(self, density):
+        """Return each segment's weight: its normalized wing density."""
+        return density
+
     def values(self, y, logw, mu, sigma, context):
         import torch
         logw, mu, sigma = (a.to(y.dtype) for a in (logw, mu, sigma))
         lower, upper, density = (context[k].to(y.dtype) for k in self.context_keys)
+        density = self._segment_weights(density)
         x, g = _gauss_legendre(_QUADRATURE_NODES)
         nodes, weights = (torch.as_tensor(a, dtype=y.dtype, device=y.device) for a in (x, g))
         cut = torch.minimum(torch.maximum(y, lower), upper)
@@ -3197,64 +3360,47 @@ class _CDFWingTwCRPS(_CDFLossTerm):
         return total.index_add(0, row, density[row, segment]*piece), self.eligible(context)
 
 
-class TorchCDF(MixtureMLPCDF):
-    """Configurable encoder, family and composite proper scores for scalar CDFs.
+class _CDFTailCRPS(_CDFWingTwCRPS):
+    """Unit-weight twCRPS over the same intervals: the study's ``tail_crps``.
 
-    The loss is ``sum_g w_g * mean_over_all_rows(g) + sum_l w_l *
-    mean_over_eligible_rows(l)``: a global term (``nll`` or ``crps``) models
-    every date, a local term scores the dates that have decision structure and
-    never dilutes its weight on dates without it (minibatches are rescaled by
-    the full-training eligible fraction).
-
-    Parameters
-    ----------
-    encoder : dict
-        kind=mlp, or kind=gru with explicit oldest-to-newest sequence_indices,
-        disjoint context_indices, hidden_size and num_layers.
-    losses : list of dict
-        Unique ``{"kind", "weight"}`` terms, weight above zero, at least one
-        global (``nll``, ``crps``) and one local (``decision_brier``,
-        ``decision_log``, ``wing_twcrps``). ``wing_twcrps`` is the
-        indicator-weighted CRPS over the condor wings, read from each record's
-        ``intervals``.
-    family : dict or None
-        Absent means Gaussian components. ``{"kind": "student", "degrees": k}``
-        with integer ``k >= 3`` selects Student components; ``{"kind":
-        "gaussian"}`` names the default explicitly.
-    settings : dict
-        Existing mixture training and output-head settings. ``feature_indices``
-        (the base class's one rule; absent = every column) picks the encoder's
-        input columns, and GRU indices are then positions WITHIN that subset.
-        Task heads and the legacy left-tail penalty are deliberately refused.
-
-    Examples
-    --------
-    A plain encoder, a global CRPS term and the wing term, Student components::
-
-        model = TorchCDF(encoder={"kind": "mlp"},
-                         family={"kind": "student", "degrees": 5},
-                         losses=[{"kind": "crps", "weight": 1.0},
-                                 {"kind": "wing_twcrps", "weight": 0.5}],
-                         device="cpu")
+    Per row ``sum_s int_{lo_s}^{hi_s} (F(z) - 1{y <= z})**2 dz`` over each
+    record's merged wing segments, by the wing term's exact quadrature (the
+    wing term weights a segment by its normalized density instead). With no
+    study ``decision_context`` every record's intervals are the study's
+    ``tail_intervals``, so this is the per-row ``tail_crps`` metric (which
+    integrates each declared interval: the two differ only where intervals
+    overlap), and ``crps`` plus ``w`` times this term trains on the study's
+    ``weighted_crps`` at ``tail_weight = w`` (ADR-0236).
     """
 
-    _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder}
+    def _segment_weights(self, density):
+        """Return one per unit length on every non-empty segment."""
+        return (density > 0).to(density.dtype)
+
+
+class _CompositeLossCDF:
+    """The composite proper-score objective over a mixture family (ADR-0236).
+
+    The loss is ``sum_g w_g * mean_over_all_rows(g) + sum_l w_l *
+    mean_over_eligible_rows(l)`` over the configured ``losses`` terms, with
+    the component family's exact scores. ``TorchCDF`` (a network) and
+    ``BoostedTorchCDF`` (a booster) both inherit it, so the two minimize ONE
+    loss. The class it is mixed into supplies ``curve``, ``device`` and
+    ``batch_size``, and calls ``_set_composite`` from its constructor.
+    """
+
     _FAMILIES = {_GaussianFamily.KIND: _GaussianFamily,
                  _StudentFamily.KIND: _StudentFamily}
     _DEFAULT_FAMILY = _GaussianFamily.KIND
     _LOSSES = {"nll": _CDFNLL, "crps": _CDFCRPS, "decision_brier": _CDFDecisionBrier,
-               "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS}
+               "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS,
+               "tail_crps": _CDFTailCRPS}
     _WING_KEYS = _CDFWingTwCRPS.context_keys
 
-    def __init__(self, encoder, losses, family=None, **settings):
+    def _set_composite(self, losses, family):
+        """Validate and bind the loss terms and the component family."""
         import copy
         import math
-        super().__init__(**settings)
-        if self.head_features or self.left_cdf_weight:
-            raise ValueError("TorchCDF refuses head_features and left_cdf_weight: "
-                             "it uses explicit encoder columns and composite losses")
-        if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
-            raise ValueError("unknown CDF encoder")
         if family is not None and (not isinstance(family, dict)
                                    or family.get("kind") not in self._FAMILIES):
             raise ValueError("unknown CDF family")
@@ -3268,22 +3414,15 @@ class TorchCDF(MixtureMLPCDF):
                 or {self._LOSSES[term["kind"]].scope for term in losses}
                 != {"global", "local"}):
             raise ValueError("invalid composite loss terms")
-        self.encoder_config, self.loss_config = copy.deepcopy(encoder), copy.deepcopy(losses)
+        self.loss_config = copy.deepcopy(losses)
         self.family_config = copy.deepcopy(family)
         self.family = self._FAMILIES[
             self._DEFAULT_FAMILY if family is None else family["kind"]](
             self.family_config or {"kind": self._DEFAULT_FAMILY})
         self._terms = [self._LOSSES[term["kind"]](self.family) for term in losses]
-        self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
 
     def _curve(self, weights, means, scales):
         return self.family.curve(weights, means, scales)
-
-    def _equivalence_settings(self):
-        settings = super()._equivalence_settings()
-        if self.family_config is not None:
-            settings["family"] = self.family_config
-        return settings
 
     def _context_arrays(self, scorer):
         """Return the numpy context arrays the configured terms read, refusing early."""
@@ -3303,9 +3442,6 @@ class TorchCDF(MixtureMLPCDF):
     def _target_tensor(self, y):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
-
-    def _build_module(self, features):
-        return self.encoder.build(self, features)
 
     def _context_tensors(self, scorer, x, kind, rows):
         """Return one row set's context as tensors, refusing an unattached or empty one."""
@@ -3373,6 +3509,77 @@ class TorchCDF(MixtureMLPCDF):
                 "terms": terms, "n": len(y), "eligible_n": int((counts > 0).sum()),
                 "threshold_n": int(counts.sum())}
 
+
+class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
+    """Configurable encoder, family and composite proper scores for scalar CDFs.
+
+    The loss is ``_CompositeLossCDF``'s: ``sum_g w_g * mean_over_all_rows(g) +
+    sum_l w_l * mean_over_eligible_rows(l)``: a global term (``nll`` or
+    ``crps``) models every date, a local term scores the dates that have
+    decision structure and never dilutes its weight on dates without it
+    (minibatches are rescaled by the full-training eligible fraction).
+
+    Parameters
+    ----------
+    encoder : dict
+        kind=mlp; kind=gru or kind=lstm with explicit oldest-to-newest
+        sequence_indices, disjoint context_indices, hidden_size and num_layers;
+        or kind=cnn with the same indices plus channels, kernel_size,
+        dilations (one causal layer each) and pooling (``last`` or ``mean``).
+    losses : list of dict
+        Unique ``{"kind", "weight"}`` terms, weight above zero, at least one
+        global (``nll``, ``crps``) and one local (``decision_brier``,
+        ``decision_log``, ``wing_twcrps``, ``tail_crps``). ``wing_twcrps`` is
+        the indicator-weighted CRPS over the condor wings, read from each
+        record's ``intervals`` with normalized density; ``tail_crps`` is the
+        same integral at unit weight, the study's ``tail_crps`` metric.
+    family : dict or None
+        Absent means Gaussian components. ``{"kind": "student", "degrees": k}``
+        with integer ``k >= 3`` selects Student components; ``{"kind":
+        "gaussian"}`` names the default explicitly.
+    settings : dict
+        Existing mixture training and output-head settings. ``feature_indices``
+        (the base class's one rule; absent = every column) picks the encoder's
+        input columns, and sequence indices are then positions WITHIN that
+        subset. ``head_features`` (one-hot task positions, which must be
+        excluded from ``feature_indices``) gives one mixture head per task over
+        the shared encoder. The legacy left-tail penalty is refused.
+
+    Examples
+    --------
+    A plain encoder, a global CRPS term and the wing term, Student components::
+
+        model = TorchCDF(encoder={"kind": "mlp"},
+                         family={"kind": "student", "degrees": 5},
+                         losses=[{"kind": "crps", "weight": 1.0},
+                                 {"kind": "wing_twcrps", "weight": 0.5}],
+                         device="cpu")
+    """
+
+    _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder, "lstm": _CDFLSTMEncoder,
+                 "cnn": _CDFCNNEncoder}
+
+    def __init__(self, encoder, losses, family=None, **settings):
+        import copy
+        super().__init__(**settings)
+        if self.left_cdf_weight:
+            raise ValueError("TorchCDF refuses left_cdf_weight: it trains on composite losses")
+        self._refuse_head_inputs()
+        if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
+            raise ValueError("unknown CDF encoder")
+        self._set_composite(losses, family)
+        self.encoder_config = copy.deepcopy(encoder)
+        self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
+
+    def _equivalence_settings(self):
+        settings = super()._equivalence_settings()
+        if self.family_config is not None:
+            settings["family"] = self.family_config
+        return settings
+
+    def _build_module(self, features):
+        return self.encoder.build(self, features)
+
     def _research_state(self):
         import torch
         state = {"encoder": self.encoder_config, "losses": self.loss_config,
@@ -3383,9 +3590,340 @@ class TorchCDF(MixtureMLPCDF):
                                                if self.device.startswith("cuda") else 0)}
         if self.family_config is not None:
             state["family"] = self.family_config
+        if self.head_features:
+            state["head_features"] = list(self.head_features)
         if self.patience is not None:
             state.update(patience=self.patience, best_epoch_by_seed=self.best_epochs,
                          monitor_loss_by_seed=self.monitor_losses)
+        return state
+
+
+class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
+    """LightGBM boosting of the mixture parameters on TorchCDF's composite loss.
+
+    One booster with ``3 * components`` outputs per row (LightGBM's
+    multi-output custom objective, ``num_class = 3 * components``) learns the
+    raw logits, means and scales that TorchCDF's transform maps to the
+    mixture, so its curve is the same type and the study scores it the same
+    way. Each round the custom objective returns, by torch autograd, the
+    gradient of the composite loss summed over rows (the same ``losses`` and
+    ``family`` as TorchCDF) and its EXACT Hessian diagonal: rows are
+    independent, so one second backward pass per output column yields every
+    row's own second derivatives. Mixture losses are not convex, so a diagonal
+    entry can be zero or negative; it is floored at ``hessian_floor`` before
+    LightGBM's Newton leaf step.
+
+    Rounds start from one constant row: equal weights, means at the
+    ``components`` midpoint quantiles of the training outcomes and a common
+    scale that makes the mixture variance equal theirs. Declared task heads
+    (``head_features``) collapse to ONE integer column that LightGBM splits as
+    a native categorical, the booster's per-task analogue of TorchCDF's heads.
+
+    Parameters
+    ----------
+    losses, family : list of dict, dict or None
+        TorchCDF's composite terms and component family, same validation.
+    components : int
+        Mixture components (>= 1).
+    n_estimators : int
+        Boosting rounds: exactly this many without ``patience``, else the ceiling.
+    num_leaves, min_data_in_leaf : int
+        Leaves per tree (>= 2) and training rows per leaf (>= 1).
+    learning_rate, feature_fraction, lambda_l2 : float
+        Shrinkage (> 0), column fraction per tree in (0, 1], L2 leaf penalty (>= 0).
+    seed, num_threads : int
+        LightGBM seed (>= 0) and threads (>= 1). LightGBM runs deterministic
+        and column-wise; a result is pinned for one thread count.
+    hessian_floor : float
+        Positive floor on the exact Hessian diagonal.
+    min_scale : float
+        Positive component-scale floor of the parameter transform.
+    batch_size : int
+        Rows per torch loss evaluation; memory only, rows are independent.
+    device : str
+        ``cpu`` or ``cuda[:n]`` for the torch loss; LightGBM runs on CPU.
+    deterministic : bool
+        Torch deterministic algorithms for the loss (CUDA also needs
+        ``CUBLAS_WORKSPACE_CONFIG`` set before launch).
+    patience : int or None
+        As MixtureMLPCDF's: absent trains ``n_estimators`` rounds; an integer
+        scores the composite on the calibration rows after every round, keeps
+        the best round and stops after ``patience`` rounds without a strict
+        improvement; reaching ``n_estimators`` first raises.
+    head_features, feature_indices : list of int or None
+        One-hot task positions (excluded from ``feature_indices``) and the
+        plain input columns (absent = every column, only without heads).
+
+    Examples
+    --------
+    The weighted CRPS at unit tail weight, early-stopped on calibration rows::
+
+        model = BoostedTorchCDF(losses=[{"kind": "crps", "weight": 1.0},
+                                        {"kind": "tail_crps", "weight": 1.0}],
+                                components=3, n_estimators=400, patience=20)
+    """
+
+    def __init__(self, losses, family=None, components=3, n_estimators=500, num_leaves=15,
+                 min_data_in_leaf=100, learning_rate=.05, feature_fraction=1., lambda_l2=1.,
+                 seed=0, num_threads=1, hessian_floor=1e-6, min_scale=_MIN_SCALE,
+                 batch_size=4096, device="cpu", deterministic=False, patience=None,
+                 head_features=None, feature_indices=None):
+        import math
+        counts = ((components, 1), (n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
+                  (seed, 0), (num_threads, 1), (batch_size, 1))
+        rates = (learning_rate, feature_fraction, lambda_l2, hessian_floor, min_scale)
+        if (any(type(v) is not int or v < low for v, low in counts)
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in rates)
+                or min(learning_rate, hessian_floor, min_scale) <= 0 or lambda_l2 < 0
+                or not 0 < feature_fraction <= 1
+                or not isinstance(device, str)
+                or not (device == "cpu" or device.startswith("cuda"))
+                or type(deterministic) is not bool):
+            raise ValueError("invalid boosted CDF parameters")
+        self.patience = self._checked_patience(patience)
+        self.head_features = self._checked_heads(head_features)
+        self.feature_indices = self._checked_indices(feature_indices)
+        self._refuse_head_inputs()
+        self._set_composite(losses, family)
+        self.components, self.n_estimators, self.num_leaves = components, n_estimators, num_leaves
+        self.min_data_in_leaf, self.learning_rate = min_data_in_leaf, float(learning_rate)
+        self.feature_fraction, self.lambda_l2 = float(feature_fraction), float(lambda_l2)
+        self.seed, self.num_threads = seed, num_threads
+        self.hessian_floor, self.min_scale = float(hessian_floor), float(min_scale)
+        self.batch_size, self.device, self.deterministic = batch_size, device, deterministic
+
+    def _booster_params(self):
+        """Return LightGBM's parameters: the knobs plus the forced custom-objective ones."""
+        return {"objective": "none", "num_class": 3*self.components, "metric": "None",
+                "num_leaves": self.num_leaves, "min_data_in_leaf": self.min_data_in_leaf,
+                "learning_rate": self.learning_rate, "feature_fraction": self.feature_fraction,
+                "lambda_l2": self.lambda_l2, "seed": self.seed, "num_threads": self.num_threads,
+                "deterministic": True, "force_col_wise": True, "verbosity": -1}
+
+    def _design(self, x, heads):
+        """Return the booster input: the plain columns, then the task code under heads."""
+        import numpy as np
+        features = np.asarray(self._features(x), dtype=float)
+        return np.column_stack([features, heads]) if self.head_features else features
+
+    def _dataset(self, design, y, reference=None):
+        """Return a LightGBM dataset starting every row at the constant start.
+
+        The dataset carries the booster parameters itself: its construction
+        (binning, the ``min_data_in_leaf`` feature pre-filter) reads only them.
+        """
+        import lightgbm
+        import numpy as np
+        return lightgbm.Dataset(
+            design, label=y, init_score=np.tile(self.start, (len(design), 1)),
+            categorical_feature=[design.shape[1]-1] if self.head_features else "auto",
+            reference=reference, free_raw_data=False, params=self._booster_params())
+
+    def _moment_start(self, y):
+        """Return the constant raw start row: quantile means, variance-matched scale."""
+        import numpy as np
+        k = self.components
+        means = np.quantile(y, (np.arange(k)+.5)/k)
+        scale = np.sqrt(max(y.var()-means.var(), 0.)/self.family.variance_factor)
+        if not scale > self.min_scale:
+            raise ValueError(f"training outcomes too concentrated: the start scale {scale:.4g} "
+                             f"does not exceed min_scale {self.min_scale}")
+        return np.concatenate([np.zeros(k), means,
+                               np.full(k, np.log(np.expm1(scale-self.min_scale)))])
+
+    @staticmethod
+    def _derivatives(loss, theta):
+        """Return the gradient and exact Hessian diagonal of a row-separable loss."""
+        import torch
+        (gradient,) = torch.autograd.grad(loss, theta, create_graph=True)
+        diagonal = []
+        for j in range(theta.shape[1]):
+            column = gradient[:, j].sum()
+            second = (torch.autograd.grad(column, theta, retain_graph=True, allow_unused=True)[0]
+                      if column.requires_grad else None)
+            diagonal.append(torch.zeros_like(theta[:, j]) if second is None else second[:, j])
+        return (gradient.detach().cpu().numpy(),
+                torch.stack(diagonal, 1).detach().cpu().numpy())
+
+    def _raw_composite(self, raw, y, context, derivatives):
+        """Return the composite summed over rows at raw outputs, with derivatives if asked.
+
+        Parameters
+        ----------
+        raw : ndarray
+            (rows, 3 * components) raw outputs, start included.
+        y : Tensor
+            The rows' outcomes, from ``_target_tensor``.
+        context : dict
+            The rows' full context tensors (training or calibration).
+        derivatives : bool
+            Also return the gradient and the exact Hessian diagonal.
+
+        Returns
+        -------
+        tuple
+            ``(total, gradient, hessian)``: rows times the composite mean, and
+            two arrays shaped like ``raw`` (None without ``derivatives``).
+        """
+        import numpy as np
+        import torch
+        raw = np.asarray(raw, dtype=float)
+        total, gradients, hessians = 0., [], []
+        for start in range(0, len(raw), self.batch_size):
+            stop = min(start+self.batch_size, len(raw))
+            ix = torch.arange(start, stop, device=self.device)
+            theta = torch.tensor(raw[start:stop], dtype=torch.float64, device=self.device,
+                                 requires_grad=derivatives)
+            with torch.set_grad_enabled(derivatives):
+                logw, mu, sigma = self._parts(theta)
+                # A chunk's composite times its rows is its exact share of the sum.
+                loss = self._objective_loss(y[ix], logw, mu, sigma, ix, context)*(stop-start)
+            total += loss.item()
+            if derivatives:
+                gradient, hessian = self._derivatives(loss, theta)
+                gradients.append(gradient)
+                hessians.append(hessian)
+        if not derivatives:
+            return total, None, None
+        return total, np.concatenate(gradients), np.concatenate(hessians)
+
+    def _boosting_step(self, preds, y, context):
+        """Return one round's floored (grad, hess) and record the training composite."""
+        import numpy as np
+        total, gradient, hessian = self._raw_composite(preds, y, context, True)
+        if not (np.isfinite(gradient).all() and np.isfinite(hessian).all()):
+            raise ValueError("nonfinite boosted CDF gradient")
+        self.losses.append(total/len(gradient))
+        return gradient, np.maximum(hessian, self.hessian_floor)
+
+    def _monitor_round(self, booster, monitor):
+        """Return the composite mean on the calibration rows after this round."""
+        (result,) = booster.eval_valid(feval=lambda preds, _: (
+            "composite", self._raw_composite(preds, *monitor, False)[0]/len(preds), False))
+        return result[2]
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Boost from the constant start on the composite loss.
+
+        Parameters
+        ----------
+        x, y, cal_x, cal_y : array-like
+            Training and separate calibration arrays. The calibration rows are
+            read only when ``patience`` is set, as the stop rule's monitor.
+
+        Returns
+        -------
+        self
+            Fitted booster, kept as LightGBM text truncated at the kept round.
+
+        Raises
+        ------
+        ValueError
+            For unattached context, unseen calibration heads, a start scale at
+            ``min_scale``, a nonfinite gradient, or patience not exhausted.
+        """
+        with self._deterministic_context():
+            return self._fit(x, y, cal_x, cal_y)
+
+    def _fit(self, x, y, cal_x, cal_y):
+        import lightgbm
+        import numpy as np
+        self._validate_x(cal_x)
+        self._features(cal_x)
+        y = np.asarray(y, dtype=float)
+        heads = self._heads(x)
+        self.seen_heads = set(heads)
+        target, context = self._target_tensor(y), self._training_context(x)
+        self.start = self._moment_start(y)
+        train = self._dataset(self._design(x, heads), y)
+        booster = lightgbm.Booster(params=self._booster_params(), train_set=train)
+        stop = monitor = None
+        if self.patience is not None:
+            cal_heads = self._heads(cal_x)
+            if not set(cal_heads).issubset(self.seen_heads):
+                raise ValueError("unseen head in the calibration rows")
+            cal_y = np.asarray(cal_y, dtype=float)
+            booster.add_valid(self._dataset(self._design(cal_x, cal_heads), cal_y, train),
+                              "calibration")
+            monitor = (self._target_tensor(cal_y), self._monitor_context(cal_x))
+            stop = _RoundPatienceStop(self.patience)
+        self.losses = []
+        for _ in range(self.n_estimators):
+            booster.update(fobj=lambda preds, _: self._boosting_step(preds, target, context))
+            if stop is not None and stop.exhausted(self._monitor_round(booster, monitor), None):
+                break
+        else:
+            if stop is not None:
+                raise ValueError(
+                    f"patience {self.patience} was not exhausted within n_estimators "
+                    f"{self.n_estimators}: the monitored loss may still be improving; "
+                    "raise n_estimators, the ceiling")
+        self.rounds = self.n_estimators if stop is None else stop.best_epoch
+        self.monitor_losses = [] if stop is None else stop.history
+        self.booster_text = booster.model_to_string(num_iteration=self.rounds)
+        self.booster = lightgbm.Booster(model_str=self.booster_text)
+        return self
+
+    def curve(self, x):
+        """Map the booster's raw outputs plus the start to the family's mixture.
+
+        Parameters
+        ----------
+        x : array-like
+            Feature rows, task columns included when heads are declared.
+
+        Returns
+        -------
+        MixtureCurve or StudentMixtureCurve
+            One mixture per row, ``components`` terms.
+        """
+        import numpy as np
+        import torch
+        heads = self._heads(x)
+        if not set(heads).issubset(self.seen_heads):
+            raise ValueError("unseen head requested")
+        raw = self.booster.predict(self._design(x, heads), raw_score=True)
+        raw = np.asarray(raw, dtype=float).reshape(len(heads), -1) + self.start
+        with torch.no_grad():
+            logw, mu, sigma = self._parts(torch.as_tensor(raw, dtype=torch.float64))
+        return self._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+
+    def _equivalence_settings(self):
+        """Return the settings the equivalence digest covers."""
+        settings = {"components": self.components, "losses": self.loss_config,
+                    "n_estimators": self.n_estimators, "num_leaves": self.num_leaves,
+                    "min_data_in_leaf": self.min_data_in_leaf,
+                    "learning_rate": self.learning_rate,
+                    "feature_fraction": self.feature_fraction, "lambda_l2": self.lambda_l2,
+                    "seed": self.seed, "num_threads": self.num_threads,
+                    "hessian_floor": self.hessian_floor, "min_scale": self.min_scale,
+                    "batch_size": self.batch_size, "device": self.device,
+                    "deterministic": self.deterministic, "head_features": self.head_features}
+        optional = {"family": self.family_config, "feature_indices": self.feature_indices,
+                    "patience": self.patience}
+        settings.update({k: v for k, v in optional.items() if v is not None})
+        return settings
+
+    def _equivalence_state(self):
+        """Digest the settings, the constant start and the fitted text model."""
+        import numpy as np
+        digest = hashlib.sha256()
+        digest.update(json.dumps(self._equivalence_settings(), sort_keys=True).encode())
+        digest.update(np.asarray(self.start, dtype="<f8").tobytes())
+        digest.update(self.booster_text.encode())
+        return digest.hexdigest()
+
+    def _research_state(self):
+        state = {"losses": self.loss_config, "training_composite_by_round": self.losses,
+                 "rounds_run": len(self.losses), "best_round": self.rounds,
+                 "stopped_by_patience": self.patience is not None,
+                 "start": [float(v) for v in self.start]}
+        if self.family_config is not None:
+            state["family"] = self.family_config
+        if self.head_features:
+            state["head_features"] = list(self.head_features)
+        if self.patience is not None:
+            state.update(patience=self.patience, monitor_loss_by_round=self.monitor_losses)
         return state
 
 
@@ -4156,13 +4694,17 @@ class ChronologicalCDFStudy:
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
             "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
-            "wing_metrics", "fold_table", "notes"}
+            "wing_metrics", "fold_table", "tail_weight", "notes"}
+    #: The per-row ``crps + tail_weight * tail_crps`` column, scored (and the
+    #: development selection and paired intervals extended to it) only when
+    #: ``tail_weight`` is declared (ADR-0236).
+    WEIGHTED_METRIC = "weighted_crps"
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
                     "frozen_variants", "promotion_guard", "decision_acceptance",
-                    "wing_metrics", "fold_table"}
+                    "wing_metrics", "fold_table", "tail_weight"}
         folds = "fold_table" in config
         year_keys = {"years", "development_end"}
         missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
@@ -4175,6 +4717,11 @@ class ChronologicalCDFStudy:
                                          or (config["wing_metrics"]
                                              and not config.get("decision_context"))):
             raise ValueError("wing metrics must be a bool and need a decision context")
+        if "tail_weight" in config:
+            import math
+            weight = config["tail_weight"]
+            if type(weight) not in (int, float) or not math.isfinite(weight) or weight <= 0:
+                raise ValueError("tail_weight must be a finite number above zero")
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
@@ -4314,7 +4861,7 @@ class ChronologicalCDFStudy:
     #: group, fold and trained model), and the research-state fields it carries.
     FOLD_LOSSES_FILE = "fold_losses.csv"
     LOSS_STATE_FIELDS = ("epochs_run_by_seed", "best_epoch_by_seed", "stopped_by_patience",
-                         "patience")
+                         "patience", "rounds_run", "best_round")
     LOSS_SUFFIX, STATE_SUFFIX = "_losses", "_research_state"
 
     @classmethod
@@ -4399,8 +4946,11 @@ class ChronologicalCDFStudy:
         split = self.plan.column
         dev = scores[scores[split] <= self.plan.development_end]
         later = scores[scores[split] > self.plan.development_end]
+        weighted = [self.WEIGHTED_METRIC] if "tail_weight" in c else []
+        if weighted and self.WEIGHTED_METRIC not in scores:
+            raise ValueError("tail_weight is declared but the scores carry no weighted_crps")
         selection_metric = ("decision_strike_brier"
-                            if "decision_strike_brier" in dev else "crps")
+                            if "decision_strike_brier" in dev else (weighted or ["crps"])[0])
         dev_means = dev.groupby(cells+["model", "variant"])[selection_metric].mean().unstack(["model", "variant"])
         # Equal-cell relative score uses a fixed raw horizon-empirical reference.
         baseline = c["reference_model"]
@@ -4421,7 +4971,7 @@ class ChronologicalCDFStudy:
             selected = selected_variants
         picked = pd.concat([later[(later.model == name) & (later.variant == variant)]
                             for name, variant in selected.items()])
-        metrics = ["crps", "tail_crps", "lower_tail_quantile_score",
+        metrics = ["crps", "tail_crps", *weighted, "lower_tail_quantile_score",
                    "upper_tail_quantile_score", "raw_return_crps", "strike_brier", "condor_loss_mse",
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
         if "decision_strike_brier" in scores:
@@ -4459,7 +5009,8 @@ class ChronologicalCDFStudy:
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
                     if metric in (*DecisionRegionScores.PROPER_METRICS, "crps", "tail_crps",
-                                  "raw_return_crps", "strike_brier", "condor_loss_mse")
+                                  self.WEIGHTED_METRIC, "raw_return_crps", "strike_brier",
+                                  "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
             if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95",
                               "payoff_quadrature_gap"):
@@ -4475,8 +5026,8 @@ class ChronologicalCDFStudy:
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
         # paired denominators cancel in each cell's candidate/reference ratio.
-        interval_metrics = ["crps"]+[m for m in DecisionRegionScores.PROPER_METRICS
-                                     if m in picked]
+        interval_metrics = ["crps", *weighted]+[m for m in DecisionRegionScores.PROPER_METRICS
+                                                if m in picked]
         for interval_metric in interval_metrics:
           for reference in c["comparison_references"]:
             base_rows = picked[picked.model == reference].set_index(keys)[interval_metric].dropna()
@@ -4835,6 +5386,9 @@ class ChronologicalCDFStudy:
                         part[self.plan.column], part["model"], part["variant"] = split, name, variant
                         for metric, values in scored.items():
                             part[metric] = values
+                        if "tail_weight" in c:
+                            part[self.WEIGHTED_METRIC] = (
+                                scored["crps"] + c["tail_weight"]*scored["tail_crps"])
                         part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
                         if diagnostic:
                             for metric, values in diagnostic(val, curve, draws).items():
@@ -4860,7 +5414,7 @@ class ChronologicalCDFStudy:
                         count[name+"_research_state"] = model._research_state()
                     if name == c["reference_model"]:
                         reference_model, reference_imputer = model, imputer
-                    if isinstance(model, TorchCDF):
+                    if isinstance(model, _CompositeLossCDF):
                         count[name+"_losses"] = self._loss_telemetry(
                             model, imputer, reference_model, reference_imputer, fit, cal, val)
                     elif isinstance(model, MixtureMLPCDF):
@@ -4930,10 +5484,14 @@ class CDFHyperparameterStudy:
             raise ValueError("unknown or missing experiment keys")
         metric = e.get("selection_metric", "crps")
         proper = DecisionRegionScores.PROPER_METRICS
-        if (metric not in ("crps", *proper)
+        weighted = ChronologicalCDFStudy.WEIGHTED_METRIC
+        if (metric not in ("crps", weighted, *proper)
+                or (metric == weighted and "tail_weight" not in c)
                 or (metric in proper and not c.get("decision_context"))
                 or (metric in DecisionRegionScores.WING_METRICS and not c.get("wing_metrics"))):
             raise ValueError("invalid primary selection metric")
+        if metric == weighted:
+            self._pin_tail_weight(c["tail_weight"], {**c["models"], **e["candidates"]})
         guard = e.get("selection_guard")
         if metric in proper and guard is not None:
             guarded = [*guard.get("metrics", []), *guard.get("cell_improvement_metrics", []),
@@ -5060,6 +5618,38 @@ class CDFHyperparameterStudy:
         """Return the full JSON experiment for the canonical identity owner."""
         return self.config
 
+    @staticmethod
+    def _pin_tail_weight(tail_weight, specs):
+        """Refuse a model trained on ``tail_crps`` at another weight than it is selected on.
+
+        Parameters
+        ----------
+        tail_weight : float
+            The study's ``tail_weight``.
+        specs : dict
+            Model name to ``{"class", "params", ...}`` specification.
+
+        Raises
+        ------
+        ValueError
+            When a model's ``losses`` hold ``tail_crps`` but not ``crps`` with
+            ``tail_crps`` weight equal to ``tail_weight`` times it (any common
+            scale is the same objective).
+        """
+        import math
+        for name, spec in specs.items():
+            losses = spec.get("params", {}).get("losses") if isinstance(spec, dict) else None
+            if not isinstance(losses, list):
+                continue
+            weights = {t.get("kind"): t.get("weight") for t in losses if isinstance(t, dict)}
+            if "tail_crps" in weights and not (
+                    all(type(weights.get(k)) in (int, float) for k in ("crps", "tail_crps"))
+                    and math.isclose(weights["tail_crps"], tail_weight*weights["crps"],
+                                     rel_tol=1e-9)):
+                raise ValueError(f"{name} trains on tail_crps but not as crps + tail_weight "
+                                 f"({tail_weight}) x tail_crps, the weighted_crps it is "
+                                 "selected on")
+
     def _dependency_versions(self):
         """Return versions of optional libraries selected by configured classes."""
         from importlib.metadata import version
@@ -5074,6 +5664,8 @@ class CDFHyperparameterStudy:
             names.append("catboost")
         if "SplineFlowCDF" in classes:
             names.append("nflows")
+        if "BoostedTorchCDF" in classes:
+            names.append("lightgbm")
         return {name: version(name) for name in sorted(names)}
 
     @staticmethod

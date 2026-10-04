@@ -311,6 +311,14 @@ local `decision_brier`, `decision_log`, `wing_twcrps` (ADR-0218). One global
 and one local term are required. Optional `family` is `{"kind": "student",
 "degrees": k}` (integer `k >= 3`); absent means Gaussian components.
 No instrument or index is encoded in this estimator.
+ADR-0236 adds encoders `lstm` (GRU's keys) and `cnn` (`channels`,
+`kernel_size`, `dilations`, `pooling`), per-task heads (`head_features`,
+excluded from `feature_indices`), the local term `tail_crps` (unit-weight
+twCRPS = the study's `tail_crps`; `wing_twcrps` is density-normalized), and
+`BoostedTorchCDF`: LightGBM on the SAME composite loss (custom objective, exact
+Hessian diagonal, heads as one categorical column). Study key `tail_weight`
+scores `weighted_crps = crps + tail_weight * tail_crps`, a valid
+`selection_metric` that the report's paired intervals also carry.
 `DecisionRegionScores` consumes caller-bound threshold/weight inventories;
 the domain adapter owns the source clock and listed-wing eligibility.
 Local loss means divide by eligible rows, while global terms use all rows.
