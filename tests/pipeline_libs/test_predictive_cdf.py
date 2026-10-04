@@ -3710,7 +3710,7 @@ def test_boosted_objective_is_the_composite_with_exact_gradient_and_hessian(fami
     rng = np.random.default_rng(4)
     x, y, raw = np.zeros((n, 1)), rng.normal(size=n)*1.3, rng.normal(size=(n, 6))*.4
     target, training = model._target_tensor(y), model._training_context(x)
-    total, grad, hess = model._raw_composite(raw, target, training, True)
+    total, grad, hess = model._raw_composite(raw, target, training, 2)
     assert grad.shape == hess.shape == raw.shape
     with torch.no_grad():
         logw, mu, sigma = model._parts(torch.tensor(raw))
@@ -3721,7 +3721,7 @@ def test_boosted_objective_is_the_composite_with_exact_gradient_and_hessian(fami
     def at(i, j, step):
         moved = raw.copy()
         moved[i, j] += step
-        return model._raw_composite(moved, target, training, False)[0]
+        return model._raw_composite(moved, target, training, 0)[0]
     for i, j in [(0, 0), (1, 2), (4, 3), (6, 5), (2, 1), (5, 4)]:
         assert grad[i, j] == pytest.approx((at(i, j, 1e-6)-at(i, j, -1e-6))/2e-6,
                                            rel=1e-5, abs=1e-8)
@@ -3739,13 +3739,53 @@ def test_boosted_step_floors_the_hessian_and_records_the_training_composite():
     rng = np.random.default_rng(1)
     y, raw = rng.normal(size=n), rng.normal(size=(n, 3))*.3
     target, training = model._target_tensor(y), model._training_context(np.zeros((n, 1)))
-    total, grad, hess = model._raw_composite(raw, target, training, True)
+    total, grad, hess = model._raw_composite(raw, target, training, 2)
     assert (hess[:, 0] == 0).all()  # one component: its logit never moves the loss
     model.losses = []
     step_grad, step_hess = model._boosting_step(raw, target, training)
     np.testing.assert_array_equal(step_grad, grad)
     np.testing.assert_array_equal(step_hess, np.maximum(hess, .25))
     assert model.losses == [pytest.approx(total/n)]
+
+
+def test_constant_hessian_keeps_the_exact_gradient_with_unit_curvature():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 6
+    context = _zoo_context(n)
+    rng = np.random.default_rng(3)
+    y, raw = rng.normal(size=n), rng.normal(size=(n, 6))*.3
+    exact, constant = _boosted(), _boosted(hessian="constant")
+    for model in (exact, constant):
+        model.fit_decision_context(context, context)
+        model.losses = []
+    target, training = exact._target_tensor(y), exact._training_context(np.zeros((n, 1)))
+    total, grad, hess = exact._raw_composite(raw, target, training, 1)
+    assert hess is None  # first order computes no Hessian
+    step_grad, step_hess = constant._boosting_step(raw, target, training)
+    np.testing.assert_allclose(step_grad, grad, rtol=1e-12)
+    np.testing.assert_array_equal(step_hess, np.ones_like(grad))
+    assert constant.losses == [pytest.approx(total/n)]
+    assert exact._boosting_step(raw, target, training)[1].min() >= exact.hessian_floor
+    assert constant._equivalence_settings()["hessian"] == "constant"
+    assert exact._equivalence_settings()["hessian"] == "exact"
+
+
+@pytest.mark.parametrize("hessian", ["exact", "constant"])
+def test_both_hessian_modes_learn_heteroscedastic_scale(hessian):
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(600, 1)
+    xv, yv = _hetero_rows(400, 2)
+    context, held = _zoo_context(600), _zoo_context(400, "v")
+    rate = .1 if hessian == "exact" else .5  # unit Hessians take gradient-sized steps
+    model = _boosted(n_estimators=20, learning_rate=rate, num_leaves=2, min_data_in_leaf=20,
+                     hessian=hessian)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert model.losses[-1] < .95*model.losses[0]
+    q = model.curve(np.array([[-.9, 0.], [.9, 0.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 1.3*(q[0, 1]-q[0, 0])
+    assert model.loss_report(xv, yv, held)["composite"] < .97*model.losses[0]
 
 
 def test_boosted_cdf_learns_heteroscedastic_scale_and_beats_the_best_constant_mixture():
@@ -3812,7 +3852,7 @@ def test_boosted_cdf_round_trips_through_its_text_model_and_refits_identically()
     {"patience": 0}, {"head_features": [0, 0]}, {"feature_indices": []},
     {"head_features": [1, 2]}, {"head_features": [1, 2], "feature_indices": [0, 1]},
     {"losses": [{"kind": "crps", "weight": 1.}]}, {"family": {"kind": "cauchy"}},
-    {"max_bin": 1}, {"max_bin": 255.},
+    {"max_bin": 1}, {"max_bin": 255.}, {"hessian": "diagonal"}, {"hessian": None},
 ])
 def test_boosted_cdf_refuses_bad_knobs(edit):
     with pytest.raises(ValueError):

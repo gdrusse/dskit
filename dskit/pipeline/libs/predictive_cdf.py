@@ -3607,11 +3607,15 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
     mixture, so its curve is the same type and the study scores it the same
     way. Each round the custom objective returns, by torch autograd, the
     gradient of the composite loss summed over rows (the same ``losses`` and
-    ``family`` as TorchCDF) and its EXACT Hessian diagonal: rows are
-    independent, so one second backward pass per output column yields every
-    row's own second derivatives. Mixture losses are not convex, so a diagonal
-    entry can be zero or negative; it is floored at ``hessian_floor`` before
-    LightGBM's Newton leaf step.
+    ``family`` as TorchCDF) and, with ``hessian="exact"``, its EXACT Hessian
+    diagonal: rows are independent, so one second backward pass per output
+    column yields every row's own second derivatives. Mixture losses are not
+    convex, so a diagonal entry can be zero or negative; it is floored at
+    ``hessian_floor`` before LightGBM's Newton leaf step. ``hessian="constant"``
+    returns unit Hessians instead: first-order boosting of the same loss (a
+    leaf moves by ``learning_rate`` times its mean negative gradient, before
+    ``lambda_l2``), several times cheaper per round because the second
+    backward passes dominate the exact cost.
 
     Rounds start from one constant row: equal weights, means at the
     ``components`` midpoint quantiles of the training outcomes and a common
@@ -3634,8 +3638,11 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
     seed, num_threads : int
         LightGBM seed (>= 0) and threads (>= 1). LightGBM runs deterministic
         and column-wise; a result is pinned for one thread count.
+    hessian : str
+        ``exact`` (default, the floored second-derivative diagonal) or
+        ``constant`` (unit Hessians, first-order steps).
     hessian_floor : float
-        Positive floor on the exact Hessian diagonal.
+        Positive floor on the exact Hessian diagonal (unused by ``constant``).
     min_scale : float
         Positive component-scale floor of the parameter transform.
     batch_size : int
@@ -3667,11 +3674,14 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                                 components=3, n_estimators=400, patience=20)
     """
 
+    #: Each ``hessian`` mode and the derivative order its objective computes.
+    _HESSIAN_ORDERS = {"exact": 2, "constant": 1}
+
     def __init__(self, losses, family=None, components=3, n_estimators=500, num_leaves=15,
                  min_data_in_leaf=100, learning_rate=.05, feature_fraction=1., lambda_l2=1.,
                  seed=0, num_threads=1, hessian_floor=1e-6, min_scale=_MIN_SCALE,
                  batch_size=4096, device="cpu", deterministic=False, patience=None,
-                 head_features=None, feature_indices=None, max_bin=255):
+                 head_features=None, feature_indices=None, max_bin=255, hessian="exact"):
         import math
         counts = ((components, 1), (n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
                   (seed, 0), (num_threads, 1), (batch_size, 1), (max_bin, 2))
@@ -3682,8 +3692,10 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                 or not 0 < feature_fraction <= 1
                 or not isinstance(device, str)
                 or not (device == "cpu" or device.startswith("cuda"))
-                or type(deterministic) is not bool):
+                or type(deterministic) is not bool
+                or not isinstance(hessian, str) or hessian not in self._HESSIAN_ORDERS):
             raise ValueError("invalid boosted CDF parameters")
+        self.hessian = hessian
         self.patience = self._checked_patience(patience)
         self.head_features = self._checked_heads(head_features)
         self.feature_indices = self._checked_indices(feature_indices)
@@ -3775,10 +3787,12 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                                np.full(k, np.log(np.expm1(scale-self.min_scale)))])
 
     @staticmethod
-    def _derivatives(loss, theta):
-        """Return the gradient and exact Hessian diagonal of a row-separable loss."""
+    def _derivatives(loss, theta, order):
+        """Return the gradient and, at ``order`` 2, the exact Hessian diagonal (else None)."""
         import torch
-        (gradient,) = torch.autograd.grad(loss, theta, create_graph=True)
+        (gradient,) = torch.autograd.grad(loss, theta, create_graph=order == 2)
+        if order < 2:
+            return gradient.detach().cpu().numpy(), None
         diagonal = []
         for j in range(theta.shape[1]):
             column = gradient[:, j].sum()
@@ -3788,8 +3802,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         return (gradient.detach().cpu().numpy(),
                 torch.stack(diagonal, 1).detach().cpu().numpy())
 
-    def _raw_composite(self, raw, y, context, derivatives):
-        """Return the composite summed over rows at raw outputs, with derivatives if asked.
+    def _raw_composite(self, raw, y, context, order):
+        """Return the composite summed over rows at raw outputs, with derivatives to ``order``.
 
         Parameters
         ----------
@@ -3799,14 +3813,15 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
             The rows' outcomes, from ``_target_tensor``.
         context : dict
             The rows' full context tensors (training or calibration).
-        derivatives : bool
-            Also return the gradient and the exact Hessian diagonal.
+        order : int
+            0: the value only; 1: also the gradient; 2: also the exact Hessian
+            diagonal.
 
         Returns
         -------
         tuple
             ``(total, gradient, hessian)``: rows times the composite mean, and
-            two arrays shaped like ``raw`` (None without ``derivatives``).
+            arrays shaped like ``raw`` (None beyond ``order``).
         """
         import numpy as np
         import torch
@@ -3816,33 +3831,35 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
             stop = min(start+self.batch_size, len(raw))
             ix = torch.arange(start, stop, device=self.device)
             theta = torch.tensor(raw[start:stop], dtype=torch.float64, device=self.device,
-                                 requires_grad=derivatives)
-            with torch.set_grad_enabled(derivatives):
+                                 requires_grad=order > 0)
+            with torch.set_grad_enabled(order > 0):
                 logw, mu, sigma = self._parts(theta)
                 # A chunk's composite times its rows is its exact share of the sum.
                 loss = self._objective_loss(y[ix], logw, mu, sigma, ix, context)*(stop-start)
             total += loss.item()
-            if derivatives:
-                gradient, hessian = self._derivatives(loss, theta)
+            if order:
+                gradient, hessian = self._derivatives(loss, theta, order)
                 gradients.append(gradient)
                 hessians.append(hessian)
-        if not derivatives:
-            return total, None, None
-        return total, np.concatenate(gradients), np.concatenate(hessians)
+        return (total, np.concatenate(gradients) if order else None,
+                np.concatenate(hessians) if order == 2 else None)
 
     def _boosting_step(self, preds, y, context):
-        """Return one round's floored (grad, hess) and record the training composite."""
+        """Return one round's (grad, hess) for ``hessian`` and record the training composite."""
         import numpy as np
-        total, gradient, hessian = self._raw_composite(preds, y, context, True)
+        total, gradient, hessian = self._raw_composite(
+            preds, y, context, self._HESSIAN_ORDERS[self.hessian])
+        hessian = np.ones_like(gradient) if hessian is None else np.maximum(
+            hessian, self.hessian_floor)
         if not (np.isfinite(gradient).all() and np.isfinite(hessian).all()):
             raise ValueError("nonfinite boosted CDF gradient")
         self.losses.append(total/len(gradient))
-        return gradient, np.maximum(hessian, self.hessian_floor)
+        return gradient, hessian
 
     def _monitor_round(self, booster, monitor):
         """Return the composite mean on the calibration rows after this round."""
         (result,) = booster.eval_valid(feval=lambda preds, _: (
-            "composite", self._raw_composite(preds, *monitor, False)[0]/len(preds), False))
+            "composite", self._raw_composite(preds, *monitor, 0)[0]/len(preds), False))
         return result[2]
 
     def fit(self, x, y, cal_x, cal_y):
@@ -3960,8 +3977,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                     "learning_rate": self.learning_rate,
                     "feature_fraction": self.feature_fraction, "lambda_l2": self.lambda_l2,
                     "seed": self.seed, "num_threads": self.num_threads,
-                    "hessian_floor": self.hessian_floor, "min_scale": self.min_scale,
-                    "max_bin": self.max_bin,
+                    "hessian": self.hessian, "hessian_floor": self.hessian_floor,
+                    "min_scale": self.min_scale, "max_bin": self.max_bin,
                     "batch_size": self.batch_size, "device": self.device,
                     "deterministic": self.deterministic, "head_features": self.head_features}
         optional = {"family": self.family_config, "feature_indices": self.feature_indices,
