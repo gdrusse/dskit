@@ -51,3 +51,9 @@ def test_features_300_overlay_agrees_with_the_universe(child_root):
     tickers = json.load(open(os.path.join(str(child_root), "configs", "option_universe_300.json")))["tickers"]
     assert overlay["tickers"] == tickers
     assert overlay["bars"]["relpath"] == {t: f"{t.lower()}/underlying_prices.parquet" for t in tickers}
+
+
+def test_features_300_trades_keep_list_is_the_universe(child_root):
+    overlay = json.load(open(os.path.join(str(child_root), "configs", "features-300.json")))
+    assert overlay["options"]["keep_values"] == {"symbol": overlay["tickers"]}
+    assert overlay["targets"]["trades"] != overlay["targets"]["daily"]
