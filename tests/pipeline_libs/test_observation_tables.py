@@ -120,3 +120,87 @@ def test_a_table_may_name_its_own_root_and_needs_one_somewhere(root, tmp_path):
     assert node.run(_ctx(tmp_path), {"records": STREAM_ROWS})["records"][0]["f_px"] == 1.0
     bare = {k: v for k, v in spec.items() if k != "root"}
     assert ObservationTables.validate_params({"key": ["sym", "date"], "tables": {"f": bare}})
+
+
+# -- parts: one table read from several sources (ADR-0236) -------------------------------------
+
+OTHER = "src2"
+OTHER_ROWS = ({"sym": "C", "date": "2026-01-02", "px": 30.0, "vol": 3.0},
+              {"sym": "C", "date": "2026-01-05", "px": 31.0, "vol": 4.0})
+
+
+def _store(tmp_path, sources):
+    """One store holding each ``{name: rows}`` source as a ``localfiles`` stream."""
+    store = OnboardingRoot.create(str(tmp_path / "ob"))
+    reg = store.registry()
+    for name, rows in sources.items():
+        data = tmp_path / f"data-{name}"
+        data.mkdir()
+        with open(data / f"{STREAM}.jsonl", "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        vid = reg.register("source_config", {
+            "name": name, "catalog_source": name, "connector": "localfiles",
+            "config": {"path": str(data), "effective_field": "date"}}, origin="test")
+        reg.transition(vid, "active", origin="test")
+        run_acquisition(store, reg, name, STREAM, "backfill")
+    return store.root
+
+
+PARTS = [{"source": SOURCE, "stream": STREAM}, {"source": OTHER, "stream": STREAM}]
+UNION_ROWS = STREAM_ROWS + [{"sym": "C", "date": "2026-01-02"}, {"sym": "C", "date": "2026-01-06"}]
+
+
+def test_parts_concatenate_disjoint_sources_and_record_each_snapshot(tmp_path):
+    root = _store(tmp_path, {SOURCE: ROWS, OTHER: OTHER_ROWS})
+    node = _node(root, {"f": {"parts": PARTS, "columns": {"px": "f_px"}}})
+    out = node.run(_ctx(tmp_path), {"records": UNION_ROWS})
+    assert [r["f_px"] for r in out["records"]] == [1.0, None, 2.0, None, 30.0, None]
+    report = out["provenance"]["tables"]["f"]
+    alone = [_node(root, {"f": {"source": s, "stream": STREAM, "columns": {"px": "f_px"}}}).run(
+        _ctx(tmp_path), {"records": UNION_ROWS})["provenance"]["tables"]["f"] for s in (SOURCE, OTHER)]
+    assert report["parts"] == [{"source": s, "stream": STREAM, "rows": a["rows"], "sha256": a["sha256"]}
+                               for s, a in zip((SOURCE, OTHER), alone)]
+    assert report["rows"] == 5 and report["matched"] == 3 and len(report["sha256"]) == 64
+    assert report["sha256"] not in {a["sha256"] for a in alone}
+    asof = _node(root, {"f": {"parts": PARTS, "columns": {"px": "f_px"}, "max_age_days": 3}})
+    rows = asof.run(_ctx(tmp_path), {"records": UNION_ROWS})["records"]
+    assert rows[-1]["f_px"] == 31.0 and rows[-1]["f_px" + AGE_SUFFIX] == 1
+
+
+def test_parts_holding_the_same_key_are_refused(tmp_path):
+    root = _store(tmp_path, {SOURCE: ROWS, OTHER: ROWS[:1]})
+    with pytest.raises(ValueError, match="both hold key"):
+        _node(root, {"f": {"parts": PARTS, "columns": {"px": "f_px"}}}).run(
+            _ctx(tmp_path), {"records": STREAM_ROWS})
+
+
+def test_a_part_may_name_its_own_root(tmp_path):
+    root = _store(tmp_path, {SOURCE: ROWS, OTHER: OTHER_ROWS})
+    parts = [{"root": root, "source": SOURCE, "stream": STREAM}, {"root": root, "source": OTHER,
+                                                                 "stream": STREAM}]
+    node = ObservationTables("t", {"key": ["sym", "date"],
+                                   "tables": {"f": {"parts": parts, "columns": {"px": "f_px"}}}})
+    assert node.run(_ctx(tmp_path), {"records": UNION_ROWS})["records"][4]["f_px"] == 30.0
+
+
+@pytest.mark.parametrize("bad", [
+    {"parts": PARTS[:1], "columns": {"a": "x"}},
+    {"parts": PARTS, "source": "s", "columns": {"a": "x"}},
+    {"parts": PARTS, "stream": "t", "columns": {"a": "x"}},
+    {"parts": [PARTS[0], PARTS[0]], "columns": {"a": "x"}},
+    {"parts": [PARTS[0], {"source": "s"}], "columns": {"a": "x"}},
+    {"parts": [PARTS[0], {"source": "s", "stream": "t", "typo": 1}], "columns": {"a": "x"}},
+    {"parts": [PARTS[0], "s"], "columns": {"a": "x"}},
+    {"parts": "s", "columns": {"a": "x"}},
+])
+def test_a_malformed_parts_declaration_is_refused(bad):
+    assert ObservationTables.validate_params({"root": "r", "key": ["sym", "date"],
+                                              "tables": {"f": bad}})
+
+
+def test_parts_need_a_root_somewhere():
+    assert ObservationTables.validate_params({"key": ["sym", "date"], "tables": {
+        "f": {"parts": PARTS, "columns": {"a": "x"}}}})
+    assert ObservationTables.validate_params({"key": ["sym", "date"], "tables": {
+        "f": {"parts": [{**p, "root": "r"} for p in PARTS], "columns": {"a": "x"}}}}) == []

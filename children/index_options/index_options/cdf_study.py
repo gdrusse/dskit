@@ -3090,7 +3090,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     config : dict
         The base keys, with ``reader`` ``"price_calendar"``, ``exact_dte`` (required),
         ``price_source`` ``{source, stream, relpath {symbol: file}, columns {file column:
-        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). ``price_source``
+        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). A ``relpath``
+        entry may instead be ``{source, stream, relpath}``: that symbol's file lives in another
+        onboarded source (disjoint universes in separate sources, ADR-0236), and its reader
+        fingerprint names the source and stream. ``price_source``
         may carry ``window`` (``ParquetRows``' block, ``field`` a mapped field): ENTRY dates
         are cut to it, price records before ``start`` stay for the features' lookback, and
         records after ``end`` are cut, so settlement follows step 1's rule. Optional
@@ -3125,6 +3128,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         source = config.get("price_source")
         ok = (isinstance(source, dict) and isinstance(source.get("source"), str)
               and isinstance(source.get("stream"), str) and isinstance(source.get("relpath"), dict)
+              and all(cls._location_ok(v) for v in source["relpath"].values())
               and isinstance(source.get("columns"), dict)
               and set(source["columns"].values()) <= set(PRICE_FIELDS)
               and set(_PRICE_REQUIRED) <= set(source["columns"].values()))
@@ -3137,12 +3141,34 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
             if isinstance(window, dict) and window.get("field") not in (None, "date"):
                 problems.append("price_source.window.field must be 'date', the panel's date field")
         if not ok:
-            problems.append("price_source must be {source, stream, relpath {symbol: file}, columns "
-                            "{file column: field}} writing fields from "
-                            f"{PRICE_FIELDS} (including {_PRICE_REQUIRED}), got {source!r}")
+            problems.append("price_source must be {source, stream, relpath {symbol: file or "
+                            "{source, stream, relpath}}, columns {file column: field}} writing "
+                            f"fields from {PRICE_FIELDS} (including {_PRICE_REQUIRED}), "
+                            f"got {source!r}")
         problems += [f"{name} is an option-surface key; reader {cls.READER!r} has none"
                      for name in OPTION_SOURCE_KEYS if config.get(name) not in (None, {}, False)]
         return problems
+
+    #: The keys of a ``price_source.relpath`` entry naming its own source.
+    LOCATION_KEYS = ("source", "stream", "relpath")
+
+    @classmethod
+    def _location_ok(cls, entry):
+        """Say whether a ``relpath`` entry is a file name or a full ``{source, stream, relpath}``."""
+        if isinstance(entry, str):
+            return bool(entry)
+        return (isinstance(entry, dict) and set(entry) == set(cls.LOCATION_KEYS)
+                and all(isinstance(entry[k], str) and entry[k] for k in cls.LOCATION_KEYS))
+
+    def _location(self, symbol):
+        """Return the symbol's price file as ``(source, stream, relpath)``, defaults filled in."""
+        source = self.config["price_source"]
+        entry = source["relpath"].get(symbol)
+        if entry is None:
+            raise ValueError(f"price_source.relpath has no file for symbol {symbol!r}")
+        if isinstance(entry, str):
+            return source["source"], source["stream"], entry
+        return tuple(entry[k] for k in self.LOCATION_KEYS)
 
     @classmethod
     def action_problems(cls, spec):
@@ -3189,20 +3215,28 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         return self._records[symbol]
 
     def _file_rows(self, symbol):
-        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint."""
+        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint.
+
+        A symbol whose ``relpath`` entry names its own source gets a fingerprint that also
+        names that source and stream; a plain file entry's fingerprint is unchanged.
+        """
         from dskit.pipeline.libs.parquet import ParquetRows
 
         c, source = self.config, self.config["price_source"]
+        name, stream, relpath = self._location(symbol)
         reader = ParquetRows("prices", {
-            "root": c["root"], "source": source["source"], "stream": source["stream"],
-            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"],
+            "root": c["root"], "source": name, "stream": stream,
+            "relpath_by_key": {symbol: relpath}, "key": symbol, "columns": source["columns"],
             "window": self._end_window(source.get("window"))})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
         if repeated:
             raise ValueError(f"{symbol}: price file repeats date(s) {repeated[:3]}")
-        return rows, reader.fingerprint()
+        fingerprint = reader.fingerprint()
+        if not isinstance(source["relpath"][symbol], str):
+            fingerprint = {**fingerprint, "source": name, "stream": stream}
+        return rows, fingerprint
 
     @staticmethod
     def _end_window(window):
@@ -3221,7 +3255,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     def _project(self, symbol, raw):
         """Project file rows to price envelopes by the index reader's own rules."""
         c = self.config
-        owner = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"]["source"],
+        owner = IndexCloseRows("prices", {"root": c["root"], "source": self._location(symbol)[0],
                                           "symbol": symbol})
         stamped = [{**{k: v for k, v in r.items() if k != "split_coefficient"},
                     "symbol": symbol, "asof_ms": self._stamp(r["date"])} for r in raw]

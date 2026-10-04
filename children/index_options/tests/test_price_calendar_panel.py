@@ -178,6 +178,51 @@ def test_the_provenance_names_the_price_file_hash(make):
     assert panel.provenance()["sha256"] == {"price:AAA": finger["sha256"]}
 
 
+# -- per-symbol price sources (ADR-0236): disjoint universes in separate onboarded sources --------
+
+def _second_source(tmp_path, blob_store, table):
+    """Acquire ``bbb/q.parquet`` into a second source, ``prices-b``."""
+    folder = tmp_path/"prices-b-src"
+    (folder/"bbb").mkdir(parents=True, exist_ok=True)
+    table.to_parquet(folder/"bbb"/"q.parquet")
+    blob_store.add("prices-b", folder)
+
+
+def test_a_symbol_may_name_its_own_price_source(make, tmp_path, blob_store):
+    other = _price_table(close={d: CLOSE[d]*2 for d in DATES})
+    one = make()   # acquires the default source first
+    _second_source(tmp_path, blob_store, other)
+    relpath = {"AAA": "aaa/p.parquet",
+               "BBB": {"source": "prices-b", "stream": "files", "relpath": "bbb/q.parquet"}}
+    panel = make(symbols={"AAA": "VOL", "BBB": "VOL"},
+                 price_source={**one.config["price_source"], "relpath": relpath})
+    frame = panel.read()
+    alone = one.read()
+    a, b = frame[frame.symbol == "AAA"], frame[frame.symbol == "BBB"]
+    pd.testing.assert_frame_equal(a[list(alone.columns)].reset_index(drop=True),
+                                  alone.reset_index(drop=True))
+    assert b.spot.tolist() == pytest.approx([2*CLOSE[d] for d in b.quote_date])
+    readers = panel.provenance()["readers"]
+    assert readers["AAA"] == one.provenance()["readers"]["AAA"]   # a file entry is unchanged
+    assert readers["BBB"]["source"] == "prices-b" and readers["BBB"]["stream"] == "files"
+    assert readers["BBB"]["relpath"] == "bbb/q.parquet" and len(readers["BBB"]["sha256"]) == 64
+    assert panel.provenance()["sha256"]["price:BBB"] == readers["BBB"]["sha256"]
+
+
+@pytest.mark.parametrize("entry", [
+    {"source": "prices-b", "stream": "files"}, {"source": "", "stream": "files", "relpath": "x"},
+    {"source": "s", "stream": "files", "relpath": "x", "typo": 1}, "", 3])
+def test_a_malformed_price_location_is_refused(make, entry):
+    with pytest.raises(ValueError, match="price_source"):
+        make(price_source={"source": "prices", "stream": "files", "columns": COLUMNS,
+                           "relpath": {"AAA": entry}})
+
+
+def test_a_symbol_without_a_price_location_is_refused_by_name(make):
+    with pytest.raises(ValueError, match="BBB"):
+        make(symbols={"AAA": "VOL", "BBB": "VOL"}).read()
+
+
 # -- keyed tables ------------------------------------------------------------------------------
 
 class _Table(ObservationTables):
