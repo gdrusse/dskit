@@ -3549,6 +3549,16 @@ def test_torch_cdf_task_heads_share_one_encoder_and_route_each_row_to_its_head(k
     curves = model.curve(probe).cdf([-.5, .5])
     assert not np.allclose(curves[0], curves[1]) and not np.allclose(curves[1], curves[2])
     np.testing.assert_allclose(model.curve(probe[1:2]).cdf([-.5, .5])[0], curves[1], atol=1e-7)
+    # Row h carries task h: its curve is head h's slice of the shared output, no other.
+    xx = torch.tensor(model.scaler.transform(model._features(probe)), dtype=torch.float32)
+    with torch.no_grad():
+        full = model.models[0](xx).reshape(3, 3, 3*2)
+    means = model.curve(probe).means
+    for h in range(3):
+        np.testing.assert_allclose(means[h], model._parts(full[h, h][None])[1][0].numpy(),
+                                   atol=1e-6)
+        other = model._parts(full[h, (h+1) % 3][None])[1][0].numpy()
+        assert not np.allclose(means[h], other)
     assert model.seen_heads == {0, 1, 2}
     assert model._equivalence_settings()["head_features"] == (4, 5, 6)
     assert model._research_state()["head_features"] == [4, 5, 6]
@@ -3597,12 +3607,13 @@ def test_cnn_encoder_is_causal_and_its_pooling_sets_the_receptive_field(pooling,
     module = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, components=2,
                                      hidden=[4], device="cpu")._build_module(6)
     x = torch.randn(4, 6)
-    oldest, newest = x.clone(), x.clone()
+    oldest, newest, previous = x.clone(), x.clone(), x.clone()
     oldest[:, 5] += 3.
     newest[:, 1] += 3.
+    previous[:, 2] += 3.  # one step before the newest: inside a causal kernel of 2
     with torch.no_grad():
-        base, old, new = module(x), module(oldest), module(newest)
-    assert not torch.allclose(base, new)
+        base, old, new, prev = module(x), module(oldest), module(newest), module(previous)
+    assert not torch.allclose(base, new) and not torch.allclose(base, prev)
     assert torch.allclose(base, old) is (not reaches_oldest)
     assert [conv.dilation for conv in module.convs] == [(1,)]
     assert [conv.in_channels for conv in module.convs] == [1]
@@ -3801,6 +3812,7 @@ def test_boosted_cdf_round_trips_through_its_text_model_and_refits_identically()
     {"patience": 0}, {"head_features": [0, 0]}, {"feature_indices": []},
     {"head_features": [1, 2]}, {"head_features": [1, 2], "feature_indices": [0, 1]},
     {"losses": [{"kind": "crps", "weight": 1.}]}, {"family": {"kind": "cauchy"}},
+    {"max_bin": 1}, {"max_bin": 255.},
 ])
 def test_boosted_cdf_refuses_bad_knobs(edit):
     with pytest.raises(ValueError):
@@ -3854,6 +3866,56 @@ def test_boosted_cdf_collapses_task_heads_to_one_native_categorical_column():
         x[first], y[first], x[first], y[first])
     with pytest.raises(ValueError, match="unseen head"):
         only.curve(x[~first][:1])
+
+
+def test_boosted_cdf_gives_every_task_its_own_bin_however_rare():
+    pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(10)
+    counts = [5]*30 + [60]*270  # 300 tasks; the 30 rare ones hold 0.9% of the rows
+    tasks = np.repeat(np.arange(300), counts)
+    x = np.column_stack([rng.normal(size=len(tasks)), np.eye(300)[tasks]])
+    y = rng.normal(size=len(tasks))
+    context = _zoo_context(len(tasks))
+    model = _boosted(n_estimators=2, head_features=list(range(1, 301)), feature_indices=[0],
+                     min_data_in_leaf=20)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    design = model._design(x, model._heads(x))
+    assert model._task_bins(design).feature_num_bin(1) == 301  # 300 tasks + missing
+    plain = lightgbm.Dataset(design, categorical_feature=[1],
+                             params=model._dataset_params(design)).construct()
+    assert plain.feature_num_bin(1) < 301  # LightGBM alone folds a rare task away
+    few = np.repeat(np.arange(4), [2, 60, 60, 60])
+    xf = np.column_stack([rng.normal(size=len(few)), np.eye(4)[few]])
+    short = _zoo_context(len(few))
+    with pytest.raises(ValueError, match="min_data_in_bin"):
+        _boosted(head_features=[1, 2, 3, 4], feature_indices=[0]).fit_decision_context(
+            short, short).fit(xf, rng.normal(size=len(few)), xf, rng.normal(size=len(few)))
+
+
+def test_boosted_cdf_stops_when_lightgbm_reports_no_split_left(monkeypatch):
+    pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    calls, original = [], lightgbm.Booster.update
+
+    def update(self, train_set=None, fobj=None):
+        calls.append(original(self, train_set=train_set, fobj=fobj))
+        return len(calls) >= 3
+    monkeypatch.setattr(lightgbm.Booster, "update", update)
+    x, y = _hetero_rows(200, 9)
+    context = _zoo_context(200)
+    model = _boosted(n_estimators=10).fit_decision_context(context, context).fit(x, y, x, y)
+    assert len(calls) == 3 and model.rounds == model.booster.current_iteration() == 3
+    assert model._research_state()["best_round"] == 3
+
+
+def test_boosted_cdf_refuses_a_design_lightgbm_cannot_split():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = np.ones((40, 2)), np.random.default_rng(2).normal(size=40)
+    context = _zoo_context(40)
+    with pytest.raises(ValueError, match="no usable feature"):
+        _boosted().fit_decision_context(context, context).fit(x, y, x, y)
 
 
 def test_boosted_cdf_stops_on_the_calibration_composite_and_keeps_the_best_round():
@@ -3951,8 +4013,24 @@ def test_weighted_crps_needs_a_study_tail_weight_and_the_same_training_weight(tm
         losses[:] = drifted
         with pytest.raises(ValueError, match="tail_weight"):
             CDFHyperparameterStudy(config)
+    losses[:] = [{"kind": "nll", "weight": .1}, {"kind": "crps", "weight": 1.},
+                 {"kind": "tail_crps", "weight": 1.}]
+    with pytest.raises(ValueError, match="exactly crps"):
+        CDFHyperparameterStudy(config)  # an extra term is no longer the same loss
     losses[:] = [{"kind": "crps", "weight": 2.}, {"kind": "tail_crps", "weight": 2.}]
     CDFHyperparameterStudy(config)  # the same objective at another overall scale
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy({**config, "experiment": {
+            **config["experiment"], "selection_metric": "crps"}})
+    direct = {**config["study"], "models": {"m": {**config["experiment"]["candidates"][
+        "candidate"], "params": {"losses": [{"kind": "crps", "weight": 1.},
+                                            {"kind": "tail_crps", "weight": 3.}]}}}}
+    with pytest.raises(ValueError, match="tail_weight"):
+        ChronologicalCDFStudy(direct)  # the study pins its own models, not only HPO
+    matched = {**direct, "decision_context": "context", "models": {"m": {
+        **direct["models"]["m"], "params": {"losses": copy.deepcopy(_ZOO_LOSSES)}}}}
+    with pytest.raises(ValueError, match="decision_context"):
+        ChronologicalCDFStudy(matched)  # decision wings would replace tail_intervals
     losses[:] = [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 4.}]
     CDFHyperparameterStudy(config)  # no tail_crps term: nothing to pin
 

@@ -3653,6 +3653,10 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
     head_features, feature_indices : list of int or None
         One-hot task positions (excluded from ``feature_indices``) and the
         plain input columns (absent = every column, only without heads).
+    max_bin : int
+        Histogram bins per plain column (>= 2, LightGBM's default 255). The
+        task column always gets one bin per training task; binning reads
+        every training row (no sampling).
 
     Examples
     --------
@@ -3667,10 +3671,10 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                  min_data_in_leaf=100, learning_rate=.05, feature_fraction=1., lambda_l2=1.,
                  seed=0, num_threads=1, hessian_floor=1e-6, min_scale=_MIN_SCALE,
                  batch_size=4096, device="cpu", deterministic=False, patience=None,
-                 head_features=None, feature_indices=None):
+                 head_features=None, feature_indices=None, max_bin=255):
         import math
         counts = ((components, 1), (n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
-                  (seed, 0), (num_threads, 1), (batch_size, 1))
+                  (seed, 0), (num_threads, 1), (batch_size, 1), (max_bin, 2))
         rates = (learning_rate, feature_fraction, lambda_l2, hessian_floor, min_scale)
         if (any(type(v) is not int or v < low for v, low in counts)
                 or any(type(v) not in (int, float) or not math.isfinite(v) for v in rates)
@@ -3691,6 +3695,7 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         self.seed, self.num_threads = seed, num_threads
         self.hessian_floor, self.min_scale = float(hessian_floor), float(min_scale)
         self.batch_size, self.device, self.deterministic = batch_size, device, deterministic
+        self.max_bin = max_bin
 
     def _booster_params(self):
         """Return LightGBM's parameters: the knobs plus the forced custom-objective ones."""
@@ -3706,18 +3711,53 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         features = np.asarray(self._features(x), dtype=float)
         return np.column_stack([features, heads]) if self.head_features else features
 
-    def _dataset(self, design, y, reference=None):
-        """Return a LightGBM dataset starting every row at the constant start.
+    def _dataset_params(self, design):
+        """Return the dataset parameters: the booster's plus exact, unsampled binning.
 
-        The dataset carries the booster parameters itself: its construction
-        (binning, the ``min_data_in_leaf`` feature pre-filter) reads only them.
+        A dataset's construction (binning, the ``min_data_in_leaf`` feature
+        pre-filter) reads only its own parameters, never the booster's.
         """
+        params = {**self._booster_params(), "bin_construct_sample_cnt": len(design)}
+        if not self.head_features:
+            return {**params, "max_bin": self.max_bin}
+        tasks = len(self.head_features)+1  # every task plus the missing-value bin
+        return {**params, "max_bin_by_feature": [self.max_bin]*(design.shape[1]-1) + [
+            max(self.max_bin, tasks)]}
+
+    def _task_bins(self, design):
+        """Return a binning reference that gives every training task its own bin.
+
+        LightGBM bins a categorical column into a missing-value bin plus at
+        most ``min(distinct values, max_bin)`` categories, dropping the rarest
+        once the rest cover 99% of the rows; with no missing value present the
+        rarest task would silently share the unseen bin. One extra row with a
+        missing task code lifts that cap. A task with fewer rows than LightGBM's
+        ``min_data_in_bin`` (default 3) is still dropped, and refused here. A
+        column LightGBM pre-filters as unsplittable (zero bins: one task, or
+        no split ``min_data_in_leaf`` allows) loses nothing and is accepted.
+        """
+        import lightgbm
+        import numpy as np
+        missing = design[:1].copy()
+        missing[0, -1] = np.nan
+        binning = lightgbm.Dataset(
+            np.vstack([design, missing]), categorical_feature=[design.shape[1]-1],
+            free_raw_data=False, params=self._dataset_params(design)).construct()
+        bins = binning.feature_num_bin(design.shape[1]-1)
+        if bins and bins != len(self.seen_heads)+1:
+            raise ValueError(
+                f"LightGBM binned {bins-1} of {len(self.seen_heads)} training tasks: every "
+                "task needs at least min_data_in_bin (default 3) training rows")
+        return binning
+
+    def _dataset(self, design, y, reference):
+        """Return a LightGBM dataset starting every row at the constant start."""
         import lightgbm
         import numpy as np
         return lightgbm.Dataset(
             design, label=y, init_score=np.tile(self.start, (len(design), 1)),
             categorical_feature=[design.shape[1]-1] if self.head_features else "auto",
-            reference=reference, free_raw_data=False, params=self._booster_params())
+            reference=reference, free_raw_data=False, params=self._dataset_params(design))
 
     def _moment_start(self, y):
         """Return the constant raw start row: quantile means, variance-matched scale."""
@@ -3819,11 +3859,22 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         Raises
         ------
         ValueError
-            For unattached context, unseen calibration heads, a start scale at
-            ``min_scale``, a nonfinite gradient, or patience not exhausted.
+            For unattached context, unseen calibration heads, a task too rare
+            to bin, a start scale at ``min_scale``, a nonfinite gradient, a
+            design LightGBM cannot split, or patience not exhausted.
         """
         with self._deterministic_context():
             return self._fit(x, y, cal_x, cal_y)
+
+    def _boost(self, booster, target, context):
+        """Run one round; return True once LightGBM can add no further split."""
+        import lightgbm
+        try:
+            return booster.update(fobj=lambda preds, _: self._boosting_step(
+                preds, target, context))
+        except lightgbm.basic.LightGBMError as err:
+            raise ValueError(f"LightGBM refused the boosted CDF fit (no usable feature, or "
+                             f"too few rows for min_data_in_leaf): {err}") from err
 
     def _fit(self, x, y, cal_x, cal_y):
         import lightgbm
@@ -3835,7 +3886,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         self.seen_heads = set(heads)
         target, context = self._target_tensor(y), self._training_context(x)
         self.start = self._moment_start(y)
-        train = self._dataset(self._design(x, heads), y)
+        design = self._design(x, heads)
+        train = self._dataset(design, y, self._task_bins(design) if self.head_features else None)
         booster = lightgbm.Booster(params=self._booster_params(), train_set=train)
         stop = monitor = None
         if self.patience is not None:
@@ -3849,8 +3901,10 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
             stop = _RoundPatienceStop(self.patience)
         self.losses = []
         for _ in range(self.n_estimators):
-            booster.update(fobj=lambda preds, _: self._boosting_step(preds, target, context))
-            if stop is not None and stop.exhausted(self._monitor_round(booster, monitor), None):
+            # A finished booster (no split left) stops: its monitored loss cannot change.
+            if self._boost(booster, target, context) or (
+                    stop is not None
+                    and stop.exhausted(self._monitor_round(booster, monitor), None)):
                 break
         else:
             if stop is not None:
@@ -3858,7 +3912,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                     f"patience {self.patience} was not exhausted within n_estimators "
                     f"{self.n_estimators}: the monitored loss may still be improving; "
                     "raise n_estimators, the ceiling")
-        self.rounds = self.n_estimators if stop is None else stop.best_epoch
+        self.rounds = (stop.best_epoch if stop is not None and stop.history
+                       else booster.current_iteration())
         self.monitor_losses = [] if stop is None else stop.history
         self.booster_text = booster.model_to_string(num_iteration=self.rounds)
         self.booster = lightgbm.Booster(model_str=self.booster_text)
@@ -3897,6 +3952,7 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                     "feature_fraction": self.feature_fraction, "lambda_l2": self.lambda_l2,
                     "seed": self.seed, "num_threads": self.num_threads,
                     "hessian_floor": self.hessian_floor, "min_scale": self.min_scale,
+                    "max_bin": self.max_bin,
                     "batch_size": self.batch_size, "device": self.device,
                     "deterministic": self.deterministic, "head_features": self.head_features}
         optional = {"family": self.family_config, "feature_indices": self.feature_indices,
@@ -3914,6 +3970,8 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         return digest.hexdigest()
 
     def _research_state(self):
+        # training_composite_by_round[r] is the composite ENTERING round r+1
+        # (its objective call); monitor_loss_by_round[r] is scored AFTER it.
         state = {"losses": self.loss_config, "training_composite_by_round": self.losses,
                  "rounds_run": len(self.losses), "best_round": self.rounds,
                  "stopped_by_patience": self.patience is not None,
@@ -4722,6 +4780,7 @@ class ChronologicalCDFStudy:
             weight = config["tail_weight"]
             if type(weight) not in (int, float) or not math.isfinite(weight) or weight <= 0:
                 raise ValueError("tail_weight must be a finite number above zero")
+            self._pin_tail_weight(config)
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
@@ -4788,6 +4847,44 @@ class ChronologicalCDFStudy:
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
         return self.config
+
+    @staticmethod
+    def _pin_tail_weight(config):
+        """Refuse a model that trains on ``tail_crps`` but not on this study's ``weighted_crps``.
+
+        Parameters
+        ----------
+        config : dict
+            A study configuration declaring ``tail_weight``.
+
+        Raises
+        ------
+        ValueError
+            When a model's ``losses`` hold ``tail_crps`` and are not exactly
+            ``crps`` and ``tail_crps`` at weights in the ratio 1 : ``tail_weight``
+            (any common scale is the same objective), or when a
+            ``decision_context`` is declared: its wings, not ``tail_intervals``,
+            would then be the loss's intervals.
+        """
+        import math
+        weight = config["tail_weight"]
+        for name, spec in config["models"].items():
+            params = spec.get("params") if isinstance(spec, dict) else None
+            losses = params.get("losses") if isinstance(params, dict) else None
+            if not isinstance(losses, list):
+                continue
+            terms = {t.get("kind"): t.get("weight") for t in losses if isinstance(t, dict)}
+            if "tail_crps" not in terms:
+                continue
+            if config.get("decision_context"):
+                raise ValueError(f"{name} trains on tail_crps under a decision_context: its "
+                                 "wings, not tail_intervals, would be integrated")
+            if (set(terms) != {"crps", "tail_crps"}
+                    or any(type(terms[k]) not in (int, float) for k in terms)
+                    or not math.isclose(terms["tail_crps"], weight*terms["crps"], rel_tol=1e-9)):
+                raise ValueError(f"{name} trains on tail_crps but not on exactly crps + "
+                                 f"tail_weight ({weight}) x tail_crps, the weighted_crps "
+                                 "this study scores")
 
     def _decision_context_rows(self, frame):
         """Return context only after binding every record to its frame identity.
@@ -5485,13 +5582,13 @@ class CDFHyperparameterStudy:
         metric = e.get("selection_metric", "crps")
         proper = DecisionRegionScores.PROPER_METRICS
         weighted = ChronologicalCDFStudy.WEIGHTED_METRIC
+        # A declared tail_weight IS the study's weighted metric: plain crps would
+        # select on one score and report variants on another.
         if (metric not in ("crps", weighted, *proper)
-                or (metric == weighted and "tail_weight" not in c)
+                or (metric == weighted) != (metric not in proper and "tail_weight" in c)
                 or (metric in proper and not c.get("decision_context"))
                 or (metric in DecisionRegionScores.WING_METRICS and not c.get("wing_metrics"))):
             raise ValueError("invalid primary selection metric")
-        if metric == weighted:
-            self._pin_tail_weight(c["tail_weight"], {**c["models"], **e["candidates"]})
         guard = e.get("selection_guard")
         if metric in proper and guard is not None:
             guarded = [*guard.get("metrics", []), *guard.get("cell_improvement_metrics", []),
@@ -5617,38 +5714,6 @@ class CDFHyperparameterStudy:
     def to_obj(self):
         """Return the full JSON experiment for the canonical identity owner."""
         return self.config
-
-    @staticmethod
-    def _pin_tail_weight(tail_weight, specs):
-        """Refuse a model trained on ``tail_crps`` at another weight than it is selected on.
-
-        Parameters
-        ----------
-        tail_weight : float
-            The study's ``tail_weight``.
-        specs : dict
-            Model name to ``{"class", "params", ...}`` specification.
-
-        Raises
-        ------
-        ValueError
-            When a model's ``losses`` hold ``tail_crps`` but not ``crps`` with
-            ``tail_crps`` weight equal to ``tail_weight`` times it (any common
-            scale is the same objective).
-        """
-        import math
-        for name, spec in specs.items():
-            losses = spec.get("params", {}).get("losses") if isinstance(spec, dict) else None
-            if not isinstance(losses, list):
-                continue
-            weights = {t.get("kind"): t.get("weight") for t in losses if isinstance(t, dict)}
-            if "tail_crps" in weights and not (
-                    all(type(weights.get(k)) in (int, float) for k in ("crps", "tail_crps"))
-                    and math.isclose(weights["tail_crps"], tail_weight*weights["crps"],
-                                     rel_tol=1e-9)):
-                raise ValueError(f"{name} trains on tail_crps but not as crps + tail_weight "
-                                 f"({tail_weight}) x tail_crps, the weighted_crps it is "
-                                 "selected on")
 
     def _dependency_versions(self):
         """Return versions of optional libraries selected by configured classes."""
