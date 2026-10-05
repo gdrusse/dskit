@@ -135,7 +135,8 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197)
-                           # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, the
+                           # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
+                           # and templates/report-spec-pooled-zoo-417.json (owner, 2026-10-04), the
                            # ADR-0236 zoo over both stock universes read via ADR-0237; never hand-edit)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,

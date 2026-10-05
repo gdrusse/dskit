@@ -231,6 +231,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         # and pinned below.
         "index_options/pooled.py", "configs/run-pooled-zoo-417.json",
         "configs/run-pooled-zoo-417-folds.json",
+        # Owner request 2026-10-04: its workflow manifest and verified-report spec.
+        "configs/workflow-pooled-zoo-417.json",
+        "configs/templates/report-spec-pooled-zoo-417.json",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -253,8 +256,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
     # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417, plus 1 more = 418,
     # plus ADR-0235's four option-universe-300 configs + the 300-stock bars source and daily-features overlay = 425
-    # (427 as shipped), plus ADR-0236/0237's pooled.py and its two generated documents = 430
-    assert len(actual) == 430
+    # (427 as shipped), plus ADR-0236/0237's pooled.py and its two generated documents = 430,
+    # plus the pooled workflow manifest and report spec = 432
+    assert len(actual) == 432
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3480,6 +3484,98 @@ def test_every_pooled_candidate_trains_on_the_selection_metric_with_ticker_heads
         module, cls = spec["class"].split(":")
         getattr(importlib.import_module(module), cls)(**p)   # every knob validates
     ChronologicalCDFStudy._pin_tail_weight({**c, "models": e["candidates"]})
+
+
+def test_the_pooled_workflow_and_report_spec_equal_their_generator_and_validate(child_root):
+    import os
+
+    from dskit.pipeline import workflow as wf
+
+    configs = child_root/"configs"
+    study = _pooled(child_root)
+    manifest = json.loads((configs/pooled.WORKFLOW_FILE).read_text())
+    spec = json.loads((configs/pooled.REPORT_SPEC_FILE).read_text())
+    assert manifest == pooled.workflow_document(configs)
+    assert spec == pooled.report_spec_document(study)
+    flow = wf.validate_manifest(json.loads(json.dumps(manifest)), str(configs))
+    # Restated on purpose (owner, 2026-10-04): the zoo builds the panel, searches every
+    # partition and selects; step 7 is the per-ticker workflow's evaluate stages.
+    assert manifest["args"]["zoo"]["stages"]["sequence"] == [
+        {"stage": "panel"}, {"stage": "search", "partition": "*"}, {"stage": "select"}]
+    assert manifest["args"]["evaluate"]["stages"]["sequence"] == [
+        {"stage": "evaluate", "partition": "development"},
+        {"stage": "evaluate", "partition": "later"}, {"stage": "report"}]
+    source = json.loads((configs/"workflow.json").read_text())["args"]
+    assert manifest["args"]["evaluate"] == source["evaluate"]
+    assert manifest["args"]["run_env"] == source["run_env"]
+    output = os.path.normpath(study["experiment"]["output"])
+    for step, out, tail in (("zoo", "search", "search"), ("zoo", "selection", "selection"),
+                            ("step7", "development", "evaluate/development"),
+                            ("step7", "scored", "evaluate/later"), ("step7", "report", "report")):
+        assert os.path.normpath(flow.path(step, out)) == os.path.join(output, tail)
+
+
+def _tiny_pooled_run(work, metric):
+    """Write the files the study names, for one ticker, under a fake run directory."""
+    from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+
+    def put(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    study, admission = work/"study", ChronologicalCDFStudy.ADMISSION_FILE
+    put(study/"selection/candidates.jsonl", json.dumps(
+        {"partition": "mlp_base", "candidate": "m", "variant": "raw", "n_features": 2,
+         "feature_names": ["a", "b"], "warmup_mean_skill": 1.0, "guard_pass": None,
+         "winner": True})+"\n")
+    put(study/"selection/selected.json", json.dumps({"variants": {"m": "raw"}}))
+    for part in ("development", "later"):
+        put(study/"evaluate"/part/admission, json.dumps({
+            "dropped_rows": {"calibration": 1, "evaluation": 2}, "not_evaluated": [
+                {"group": "LATE", "fold": 1, "reason": "waiting"}]}))
+        put(study/"evaluate"/part/"complete.json", json.dumps({"identity": {"config": "c"}}))
+    intervals = [{"metric": m, "model": "m", "reference": "horizon_empirical",
+                  "block_dates": 30, "lo": 0.1, "hi": 0.9} for m in ("crps", metric)]
+    put(study/"report/comparison.json", json.dumps({
+        "development_relative_primary": {"m:raw": 0.98}, "metrics": [{"model": "m"}],
+        "paired_block_intervals": intervals}))
+    put(study/"report/skill_by_exact_day.csv",
+        "symbol,actual_calendar_dte,skill,metric,model,n\n"
+        f"AAA,31,1.5,crps,m,9\nAAA,31,2.5,{metric},m,9\n")
+    put(work/"folds.jsonl", json.dumps({"fold": 1, "role": "warmup"})+"\n")
+
+
+def test_the_pooled_report_builds_from_a_tiny_run(child_root, tmp_path):
+    from dskit.pipeline import workflow as wf
+    from dskit.pipeline import workflow_report as wr
+
+    study = _pooled(child_root)
+    metric = study["experiment"]["selection_metric"]
+    work = tmp_path/"work"
+    _tiny_pooled_run(work, metric)
+    template = pooled.report_spec_document(study)
+    for section in template["sections"]:
+        if section["name"] == "folds":   # the pinned fold table, read from its own path
+            section["source"] = str(work/"folds.jsonl")
+    outs = {"selection": work/"study/selection", "development": work/"study/evaluate/development",
+            "scored": work/"study/evaluate/later", "report": work/"study/report"}
+    spec = wf.expand(template, {
+        "W": str(work), "selection": str(outs["selection"]),
+        "development": str(outs["development"]), "scored": str(outs["scored"]),
+        "evaluation": str(outs["report"]), "L": {"report": {"output": str(work/"out")}}})
+    (work/wf.LEDGER_NAME).write_text(json.dumps({"steps": {
+        "zoo": {"exit_code": 0, "outputs": {"selection": wf.path_hash(str(outs["selection"]))}},
+        "step7": {"exit_code": 0, "outputs": {k: wf.path_hash(str(outs[k]))
+                                              for k in ("development", "scored", "report")}}}}))
+    path = tmp_path/"spec.json"
+    path.write_text(json.dumps(spec))
+    lines = []
+    assert wr.main([str(path)], out=lines.append) == 0, lines
+    sections = work/"out"/"sections"
+    assert {p.stem for p in sections.glob("*.csv")} == {s["name"] for s in template["sections"]}
+    ticker = (sections/"per_ticker_skill.csv").read_text().splitlines()
+    assert ticker == ["symbol,actual_calendar_dte,skill,metric,model,n", f"AAA,31,2.5,{metric},m,9"]
+    assert "crps," not in (sections/"scored_intervals.csv").read_text().replace(metric, "")
 
 
 def test_the_pooled_generator_refuses_a_refused_ticker_in_no_universe(child_root):

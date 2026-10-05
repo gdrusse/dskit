@@ -3793,7 +3793,8 @@ class DecisionStrikeDiagnosisStudy:
 def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
+    parser.add_argument("--stage", choices=["prepare", "panel", "search", "select", "evaluate",
+                                            "report"])
     parser.add_argument("--partition")
     parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
@@ -3849,13 +3850,18 @@ def _main():
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:
-        if not args.stage:
-            parser.error("HPO requires an explicit --stage")
-        # Every stage reads the panel the first one built (ADR-0236 amendment).
+        if not args.stage or (args.stage == "panel" and args.partition):
+            parser.error("HPO requires an explicit --stage; panel takes no partition")
+        label = " ".join(filter(None, [args.stage, args.partition]))
+        print(f"[cdf_study] {label} start", flush=True)
+        # Every stage reads the panel the first one built (ADR-0236 amendment); the
+        # panel stage only builds it, in a process that then fits nothing.
         frame, provenance = adapter.cached_read(
             Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
-        CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
-                                            partition=args.partition, provenance=provenance)
+        if args.stage != "panel":
+            CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
+                                                partition=args.partition, provenance=provenance)
+        print(f"[cdf_study] {label} end", flush=True)
         if config.get("data", {}).get("decision_regions"):
             import signal
             signal.setitimer(signal.ITIMER_REAL, 0.)

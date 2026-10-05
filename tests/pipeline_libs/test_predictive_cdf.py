@@ -3578,6 +3578,53 @@ def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
         'dropped_evaluation_rows': 5}]
 
 
+def test_a_run_writes_its_scores_and_counts_once(tmp_path, monkeypatch):
+    # ADR-0236 amendment 2: rewriting both after every group made a pooled run quadratic.
+    rows = _late_rows(start='2020-01-01')
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    written, write = [], pd.DataFrame.to_parquet
+    monkeypatch.setattr(pd.DataFrame, 'to_parquet',
+                        lambda self, path, **kw: written.append(str(path).rsplit('/', 1)[-1])
+                        or write(self, path, **kw))
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    assert written.count('scores.parquet') == 1
+    stored = pd.read_parquet(tmp_path/'out/scores.parquet')
+    pd.testing.assert_frame_equal(stored, scores.reset_index(drop=True))
+    counts = json.loads((tmp_path/'out/counts.json').read_text())
+    assert len(counts) == 2*len(plan['records'])  # every group and fold, in loop order
+
+
+def test_a_composite_fit_drops_its_attached_contexts_and_a_refit_needs_them_again():
+    # ADR-0236 amendment 2: a pooled study keeps every fold's model; the per-row
+    # inventories must not ride along.
+    pytest.importorskip("torch")
+    n = 24
+    x, y = np.random.default_rng(3).normal(size=(n, 4)), np.random.default_rng(4).normal(size=n)
+    context = _zoo_context(n)
+    for model in (_zoo_torch("mlp"), _boosted()):
+        fitted = model.fit_decision_context(context, context).fit(x, y, x, y)
+        assert fitted._fit_context is None and fitted._cal_context is None
+        assert fitted.curve(x).cdf(np.zeros((n, 1))).shape == (n, 1)
+        with pytest.raises(ValueError, match="context was not attached"):
+            fitted.fit(x, y, x, y)
+
+
+def test_a_mixture_curve_never_runs_a_full_garbage_collection(monkeypatch):
+    # It cost ~0.1 s a call, seven calls per model and ticker-fold in a pooled study.
+    import gc
+    pytest.importorskip("torch")
+    n = 24
+    x, y = np.random.default_rng(3).normal(size=(n, 4)), np.random.default_rng(4).normal(size=n)
+    model = _zoo_torch("mlp").fit_decision_context(_zoo_context(n), _zoo_context(n))
+    model.fit(x, y, x, y)
+    calls = []
+    monkeypatch.setattr(gc, "collect", lambda *a: calls.append(1) or 0)
+    model.curve(x)
+    assert calls == []
+
+
 def test_hpo_expected_cells_stage_outputs_and_report_carry_the_admission(tmp_path):
     config, _, plan = _fold_hpo_fixture(tmp_path)
     rows = _late_rows()
@@ -3959,6 +4006,8 @@ def test_boosted_cdf_learns_heteroscedastic_scale_and_beats_the_best_constant_mi
     model = _boosted(n_estimators=20, learning_rate=.1, num_leaves=2, min_data_in_leaf=20)
     model.fit_decision_context(context, context).fit(x, y, x, y)
     assert len(model.losses) == 20 and model.losses[-1] < .9*model.losses[0]
+    # A fit drops its contexts (ADR-0236 amendment 2): attach them again to read them.
+    model.fit_decision_context(context, context)
     target, training = model._target_tensor(y), model._training_context(x)
     theta = torch.tensor(model.start[None, :], requires_grad=True)
     optimizer = torch.optim.Adam([theta], lr=.05)

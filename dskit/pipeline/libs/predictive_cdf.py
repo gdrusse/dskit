@@ -2281,6 +2281,32 @@ class _MixtureParameterCDF(CDFEstimator):
                 torch.backends.cudnn.benchmark = old_benchmark
         return configured()
 
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit the subclass's ``_fit`` under the deterministic context.
+
+        Parameters
+        ----------
+        x, y, cal_x, cal_y : array-like
+            Training and separate calibration arrays. The calibration rows are
+            read only when ``patience`` is set, as the stop rule's monitor.
+
+        Returns
+        -------
+        self
+            The fitted estimator (networks, or LightGBM text truncated at the
+            kept round), retained for exact CDF queries.
+
+        Raises
+        ------
+        ValueError
+            What ``_fit`` refuses: unattached context, unseen calibration heads,
+            a nonfinite loss or gradient, patience not exhausted within the
+            ceiling, and the booster's own (a task too rare to bin, a start scale
+            at ``min_scale``, a design LightGBM cannot split).
+        """
+        with self._deterministic_context():
+            return self._fit(x, y, cal_x, cal_y)
+
     def _validate_x(self, x):
         import numpy as np
         x = np.asarray(x)
@@ -2472,23 +2498,6 @@ class MixtureMLPCDF(_MixtureParameterCDF):
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
 
-    def fit(self, x, y, cal_x, cal_y):
-        """Train with train-only scaling, fixed epochs and explicit seeds.
-
-        Parameters
-        ----------
-        x, y, cal_x, cal_y : array-like
-            Training and separate calibration arrays. The calibration rows are
-            read only when ``patience`` is set, as the stop rule's monitor.
-
-        Returns
-        -------
-        self
-            Fitted ensemble, retaining networks for exact CDF queries.
-        """
-        with self._deterministic_context():
-            return self._fit(x, y, cal_x, cal_y)
-
     def _target_tensor(self, y):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
@@ -2602,7 +2611,6 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         MixtureCurve
             Ensemble curve; components times seeds Gaussian terms.
         """
-        import gc
         import numpy as np
         import torch
 
@@ -2620,8 +2628,10 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 scales.append(sigma.cpu().numpy())
         result = self._curve(np.concatenate(weights, 1), np.concatenate(means, 1),
                              np.concatenate(scales, 1))
+        # The tensors hold no reference cycles, so dropping them frees them; a full
+        # gc.collect here cost ~0.1 s per call, seven calls per model and ticker-fold
+        # in a pooled study (ADR-0236 amendment 2).
         del xx, hh, logw, mu, sigma
-        gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         return result
@@ -3443,6 +3453,29 @@ class _CompositeLossCDF:
         self._context_arrays(self._cal_context)
         return self
 
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit as the host estimator does, then drop the attached fit-time contexts.
+
+        The inventories (one record per training and calibration row, ~0.9 kB
+        each) are read only while fitting; a pooled study keeps every fold's
+        fitted model, so holding them grew memory with folds x candidates
+        (ADR-0236 amendment 2). A refit attaches them again first.
+
+        Parameters
+        ----------
+        x, y, cal_x, cal_y : array-like
+            As the host estimator's ``fit``.
+
+        Returns
+        -------
+        self
+            The fitted estimator.
+        """
+        try:
+            return super().fit(x, y, cal_x, cal_y)
+        finally:
+            self._fit_context = self._cal_context = None
+
     def _target_tensor(self, y):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
@@ -3865,30 +3898,6 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         (result,) = booster.eval_valid(feval=lambda preds, _: (
             "composite", self._raw_composite(preds, *monitor, 0)[0]/len(preds), False))
         return result[2]
-
-    def fit(self, x, y, cal_x, cal_y):
-        """Boost from the constant start on the composite loss.
-
-        Parameters
-        ----------
-        x, y, cal_x, cal_y : array-like
-            Training and separate calibration arrays. The calibration rows are
-            read only when ``patience`` is set, as the stop rule's monitor.
-
-        Returns
-        -------
-        self
-            Fitted booster, kept as LightGBM text truncated at the kept round.
-
-        Raises
-        ------
-        ValueError
-            For unattached context, unseen calibration heads, a task too rare
-            to bin, a start scale at ``min_scale``, a nonfinite gradient, a
-            design LightGBM cannot split, or patience not exhausted.
-        """
-        with self._deterministic_context():
-            return self._fit(x, y, cal_x, cal_y)
 
     def _boost(self, booster, target, context):
         """Run one round; return True once LightGBM can add no further split."""
@@ -5593,6 +5602,9 @@ class ChronologicalCDFStudy:
                             model_fit, model_cal = fit, cal
                         module, cls = spec["class"].split(":")
                         model = getattr(importlib.import_module(module), cls)(**spec["params"])
+                        if pooled:
+                            print(f"fit {name} {self.plan.column} {split} on {len(model_fit)} "
+                                  "pooled rows", flush=True)
                         for band in (model_fit, model_cal, val):
                             model._validate_x(band[c["features"]].to_numpy())
                         imputer = SimpleImputer(strategy="median", keep_empty_features=True)
@@ -5621,6 +5633,9 @@ class ChronologicalCDFStudy:
                         fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
                                      "groups": model_fit.groupby(c["group"]).size().to_dict(),
                                      "latest_label": model_fit[c["end"]].max()}
+                        # A pooled fit band is most of the panel: never hold it (or its
+                        # imputed copy) through the per-group scoring that follows.
+                        del model_fit, model_cal, x
                         if pooled:
                             pooled_cache[key] = model, imputer, fit_count
                     else:
@@ -5691,8 +5706,11 @@ class ChronologicalCDFStudy:
                         count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
                     print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
                 counts.append(count)
-                pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
-                (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
+        # Written once: rewriting both after every group made a run quadratic in its
+        # groups x splits (ADR-0236 amendment 2); a stage that dies is rerun whole anyway.
+        scores = pd.concat(results, ignore_index=True)
+        scores.to_parquet(output/"scores.parquet", index=False)
+        (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
         loss_rows = self._loss_rows(counts, self.plan.column)
         if loss_rows:
             pd.DataFrame(loss_rows).to_csv(output/self.FOLD_LOSSES_FILE, index=False)
@@ -5702,7 +5720,7 @@ class ChronologicalCDFStudy:
                      "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
                     for (split, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
-        return pd.concat(results, ignore_index=True)
+        return scores
 
 
 class CDFHyperparameterStudy:
@@ -6326,6 +6344,7 @@ class CDFHyperparameterStudy:
             years = self.partitions[partition]
             panel = dev if partition == "development" else frame
             samples = e["resolutions"]["final_samples"]
+        del dev  # the scored partition fits on the whole panel: never hold a second copy
         path = self.output/stage/partition
         study = ChronologicalCDFStudy({**c, "output": str(path), **self.plan.stage(years),
                                        "samples": samples, "models": models})
