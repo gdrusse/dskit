@@ -18,7 +18,8 @@ from dskit.pipeline.libs.predictive_cdf import (
     DiscreteCDFGrid, GridCurve,
 )
 from dskit.pipeline.libs.observations import ObservationRows
-from .datafiles import DataFiles, DataTree, archive_relpath, entry_problems
+from .datafiles import (DataFiles, DataTree, archive_relpath, clear_snapshot_cache,
+                        entry_problems)
 from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
@@ -2000,7 +2001,7 @@ class RawChainFeatureBuilder:
         target = Path(output); target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix+".tmp")
         result.to_parquet(temporary, index=False); temporary.replace(target)
-        manifest = Path(str(target)+".sources.json")
+        manifest = Path(str(target)+_SOURCES_SIDECAR)
         temporary_manifest = manifest.with_suffix(manifest.suffix+".tmp")
         sidecar = {"metadata_columns": metadata_columns,
                    "metadata_sha256": metadata_sha256,
@@ -2087,6 +2088,8 @@ _PRICE_REQUIRED = ("date", "close")
 _CALENDAR_READER = "price_calendar"
 #: Where an HPO experiment keeps the panel its first stage built, under ``experiment.output``.
 PANEL_CACHE_DIR = "panel-cache"
+#: The source-hash sidecar written beside a raw-chain feature file and read with it.
+_SOURCES_SIDECAR = ".sources.json"
 _KEYED_KEYS = ("key", "tables", "age_suffix", "missing_suffix")
 _ACTION_KEYS = ("max_dividend_yield", "max_abs_jump", "windows")
 
@@ -2838,9 +2841,9 @@ class ExactExpiryCDFPanel:
         c = self.config
         hashes = {name: files.sha256(c[name]) for name in self._source_names()}
         if c.get("chain_features"):
-            if not files.has(c["chain_features"], ".sources.json"):
+            if not files.has(c["chain_features"], _SOURCES_SIDECAR):
                 raise ValueError("raw-chain source hash manifest is missing")
-            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], ".sources.json")
+            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], _SOURCES_SIDECAR)
         return hashes
 
     def read(self):
@@ -3082,9 +3085,10 @@ class ExactExpiryCDFPanel:
 
         Every ``root`` value, at any depth, is a store root (a run config's one
         absolute-path convention); any other string naming an existing file or
-        directory is a data path (a legacy entry). The whole config is walked, so a
-        key added later is covered without editing this; the working directory and
-        its parents are never a data path.
+        directory is a data path (a legacy entry), with the source-hash sidecar a
+        raw-chain file is read with. The whole config is walked, so a key added
+        later is covered without editing this; the working directory and its
+        parents are never a data path.
 
         Returns
         -------
@@ -3104,11 +3108,11 @@ class ExactExpiryCDFPanel:
                 for item in value:
                     walk(item, key)
             elif isinstance(value, str) and value:
-                where = os.path.abspath(value)
+                where = os.path.abspath(os.path.expanduser(value))
                 if key == "root":
                     roots.add(where)
                 elif os.path.exists(where) and os.path.commonpath([where, here]) != where:
-                    paths.add(where)
+                    paths.update((where, where+_SOURCES_SIDECAR))
 
         walk(self.config, None)
         return sorted(roots), sorted(paths-roots)
@@ -3121,9 +3125,10 @@ class ExactExpiryCDFPanel:
         dict
             ``reader`` (the class), ``config`` (the config's identity hash),
             ``holdout_start``, ``code`` (every module of dskit and of this package),
-            ``environment`` (interpreter and installed distributions), ``stores`` (each
-            named root's content token) and ``paths`` (a stat token over every other
-            existing path the config names).
+            ``environment`` (the production runtime fingerprint: interpreter,
+            platform, every installed distribution), ``stores`` (each named root's
+            content token) and ``paths`` (a stat token over every other existing
+            path the config names).
         """
         import sys
         from types import SimpleNamespace
@@ -3132,18 +3137,24 @@ class ExactExpiryCDFPanel:
         from dskit.onboarding import OnboardingRoot, files_token
         from dskit.pipeline.base import config_hash
         from dskit.pipeline.libs.parquet import ParquetFrameCache
+        from dskit.production.release import RuntimeFingerprint
 
         roots, paths = self._locations()
         return {"reader": f"{type(self).__module__}:{type(self).__qualname__}",
                 "config": config_hash(SimpleNamespace(to_obj=lambda: self.config), exclude=()),
                 "holdout_start": self.holdout_start,
                 "code": ParquetFrameCache.code_digest(dskit, sys.modules[__package__]),
-                "environment": ParquetFrameCache.environment(),
+                "environment": RuntimeFingerprint.capture().to_obj(),
                 "stores": {root: OnboardingRoot(root).content_token() for root in roots},
                 "paths": files_token(paths)}
 
     def cached_read(self, directory):
         """Return ``(read(), provenance())``, reusing the panel a same-identity read stored.
+
+        The store snapshots this process resolved before are forgotten first, so a
+        build reads the snapshots the identity's tokens name. A panel that cannot be
+        stored (container-valued columns, such as a decision context) is read afresh
+        by every stage, as without a cache.
 
         Parameters
         ----------
@@ -3158,9 +3169,10 @@ class ExactExpiryCDFPanel:
         """
         from dskit.pipeline.libs.parquet import ParquetFrameCache
 
-        frame, provenance, reused = ParquetFrameCache(directory).load_or_build(
+        clear_snapshot_cache()
+        frame, provenance, state = ParquetFrameCache(directory).load_or_build(
             self.cache_identity, lambda: (self.read(), self.provenance()))
-        print("panel", "reused" if reused else "built", frame.shape, flush=True)
+        print("panel", state, frame.shape, flush=True)
         return frame, provenance
 
 
@@ -3238,16 +3250,16 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
                      for name in OPTION_SOURCE_KEYS if config.get(name) not in (None, {}, False)]
         return problems
 
-    #: The keys of a ``price_source.relpath`` entry naming its own source.
-    LOCATION_KEYS = ("source", "stream", "relpath")
+    @staticmethod
+    def _location_ok(entry):
+        """Say whether a ``relpath`` entry is a file name or a store reference to one file.
 
-    @classmethod
-    def _location_ok(cls, entry):
-        """Say whether a ``relpath`` entry is a file name or a full ``{source, stream, relpath}``."""
-        if isinstance(entry, str):
-            return bool(entry)
-        return (isinstance(entry, dict) and set(entry) == set(cls.LOCATION_KEYS)
-                and all(isinstance(entry[k], str) and entry[k] for k in cls.LOCATION_KEYS))
+        The reference rule is :func:`~index_options.datafiles.entry_problems`'s; a
+        ``manifest_sha256`` pin is refused, since the price reader pins each file by its
+        own manifest digest instead.
+        """
+        return not entry_problems("price_source.relpath entry", entry) and not (
+            isinstance(entry, dict) and "manifest_sha256" in entry)
 
     def _location(self, symbol):
         """Return the symbol's price file as ``(source, stream, relpath)``, defaults filled in."""
@@ -3257,7 +3269,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
             raise ValueError(f"price_source.relpath has no file for symbol {symbol!r}")
         if isinstance(entry, str):
             return source["source"], source["stream"], entry
-        return tuple(entry[k] for k in self.LOCATION_KEYS)
+        return entry["source"], entry["stream"], entry["relpath"]
 
     @classmethod
     def action_problems(cls, spec):

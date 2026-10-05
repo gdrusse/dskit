@@ -216,7 +216,8 @@ def test_a_cached_read_keys_on_every_store_root_and_existing_path_the_config_nam
     table = {"root": str(tmp_path/"elsewhere"), "path": str(legacy), "relpath": "a/b.parquet"}
     roots, paths = PriceCalendarCDFPanel({**panel.config, "extra": table})._locations()
     assert roots == sorted({panel.config["root"], str(tmp_path/"elsewhere")})
-    assert paths == [str(legacy)]           # a store relpath names no file here
+    # a store relpath names no file here; a legacy file brings its source-hash sidecar
+    assert paths == [str(legacy), str(legacy)+".sources.json"]
 
 
 # -- per-symbol price sources (ADR-0236): disjoint universes in separate onboarded sources --------

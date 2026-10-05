@@ -400,7 +400,10 @@ def workflow_document(configs_dir):
                                             *copy.deepcopy(source["hpo"]["run"]["sequence"])]},
                     "notes": "The panel stage builds the panel cache in a process that fits "
                              "nothing; then search every partition, then select."},
-            "evaluate": copy.deepcopy(source["evaluate"]),
+            "evaluate": {"stages": copy.deepcopy(source["evaluate"]["stages"]),
+                         "notes": "The per-ticker workflow's step-7 stages: step zoo already "
+                                  "searched and selected (a second select would refuse to "
+                                  "overwrite the frozen selection)."},
             "study_io": {"cli": copy.deepcopy(source["study_io"]["cli"])},
         },
         "env": "$args.run_env",

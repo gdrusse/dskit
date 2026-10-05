@@ -3491,7 +3491,17 @@ def _admission_config(tmp_path, spec, minimum=None, calibrate=False):
     return config
 
 
-@pytest.mark.parametrize(('minimum', 'waits'), [(None, [1, 2]), (1, [1, 2]), (4, [1, 2, 3])])
+def test_an_undeclared_minimum_keeps_the_every_band_refusal(tmp_path, monkeypatch):
+    # Owner: the default keeps today's behaviour. A late task's empty fit band refuses.
+    rows = _late_rows()
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    with pytest.raises(ValueError, match='empty band: B 1'):
+        ChronologicalCDFStudy(_admission_config(tmp_path, spec)).run(frame)
+
+
+@pytest.mark.parametrize(('minimum', 'waits'), [(1, [1, 2]), (4, [1, 2, 3])])
 def test_a_late_task_waits_until_its_fit_band_holds_min_task_fit_rows(
         tmp_path, monkeypatch, minimum, waits):
     rows = _late_rows()
@@ -3563,11 +3573,20 @@ def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibra
     calibrated['output'] = str(tmp_path/'calibrated')
     with pytest.raises(ValueError, match='empty calibration band: B 3'):
         ChronologicalCDFStudy(calibrated).run(frame)
+    # A per-group fit is handed its calibration rows unless its class declares it ignores
+    # them: ScaledEmpiricalCDF learns its shape there, flagged or not.
+    scaled = _admission_config(tmp_path, spec, 4)
+    scaled['output'] = str(tmp_path/'scaled')
+    scaled['models']['scaled'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
+        'params': {'alpha': 1., 'floor': .01, 'knots': 11}, 'calibrate': False}
+    with pytest.raises(ValueError, match=r"empty calibration band: B 3, which \['scaled'\]"):
+        ChronologicalCDFStudy(scaled).run(frame)
 
 
 def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
     config, frame = _hpo_fixture(tmp_path)
-    study = dict(config['study'], output=str(tmp_path/'years'))
+    study = dict(config['study'], output=str(tmp_path/'years'), min_task_fit_rows=1)
     frame = frame[(frame.unit == 'A') | (frame.date >= '2016-01-01')]
     scores = ChronologicalCDFStudy(study).run(frame)
     assert set(scores[scores.unit == 'B'].year) == {2019}

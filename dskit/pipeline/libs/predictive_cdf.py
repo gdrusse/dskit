@@ -30,8 +30,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel",
-           "DEFAULT_MIN_TASK_FIT_ROWS"]
+           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -39,9 +38,9 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
 _QUADRATURE_NODES = 64
 # Positive remainder terms of the Student lower-tail series (ADR-0218).
 _STUDENT_TAIL_TERMS = 64
-#: A study's ``min_task_fit_rows`` when it declares none: a group is evaluated in a
-#: split once its fit band holds one row (ADR-0236 amendment).
-DEFAULT_MIN_TASK_FIT_ROWS = 1
+#: The fit-row floor a study that declares no ``min_task_fit_rows`` is checked
+#: against: one row, which its every-band rule already requires (ADR-0236 amendment).
+_DEFAULT_MIN_TASK_FIT_ROWS = 1
 
 
 @lru_cache(maxsize=None)
@@ -787,6 +786,9 @@ class HorizonEmpiricalCDF(CDFEstimator):
 
         model = HorizonEmpiricalCDF(0, 1, 401)
     """
+
+    #: Its fit never reads the calibration rows, so a study may hand it none (ADR-0236 amendment 2).
+    ignores_calibration_rows = True
 
     def __init__(self, horizon_index, reference_index, knots, condition_indices=None):
         self.horizon_index, self.reference_index, self.knots = horizon_index, reference_index, knots
@@ -4581,11 +4583,13 @@ class _SplitPlan(ABC):
     asks the plan for every split-shaped fact (ids, bands, the rows a split
     evaluates), so a new grammar is a subclass, never a branch in the study.
 
-    Task admission (ADR-0236 amendment, owner option B) is every grammar's:
-    a group WAITS in a split while its fit band holds fewer than
-    ``min_task_fit_rows`` rows, and its calibration and evaluation rows are
-    then dropped for every model alike (its fit rows stay); an admitted group
-    with no evaluation row has nothing to score in that split.
+    Task admission (ADR-0236 amendment, owner option B) is every grammar's,
+    once a study declares ``min_task_fit_rows`` (``admits``): a group WAITS in
+    a split while its fit band holds fewer rows, and its calibration and
+    evaluation rows are then dropped for every model alike (its fit rows
+    stay); an admitted group with no evaluation row has nothing to score in
+    that split. Undeclared, the study keeps its old rule: every group needs
+    rows in every band of every split.
     """
 
     column = ""
@@ -4594,7 +4598,10 @@ class _SplitPlan(ABC):
 
     def __init__(self, config):
         self.date, self.end, self.group = config["date"], config["end"], config["group"]
-        self.min_task_fit_rows = config.get("min_task_fit_rows", DEFAULT_MIN_TASK_FIT_ROWS)
+        self.admits = "min_task_fit_rows" in config
+        self.min_task_fit_rows = config.get("min_task_fit_rows", _DEFAULT_MIN_TASK_FIT_ROWS)
+        if type(self.min_task_fit_rows) is not int or self.min_task_fit_rows < 1:
+            raise ValueError("min_task_fit_rows must be an integer >= 1")
 
     @abstractmethod
     def ids(self):
@@ -4898,9 +4905,6 @@ class ChronologicalCDFStudy:
             if type(weight) not in (int, float) or not math.isfinite(weight) or weight <= 0:
                 raise ValueError("tail_weight must be a finite number above zero")
             self._pin_tail_weight(config)
-        minimum = config.get("min_task_fit_rows", DEFAULT_MIN_TASK_FIT_ROWS)
-        if type(minimum) is not int or minimum < 1:
-            raise ValueError("min_task_fit_rows must be an integer >= 1")
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
@@ -4965,22 +4969,27 @@ class ChronologicalCDFStudy:
         return self.config
 
     @staticmethod
-    def _consumes_calibration(spec):
-        """Say whether a model's fit reads its calibration rows' labels (a monitor or a map)."""
+    def _estimator(spec):
+        """Return the estimator class a model spec names."""
         module, cls = spec["class"].split(":")
-        estimator = getattr(importlib.import_module(module), cls)
-        return bool(getattr(estimator, "consumes_calibration_labels", False)
+        return getattr(importlib.import_module(module), cls)
+
+    @classmethod
+    def _consumes_calibration(cls, spec):
+        """Say whether a model's fit reads its calibration rows' labels (a monitor or a map)."""
+        return bool(getattr(cls._estimator(spec), "consumes_calibration_labels", False)
                     or spec["params"].get("patience") is not None)
 
     def _reads_group_calibration(self, spec):
         """Say whether a model needs the group's own calibration rows in a split.
 
-        A calibrated variant maps through them; a per-group (unpooled) fit that
-        consumes calibration labels monitors on them. A pooled fit monitors on the
-        pooled calibration slice, never one group's.
+        A calibrated variant maps through them, and a per-group (unpooled) fit is
+        handed them unless its class declares ``ignores_calibration_rows``; a
+        pooled fit monitors on the pooled calibration slice, never one group's.
         """
-        return spec["calibrate"] or (not spec.get("pooled", False)
-                                     and self._consumes_calibration(spec))
+        return spec["calibrate"] or not (
+            spec.get("pooled", False)
+            or getattr(self._estimator(spec), "ignores_calibration_rows", False))
 
     def _admission(self, frame, calendar):
         """Return each split's band counts and write the run's admission ledger."""
@@ -5563,10 +5572,15 @@ class ChronologicalCDFStudy:
         admitted = self._admission(frame, calendar)
         for group, group_frame in frame.groupby(c["group"]):
             for split in self.plan.ids():
-                if not self._evaluated(admitted[split], group):
+                evaluated = self._evaluated(admitted[split], group)
+                if not (evaluated or self.plan.admits):
+                    raise ValueError(f"empty band: {group} {split}")
+                if not evaluated:
                     continue  # waiting, or nothing to score: in the admission ledger
                 fit, cal, val = self.plan.bands(group_frame, split, calendar)
                 if cal.empty:
+                    if not self.plan.admits:
+                        raise ValueError(f"empty band: {group} {split}")
                     readers = [n for n, s in c["models"].items() if self._reads_group_calibration(s)]
                     if readers:
                         raise ValueError(f"empty calibration band: {group} {split}, which "
@@ -5582,8 +5596,9 @@ class ChronologicalCDFStudy:
                     count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
                                    "ends": band[c["end"]].nunique(),
                                    "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
-                                   "first": band[c["date"]].min(), "last": band[c["date"]].max(),
-                                   "latest_label": band[c["end"]].max()}
+                                   "first": band[c["date"]].min() if len(band) else None,
+                                   "last": band[c["date"]].max() if len(band) else None,
+                                   "latest_label": band[c["end"]].max() if len(band) else None}
                 yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
                 model_items = sorted(c["models"].items(),
                                      key=lambda item: item[0] != c["reference_model"])

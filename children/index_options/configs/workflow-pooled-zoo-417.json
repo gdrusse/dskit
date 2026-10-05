@@ -41,7 +41,7 @@
           }
         ]
       },
-      "notes": "Step 6 already ran search and select, so step 7 starts at evaluate (select would refuse to overwrite the frozen selection). development = warm-up folds, later = scored folds only (frozen choices, holdout refused)."
+      "notes": "The per-ticker workflow's step-7 stages: step zoo already searched and selected (a second select would refuse to overwrite the frozen selection)."
     },
     "study_io": {
       "cli": {

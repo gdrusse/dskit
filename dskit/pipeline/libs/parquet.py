@@ -27,17 +27,11 @@ from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
 __all__ = ["NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
 
-#: Bytes per hashing read; a price file is small, an options file is not.
-_CHUNK = 1 << 20
-
 
 def _sha256(path):
-    """Return the sha256 hex digest of a file, read in chunks: this pack's one hashing rule."""
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(_CHUNK), b""):
-            h.update(block)
-    return h.hexdigest()
+    """Return a file's sha256 hex digest by the pipeline's one file-hash rule (``path_hash``)."""
+    from dskit.pipeline.workflow import path_hash
+    return path_hash(str(path))
 
 
 class ParquetRows(Node):
@@ -288,7 +282,9 @@ class ParquetFrameCache:
     the frame a rebuild would give. One slot per directory: a build under a
     new identity replaces the old frame. Every caller, the building one
     included, gets the frame and payload read back from disk, so a reuse and
-    a build can never differ in dtype or JSON shape.
+    a build can never differ in dtype or JSON shape. A frame whose object
+    columns hold anything but scalars (dicts, lists) is never stored: parquet
+    would hand its containers back as arrays.
 
     Parameters
     ----------
@@ -301,11 +297,15 @@ class ParquetFrameCache:
     Build a panel once per data identity::
 
         cache = ParquetFrameCache("runs/study/panel-cache")
-        frame, payload, reused = cache.load_or_build(
+        frame, payload, state = cache.load_or_build(
             lambda: {"config": digest, "store": token}, lambda: (build(), {"rows": 3}))
+        # state: "reused", "stored" or "unstored"
     """
 
     FRAME, RECORD = "frame.parquet", "record.json"
+    #: What ``pandas.api.types.infer_dtype`` may call an object column of a storable frame.
+    SCALAR_KINDS = frozenset({"string", "bytes", "empty", "boolean", "integer", "floating",
+                              "mixed-integer-float", "decimal"})
 
     def __init__(self, directory):
         from pathlib import Path
@@ -344,6 +344,22 @@ class ParquetFrameCache:
             return None
         return pd.read_parquet(frame), stored["payload"]
 
+    @classmethod
+    def storable(cls, frame):
+        """Say whether parquet hands ``frame`` back unchanged: every object column scalar.
+
+        Parameters
+        ----------
+        frame : DataFrame
+
+        Returns
+        -------
+        bool
+        """
+        from pandas.api.types import infer_dtype
+        return all(infer_dtype(frame[name], skipna=True) in cls.SCALAR_KINDS
+                   for name in frame.columns if frame[name].dtype == object)
+
     def store(self, identity, frame, payload):
         """Replace the slot with ``frame`` and ``payload`` under ``identity``.
 
@@ -352,24 +368,33 @@ class ParquetFrameCache:
         identity : dict
             JSON-serializable.
         frame : DataFrame
-            Written as parquet without its index.
+            A :meth:`storable` frame, written as parquet without its index.
         payload : dict
             JSON-serializable; stored and returned as JSON gives it back.
+
+        Raises
+        ------
+        ValueError
+            When ``frame`` is not :meth:`storable`.
         """
         import json
         import os
+        import tempfile
 
         from dskit.pipeline.node import atomic_write
 
+        if not self.storable(frame):
+            raise ValueError("a frame with container-valued object columns is not stored")
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory/self.RECORD).unlink(missing_ok=True)  # never a record over a new frame
-        partial = self.directory/(self.FRAME+".partial")
+        handle, partial = tempfile.mkstemp(dir=self.directory, suffix=".partial")
+        os.close(handle)
         frame.to_parquet(partial, index=False)
+        digest = _sha256(partial)  # of these bytes: a concurrent writer's frame cannot pass load
         os.replace(partial, self.directory/self.FRAME)
         atomic_write(str(self.directory/self.RECORD), json.dumps({
-            "identity": self._canonical(identity),
-            "frame_sha256": _sha256(self.directory/self.FRAME),
-            "rows": int(len(frame)), "payload": payload}, indent=1, allow_nan=False).encode())
+            "identity": self._canonical(identity), "frame_sha256": digest,
+            "payload": payload}, indent=1, allow_nan=False).encode())
 
     def load_or_build(self, identity, build):
         """Return the stored frame for the current identity, building and storing it if absent.
@@ -385,19 +410,23 @@ class ParquetFrameCache:
         Returns
         -------
         tuple
-            ``(frame, payload, reused)``.
+            ``(frame, payload, state)``: ``reused`` (from the slot), ``stored``
+            (built, stored and read back) or ``unstored`` (built; not
+            :meth:`storable`, the identity moved, or another writer took the slot).
         """
         import json
 
         before = identity()
         held = self.load(before)
         if held is not None:
-            return (*held, True)
+            return (*held, "reused")
         frame, payload = build()
-        if self._canonical(identity()) != self._canonical(before):
-            return frame, json.loads(json.dumps(payload)), False
-        self.store(before, frame, payload)
-        return (*self.load(before), False)
+        if self.storable(frame) and self._canonical(identity()) == self._canonical(before):
+            self.store(before, frame, payload)
+            held = self.load(before)
+            if held is not None:
+                return (*held, "stored")
+        return frame, json.loads(json.dumps(payload)), "unstored"
 
     @staticmethod
     def code_digest(*packages):
@@ -411,7 +440,8 @@ class ParquetFrameCache:
         Returns
         -------
         str
-            A hex digest that moves with any edit of that code.
+            A hex digest that moves with any edit of that code (compiled files
+            and data beside it never move it).
         """
         from pathlib import Path
 
@@ -419,25 +449,9 @@ class ParquetFrameCache:
         for package in packages:
             top = Path(package.__file__).parent
             for path in sorted(top.rglob("*.py")):
-                digest.update(f"{package.__name__}/{path.relative_to(top).as_posix()}\n".encode())
-                digest.update(hashlib.sha256(path.read_bytes()).digest())
+                digest.update(f"{package.__name__}/{path.relative_to(top).as_posix()}:"
+                              f"{_sha256(path)}\n".encode())
         return digest.hexdigest()
-
-    @staticmethod
-    def environment():
-        """Return the interpreter version and every installed distribution's version.
-
-        Returns
-        -------
-        dict
-            ``python`` and the sorted ``distributions`` (``name==version``).
-        """
-        import sys
-        from importlib.metadata import distributions
-
-        return {"python": sys.version,
-                "distributions": sorted({f"{d.metadata['Name']}=={d.version}"
-                                         for d in distributions()})}
 
 
 #: The pack's kinds.

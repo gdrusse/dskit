@@ -41,24 +41,26 @@ from .base import (
     _check_segment,
     _check_str,
     _raise_if,
+    file_signature,
 )
 from .default_model import onboarding_model
 
-__all__ = ["OnboardingRoot", "READ_SUBDIRS", "files_token"]
+__all__ = ["OnboardingRoot", "files_token"]
 
 #: The top-level directories ``create`` builds — the whole P2 estate.
 _SUBDIRS = ("store", "raw", "observations", "forecasts", "state", "published")
 #: The directories whose committed files a read consumes: snapshots, rows, forecasts.
-READ_SUBDIRS = ("raw", "observations", "forecasts")
+_READ_SUBDIRS = ("raw", "observations", "forecasts")
 
 
-def files_token(paths) -> str:
-    """Return a digest of every file under ``paths`` by path, size and modification time.
+def files_token(paths):
+    """Return a digest of every file under ``paths`` by path and :func:`file_signature`.
 
     A directory is walked (links are not followed into); a missing path
-    is recorded as missing. Nothing is opened: the token is cheap, and it
-    moves when a file is added, removed, resized or touched, which for
-    write-once acquisitions is every change a reader could see.
+    is recorded as missing, and a file gone mid-walk is left out. Nothing is
+    opened: the token is cheap, and it moves when a file is added, removed,
+    resized or touched, which for write-once acquisitions is every change a
+    reader could see.
 
     Parameters
     ----------
@@ -79,9 +81,10 @@ def files_token(paths) -> str:
             dirs.sort()
             for name in sorted(files):
                 path = os.path.join(folder, name)
-                if os.path.exists(path):
-                    stat = os.stat(path)
-                    entries.append([path, stat.st_size, stat.st_mtime_ns])
+                try:
+                    entries.append([path, *file_signature(path)])
+                except AssetError:
+                    continue
         digest.update(json.dumps(entries).encode() + b"\n")
     return digest.hexdigest()
 
@@ -228,7 +231,7 @@ class OnboardingRoot:
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)
 
-    def content_token(self) -> str:
+    def content_token(self):
         """Return a token that moves whenever a read of this root could read something new.
 
         The key of a memo built from the root's acquisitions (a cached
@@ -238,11 +241,11 @@ class OnboardingRoot:
         Returns
         -------
         str
-            :func:`files_token` over the root's :data:`READ_SUBDIRS`;
-            ``state/``, ``published/`` and ``store/`` are bookkeeping no
-            read consumes, so they never move it.
+            :func:`files_token` over the root's ``raw/``, ``observations/``
+            and ``forecasts/``; ``state/``, ``published/`` and ``store/`` are
+            bookkeeping no read consumes, so they never move it.
         """
-        return files_token(os.path.join(self.root, sub) for sub in READ_SUBDIRS)
+        return files_token(os.path.join(self.root, sub) for sub in _READ_SUBDIRS)
 
     # -- path helpers: every path in the estate comes from here ------------
 

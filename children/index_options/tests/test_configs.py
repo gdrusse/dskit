@@ -3506,7 +3506,7 @@ def test_the_pooled_workflow_and_report_spec_equal_their_generator_and_validate(
         {"stage": "evaluate", "partition": "development"},
         {"stage": "evaluate", "partition": "later"}, {"stage": "report"}]
     source = json.loads((configs/"workflow.json").read_text())["args"]
-    assert manifest["args"]["evaluate"] == source["evaluate"]
+    assert manifest["args"]["evaluate"]["stages"] == source["evaluate"]["stages"]
     assert manifest["args"]["run_env"] == source["run_env"]
     output = os.path.normpath(study["experiment"]["output"])
     for step, out, tail in (("zoo", "search", "search"), ("zoo", "selection", "selection"),
