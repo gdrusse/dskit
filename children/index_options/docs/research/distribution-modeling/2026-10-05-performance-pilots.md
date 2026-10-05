@@ -45,7 +45,7 @@ The base runs QQQ only at 7 days, with 2 forward-selection rounds and 300 bootst
 |---|---|---|
 | `pilot-base.json` | The baseline gap, regime segmentation, inputs over architecture | Adds references: `standardized_empirical` (FHS); two regime forests on 7 vol/implied-vol inputs, with leaves of ≥40 and ≥15 rows (about 5 and 13 leaves per tree at 410 rows); and a 1-component, 8-unit, 3-seed MLP on the same inputs (batch 64) |
 | `pilot-crps-student.json` | Loss and tail family | CRPS + wing twCRPS, Student components; step-6 grid over degrees of freedom 4/8/30 (3 candidates) |
-| `pilot-regularize.json` | Training budget and variance control | Batch size 512/64 × dropout 0/0.2 × seeds 1/5 (8 candidates) |
+| `pilot-regularize.json` | Training budget and variance control | Batch size 512/64 × dropout 0/0.2 × seeds 1/5 at patience 20 (8 candidates) |
 | `pilot-window-250.json`, `pilot-window-750.json` | Time segmentation | Training window of 250 or 750 dates, instead of 450 |
 | `pilot-horizon-14.json`, `pilot-horizon-28.json` | Horizon segmentation | 14- or 28-day exact horizon, instead of 7 |
 
@@ -64,7 +64,7 @@ The base runs QQQ only at 7 days, with 2 forward-selection rounds and 300 bootst
 - **Check training first.** At batch 512 a ~410-row fold window is one optimizer step per epoch, and with patience 6 a synthetic run stopped TorchCDF at best epochs 1–49. The workflow's networks may be undertrained, not only overfit. Read `best_epoch_by_seed` in each study's `fold_losses.csv`; `pilot-regularize` tests batch 64.
 
 - **A screen, not acceptance.** Shortlist an idea only if its 30- and 60-date block lower bounds beat both `horizon_empirical` and `standardized_empirical` on the scored folds. Then rerun it on the full manifest for QQQ and IWM (plus SPY).
-- **Window pilots** change the training window, the warm-up years used for selection, and every reference's window at once, so skill inside one run is confounded. Compare raw CRPS on the scored dates all window runs share (the 750 run's set) from each run's `step6/study_QQQ/evaluate/later/scores.parquet`.
+- **Window pilots** change the training window, the warm-up years used for selection, and every reference's window at once, so skill inside one run is confounded. Compare raw CRPS on the scored dates all window runs share (the 750 run's set, about 160 dates) from each run's `step6/study_QQQ/evaluate/later/scores.parquet`, raw `variant` only. The fixed-spec references answer the window question; the selected candidate's gap is directional only.
 - **Horizon pilots** forecast different targets. Compare them only by skill against the references inside each run.
 - **Viewed data:** every pilot uses 2019+ data that has already been seen. The never-seen Sep-2026+ recorder chains stay reserved.
 

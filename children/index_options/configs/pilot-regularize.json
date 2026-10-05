@@ -1,5 +1,5 @@
 {
-  "notes": "PILOT: training budget, dropout and seed ensembling. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-regularize.json. Earlier neural runs fit training rows well and validation badly (+8.9% train against -22.2% 2018 skill, docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md). But at the manifest's batch_size 512 a ~410-row fold window is ONE optimizer step per epoch, and with patience 6 a synthetic smoke run stopped TorchCDF at best epochs 1 to 49, so weight decay barely acted (decoupled AdamW decay shrinks weights by about lr x wd per step) and the model may be undertrained rather than overfit. The step-6 grid therefore fixes width, learning rate and weight decay at the manifest defaults and crosses batch_size (512, 64: about seven steps per epoch), dropout (0, 0.2) and seeds (one, or five fits averaged into one mixture): 8 candidates. Read best_epoch_by_seed in the study's fold_losses.csv before interpreting any axis, then the warm-up search table (selection/candidates.jsonl); the selected candidate is evaluated on the scored folds as usual. Five-seed candidates cost five times as much to train, batch 64 about seven times per epoch. Stack one step-6 pilot at a time (with pilot-crps-student.json the axes would merge under one name pattern).",
+  "notes": "PILOT: training budget, dropout and seed ensembling. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-regularize.json. Earlier neural runs fit training rows well and validation badly (+8.9% train against -22.2% 2018 skill, docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md). But at the manifest's batch_size 512 a ~410-row fold window is ONE optimizer step per epoch, and with patience 6 a synthetic smoke run stopped TorchCDF at best epochs 1 to 49, so weight decay barely acted (decoupled AdamW decay shrinks weights by about lr x wd per step) and the model may be undertrained rather than overfit. The step-6 grid therefore fixes width and learning rate at the manifest's values, weight decay at the class default 0.01 and patience at 20 (the manifest's 6 stopped some batch-64 synthetic fits at epochs 1 to 4) and crosses batch_size (512, 64: about seven steps per epoch), dropout (0, 0.2) and seeds (one, or five fits averaged into one mixture): 8 candidates. Read best_epoch_by_seed in the study's fold_losses.csv before interpreting any axis, then the warm-up search table (selection/candidates.jsonl); the selected candidate is evaluated on the scored folds as usual. Five-seed candidates cost five times as much to train, batch 64 about seven times per epoch. Stack one step-6 pilot at a time (with pilot-crps-student.json the axes would merge under one name pattern).",
   "work_dir": "./pipeline_runs/pilot-regularize",
   "hpo": {
     "axes": {
@@ -11,6 +11,9 @@
       ],
       "learning_rate": [
         0.001
+      ],
+      "patience": [
+        20
       ],
       "batch_size": [
         512,
@@ -36,10 +39,11 @@
     "paths": {
       "batch_size": "params.batch_size",
       "dropout": "params.dropout",
-      "seeds": "params.seeds"
+      "seeds": "params.seeds",
+      "patience": "params.patience"
     },
     "name": {
-      "pattern": "{encoder}_h{hidden}_lr{learning_rate}_b{batch_size}_do{dropout}_s{seeds}"
+      "pattern": "{encoder}_h{hidden}_lr{learning_rate}_p{patience}_b{batch_size}_do{dropout}_s{seeds}"
     }
   }
 }
