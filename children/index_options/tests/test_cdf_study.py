@@ -1695,6 +1695,16 @@ def test_provenance_is_the_one_owner_of_what_main_hands_the_study(tmp_path, monk
         cdf_study._main()
     assert reads == [1, 1]
 
+    class Contexts(Panel):
+        def read(self):
+            super().read()
+            return pd.DataFrame({"x": [1.], "context": [{"t": [1.]}]})   # never storable
+
+    monkeypatch.setattr(cdf_study, "ExactExpiryCDFPanel", Contexts)
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel"])
+    with pytest.raises(ValueError, match="could not cache the panel"):
+        cdf_study._main()
+
 
 def test_expanded_context_joins_only_the_strictly_prior_close_and_ages_it(tmp_path, monkeypatch):
     days = _fe_days()

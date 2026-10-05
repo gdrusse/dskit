@@ -22,7 +22,8 @@ import json
 from pathlib import Path
 
 __all__ = ["NAME", "STUDY_FILE", "FOLDS_FILE", "WORKFLOW_FILE", "REPORT_SPEC_FILE",
-           "TEMPLATE_FILE", "TEMPLATE_FOLDS_FILE", "WORKFLOW_SOURCE", "UNIVERSES", "ZOO",
+           "TEMPLATE_FILE", "TEMPLATE_FOLDS_FILE", "WORKFLOW_SOURCE", "UNIVERSES",
+           "WINDOWS_OVERLAY", "ZOO",
            "zoo_document", "folds_document", "workflow_document", "report_spec_document",
            "measured", "write"]
 
@@ -37,7 +38,7 @@ REPORT_SPEC_FILE = f"templates/report-spec-{NAME}.json"
 #: manifest reuses, so step 7 runs exactly ``args.evaluate.stages``.
 WORKFLOW_SOURCE = "workflow.json"
 #: The report table's row cap: the per-ticker rollup holds about 4,400 rows.
-REPORT_MAX_ROWS = 5000
+_REPORT_MAX_ROWS = 5000
 TEMPLATE_FILE = "run-pooled-heads-top5.json"
 TEMPLATE_FOLDS_FILE = "run-pooled-heads-top5-folds.json"
 _TEMPLATE_NAME = "pooled-heads-top5"
@@ -490,7 +491,7 @@ def report_spec_document(document):
         "output_dir": "${L.report.output}",
         "title": f"Pooled model zoo {NAME}: selection, development and scored evaluation",
         "required_steps": ["zoo", "step7"],
-        "max_rows": REPORT_MAX_ROWS,
+        "max_rows": _REPORT_MAX_ROWS,
         "statements": [
             {"title": "Scope.", "text": (
                 "Descriptive evidence: the warm-up fold selects one candidate and variant per "

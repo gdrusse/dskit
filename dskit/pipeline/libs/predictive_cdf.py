@@ -2242,6 +2242,15 @@ class _MixtureParameterCDF(CDFEstimator):
         return None if feature_indices is None else tuple(feature_indices)
 
     @staticmethod
+    def _shared_settings_ok(components, batch_size, learning_rate, min_scale, deterministic):
+        """Say whether the knobs every mixture estimator shares hold: positive counts, rates, a bool."""
+        import math
+        return (all(type(v) is int and v >= 1 for v in (components, batch_size))
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and math.isfinite(v) and v > 0 for v in (learning_rate, min_scale))
+                and type(deterministic) is bool)
+
+    @staticmethod
     def _checked_patience(patience):
         """Return patience, refusing anything but an integer >= 1 or None."""
         if patience is not None and (type(patience) is not int or patience < 1):
@@ -2382,12 +2391,12 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
-                or any(type(v) is not int or v <= 0 for v in [components, epochs, batch_size, *widths])
-                or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
-                or min(learning_rate, min_scale) <= 0 or weight_decay < 0
+                or any(type(v) is not int or v <= 0 for v in [epochs, *widths])
+                or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
+                                                deterministic)
+                or any(not math.isfinite(v) for v in [weight_decay, dropout]) or weight_decay < 0
                 or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
-                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)
-                or type(deterministic) is not bool):
+                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
             raise ValueError("invalid mixture training parameters")
         head_features = self._checked_heads(head_features)
         if (isinstance(left_cdf_weight, bool) or not math.isfinite(left_cdf_weight)
@@ -3722,16 +3731,17 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                  batch_size=4096, device="cpu", deterministic=False, patience=None,
                  head_features=None, feature_indices=None, max_bin=255, hessian="exact"):
         import math
-        counts = ((components, 1), (n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
-                  (seed, 0), (num_threads, 1), (batch_size, 1), (max_bin, 2))
-        rates = (learning_rate, feature_fraction, lambda_l2, hessian_floor, min_scale)
+        counts = ((n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
+                  (seed, 0), (num_threads, 1), (max_bin, 2))
+        rates = (feature_fraction, lambda_l2, hessian_floor)
         if (any(type(v) is not int or v < low for v, low in counts)
+                or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
+                                                deterministic)
                 or any(type(v) not in (int, float) or not math.isfinite(v) for v in rates)
-                or min(learning_rate, hessian_floor, min_scale) <= 0 or lambda_l2 < 0
+                or hessian_floor <= 0 or lambda_l2 < 0
                 or not 0 < feature_fraction <= 1
                 or not isinstance(device, str)
                 or not (device == "cpu" or device.startswith("cuda"))
-                or type(deterministic) is not bool
                 or not isinstance(hessian, str) or hessian not in self._HESSIAN_ORDERS):
             raise ValueError("invalid boosted CDF parameters")
         self.hessian = hessian
@@ -4585,11 +4595,12 @@ class _SplitPlan(ABC):
 
     Task admission (ADR-0236 amendment, owner option B) is every grammar's,
     once a study declares ``min_task_fit_rows`` (``admits``): a group WAITS in
-    a split while its fit band holds fewer rows, and its calibration and
-    evaluation rows are then dropped for every model alike (its fit rows
-    stay); an admitted group with no evaluation row has nothing to score in
-    that split. Undeclared, the study keeps its old rule: every group needs
-    rows in every band of every split.
+    a split while its fit band holds fewer rows, and sits the split out: its
+    fit, calibration and evaluation rows are dropped for every model alike
+    (a head fitted on a few rows would never be scored). An admitted group
+    with no evaluation row has nothing to score in that split. Undeclared,
+    the study keeps its old rule: every group needs rows in every band of
+    every split.
     """
 
     column = ""
@@ -4630,15 +4641,16 @@ class _SplitPlan(ABC):
         Returns
         -------
         DataFrame
-            One row per group holding a row in any band, one int column per
-            :attr:`BANDS` name, sorted by group.
+            One row per group of ``frame`` (zeros where it has no row in the
+            split), one int column per :attr:`BANDS` name, sorted by group.
         """
         import pandas as pd
         narrow = frame[list(dict.fromkeys([self.group, self.date, self.end]))]
         counts = pd.DataFrame({name: band[self.group].value_counts() for name, band in
                                zip(self.BANDS, self.bands(narrow, split, calendar))},
                               columns=list(self.BANDS))
-        return counts.fillna(0).astype(int).sort_index()
+        groups = sorted(pd.unique(narrow[self.group]))
+        return counts.reindex(groups).fillna(0).astype(int)
 
     def waiting(self, counts):
         """Return the groups of :meth:`band_counts` whose fit band is below the minimum."""
@@ -4657,10 +4669,11 @@ class _SplitPlan(ABC):
         Returns
         -------
         list of dict
-            Per group, in group order: ``reason`` (``waiting``: fit band below
-            ``min_task_fit_rows``, its calibration and evaluation rows dropped;
-            ``no_evaluation_rows``: admitted, nothing to score), the three band
-            counts and the rows dropped from each of the last two.
+            Per group of the frame, in group order: ``reason`` (``waiting``: fit
+            band below ``min_task_fit_rows``, every band's rows dropped, none
+            when it has no row in the split; ``no_evaluation_rows``: admitted,
+            nothing to score), the three band counts and the rows dropped from
+            each.
         """
         rows, waiting = [], self.waiting(counts)
         for group, n in counts.iterrows():
@@ -4669,10 +4682,9 @@ class _SplitPlan(ABC):
             dropped = group in waiting
             rows.append({"group": group, self.column: split,
                          "reason": "waiting" if dropped else "no_evaluation_rows",
-                         "fit_rows": int(n["fit"]), "calibration_rows": int(n["calibration"]),
-                         "evaluation_rows": int(n["evaluation"]),
-                         "dropped_calibration_rows": int(n["calibration"]) if dropped else 0,
-                         "dropped_evaluation_rows": int(n["evaluation"]) if dropped else 0})
+                         **{f"{band}_rows": int(n[band]) for band in self.BANDS},
+                         **{f"dropped_{band}_rows": int(n[band]) if dropped else 0
+                            for band in self.BANDS}})
         return rows
 
     def expected(self, frame, ids):
@@ -4997,9 +5009,8 @@ class ChronologicalCDFStudy:
         rows = [row for split, n in counts.items() for row in self.plan.admission(n, split)]
         ledger = {"min_task_fit_rows": self.plan.min_task_fit_rows, "split": self.plan.column,
                   "not_evaluated": rows,
-                  "dropped_rows": {
-                      "calibration": sum(r["dropped_calibration_rows"] for r in rows),
-                      "evaluation": sum(r["dropped_evaluation_rows"] for r in rows)}}
+                  "dropped_rows": {band: sum(r[f"dropped_{band}_rows"] for r in rows)
+                                   for band in self.plan.BANDS}}
         (Path(self.config["output"])/self.ADMISSION_FILE).write_text(
             json.dumps(ledger, indent=2, default=int))
         return counts
@@ -5610,9 +5621,11 @@ class ChronologicalCDFStudy:
                     if new_fit:
                         if pooled:
                             model_fit, model_cal, _ = self.plan.bands(frame, split, calendar)
-                            # A waiting group's fit rows train; its monitor rows wait.
-                            model_cal = model_cal[~model_cal[c["group"]].isin(
-                                self.plan.waiting(admitted[split]))]
+                            # A waiting group sits the split out: a head fitted on a few
+                            # rows is never scored (and LightGBM refuses a task under 3).
+                            waiting = self.plan.waiting(admitted[split])
+                            model_fit = model_fit[~model_fit[c["group"]].isin(waiting)]
+                            model_cal = model_cal[~model_cal[c["group"]].isin(waiting)]
                         else:
                             model_fit, model_cal = fit, cal
                         model = self._estimator(spec)(**spec["params"])
@@ -5942,9 +5955,8 @@ class CDFHyperparameterStudy:
 
     @staticmethod
     def _digest(value):
-        from types import SimpleNamespace
-        from dskit.pipeline.base import config_hash
-        return config_hash(SimpleNamespace(to_obj=lambda: value), exclude=())
+        from dskit.pipeline.base import value_hash
+        return value_hash(value)
 
     @staticmethod
     def _file_hash(path):

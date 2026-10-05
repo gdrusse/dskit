@@ -187,7 +187,7 @@ def test_a_cached_read_is_built_once_and_reused_until_an_input_moves(
     monkeypatch.setattr(PriceCalendarCDFPanel, "read", lambda self: built.append(1) or read(self))
 
     def stage(data=config, holdout=None):
-        return PriceCalendarCDFPanel(data, holdout_start=holdout).cached_read(cache)
+        return PriceCalendarCDFPanel(data, holdout_start=holdout).cached_read(cache)[:2]
 
     frame, provenance = stage()
     again, provenance_again = stage()
@@ -275,8 +275,9 @@ def test_a_cached_read_forgets_resolved_snapshots_and_reads_uncached_without_a_f
         raise ProductionError(["distribution at x has no Name/Version metadata"])
 
     monkeypatch.setattr(RuntimeFingerprint, "capture", classmethod(broken))
-    frame, provenance = PriceCalendarCDFPanel(panel.config).cached_read(tmp_path/"other")
+    frame, provenance, state = PriceCalendarCDFPanel(panel.config).cached_read(tmp_path/"other")
     assert len(frame) and provenance["sha256"] and not (tmp_path/"other").exists()
+    assert state == "off"
     assert "panel cache off" in capsys.readouterr().out
 
 

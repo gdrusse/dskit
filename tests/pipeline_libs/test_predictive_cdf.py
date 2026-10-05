@@ -3532,17 +3532,18 @@ def test_a_late_task_waits_until_its_fit_band_holds_min_task_fit_rows(
         assert set(got.date) == (set(val) if joined else set()), fold['fold']
         assert set(got.model) == ({'reference', 'spy'} if joined and val else set())
         assert (1 in monitor_flags) == (joined and bool(cal))   # the monitor waits too
-        assert (1 in fit_flags) == bool(fit)                    # its fit rows never do
+        assert (1 in fit_flags) == (joined and bool(fit))      # it sits the fold out
         if not joined:
             want.append({'group': 'B', 'fold': fold['fold'], 'reason': 'waiting',
                          'fit_rows': len(fit), 'calibration_rows': len(cal),
-                         'evaluation_rows': len(val), 'dropped_calibration_rows': len(cal),
+                         'evaluation_rows': len(val), 'dropped_fit_rows': len(fit),
+                         'dropped_calibration_rows': len(cal),
                          'dropped_evaluation_rows': len(val)})
     assert [w['fold'] for w in want] == waits                   # the fixture exercises the rule
+    assert any(w['fit_rows'] for w in want) or floor == 1      # a waiting fit band is dropped
     assert ledger == {'min_task_fit_rows': floor, 'split': 'fold', 'not_evaluated': want,
-                      'dropped_rows': {
-                          'calibration': sum(w['dropped_calibration_rows'] for w in want),
-                          'evaluation': sum(w['dropped_evaluation_rows'] for w in want)}}
+                      'dropped_rows': {band: sum(w[f'dropped_{band}_rows'] for w in want)
+                                       for band in ('fit', 'calibration', 'evaluation')}}
     assert not (scores.unit == 'A').groupby(scores.fold).sum().eq(0).any()  # A never waits
 
 
@@ -3576,8 +3577,8 @@ def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibra
     ledger = json.loads((tmp_path/'out/admission.json').read_text())
     assert ledger['not_evaluated'] == [{
         'group': 'B', 'fold': 2, 'reason': 'no_evaluation_rows', 'fit_rows': 14,
-        'calibration_rows': 5, 'evaluation_rows': 0, 'dropped_calibration_rows': 0,
-        'dropped_evaluation_rows': 0}]
+        'calibration_rows': 5, 'evaluation_rows': 0, 'dropped_fit_rows': 0,
+        'dropped_calibration_rows': 0, 'dropped_evaluation_rows': 0}]
     calibrated = _admission_config(tmp_path, spec, 4, calibrate=True)
     calibrated['output'] = str(tmp_path/'calibrated')
     with pytest.raises(ValueError, match='empty calibration band: B 3'):
@@ -3593,6 +3594,30 @@ def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibra
         ChronologicalCDFStudy(scaled).run(frame)
 
 
+def test_a_waiting_task_with_a_row_or_two_never_reaches_a_pooled_booster(tmp_path):
+    # Review round 3: LightGBM cannot bin a task under three rows, and a waiting ticker's
+    # few fit rows used to train the pooled fit; it now sits the fold out entirely.
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rows = _late_rows(start='2020-01-20')          # fold 2 holds B's first two fit rows
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config = _fold_config(tmp_path, spec)
+    config.update(features=['h', 'scale', 't', 'is_A', 'is_B'], min_task_fit_rows=4)
+    config['models']['reference']['calibrate'] = False
+    config['models']['boost'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF', 'calibrate': False,
+        'pooled': True, 'params': {
+            'losses': [{'kind': 'crps', 'weight': 1.}, {'kind': 'tail_crps', 'weight': 1.}],
+            'components': 1, 'n_estimators': 3, 'num_leaves': 2, 'min_data_in_leaf': 2,
+            'device': 'cpu', 'head_features': [3, 4], 'feature_indices': [2]}}
+    scores = ChronologicalCDFStudy(config).run(frame)
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    fold2 = next(r for r in ledger['not_evaluated'] if r['fold'] == 2)
+    assert (fold2['group'], fold2['fit_rows'], fold2['dropped_fit_rows']) == ('B', 2, 2)
+    assert set(scores[scores.unit == 'B'].fold) == {3, 4, 5, 6}
+
+
 def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
     config, frame = _hpo_fixture(tmp_path)
     study = dict(config['study'], output=str(tmp_path/'years'), min_task_fit_rows=1)
@@ -3602,8 +3627,8 @@ def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
     ledger = json.loads((tmp_path/'years/admission.json').read_text())
     assert ledger['not_evaluated'] == [{
         'group': 'B', 'year': 2017, 'reason': 'waiting', 'fit_rows': 0,
-        'calibration_rows': 5, 'evaluation_rows': 5, 'dropped_calibration_rows': 5,
-        'dropped_evaluation_rows': 5}]
+        'calibration_rows': 5, 'evaluation_rows': 5, 'dropped_fit_rows': 0,
+        'dropped_calibration_rows': 5, 'dropped_evaluation_rows': 5}]
 
 
 def test_a_run_writes_its_scores_and_counts_once(tmp_path, monkeypatch):

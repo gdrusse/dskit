@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
@@ -37,13 +38,6 @@ def _sha256(path):
         raise FileNotFoundError(f"no file to hash at {path}")
     return path_hash(str(path))
 
-
-def _digest(identity):
-    """Return the sha256 of an identity's canonical JSON, by the pipeline's one rule."""
-    from types import SimpleNamespace
-
-    from dskit.pipeline.base import config_hash
-    return config_hash(SimpleNamespace(to_obj=lambda: identity), exclude=())
 
 
 class ParquetRows(Node):
@@ -345,7 +339,7 @@ class ParquetFrameCache:
         if not (record.is_file() and frame.is_file()):
             return None
         stored = json.loads(record.read_text())
-        if (stored.get("identity_sha256") != _digest(identity)
+        if (stored.get("identity_sha256") != value_hash(identity)
                 or _sha256(frame) != stored.get("frame_sha256")):
             return None
         return pd.read_parquet(frame), stored["payload"]
@@ -408,7 +402,7 @@ class ParquetFrameCache:
             if os.path.exists(partial):
                 os.unlink(partial)
         atomic_write(str(self.directory/self.RECORD), json.dumps({
-            "identity_sha256": _digest(identity), "frame_sha256": digest,
+            "identity_sha256": value_hash(identity), "frame_sha256": digest,
             "payload": payload}, indent=1, allow_nan=False).encode())
 
     def load_or_build(self, identity, build):
@@ -440,7 +434,7 @@ class ParquetFrameCache:
         if held is not None:
             return (*held, "reused")
         frame, payload = build()
-        if self.storable(frame) and _digest(identity()) == _digest(before):
+        if self.storable(frame) and value_hash(identity()) == value_hash(before):
             try:
                 self.store(before, frame, payload)
             except (OSError, ValueError, TypeError, NotImplementedError):

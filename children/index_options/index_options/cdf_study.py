@@ -3168,8 +3168,10 @@ class ExactExpiryCDFPanel:
         Returns
         -------
         tuple
-            The panel and its provenance as stored, so the building call and every
-            reuse hand a study the same frame and the same dict.
+            ``(frame, provenance, state)``: the panel and its provenance as stored,
+            so the building call and every reuse hand a study the same frame and
+            the same dict, and how it was had (``reused``, ``stored``, ``unstored``,
+            or ``off`` without a fingerprint).
         """
         from dskit.pipeline.libs.parquet import ParquetFrameCache
         from dskit.production.base import ProductionError
@@ -3181,11 +3183,11 @@ class ExactExpiryCDFPanel:
         except ProductionError as err:
             print("panel cache off: the runtime has no fingerprint:", err, flush=True)
             frame = self.read()
-            return frame, json.loads(json.dumps(self.provenance()))
+            return frame, json.loads(json.dumps(self.provenance())), "off"
         frame, provenance, state = ParquetFrameCache(directory).load_or_build(
             lambda: self.cache_identity(environment), lambda: (self.read(), self.provenance()))
         print("panel", state, frame.shape, flush=True)
-        return frame, provenance
+        return frame, provenance, state
 
 
 class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
@@ -3881,8 +3883,11 @@ def _main():
         study = CDFHyperparameterStudy(config)   # a bad document refuses before any read
         # Every stage reads the panel the first one built (ADR-0236 amendment); the
         # panel stage only builds it, in a process that then fits nothing.
-        frame, provenance = adapter.cached_read(
+        frame, provenance, state = adapter.cached_read(
             Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
+        if args.stage == "panel" and state not in ("reused", "stored"):
+            raise ValueError(f"the panel stage could not cache the panel ({state}): every "
+                             "later stage would read it afresh")
         if args.stage != "panel":
             study.run(frame, diagnostic, stage=args.stage, partition=args.partition,
                       provenance=provenance)
