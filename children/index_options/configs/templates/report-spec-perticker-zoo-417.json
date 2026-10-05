@@ -15,7 +15,7 @@
     },
     {
       "title": "Admission.",
-      "text": "A ticker enters a fold once its fit band holds 40 rows; until then its calibration and scored rows are dropped for every model and listed in the admission tables."
+      "text": "A ticker enters a fold once its fit band holds 40 rows and its calibration band 1; until then its calibration and scored rows are dropped for every model and listed in the admission tables."
     },
     {
       "title": "Intervals.",

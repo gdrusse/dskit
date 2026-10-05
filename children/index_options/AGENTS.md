@@ -137,7 +137,10 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197)
                            # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
                            # and templates/report-spec-pooled-zoo-417.json (owner, 2026-10-04), the
-                           # ADR-0236 zoo over both stock universes read via ADR-0237; never hand-edit)
+                           # ADR-0236 zoo over both stock universes read via ADR-0237; and, through
+                           # its ZooVariant PerTickerZoo, run-perticker-zoo-417.json, workflow- and
+                           # report-spec-perticker-zoo-417.json, the same zoo per ticker (ADR-0236
+                           # amendment 3, 2026-10-05); never hand-edit)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-predictive-cdf-qqq-torch-{zoo,smoke}.json (ADR-0211 generic Torch/local HPO)

@@ -693,7 +693,38 @@ def test_a_declared_vintage_bounds_every_observation_read_of_the_panel(make, mon
     assert seen == [("index", expected), ("index", expected), ("fred", expected)]
 
 
+@pytest.mark.parametrize("vintage", [None, 1_759_670_000_000])
+def test_the_surface_readers_price_read_takes_the_vintage_too(make, monkeypatch, vintage):
+    # Review round 1 (M3): the option-surface reader reads its prices as observations.
+    seen = []
+
+    class _Prices(IndexCloseRows):
+        def run(self, ctx, inputs):
+            seen.append(self.params.get("as_of_acquisition_ms", "absent"))
+            return {"records": []}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    declared = {} if vintage is None else {"as_of_acquisition_ms": vintage}
+    panel = make(**declared)
+    monkeypatch.setattr(cdf_study, "IndexCloseRows", _Prices)
+    panel.config = {**panel.config, "price_source": "prices"}   # the surface reader's form
+    panel.reader_fingerprints = {}
+    ExactExpiryCDFPanel._price_records(panel, "AAA")
+    assert seen == ["absent" if vintage is None else vintage]
+
+
 @pytest.mark.parametrize("value", [-1, True, 1.5, "1759670000000"])
-def test_a_malformed_vintage_refuses_the_panel(make, value):
+def test_a_malformed_vintage_refuses_the_panel_and_its_node(make, value):
     with pytest.raises(ValueError, match="as_of_acquisition_ms"):
         make(as_of_acquisition_ms=value)
+    params = {"root": "x", "surface": "s.parquet", "lifecycle": "l.parquet",
+              "symbols": {"QQQ": "VXN"}, "price_source": "p", "iv_source": "i",
+              "since": "2020-01-01", "max_dte": 45, "lags": 22, "windows": [1, 5, 22],
+              "feature_gap_days": 7, "reference_floor": 0.001, "spot_tolerance": 0.02,
+              "columns": ["symbol", "quote_date"], "as_of_acquisition_ms": value}
+    assert any("as_of_acquisition_ms" in p for p in ExactExpiryPanelRead.validate_params(params))
+    params["as_of_acquisition_ms"] = 0
+    assert not any("as_of_acquisition_ms" in p
+                   for p in ExactExpiryPanelRead.validate_params(params))

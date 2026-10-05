@@ -3629,6 +3629,9 @@ def test_the_perticker_documents_equal_their_generator(child_root):
     assert spec == pooled.report_spec_document(shipped, variant)
     assert variant.folds_file is None and variant.fold_document == pooled.FOLDS_FILE
     assert shipped["data"]["as_of_acquisition_ms"] == PER_TICKER_VINTAGE
+    # Review round 1 (M1): the manifest's notes name its own file, never the pooled one.
+    assert f"configs/{variant.workflow_file} " in manifest["notes"]
+    assert pooled.WORKFLOW_FILE not in manifest["notes"]
 
 
 def test_the_perticker_zoo_is_the_pooled_zoo_fitted_once_per_ticker(child_root):
@@ -3638,12 +3641,22 @@ def test_the_perticker_zoo_is_the_pooled_zoo_fitted_once_per_ticker(child_root):
     # Same universe, data, folds (the pooled pin), cells, loss, selection and reference.
     data = {k: v for k, v in doc["data"].items() if k not in ("notes", "as_of_acquisition_ms")}
     assert data == {k: v for k, v in pooled_doc["data"].items() if k != "notes"}
-    study = {k: v for k, v in doc["study"].items() if k != "output"}
+    study = {k: v for k, v in doc["study"].items() if k not in ("output", "min_task_cal_rows")}
     assert study == {k: v for k, v in pooled_doc["study"].items() if k != "output"}
     assert doc["study"]["output"] == "pipeline_runs/perticker-zoo-417/study/unused"
+    # Review round 1 (C1): every candidate early-stops on its ticker's own calibration rows,
+    # so a ticker waits while that band is empty. Measured on the pooled panel: PBR's warm-up
+    # band is empty, so development loses PBR (375 -> 374); evaluation keeps 393 (QXO and UMC
+    # wait in one scored fold each).
+    assert doc["study"]["min_task_cal_rows"] == 1
     e, pe = doc["experiment"], pooled_doc["experiment"]
-    assert {k: v for k, v in e.items() if k not in ("candidates", "output", "notes")} == {
-        k: v for k, v in pe.items() if k not in ("candidates", "output", "notes")}
+    skip = ("candidates", "output", "notes", "expected_cells")
+    assert {k: v for k, v in e.items() if k not in skip} == {
+        k: v for k, v in pe.items() if k not in skip}
+    cells, pooled_cells = e["expected_cells"], pe["expected_cells"]
+    assert cells["evaluation"] == pooled_cells["evaluation"] and len(cells["evaluation"]) == 393
+    assert cells["development"] == {t: h for t, h in pooled_cells["development"].items()
+                                    if t != "PBR"}
     assert e["output"] == "pipeline_runs/perticker-zoo-417/study"
     heads = {doc["study"]["features"].index(f) for f in e["task_features"].values()}
     assert list(e["candidates"]) == list(pe["candidates"])
@@ -3676,7 +3689,7 @@ def test_the_perticker_document_constructs_its_study_with_the_pooled_fold_table(
     assert not any(s.get("pooled") for s in doc["experiment"]["candidates"].values())
 
 
-def test_the_perticker_workflow_runs_the_tickers_in_eight_workers(child_root):
+def test_the_perticker_workflow_leaves_the_worker_width_to_the_machine(child_root):
     import os
 
     from dskit.pipeline import workflow as wf
@@ -3686,8 +3699,10 @@ def test_the_perticker_workflow_runs_the_tickers_in_eight_workers(child_root):
     manifest = json.loads((configs/pooled.PER_TICKER.workflow_file).read_text())
     pooled_manifest = json.loads((configs/pooled.WORKFLOW_FILE).read_text())
     flow = wf.validate_manifest(json.loads(json.dumps(manifest)), str(configs))
-    assert manifest["args"]["run_env"] == {**pooled_manifest["args"]["run_env"],
-                                           ChronologicalCDFStudy.GROUP_WORKERS_ENV: "8"}
+    # Review round 1 (M4): the runner's ledger records run_env, so a width there would rerun
+    # the steps when retuned; the width is set where the run is launched (ADR-0093).
+    assert manifest["args"]["run_env"] == pooled_manifest["args"]["run_env"]
+    assert ChronologicalCDFStudy.GROUP_WORKERS_ENV not in json.dumps(manifest)
     assert manifest["args"]["zoo"] == pooled_manifest["args"]["zoo"]
     assert manifest["args"]["evaluate"] == pooled_manifest["args"]["evaluate"]
     output = os.path.normpath(doc["experiment"]["output"])

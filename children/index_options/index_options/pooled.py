@@ -30,13 +30,15 @@ from pathlib import Path
 
 from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
 
+from .cdf_study import PANEL_VINTAGE
+
 __all__ = ["NAME", "STUDY_FILE", "FOLDS_FILE", "WORKFLOW_FILE", "REPORT_SPEC_FILE",
            "TEMPLATE_FILE", "TEMPLATE_FOLDS_FILE", "WORKFLOW_SOURCE", "UNIVERSES",
            "WINDOWS_OVERLAY", "ZOO", "ZooVariant", "PerTickerZoo", "POOLED", "PER_TICKER",
            "zoo_document", "folds_document", "workflow_document", "report_spec_document",
            "measured", "write"]
-#: The per-ticker workflow whose stage lists, CLI flags and run environment the pooled
-#: manifest reuses, so step 7 runs exactly ``args.evaluate.stages``.
+#: The single-lane workflow (one ticker per lane) whose stage lists, CLI flags and run
+#: environment a zoo manifest reuses, so step 7 runs exactly ``args.evaluate.stages``.
 WORKFLOW_SOURCE = "workflow.json"
 #: The report table's row cap: the per-ticker rollup holds about 4,400 rows.
 _REPORT_MAX_ROWS = 5000
@@ -110,8 +112,6 @@ class ZooVariant:
     kind = "Pooled"
     #: Overrides of :data:`ZOO`'s ``torch`` and ``boosted`` blocks.
     torch, boosted = {}, {}
-    #: Environment the workflow manifest adds to the per-ticker workflow's ``run_env``.
-    run_env = {}
 
     @property
     def study_file(self):
@@ -139,7 +139,7 @@ class ZooVariant:
         return f"templates/report-spec-{self.name}.json"
 
     def spec(self, cls, params):
-        """Return one candidate's model spec: pooled, fitted once per split.
+        """Return one candidate's model spec.
 
         Parameters
         ----------
@@ -151,20 +151,60 @@ class ZooVariant:
         Returns
         -------
         dict
-            ``class``, ``calibrate`` (False), ``pooled`` (True) and ``params``.
+            ``class``, ``calibrate`` (False), :meth:`sharing`'s keys and ``params``.
         """
-        return {"class": _CLASS+cls, "calibrate": False, "pooled": True, "params": params}
+        return {"class": _CLASS+cls, "calibrate": False, **self.sharing(), "params": params}
+
+    def sharing(self):
+        """Return the spec keys that say how a fit spans tickers (dict): pooled, once a split."""
+        return {"pooled": True}
 
     def heads(self, heads):
-        """Return the task-routing params every candidate carries (dict): the ticker heads."""
+        """Return the task-routing params every candidate carries.
+
+        Parameters
+        ----------
+        heads : list of int
+            The ``is_<T>`` positions in the study's features.
+
+        Returns
+        -------
+        dict
+            ``head_features``: one head per ticker.
+        """
         return {"head_features": heads}
 
+    def study(self):
+        """Return the keys the study block gains (dict): none."""
+        return {}
+
     def data(self, values):
-        """Return the keys the data block gains from the measured ``values`` (dict): none."""
+        """Return the keys the data block gains from the measured values.
+
+        Parameters
+        ----------
+        values : dict
+            The measured inputs :func:`zoo_document` takes.
+
+        Returns
+        -------
+        dict
+            None for the pooled zoo.
+        """
         return {}
 
     def scope(self, count):
-        """Return the data notes' opening phrase for ``count`` tickers (str)."""
+        """Return the data notes' opening phrase.
+
+        Parameters
+        ----------
+        count : int
+            The tickers the study reads.
+
+        Returns
+        -------
+        str
+        """
         return f"{count} stocks pooled in one study"
 
     def experiment_notes(self):
@@ -191,12 +231,14 @@ class PerTickerZoo(ZooVariant):
     the ``is_<T>`` one-hots stay in the study's features only for the task mapping. From the
     per-ticker benchmark: torch ``batch_size`` 512 (4096 would make an epoch one step on
     ~1,000 rows); every kind on CPU with one LightGBM thread, the tickers fitted by
-    ``DSKIT_GROUP_WORKERS`` spawned processes; LightGBM ``min_data_in_leaf`` 20 (the pooled
-    100 leaves a 55-row ticker no splittable feature; 20 still splits at the 40-row
-    admission floor). The fold table is the pooled study's (same pin), so this variant has no
-    folds document. The data block pins the observation reads' vintage, measured at
-    generation, so a stage that rebuilds the panel after a scheduled acquisition reads what
-    the first stage read.
+    ``DSKIT_GROUP_WORKERS`` spawned processes (the machine's width, set where the run is
+    launched, never in a document); LightGBM ``min_data_in_leaf`` 20 (the pooled 100 leaves
+    a 55-row ticker no splittable feature; 20 still splits at the 40-row admission floor).
+    Every candidate early-stops on its ticker's own calibration rows, so a ticker also waits
+    while its calibration band is empty (``min_task_cal_rows`` 1). The fold table is the
+    pooled study's (same pin), so this variant has no folds document. The data block pins
+    the observation reads' vintage, measured at generation, so a stage that rebuilds the
+    panel after a scheduled acquisition reads what the first stage read.
 
     Examples
     --------
@@ -210,7 +252,6 @@ class PerTickerZoo(ZooVariant):
     kind = "Per-ticker"
     torch = {"batch_size": 512, "device": "cpu"}
     boosted = {"num_threads": 1, "device": "cpu", "min_data_in_leaf": 20}
-    run_env = {ChronologicalCDFStudy.GROUP_WORKERS_ENV: "8"}
 
     @property
     def folds_file(self):
@@ -222,20 +263,33 @@ class PerTickerZoo(ZooVariant):
         """Return the pooled study's folds document, whose table this study pins (str)."""
         return ZooVariant().folds_file
 
-    def spec(self, cls, params):
-        """Return one candidate's model spec: unpooled, fitted per ticker and split."""
-        return {"class": _CLASS+cls, "calibrate": False, "params": params}
-
-    def heads(self, heads):
-        """Return no task-routing params: a per-ticker model has one head."""
+    def sharing(self):
+        """Return no sharing keys (dict): unpooled, fitted per ticker and split."""
         return {}
 
+    def heads(self, heads):
+        """Return no task-routing params (dict): a per-ticker model has one head."""
+        return {}
+
+    def study(self):
+        """Return the calibration floor (dict): a ticker waits while its band is empty."""
+        return {"min_task_cal_rows": 1}
+
     def data(self, values):
-        """Return the measured observation vintage the data block pins."""
-        return {"as_of_acquisition_ms": values["as_of_acquisition_ms"]}
+        """Return the measured observation vintage the data block pins.
+
+        Raises
+        ------
+        ValueError
+            When the measured values carry no vintage.
+        """
+        if PANEL_VINTAGE not in values:
+            raise ValueError(f"the per-ticker study pins the observation reads: measure "
+                             f"{PANEL_VINTAGE} and pass it with the other measured values")
+        return {PANEL_VINTAGE: values[PANEL_VINTAGE]}
 
     def scope(self, count):
-        """Return the data notes' opening phrase: one model per ticker."""
+        """Return the data notes' opening phrase: one model per ticker (str)."""
         return f"{count} stocks in one study, fitted one ticker at a time"
 
     def experiment_notes(self):
@@ -246,10 +300,14 @@ class PerTickerZoo(ZooVariant):
             "metric weighted_crps and reference) fitted once per ticker on that ticker's own "
             "fit and calibration bands, with no heads and no is_<T> input. Torch batch_size "
             "512, every kind on CPU, BoostedTorchCDF num_threads 1 and min_data_in_leaf 20 "
-            "(the pooled 100 leaves a short ticker no split); the tickers are fitted by "
-            "DSKIT_GROUP_WORKERS spawned processes, which changes no result. One search "
-            "partition per kind and group; selection is global, one winner per partition "
-            "over every ticker, as in the pooled study. Generated by index_options.pooled.")
+            "(the pooled 100 leaves a short ticker no split); a ticker also waits while its "
+            "calibration band is empty (min_task_cal_rows 1: every candidate early-stops on "
+            "it). Launch with "
+            f"{ChronologicalCDFStudy.GROUP_WORKERS_ENV}=8 (the machine's width, outside "
+            "every document) to fit the tickers in spawned processes, which changes no "
+            "result. One search partition per kind and group; selection is global, one "
+            "winner per partition over every ticker, as in the pooled study. Generated by "
+            "index_options.pooled.")
 
 
 #: The variants this module generates.
@@ -460,7 +518,8 @@ def zoo_document(configs_dir, measured_values, variant=POOLED):
     study = copy.deepcopy(template["study"])
     study.update({
         "features": features, "output": f"pipeline_runs/{variant.name}/study/unused",
-        "tail_weight": ZOO["tail_weight"], "min_task_fit_rows": ZOO["min_task_fit_rows"]})
+        "tail_weight": ZOO["tail_weight"], "min_task_fit_rows": ZOO["min_task_fit_rows"],
+        **variant.study()})
     study["fold_table"].update(copy.deepcopy(measured_values["fold_table"]))
     study["fold_table"]["notes"] = (
         f"From {variant.fold_document}: one expanding warm-up fold before the options window, nine "
@@ -468,18 +527,18 @@ def zoo_document(configs_dir, measured_values, variant=POOLED):
         f"from {measured_values['fold_table']['holdout_start']} is never evaluated. cal_n = "
         "40 dates, the inner slice of each training window used only for patience early "
         "stopping.")
-    env = "".join(f", {k}={v}" for k, v in variant.run_env.items())
     return {"notes": (
                 f"{variant.kind} ADR-0236 model zoo over {len(tickers)} stocks at DTE 31 (refused: "
                 f"{', '.join(measured_values['refused']) or 'none'}). A ticker enters a fold "
-                f"once its fit band holds {ZOO['min_task_fit_rows']} rows (owner option B): "
+                f"once its fit band holds {ZOO['min_task_fit_rows']} rows"
+                f"{_calibration_floor(study)} (owner option B): "
                 "until then its calibration and scored rows are dropped for every model and "
                 "counted in each stage's admission.json and the report's. Run from "
                 f"children/index_options: python -m index_options.cdf_study configs/{variant.study_file} "
                 "--stage search --partition <each of experiment.search_partitions>, then "
                 "--stage select, --stage evaluate --partition development, --stage evaluate "
                 "--partition later, --stage report (env CUBLAS_WORKSPACE_CONFIG=:4096:8, "
-                f"OMP/OPENBLAS threads 1{env}). The first stage builds the panel into "
+                "OMP/OPENBLAS threads 1). The first stage builds the panel into "
                 "experiment.output/panel-cache and every later stage reuses it while the data "
                 "config, source snapshots, holdout and code are unchanged. Folds: "
                 f"configs/{variant.fold_document}. Generated by "
@@ -552,8 +611,7 @@ def workflow_document(configs_dir, variant=POOLED):
     configs_dir : str or Path
         The child's ``configs`` directory.
     variant : ZooVariant, optional
-        The study the manifest runs; :data:`POOLED` by default. Its ``run_env`` is added
-        to the per-ticker workflow's.
+        The study the manifest runs; :data:`POOLED` by default.
 
     Returns
     -------
@@ -568,14 +626,14 @@ def workflow_document(configs_dir, variant=POOLED):
         "notes": (
             f"{variant.kind} zoo run ({variant.study_file}), generated by index_options.pooled; never "
             "hand-edit. Run from children/index_options: python -m dskit.pipeline workflow "
-            f"configs/{WORKFLOW_FILE} (--only zoo, step7 or report to run one step). The "
+            f"configs/{variant.workflow_file} (--only zoo, step7 or report to run one step). The "
             "study writes under experiment.output, which is the layout's {W}/study. First "
             "build the fold table the study pins (study.fold_table: a run output, not in "
             f"git) with python -m dskit.pipeline run configs/{variant.fold_document}; its sha256 must "
             "equal the pin."),
         "args": {
             "work_dir": f"./pipeline_runs/{variant.name}",
-            "run_env": {**copy.deepcopy(source["run_env"]), **variant.run_env},
+            "run_env": copy.deepcopy(source["run_env"]),
             "zoo": {"stages": {"sequence": [{"stage": "panel"},
                                             *copy.deepcopy(source["hpo"]["run"]["sequence"])]},
                     "notes": "The panel stage builds the panel cache in a process that fits "
@@ -635,6 +693,12 @@ _REPORT_INPUT = {"selection": "selection", "development": "development", "scored
                  "report": "evaluation"}
 
 
+def _calibration_floor(study):
+    """Return the admission statement's calibration clause, empty when no floor is declared."""
+    floor = study.get("min_task_cal_rows")
+    return f" and its calibration band {floor}" if floor else ""
+
+
 def report_spec_document(document, variant=POOLED):
     """Return a zoo's report spec template ``dskit.pipeline.workflow_report`` reads.
 
@@ -677,8 +741,8 @@ def report_spec_document(document, variant=POOLED):
                 f"from {c['fold_table']['holdout_start']} is never evaluated.")},
             {"title": "Admission.", "text": (
                 f"A ticker enters a fold once its fit band holds {c['min_task_fit_rows']} "
-                "rows; until then its calibration and scored rows are dropped for every model "
-                "and listed in the admission tables.")},
+                f"rows{_calibration_floor(c)}; until then its calibration and scored rows are "
+                "dropped for every model and listed in the admission tables.")},
             {"title": "Intervals.", "text": (
                 f"Skill is 100 x (1 - model / {reference}) on {metric}. The paired date-block "
                 "bootstrap intervals pool every scored ticker with equal cell weight; the "
@@ -737,12 +801,12 @@ def measured(configs_dir, document):
     -------
     dict
         ``refused`` (universe tickers the document does not read, in universe order),
-        ``fold_table`` and ``expected_cells``, and ``as_of_acquisition_ms`` when the data
-        block pins one, as :func:`zoo_document` takes them.
+        ``fold_table`` and ``expected_cells``, and :data:`~index_options.cdf_study.PANEL_VINTAGE`
+        when the data block pins one, as :func:`zoo_document` takes them.
     """
     table, data = document["study"]["fold_table"], document["data"]
     every = [t for u in UNIVERSES for t in _load(configs_dir, u["file"])[u["key"]]]
-    vintage = {k: data[k] for k in ("as_of_acquisition_ms",) if k in data}
+    vintage = {PANEL_VINTAGE: data[PANEL_VINTAGE]} if PANEL_VINTAGE in data else {}
     return {"refused": [t for t in every if t not in data["symbols"]],
             "fold_table": {k: table[k] for k in ("path", "sha256", "holdout_start")},
             "expected_cells": document["experiment"]["expected_cells"], **vintage}

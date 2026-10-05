@@ -2712,10 +2712,9 @@ class ExactExpiryPanelRead(Node):
         for name in ("surface", "lifecycle", "chain_features"):
             if params.get(name) is not None:
                 problems += entry_problems(name, params[name])
-        if "exact_dte" in params:
-            check_int_param(problems, "exact_dte", params["exact_dte"], ge=1)
-        # the one owners of the convention and reader-selection rules
-        from .cdf_study import panel_convention_problems, panel_reader_problems
+        # the one owners of the integer-knob, convention and reader-selection rules
+        from .cdf_study import panel_convention_problems, panel_int_problems, panel_reader_problems
+        problems += panel_int_problems(params)
         problems += panel_convention_problems(params)
         problems += panel_reader_problems(params)
         return problems

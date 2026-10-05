@@ -4603,7 +4603,10 @@ class _SplitPlan(ABC):
     once a study declares ``min_task_fit_rows`` (``admits``): a group WAITS in
     a split while its fit band holds fewer rows, and sits the split out: its
     fit, calibration and evaluation rows are dropped for every model alike
-    (a head fitted on a few rows would never be scored). An admitted group
+    (a head fitted on a few rows would never be scored). ``min_task_cal_rows``
+    (optional beside it, ADR-0236 amendment 3) also makes a group wait while
+    its calibration band holds fewer rows: a per-group fit that early-stops on
+    its own calibration rows cannot fit without them. An admitted group
     with no evaluation row has nothing to score in that split. Undeclared,
     the study keeps its old rule: every group needs rows in every band of
     every split.
@@ -4619,6 +4622,12 @@ class _SplitPlan(ABC):
         self.min_task_fit_rows = config.get("min_task_fit_rows", _DEFAULT_MIN_TASK_FIT_ROWS)
         if type(self.min_task_fit_rows) is not int or self.min_task_fit_rows < 1:
             raise ValueError("min_task_fit_rows must be an integer >= 1")
+        self.min_task_cal_rows = config.get("min_task_cal_rows", 0)
+        if "min_task_cal_rows" in config and (
+                not self.admits or type(self.min_task_cal_rows) is not int
+                or self.min_task_cal_rows < 1):
+            raise ValueError("min_task_cal_rows must be an integer >= 1, declared beside "
+                             "min_task_fit_rows")
 
     @abstractmethod
     def ids(self):
@@ -4659,8 +4668,9 @@ class _SplitPlan(ABC):
         return counts.reindex(groups).fillna(0).astype(int)
 
     def waiting(self, counts):
-        """Return the groups of :meth:`band_counts` whose fit band is below the minimum."""
-        return set(counts.index[counts["fit"] < self.min_task_fit_rows])
+        """Return the groups of :meth:`band_counts` whose fit or calibration band is below its minimum."""
+        return set(counts.index[(counts["fit"] < self.min_task_fit_rows)
+                                | (counts["calibration"] < self.min_task_cal_rows)])
 
     def evaluated(self, counts):
         """Return the groups a split scores: admitted, with an evaluation row (the one rule)."""
@@ -4680,7 +4690,8 @@ class _SplitPlan(ABC):
         -------
         list of dict
             Per group of the frame, in group order: ``reason`` (``waiting``: fit
-            band below ``min_task_fit_rows``, every band's rows dropped, none
+            band below ``min_task_fit_rows`` or calibration band below
+            ``min_task_cal_rows``, every band's rows dropped, none
             when it has no row in the split; ``no_evaluation_rows``: admitted,
             nothing to score), the three band counts and the rows dropped from
             each.
@@ -4896,7 +4907,8 @@ class ChronologicalCDFStudy:
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
             "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
-            "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows", "notes"}
+            "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows",
+            "min_task_cal_rows", "notes"}
     #: The per-row ``crps + tail_weight * tail_crps`` column, scored (and the
     #: development selection and paired intervals extended to it) only when
     #: ``tail_weight`` is declared (ADR-0236).
@@ -4912,7 +4924,8 @@ class ChronologicalCDFStudy:
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
                     "frozen_variants", "promotion_guard", "decision_acceptance",
-                    "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows"}
+                    "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows",
+                    "min_task_cal_rows"}
         folds = "fold_table" in config
         year_keys = {"years", "development_end"}
         missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
@@ -4934,7 +4947,7 @@ class ChronologicalCDFStudy:
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
-                    or type(spec.get("pooled", False)) is not bool
+                    or type(self._pooled(spec)) is not bool
                     or ("equivalence" in spec and (not isinstance(spec["equivalence"], str)
                                                    or not spec["equivalence"]))):
                 raise ValueError("invalid model specification keys or pooled flag")
@@ -5000,6 +5013,11 @@ class ChronologicalCDFStudy:
         module, cls = spec["class"].split(":")
         return getattr(importlib.import_module(module), cls)
 
+    @staticmethod
+    def _pooled(spec):
+        """Say whether a model spec fits once over every group (``pooled``, default False)."""
+        return spec.get("pooled", False)
+
     @classmethod
     def _consumes_calibration(cls, spec):
         """Say whether a model's fit reads its calibration rows' labels (a monitor or a map)."""
@@ -5014,14 +5032,18 @@ class ChronologicalCDFStudy:
         pooled fit monitors on the pooled calibration slice, never one group's.
         """
         return spec["calibrate"] or not (
-            spec.get("pooled", False)
+            self._pooled(spec)
             or getattr(self._estimator(spec), "ignores_calibration_rows", False))
 
     def _admission(self, frame, calendar):
         """Return each split's band counts and write the run's admission ledger."""
         counts = {split: self.plan.band_counts(frame, split, calendar) for split in self.plan.ids()}
         rows = [row for split, n in counts.items() for row in self.plan.admission(n, split)]
-        ledger = {"min_task_fit_rows": self.plan.min_task_fit_rows, "split": self.plan.column,
+        # The calibration floor is recorded only when declared, so older ledgers do not move.
+        floor = self.plan.min_task_cal_rows
+        ledger = {"min_task_fit_rows": self.plan.min_task_fit_rows,
+                  **({"min_task_cal_rows": floor} if floor else {}),
+                  "split": self.plan.column,
                   "not_evaluated": rows,
                   "dropped_rows": {band: sum(r[f"dropped_{band}_rows"] for r in rows)
                                    for band in self.plan.BANDS}}
@@ -5559,9 +5581,11 @@ class ChronologicalCDFStudy:
             For missing/empty bands or invalid labels/reference scales; with a fold
             table, a row dated or settling on or after ``holdout_start``; a malformed
             :attr:`GROUP_WORKERS_ENV`; a width above 1 with a pooled model (a pooled
-            fit spans every group), refused before any output is written. A group
-            worker's exception is re-raised as that group raised it, with a note
-            naming the group.
+            fit spans every group), refused before any output is written; an
+            evaluated group's empty calibration band that a model reads, refused
+            before any fit. A group's exception is re-raised as the group raised it,
+            with a note naming the group (every group in flight, for a worker that
+            died).
         FileExistsError
             If the output directory exists; no research evidence is overwritten.
         """
@@ -5570,7 +5594,7 @@ class ChronologicalCDFStudy:
 
         c = self.config
         workers = declared_width(None, self.GROUP_WORKERS_ENV)
-        pooled = sorted(name for name, spec in c["models"].items() if spec.get("pooled", False))
+        pooled = sorted(name for name, spec in c["models"].items() if self._pooled(spec))
         if workers > 1 and pooled:
             raise ValueError(f"{self.GROUP_WORKERS_ENV}={workers} fits each group in its own "
                              f"process, but {pooled} fit once over every group: run them with "
@@ -5610,6 +5634,7 @@ class ChronologicalCDFStudy:
         shared = _GroupRun(calendar, admitted,
                            {split: self.plan.evaluated(n) for split, n in admitted.items()},
                            diagnostic, frame if pooled else None)
+        self._refuse_unread_calibration(shared)
         results, counts, equivalence = [], [], {}
         for parts, group_counts, records in self._group_outputs(
                 frame, shared, workers, label or output.name):
@@ -5632,44 +5657,40 @@ class ChronologicalCDFStudy:
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return scores
 
+    def _refuse_unread_calibration(self, shared):
+        """Refuse, before any fit, an evaluated group whose empty calibration band a model reads.
+
+        An admitted group with no calibration row is scored, unless ``min_task_cal_rows``
+        makes it wait; a model that reads that band (see :meth:`_reads_group_calibration`)
+        cannot fit there, so the run stops here rather than hours into the fits.
+        """
+        if not self.plan.admits:
+            return   # every band of every split must hold rows: _fit_group refuses
+        readers = [n for n, s in self.config["models"].items() if self._reads_group_calibration(s)]
+        empty = sorted((group, split) for split, n in shared.admitted.items()
+                       for group in n.index[n["calibration"] == 0]
+                       if group in shared.evaluated[split])
+        if readers and empty:
+            group, split = empty[0]
+            raise ValueError(f"empty calibration band: {group} {split}, which {readers} read "
+                             f"({len(empty)} group-split(s) in all; min_task_cal_rows makes "
+                             "them wait)")
+
     def _group_outputs(self, frame, shared, workers, label):
         """Yield each fitted group's ``_fit_group`` output in group order, printing progress.
 
         A group no split scores is skipped (it has nothing to fit) unless the study keeps
         the every-band rule, whose refusal it must still raise.
         """
+        import concurrent.futures as futures
+        import itertools
+
         c = self.config
         scored = set().union(*shared.evaluated.values())
         names = {g for g in frame[c["group"]].unique() if g in scored or not self.plan.admits}
-        groups = ((g, rows) for g, rows in frame.groupby(c["group"]) if g in names)
-        if workers > 1:
-            yield from self._spawned_outputs(groups, shared, workers, label, len(names))
-            return
-        for done, (group, rows) in enumerate(groups, 1):
-            try:
-                output = self._fit_group(group, rows, shared)
-            except Exception as err:
-                err.add_note(f"raised while fitting group {group!r}")
-                raise
-            print(self._progress(label, group, output[0], done, len(names)), flush=True)
-            yield output
-
-    def _spawned_outputs(self, groups, shared, workers, label, total):
-        """Fit groups in a spawn pool (never fork: CUDA and OpenMP do not survive it).
-
-        At most twice the width is submitted at once, so only those groups' rows are
-        copied; finished outputs wait until every earlier group's has been yielded.
-        """
-        import concurrent.futures as futures
-        import itertools
-        import multiprocessing
-
-        import torch
-
-        pool = futures.ProcessPoolExecutor(
-            workers, mp_context=multiprocessing.get_context("spawn"),
-            initializer=self._init_group_worker, initargs=(torch.get_num_threads(),))
-        pending, running, ready, emitted, done = enumerate(groups), {}, {}, 0, 0
+        pending = enumerate((g, rows) for g, rows in frame.groupby(c["group"]) if g in names)
+        pool = self._group_pool(workers)
+        running, ready, emitted, done = {}, {}, 0, 0
         try:
             while True:
                 for index, (group, rows) in itertools.islice(pending, 2*workers-len(running)):
@@ -5677,20 +5698,53 @@ class ChronologicalCDFStudy:
                 if not running:
                     return
                 finished, _ = futures.wait(running, return_when=futures.FIRST_COMPLETED)
-                for future in finished:
+                for future in sorted(finished, key=lambda f: running[f][0]):
                     index, group = running.pop(future)
-                    try:
-                        ready[index] = future.result()
-                    except Exception as err:
-                        err.add_note(f"raised while fitting group {group!r} in a group worker")
-                        raise
+                    ready[index] = self._group_result(future, group, running)
                     done += 1
-                    print(self._progress(label, group, ready[index][0], done, total), flush=True)
+                    print(self._progress(label, group, ready[index][0], done, len(names)),
+                          flush=True)
                 while emitted in ready:
                     yield ready.pop(emitted)
                     emitted += 1
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+
+    def _group_pool(self, workers):
+        """Return the executor groups are fitted in: this process, or a spawn pool.
+
+        Spawn, never fork: CUDA and OpenMP do not survive a fork. A worker takes this
+        process's torch intra-op thread count, so its fits equal this process's.
+        """
+        import multiprocessing
+
+        import torch
+
+        if workers == 1:
+            return _InlineExecutor()
+        from concurrent.futures import ProcessPoolExecutor
+        return ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
+                                   initializer=self._init_group_worker,
+                                   initargs=(torch.get_num_threads(),))
+
+    @staticmethod
+    def _group_result(future, group, running):
+        """Return a finished group's output, or re-raise its error noting the group.
+
+        A worker that died (killed, out of memory) breaks every running future, so its
+        note names every group then in flight rather than guessing one.
+        """
+        from concurrent.futures.process import BrokenProcessPool
+
+        try:
+            return future.result()
+        except BrokenProcessPool as err:
+            others = sorted(str(g) for _, g in running.values())
+            err.add_note(f"a group worker died while fitting {[str(group), *others]}")
+            raise
+        except Exception as err:
+            err.add_note(f"raised while fitting group {group!r}")
+            raise
 
     @staticmethod
     def _init_group_worker(threads):
@@ -5758,13 +5812,8 @@ class ChronologicalCDFStudy:
             if not evaluated:
                 continue  # waiting, or nothing to score: in the admission ledger
             fit, cal, val = self.plan.bands(group_frame, split, calendar)
-            if cal.empty:
-                if not self.plan.admits:
-                    raise ValueError(f"empty band: {group} {split}")
-                readers = [n for n, s in c["models"].items() if self._reads_group_calibration(s)]
-                if readers:
-                    raise ValueError(f"empty calibration band: {group} {split}, which "
-                                     f"{readers} read")
+            if cal.empty and not self.plan.admits:
+                raise ValueError(f"empty band: {group} {split}")
             if c.get("wing_metrics"):
                 # Refuse malformed wing intervals before any model is fitted.
                 for band in (fit, cal, val):
@@ -5785,7 +5834,7 @@ class ChronologicalCDFStudy:
             for name, spec in model_items:
                 start = time.monotonic()
                 key = (split, name, json.dumps(spec, sort_keys=True))
-                pooled = spec.get("pooled", False)
+                pooled = self._pooled(spec)
                 new_fit = not (pooled and key in shared.pooled_cache)
                 if new_fit:
                     if pooled:
@@ -5901,6 +5950,30 @@ class ChronologicalCDFStudy:
                 print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
             counts.append(count)
         return parts, counts, equivalence
+
+
+class _InlineExecutor:
+    """Run each submitted call at once, in this process: one group worker, today's loop.
+
+    Its futures are already done when returned, so the group loop treats one worker
+    exactly as it treats a process pool, and a pooled model keeps its shared cache.
+    """
+
+    @staticmethod
+    def submit(fn, *args):
+        """Return a done future holding ``fn(*args)``'s result or exception."""
+        from concurrent.futures import Future
+
+        future = Future()
+        try:
+            future.set_result(fn(*args))
+        except Exception as err:
+            future.set_exception(err)
+        return future
+
+    @staticmethod
+    def shutdown(wait=True, cancel_futures=False):
+        """Do nothing: no process was started."""
 
 
 class _GroupRun:
@@ -6047,7 +6120,7 @@ class CDFHyperparameterStudy:
                 cls = {"normal": "MixtureMLPCDF", "student": "StudentMixtureMLPCDF"}.get(label["family"])
                 if (cls is None or spec["class"] != f"dskit.pipeline.libs.predictive_cdf:{cls}"
                         or label["sharing"] not in ("separate", "pooled", "heads")
-                        or spec.get("pooled", False) != (label["sharing"] != "separate")
+                        or ChronologicalCDFStudy._pooled(spec) != (label["sharing"] != "separate")
                         or p.get("head_features", []) != (head_positions if label["sharing"] == "heads" else [])
                         or p.get("seeds") != [e["screen_seed"]]):
                     raise ValueError("candidate labels, class, heads or seed disagree")
@@ -6059,7 +6132,8 @@ class CDFHyperparameterStudy:
             labels = {}
             for name, spec in inventory_specs.items():
                 if spec.get("equivalence"):
-                    labels.setdefault(spec["equivalence"], []).append((name, spec.get("pooled", False)))
+                    labels.setdefault(spec["equivalence"], []).append(
+                        (name, ChronologicalCDFStudy._pooled(spec)))
             if any(len(members) < 2 or len({pooled for _, pooled in members}) != 1
                    for members in labels.values()):
                 raise ValueError("equivalence group needs pooled-compatible peers")

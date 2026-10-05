@@ -4602,3 +4602,88 @@ def test_a_failing_group_fails_the_run_naming_the_group(tmp_path, monkeypatch, w
         ChronologicalCDFStudy(config).run(frame)
     assert any("group 'B'" in note for note in raised.value.__notes__)
     assert not (tmp_path/'fail'/'scores.parquet').exists()
+
+
+def _calibration_hole(tmp_path):
+    """B misses 01-28..02-02: fold 3 holds no B calibration row (fold 2 no B evaluation row)."""
+    missing = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01', '2020-02-02'}
+    rows = _late_rows(start='2020-01-01', missing=missing)
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    config = _fold_config(tmp_path, spec)
+    config['features'] = ['h', 'scale', 't', 'is_B']
+    config['models']['reference']['calibrate'] = False
+    config['models']['scaled'] = {     # an unpooled fit that reads its group's calibration rows
+        'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
+        'params': {'alpha': 1., 'floor': .01, 'knots': 11}, 'calibrate': False}
+    config['min_task_fit_rows'] = 4
+    return config, pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+
+
+def test_an_unreadable_calibration_band_refuses_before_any_fit(tmp_path):
+    # Review round 1 (C1): the per-ticker zoo's candidates early-stop on their own ticker's
+    # calibration rows; an admitted ticker with none used to refuse only when the loop reached
+    # it, hours into a stage. Group A precedes B, so a loop-time refusal leaves A's curves.
+    config, frame = _calibration_hole(tmp_path)
+    with pytest.raises(ValueError, match=r"empty calibration band: B 3, which \['scaled'\] read "
+                                         r"\(1 group-split\(s\) in all"):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not list((tmp_path/'out').glob('*.npz'))
+    assert not (tmp_path/'out'/'counts.json').exists()
+
+
+def test_min_task_cal_rows_makes_a_group_wait_while_its_calibration_band_is_short(tmp_path):
+    config, frame = _calibration_hole(tmp_path)
+    config['min_task_cal_rows'] = 1
+    scores = ChronologicalCDFStudy(config).run(frame)
+    b = scores[scores.unit == 'B']
+    assert {2, 3}.isdisjoint(b.fold) and len(set(b.fold)) >= 2   # fold 3 waits, others score
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['min_task_cal_rows'] == 1
+    fold3 = next(r for r in ledger['not_evaluated'] if (r['group'], r['fold']) == ('B', 3))
+    assert (fold3['reason'], fold3['calibration_rows'], fold3['dropped_evaluation_rows']) == (
+        'waiting', 0, 5)
+    # Undeclared, the ledger is unchanged: no calibration floor recorded.
+    del config['min_task_cal_rows']
+    config['models'].pop('scaled')
+    config['output'] = str(tmp_path/'plain')
+    ChronologicalCDFStudy(config).run(frame)
+    assert 'min_task_cal_rows' not in json.loads((tmp_path/'plain/admission.json').read_text())
+
+
+@pytest.mark.parametrize('value, declared_fit', [(0, True), (True, True), (1.5, True), ('1', True),
+                                                 (1, False)])
+def test_min_task_cal_rows_is_an_integer_of_at_least_one_beside_the_fit_floor(
+        tmp_path, value, declared_fit):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    config['min_task_cal_rows'] = value
+    if declared_fit:
+        config['min_task_fit_rows'] = 1
+    with pytest.raises(ValueError, match='min_task_cal_rows'):
+        ChronologicalCDFStudy(config)
+
+
+def test_group_workers_keep_at_most_twice_their_width_in_flight(tmp_path, monkeypatch):
+    # Review round 1 (M2): more groups than the window, so the refill path runs, and the
+    # window is the bound on copied group rows.
+    import concurrent.futures
+
+    monkeypatch.delenv(WORKERS, raising=False)
+    groups = ('A', 'B', 'C', 'D', 'E', 'F')
+    config, frame = _worker_study(tmp_path, 'one', groups=groups)
+    ChronologicalCDFStudy(config).run(frame)
+    submitted, peak = [], []
+    real = concurrent.futures.ProcessPoolExecutor.submit
+
+    def counting(pool, fn, *args):
+        future = real(pool, fn, *args)
+        submitted.append(future)
+        peak.append(sum(not f.done() for f in submitted))
+        return future
+
+    monkeypatch.setattr(concurrent.futures.ProcessPoolExecutor, 'submit', counting)
+    monkeypatch.setenv(WORKERS, '2')
+    config['output'] = str(tmp_path/'two')
+    ChronologicalCDFStudy(config).run(frame)
+    assert len(submitted) == len(groups) and max(peak) <= 4
+    assert _written(tmp_path/'one') == _written(tmp_path/'two')

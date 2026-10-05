@@ -25,9 +25,10 @@ from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
-           "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PRICE_FIELDS", "PriceCalendarCDFPanel",
-           "READERS",
-           "panel_class", "panel_convention_problems", "panel_reader_problems",
+           "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PANEL_VINTAGE", "PRICE_FIELDS",
+           "PriceCalendarCDFPanel", "READERS",
+           "panel_class", "panel_convention_problems", "panel_int_problems",
+           "panel_reader_problems",
            "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
@@ -2226,6 +2227,34 @@ class CorporateActionRule:
         return cumulative[np.asarray(end_index)+1]-cumulative[np.asarray(start_index)] > 0
 
 
+#: The panel key naming its observation reads' vintage (ADR-0236 amendment 3): it is
+#: ``ObservationRows``' own read-vintage param (ADR-0154), handed to every read as is.
+PANEL_VINTAGE = "as_of_acquisition_ms"
+#: The panel's optional integer knobs and their floors.
+_PANEL_INTS = (("exact_dte", 1), (PANEL_VINTAGE, 0))
+
+
+def panel_int_problems(config):
+    """List what is wrong with a panel config's optional integer knobs.
+
+    Parameters
+    ----------
+    config : dict
+        A panel config. ``exact_dte`` (ADR-0230) is an int >= 1 and ``as_of_acquisition_ms``
+        (:data:`PANEL_VINTAGE`) an int >= 0, each when present.
+
+    Returns
+    -------
+    list of str
+        Every problem; empty when the knobs are usable or absent.
+    """
+    problems = []
+    for name, low in _PANEL_INTS:
+        if name in config:
+            check_int_param(problems, name, config[name], ge=low)
+    return problems
+
+
 def panel_reader_problems(config):
     """List what is wrong with the reader-selection keys of a panel config (ADR-0230).
 
@@ -2293,13 +2322,7 @@ class ExactExpiryCDFPanel:
     def __init__(self, config, holdout_start=None):
         if holdout_start is not None and date_problem(holdout_start):
             raise ValueError("holdout_start must be an ISO date or None")
-        for name, low in (("exact_dte", 1), ("as_of_acquisition_ms", 0)):
-            problems = []
-            if name in config:
-                check_int_param(problems, name, config[name], ge=low)
-            if problems:
-                raise ValueError(f"{name} must be an integer >= {low} or absent: {problems}")
-        problems = type(self).reader_problems(config)
+        problems = panel_int_problems(config) + type(self).reader_problems(config)
         if problems:
             raise ValueError("; ".join(problems))
         self.config, self.holdout_start = config, holdout_start
@@ -2638,7 +2661,7 @@ class ExactExpiryCDFPanel:
         that rebuilds the panel after a scheduled acquisition reads what the first stage read
         (ADR-0236 amendment 3).
         """
-        return {k: self.config[k] for k in ("as_of_acquisition_ms",) if k in self.config}
+        return {PANEL_VINTAGE: self.config[PANEL_VINTAGE]} if PANEL_VINTAGE in self.config else {}
 
     def _join_fred_features(self, frame, specifications):
         """Join pinned market observations at their conservative availability dates."""
