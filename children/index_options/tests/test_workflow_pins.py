@@ -266,3 +266,56 @@ def test_transport_probabilities_agree_with_the_chain_proxy_levels():
     """The option-proxy transport model and the chain proxy must use one probability grid."""
     transport = ARGS["references"]["models"]["option_proxy_transport"]["params"]["probabilities"]
     assert transport == ARGS["chain_proxy"]["proxy_probabilities"]
+
+
+# -- Performance pilots: configs/pilot-*.json stacked on pilot-base.json ----------------------
+
+PILOT_BASE = "pilot-base.json"
+#: Each pilot overlay and the step-6 grid size its notes promise (None: the manifest's own grid).
+PILOT_GRIDS = {"pilot-crps-student.json": 3, "pilot-regularize.json": 8,
+               "pilot-window-250.json": None, "pilot-window-750.json": None,
+               "pilot-horizon-14.json": None, "pilot-horizon-28.json": None}
+#: The references pilot-base adds beside the manifest's two, restated.
+PILOT_REFERENCES = {"horizon_empirical", "option_proxy_transport", "standardized_empirical",
+                    "regime_forest_coarse", "regime_forest_fine", "small_input_mlp"}
+
+
+def _pilot(*names):
+    from dskit.pipeline.workflow import load_overlays
+
+    paths = [str(CHILD / "configs" / name) for name in (PILOT_BASE, *names)]
+    return _flow("QQQ", **load_overlays(paths))
+
+
+@pytest.mark.parametrize("pilot", [None, *PILOT_GRIDS])
+def test_pilot_references_resolve_on_the_qqq_lane(pilot):
+    """Every pilot keeps the base's six references, each name resolved to a lane position."""
+    flow = _pilot(*([pilot] if pilot else []))
+    refs = flow.values("step4", strict=False, only={"references"})["references"]
+    order = _derived("QQQ")
+    assert set(refs["models"]) == PILOT_REFERENCES == set(refs["comparison"])
+    standardized = refs["models"]["standardized_empirical"]["params"]
+    # The FHS trick: the divisor is the lane's own task flag, 1 on every row of a QQQ lane.
+    assert order[standardized["reference_index"]] == "is_QQQ"
+    inputs = [refs["models"][m]["params"]["feature_indices"]
+              for m in ("regime_forest_coarse", "regime_forest_fine", "small_input_mlp")]
+    assert inputs[0] == inputs[1] == inputs[2]
+    assert [order[i] for i in inputs[0]] == ["rv_5", "rv_22", "rv_66", "down_rv_22", "own_iv",
+                                             "market_vix9d", "market_vix3m"]
+
+
+@pytest.mark.parametrize("pilot, size", sorted(PILOT_GRIDS.items()))
+def test_pilot_step6_grid_has_the_promised_size_and_one_name_per_point(pilot, size):
+    """A name pattern missing an axis would collapse grid points onto one name silently."""
+    hpo = _pilot(pilot).args["hpo"]
+    points = 1
+    for values in hpo["axes"].values():
+        points *= len(values)
+    assert points == (size or 9)
+    assert set(hpo["paths"]) == set(hpo["axes"])
+    assert all("{" + axis + "}" in hpo["name"]["pattern"] for axis in hpo["axes"])
+
+
+def test_pilots_write_to_distinct_work_dirs():
+    dirs = [_pilot().args["work_dir"]] + [_pilot(p).args["work_dir"] for p in PILOT_GRIDS]
+    assert len(set(dirs)) == len(dirs) and ARGS["work_dir"] not in dirs

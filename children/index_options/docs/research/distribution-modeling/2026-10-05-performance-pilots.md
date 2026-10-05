@@ -8,15 +8,15 @@ What could lift predictive-CDF skill over the empirical baseline (model architec
 
 - **Best offline result:** the GPD-tailed transport, +1.83% CRPS skill [1.04, 2.79]. This is on the SPY/QQQ/IWM panel for 2019–25, which has been viewed many times.
 - **Learned heads lose on their own.** MLP, GRU, quantile forest (QRF), NGBoost, CatBoost, flows and set models all score below the baseline. The 7-day workflow scored −2.95% for QQQ and −1.71% for IWM.
-- **Overfitting is the pattern:** about +9% skill on training rows against −22% on development.
+- **Overfitting is the pattern:** e.g. +8.9% skill on training rows against −22.2% on 2018 validation (QQQ Torch zoo, `docs/memos/2026-10-01-qqq-torch-decision-cdf-zoo.md`).
 - **The realistic ceiling is about 0.5–2% CRPS.** Baruník & Hanuš got about 1.8%, and only from better inputs: the same network with the same inputs gained nothing.
 - **Why the ceiling is low (derived here, Gaussian case):** a vol forecast off by a factor k costs about (k−1)²/4 in CRPS. A 20% vol error costs about 1%.
 
-### A gap in the baseline (new)
+### A gap in the baseline (flagged 2026-09-28, never built)
 
 - `HorizonEmpiricalCDF` fits quantiles of **raw** returns (`raw = y * a`). It therefore ignores today's vol.
-- The standard benchmark is filtered historical simulation (FHS): a standardized shape times today's vol (McNeil & Frey 2000; Kuester et al. 2006). It was never used as a reference.
-- The only vol-scaled reference tried, `ScaledEmpiricalCDF`, lost by 3.3%. Its ridge regression uses all ~200 panel columns, so overfitting is the likelier cause; that result is not evidence against vol scaling.
+- The standard benchmark is filtered historical simulation (FHS): a standardized shape times today's vol (McNeil & Frey 2000; Kuester et al. 2006). `2026-09-28-predictive-cdf-condor-research.md` §1 named it "the reference to beat", but it was never used as a reference.
+- The only vol-scaled reference tried, `ScaledEmpiricalCDF`, lost by 3.3%. It fits a ridge-regression scale on every study feature (39 in that run; it has no feature subset), so the loss may come from that fitted scale rather than from vol scaling itself.
 - **What the outcome would mean:**
   - If FHS beats the raw baseline, every skill number so far was measured against a weaker bar.
   - If FHS loses, the trailing 22-day vol scale is the weak link, and the scale is what to fix.
@@ -39,7 +39,7 @@ Run from `children/index_options` with `PYTHONPATH` set to the repo root:
 python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json [--args configs/pilot-<x>.json]
 ```
 
-The base runs QQQ only at 7 days, with 2 forward-selection rounds and 300 bootstrap replicates. Each run takes minutes.
+The base runs QQQ only at 7 days, with 2 forward-selection rounds and 300 bootstrap replicates. Each run should take minutes, but this is not measured: the references are refit in every study stage. Stack one step-6 pilot at a time: `crps-student` and `regularize` together would merge their axes but keep only the later name pattern.
 
 | File | Tests | What changes |
 |---|---|---|
