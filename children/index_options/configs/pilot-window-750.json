@@ -1,0 +1,9 @@
+{
+  "notes": "PILOT: time segmentation, long training window. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-window-750.json. Every fold trains on the last 750 dates instead of 450 (about three years; the HAR literature's strongest rolling window is about 630 days, Audrino and Chassot 2024). It trades recency for sample size and leaves fewer scored folds. Step 3 refuses if fewer than warmup_folds + 1 folds fit before the holdout; if it does, lower train_n. Compare against the references inside the run, as for pilot-window-250.json.",
+  "work_dir": "./pipeline_runs/pilot-window-750",
+  "split": {
+    "folds": {
+      "train_n": 750
+    }
+  }
+}

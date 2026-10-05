@@ -1,0 +1,26 @@
+{
+  "notes": "PILOT: training loss and tail family. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-crps-student.json. The manifest trains TorchCDF with Gaussian components on 0.1 x NLL + wing twCRPS; NLL chases outliers and Gaussian components understate fat tails, and the step-7 runs found the models too optimistic on the downside (10% of outcomes below the 5th percentile). This run swaps both everywhere (steps 4 to 7): CRPS (robust, the scored metric) plus wing twCRPS, Student components, and the step-6 grid searches only the degrees of freedom (4, 8, 30; 30 is near-Gaussian) at the manifest's default width and learning rate, so 3 candidates instead of 9. Compare its report with pilot-base's: same folds, same references.",
+  "work_dir": "./pipeline_runs/pilot-crps-student",
+  "model": {
+    "params": {
+      "losses": [
+        {"kind": "crps", "weight": 1.0},
+        {"kind": "wing_twcrps", "weight": 1.0}
+      ],
+      "family": {"kind": "student", "degrees": 5}
+    }
+  },
+  "hpo": {
+    "axes": {
+      "hidden": [[32, 16]],
+      "learning_rate": [0.001],
+      "degrees": [4, 8, 30]
+    },
+    "paths": {
+      "degrees": "params.family.degrees"
+    },
+    "name": {
+      "pattern": "{encoder}_h{hidden}_lr{learning_rate}_df{degrees}"
+    }
+  }
+}

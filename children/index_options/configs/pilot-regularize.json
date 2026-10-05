@@ -1,0 +1,21 @@
+{
+  "notes": "PILOT: overfitting controls and seed ensembling. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-regularize.json. Earlier neural runs fit training rows well and validation badly (QQQ about +9% train skill against -22% development), the signature of variance, not bias. The step-6 grid here fixes width and learning rate at the manifest defaults and crosses weight decay (0.01 = the TorchCDF default, 1.0: AdamW decay is decoupled, shrinking weights by about learning_rate x weight_decay per step, so at lr 0.001 and a few hundred early-stopped steps 0.1 is barely distinguishable from 0.01 in a synthetic smoke run; 1.0 is a real contrast), dropout (0, 0.2) and seeds (one, or five fits averaged into one mixture): 8 candidates. The warm-up search table (step6 rounds and selection/candidates.jsonl) shows each control's effect; the selected one is then evaluated on the scored folds as usual. Five-seed candidates cost five times as much to train.",
+  "work_dir": "./pipeline_runs/pilot-regularize",
+  "hpo": {
+    "axes": {
+      "hidden": [[32, 16]],
+      "learning_rate": [0.001],
+      "weight_decay": [0.01, 1.0],
+      "dropout": [0.0, 0.2],
+      "seeds": [[11], [11, 12, 13, 14, 15]]
+    },
+    "paths": {
+      "weight_decay": "params.weight_decay",
+      "dropout": "params.dropout",
+      "seeds": "params.seeds"
+    },
+    "name": {
+      "pattern": "{encoder}_h{hidden}_lr{learning_rate}_wd{weight_decay}_do{dropout}_s{seeds}"
+    }
+  }
+}

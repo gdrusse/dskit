@@ -1,0 +1,9 @@
+{
+  "notes": "PILOT: time segmentation, short training window. Stack on the base: python -m dskit.pipeline workflow configs/workflow.json --args configs/pilot-base.json --args configs/pilot-window-250.json. Every fold trains on the last 250 dates instead of 450 (about one year): it adapts faster to a new regime and estimates with less data. The GRU's edge over the MLP shrank from 58.9% on the full history to 3.0% after 2019, so the data are not stationary; this asks whether recency beats sample size. More scored folds result (the first one starts earlier), so its scored dates differ from pilot-base's: compare skill against the references inside each run, not raw CRPS across runs. Pair it with pilot-window-750.json.",
+  "work_dir": "./pipeline_runs/pilot-window-250",
+  "split": {
+    "folds": {
+      "train_n": 250
+    }
+  }
+}

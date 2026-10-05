@@ -149,6 +149,8 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # + run-real-zoo.json (ADR-0182); run-real-vix/-har-vix/
                            # -lightgbm-vix.json (VIX as a scale feature); source-cboe-chain-wide/
                            # -index-wide.json (wide recorder + vol indices)
+                           # pilot-*.json: quick args overlays for workflow.json (base + crps-student,
+                           # regularize, window-250/750, horizon-14/28; docs/research performance-pilots)
                            # source-optionshist-chain.json (EOD SPY/QQQ/IWM chain archive,
                            # sha256-pinned, ADR-0182 amendment)
 configs/grid/              # ADR-0187, generated: 21 cell documents <symbol>-<bucket>.json

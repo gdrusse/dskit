@@ -30,6 +30,7 @@ systemd-run --user --wait --pipe --collect -p MemoryMax=6G -p MemorySwapMax=0 -p
 - Torch deterministic CUDA needs the variables in `args.run_env`; the runner sets them for every command.
 - Outputs: `{work_dir}/step*/` per step and `{work_dir}/report/report_<T>/report.md`, `report.html`, `sections/*.csv` per ticker. `{work_dir}/workflow.json` is the ledger (config hash, input and output hashes, exit code per `step@ticker`).
 - Exit codes: 0 ran, 1 error, 3 halted, 5 refused.
+- Quick pilots (QQQ, minutes each): stack `--args configs/pilot-base.json --args configs/pilot-<x>.json`. Hypotheses and how to read them: `docs/research/distribution-modeling/2026-10-05-performance-pilots.md`.
 
 ## 3. Run for an arbitrary ticker
 

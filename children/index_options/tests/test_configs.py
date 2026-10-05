@@ -227,6 +227,12 @@ def test_exact_manifest_and_agent_parity(child_root):
         "tests/fixtures/args-step1.json", "tests/fixtures/args-features.json",
         "tests/fixtures/args-report.json", "tests/fixtures/args-study.json",
         "docs/plans/archive-2026-10-02.md",
+        # Performance pilots: args overlays for configs/workflow.json and their research note.
+        "configs/pilot-base.json", "configs/pilot-crps-student.json",
+        "configs/pilot-regularize.json", "configs/pilot-window-250.json",
+        "configs/pilot-window-750.json", "configs/pilot-horizon-14.json",
+        "configs/pilot-horizon-28.json",
+        "docs/research/distribution-modeling/2026-10-05-performance-pilots.md",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -249,7 +255,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the stock-lane work (ADR-0232 amendment): 4 overlays, 3 universe/source configs,
     # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417, plus 1 more = 418,
     # plus ADR-0235's four option-universe-300 configs + the 300-stock bars source and daily-features overlay = 425
-    assert len(actual) == 427
+    # (427 on main), plus the seven performance-pilot overlays and their research note = 435
+    assert len(actual) == 435
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
