@@ -3632,6 +3632,12 @@ def test_the_perticker_documents_equal_their_generator(child_root):
     # Review round 1 (M1): the manifest's notes name its own file, never the pooled one.
     assert f"configs/{variant.workflow_file} " in manifest["notes"]
     assert pooled.WORKFLOW_FILE not in manifest["notes"]
+    # Review round 2: the vintage is explained where it is declared, and never omitted.
+    assert f"as_of_acquisition_ms {PER_TICKER_VINTAGE} (epoch ms" in shipped["data"]["notes"]
+    values = pooled.measured(configs, shipped)
+    del values["as_of_acquisition_ms"]
+    with pytest.raises(ValueError, match="as_of_acquisition_ms"):
+        pooled.zoo_document(configs, values, variant)
 
 
 def test_the_perticker_zoo_is_the_pooled_zoo_fitted_once_per_ticker(child_root):
@@ -3665,7 +3671,8 @@ def test_the_perticker_zoo_is_the_pooled_zoo_fitted_once_per_ticker(child_root):
         del want["pooled"], want["params"]["head_features"]
         # Restated on purpose (per-ticker benchmark, 2026-10-05): batch 512 and CPU for the
         # networks; CPU, one thread and 20 rows a leaf for LightGBM.
-        want["params"].update({"device": "cpu", "num_threads": 1, "min_data_in_leaf": 20}
+        want["params"].update({"device": "cpu", "num_threads": 1, "min_data_in_leaf": 20,
+                               "n_estimators": 10000}    # the ceiling only (smoke max 643)
                               if name.startswith("lgbm") else {"device": "cpu", "batch_size": 512})
         assert spec == want, name
         assert not heads & set(spec["params"]["feature_indices"]), name   # no is_<T> input

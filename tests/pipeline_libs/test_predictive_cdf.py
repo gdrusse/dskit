@@ -4572,6 +4572,14 @@ def test_group_workers_write_exactly_what_one_process_writes(tmp_path, monkeypat
     for line in spawned:
         assert line.startswith('[ticker-done] search smoke ')
         assert [word.split('=')[0] for word in line.split()[5:-1]] == ['twin_a', 'twin_b', 'boost']
+    # Review round 2: the live values are each model's point skill on the group's own raw
+    # rows against the reference, on weighted_crps (tail_weight is declared here).
+    raw = one[(one.unit == 'C') & (one.variant == 'raw')]
+    means = raw.groupby('model').weighted_crps.mean()
+    line = next(line for line in spawned if line.split()[3] == 'C').split()
+    assert line[4] == f"n={int((raw.model == 'reference').sum())}"
+    assert line[5:-1] == [f"{m}={100*(1-means[m]/means['reference']):.2f}"
+                          for m in ('twin_a', 'twin_b', 'boost')]
 
 
 @pytest.mark.parametrize('width', ['0', '', 'two', '-1'])
@@ -4685,5 +4693,38 @@ def test_group_workers_keep_at_most_twice_their_width_in_flight(tmp_path, monkey
     monkeypatch.setenv(WORKERS, '2')
     config['output'] = str(tmp_path/'two')
     ChronologicalCDFStudy(config).run(frame)
-    assert len(submitted) == len(groups) and max(peak) <= 4
+    assert len(submitted) == len(groups) and max(peak) <= 3   # 2W - 1 unfinished at most
     assert _written(tmp_path/'one') == _written(tmp_path/'two')
+
+
+def test_in_process_a_failing_group_stops_the_run_before_the_next_is_fitted(tmp_path, monkeypatch):
+    # Review round 2: one worker fits one group at a time, as the loop always did.
+    monkeypatch.setenv(WORKERS, '1')
+    config, frame = _worker_study(tmp_path, 'first', groups=('A', 'B'))
+    frame.loc[frame.unit == 'A', 't'] = np.inf
+    with pytest.raises(ValueError, match='infinity'):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not list((tmp_path/'first').glob('B-*.npz'))
+
+
+class _DiesWhenUnpickled:
+    """A diagnostic whose unpickling ends the process: a group worker that dies (as if killed)."""
+
+    def __reduce__(self):
+        import os
+        return os._exit, (3,)
+
+    def __call__(self, frame, curve, draws):
+        return {}
+
+
+def test_a_dead_group_worker_fails_the_run_naming_the_unfinished_groups(tmp_path, monkeypatch):
+    from concurrent.futures.process import BrokenProcessPool
+
+    monkeypatch.setenv(WORKERS, '2')
+    config, frame = _worker_study(tmp_path, 'dead', groups=('A', 'B', 'C'))
+    with pytest.raises(BrokenProcessPool) as raised:
+        ChronologicalCDFStudy(config).run(frame, _DiesWhenUnpickled())
+    note = next(n for n in raised.value.__notes__ if 'a group worker died' in n)
+    assert "'A'" in note and "'B'" in note and "'C'" in note   # 2W - 1 = 3 were unfinished
+    assert not (tmp_path/'dead'/'scores.parquet').exists()

@@ -156,7 +156,13 @@ class ZooVariant:
         return {"class": _CLASS+cls, "calibrate": False, **self.sharing(), "params": params}
 
     def sharing(self):
-        """Return the spec keys that say how a fit spans tickers (dict): pooled, once a split."""
+        """Return the spec keys that say how a fit spans tickers.
+
+        Returns
+        -------
+        dict
+            ``pooled`` True: one fit per split over every ticker.
+        """
         return {"pooled": True}
 
     def heads(self, heads):
@@ -175,7 +181,13 @@ class ZooVariant:
         return {"head_features": heads}
 
     def study(self):
-        """Return the keys the study block gains (dict): none."""
+        """Return the keys the study block gains.
+
+        Returns
+        -------
+        dict
+            Empty: the template's study keys and :data:`ZOO`'s admission floor suffice.
+        """
         return {}
 
     def data(self, values):
@@ -189,9 +201,24 @@ class ZooVariant:
         Returns
         -------
         dict
-            None for the pooled zoo.
+            Empty for the pooled zoo.
         """
         return {}
+
+    def data_note(self, values):
+        """Return the sentence the data notes gain from the measured values.
+
+        Parameters
+        ----------
+        values : dict
+            The measured inputs :func:`zoo_document` takes.
+
+        Returns
+        -------
+        str
+            Empty for the pooled zoo.
+        """
+        return ""
 
     def scope(self, count):
         """Return the data notes' opening phrase.
@@ -204,11 +231,18 @@ class ZooVariant:
         Returns
         -------
         str
+            How many stocks, and how the study shares its fits.
         """
         return f"{count} stocks pooled in one study"
 
     def experiment_notes(self):
-        """Return the experiment block's notes (str)."""
+        """Return the experiment block's notes.
+
+        Returns
+        -------
+        str
+            The zoo's design: kinds, grids, losses, selection.
+        """
         return (
             "ADR-0236 pooled zoo, owner design 2026-10-04: one model per kind over every "
             "ticker, per-ticker heads (TorchCDF: one mixture head per is_<T>; BoostedTorchCDF: "
@@ -251,7 +285,9 @@ class PerTickerZoo(ZooVariant):
     name = "perticker-zoo-417"
     kind = "Per-ticker"
     torch = {"batch_size": 512, "device": "cpu"}
-    boosted = {"num_threads": 1, "device": "cpu", "min_data_in_leaf": 20}
+    #: ``n_estimators`` is only the ceiling: a per-ticker fit stopped after up to 643 rounds on
+    #: the smoke, a third of the pooled 2000, and reaching it refuses the whole stage.
+    boosted = {"num_threads": 1, "device": "cpu", "min_data_in_leaf": 20, "n_estimators": 10000}
 
     @property
     def folds_file(self):
@@ -264,19 +300,52 @@ class PerTickerZoo(ZooVariant):
         return ZooVariant().folds_file
 
     def sharing(self):
-        """Return no sharing keys (dict): unpooled, fitted per ticker and split."""
+        """Return the spec keys that say how a fit spans tickers.
+
+        Returns
+        -------
+        dict
+            Empty: unpooled, one fit per ticker and split.
+        """
         return {}
 
     def heads(self, heads):
-        """Return no task-routing params (dict): a per-ticker model has one head."""
+        """Return the task-routing params every candidate carries.
+
+        Parameters
+        ----------
+        heads : list of int
+            The ``is_<T>`` positions, unused: a per-ticker model has one head.
+
+        Returns
+        -------
+        dict
+            Empty.
+        """
         return {}
 
     def study(self):
-        """Return the calibration floor (dict): a ticker waits while its band is empty."""
+        """Return the keys the study block gains.
+
+        Returns
+        -------
+        dict
+            ``min_task_cal_rows`` 1: a ticker waits while its calibration band is empty.
+        """
         return {"min_task_cal_rows": 1}
 
     def data(self, values):
-        """Return the measured observation vintage the data block pins.
+        """Return the keys the data block gains from the measured values.
+
+        Parameters
+        ----------
+        values : dict
+            The measured inputs :func:`zoo_document` takes, with the vintage.
+
+        Returns
+        -------
+        dict
+            The observation reads' vintage (:data:`~index_options.cdf_study.PANEL_VINTAGE`).
 
         Raises
         ------
@@ -288,19 +357,55 @@ class PerTickerZoo(ZooVariant):
                              f"{PANEL_VINTAGE} and pass it with the other measured values")
         return {PANEL_VINTAGE: values[PANEL_VINTAGE]}
 
+    def data_note(self, values):
+        """Return the sentence the data notes gain: what the vintage is and why it is pinned.
+
+        Parameters
+        ----------
+        values : dict
+            The measured inputs, with the vintage.
+
+        Returns
+        -------
+        str
+        """
+        return (f" {PANEL_VINTAGE} {values[PANEL_VINTAGE]} (epoch ms, measured at generation, "
+                "after every acquisition the panel reads) bounds every observation read "
+                "(index closes, market symbols, FRED): the owner's chain recorder adds "
+                "cboe-index-wide snapshots on weekdays, and a stage that rebuilds the panel "
+                "after one must read what the first stage read, or its identity moves.")
+
     def scope(self, count):
-        """Return the data notes' opening phrase: one model per ticker (str)."""
+        """Return the data notes' opening phrase.
+
+        Parameters
+        ----------
+        count : int
+            The tickers the study reads.
+
+        Returns
+        -------
+        str
+            How many stocks, fitted one ticker at a time.
+        """
         return f"{count} stocks in one study, fitted one ticker at a time"
 
     def experiment_notes(self):
-        """Return the experiment block's notes: the pooled zoo's grid, fitted per ticker."""
+        """Return the experiment block's notes.
+
+        Returns
+        -------
+        str
+            The pooled zoo's design, fitted per ticker, and what differs.
+        """
         return (
             "ADR-0236 amendment 3, owner request 2026-10-05: the pooled zoo's candidates "
             "(run-pooled-zoo-417.json: same feature groups, kinds, grids, losses, selection "
             "metric weighted_crps and reference) fitted once per ticker on that ticker's own "
             "fit and calibration bands, with no heads and no is_<T> input. Torch batch_size "
             "512, every kind on CPU, BoostedTorchCDF num_threads 1 and min_data_in_leaf 20 "
-            "(the pooled 100 leaves a short ticker no split); a ticker also waits while its "
+            "(the pooled 100 leaves a short ticker no split) and n_estimators 10000 (the "
+            "ceiling only: reaching it refuses the stage); a ticker also waits while its "
             "calibration band is empty (min_task_cal_rows 1: every candidate early-stops on "
             "it). Launch with "
             f"{ChronologicalCDFStudy.GROUP_WORKERS_ENV}=8 (the machine's width, outside "
@@ -385,7 +490,8 @@ def _data(variant, configs_dir, template, owner, values):
         "sources: price_source.relpath objects name the second universe's bars, and every "
         "keyed table lists one part per universe. Window, reader, columns, exact_dte 31 and "
         f"the feature recipe as {TEMPLATE_FILE}; corporate-action windows from "
-        f"{WINDOWS_OVERLAY}'s corporate_windows. Generated by index_options.pooled.")
+        f"{WINDOWS_OVERLAY}'s corporate_windows.{variant.data_note(values)} Generated by "
+        "index_options.pooled.")
     return data
 
 

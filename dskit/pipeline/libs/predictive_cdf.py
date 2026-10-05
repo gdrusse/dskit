@@ -5557,7 +5557,7 @@ class ChronologicalCDFStudy:
         variable :attr:`GROUP_WORKERS_ENV` names a width above 1, in that many spawned
         processes (ADR-0236 amendment 3), each fitting one group's splits and models.
         Outputs are gathered in group order, so every file equals the one-process run's
-        on the same device and thread count. Each group's completion prints one
+        on the same device and thread count (``counts.json``'s timings aside). Each group's completion prints one
         ``[ticker-done]`` line (point skill on its own rows; the summary is canonical).
 
         Parameters
@@ -5679,8 +5679,11 @@ class ChronologicalCDFStudy:
     def _group_outputs(self, frame, shared, workers, label):
         """Yield each fitted group's ``_fit_group`` output in group order, printing progress.
 
-        A group no split scores is skipped (it has nothing to fit) unless the study keeps
-        the every-band rule, whose refusal it must still raise.
+        At most ``2 * workers - 1`` groups are submitted and unfinished at once: one in
+        process, so a failure surfaces before the next group is fitted, and a window
+        beyond the width in a pool, so a worker never waits for the parent. A group no
+        split scores is skipped (it has nothing to fit) unless the study keeps the
+        every-band rule, whose refusal it must still raise.
         """
         import concurrent.futures as futures
         import itertools
@@ -5693,7 +5696,7 @@ class ChronologicalCDFStudy:
         running, ready, emitted, done = {}, {}, 0, 0
         try:
             while True:
-                for index, (group, rows) in itertools.islice(pending, 2*workers-len(running)):
+                for index, (group, rows) in itertools.islice(pending, 2*workers-1-len(running)):
                     running[pool.submit(self._fit_group, group, rows, shared)] = index, group
                 if not running:
                     return
@@ -5716,31 +5719,31 @@ class ChronologicalCDFStudy:
         Spawn, never fork: CUDA and OpenMP do not survive a fork. A worker takes this
         process's torch intra-op thread count, so its fits equal this process's.
         """
+        import concurrent.futures as futures
         import multiprocessing
 
         import torch
 
         if workers == 1:
             return _InlineExecutor()
-        from concurrent.futures import ProcessPoolExecutor
-        return ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
-                                   initializer=self._init_group_worker,
-                                   initargs=(torch.get_num_threads(),))
+        return futures.ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=self._init_group_worker, initargs=(torch.get_num_threads(),))
 
     @staticmethod
     def _group_result(future, group, running):
         """Return a finished group's output, or re-raise its error noting the group.
 
-        A worker that died (killed, out of memory) breaks every running future, so its
-        note names every group then in flight rather than guessing one.
+        A worker that died (killed, out of memory) breaks every unfinished future, so its
+        note names every group then submitted and unfinished rather than guessing one.
         """
-        from concurrent.futures.process import BrokenProcessPool
+        import concurrent.futures as futures
 
         try:
             return future.result()
-        except BrokenProcessPool as err:
+        except futures.process.BrokenProcessPool as err:
             others = sorted(str(g) for _, g in running.values())
-            err.add_note(f"a group worker died while fitting {[str(group), *others]}")
+            err.add_note(f"a group worker died; groups then unfinished: {[str(group), *others]}")
             raise
         except Exception as err:
             err.add_note(f"raised while fitting group {group!r}")
@@ -5962,9 +5965,9 @@ class _InlineExecutor:
     @staticmethod
     def submit(fn, *args):
         """Return a done future holding ``fn(*args)``'s result or exception."""
-        from concurrent.futures import Future
+        import concurrent.futures as futures
 
-        future = Future()
+        future = futures.Future()
         try:
             future.set_result(fn(*args))
         except Exception as err:
