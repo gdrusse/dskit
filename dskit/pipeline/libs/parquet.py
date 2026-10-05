@@ -30,8 +30,20 @@ __all__ = ["NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
 
 def _sha256(path):
     """Return a file's sha256 hex digest by the pipeline's one file-hash rule (``path_hash``)."""
+    import os
+
     from dskit.pipeline.workflow import path_hash
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"no file to hash at {path}")
     return path_hash(str(path))
+
+
+def _digest(identity):
+    """Return the sha256 of an identity's canonical JSON, by the pipeline's one rule."""
+    from types import SimpleNamespace
+
+    from dskit.pipeline.base import config_hash
+    return config_hash(SimpleNamespace(to_obj=lambda: identity), exclude=())
 
 
 class ParquetRows(Node):
@@ -311,19 +323,13 @@ class ParquetFrameCache:
         from pathlib import Path
         self.directory = Path(directory)
 
-    @staticmethod
-    def _canonical(identity):
-        """Return the identity's canonical JSON, the one form two identities compare in."""
-        import json
-        return json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
     def load(self, identity):
         """Return ``(frame, payload)`` stored under ``identity``, or None.
 
         Parameters
         ----------
         identity : dict
-            JSON-serializable.
+            JSON-serializable; compared by its canonical digest.
 
         Returns
         -------
@@ -339,14 +345,17 @@ class ParquetFrameCache:
         if not (record.is_file() and frame.is_file()):
             return None
         stored = json.loads(record.read_text())
-        if (stored.get("identity") != self._canonical(identity)
+        if (stored.get("identity_sha256") != _digest(identity)
                 or _sha256(frame) != stored.get("frame_sha256")):
             return None
         return pd.read_parquet(frame), stored["payload"]
 
     @classmethod
     def storable(cls, frame):
-        """Say whether parquet hands ``frame`` back unchanged: every object column scalar.
+        """Say whether parquet hands ``frame`` back unchanged.
+
+        Every column label must be a unique string and every object column
+        scalar: parquet returns a container's lists as arrays.
 
         Parameters
         ----------
@@ -357,8 +366,9 @@ class ParquetFrameCache:
         bool
         """
         from pandas.api.types import infer_dtype
-        return all(infer_dtype(frame[name], skipna=True) in cls.SCALAR_KINDS
-                   for name in frame.columns if frame[name].dtype == object)
+        return (frame.columns.is_unique and all(isinstance(n, str) for n in frame.columns)
+                and all(infer_dtype(frame[name], skipna=True) in cls.SCALAR_KINDS
+                        for name in frame.columns if frame[name].dtype == object))
 
     def store(self, identity, frame, payload):
         """Replace the slot with ``frame`` and ``payload`` under ``identity``.
@@ -366,7 +376,7 @@ class ParquetFrameCache:
         Parameters
         ----------
         identity : dict
-            JSON-serializable.
+            JSON-serializable; recorded by its canonical digest.
         frame : DataFrame
             A :meth:`storable` frame, written as parquet without its index.
         payload : dict
@@ -375,7 +385,8 @@ class ParquetFrameCache:
         Raises
         ------
         ValueError
-            When ``frame`` is not :meth:`storable`.
+            When ``frame`` is not :meth:`storable`; whatever writing raises,
+            with no partial file left behind.
         """
         import json
         import os
@@ -389,15 +400,22 @@ class ParquetFrameCache:
         (self.directory/self.RECORD).unlink(missing_ok=True)  # never a record over a new frame
         handle, partial = tempfile.mkstemp(dir=self.directory, suffix=".partial")
         os.close(handle)
-        frame.to_parquet(partial, index=False)
-        digest = _sha256(partial)  # of these bytes: a concurrent writer's frame cannot pass load
-        os.replace(partial, self.directory/self.FRAME)
+        try:
+            frame.to_parquet(partial, index=False)
+            digest = _sha256(partial)  # of these bytes: another writer's frame cannot pass load
+            os.replace(partial, self.directory/self.FRAME)
+        finally:
+            if os.path.exists(partial):
+                os.unlink(partial)
         atomic_write(str(self.directory/self.RECORD), json.dumps({
-            "identity": self._canonical(identity), "frame_sha256": digest,
+            "identity_sha256": _digest(identity), "frame_sha256": digest,
             "payload": payload}, indent=1, allow_nan=False).encode())
 
     def load_or_build(self, identity, build):
         """Return the stored frame for the current identity, building and storing it if absent.
+
+        A memo degrades, it never fails a caller: a frame it cannot store is
+        handed back as built.
 
         Parameters
         ----------
@@ -412,7 +430,8 @@ class ParquetFrameCache:
         tuple
             ``(frame, payload, state)``: ``reused`` (from the slot), ``stored``
             (built, stored and read back) or ``unstored`` (built; not
-            :meth:`storable`, the identity moved, or another writer took the slot).
+            :meth:`storable`, the identity moved, writing failed, or another
+            writer took the slot).
         """
         import json
 
@@ -421,9 +440,13 @@ class ParquetFrameCache:
         if held is not None:
             return (*held, "reused")
         frame, payload = build()
-        if self.storable(frame) and self._canonical(identity()) == self._canonical(before):
-            self.store(before, frame, payload)
-            held = self.load(before)
+        if self.storable(frame) and _digest(identity()) == _digest(before):
+            try:
+                self.store(before, frame, payload)
+            except (OSError, ValueError, TypeError, NotImplementedError):
+                held = None   # parquet refused a column type, or the disk is full
+            else:
+                held = self.load(before)
             if held is not None:
                 return (*held, "stored")
         return frame, json.loads(json.dumps(payload)), "unstored"

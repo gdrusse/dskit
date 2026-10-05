@@ -3117,34 +3117,36 @@ class ExactExpiryCDFPanel:
         walk(self.config, None)
         return sorted(roots), sorted(paths-roots)
 
-    def cache_identity(self):
+    def cache_identity(self, environment):
         """Return everything this panel's read is a function of (ADR-0236 amendment).
+
+        Parameters
+        ----------
+        environment : dict
+            The runtime fingerprint the caller captured once
+            (:class:`~dskit.production.release.RuntimeFingerprint`: interpreter,
+            platform, every installed distribution).
 
         Returns
         -------
         dict
-            ``reader`` (the class), ``config`` (the config's identity hash),
-            ``holdout_start``, ``code`` (every module of dskit and of this package),
-            ``environment`` (the production runtime fingerprint: interpreter,
-            platform, every installed distribution), ``stores`` (each named root's
-            content token) and ``paths`` (a stat token over every other existing
-            path the config names).
+            ``reader`` (the class), ``config`` (the config itself; the cache digests
+            it without its ``notes``), ``holdout_start``, ``code`` (every module of
+            dskit and of this package), ``environment``, ``stores`` (each named
+            root's content token) and ``paths`` (a stat token over every other
+            existing path the config names).
         """
         import sys
-        from types import SimpleNamespace
 
         import dskit
         from dskit.onboarding import OnboardingRoot, files_token
-        from dskit.pipeline.base import config_hash
         from dskit.pipeline.libs.parquet import ParquetFrameCache
-        from dskit.production.release import RuntimeFingerprint
 
         roots, paths = self._locations()
         return {"reader": f"{type(self).__module__}:{type(self).__qualname__}",
-                "config": config_hash(SimpleNamespace(to_obj=lambda: self.config), exclude=()),
-                "holdout_start": self.holdout_start,
+                "config": self.config, "holdout_start": self.holdout_start,
                 "code": ParquetFrameCache.code_digest(dskit, sys.modules[__package__]),
-                "environment": RuntimeFingerprint.capture().to_obj(),
+                "environment": environment,
                 "stores": {root: OnboardingRoot(root).content_token() for root in roots},
                 "paths": files_token(paths)}
 
@@ -3154,7 +3156,9 @@ class ExactExpiryCDFPanel:
         The store snapshots this process resolved before are forgotten first, so a
         build reads the snapshots the identity's tokens name. A panel that cannot be
         stored (container-valued columns, such as a decision context) is read afresh
-        by every stage, as without a cache.
+        by every stage, as without a cache; so is every panel when the runtime cannot
+        be fingerprinted (a distribution without a name or version), since no key
+        could then be trusted.
 
         Parameters
         ----------
@@ -3168,10 +3172,18 @@ class ExactExpiryCDFPanel:
             reuse hand a study the same frame and the same dict.
         """
         from dskit.pipeline.libs.parquet import ParquetFrameCache
+        from dskit.production.base import ProductionError
+        from dskit.production.release import RuntimeFingerprint
 
         clear_snapshot_cache()
+        try:
+            environment = RuntimeFingerprint.capture().to_obj()
+        except ProductionError as err:
+            print("panel cache off: the runtime has no fingerprint:", err, flush=True)
+            frame = self.read()
+            return frame, json.loads(json.dumps(self.provenance()))
         frame, provenance, state = ParquetFrameCache(directory).load_or_build(
-            self.cache_identity, lambda: (self.read(), self.provenance()))
+            lambda: self.cache_identity(environment), lambda: (self.read(), self.provenance()))
         print("panel", state, frame.shape, flush=True)
         return frame, provenance
 
@@ -3866,13 +3878,14 @@ def _main():
             parser.error("HPO requires an explicit --stage; panel takes no partition")
         label = " ".join(filter(None, [args.stage, args.partition]))
         print(f"[cdf_study] {label} start", flush=True)
+        study = CDFHyperparameterStudy(config)   # a bad document refuses before any read
         # Every stage reads the panel the first one built (ADR-0236 amendment); the
         # panel stage only builds it, in a process that then fits nothing.
         frame, provenance = adapter.cached_read(
             Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
         if args.stage != "panel":
-            CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
-                                                partition=args.partition, provenance=provenance)
+            study.run(frame, diagnostic, stage=args.stage, partition=args.partition,
+                      provenance=provenance)
         print(f"[cdf_study] {label} end", flush=True)
         if config.get("data", {}).get("decision_regions"):
             import signal

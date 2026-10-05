@@ -209,15 +209,75 @@ def test_a_cached_read_is_built_once_and_reused_until_an_input_moves(
         [CLOSE[DATES[50]]*1.01])
 
 
-def test_a_cached_read_keys_on_every_store_root_and_existing_path_the_config_names(make, tmp_path):
+def test_a_cached_read_keys_on_every_store_root_and_existing_path_the_config_names(
+        make, tmp_path, monkeypatch):
     panel = make()
     legacy = tmp_path/"legacy.parquet"
     legacy.write_bytes(b"x")
-    table = {"root": str(tmp_path/"elsewhere"), "path": str(legacy), "relpath": "a/b.parquet"}
+    monkeypatch.setenv("HOME", str(tmp_path))
+    table = {"root": str(tmp_path/"elsewhere"), "path": str(legacy), "relpath": "a/b.parquet",
+             "home": "~/legacy.parquet", "here": ".", "notes": str(tmp_path/"noted.txt")}
+    (tmp_path/"noted.txt").write_text("documentation")
     roots, paths = PriceCalendarCDFPanel({**panel.config, "extra": table})._locations()
     assert roots == sorted({panel.config["root"], str(tmp_path/"elsewhere")})
-    # a store relpath names no file here; a legacy file brings its source-hash sidecar
+    # a store relpath names no file here, "~" expands, the working directory and notes are
+    # never data, and a legacy file brings its source-hash sidecar
     assert paths == [str(legacy), str(legacy)+".sources.json"]
+
+
+def test_every_part_of_the_cache_key_rebuilds_the_panel(make, tmp_path, monkeypatch):
+    # ADR-0236 amendment 2: a key missing a part would serve a stale panel (review round 2).
+    from dskit.pipeline.libs.parquet import ParquetFrameCache
+    from dskit.production.release import RuntimeFingerprint
+
+    legacy = tmp_path/"surface.parquet"
+    legacy.write_bytes(b"one")
+    config = {**make().config, "extra": str(legacy)}
+    cache, built, read = tmp_path/"panel-cache", [], PriceCalendarCDFPanel.read
+    monkeypatch.setattr(PriceCalendarCDFPanel, "read", lambda self: built.append(1) or read(self))
+    fingerprint = RuntimeFingerprint.capture().to_obj()
+    assert set(PriceCalendarCDFPanel(config).cache_identity(fingerprint)) == {
+        "reader", "config", "holdout_start", "code", "environment", "stores", "paths"}
+
+    def stage(cls=PriceCalendarCDFPanel):
+        cls(config).cached_read(cache)
+        return len(built)
+
+    assert (stage(), stage()) == (1, 1)
+    legacy.write_bytes(b"two!")                                      # a legacy file
+    assert stage() == 2
+    real = ParquetFrameCache.code_digest
+    monkeypatch.setattr(ParquetFrameCache, "code_digest", lambda *p: "edited" + real(*p))
+    assert stage() == 3                                              # the code
+    capture = RuntimeFingerprint.capture
+    monkeypatch.setattr(RuntimeFingerprint, "capture", classmethod(
+        lambda cls: type("F", (), {"to_obj": lambda s: {**capture().to_obj(), "x": 1}})()))
+    assert stage() == 4                                              # the environment
+
+    class Other(PriceCalendarCDFPanel):
+        """Another reader class."""
+
+    assert stage(Other) == 5                                         # the reader
+
+
+def test_a_cached_read_forgets_resolved_snapshots_and_reads_uncached_without_a_fingerprint(
+        make, tmp_path, monkeypatch, capsys):
+    from index_options import datafiles
+    from dskit.production.base import ProductionError
+    from dskit.production.release import RuntimeFingerprint
+
+    panel = make()
+    datafiles._SNAPSHOTS["stale"] = {"snapshot": "old"}
+    panel.cached_read(tmp_path/"cache")
+    assert "stale" not in datafiles._SNAPSHOTS
+
+    def broken(cls):
+        raise ProductionError(["distribution at x has no Name/Version metadata"])
+
+    monkeypatch.setattr(RuntimeFingerprint, "capture", classmethod(broken))
+    frame, provenance = PriceCalendarCDFPanel(panel.config).cached_read(tmp_path/"other")
+    assert len(frame) and provenance["sha256"] and not (tmp_path/"other").exists()
+    assert "panel cache off" in capsys.readouterr().out
 
 
 # -- per-symbol price sources (ADR-0236): disjoint universes in separate onboarded sources --------
@@ -253,7 +313,9 @@ def test_a_symbol_may_name_its_own_price_source(make, tmp_path, blob_store):
 
 @pytest.mark.parametrize("entry", [
     {"source": "prices-b", "stream": "files"}, {"source": "", "stream": "files", "relpath": "x"},
-    {"source": "s", "stream": "files", "relpath": "x", "typo": 1}, "", 3])
+    {"source": "s", "stream": "files", "relpath": "x", "typo": 1}, "", 3,
+    {"source": "s", "stream": "files", "relpath": "/abs/x"},
+    {"source": "s", "stream": "files", "relpath": "x", "manifest_sha256": "0"*64}])
 def test_a_malformed_price_location_is_refused(make, entry):
     with pytest.raises(ValueError, match="price_source"):
         make(price_source={"source": "prices", "stream": "files", "columns": COLUMNS,

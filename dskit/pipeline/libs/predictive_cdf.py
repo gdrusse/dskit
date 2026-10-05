@@ -5615,8 +5615,7 @@ class ChronologicalCDFStudy:
                                 self.plan.waiting(admitted[split]))]
                         else:
                             model_fit, model_cal = fit, cal
-                        module, cls = spec["class"].split(":")
-                        model = getattr(importlib.import_module(module), cls)(**spec["params"])
+                        model = self._estimator(spec)(**spec["params"])
                         if pooled:
                             print(f"fit {name} {self.plan.column} {split} on {len(model_fit)} "
                                   "pooled rows", flush=True)
@@ -5658,7 +5657,10 @@ class ChronologicalCDFStudy:
                     for band in (cal, val):
                         model._validate_x(band[c["features"]].to_numpy())
                     xc, xv = [self._transform(imputer, b, c["features"]) for b in (cal, val)]
-                    count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
+                    # A pooled fit's per-group row map goes on the entry that fitted it only:
+                    # repeated on every group, counts.json grew with groups squared.
+                    count[name+"_fit"] = {**{k: v for k, v in fit_count.items()
+                                             if new_fit or k != "groups"}, "new_fit": new_fit}
                     if hasattr(model, "curve_decision_context"):
                         raw = model.curve_decision_context(
                             xv, self._decision_context_rows(val))
@@ -5876,8 +5878,7 @@ class CDFHyperparameterStudy:
                     raise ValueError("candidate labels, class, heads or seed disagree")
             cls = spec["class"].rsplit(":", 1)[-1]
             ChronologicalCDFStudy({**c, "models": {name: spec}})
-            module, class_name = spec["class"].split(":")
-            getattr(importlib.import_module(module), class_name)(**spec["params"])
+            ChronologicalCDFStudy._estimator(spec)(**spec["params"])
         if self.grouped:
             inventory_specs = {**c["models"], **e["candidates"]}
             labels = {}

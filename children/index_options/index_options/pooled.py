@@ -372,8 +372,9 @@ def workflow_document(configs_dir):
     partition and selects; ``step7`` runs the per-ticker workflow's
     ``args.evaluate.stages``; ``report`` hands :func:`report_spec_document`'s
     template to ``dskit.pipeline.workflow_report``, which verifies the ledger
-    the runner keeps. Stage lists, CLI flags and the run environment are copied
-    from :data:`WORKFLOW_SOURCE`.
+    the runner keeps. Stage lists, CLI flags, the run environment, the study and
+    report commands and the report's file names are copied from
+    :data:`WORKFLOW_SOURCE`.
 
     Parameters
     ----------
@@ -385,7 +386,9 @@ def workflow_document(configs_dir):
     dict
         The document ``write`` stores as :data:`WORKFLOW_FILE`.
     """
-    source = _load(configs_dir, WORKFLOW_SOURCE)["args"]
+    workflow = _load(configs_dir, WORKFLOW_SOURCE)
+    source, registry = workflow["args"], workflow["registry"]
+    report_files = {k: workflow["layout"]["report"][k] for k in ("markdown", "html", "sections")}
     study = "{W}/study"
     return {
         "notes": (
@@ -413,17 +416,14 @@ def workflow_document(configs_dir):
             "step7": {"dir": "{W}/workflow/step7",
                       "development": f"{study}/evaluate/development",
                       "scored": f"{study}/evaluate/later", "report": f"{study}/report"},
-            "report": {"dir": "{W}/workflow/report", "output": "{W}/report",
-                       "markdown": "{L.report.output}/report.md",
-                       "html": "{L.report.output}/report.html",
-                       "sections": "{L.report.output}/sections"},
+            "report": {"dir": "{W}/workflow/report", "output": "{W}/report", **report_files},
         },
         "registry": {
             "zoo": {"template": STUDY_FILE, "extends": None,
-                    "command": "{python} -m index_options.cdf_study {config}"},
+                    "command": registry["step4"]["command"]},
             "step7": {"extends": "zoo"},
             "report": {"template": REPORT_SPEC_FILE, "extends": None,
-                       "command": "{python} -m dskit.pipeline.workflow_report {config}"},
+                       "command": registry["report"]["command"]},
         },
         "steps": {
             "zoo": {"registry": "zoo", "in": {"W": "$args.work_dir"},

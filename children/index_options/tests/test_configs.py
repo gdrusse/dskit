@@ -3486,6 +3486,21 @@ def test_every_pooled_candidate_trains_on_the_selection_metric_with_ticker_heads
     ChronologicalCDFStudy._pin_tail_weight({**c, "models": e["candidates"]})
 
 
+def test_the_shipped_pooled_document_constructs_its_study(child_root, monkeypatch):
+    # The fold table is a run output (not in git): stand in a valid two-fold table for the
+    # pinned file, so the rest of the document is validated as the CLI would.
+    from dskit.pipeline.libs import predictive_cdf
+
+    folds = [{"fold": 1, "role": "warmup", "train_start": "2016-02-05",
+              "train_end": "2023-07-28", "val_start": "2023-08-29", "val_end": "2023-11-10"},
+             {"fold": 2, "role": "scored", "train_start": "2016-02-05",
+              "train_end": "2024-01-05", "val_start": "2024-02-06", "val_end": "2024-04-22"}]
+    monkeypatch.setattr(predictive_cdf._FoldPlan, "_read", staticmethod(lambda spec: folds))
+    study = predictive_cdf.CDFHyperparameterStudy(_pooled(child_root))
+    assert study.plan.min_task_fit_rows == 40 and study.plan.admits
+    assert list(study.partitions) == ["development", "later"]
+
+
 def test_the_pooled_workflow_and_report_spec_equal_their_generator_and_validate(child_root):
     import os
 

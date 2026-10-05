@@ -248,6 +248,27 @@ def test_a_frame_holding_containers_is_never_stored(tmp_path):
         cache.store({"v": 1}, contexts, {})
 
 
+def test_a_failed_write_or_a_lost_slot_degrades_to_an_unstored_build(tmp_path, monkeypatch):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    real = pd.DataFrame.to_parquet
+
+    def full_disk(self, path, **kw):
+        real(self, path, **kw)
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", full_disk)
+    frame, payload, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "unstored" and len(frame) == 2 and payload["pair"] == [1, 2]
+    assert list((tmp_path / "cache").iterdir()) == []      # no partial file is left behind
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", real)
+    monkeypatch.setattr(cache, "load", lambda identity: None)   # another writer took the slot
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "unstored" and calls == [1, 1]
+    assert not pack.ParquetFrameCache.storable(pd.DataFrame([[1, 2]], columns=["a", "a"]))
+    assert not pack.ParquetFrameCache.storable(pd.DataFrame({0: [1]}))
+
+
 def test_the_code_digest_names_the_code_that_built_a_frame(tmp_path):
     import types
     package = types.ModuleType("pkg")

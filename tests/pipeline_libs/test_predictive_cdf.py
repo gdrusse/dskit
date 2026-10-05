@@ -1099,7 +1099,8 @@ def test_pooled_study_fits_once_and_keeps_index_calibration_and_counts(tmp_path,
     assert len(scores) == 4 and set(scores.unit) == {'A', 'B'}
     counts = json.loads((tmp_path/'pool'/'counts.json').read_text())
     assert all(r['pool_fit']['n'] == 5 for r in counts)
-    assert all(r['pool_fit']['groups'] == {'A': 3, 'B': 2} for r in counts)
+    # The per-group map rides on the entry that fitted only (ADR-0236 amendment 2).
+    assert [r['pool_fit'].get('groups') for r in counts] == [{'A': 3, 'B': 2}, None]
     assert sum(r['pool_fit']['new_fit'] for r in counts) == 1
     c['models']['pool']['pooled_typo'] = True
     with pytest.raises(ValueError, match='model'):
@@ -3492,13 +3493,21 @@ def _admission_config(tmp_path, spec, minimum=None, calibrate=False):
 
 
 def test_an_undeclared_minimum_keeps_the_every_band_refusal(tmp_path, monkeypatch):
-    # Owner: the default keeps today's behaviour. A late task's empty fit band refuses.
+    # Owner: the default keeps today's behaviour. A late task's empty fit band refuses,
+    # and so does an empty calibration band.
     rows = _late_rows()
     spec, _ = _fold_table(tmp_path, rows, 1)
     frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
     monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
     with pytest.raises(ValueError, match='empty band: B 1'):
         ChronologicalCDFStudy(_admission_config(tmp_path, spec)).run(frame)
+    holes = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01'}
+    rows = _late_rows(start='2020-01-01', missing=holes)   # fold 3: no B calibration row
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config = _admission_config(tmp_path, spec)
+    config['output'] = str(tmp_path/'cal-hole')
+    with pytest.raises(ValueError, match='empty band: B 3'):
+        ChronologicalCDFStudy(config).run(frame)
 
 
 @pytest.mark.parametrize(('minimum', 'waits'), [(1, [1, 2]), (4, [1, 2, 3])])
@@ -3603,12 +3612,15 @@ def test_a_run_writes_its_scores_and_counts_once(tmp_path, monkeypatch):
     spec, plan = _fold_table(tmp_path, rows, 1)
     frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
     monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
-    written, write = [], pd.DataFrame.to_parquet
+    import pathlib
+    written, write, text = [], pd.DataFrame.to_parquet, pathlib.Path.write_text
     monkeypatch.setattr(pd.DataFrame, 'to_parquet',
                         lambda self, path, **kw: written.append(str(path).rsplit('/', 1)[-1])
                         or write(self, path, **kw))
+    monkeypatch.setattr(pathlib.Path, 'write_text',
+                        lambda self, data, **kw: written.append(self.name) or text(self, data, **kw))
     scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
-    assert written.count('scores.parquet') == 1
+    assert written.count('scores.parquet') == written.count('counts.json') == 1
     stored = pd.read_parquet(tmp_path/'out/scores.parquet')
     pd.testing.assert_frame_equal(stored, scores.reset_index(drop=True))
     counts = json.loads((tmp_path/'out/counts.json').read_text())

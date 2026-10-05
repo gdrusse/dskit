@@ -48,6 +48,25 @@ def test_files_token_walks_directories_and_names_a_missing_path(tmp_path):
     assert files_token([str(tmp_path / "gone")]) != files_token([])  # absence is a state too
 
 
+def test_files_token_leaves_out_a_file_gone_mid_walk(tmp_path, monkeypatch):
+    from dskit.onboarding import layout
+
+    folder = tmp_path / "archive"
+    keep, gone = _put(folder / "a.bin"), _put(folder / "b.bin")
+    real = layout.file_signature
+
+    def racing(path):
+        if path == str(gone):
+            raise AssetError([f"cannot stat {path}: vanished"])
+        return real(path)
+
+    monkeypatch.setattr(layout, "file_signature", racing)
+    walked = files_token([str(folder)])
+    gone.unlink()
+    monkeypatch.setattr(layout, "file_signature", real)
+    assert walked == files_token([str(folder)]) and keep.exists()
+
+
 def test_create_builds_the_whole_estate(tmp_path):
     ob = OnboardingRoot.create(str(tmp_path / "ob"))
     for sub in ("store", "raw", "observations", "forecasts", "state", "published"):

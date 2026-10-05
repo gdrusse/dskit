@@ -1689,6 +1689,11 @@ def test_provenance_is_the_one_owner_of_what_main_hands_the_study(tmp_path, monk
     cdf_study._main()
     assert reads == [1, 1] and not seen
     assert (tmp_path/"fresh"/cdf_study.PANEL_CACHE_DIR/"frame.parquet").exists()
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel",
+                                      "--partition", "x"])
+    with pytest.raises(SystemExit):
+        cdf_study._main()
+    assert reads == [1, 1]
 
 
 def test_expanded_context_joins_only_the_strictly_prior_close_and_ages_it(tmp_path, monkeypatch):
