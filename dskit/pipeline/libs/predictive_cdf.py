@@ -3736,7 +3736,6 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
                  seed=0, num_threads=1, hessian_floor=1e-6, min_scale=_MIN_SCALE,
                  batch_size=4096, device="cpu", deterministic=False, patience=None,
                  head_features=None, feature_indices=None, max_bin=255, hessian="exact"):
-        import math
         counts = ((n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
                   (seed, 0), (num_threads, 1), (max_bin, 2))
         rates = (feature_fraction, lambda_l2, hessian_floor)
