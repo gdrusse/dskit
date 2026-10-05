@@ -978,12 +978,13 @@ PANEL_READ_KEYS = {
     "raw_chain", "market_symbols", "fred_market_symbols", "surface_features", "ohlc_windows",
     "matched_dte_vrp", "columns", "reference_window", "change_lags", "directional_windows",
     "periods_per_year", "calendar", "calendar_pad_days", "dividend_field",
-    "exact_dte", "reader", "keyed_tables", "corporate_actions", "cohort_columns"}
+    "exact_dte", "reader", "keyed_tables", "corporate_actions", "cohort_columns",
+    "as_of_acquisition_ms"}
 PANEL_READ_REQUIRED = PANEL_READ_KEYS - {
     "chain_features", "raw_chain", "market_symbols", "fred_market_symbols", "surface_features",
     "ohlc_windows", "matched_dte_vrp", "reference_window", "change_lags", "directional_windows",
     "periods_per_year", "calendar", "calendar_pad_days", "dividend_field", "exact_dte", "reader",
-    "keyed_tables", "corporate_actions", "cohort_columns"}
+    "keyed_tables", "corporate_actions", "cohort_columns", "as_of_acquisition_ms"}
 
 
 def _panel_read_params(**over):
@@ -1044,7 +1045,8 @@ def test_the_panel_readers_params_are_the_tail_data_read_keys_plus_columns(child
     assert set(ExactExpiryPanelRead._PARAMS) == PANEL_READ_KEYS == (
         set(data) - {"archive_root"} | {"columns"} | study_conventions   # frozen tail config omits them
         | {"exact_dte", "reader", "keyed_tables", "corporate_actions",   # ADR-0230 additions
-           "cohort_columns"})
+           "cohort_columns"}
+        | {"as_of_acquisition_ms"})                                      # ADR-0236 amendment 3
     assert set(ExactExpiryPanelRead._PARAMS) & {"decision_regions", "macro_event_calendars"} == set()
 
 

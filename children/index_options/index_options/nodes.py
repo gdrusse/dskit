@@ -2641,7 +2641,8 @@ class ExactExpiryPanelRead(Node):
         (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`)
         and, ADR-0230, ``exact_dte`` (keep one horizon), ``reader`` (``price_calendar``
         builds the panel from a price file alone), ``keyed_tables`` and
-        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`).
+        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`), and
+        ``as_of_acquisition_ms`` (the observation reads' vintage, ADR-0236 amendment 3).
 
     Examples
     --------
@@ -2664,8 +2665,9 @@ class ExactExpiryPanelRead(Node):
                  "symbols", "windows")
     #: ``surface`` and ``lifecycle`` are required only while no ``reader`` is selected (ADR-0230).
     _SURFACE_REQUIRED = ("lifecycle", "surface")
-    _OPTIONAL = ("calendar", "calendar_pad_days", "chain_features", "change_lags",
-                 "cohort_columns", "corporate_actions", "directional_windows", "dividend_field", "exact_dte",
+    _OPTIONAL = ("as_of_acquisition_ms", "calendar", "calendar_pad_days", "chain_features",
+                 "change_lags", "cohort_columns", "corporate_actions", "directional_windows",
+                 "dividend_field", "exact_dte",
                  "fred_market_symbols", "keyed_tables", "market_symbols", "matched_dte_vrp",
                  "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
                  "surface_features")

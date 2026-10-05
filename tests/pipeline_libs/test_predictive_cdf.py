@@ -4498,3 +4498,107 @@ def test_plain_crps_studies_score_no_weighted_column(tmp_path):
                                     ).summarize(scores)
     assert summary["selection_metric"] == "crps"
     assert {r["metric"] for r in summary["paired_block_intervals"]} == {"crps"}
+
+
+# ---- ADR-0236 amendment 3: groups fitted in spawned worker processes -------------------------
+
+WORKERS = ChronologicalCDFStudy.GROUP_WORKERS_ENV
+_TWIN = {'class': 'dskit.pipeline.libs.predictive_cdf:TorchCDF', 'calibrate': False,
+         'equivalence': 'twin',
+         'params': {'encoder': {'kind': 'mlp'}, 'losses': _ZOO_LOSSES,
+                    'components': 2, 'hidden': [4], 'epochs': 40, 'patience': 2,
+                    'batch_size': 8, 'seeds': [3], 'device': 'cpu', 'deterministic': True,
+                    'learning_rate': .01}}
+
+
+def _worker_study(tmp_path, name, groups=('A', 'B', 'C', 'D'), pooled=False):
+    """Four groups; a reference, two equivalent torch twins and a CPU booster (unpooled)."""
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rows = _fold_rows(groups=groups)
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    config = _fold_config(tmp_path, spec, name)
+    config['tail_weight'] = 1.
+    config['models'].update({'twin_a': copy.deepcopy(_TWIN), 'twin_b': copy.deepcopy(_TWIN),
+                             'boost': {
+        'class': 'dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF', 'calibrate': False,
+        'pooled': pooled, 'params': {'losses': _ZOO_LOSSES,
+                                     'components': 2, 'n_estimators': 30, 'min_data_in_leaf': 2,
+                                     'num_leaves': 3, 'hessian': 'constant',
+                                     'num_threads': 1, 'device': 'cpu'}}})
+    return config, pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+
+
+def _written(path):
+    """Every file a run wrote: npz arrays (a zip stamps its write time), counts without
+    timings, the protocol without its output directory, every other file as bytes."""
+    out = {}
+    for file in sorted(p for p in path.rglob('*') if p.is_file()):
+        rel = file.relative_to(path).as_posix()
+        if file.suffix == '.npz':
+            with np.load(file) as archive:
+                out[rel] = {k: archive[k].tolist() for k in archive.files}
+        elif file.name == 'counts.json':
+            out[rel] = [{k: v for k, v in row.items() if not k.endswith('_seconds')}
+                        for row in json.loads(file.read_text())]
+        elif file.name == 'protocol.json':
+            out[rel] = {k: v for k, v in json.loads(file.read_text()).items()
+                        if k not in ('output', 'config_sha256')}
+        else:
+            out[rel] = file.read_bytes()
+    return out
+
+
+def test_group_workers_write_exactly_what_one_process_writes(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv(WORKERS, raising=False)
+    config, frame = _worker_study(tmp_path, 'one')
+    one = ChronologicalCDFStudy(config).run(frame)
+    serial = [line for line in capsys.readouterr().out.splitlines() if '[ticker-done]' in line]
+    monkeypatch.setenv(WORKERS, '3')
+    config['output'] = str(tmp_path/'three')
+    three = ChronologicalCDFStudy(config).run(frame, label='search smoke')
+    spawned = [line for line in capsys.readouterr().out.splitlines() if '[ticker-done]' in line]
+    pd.testing.assert_frame_equal(one, three)
+    assert _written(tmp_path/'one') == _written(tmp_path/'three')
+    evidence = json.loads((tmp_path/'three/equivalence.json').read_text())
+    assert evidence and {e['status'] for e in evidence} == {'verified'}
+    assert {e['population'] for e in evidence} == {'A', 'B', 'C', 'D'}
+    # One live line per group: group order in process, completion order (any) in workers.
+    assert [line.split()[2] for line in serial] == ['A', 'B', 'C', 'D']
+    assert [line.split()[-1] for line in serial] == ['[1/4]', '[2/4]', '[3/4]', '[4/4]']
+    assert serial[0].startswith('[ticker-done] one A n=')
+    assert sorted(line.split()[3] for line in spawned) == ['A', 'B', 'C', 'D']
+    assert {line.split()[-1] for line in spawned} == {'[1/4]', '[2/4]', '[3/4]', '[4/4]'}
+    for line in spawned:
+        assert line.startswith('[ticker-done] search smoke ')
+        assert [word.split('=')[0] for word in line.split()[5:-1]] == ['twin_a', 'twin_b', 'boost']
+
+
+@pytest.mark.parametrize('width', ['0', '', 'two', '-1'])
+def test_a_malformed_group_width_refuses_before_writing(tmp_path, monkeypatch, width):
+    monkeypatch.setenv(WORKERS, width)
+    config, frame = _worker_study(tmp_path, 'bad')
+    with pytest.raises(ValueError, match=WORKERS):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not (tmp_path/'bad').exists()
+
+
+def test_group_workers_refuse_a_pooled_model_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv(WORKERS, '2')
+    config, frame = _worker_study(tmp_path, 'pooled', pooled=True)
+    with pytest.raises(ValueError, match=r"\['boost'\] fit once over every group"):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not (tmp_path/'pooled').exists()
+    monkeypatch.setenv(WORKERS, '1')   # one worker keeps the pooled path
+    ChronologicalCDFStudy(config).run(frame)
+
+
+@pytest.mark.parametrize('width', ['1', '2'])
+def test_a_failing_group_fails_the_run_naming_the_group(tmp_path, monkeypatch, width):
+    monkeypatch.setenv(WORKERS, width)
+    config, frame = _worker_study(tmp_path, 'fail', groups=('A', 'B'))
+    frame.loc[frame.unit == 'B', 't'] = np.inf   # the imputer refuses B's fit band
+    with pytest.raises(ValueError, match='infinity') as raised:
+        ChronologicalCDFStudy(config).run(frame)
+    assert any("group 'B'" in note for note in raised.value.__notes__)
+    assert not (tmp_path/'fail'/'scores.parquet').exists()

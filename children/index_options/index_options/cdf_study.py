@@ -2272,7 +2272,10 @@ class ExactExpiryCDFPanel:
         file by store reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``,
         resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
-        absent keeps every horizon up to ``max_dte``.
+        absent keeps every horizon up to ``max_dte``. Optional ``as_of_acquisition_ms``
+        (int >= 0, ADR-0154's read vintage) bounds the acquisitions every observation read
+        sees (index closes, market symbols, FRED, the surface reader's prices); keyed tables
+        and price files are not bounded.
         Study conventions (see ``panel_convention_problems``): ``reference_window``,
         ``change_lags``, ``directional_windows``, ``periods_per_year``, ``calendar``,
         ``calendar_pad_days``, and ``dividend_field`` (absent: dividends known zero).
@@ -2290,11 +2293,12 @@ class ExactExpiryCDFPanel:
     def __init__(self, config, holdout_start=None):
         if holdout_start is not None and date_problem(holdout_start):
             raise ValueError("holdout_start must be an ISO date or None")
-        if "exact_dte" in config:
+        for name, low in (("exact_dte", 1), ("as_of_acquisition_ms", 0)):
             problems = []
-            check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
+            if name in config:
+                check_int_param(problems, name, config[name], ge=low)
             if problems:
-                raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
+                raise ValueError(f"{name} must be an integer >= {low} or absent: {problems}")
         problems = type(self).reader_problems(config)
         if problems:
             raise ValueError("; ".join(problems))
@@ -2626,6 +2630,16 @@ class ExactExpiryCDFPanel:
             frame[column] = values
         return frame.sort_index()
 
+    def _vintage(self):
+        """Return the read vintage every observation read of the panel takes, when declared.
+
+        ``as_of_acquisition_ms`` (ADR-0154) hides rows acquired after it from the observation
+        reads (index closes, market symbols, FRED, and the surface reader's prices), so a stage
+        that rebuilds the panel after a scheduled acquisition reads what the first stage read
+        (ADR-0236 amendment 3).
+        """
+        return {k: self.config[k] for k in ("as_of_acquisition_ms",) if k in self.config}
+
     def _join_fred_features(self, frame, specifications):
         """Join pinned market observations at their conservative availability dates."""
         import numpy as np
@@ -2638,7 +2652,7 @@ class ExactExpiryCDFPanel:
             reader = ObservationRows(feature, {
                 "root": self.config["root"], "source": "fred-market-features",
                 "stream": spec["stream"], "key_fields": ["observation_date"],
-                "ts_field": "observation_date",
+                "ts_field": "observation_date", **self._vintage(),
             })
             records = reader.run(None, {})["records"]
             self.reader_fingerprints[f"fred:{spec['stream']}"] = reader.fingerprint()
@@ -2720,7 +2734,7 @@ class ExactExpiryCDFPanel:
         c = self.config
         price_reader = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"],
                                            "since_ms": int(pd.Timestamp(c["since"]).timestamp()*1000),
-                                           "symbol": symbol})
+                                           "symbol": symbol, **self._vintage()})
         prices = price_reader.run(None, {})["records"]
         self.reader_fingerprints[symbol] = price_reader.fingerprint()
         return prices
@@ -2948,7 +2962,7 @@ class ExactExpiryCDFPanel:
                 if "date_ohlc" in rows:
                     rows = rows.drop(columns=["date_ohlc"])
             iv_reader = IndexCloseRows("iv", {"root": c["root"], "source": c["iv_source"],
-                                              "symbol": iv_symbol})
+                                              "symbol": iv_symbol, **self._vintage()})
             iv = iv_reader.run(None, {})["records"]
             self.reader_fingerprints[iv_symbol] = iv_reader.fingerprint()
             iv_by_date = {r["date"]: r["close"] for r in iv}
@@ -3000,7 +3014,7 @@ class ExactExpiryCDFPanel:
             for feature, spec in c["market_symbols"].items():
                 symbol = spec["symbol"]
                 reader = IndexCloseRows(feature, {"root": c["root"], "source": c["iv_source"],
-                                                   "symbol": symbol})
+                                                   "symbol": symbol, **self._vintage()})
                 records = reader.run(None, {})["records"]
                 self.reader_fingerprints[symbol] = reader.fingerprint()
                 values = pd.DataFrame(records)[["date", "close"]].drop_duplicates("date")

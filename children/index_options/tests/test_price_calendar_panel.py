@@ -653,3 +653,47 @@ def test_the_windowed_cohort_equals_step_1s_target_dates(make):
     ).run(None, {"records": cut})["records"]
     listed = [r["d"] for r in step1 if _expiry(r["d"]) == _settlement(r["d"])]
     assert _with_window(make, _window()).read().quote_date.tolist() == listed
+
+
+# -- ADR-0236 amendment 3: the observation reads' vintage --------------------------------------
+
+@pytest.mark.parametrize("vintage", [None, 1_759_670_000_000])
+def test_a_declared_vintage_bounds_every_observation_read_of_the_panel(make, monkeypatch, vintage):
+    # A stage that rebuilds the panel after a scheduled acquisition must read what the
+    # first stage read: the index-close, market-symbol and FRED reads all take the vintage.
+    seen = []
+
+    class _Seen(_Vol):
+        def __init__(self, key, params):
+            super().__init__(key, params)
+            self.vintage = params.get("as_of_acquisition_ms", "absent")
+
+        def run(self, ctx, inputs):   # a read; the price projection constructs but never reads
+            seen.append(("index", self.vintage))
+            return super().run(ctx, inputs)
+
+    class _Rates:
+        def __init__(self, key, params):
+            self.vintage = params.get("as_of_acquisition_ms", "absent")
+
+        def run(self, ctx, inputs):
+            seen.append(("fred", self.vintage))
+            return {"records": [{"observation_date": d, "DFF": 5.} for d in DATES]}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    monkeypatch.setattr(cdf_study, "IndexCloseRows", _Seen)
+    monkeypatch.setattr(cdf_study, "ObservationRows", _Rates)
+    declared = {} if vintage is None else {"as_of_acquisition_ms": vintage}
+    make(market_symbols={"market_vix9d": {"symbol": "VIX9D", "max_age_days": 7}},
+         fred_market_symbols={"rate_dff": {"stream": "dff", "field": "DFF", "lag_sessions": 1,
+                                           "max_age_days": 7}}, **declared).read()
+    expected = "absent" if vintage is None else vintage
+    assert seen == [("index", expected), ("index", expected), ("fred", expected)]
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "1759670000000"])
+def test_a_malformed_vintage_refuses_the_panel(make, value):
+    with pytest.raises(ValueError, match="as_of_acquisition_ms"):
+        make(as_of_acquisition_ms=value)

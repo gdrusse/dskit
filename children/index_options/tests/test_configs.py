@@ -234,6 +234,11 @@ def test_exact_manifest_and_agent_parity(child_root):
         # Owner request 2026-10-04: its workflow manifest and verified-report spec.
         "configs/workflow-pooled-zoo-417.json",
         "configs/templates/report-spec-pooled-zoo-417.json",
+        # The pooled run's results memo (302bf694), which this inventory missed.
+        "docs/memos/2026-10-05-pooled-zoo-417.md",
+        # ADR-0236 amendment 3 (owner request 2026-10-05): the same zoo fitted per ticker.
+        "configs/run-perticker-zoo-417.json", "configs/workflow-perticker-zoo-417.json",
+        "configs/templates/report-spec-perticker-zoo-417.json",
     }
     ignored = {".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".git",
                "build", "dist", "ob", "pipeline_runs", ".journal.lock"}
@@ -257,8 +262,9 @@ def test_exact_manifest_and_agent_parity(child_root):
     # workflow-features.json, 4 templates, stock_bars.py and 5 tests = 19 new = 417, plus 1 more = 418,
     # plus ADR-0235's four option-universe-300 configs + the 300-stock bars source and daily-features overlay = 425
     # (427 as shipped), plus ADR-0236/0237's pooled.py and its two generated documents = 430,
-    # plus the pooled workflow manifest and report spec = 432
-    assert len(actual) == 432
+    # plus the pooled workflow manifest and report spec = 432, plus its results memo = 433,
+    # plus the per-ticker study, its workflow manifest and report spec = 436
+    assert len(actual) == 436
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
@@ -3600,3 +3606,92 @@ def test_the_pooled_generator_refuses_a_refused_ticker_in_no_universe(child_root
     values = pooled.measured(child_root/"configs", shipped)
     with pytest.raises(ValueError, match="in no universe"):
         pooled.zoo_document(child_root/"configs", {**values, "refused": ["HES", "ZZZZ"]})
+
+
+# -- ADR-0236 amendment 3 (owner request 2026-10-05): the same zoo, fitted once per ticker ------
+
+#: Measured 2026-10-05: after every acquisition the panel's observation reads see (the newest,
+#: cboe-index-wide, 2026-10-02T14:31Z), before the recorder's next (2026-10-05T14:30Z).
+PER_TICKER_VINTAGE = 1791198000000   # 2026-10-05T11:00:00Z
+
+
+def _perticker(child_root):
+    return json.loads((child_root/"configs"/pooled.PER_TICKER.study_file).read_text())
+
+
+def test_the_perticker_documents_equal_their_generator(child_root):
+    configs, variant = child_root/"configs", pooled.PER_TICKER
+    shipped = _perticker(child_root)
+    assert pooled.zoo_document(configs, pooled.measured(configs, shipped), variant) == shipped
+    manifest = json.loads((configs/variant.workflow_file).read_text())
+    assert manifest == pooled.workflow_document(configs, variant)
+    spec = json.loads((configs/variant.report_spec_file).read_text())
+    assert spec == pooled.report_spec_document(shipped, variant)
+    assert variant.folds_file is None and variant.fold_document == pooled.FOLDS_FILE
+    assert shipped["data"]["as_of_acquisition_ms"] == PER_TICKER_VINTAGE
+
+
+def test_the_perticker_zoo_is_the_pooled_zoo_fitted_once_per_ticker(child_root):
+    import importlib
+
+    pooled_doc, doc = _pooled(child_root), _perticker(child_root)
+    # Same universe, data, folds (the pooled pin), cells, loss, selection and reference.
+    data = {k: v for k, v in doc["data"].items() if k not in ("notes", "as_of_acquisition_ms")}
+    assert data == {k: v for k, v in pooled_doc["data"].items() if k != "notes"}
+    study = {k: v for k, v in doc["study"].items() if k != "output"}
+    assert study == {k: v for k, v in pooled_doc["study"].items() if k != "output"}
+    assert doc["study"]["output"] == "pipeline_runs/perticker-zoo-417/study/unused"
+    e, pe = doc["experiment"], pooled_doc["experiment"]
+    assert {k: v for k, v in e.items() if k not in ("candidates", "output", "notes")} == {
+        k: v for k, v in pe.items() if k not in ("candidates", "output", "notes")}
+    assert e["output"] == "pipeline_runs/perticker-zoo-417/study"
+    heads = {doc["study"]["features"].index(f) for f in e["task_features"].values()}
+    assert list(e["candidates"]) == list(pe["candidates"])
+    for name, spec in e["candidates"].items():
+        want = copy.deepcopy(pe["candidates"][name])
+        del want["pooled"], want["params"]["head_features"]
+        # Restated on purpose (per-ticker benchmark, 2026-10-05): batch 512 and CPU for the
+        # networks; CPU, one thread and 20 rows a leaf for LightGBM.
+        want["params"].update({"device": "cpu", "num_threads": 1, "min_data_in_leaf": 20}
+                              if name.startswith("lgbm") else {"device": "cpu", "batch_size": 512})
+        assert spec == want, name
+        assert not heads & set(spec["params"]["feature_indices"]), name   # no is_<T> input
+        module, cls = spec["class"].split(":")
+        getattr(importlib.import_module(module), cls)(**spec["params"])   # every knob validates
+
+
+def test_the_perticker_document_constructs_its_study_with_the_pooled_fold_table(
+        child_root, monkeypatch):
+    from dskit.pipeline.libs import predictive_cdf
+
+    folds = [{"fold": 1, "role": "warmup", "train_start": "2016-02-05",
+              "train_end": "2023-07-28", "val_start": "2023-08-29", "val_end": "2023-11-10"},
+             {"fold": 2, "role": "scored", "train_start": "2016-02-05",
+              "train_end": "2024-01-05", "val_start": "2024-02-06", "val_end": "2024-04-22"}]
+    monkeypatch.setattr(predictive_cdf._FoldPlan, "_read", staticmethod(lambda spec: folds))
+    doc = _perticker(child_root)
+    assert doc["study"]["fold_table"] == _pooled(child_root)["study"]["fold_table"]
+    study = predictive_cdf.CDFHyperparameterStudy(doc)
+    assert study.plan.min_task_fit_rows == 40
+    assert not any(s.get("pooled") for s in doc["experiment"]["candidates"].values())
+
+
+def test_the_perticker_workflow_runs_the_tickers_in_eight_workers(child_root):
+    import os
+
+    from dskit.pipeline import workflow as wf
+    from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+
+    configs, doc = child_root/"configs", _perticker(child_root)
+    manifest = json.loads((configs/pooled.PER_TICKER.workflow_file).read_text())
+    pooled_manifest = json.loads((configs/pooled.WORKFLOW_FILE).read_text())
+    flow = wf.validate_manifest(json.loads(json.dumps(manifest)), str(configs))
+    assert manifest["args"]["run_env"] == {**pooled_manifest["args"]["run_env"],
+                                           ChronologicalCDFStudy.GROUP_WORKERS_ENV: "8"}
+    assert manifest["args"]["zoo"] == pooled_manifest["args"]["zoo"]
+    assert manifest["args"]["evaluate"] == pooled_manifest["args"]["evaluate"]
+    output = os.path.normpath(doc["experiment"]["output"])
+    for step, out, tail in (("zoo", "search", "search"), ("zoo", "selection", "selection"),
+                            ("step7", "development", "evaluate/development"),
+                            ("step7", "scored", "evaluate/later"), ("step7", "report", "report")):
+        assert os.path.normpath(flow.path(step, out)) == os.path.join(output, tail)

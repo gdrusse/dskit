@@ -16,6 +16,7 @@ import time
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import date_problem
+from dskit.pipeline.folds import declared_width
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
 
@@ -4902,6 +4903,10 @@ class ChronologicalCDFStudy:
     WEIGHTED_METRIC = "weighted_crps"
     #: The task-admission ledger every run writes beside ``counts.json`` (ADR-0236 amendment).
     ADMISSION_FILE = "admission.json"
+    #: The environment variable naming how many processes fit groups at once (ADR-0236
+    #: amendment 3); unset means 1, the in-process loop. A machine's width, never a
+    #: document's (ADR-0093): a graded knob would move the study identity when tuned.
+    GROUP_WORKERS_ENV = "DSKIT_GROUP_WORKERS"
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
@@ -5523,15 +5528,25 @@ class ChronologicalCDFStudy:
                                                    else (pit > level)).astype(float)
         return result, q
 
-    def run(self, frame, diagnostic=None):
+    def run(self, frame, diagnostic=None, label=None):
         """Fit paired splits (years or fold-table folds); retain scores, counts, curves.
+
+        Groups are fitted one after another in this process or, when the environment
+        variable :attr:`GROUP_WORKERS_ENV` names a width above 1, in that many spawned
+        processes (ADR-0236 amendment 3), each fitting one group's splits and models.
+        Outputs are gathered in group order, so every file equals the one-process run's
+        on the same device and thread count. Each group's completion prints one
+        ``[ticker-done]`` line (point skill on its own rows; the summary is canonical).
 
         Parameters
         ----------
         frame : DataFrame
             Complete labels, causal features and metadata.
         diagnostic : callable or None
-            Optional domain diagnostic(frame, curve, draws) returning row metrics.
+            Optional domain diagnostic(frame, curve, draws) returning row metrics;
+            pickled to the group workers when there are any.
+        label : str or None
+            Names the run on the progress lines; None uses the output directory's name.
 
         Returns
         -------
@@ -5541,16 +5556,25 @@ class ChronologicalCDFStudy:
         Raises
         ------
         ValueError
-            For missing/empty bands or invalid labels/reference scales, or, with a
-            fold table, a row dated or settling on or after ``holdout_start``.
+            For missing/empty bands or invalid labels/reference scales; with a fold
+            table, a row dated or settling on or after ``holdout_start``; a malformed
+            :attr:`GROUP_WORKERS_ENV`; a width above 1 with a pooled model (a pooled
+            fit spans every group), refused before any output is written. A group
+            worker's exception is re-raised as that group raised it, with a note
+            naming the group.
         FileExistsError
             If the output directory exists; no research evidence is overwritten.
         """
         import numpy as np
         import pandas as pd
-        from sklearn.impute import SimpleImputer
 
         c = self.config
+        workers = declared_width(None, self.GROUP_WORKERS_ENV)
+        pooled = sorted(name for name, spec in c["models"].items() if spec.get("pooled", False))
+        if workers > 1 and pooled:
+            raise ValueError(f"{self.GROUP_WORKERS_ENV}={workers} fits each group in its own "
+                             f"process, but {pooled} fit once over every group: run them with "
+                             "one worker")
         _validate_temporal_frame(frame, c["date"], c["end"])
         self.plan.lock(frame)
         output = Path(c["output"])
@@ -5581,166 +5605,17 @@ class ChronologicalCDFStudy:
             raise ValueError("invalid target, reference or nonfuture outcome date")
         if frame[c["identity"]].isna().any().any() or frame.duplicated(c["identity"]).any():
             raise ValueError("missing or duplicate forecast identity")
-        results, counts, pooled_cache = [], [], {}
-        equivalence = {}
         calendar = self.plan.calendar(frame)
         admitted = self._admission(frame, calendar)
-        evaluated_groups = {split: self.plan.evaluated(n) for split, n in admitted.items()}
-        for group, group_frame in frame.groupby(c["group"]):
-            for split in self.plan.ids():
-                evaluated = group in evaluated_groups[split]
-                if not (evaluated or self.plan.admits):
-                    raise ValueError(f"empty band: {group} {split}")
-                if not evaluated:
-                    continue  # waiting, or nothing to score: in the admission ledger
-                fit, cal, val = self.plan.bands(group_frame, split, calendar)
-                if cal.empty:
-                    if not self.plan.admits:
-                        raise ValueError(f"empty band: {group} {split}")
-                    readers = [n for n, s in c["models"].items() if self._reads_group_calibration(s)]
-                    if readers:
-                        raise ValueError(f"empty calibration band: {group} {split}, which "
-                                         f"{readers} read")
-                if c.get("wing_metrics"):
-                    # Refuse malformed wing intervals before any model is fitted.
-                    for band in (fit, cal, val):
-                        if len(band):
-                            DecisionRegionScores(
-                                self._decision_context_rows(band)).segment_arrays()
-                count = {"group": group, self.plan.column: split}
-                for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
-                    count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
-                                   "ends": band[c["end"]].nunique(),
-                                   "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
-                                   "first": band[c["date"]].min() if len(band) else None,
-                                   "last": band[c["date"]].max() if len(band) else None,
-                                   "latest_label": band[c["end"]].max() if len(band) else None}
-                yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
-                model_items = sorted(c["models"].items(),
-                                     key=lambda item: item[0] != c["reference_model"])
-                for name, spec in model_items:
-                    start = time.monotonic()
-                    key = (split, name, json.dumps(spec, sort_keys=True))
-                    pooled = spec.get("pooled", False)
-                    new_fit = not (pooled and key in pooled_cache)
-                    if new_fit:
-                        if pooled:
-                            model_fit, model_cal, _ = self.plan.bands(frame, split, calendar)
-                            # A waiting group sits the split out: a head fitted on a few
-                            # rows is never scored (and LightGBM refuses a task under 3).
-                            waiting = self.plan.waiting(admitted[split])
-                            model_fit = model_fit[~model_fit[c["group"]].isin(waiting)]
-                            model_cal = model_cal[~model_cal[c["group"]].isin(waiting)]
-                        else:
-                            model_fit, model_cal = fit, cal
-                        model = self._estimator(spec)(**spec["params"])
-                        if pooled:
-                            print(f"fit {name} {self.plan.column} {split} on {len(model_fit)} "
-                                  "pooled rows", flush=True)
-                        for band in (model_fit, model_cal, val):
-                            model._validate_x(band[c["features"]].to_numpy())
-                        imputer = SimpleImputer(strategy="median", keep_empty_features=True)
-                        x = imputer.fit_transform(model_fit[c["features"]])
-                        if hasattr(model, "fit_decision_context"):
-                            model.fit_decision_context(
-                                self._decision_context_rows(model_fit),
-                                self._decision_context_rows(model_cal))
-                        model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
-                                  self._transform(imputer, model_cal, c["features"]),
-                                  (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
-                        if hasattr(model, "fit_context"):
-                            model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
-                        label = spec.get("equivalence")
-                        if label:
-                            if not hasattr(model, "_equivalence_state"):
-                                raise ValueError("equivalence model does not expose fitted state")
-                            state = model._equivalence_state()
-                            population = "pooled" if pooled else str(group)
-                            equivalence_key = (int(split), population, label)
-                            record = equivalence.setdefault(
-                                equivalence_key, {"digest": state, "members": []})
-                            if record["digest"] != state:
-                                raise ValueError("equivalence state mismatch")
-                            record["members"].append(name)
-                        fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
-                                     "groups": model_fit.groupby(c["group"]).size().to_dict(),
-                                     "latest_label": model_fit[c["end"]].max()}
-                        # A pooled fit band is most of the panel: never hold it (or its
-                        # imputed copy) through the per-group scoring that follows.
-                        del model_fit, model_cal, x
-                        if pooled:
-                            pooled_cache[key] = model, imputer, fit_count
-                    else:
-                        model, imputer, fit_count = pooled_cache[key]
-                    for band in (cal, val):
-                        model._validate_x(band[c["features"]].to_numpy())
-                    xc, xv = [self._transform(imputer, b, c["features"]) for b in (cal, val)]
-                    # A pooled fit's per-group row map goes on the entry that fitted it only:
-                    # repeated on every group, counts.json grew with groups squared.
-                    count[name+"_fit"] = {**{k: v for k, v in fit_count.items()
-                                             if new_fit or k != "groups"}, "new_fit": new_fit}
-                    if hasattr(model, "curve_decision_context"):
-                        raw = model.curve_decision_context(
-                            xv, self._decision_context_rows(val))
-                    else:
-                        raw = (model.curve_context(
-                        xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
-                        if hasattr(model, "curve_context") else model.curve(xv))
-                    variants = {"raw": raw}
-                    if spec["calibrate"]:
-                        calibration_curve = (model.curve_decision_context(
-                            xc, self._decision_context_rows(cal))
-                            if hasattr(model, "curve_decision_context")
-                            else model.curve(xc))
-                        pit = calibration_curve.cdf(yc[:, None])[:, 0]
-                        variants["calibrated"] = CalibratedCurve(raw, pit, c["calibration_knots"])
-                    else:
-                        variants["calibrated"] = raw
-                    for variant, curve in variants.items():
-                        scored, draws = self.scores(
-                            curve, yv, c["samples"], c["tail_intervals"], c["tail_points"],
-                            c.get("tail_probabilities"))
-                        columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
-                                                      c["group"], c["date"], c["end"], c["horizon"]]))
-                        part = val[columns].copy()
-                        part[self.plan.column], part["model"], part["variant"] = split, name, variant
-                        for metric, values in scored.items():
-                            part[metric] = values
-                        if "tail_weight" in c:
-                            part[self.WEIGHTED_METRIC] = (
-                                scored["crps"] + c["tail_weight"]*scored["tail_crps"])
-                        part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
-                        if diagnostic:
-                            for metric, values in diagnostic(val, curve, draws).items():
-                                part[metric] = values
-                        if c.get("decision_context"):
-                            scorer = DecisionRegionScores(self._decision_context_rows(val))
-                            for metric, values in scorer.score(curve, yv).items():
-                                part[metric] = values
-                            if c.get("wing_metrics"):
-                                for metric, values in scorer.wing_score(curve, yv).items():
-                                    part[metric] = values
-                        results.append(part)
-                        # Retain both exact grids/maps/mixtures and quadrature draws.
-                        # This is numerical research evidence, not a serving artifact.
-                        if split == max(self.plan.ids()):
-                            np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
-                                                draws=draws.astype("float32"),
-                                                reference=val[c["reference"]].to_numpy(),
-                                                identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
-                                                row_index=val.index.to_numpy(), **curve._arrays())
-                    count[name+"_seconds"] = time.monotonic()-start
-                    if hasattr(model, "_research_state"):
-                        count[name+"_research_state"] = model._research_state()
-                    if name == c["reference_model"]:
-                        reference_model, reference_imputer = model, imputer
-                    if isinstance(model, _CompositeLossCDF):
-                        count[name+"_losses"] = self._loss_telemetry(
-                            model, imputer, reference_model, reference_imputer, fit, cal, val)
-                    elif isinstance(model, MixtureMLPCDF):
-                        count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
-                    print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
-                counts.append(count)
+        shared = _GroupRun(calendar, admitted,
+                           {split: self.plan.evaluated(n) for split, n in admitted.items()},
+                           diagnostic, frame if pooled else None)
+        results, counts, equivalence = [], [], {}
+        for parts, group_counts, records in self._group_outputs(
+                frame, shared, workers, label or output.name):
+            results.extend(parts)
+            counts.extend(group_counts)
+            self._merge_equivalence(equivalence, records)
         # Written once: rewriting both after every group made a run quadratic in its
         # groups x splits (ADR-0236 amendment 2); a stage that dies is rerun whole anyway.
         scores = pd.concat(results, ignore_index=True)
@@ -5756,6 +5631,288 @@ class ChronologicalCDFStudy:
                     for (split, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
         return scores
+
+    def _group_outputs(self, frame, shared, workers, label):
+        """Yield each fitted group's ``_fit_group`` output in group order, printing progress.
+
+        A group no split scores is skipped (it has nothing to fit) unless the study keeps
+        the every-band rule, whose refusal it must still raise.
+        """
+        c = self.config
+        scored = set().union(*shared.evaluated.values())
+        names = {g for g in frame[c["group"]].unique() if g in scored or not self.plan.admits}
+        groups = ((g, rows) for g, rows in frame.groupby(c["group"]) if g in names)
+        if workers > 1:
+            yield from self._spawned_outputs(groups, shared, workers, label, len(names))
+            return
+        for done, (group, rows) in enumerate(groups, 1):
+            try:
+                output = self._fit_group(group, rows, shared)
+            except Exception as err:
+                err.add_note(f"raised while fitting group {group!r}")
+                raise
+            print(self._progress(label, group, output[0], done, len(names)), flush=True)
+            yield output
+
+    def _spawned_outputs(self, groups, shared, workers, label, total):
+        """Fit groups in a spawn pool (never fork: CUDA and OpenMP do not survive it).
+
+        At most twice the width is submitted at once, so only those groups' rows are
+        copied; finished outputs wait until every earlier group's has been yielded.
+        """
+        import concurrent.futures as futures
+        import itertools
+        import multiprocessing
+
+        import torch
+
+        pool = futures.ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=self._init_group_worker, initargs=(torch.get_num_threads(),))
+        pending, running, ready, emitted, done = enumerate(groups), {}, {}, 0, 0
+        try:
+            while True:
+                for index, (group, rows) in itertools.islice(pending, 2*workers-len(running)):
+                    running[pool.submit(self._fit_group, group, rows, shared)] = index, group
+                if not running:
+                    return
+                finished, _ = futures.wait(running, return_when=futures.FIRST_COMPLETED)
+                for future in finished:
+                    index, group = running.pop(future)
+                    try:
+                        ready[index] = future.result()
+                    except Exception as err:
+                        err.add_note(f"raised while fitting group {group!r} in a group worker")
+                        raise
+                    done += 1
+                    print(self._progress(label, group, ready[index][0], done, total), flush=True)
+                while emitted in ready:
+                    yield ready.pop(emitted)
+                    emitted += 1
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    @staticmethod
+    def _init_group_worker(threads):
+        """Give a group worker the parent's torch intra-op threads (equal results)."""
+        import torch
+        torch.set_num_threads(threads)
+
+    def _progress(self, label, group, parts, done, total):
+        """Return a finished group's live line: point skill per model on its own rows."""
+        import pandas as pd
+        c, reference = self.config, self.config["reference_model"]
+        metric = self.WEIGHTED_METRIC if "tail_weight" in c else "crps"
+        raw = pd.concat(parts)   # a fitted group scores every model in some split
+        raw = raw[raw.variant == "raw"]
+        means = raw.groupby("model")[metric].mean()
+        skills = [f"{name}={100*(1-means[name]/means[reference]):.2f}"
+                  for name in c["models"] if name != reference]
+        n = int((raw.model == reference).sum())
+        return " ".join(["[ticker-done]", label, str(group), f"n={n}", *skills,
+                         f"[{done}/{total}]"])
+
+    @staticmethod
+    def _merge_equivalence(held, records):
+        """Add equivalence records to ``held``, refusing a digest its peers disagree with."""
+        for key, record in records.items():
+            entry = held.setdefault(key, {"digest": record["digest"], "members": []})
+            if entry["digest"] != record["digest"]:
+                raise ValueError("equivalence state mismatch")
+            entry["members"].extend(record["members"])
+
+    def _fit_group(self, group, group_frame, shared):
+        """Fit and score one group's splits and models.
+
+        Parameters
+        ----------
+        group : object
+            The group's key.
+        group_frame : DataFrame
+            Every row of the group.
+        shared : _GroupRun
+            The run's calendar, admission and diagnostic and, for a pooled model, the
+            whole frame and the fits every group reuses.
+
+        Returns
+        -------
+        tuple
+            ``(parts, counts, equivalence)``: the group's score frames and ``counts.json``
+            entries in split then model order, and its equivalence records keyed by
+            ``(split, population, label)``.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`run`, for this group.
+        """
+        import numpy as np
+        from sklearn.impute import SimpleImputer
+
+        c, output, calendar = self.config, Path(self.config["output"]), shared.calendar
+        parts, counts, equivalence = [], [], {}
+        for split in self.plan.ids():
+            evaluated = group in shared.evaluated[split]
+            if not (evaluated or self.plan.admits):
+                raise ValueError(f"empty band: {group} {split}")
+            if not evaluated:
+                continue  # waiting, or nothing to score: in the admission ledger
+            fit, cal, val = self.plan.bands(group_frame, split, calendar)
+            if cal.empty:
+                if not self.plan.admits:
+                    raise ValueError(f"empty band: {group} {split}")
+                readers = [n for n, s in c["models"].items() if self._reads_group_calibration(s)]
+                if readers:
+                    raise ValueError(f"empty calibration band: {group} {split}, which "
+                                     f"{readers} read")
+            if c.get("wing_metrics"):
+                # Refuse malformed wing intervals before any model is fitted.
+                for band in (fit, cal, val):
+                    if len(band):
+                        DecisionRegionScores(
+                            self._decision_context_rows(band)).segment_arrays()
+            count = {"group": group, self.plan.column: split}
+            for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
+                count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
+                               "ends": band[c["end"]].nunique(),
+                               "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
+                               "first": band[c["date"]].min() if len(band) else None,
+                               "last": band[c["date"]].max() if len(band) else None,
+                               "latest_label": band[c["end"]].max() if len(band) else None}
+            yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
+            model_items = sorted(c["models"].items(),
+                                 key=lambda item: item[0] != c["reference_model"])
+            for name, spec in model_items:
+                start = time.monotonic()
+                key = (split, name, json.dumps(spec, sort_keys=True))
+                pooled = spec.get("pooled", False)
+                new_fit = not (pooled and key in shared.pooled_cache)
+                if new_fit:
+                    if pooled:
+                        model_fit, model_cal, _ = self.plan.bands(shared.frame, split, calendar)
+                        # A waiting group sits the split out: a head fitted on a few
+                        # rows is never scored (and LightGBM refuses a task under 3).
+                        waiting = self.plan.waiting(shared.admitted[split])
+                        model_fit = model_fit[~model_fit[c["group"]].isin(waiting)]
+                        model_cal = model_cal[~model_cal[c["group"]].isin(waiting)]
+                    else:
+                        model_fit, model_cal = fit, cal
+                    model = self._estimator(spec)(**spec["params"])
+                    if pooled:
+                        print(f"fit {name} {self.plan.column} {split} on {len(model_fit)} "
+                              "pooled rows", flush=True)
+                    for band in (model_fit, model_cal, val):
+                        model._validate_x(band[c["features"]].to_numpy())
+                    imputer = SimpleImputer(strategy="median", keep_empty_features=True)
+                    x = imputer.fit_transform(model_fit[c["features"]])
+                    if hasattr(model, "fit_decision_context"):
+                        model.fit_decision_context(
+                            self._decision_context_rows(model_fit),
+                            self._decision_context_rows(model_cal))
+                    model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
+                              self._transform(imputer, model_cal, c["features"]),
+                              (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
+                    if hasattr(model, "fit_context"):
+                        model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
+                    label = spec.get("equivalence")
+                    if label:
+                        if not hasattr(model, "_equivalence_state"):
+                            raise ValueError("equivalence model does not expose fitted state")
+                        population = "pooled" if pooled else str(group)
+                        self._merge_equivalence(equivalence, {(int(split), population, label): {
+                            "digest": model._equivalence_state(), "members": [name]}})
+                    fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
+                                 "groups": model_fit.groupby(c["group"]).size().to_dict(),
+                                 "latest_label": model_fit[c["end"]].max()}
+                    # A pooled fit band is most of the panel: never hold it (or its
+                    # imputed copy) through the per-group scoring that follows.
+                    del model_fit, model_cal, x
+                    if pooled:
+                        shared.pooled_cache[key] = model, imputer, fit_count
+                else:
+                    model, imputer, fit_count = shared.pooled_cache[key]
+                for band in (cal, val):
+                    model._validate_x(band[c["features"]].to_numpy())
+                xc, xv = [self._transform(imputer, b, c["features"]) for b in (cal, val)]
+                # A pooled fit's per-group row map goes on the entry that fitted it only:
+                # repeated on every group, counts.json grew with groups squared.
+                count[name+"_fit"] = {**{k: v for k, v in fit_count.items()
+                                         if new_fit or k != "groups"}, "new_fit": new_fit}
+                if hasattr(model, "curve_decision_context"):
+                    raw = model.curve_decision_context(
+                        xv, self._decision_context_rows(val))
+                else:
+                    raw = (model.curve_context(
+                    xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
+                    if hasattr(model, "curve_context") else model.curve(xv))
+                variants = {"raw": raw}
+                if spec["calibrate"]:
+                    calibration_curve = (model.curve_decision_context(
+                        xc, self._decision_context_rows(cal))
+                        if hasattr(model, "curve_decision_context")
+                        else model.curve(xc))
+                    pit = calibration_curve.cdf(yc[:, None])[:, 0]
+                    variants["calibrated"] = CalibratedCurve(raw, pit, c["calibration_knots"])
+                else:
+                    variants["calibrated"] = raw
+                for variant, curve in variants.items():
+                    scored, draws = self.scores(
+                        curve, yv, c["samples"], c["tail_intervals"], c["tail_points"],
+                        c.get("tail_probabilities"))
+                    columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
+                                                  c["group"], c["date"], c["end"], c["horizon"]]))
+                    part = val[columns].copy()
+                    part[self.plan.column], part["model"], part["variant"] = split, name, variant
+                    for metric, values in scored.items():
+                        part[metric] = values
+                    if "tail_weight" in c:
+                        part[self.WEIGHTED_METRIC] = (
+                            scored["crps"] + c["tail_weight"]*scored["tail_crps"])
+                    part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
+                    if shared.diagnostic:
+                        for metric, values in shared.diagnostic(val, curve, draws).items():
+                            part[metric] = values
+                    if c.get("decision_context"):
+                        scorer = DecisionRegionScores(self._decision_context_rows(val))
+                        for metric, values in scorer.score(curve, yv).items():
+                            part[metric] = values
+                        if c.get("wing_metrics"):
+                            for metric, values in scorer.wing_score(curve, yv).items():
+                                part[metric] = values
+                    parts.append(part)
+                    # Retain both exact grids/maps/mixtures and quadrature draws.
+                    # This is numerical research evidence, not a serving artifact.
+                    if split == max(self.plan.ids()):
+                        np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
+                                            draws=draws.astype("float32"),
+                                            reference=val[c["reference"]].to_numpy(),
+                                            identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
+                                            row_index=val.index.to_numpy(), **curve._arrays())
+                count[name+"_seconds"] = time.monotonic()-start
+                if hasattr(model, "_research_state"):
+                    count[name+"_research_state"] = model._research_state()
+                if name == c["reference_model"]:
+                    reference_model, reference_imputer = model, imputer
+                if isinstance(model, _CompositeLossCDF):
+                    count[name+"_losses"] = self._loss_telemetry(
+                        model, imputer, reference_model, reference_imputer, fit, cal, val)
+                elif isinstance(model, MixtureMLPCDF):
+                    count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
+                print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
+            counts.append(count)
+        return parts, counts, equivalence
+
+
+class _GroupRun:
+    """What every group of one ``ChronologicalCDFStudy.run`` shares, pickled to group workers.
+
+    ``frame`` and ``pooled_cache`` serve pooled models only, which never run in a worker,
+    so a worker's copy holds no panel: it is handed one group's rows per task.
+    """
+
+    def __init__(self, calendar, admitted, evaluated, diagnostic, frame):
+        self.calendar, self.admitted, self.evaluated = calendar, admitted, evaluated
+        self.diagnostic, self.frame, self.pooled_cache = diagnostic, frame, {}
 
 
 class CDFHyperparameterStudy:
@@ -6376,7 +6533,7 @@ class CDFHyperparameterStudy:
         path = self.output/stage/partition
         study = ChronologicalCDFStudy({**c, "output": str(path), **self.plan.stage(years),
                                        "samples": samples, "models": models})
-        scores = study.run(panel, diagnostic)
+        scores = study.run(panel, diagnostic, label=" ".join([stage, partition]))
         self._check_scores(scores, self._expected(panel, years), models)
         self._write(path/"data_provenance.json", provenance)
         self._complete(path, identity, stage, partition, selection_hash=selection_hash)
