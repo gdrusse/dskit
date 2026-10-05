@@ -293,3 +293,42 @@ def test_pyarrow_is_imported_only_inside_run():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [a.name for a in node.names] + [getattr(node, "module", "") or ""]
             assert not any("pyarrow" in n for n in names)
+
+
+def test_a_damaged_slot_is_a_miss_that_rebuilds(tmp_path):
+    # Review round 6: a record that does not parse, lacks its payload, or names bytes that
+    # hash right but are not parquet never crashes a caller; the next build replaces it.
+    import json
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    record, frame = tmp_path / "cache" / "record.json", tmp_path / "cache" / "frame.parquet"
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    stored = json.loads(record.read_text())
+    without_payload = {k: v for k, v in stored.items() if k != "payload"}
+    for damage in ("{not json", json.dumps([1]), json.dumps(without_payload)):
+        record.write_text(damage)
+        assert cache.load({"v": 1}) is None
+    frame.write_bytes(b"not parquet at all")
+    record.write_text(json.dumps({**stored, "frame_sha256": pack._sha256(frame)}))
+    assert cache.load({"v": 1}) is None
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "stored" and calls == [1, 1]
+    with pytest.raises(FileNotFoundError):
+        pack._sha256(tmp_path / "missing.parquet")
+
+
+def test_the_code_digest_moves_when_a_module_is_renamed(tmp_path):
+    import types
+    package = types.ModuleType("pkg")
+    package.__file__ = str(tmp_path / "pkg" / "__init__.py")
+    module = _write_module(tmp_path / "pkg", "rule.py")
+    first = pack.ParquetFrameCache.code_digest(package)
+    module.rename(tmp_path / "pkg" / "renamed.py")      # same bytes, new name
+    assert pack.ParquetFrameCache.code_digest(package) != first
+
+
+def _write_module(folder, name):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "__init__.py").write_text("")
+    path = folder / name
+    path.write_text("LIMIT = 1\n")
+    return path

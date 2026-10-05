@@ -4661,6 +4661,10 @@ class _SplitPlan(ABC):
         """Return the groups of :meth:`band_counts` whose fit band is below the minimum."""
         return set(counts.index[counts["fit"] < self.min_task_fit_rows])
 
+    def evaluated(self, counts):
+        """Return the groups a split scores: admitted, with an evaluation row (the one rule)."""
+        return set(counts.index[counts["evaluation"] > 0]) - self.waiting(counts)
+
     def admission(self, counts, split):
         """Return the ledger rows of the groups one split does not evaluate.
 
@@ -4680,9 +4684,9 @@ class _SplitPlan(ABC):
             nothing to score), the three band counts and the rows dropped from
             each.
         """
-        rows, waiting = [], self.waiting(counts)
+        rows, waiting, evaluated = [], self.waiting(counts), self.evaluated(counts)
         for group, n in counts.iterrows():
-            if group not in waiting and n["evaluation"]:
+            if group in evaluated:
                 continue
             dropped = group in waiting
             rows.append({"group": group, self.column: split,
@@ -4698,8 +4702,8 @@ class _SplitPlan(ABC):
         calendar, parts = self.calendar(frame), []
         for split in ids:
             rows = self.evaluation(frame, split)
-            waiting = self.waiting(self.band_counts(frame, split, calendar))
-            parts.append(rows[~rows[self.group].isin(waiting)])
+            scored = self.evaluated(self.band_counts(frame, split, calendar))
+            parts.append(rows[rows[self.group].isin(scored)])
         return pd.concat(parts)
 
     @abstractmethod
@@ -5019,11 +5023,6 @@ class ChronologicalCDFStudy:
         (Path(self.config["output"])/self.ADMISSION_FILE).write_text(
             json.dumps(ledger, indent=2, default=int))
         return counts
-
-    def _evaluated(self, counts, group):
-        """Say whether a group is admitted in a split and holds an evaluation row there."""
-        return (group in counts.index and group not in self.plan.waiting(counts)
-                and counts.at[group, "evaluation"] > 0)
 
     @staticmethod
     def _transform(imputer, band, features):
@@ -5586,9 +5585,10 @@ class ChronologicalCDFStudy:
         equivalence = {}
         calendar = self.plan.calendar(frame)
         admitted = self._admission(frame, calendar)
+        evaluated_groups = {split: self.plan.evaluated(n) for split, n in admitted.items()}
         for group, group_frame in frame.groupby(c["group"]):
             for split in self.plan.ids():
-                evaluated = self._evaluated(admitted[split], group)
+                evaluated = group in evaluated_groups[split]
                 if not (evaluated or self.plan.admits):
                     raise ValueError(f"empty band: {group} {split}")
                 if not evaluated:

@@ -328,7 +328,8 @@ class ParquetFrameCache:
         -------
         tuple or None
             None when the slot is empty, holds another identity, its record
-            is unreadable, or its frame no longer hashes to the recorded digest.
+            is unreadable, or its frame no longer hashes to the recorded digest
+            or does not parse.
         """
         import json
 
@@ -345,7 +346,10 @@ class ParquetFrameCache:
                 or stored.get("identity_sha256") != value_hash(identity)
                 or _sha256(frame) != stored.get("frame_sha256")):
             return None
-        return pd.read_parquet(frame), stored["payload"]
+        try:
+            return pd.read_parquet(frame), stored["payload"]
+        except (OSError, ValueError, TypeError, NotImplementedError):
+            return None   # bytes that hash right but do not parse are a miss, never a crash
 
     @classmethod
     def storable(cls, frame):
