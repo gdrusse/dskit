@@ -3183,7 +3183,7 @@ class ExactExpiryCDFPanel:
         except ProductionError as err:
             print("panel cache off: the runtime has no fingerprint:", err, flush=True)
             frame = self.read()
-            return frame, json.loads(json.dumps(self.provenance())), "off"
+            return frame, ParquetFrameCache.as_stored(self.provenance()), "off"
         frame, provenance, state = ParquetFrameCache(directory).load_or_build(
             lambda: self.cache_identity(environment), lambda: (self.read(), self.provenance()))
         print("panel", state, frame.shape, flush=True)

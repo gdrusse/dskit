@@ -27,8 +27,6 @@ Import cost: stdlib + :mod:`dskit.assets` + this package.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 
 from dskit.assets.model import AssetModel
@@ -41,6 +39,7 @@ from .base import (
     _check_segment,
     _check_str,
     _raise_if,
+    canonical_hash,
     file_signature,
 )
 from .default_model import onboarding_model
@@ -82,11 +81,11 @@ def files_token(paths):
     def unlistable(error):
         raise AssetError([f"cannot list {error.filename}: {error}"]) from error
 
-    digest = hashlib.sha256()
+    tops = []
     for top in sorted({os.path.abspath(p) for p in paths}):
         entries = [[top, None, None]] if not os.path.exists(top) else []
-        walk = os.walk(top, onerror=unlistable) if os.path.isdir(top) else [(os.path.dirname(top), [],
-                                                         [os.path.basename(top)])]
+        walk = os.walk(top, onerror=unlistable) if os.path.isdir(top) else [
+            (os.path.dirname(top), [], [os.path.basename(top)])]
         for folder, dirs, files in walk:
             dirs.sort()
             for name in sorted(files):
@@ -95,8 +94,8 @@ def files_token(paths):
                     entries.append([path, *file_signature(path)])
                 except AssetError:
                     continue
-        digest.update(json.dumps(entries).encode() + b"\n")
-    return digest.hexdigest()
+        tops.append(entries)
+    return canonical_hash(tops)
 
 
 class OnboardingRoot:

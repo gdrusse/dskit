@@ -20,7 +20,6 @@ builds an expensive panel once and every later stage reuses it.
 from __future__ import annotations
 
 import datetime
-import hashlib
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
@@ -431,8 +430,6 @@ class ParquetFrameCache:
             :meth:`storable`, the identity moved, writing failed, or another
             writer took the slot).
         """
-        import json
-
         before = identity()
         held = self.load(before)
         if held is not None:
@@ -441,13 +438,28 @@ class ParquetFrameCache:
         if self.storable(frame) and value_hash(identity()) == value_hash(before):
             try:
                 self.store(before, frame, payload)
-            except (OSError, ValueError, TypeError, NotImplementedError):
-                held = None   # parquet refused a column type, or the disk is full
-            else:
                 held = self.load(before)
+            except (OSError, ValueError, TypeError, NotImplementedError):
+                held = None   # parquet refused a column or a read-back, or the disk is full
             if held is not None:
                 return (*held, "stored")
-        return frame, json.loads(json.dumps(payload)), "unstored"
+        return frame, self.as_stored(payload), "unstored"
+
+    @staticmethod
+    def as_stored(payload):
+        """Return ``payload`` as the slot gives it back: through JSON (tuples become lists).
+
+        Parameters
+        ----------
+        payload : dict
+            JSON-serializable.
+
+        Returns
+        -------
+        dict
+        """
+        import json
+        return json.loads(json.dumps(payload))
 
     @staticmethod
     def code_digest(*packages):
@@ -466,13 +478,10 @@ class ParquetFrameCache:
         """
         from pathlib import Path
 
-        digest = hashlib.sha256()
-        for package in packages:
-            top = Path(package.__file__).parent
-            for path in sorted(top.rglob("*.py")):
-                digest.update(f"{package.__name__}/{path.relative_to(top).as_posix()}:"
-                              f"{_sha256(path)}\n".encode())
-        return digest.hexdigest()
+        return value_hash([[package.__name__, path.relative_to(top).as_posix(), _sha256(path)]
+                           for package in packages
+                           for top in [Path(package.__file__).parent]
+                           for path in sorted(top.rglob("*.py"))])
 
 
 #: The pack's kinds.

@@ -61,9 +61,9 @@ WINDOWS_OVERLAY = "stocks-opt.json"
 
 #: The zoo (owner decisions 2026-10-04). ``losses`` is every candidate's objective and
 #: ``tail_weight`` the study's weighted-metric weight; the study refuses the two disagreeing.
-#: ``batch_size`` 4096 (the template used 512 on ~12k rows): ~1M pooled rows make 512 a
-#: 2,000-step epoch, and 4096 keeps ~250 AdamW steps per epoch, enough for patience 6 to
-#: see a trend, at a fraction of the wall time. The booster's loss chunk is memory only.
+#: ``batch_size`` 4096 (the template used 512 on ~12k rows): the ~460k pooled panel rows make
+#: 512 a ~900-step epoch, and 4096 keeps ~110 AdamW steps per epoch, enough for patience 6
+#: to see a trend, at a fraction of the wall time. The booster's loss chunk is memory only.
 ZOO = {
     "losses": [{"kind": "crps", "weight": 1.0}, {"kind": "tail_crps", "weight": 1.0}],
     "tail_weight": 1.0,
