@@ -3571,9 +3571,11 @@ def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibra
     b = scores[scores.unit == 'B']
     assert 2 not in set(b.fold) and set(b[b.fold == 3].date) == {
         '2020-02-03', '2020-02-04', '2020-02-05', '2020-02-06', '2020-02-07'}
-    counts = json.loads((tmp_path/'out/counts.json').read_text())
+    text = (tmp_path/'out/counts.json').read_text()
+    counts = json.loads(text)
     entry = next(c for c in counts if c['group'] == 'B' and c['fold'] == 3)
     assert entry['cal']['n'] == 0 and entry['val']['n'] == 5
+    assert entry['cal']['first'] is None and 'NaN' not in text   # strict JSON
     ledger = json.loads((tmp_path/'out/admission.json').read_text())
     assert ledger['not_evaluated'] == [{
         'group': 'B', 'fold': 2, 'reason': 'no_evaluation_rows', 'fit_rows': 14,
@@ -3592,6 +3594,20 @@ def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibra
         'params': {'alpha': 1., 'floor': .01, 'knots': 11}, 'calibrate': False}
     with pytest.raises(ValueError, match=r"empty calibration band: B 3, which \['scaled'\]"):
         ChronologicalCDFStudy(scaled).run(frame)
+
+
+def test_the_ledger_lists_a_task_with_no_row_in_a_fold(tmp_path, monkeypatch):
+    # B lists after fold 1's bands: it holds no row there, nothing is dropped, it is listed.
+    rows = _late_rows(start='2020-02-10')
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['not_evaluated'][0] == {
+        'group': 'B', 'fold': 1, 'reason': 'waiting', 'fit_rows': 0, 'calibration_rows': 0,
+        'evaluation_rows': 0, 'dropped_fit_rows': 0, 'dropped_calibration_rows': 0,
+        'dropped_evaluation_rows': 0}
 
 
 def test_a_waiting_task_with_a_row_or_two_never_reaches_a_pooled_booster(tmp_path):
@@ -4122,6 +4138,23 @@ def test_boosted_cdf_round_trips_through_its_text_model_and_refits_identically()
 def test_boosted_cdf_refuses_bad_knobs(edit):
     with pytest.raises(ValueError):
         _boosted(**edit)
+
+
+# The knobs every mixture estimator shares, one rule (review round 4): each family refuses
+# the same values, and a finite non-bool number (numpy floats included) is accepted.
+_SHARED_BAD = [{"components": 0}, {"components": 1.}, {"batch_size": 0}, {"learning_rate": 0.},
+               {"learning_rate": float("nan")}, {"learning_rate": True}, {"learning_rate": "1"},
+               {"min_scale": 0.}, {"min_scale": float("inf")}, {"deterministic": 1}]
+
+
+@pytest.mark.parametrize("edit", _SHARED_BAD)
+@pytest.mark.parametrize("family", ["mlp", "torch", "boosted"])
+def test_every_mixture_estimator_refuses_the_same_shared_knobs(family, edit):
+    make = {"mlp": lambda **k: MixtureMLPCDF(device="cpu", **k),
+            "torch": lambda **k: _zoo_torch("mlp", **k), "boosted": _boosted}[family]
+    with pytest.raises(ValueError):
+        make(**edit)
+    make(learning_rate=np.float64(.01), min_scale=np.float64(1e-3))
 
 
 def test_boosted_cdf_runs_its_loss_on_cuda_deterministically_and_like_cpu(monkeypatch):

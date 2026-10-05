@@ -1704,6 +1704,18 @@ def test_provenance_is_the_one_owner_of_what_main_hands_the_study(tmp_path, monk
     monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel"])
     with pytest.raises(ValueError, match="could not cache the panel"):
         cdf_study._main()
+    # A document the HPO study refuses is refused before any panel is read.
+    before = len(reads)
+
+    class Refused(Study):
+        def __init__(self, config):
+            raise ValueError("unknown or missing experiment keys")
+
+    monkeypatch.setattr(cdf_study, "CDFHyperparameterStudy", Refused)
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "search"])
+    with pytest.raises(ValueError, match="experiment keys"):
+        cdf_study._main()
+    assert len(reads) == before
 
 
 def test_expanded_context_joins_only_the_strictly_prior_close_and_ages_it(tmp_path, monkeypatch):

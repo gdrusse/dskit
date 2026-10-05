@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import date_problem
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
@@ -2242,12 +2243,17 @@ class _MixtureParameterCDF(CDFEstimator):
         return None if feature_indices is None else tuple(feature_indices)
 
     @staticmethod
-    def _shared_settings_ok(components, batch_size, learning_rate, min_scale, deterministic):
-        """Say whether the knobs every mixture estimator shares hold: positive counts, rates, a bool."""
+    def _finite(value):
+        """Say whether a knob is a finite real number (never a bool): the one numeric-knob rule."""
         import math
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value))
+
+    @classmethod
+    def _shared_settings_ok(cls, components, batch_size, learning_rate, min_scale, deterministic):
+        """Say whether the knobs every mixture estimator shares hold: positive counts, rates, a bool."""
         return (all(type(v) is int and v >= 1 for v in (components, batch_size))
-                and all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                        and math.isfinite(v) and v > 0 for v in (learning_rate, min_scale))
+                and all(cls._finite(v) and v > 0 for v in (learning_rate, min_scale))
                 and type(deterministic) is bool)
 
     @staticmethod
@@ -2394,7 +2400,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 or any(type(v) is not int or v <= 0 for v in [epochs, *widths])
                 or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
                                                 deterministic)
-                or any(not math.isfinite(v) for v in [weight_decay, dropout]) or weight_decay < 0
+                or not all(self._finite(v) for v in [weight_decay, dropout]) or weight_decay < 0
                 or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
                 or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
             raise ValueError("invalid mixture training parameters")
@@ -3737,7 +3743,7 @@ class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
         if (any(type(v) is not int or v < low for v, low in counts)
                 or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
                                                 deterministic)
-                or any(type(v) not in (int, float) or not math.isfinite(v) for v in rates)
+                or not all(self._finite(v) for v in rates)
                 or hessian_floor <= 0 or lambda_l2 < 0
                 or not 0 < feature_fraction <= 1
                 or not isinstance(device, str)
@@ -5954,11 +5960,6 @@ class CDFHyperparameterStudy:
         return {name: version(name) for name in sorted(names)}
 
     @staticmethod
-    def _digest(value):
-        from dskit.pipeline.base import value_hash
-        return value_hash(value)
-
-    @staticmethod
     def _file_hash(path):
         with Path(path).open("rb") as stream:
             return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -5966,7 +5967,7 @@ class CDFHyperparameterStudy:
     def _frame_hash(self, frame, keys):
         import pandas as pd
         f = frame.sort_values(keys).reindex(sorted(frame.columns), axis=1)
-        schema = self._digest({k: str(v) for k, v in f.dtypes.items()})
+        schema = value_hash({k: str(v) for k, v in f.dtypes.items()})
         field = self.base.get("decision_context")
         if field and field in f:
             f = f.copy()
@@ -6198,7 +6199,7 @@ class CDFHyperparameterStudy:
                    "skill_pct": {key: 100*(1-value) for key, value in rankings.items()},
                    "selection_guard": self.experiment.get("selection_guard"),
                    "selection_guard_evidence": guard_evidence,
-                   "screen_spec_hash": self._digest(screen_specs), "final_spec_hash": self._digest(selected),
+                   "screen_spec_hash": value_hash(screen_specs), "final_spec_hash": value_hash(selected),
                    "screen_specs": screen_specs, "expected_identity_hash": self._frame_hash(expected[c["identity"]], c["identity"]),
                    "n": len(expected), "cells": len(expected[[c["group"], c["horizon"]]].drop_duplicates())}
         path = self.output/"selection"
@@ -6319,8 +6320,8 @@ class CDFHyperparameterStudy:
         dev = frame[~label_reaches(frame[c["end"]], self.cutoff)]
         self._check_cells(self._expected(dev, self.development), "development")
         self._check_cells(self._expected(frame, self.later), "evaluation")
-        identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
-                    "provenance": self._digest(provenance), "inventory": self.inventory.digest,
+        identity = {"config": value_hash(self.config), "panel": self._frame_hash(frame, c["identity"]),
+                    "provenance": value_hash(provenance), "inventory": self.inventory.digest,
                     "implementation": self._file_hash(__file__),
                     "resolutions": e["resolutions"],
                     "dependencies": self._dependency_versions()}

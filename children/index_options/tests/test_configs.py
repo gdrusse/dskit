@@ -3546,8 +3546,10 @@ def _tiny_pooled_run(work, metric):
     put(study/"selection/selected.json", json.dumps({"variants": {"m": "raw"}}))
     for part in ("development", "later"):
         put(study/"evaluate"/part/admission, json.dumps({
-            "dropped_rows": {"calibration": 1, "evaluation": 2}, "not_evaluated": [
-                {"group": "LATE", "fold": 1, "reason": "waiting"}]}))
+            "dropped_rows": {"fit": 3, "calibration": 1, "evaluation": 2}, "not_evaluated": [
+                {"group": "LATE", "fold": 1, "reason": "waiting", "fit_rows": 3,
+                 "calibration_rows": 1, "evaluation_rows": 2, "dropped_fit_rows": 3,
+                 "dropped_calibration_rows": 1, "dropped_evaluation_rows": 2}]}))
         put(study/"evaluate"/part/"complete.json", json.dumps({"identity": {"config": "c"}}))
     intervals = [{"metric": m, "model": "m", "reference": "horizon_empirical",
                   "block_dates": 30, "lo": 0.1, "hi": 0.9} for m in ("crps", metric)]

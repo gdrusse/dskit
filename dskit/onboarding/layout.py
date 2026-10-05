@@ -56,8 +56,9 @@ _READ_SUBDIRS = ("raw", "observations", "forecasts")
 def files_token(paths):
     """Return a digest of every file under ``paths`` by path and :func:`file_signature`.
 
-    A directory is walked (links are not followed into); a missing path
-    is recorded as missing, and a file gone mid-walk is left out. Nothing is
+    A directory is walked (links are not followed into; a directory it
+    cannot list refuses); a missing path is recorded as missing, and a file
+    gone mid-walk is left out. Nothing is
     opened: the token is cheap, and it moves when a file is added, removed,
     resized or touched, which for write-once acquisitions is every change a
     reader could see.
@@ -71,11 +72,20 @@ def files_token(paths):
     -------
     str
         A sha256 hex digest.
+
+    Raises
+    ------
+    AssetError
+        When a directory under ``paths`` cannot be listed: a subtree the
+        walk silently skipped would drop out of the token.
     """
+    def unlistable(error):
+        raise AssetError([f"cannot list {error.filename}: {error}"]) from error
+
     digest = hashlib.sha256()
     for top in sorted({os.path.abspath(p) for p in paths}):
         entries = [[top, None, None]] if not os.path.exists(top) else []
-        walk = os.walk(top) if os.path.isdir(top) else [(os.path.dirname(top), [],
+        walk = os.walk(top, onerror=unlistable) if os.path.isdir(top) else [(os.path.dirname(top), [],
                                                          [os.path.basename(top)])]
         for folder, dirs, files in walk:
             dirs.sort()

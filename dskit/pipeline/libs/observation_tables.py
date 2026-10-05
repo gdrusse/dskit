@@ -27,11 +27,10 @@ a document can keep this node whether or not any keyed family is declared.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from bisect import bisect_left, bisect_right
 from datetime import date
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param, reject_unknown_params
 
@@ -226,8 +225,7 @@ class ObservationTables(Node):
             rows.extend(part_rows)
             prints.append({"source": part["source"], "stream": part["stream"],
                            "rows": finger["rows"], "sha256": finger["sha256"]})
-        digest = hashlib.sha256(json.dumps(prints, sort_keys=True).encode()).hexdigest()
-        return rows, {"rows": len(rows), "sha256": digest, "parts": prints}
+        return rows, {"rows": len(rows), "sha256": value_hash(prints), "parts": prints}
 
     # -- matching -------------------------------------------------------------
 

@@ -153,3 +153,17 @@ def test_unsafe_segments_refused_everywhere(root):
         root.state_path("ok", "stream", "sideways")  # not a declared mode
     with pytest.raises(AssetError):
         root.published_dir("UPPER")
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="chmod-based denial is inert for root")
+def test_files_token_refuses_a_directory_it_cannot_list(tmp_path):
+    # A subtree os.walk silently skipped would drop out of the token (review round 4).
+    _put(tmp_path / "archive" / "locked" / "a.bin")
+    locked = tmp_path / "archive" / "locked"
+    os.chmod(locked, 0o000)
+    try:
+        with pytest.raises(AssetError, match="cannot list"):
+            files_token([str(tmp_path / "archive")])
+    finally:
+        os.chmod(locked, 0o755)

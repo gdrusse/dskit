@@ -328,8 +328,8 @@ class ParquetFrameCache:
         Returns
         -------
         tuple or None
-            None when the slot is empty, holds another identity, or its
-            frame no longer hashes to the recorded digest.
+            None when the slot is empty, holds another identity, its record
+            is unreadable, or its frame no longer hashes to the recorded digest.
         """
         import json
 
@@ -338,8 +338,12 @@ class ParquetFrameCache:
         record, frame = self.directory/self.RECORD, self.directory/self.FRAME
         if not (record.is_file() and frame.is_file()):
             return None
-        stored = json.loads(record.read_text())
-        if (stored.get("identity_sha256") != value_hash(identity)
+        try:
+            stored = json.loads(record.read_text())
+        except ValueError:
+            return None
+        if (not isinstance(stored, dict) or "payload" not in stored
+                or stored.get("identity_sha256") != value_hash(identity)
                 or _sha256(frame) != stored.get("frame_sha256")):
             return None
         return pd.read_parquet(frame), stored["payload"]
