@@ -132,7 +132,7 @@ python -m dskit.onboarding verify --root "$OB"           # re-hash every snapsho
 git add docs/decisioning && git commit                   # the acquires journaled themselves
 ```
 
-Interim digest spot check (until ADR-0238): the two lines must print the same hash.
+Digest spot check (the manual stand-in for PROPOSED ADR-0238, a new verifying subclass; it stays the child-side fallback if the owner declines that): the two lines must print the same hash.
 
 ```bash
 python -c "import hashlib; from dskit.onboarding import payload_files as p; \
@@ -305,7 +305,7 @@ Not covered yet: the realised settlement value and every hourly series (ADR-0236
 - The basis uses the mean of a 1-minute bar's open and close as a proxy for a 60-second average, so each
   basis is noisy; the strike anchors only exist for the 15-minute series.
 - `ObservationRows` and `scan_stream` do not expand `~` in `root` (the reason the document carries an
-  absolute path): TODO row, a dskit gap.
+  absolute path): a known dskit limitation the child works around; no dskit change is proposed.
 - BVOL cadence (about one row a second) and the 365-day year are unverified; the fee schedule is today's.
 - The held-out cut and margin are chosen, not derived; the fair value is not fitted and ignores the
   Jensen gap of the settlement average.

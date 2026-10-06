@@ -18,13 +18,14 @@ market mid after fees?); models come only if it survives. The focus areas in
 | `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet (26 known missing days) | `binance-files` |
 
 Existing packs only (`kalshi`, `httpblobs`); the child adds the zip-to-parquet
-transform `crypto_trading/binance_vision.py` (interim, see ADR-0239). Binance Vision
+transform `crypto_trading/binance_vision.py` (interim until a NEW dskit module lands, ADR-0239). Binance Vision
 is CC BY-NC-SA: research use only, not for live trading features. Exact commands:
 `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 **Not in stage A.** The realised settlement value (the model's label), hourly-ladder
 candles and Kalshi history before 2026-08-07 need PROPOSED ADR-0236; Coinbase, Deribit and
-Kraken need ADR-0237; digest verification ADR-0238. They are dskit changes, not child code.
+Kraken need ADR-0237; digest verification ADR-0238. Each is a NEW dskit pack or subclass (existing
+packs stay untouched), not child code.
 
 ## Stage B: features and the kill test
 
@@ -47,9 +48,9 @@ minutes before the close). Hourly series plug in by config once ADR-0236 supplie
 The table is written as JSON lines, one file and one stream per run (`decision_features-<run>`, rows carry
 `run_id`), and published back as source `features-15m` through `configs/source-features-15m.json`
 (`localtables`); commands are in the runbook, stage B.
-Interim child classes standing in for PROPOSED dskit ADRs: `day_series.py` (0240),
-`vol_estimators.py` (0241), `fees.py` (0242), `fair_value.py` + `payoffs.py` + `kill_test.py` (0243),
-`run_write.py` (0244).
+Interim child classes standing in for PROPOSED dskit ADRs, each a NEW dskit module: `day_series.py` (0240),
+`vol_estimators.py` (0241), `fees.py` (0242; `pmquant` stays untouched), `fair_value.py` + `payoffs.py` +
+`kill_test.py` (0243), `run_write.py` (0244). Moving to a new module is a later step of the child's own.
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 

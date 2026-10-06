@@ -108,7 +108,8 @@ its own suite. Series and date lists repeat across configs and suites by design 
 suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
 both together. Candles are the two 15-minute series, one source each; hourly candles,
 the settlement value (`expiration_value`, the model's label) and pre-cutoff history wait on
-PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side. `AGENTS.md` mirrors this file
+PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side: each is a NEW dskit pack or subclass (no
+existing pack is edited). `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 ## Stage B features and the kill test
@@ -140,7 +141,8 @@ features, fair values, fees, the kill test, then `records-write`. Rules that bin
 - **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`), 0242
   (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`), 0243 (`fair_value.py`, `payoffs.py`, `kill_test.py`) and
   0244 (`run_write.py`).
-  Do not grow them; delete them when the ADR lands. Parsing and the cluster error are dskit's
+  Do not grow them; retire each when its NEW dskit module lands and the child's config moves to it (a
+  separate step that changes the child's identity hashes; `pmquant` stays untouched). Parsing and the cluster error are dskit's
   (`dskit.production.base.parse_utc_ms`, `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement.
 - **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
   cut on the market's close; the document reports `development` only, and reading `heldout` is a recorded
