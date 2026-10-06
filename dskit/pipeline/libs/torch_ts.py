@@ -1849,10 +1849,13 @@ class SequenceEncoderAdapter(ABC):
     Subclasses return a torch module at runtime; no library imports at discovery.
     The output is a learned representation, not a forecast in physical units.
     """
+
     @abstractmethod
     def output_width(self, channels):
+        """Return the encoded width for the declared input channels."""
         raise NotImplementedError
 
     @abstractmethod
     def build_module(self, sequence_length, channels):
+        """Build a torch sequence encoder without a training loop."""
         raise NotImplementedError

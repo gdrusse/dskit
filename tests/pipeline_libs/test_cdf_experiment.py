@@ -1,11 +1,15 @@
 """Focused adapter/capacity regression tests for ADR-0238."""
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("torch")
+pytest.importorskip("sklearn")
 
 from dskit.pipeline.libs.predictive_cdf import TorchCDF
 
 
 def model(backend="hf", **extra):
+    pytest.importorskip("transformers" if backend == "hf" else "neuralforecast")
     adapters = {
         "hf": {"class": "dskit.pipeline.libs.transformers:HFSequenceEncoder",
                "params": {"model": "PatchTST", "config": {
@@ -42,10 +46,10 @@ def test_external_sequence_encoder_preserves_rows_and_gradients(backend):
     assert x.grad[:, 22:].abs().sum() > 0
 
 def test_capacity_refuses_before_optimizer_and_constant_mask_is_training_only(tmp_path):
-    import torch
     from dskit.pipeline.libs.predictive_cdf import MixtureMLPCDF
     rng = np.random.default_rng(4)
-    x = rng.normal(size=(24, 3)); x[:, 2] = 7
+    x = rng.normal(size=(24, 3))
+    x[:, 2] = 7
     y = rng.normal(size=24)
     m = MixtureMLPCDF(hidden=[2], epochs=2, seeds=[11], device="cpu",
                       max_parameters=1, mask_constant_features=True, training_telemetry=True)
@@ -54,7 +58,8 @@ def test_capacity_refuses_before_optimizer_and_constant_mask_is_training_only(tm
     m = MixtureMLPCDF(hidden=[2], epochs=2, seeds=[11], device="cpu",
                       max_parameters=100, mask_constant_features=True, training_telemetry=True)
     m.fit(x, y, x[:4], y[:4])
-    moved = x[:4].copy(); moved[:, 2] = 100
+    moved = x[:4].copy()
+    moved[:, 2] = 100
     np.testing.assert_array_equal(m.curve(x[:4]).cdf([0.]), m.curve(moved).cdf([0.]))
     assert m.training_diagnostics[0]["optimizer_steps"] == 2
     assert m.training_diagnostics[0]["parameter_delta_l2"] > 0
@@ -92,7 +97,8 @@ def test_external_fit_checkpoint_roundtrip(tmp_path, backend):
     from dskit.pipeline.libs.predictive_cdf import TorchCDF
     m = model(backend, training_telemetry=True, mask_constant_features=True)
     rng = np.random.default_rng(7)
-    x = rng.normal(size=(16, 24)); y = rng.normal(size=16)
+    x = rng.normal(size=(16, 24))
+    y = rng.normal(size=16)
     def context(n, prefix):
         return [{"identity": [prefix+str(i)], "thresholds": [-2.5,-.5,.5,2.5],
                  "weights": [.25]*4, "intervals": [[-2.5,-.5],[.5,2.5]]}
@@ -107,12 +113,17 @@ def test_external_fit_checkpoint_roundtrip(tmp_path, backend):
 
 @pytest.fixture
 def experiment_config(tmp_path):
-    import copy, json, pandas as pd
+    import json
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("transformers")
     from pathlib import Path
     from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
     cfg = json.loads(Path("children/index_options/configs/advanced-cdf-zoo.json").read_text())
-    cfg["source_hashes"] = {}; cfg["dependencies"] = {}
-    cfg["tickers"] = ["AAA", "BBB"]; cfg["arms"] = {"base": cfg["arms"]["base"]}
+    cfg["source_hashes"] = {}
+    cfg["dependencies"] = {}
+    cfg["tickers"] = ["AAA", "BBB"]
+    cfg["arms"] = {"base": cfg["arms"]["base"]}
     cfg["candidates"] = cfg["candidates"][:1]
     cfg["candidates"][0]["adapters"]["pooled"] = cfg["candidates"][0]["adapters"]["unpooled"][-1:]
     cfg["training"].update(epochs=2,patience=None)
@@ -241,3 +252,46 @@ def test_conflicting_terminal_states_refuse(experiment_config, monkeypatch):
     (root/"completed").mkdir()
     with pytest.raises(IntegrityError, match="conflicting"):
         exp.run("pooled")
+
+@pytest.mark.parametrize("control", [{"max_parameters":1}, {"mask_constant_features":True},
+                                     {"training_telemetry":True}])
+def test_set_encoder_refuses_unsupported_mixture_controls(control):
+    from dskit.pipeline.libs.predictive_cdf import SetMixtureCDF
+    with pytest.raises(ValueError, match="unsupported"):
+        SetMixtureCDF(nodes=1,node_features=1,tensor_indices=[0],mask_indices=[1],
+                      context_indices=[2],hidden=[2],device="cpu",**control)
+
+
+def test_set_parameter_count_refuses_unrelated_mlp_count():
+    from dskit.pipeline.libs.predictive_cdf import SetMixtureCDF
+    m = SetMixtureCDF(nodes=1,node_features=1,tensor_indices=[0],mask_indices=[1],
+                      context_indices=[2],hidden=[2],device="cpu")
+    with pytest.raises(ValueError, match="unsupported"):
+        m.parameter_count(3)
+
+
+@pytest.mark.parametrize("name, settings", [
+    ("StudentMixtureMLPCDF", {"degrees":5}),
+    ("DecisionWeightedMixtureMLPCDF", {"decision_weight":2}),
+    ("SetMixtureCDF", {"nodes":1,"node_features":1,"tensor_indices":[0],
+                       "mask_indices":[1],"context_indices":[2]})])
+def test_unsupported_checkpoints_refuse_before_io(tmp_path, name, settings):
+    from dskit.pipeline.libs import predictive_cdf
+    cls = getattr(predictive_cdf,name)
+    m = cls(device="cpu",**settings)
+    with pytest.raises(ValueError, match="unsupported"):
+        m.save_checkpoint(tmp_path/"save")
+    with pytest.raises(ValueError, match="unsupported"):
+        cls.load_checkpoint(tmp_path/"absent")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unfitted_checkpoint_and_nonsequence_validation_refuse(tmp_path):
+    from dskit.pipeline.libs.predictive_cdf import MixtureMLPCDF
+    with pytest.raises(ValueError, match="fitted"):
+        MixtureMLPCDF(device="cpu").save_checkpoint(tmp_path/"new")
+    assert list(tmp_path.iterdir()) == []
+    m = TorchCDF(encoder={"kind":"mlp"},losses=[{"kind":"crps","weight":1.},
+                   {"kind":"tail_crps","weight":1.}],device="cpu")
+    with pytest.raises(ValueError,match="sequence"):
+        m.validate_encoder(3)

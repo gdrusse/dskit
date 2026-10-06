@@ -34,6 +34,7 @@ class AtomicFitStore:
 
     @staticmethod
     def file_hash(path):
+        """Return the SHA-256 of a file without loading it into memory."""
         with Path(path).open("rb") as stream:
             return hashlib.file_digest(stream, "sha256").hexdigest()
 
@@ -65,6 +66,7 @@ class AtomicFitStore:
             raise IntegrityError("unreadable checkpoint manifest/payload: "+str(self.path)) from error
 
     def publish(self, files):
+        """Atomically publish named byte payloads with an immutable manifest."""
         if self.path.exists():
             raise IntegrityError("refusing to overwrite an immutable artifact")
         if any(Path(k).is_absolute() or ".." in Path(k).parts or k == "complete.json"
@@ -152,6 +154,7 @@ class CDFExperiment:
 
     @staticmethod
     def json_bytes(value):
+        """Encode canonical-order finite JSON as UTF-8."""
         return json.dumps(value, sort_keys=True, allow_nan=False).encode()
 
     def _verify_provenance(self):
@@ -169,6 +172,7 @@ class CDFExperiment:
             raise IntegrityError("panel predicate crosses locked holdout")
 
     def load_panel(self):
+        """Read only configured pre-holdout rows and validate their identities."""
         import numpy as np
         import pandas as pd
         c, s = self.config, self.config["study"]
@@ -190,6 +194,7 @@ class CDFExperiment:
 
     @staticmethod
     def disjoint_count(frame, date, end):
+        """Count a maximal disjoint set of labeled temporal intervals."""
         last, count = "", 0
         for start, stop in frame.sort_values(end)[[date, end]].itertuples(index=False, name=None):
             if start > last:
@@ -198,6 +203,7 @@ class CDFExperiment:
 
     @staticmethod
     def check_pairing(expected, actual, identity):
+        """Refuse duplicate, missing, or substituted forecast identities."""
         left = expected[identity].sort_values(identity).reset_index(drop=True)
         right = actual[identity].sort_values(identity).reset_index(drop=True)
         if left.duplicated().any() or right.duplicated().any() or not left.equals(right):
@@ -326,7 +332,7 @@ class CDFExperiment:
                 continue
             fmask, vmask = [(b[s["group"]] == ticker).to_numpy() for b in (bands[0], bands[2])]
             f, v = bands[0].loc[fmask], bands[2].loc[vmask]
-            xfit, xv = arrays[0][fmask], arrays[2][vmask]
+            xv = arrays[2][vmask]
             baseline_x = [b[[s["horizon"], s["reference"]]].to_numpy() for b in (f,v)]
             yf, yv = [(b[s["target"]]/b[s["reference"]]).to_numpy() for b in (f,v)]
             baseline_params = dict(s["models"][s["reference_model"]]["params"],
@@ -415,6 +421,7 @@ class CDFExperiment:
             return "skipped"
 
     def run(self, regime, worker=0, workers=1, limit=None):
+        """Execute one stable worker partition, verifying completed artifacts on retry."""
         import fcntl
         import torch
         if regime not in ("pooled", "unpooled") or not 0 <= worker < workers:

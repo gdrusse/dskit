@@ -11,6 +11,7 @@ class NFSequenceEncoder(SequenceEncoderAdapter):
     h is the latent width, not a change to the supervised target horizon.
     No future observations or library Trainer/loss enter this adapter.
     """
+
     def __init__(self, model, settings, output_size=8):
         import copy
         if (not isinstance(model, str) or not model.isidentifier()
@@ -26,11 +27,13 @@ class NFSequenceEncoder(SequenceEncoderAdapter):
         self.output_size = output_size
 
     def output_width(self, channels):
+        """Return the latent width, refusing multichannel input."""
         if channels != 1:
             raise ValueError("this native univariate adapter requires one channel")
         return self.output_size
 
     def build_module(self, sequence_length, channels):
+        """Build a native forward adapter without starting a library trainer."""
         import inspect
         import random
         import numpy as np

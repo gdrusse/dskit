@@ -2533,6 +2533,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         import torch
         from sklearn.preprocessing import StandardScaler
 
+        self._checkpoint_ready = False
         self._validate_x(cal_x)
         self._features(cal_x)
         heads = self._heads(x)
@@ -2606,6 +2607,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
+        self._checkpoint_ready = True
         return self
 
 
@@ -2622,6 +2624,11 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             values[:, self.scaler.var_ == 0] = 0.
         return values
 
+    @classmethod
+    def _check_checkpoint_support(cls):
+        if cls is not MixtureMLPCDF:
+            raise ValueError("checkpoint serialization unsupported for "+cls.__name__)
+
     def _checkpoint_settings(self):
         return self._equivalence_settings()
 
@@ -2631,6 +2638,9 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         The directory is immutable. Caller preprocessing and forecast identities
         belong in the enclosing fit manifest.
         """
+        self._check_checkpoint_support()
+        if not getattr(self, "_checkpoint_ready", False):
+            raise ValueError("checkpoint requires a successfully fitted model")
         import os
         import tempfile
         import torch
@@ -2654,6 +2664,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
     @classmethod
     def load_checkpoint(cls, path):
         """Restore the same estimator type, refusing modified tensor payloads."""
+        cls._check_checkpoint_support()
         import numpy as np
         import torch
         from sklearn.preprocessing import StandardScaler
@@ -2683,6 +2694,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         model.losses, model.monitor_losses = state["losses"], state["monitor_losses"]
         model.best_epochs = state["best_epochs"]
         model.training_diagnostics = state["diagnostics"]
+        model._checkpoint_ready = True
         return model
 
     def _equivalence_settings(self):
@@ -3182,6 +3194,7 @@ class _CDFCNNEncoder(_CDFSequenceEncoder):
 
 class _CDFExternalEncoder(_CDFSequenceEncoder):
     """A public library adapter feeding the existing common mixture head."""
+
     NAME = "external"
     _SETTINGS = ("adapter",)
 
@@ -3776,12 +3789,19 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
         self.encoder_config = copy.deepcopy(encoder)
         self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
 
+    @classmethod
+    def _check_checkpoint_support(cls):
+        if cls is not TorchCDF:
+            raise ValueError("checkpoint serialization unsupported for "+cls.__name__)
+
     def _checkpoint_settings(self):
         return {**self._equivalence_settings(), "encoder": self.encoder_config,
                 "losses": self.loss_config}
 
     def validate_encoder(self, features):
-        """Fail closed when an adapter uses other rows or random evaluation."""
+        """Check a sequence encoder; MLP has no sequence and is refused."""
+        if not {"sequence_indices", "context_indices"} <= set(self.encoder_config):
+            raise ValueError("validation requires an explicit sequence encoder layout")
         import torch
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(271)
@@ -4354,7 +4374,15 @@ class SetMixtureCDF(MixtureMLPCDF):
         settings.pop("head_features", None)
         if settings.get("patience") is not None:
             raise ValueError("SetMixtureCDF trains its own loop: patience is unsupported")
+        if (settings.get("max_parameters") is not None
+                or settings.get("mask_constant_features", False) is not False
+                or settings.get("training_telemetry", False) is not False):
+            raise ValueError("mixture-loop controls are unsupported by SetMixtureCDF")
         super().__init__(feature_indices=None, head_features=None, **settings)
+
+    def parameter_count(self, features):
+        """Refuse the dense-loop counter: this encoder builds a different module."""
+        raise ValueError("mixture-loop parameter counting is unsupported by SetMixtureCDF")
 
     def _validate_x(self, x):
         import numpy as np
