@@ -38,15 +38,31 @@ class AtomicFitStore:
             return hashlib.file_digest(stream, "sha256").hexdigest()
 
     def verify(self):
-        record = json.loads((self.path/"complete.json").read_text())
-        files = {str(p.relative_to(self.path)) for p in self.path.rglob("*")
-                 if p.is_file() and p != self.path/"complete.json"}
-        if record["identity"] != self.identity or files != set(record["files"]):
-            raise IntegrityError("checkpoint identity/inventory mismatch")
-        if any(self.file_hash(self.path/name) != digest
-               for name, digest in record["files"].items()):
-            raise IntegrityError("checkpoint content hash mismatch")
-        return record
+        """Treat every missing/malformed persisted manifest as an integrity error."""
+        try:
+            record = json.loads((self.path/"complete.json").read_text())
+            if (not isinstance(record, dict) or set(record) != {"identity", "files"}
+                    or not isinstance(record["files"], dict)
+                    or record["identity"] != self.identity):
+                raise IntegrityError("checkpoint manifest schema/identity mismatch")
+            for name, digest in record["files"].items():
+                if (not isinstance(name, str) or Path(name).is_absolute()
+                        or ".." in Path(name).parts or name == "complete.json"
+                        or not isinstance(digest, str) or len(digest) != 64
+                        or any(c not in "0123456789abcdef" for c in digest)):
+                    raise IntegrityError("checkpoint file manifest is malformed")
+            files = {str(p.relative_to(self.path)) for p in self.path.rglob("*")
+                     if p.is_file() and p != self.path/"complete.json"}
+            if files != set(record["files"]):
+                raise IntegrityError("checkpoint file inventory mismatch")
+            if any(self.file_hash(self.path/name) != digest
+                   for name, digest in record["files"].items()):
+                raise IntegrityError("checkpoint content hash mismatch")
+            return record
+        except IntegrityError:
+            raise
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+            raise IntegrityError("unreadable checkpoint manifest/payload: "+str(self.path)) from error
 
     def publish(self, files):
         if self.path.exists():
@@ -98,7 +114,7 @@ class CDFExperiment:
                 or len({a["name"] for a in candidates}) != len(candidates)):
             raise ValueError("invalid candidate inventory")
         names = [*config["arms"], *(a["name"] for a in candidates), *config["tickers"]]
-        if any(not isinstance(n, str) or not n or "/" in n or "\\" in n or n in (".", "..")
+        if any(not isinstance(n, str) or not n or "/" in n or "\\" in n or n in (".", "..") or ".pending-" in n
                for n in names):
             raise ValueError("unsafe experiment identifier")
         for arm in config["arms"].values():
@@ -337,8 +353,34 @@ class CDFExperiment:
             store.publish({"scores.parquet": buffer.getvalue(),
                            "link.json": self.json_bytes({"checkpoint": checkpoint_hash, "n": len(scores)})})
 
+    def _resume_state(self, root, identity, groups):
+        """Validate all published ancestors/dependants before any fit or skip."""
+        if (root/"skipped").exists() and (root/"completed").exists():
+            raise IntegrityError("conflicting completed and skipped terminal states")
+        score_root = root/"scores"
+        published = []
+        if score_root.exists():
+            for path in score_root.iterdir():
+                # Atomic publication may leave an unpublished temporary directory.
+                if ".pending-" in path.name:
+                    continue
+                if not path.is_dir() or path.name not in groups:
+                    raise IntegrityError("unexpected score shard")
+                published.append(path)
+        fit = root/"fit"
+        if not fit.exists():
+            if published or (root/"completed").exists():
+                raise IntegrityError("published dependants lack their immutable fit")
+            return
+        record = AtomicFitStore(fit, identity).verify()
+        checkpoint = value_hash(record)
+        for path in published:
+            AtomicFitStore(path, {"fit": identity, "checkpoint": checkpoint,
+                                 "ticker": path.name}).verify()
+
     def _cell(self, root, identity, bands, groups, admission, arm, candidate, regime):
         root.mkdir(parents=True, exist_ok=True)
+        self._resume_state(root, identity, groups)
         skip = AtomicFitStore(root/"skipped", identity)
         if skip.path.exists():
             skip.verify()
