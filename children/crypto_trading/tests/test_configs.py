@@ -452,12 +452,24 @@ def test_the_kill_test_holds_a_segment_out_and_the_two_never_overlap():
 def test_the_published_table_registration_matches_what_the_document_writes():
     config = _load("source-features-15m.json")
     check_config(LocalTablesConnector(), config)
-    write = _doc()["pipeline"]["write"]["params"]
+    node = _doc()["pipeline"]["write"]
+    write = node["params"]
+    assert node["uses"] == "crypto_trading.run_write:RunStampedWrite"
     assert os.path.dirname(write["path"]) == config["path"] == FEATURES_DIR
-    assert os.path.basename(write["path"]) == "decision_features.jsonl"
-    assert config["streams"] == ["decision_features"] and config["formats"] == ["jsonl"]
+    assert os.path.basename(write["path"]) == "decision_features-{run}.jsonl", "one file, one stream, per run"
+    assert write["path"].count("{run}") == 1
+    assert "streams" not in config, "a fixed stream list would hide every run's table but the first"
+    assert config["formats"] == ["jsonl"]
     assert config["effective_field"] == "decision_ms" and config["effective_unit"] == "ms"
     assert config["layout"] == "file" and config["notes"].strip()
+
+
+def test_the_registration_and_the_runbook_never_publish_under_one_fixed_stream_name():
+    """A fixed stream name serves the OLD rows after a change (localtables' cursor); name the hazard, never the habit."""
+    config = _load("source-features-15m.json")
+    for text in (config["notes"], RUNBOOK_TEXT):
+        assert "--stream decision_features " not in text and "--stream decision_features\n" not in text
+    assert "OLD rows" in config["notes"]
 
 
 def test_the_runbook_registers_and_publishes_the_feature_table():

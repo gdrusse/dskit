@@ -108,9 +108,12 @@ def runbook_root_command():
     return line
 
 
-def patched_doc(store, tmp_path):
-    """The shipped document with its roots rewritten EXACTLY as the runbook says, then placement and the cut moved."""
-    work = tmp_path / "shipped"
+def patched_doc(store, tmp_path, tweak=None, name="run.json"):
+    """The shipped document with its roots rewritten EXACTLY as the runbook says, then placement and the cut moved.
+
+    ``tweak(doc)`` may change the document further (a second, different configuration).
+    """
+    work = tmp_path / ("shipped-" + name)
     (work / "configs").mkdir(parents=True)
     shutil.copy(DOC, work / "configs" / "run-features-15m.json")
     done = subprocess.run(["bash", "-c", runbook_root_command()], cwd=work, capture_output=True, text=True,
@@ -118,19 +121,22 @@ def patched_doc(store, tmp_path):
     assert done.returncode == 0, done.stderr
     doc = json.loads((work / "configs" / "run-features-15m.json").read_text(encoding="utf-8"))
     out = tmp_path / "features"
-    out.mkdir()
-    doc["pipeline"]["write"]["params"]["path"] = str(out / "decision_features.jsonl")
+    out.mkdir(exist_ok=True)
+    shipped_path = doc["pipeline"]["write"]["params"]["path"]
+    doc["pipeline"]["write"]["params"]["path"] = str(out / os.path.basename(shipped_path))  # keeps the {run} template
     kill = doc["pipeline"]["kill_test"]["params"]
     kill["segments"]["development"]["end"] = CUT
     kill["segments"]["heldout"]["start"] = CUT
     kill["report_segments"] = ["development", "heldout"]  # the shipped document reports development only
-    path = tmp_path / "run.json"
+    if tweak is not None:
+        tweak(doc)
+    path = tmp_path / name
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path, out
 
 
-def run(store, tmp_path):
-    path, out = patched_doc(store, tmp_path)
+def run(store, tmp_path, tweak=None, name="run.json"):
+    path, out = patched_doc(store, tmp_path, tweak, name)
     document = replace(load_document(str(path)), outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
     return run_document(document, asof="2026-10-06"), out
 
@@ -203,10 +209,14 @@ def test_the_exclusion_lists_and_provenance_are_kept_in_the_run_directory(ran):
 
 def test_the_table_is_written_as_json_lines_for_the_next_run(ran):
     _, result, out = ran
-    lines = (out / "decision_features.jsonl").read_text(encoding="utf-8").splitlines()
+    (table,) = list(out.iterdir())
+    assert table.name == f"decision_features-{os.path.basename(result.run_dir)}.jsonl", "the file names its run"
+    lines = table.read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(result.outputs["fees"]["records"])
     first = json.loads(lines[0])
     assert {"ticker", "decision_ms", "label", "spot", "fair_rms", "fee_buy_yes"} <= set(first)
+    assert {json.loads(line)["run_id"] for line in lines} == {os.path.basename(result.run_dir)}, (
+        "every row says which run produced it")
 
 
 def test_the_kill_test_scores_both_segments_and_writes_its_report(ran):
@@ -239,22 +249,59 @@ def test_nothing_but_placement_and_the_cut_was_changed_for_this_run(tmp_path, mo
     assert strip(patched) == strip(shipped_doc)
 
 
-def test_the_feature_table_publishes_through_localtables_and_reads_back(ran, tmp_path):
-    store, result, out = ran
+def stream_of(result):
+    """The stream a run's table is published under: one per run, so tables never merge or shadow."""
+    return f"decision_features-{os.path.basename(result.run_dir)}"
+
+
+def read_back(store, stream):
+    node = ObservationRows("features", {
+        "root": store.path, "source": "features-15m", "stream": stream,
+        "key_fields": ["ticker", "lead_minutes"], "ts_field": "decision_ms", "ts_unit": "ms"})
+    return node.run(None, {})["records"]
+
+
+def register_features(store, out):
     config = shipped("source-features-15m.json")
     config["path"] = str(out)
     check_config(LocalTablesConnector(), config)
     store._register("features-15m", "localtables", config)
-    run_acquisition(store.onboarding, store.registry, "features-15m", "decision_features", "backfill")
-    node = ObservationRows("features", {
-        "root": store.path, "source": "features-15m", "stream": "decision_features",
-        "key_fields": ["ticker", "lead_minutes"], "ts_field": "decision_ms", "ts_unit": "ms"})
-    rows = node.run(None, {})["records"]
+
+
+def test_the_feature_table_publishes_through_localtables_and_reads_back(ran, tmp_path):
+    store, result, out = ran
+    register_features(store, out)
+    run_acquisition(store.onboarding, store.registry, "features-15m", stream_of(result), "backfill")
+    rows = read_back(store, stream_of(result))
     written = result.outputs["fees"]["records"]
     assert len(rows) == len(written)
     assert {(r["ticker"], r["lead_minutes"]) for r in rows} == {
         (r["ticker"], r["lead_minutes"]) for r in written}
     assert all(r["asof_ms"] == r["decision_ms"] for r in rows)
+    assert {r["run_id"] for r in rows} == {os.path.basename(result.run_dir)}
+
+
+def test_a_changed_document_publishes_its_own_table_and_never_shadows_the_old_one(ran, tmp_path):
+    """localtables is incremental on decision_ms: re-acquiring a CHANGED table under one stream name returns
+    `snapshot: null` and the OLD rows. One stream per run makes that impossible."""
+    store, first, out = ran
+    second, _ = run(store, tmp_path, name="run2.json",
+                    tweak=lambda doc: doc["pipeline"]["decisions"]["params"].update(exec_lag_s=10))
+    assert second.state == "ran", (second.state, second.error)
+    assert second.run_dir != first.run_dir, "a changed document is a different run"
+    assert sorted(p.name for p in out.iterdir()) == sorted(f"{stream_of(r)}.jsonl" for r in (first, second))
+
+    register_features(store, out)
+    for result in (first, second):
+        done = run_acquisition(store.onboarding, store.registry, "features-15m", stream_of(result), "backfill")
+        assert done["snapshot"], "each run's table is a NEW stream: its first acquisition always lands"
+    old, new = read_back(store, stream_of(first)), read_back(store, stream_of(second))
+    assert len(old) == len(new) == len(first.outputs["fees"]["records"])
+    assert {r["exec_ms"] - r["decision_ms"] for r in old} == {5_000}, "the old table is still retrievable, unchanged"
+    assert {r["exec_ms"] - r["decision_ms"] for r in new} == {10_000}, "and the new one is the new table"
+    assert {r["run_id"] for r in old} != {r["run_id"] for r in new}
+    again = run_acquisition(store.onboarding, store.registry, "features-15m", stream_of(first), "backfill")
+    assert again["snapshot"] is None, "re-publishing an UNCHANGED table makes no new snapshot"
 
 
 def test_the_shipped_document_does_not_report_the_held_out_segment():

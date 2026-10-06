@@ -129,13 +129,17 @@ features, fair values, fees, the kill test, then `records-write`. Rules that bin
   after the strike is known.
 - **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
   refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
+- **One published table per run.** The `write` node is `RunStampedWrite`: `{run}` in its path becomes the run
+  directory's name and rows carry `run_id`. `localtables` is incremental, so a changed table under an old
+  stream name returns `snapshot: null` and serves the OLD rows; never publish under a fixed stream name.
 - **No imputation.** Missing is `None` plus a `*_missing` / `*_status` column. A reading older than its age
   cap is missing. Excluded markets and decision rows are listed on ports and censuses, never dropped quietly.
 - **Vocabularies are params** (`payoff_by_strike_type`, `result_labels`, fee `base_rate_by_type`, leads, vol
   specs, kill-test segments and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
   to the stage A suites and sources it must agree with.
 - **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`), 0242
-  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`) and 0243 (`fair_value.py`, `payoffs.py`, `kill_test.py`).
+  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`), 0243 (`fair_value.py`, `payoffs.py`, `kill_test.py`) and
+  0244 (`run_write.py`).
   Do not grow them; delete them when the ADR lands. Parsing and the cluster error are dskit's
   (`dskit.production.base.parse_utc_ms`, `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement.
 - **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
@@ -155,7 +159,7 @@ crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform)
                        #   stage B: fields, clock, payoffs, kalshi_rows,
                        #   decisions, anchors, ports, day_series, vol_estimators,
                        #   spot_features, market_state, fair_value, fees,
-                       #   kill_test (see the section above)
+                       #   kill_test, run_write (see the section above)
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
                        #   source-kalshi-crypto[-candles-*|-books-*] /

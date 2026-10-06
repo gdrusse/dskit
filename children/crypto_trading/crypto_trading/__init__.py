@@ -21,6 +21,7 @@ from .kalshi_rows import CandleRows, FeeRows, MarketRows
 from .kill_test import KillTestScore
 from .market_state import MarketState
 from .nodes import NODE_KINDS, EnrichRecords, SampleRecords
+from .run_write import RunStampedWrite
 from .spot_features import SpotFeatures
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "NODE_KINDS",
     "ParquetDaySeries",
     "QuadraticFee",
+    "RunStampedWrite",
     "SampleConnector",
     "SampleRecords",
     "SpotFeatures",

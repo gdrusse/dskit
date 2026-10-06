@@ -23,7 +23,7 @@ __all__ = [
     "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "EXEC_MS", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
-    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
+    "RETRIEVED", "RETRIEVED_MS", "RUN_ID", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
     "TAU_S", "TICKER",
     "TWO_SIDED", "VOLUME", "YES_ASK", "YES_BID",
 ]
@@ -81,6 +81,9 @@ RETRIEVED_MS = "retrieved_ms"
 #: Per-contract taker fee columns (what ``FeeColumns`` writes and ``KillTestScore`` reads).
 FEE_BUY_YES = "fee_buy_yes"
 FEE_BUY_NO = "fee_buy_no"
+
+#: Which run produced a published row: the run directory's name (document, as-of, identity hash).
+RUN_ID = "run_id"
 
 YES_BID = "yes_bid"
 YES_ASK = "yes_ask"

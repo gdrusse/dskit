@@ -44,10 +44,12 @@ minutes before the close). Hourly series plug in by config once ADR-0236 supplie
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream, rounded per order |
 | `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
-The table is written as JSON lines and published back as source `features-15m` through
-`configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
+The table is written as JSON lines, one file and one stream per run (`decision_features-<run>`, rows carry
+`run_id`), and published back as source `features-15m` through `configs/source-features-15m.json`
+(`localtables`); commands are in the runbook, stage B.
 Interim child classes standing in for PROPOSED dskit ADRs: `day_series.py` (0240),
-`vol_estimators.py` (0241), `fees.py` (0242), `fair_value.py` + `payoffs.py` + `kill_test.py` (0243).
+`vol_estimators.py` (0241), `fees.py` (0242), `fair_value.py` + `payoffs.py` + `kill_test.py` (0243),
+`run_write.py` (0244).
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 
@@ -207,6 +209,7 @@ crypto_trading/
 │   ├── fair_value.py      # stage B: averaged-lognormal P(YES) (interim, ADR-0243)
 │   ├── fees.py            # stage B: Kalshi taker fee, per order (interim, ADR-0242)
 │   ├── kill_test.py       # stage B: fair value vs mid, after fees, by segment (interim, ADR-0243)
+│   ├── run_write.py       # stage B: RunStampedWrite, one table file and stream per run (interim, ADR-0244)
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
 │   ├── execution.py       # production seam: the venue executor (fail-closed)
@@ -267,6 +270,7 @@ crypto_trading/
     ├── test_vol_estimators.py # estimators by hand; causality by prefix
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
     ├── test_ports_and_markers.py # one list-port owner; INTERIM markers name real ADRs
+    ├── test_run_write.py  # {run} paths, run_id rows, refusals
     ├── test_configs.py    # every config validates against its engine; pins
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
     ├── test_kalshi_crypto.py # kalshi sources + suites against a scripted venue

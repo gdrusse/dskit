@@ -214,6 +214,33 @@ def test_the_block_standard_error_groups_markets_by_close_into_time_blocks(tmp_p
     assert one_block["brier_diff_se"] is None and one_block["n_clusters"] == 1
 
 
+def cluster_se(groups):
+    """The cluster-robust error of a mean, restated on purpose: sqrt(G / (G - 1) * sum u_g^2) / n, u_g = T_g - theta m_g."""
+    n = sum(len(g) for g in groups)
+    theta = sum(sum(g) for g in groups) / n
+    return math.sqrt(len(groups) / (len(groups) - 1) * sum((sum(g) - theta * len(g)) ** 2 for g in groups)) / n
+
+
+def test_every_headline_error_clusters_on_the_block_and_its_event_twin_on_the_event(tmp_path):
+    """Brier, log-loss and profit alike: three markets, two in one hour block, so block and event errors differ."""
+    hour = 3_600_000
+    rows = [row("A", 1, 0.40, 0.70, 0.42, 0.38, "ea", decision=HELD, close=CUT + 10_000),
+            row("B", 1, 0.60, 0.45, 0.62, 0.58, "eb", decision=HELD, close=CUT + 20_000),   # buys NO and loses
+            row("C", 1, 0.40, 0.55, 0.44, 0.36, "ec", decision=HELD, close=CUT + hour + 5_000)]
+    brier_d = [(0.70 - 1) ** 2 - (0.40 - 1) ** 2, (0.45 - 1) ** 2 - (0.60 - 1) ** 2, (0.55 - 1) ** 2 - (0.40 - 1) ** 2]
+    log_d = [-math.log(0.70) + math.log(0.40), -math.log(0.45) + math.log(0.60), -math.log(0.55) + math.log(0.40)]
+    pnl = [1 - 0.42 - 0.02, (1 - 1) - (1 - 0.58) - 0.02, 1 - 0.44 - 0.02]
+    cell = pick(score(tmp_path, rows=rows, cluster_block_s=3600))
+    for values, (block_key, event_key) in ((brier_d, ("brier_diff_se", "brier_diff_se_event")),
+                                           (log_d, ("logloss_diff_se", "logloss_diff_se_event")),
+                                           (pnl, ("pnl_se", "pnl_se_event"))):
+        by_block, by_event = cluster_se([values[:2], values[2:]]), cluster_se([[v] for v in values])
+        assert abs(by_block - by_event) > 0.01, "the fixture must tell the two clusterings apart"
+        assert cell[block_key] == pytest.approx(by_block), f"{block_key} clusters on the time block"
+        assert cell[event_key] == pytest.approx(by_event), f"{event_key} clusters on the event"
+    assert cell["n_trades"] == 3, "every market trades, so the profit error is estimated from all three"
+
+
 def test_a_persistent_regime_makes_the_block_error_materially_larger_than_the_per_event_error(tmp_path):
     """Vol regimes persist: neighbouring markets share one, so per-event clustering understates the error (about 2x)."""
     rng = random.Random(11)

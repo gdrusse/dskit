@@ -247,20 +247,26 @@ and run: run again. "no longer matches the manifest sha256" means a stored file 
 
 ## B4. Publish the table back through onboarding
 
-A table a later run reads is a source, not a path (CLAUDE.md). Register once, acquire after every run:
+A table a later run reads is a source, not a path (CLAUDE.md). Every run writes its OWN file,
+`decision_features-<run>.jsonl` (`<run>` is the run directory's name: document, as-of, identity hash),
+and each file is its own stream. Register once, acquire after every run:
 
 ```bash
 python -m dskit.onboarding register-source features-15m --root "$OB" --catalog-source features-15m \
-    --connector localtables --config @configs/source-features-15m.json --activate
-python -m dskit.onboarding acquire --root "$OB" --source features-15m \
-    --stream decision_features --mode backfill
+    --connector localtables --config @configs/source-features-15m.json --activate   # once
+for f in ~/data/crypto_trading/features-15m/decision_features-*.jsonl; do
+    s=$(basename "$f" .jsonl)
+    python -m dskit.onboarding acquire --root "$OB" --source features-15m --stream "$s" --mode backfill
+done                                                    # a stream already taken is a no-op
 python -m dskit.onboarding verify --root "$OB"
 git add docs/decisioning && git commit                  # the run and the acquire journaled themselves
 ```
 
-An unchanged table makes no new snapshot. A later run reads it with `ObservationRows` (source
-`features-15m`, stream `decision_features`, `key_fields` `[ticker, lead_minutes]`, `ts_field`
-`decision_ms`, `ts_unit` `ms`).
+Never publish a changed table under an old stream name: `localtables` advances on a `decision_ms` cursor,
+so the acquire exits 0 with `"snapshot": null` and a read serves the OLD rows. A new configuration is a new
+run, hence a new file and stream, and the old table stays readable. A later run reads one with
+`ObservationRows` (source `features-15m`, stream `decision_features-<run>`, `key_fields`
+`[ticker, lead_minutes]`, `ts_field` `decision_ms`, `ts_unit` `ms`); the rows also carry `run_id`.
 
 ## B5. Read the held-out set once, then read it correctly
 

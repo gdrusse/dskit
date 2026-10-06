@@ -306,16 +306,16 @@
       "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs kill_test.json and kill_test.md in the run directory. Segments are cut on the market's CLOSE (when its label is settled), so one market never has rows on both sides. The cut (2026-09-15) and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only. `report_segments` lists development only, so this run never prints the held-out numbers; to read them add \"heldout\" to it (a new document hash, so the read is recorded), commit that edit, run once, and never move the cut afterwards. Standard errors are dskit's cluster-robust ones, clustered on 1-day blocks of close (cluster_block_s 86400; blank below two clusters), with the per-event error beside them: volatility regimes persist, so neighbouring markets' errors are correlated and clustering on the market alone understates the error about twofold (review simulation: 68 to 77 percent coverage of a nominal 95 percent interval); kill_test.md also gives mean fair minus base rate per lead, which must be near zero before any edge is claimed. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
     },
     "write": {
-      "uses": "records-write",
+      "uses": "crypto_trading.run_write:RunStampedWrite",
       "inputs": {
         "records": "$fees.records"
       },
       "params": {
-        "path": "~/data/crypto_trading/features-15m/decision_features.jsonl",
+        "path": "~/data/crypto_trading/features-15m/decision_features-{run}.jsonl",
         "source": "crypto_trading run-features-15m: one row per settled 15-minute market and decision lead",
         "overwrite": true
       },
-      "notes": "The feature table as canonical JSON lines (missing values are null). A table a later run reads is published back through onboarding, not read by path: configs/source-features-15m.json registers this directory as a localtables source (runbook, stage B). The directory must exist; `overwrite` is on because the file is a pure function of the run and the snapshot chain keeps every earlier version."
+      "notes": "The feature table as canonical JSON lines (missing values are null), one file PER RUN: `{run}` becomes the run directory's name (document, as-of, identity hash) and every row carries it as run_id. Why: localtables is incremental on a decision_ms cursor, so a rewritten table under a fixed name is acquired as 'snapshot: null' and read back as the OLD rows; one stream per run means two configurations can never merge or shadow each other, and the older table stays readable under its own stream. configs/source-features-15m.json registers this directory (runbook, stage B). The directory must exist; `overwrite` only covers a re-run of the very same run name, which rewrites the same content."
     }
   },
   "outputs": {
