@@ -2394,7 +2394,8 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                  weight_decay=.01, min_scale=_MIN_SCALE, activation="tanh", dropout=0.,
                  head_features=None, deterministic=False, left_cdf_weight=0.,
                  left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
-                 patience=None):
+                 patience=None, max_parameters=None, mask_constant_features=False,
+                 training_telemetry=False):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
@@ -2414,6 +2415,13 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 or type(left_cdf_points) is not int or left_cdf_points < 2):
             raise ValueError("invalid left CDF training parameters")
         feature_indices = self._checked_indices(feature_indices)
+        if max_parameters is not None and (type(max_parameters) is not int or max_parameters < 1):
+            raise ValueError("max_parameters must be a positive integer")
+        if type(mask_constant_features) is not bool or type(training_telemetry) is not bool:
+            raise ValueError("mask and telemetry controls must be bool")
+        self.max_parameters = max_parameters
+        self.mask_constant_features = mask_constant_features
+        self.training_telemetry = training_telemetry
         self.patience = self._checked_patience(patience)
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
@@ -2480,7 +2488,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         heads = self._heads(cal_x)
         if not set(heads).issubset(self.seen_heads):
             raise ValueError("unseen head in the calibration rows")
-        return (torch.tensor(self.scaler.transform(self._features(cal_x)),
+        return (torch.tensor(self._scaled_features(cal_x),
                              dtype=torch.float32, device=self.device),
                 self._target_tensor(np.asarray(cal_y)),
                 torch.tensor(heads, dtype=torch.long, device=self.device),
@@ -2532,14 +2540,24 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         self.seen_heads = set(heads)
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         self.scaler = StandardScaler().fit(features)
-        xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
+        xx = torch.tensor(self._scaled_features(x), dtype=torch.float32, device=self.device)
         yy = self._target_tensor(y)
         training_context = self._training_context(x)
         monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
         self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
+        self.training_diagnostics = []
+        diagnostic_monitor = (self._monitor_set(cal_x, cal_y)
+                              if self.training_telemetry and monitor is None else monitor)
         for seed in self.seeds:
             torch.manual_seed(seed)
             model = self._build_module(features.shape[1])
+            parameter_count = sum(p.numel()*(2 if p.is_complex() else 1) for p in model.parameters() if p.requires_grad)
+            if self.max_parameters is not None and parameter_count > self.max_parameters:
+                raise ValueError(f"parameter budget exceeded: {parameter_count} > {self.max_parameters}")
+            initial = [p.detach().clone() for p in model.parameters()] if self.training_telemetry else None
+            epoch_zero = (self._monitor_loss(model, diagnostic_monitor)
+                          if self.training_telemetry else None)
+            steps = 0
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
@@ -2556,8 +2574,11 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                         raise ValueError("nonfinite mixture likelihood")
                     optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                    if not torch.isfinite(norm):
+                        raise ValueError("nonfinite mixture gradient")
                     optimizer.step()
+                    steps += 1
                     total += loss.item()*len(ix)
                 losses.append(total/len(xx))
                 if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
@@ -2572,6 +2593,12 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 stop.restore(model)
                 self.monitor_losses.append(stop.history)
                 self.best_epochs.append(stop.best_epoch)
+            if self.training_telemetry:
+                delta = sum((p.detach()-v).abs().double().square().sum().item()
+                            for p, v in zip(model.parameters(), initial))**.5
+                self.training_diagnostics.append({"parameters": parameter_count,
+                    "optimizer_steps": steps, "parameter_delta_l2": delta,
+                    "epoch_zero_monitor_loss": epoch_zero, "finite_gradients": True})
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
@@ -2580,6 +2607,83 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         return self
+
+
+    def parameter_count(self, features):
+        """Count all instantiated trainable parameters without retaining a model."""
+        import torch
+        with torch.random.fork_rng(devices=[]):
+            module = self._build_module(features)
+            return sum(p.numel()*(2 if p.is_complex() else 1) for p in module.parameters() if p.requires_grad)
+
+    def _scaled_features(self, x):
+        values = self.scaler.transform(self._features(x))
+        if self.mask_constant_features:
+            values[:, self.scaler.var_ == 0] = 0.
+        return values
+
+    def _checkpoint_settings(self):
+        return self._equivalence_settings()
+
+    def save_checkpoint(self, path):
+        """Persist this fitted model as JSON and tensor-only weights, atomically.
+
+        The directory is immutable. Caller preprocessing and forecast identities
+        belong in the enclosing fit manifest.
+        """
+        import os
+        import tempfile
+        import torch
+        path = Path(path)
+        if path.exists():
+            raise ValueError("checkpoint already exists")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = Path(tempfile.mkdtemp(prefix=path.name+".", dir=path.parent))
+        state = {"class": type(self).__name__, "settings": self._checkpoint_settings(),
+                 "scaler": {k: getattr(self.scaler, k).tolist()
+                            for k in ("mean_", "scale_", "var_")},
+                 "seen_heads": sorted(int(i) for i in self.seen_heads),
+                 "losses": self.losses, "monitor_losses": self.monitor_losses,
+                 "best_epochs": self.best_epochs,
+                 "diagnostics": self.training_diagnostics}
+        torch.save([m.state_dict() for m in self.models], temp/"weights.pt")
+        state["weights_sha256"] = hashlib.sha256((temp/"weights.pt").read_bytes()).hexdigest()
+        (temp/"state.json").write_text(json.dumps(state, allow_nan=False))
+        os.rename(temp, path)
+
+    @classmethod
+    def load_checkpoint(cls, path):
+        """Restore the same estimator type, refusing modified tensor payloads."""
+        import numpy as np
+        import torch
+        from sklearn.preprocessing import StandardScaler
+        path = Path(path)
+        state = json.loads((path/"state.json").read_text())
+        if state["class"] != cls.__name__:
+            raise ValueError("checkpoint estimator type mismatch")
+        if hashlib.sha256((path/"weights.pt").read_bytes()).hexdigest() != state["weights_sha256"]:
+            raise ValueError("checkpoint weights hash mismatch")
+        if not state["settings"].get("head_features"):
+            state["settings"]["head_features"] = None
+        model = cls(**state["settings"])
+        model.scaler = StandardScaler()
+        for key, value in state["scaler"].items():
+            setattr(model.scaler, key, np.asarray(value))
+        model.scaler.n_features_in_ = len(model.scaler.mean_)
+        model.seen_heads = set(state["seen_heads"])
+        weights = torch.load(path/"weights.pt", map_location=model.device, weights_only=True)
+        if len(weights) != len(model.seeds):
+            raise ValueError("checkpoint seed inventory mismatch")
+        model.models = []
+        for seed, values in zip(model.seeds, weights):
+            torch.manual_seed(seed)
+            module = model._build_module(model.scaler.n_features_in_)
+            module.load_state_dict(values, strict=True)
+            model.models.append(module.eval())
+        model.losses, model.monitor_losses = state["losses"], state["monitor_losses"]
+        model.best_epochs = state["best_epochs"]
+        model.training_diagnostics = state["diagnostics"]
+        return model
 
     def _equivalence_settings(self):
         """Return the settings the equivalence digest covers."""
@@ -2591,6 +2695,12 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                     "activation": self.activation, "dropout": self.dropout,
                     "head_features": self.head_features,
                     "deterministic": self.deterministic}
+        if self.max_parameters is not None:
+            settings["max_parameters"] = self.max_parameters
+        if self.mask_constant_features:
+            settings["mask_constant_features"] = True
+        if self.training_telemetry:
+            settings["training_telemetry"] = True
         if self.feature_indices is not None:
             settings["feature_indices"] = self.feature_indices
         if self.patience is not None:
@@ -2636,7 +2746,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         if not set(heads).issubset(self.seen_heads):
             raise ValueError("unseen head requested")
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
-        xx = torch.tensor(self.scaler.transform(self._features(x)), dtype=torch.float32, device=self.device)
+        xx = torch.tensor(self._scaled_features(x), dtype=torch.float32, device=self.device)
         weights, means, scales = [], [], []
         with torch.no_grad():
             for model in self.models:
@@ -3065,6 +3175,46 @@ class _CDFCNNEncoder(_CDFSequenceEncoder):
                 for conv, d in zip(self.convs, dilations):
                     h = self.activation(conv(torch.nn.functional.pad(h, ((kernel-1)*d, 0))))
                 return self.head(torch.cat([pool(h), x[:, context]], dim=1))
+        return Module()
+
+
+
+
+class _CDFExternalEncoder(_CDFSequenceEncoder):
+    """A public library adapter feeding the existing common mixture head."""
+    NAME = "external"
+    _SETTINGS = ("adapter",)
+
+    def _settings_ok(self, config):
+        from dskit.pipeline.libs.torch_ts import SequenceEncoderAdapter
+        spec = config["adapter"]
+        if (not isinstance(spec, dict) or set(spec) != {"class", "params"}
+                or not isinstance(spec["class"], str) or ":" not in spec["class"]
+                or not isinstance(spec["params"], dict)):
+            return False
+        module, name = spec["class"].split(":")
+        cls = getattr(importlib.import_module(module), name)
+        if not isinstance(cls, type) or not issubclass(cls, SequenceEncoderAdapter):
+            return False
+        self.adapter = cls(**spec["params"])
+        return True
+
+    def _module(self, owner, sequence, context):
+        import torch
+        encoder = self.adapter.build_module(len(sequence), len(sequence[0]))
+        width = self.adapter.output_width(len(sequence[0]))
+        head = MixtureMLPCDF._build_module(owner, width + len(context))
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder, self.head = encoder, head
+
+            def forward(self, x):
+                h = self.encoder(x[:, sequence])
+                if h.ndim != 2 or h.shape != (len(x), width):
+                    raise ValueError("external encoder violated row/width contract")
+                return self.head(torch.cat([h, x[:, context]], dim=1))
         return Module()
 
 
@@ -3612,7 +3762,7 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
     """
 
     _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder, "lstm": _CDFLSTMEncoder,
-                 "cnn": _CDFCNNEncoder}
+                 "cnn": _CDFCNNEncoder, "external": _CDFExternalEncoder}
 
     def __init__(self, encoder, losses, family=None, **settings):
         import copy
@@ -3625,6 +3775,31 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
         self._set_composite(losses, family)
         self.encoder_config = copy.deepcopy(encoder)
         self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
+
+    def _checkpoint_settings(self):
+        return {**self._equivalence_settings(), "encoder": self.encoder_config,
+                "losses": self.loss_config}
+
+    def validate_encoder(self, features):
+        """Fail closed when an adapter uses other rows or random evaluation."""
+        import torch
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(271)
+            module = self._build_module(features).eval()
+            x = torch.randn(3, features, device=self.device, requires_grad=True)
+            out = module(x)
+            for actual in (module(x), torch.cat([module(x[i:i+1]) for i in range(3)])):
+                torch.testing.assert_close(out, actual, atol=1e-5, rtol=1e-5)
+            module.train()
+            module(x).square().sum().backward()
+            if not torch.isfinite(out).all() or not torch.isfinite(x.grad).all():
+                raise ValueError("nonfinite adapter output/gradient")
+            sequence = [i for row in self.encoder_config["sequence_indices"] for i in row]
+            context = self.encoder_config["context_indices"]
+            if x.grad[:, sequence[:max(1, len(sequence)//4)]].abs().sum() == 0:
+                raise ValueError("old sequence inputs have no gradient")
+            if context and x.grad[:, context].abs().sum() == 0:
+                raise ValueError("context inputs have no gradient")
 
     def _equivalence_settings(self):
         settings = super()._equivalence_settings()
@@ -5102,6 +5277,10 @@ class ChronologicalCDFStudy:
                 raise ValueError(f"{name} trains on tail_crps but not on exactly crps + "
                                  f"tail_weight ({weight}) x tail_crps, the weighted_crps "
                                  "this study scores")
+
+    def decision_context_rows(self, frame):
+        """Return identity-bound fixed-tail or caller-supplied training context."""
+        return self._decision_context_rows(frame)
 
     def _decision_context_rows(self, frame):
         """Return context only after binding every record to its frame identity.

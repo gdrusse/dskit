@@ -89,6 +89,8 @@ Import cost: stdlib + ``dskit.pipeline`` only.
 
 from __future__ import annotations
 
+from dskit.pipeline.libs.torch_ts import SequenceEncoderAdapter
+
 import fnmatch
 import hashlib
 import json
@@ -122,6 +124,7 @@ from dskit.pipeline.trainlog import (
 )
 
 __all__ = [
+    "HFSequenceEncoder",
     "CLASSIFY_ACTIVATIONS",
     "DEFAULT_BATCH_SIZE",
     "DEFAULT_CARRY_FIELDS",
@@ -2227,3 +2230,45 @@ def register(registry=None) -> None:
     for name, cls in NODE_KINDS:
         if name not in registry:
             registry.register(name, cls)
+
+
+class HFSequenceEncoder(SequenceEncoderAdapter):
+    """Random-initialized HF patch encoder; mean over patches, retain channels."""
+    _MODELS = {"PatchTST": ("PatchTSTConfig", "PatchTSTModel"),
+               "PatchTSMixer": ("PatchTSMixerConfig", "PatchTSMixerModel")}
+
+    def __init__(self, model, config):
+        import copy
+        if model not in self._MODELS or not isinstance(config, dict):
+            raise ValueError("unsupported HF sequence encoder")
+        if type(config.get("d_model")) is not int or config["d_model"] < 1:
+            raise ValueError("d_model must be a positive integer")
+        if {"context_length", "num_input_channels"} & set(config):
+            raise ValueError("sequence dimensions belong to the input contract")
+        self.model, self.config = model, copy.deepcopy(config)
+
+    def output_width(self, channels):
+        return self.config["d_model"] * channels
+
+    def build_module(self, sequence_length, channels):
+        import inspect
+        import torch
+        import transformers
+        config_name, model_name = self._MODELS[self.model]
+        config_class = getattr(transformers, config_name)
+        allowed = set(inspect.signature(config_class).parameters)
+        if set(self.config) - allowed:
+            raise ValueError("unknown HF configuration keys")
+        config = config_class(context_length=sequence_length,
+                              num_input_channels=channels, **self.config)
+        backbone = getattr(transformers, model_name)(config)
+
+        class Encoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.backbone = backbone
+
+            def forward(self, sequence):
+                h = self.backbone(past_values=sequence).last_hidden_state
+                return h.mean(dim=2).flatten(1)
+        return Encoder()
