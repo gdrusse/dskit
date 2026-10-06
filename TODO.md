@@ -2398,11 +2398,11 @@ Still open:
 
 ### crypto_trading stage A: dskit gaps awaiting owner approval (2026-10-06)
 
-Found building the child's data pulls (`children/crypto_trading`); the child builds no workaround for any of them except the 0239 transform. Entries are in the decision log, status PROPOSED. Revised 2026-10-06 per owner: every one only ADDS new files (new modules, subclasses, import-path names); none edits an existing dskit file, kind, stream, field, default or identity hash.
+Found building the child's data pulls (`children/crypto_trading`); the child builds no workaround for any of them except the 0239 transform and the manual digest check (0238 withdrawn). Entries are in the decision log, status PROPOSED. Revised 2026-10-06 per owner: every one only ADDS new files (new modules, subclasses, import-path names); none edits an existing dskit file, kind, stream, field, default or identity hash.
 
-- [ ] **ADR-0236 new `kalshi_history` pack beside `kalshi` (`kalshi.py` untouched): `/historical/*`, event-level candles, a `trades` stream, settlement fields (`expiration_value`, `settlement_ts`, `volume`), a per-book `observed_at`.** Gates the modelling label: stage A stores only each strike's yes/no result, not the realised settlement value. Also unlocks hourly-ladder candles (about 25k requests, not 1.2M) and history before 2026-08-07.
+- [ ] **ADR-0236 new STANDALONE `kalshi_history` pack beside `kalshi` (`kalshi.py` untouched, public API only): `/historical/*`, event-level candles, a `trades` stream, settlement fields (`expiration_value`, `settlement_ts`, `volume`), a per-book `observed_at`.** Gates the modelling label: stage A stores only each strike's yes/no result, not the realised settlement value. Also unlocks hourly-ladder candles (about 25k requests, not 1.2M) and history before 2026-08-07.
 - [ ] **ADR-0237 new `restwindow` pack, a `RestApiConnector` subclass (`restapi.py` untouched): time-window pagination, positional rows, a dynamic record key.** Needed for Coinbase candles, Deribit DVOL and trades, Kraken trades.
-- [ ] **ADR-0238 new `HttpBlobsConnector` subclass that verifies a vendor's digest sidecar (`httpblobs.py` untouched).** Binance Vision publishes `<file>.zip.CHECKSUM`; the pull records `raw_sha256` but compares it with nothing. No public seam exists, so it overrides protected hooks; if the owner declines that, the runbook's manual check stays child-side.
+- **ADR-0238 `httpblobs` digest-sidecar check: WITHDRAWN 2026-10-06 (owner ruling: additive only; no public seam).** The vendor-checksum check stays the runbook's manual spot check; no dskit change.
 - [ ] **ADR-0239 new tier-2 zip-CSV to parquet `httpblobs` transform (`libs/zipcsv.py`).** The child's `ZipCsvParquet` is interim until the child migrates, a separate step that re-pulls (new declaration digest).
 
 ### crypto_trading stage B: dskit gaps awaiting owner approval (2026-10-06)

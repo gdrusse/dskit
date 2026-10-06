@@ -108,8 +108,8 @@ its own suite. Series and date lists repeat across configs and suites by design 
 suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
 both together. Candles are the two 15-minute series, one source each; hourly candles,
 the settlement value (`expiration_value`, the model's label) and pre-cutoff history wait on
-PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side: each is a NEW dskit pack or subclass (no
-existing pack is edited). `AGENTS.md` mirrors this file
+PROPOSED ADR-0236. Never solve ADR-0236, 0237 or 0239 child-side: each is a NEW dskit pack (no
+existing pack is edited). The digest check is child-side by ruling (ADR-0238 withdrawn). `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 ## Stage B features and the kill test

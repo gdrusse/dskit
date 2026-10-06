@@ -132,7 +132,7 @@ python -m dskit.onboarding verify --root "$OB"           # re-hash every snapsho
 git add docs/decisioning && git commit                   # the acquires journaled themselves
 ```
 
-Digest spot check (the manual stand-in for PROPOSED ADR-0238, a new verifying subclass; it stays the child-side fallback if the owner declines that): the two lines must print the same hash.
+Digest spot check (child-side; ADR-0238 is withdrawn, so this manual check is the permanent one): the two lines must print the same hash.
 
 ```bash
 python -c "import hashlib; from dskit.onboarding import payload_files as p; \

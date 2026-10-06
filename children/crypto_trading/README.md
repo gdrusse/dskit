@@ -24,8 +24,8 @@ is CC BY-NC-SA: research use only, not for live trading features. Exact commands
 
 **Not in stage A.** The realised settlement value (the model's label), hourly-ladder
 candles and Kalshi history before 2026-08-07 need PROPOSED ADR-0236; Coinbase, Deribit and
-Kraken need ADR-0237; digest verification ADR-0238. Each is a NEW dskit pack or subclass (existing
-packs stay untouched), not child code.
+Kraken need ADR-0237. Each is a NEW dskit pack (existing packs stay untouched), not child code.
+Digest verification stays a manual spot check in the runbook (child-side; ADR-0238 withdrawn).
 
 ## Stage B: features and the kill test
 
