@@ -1,0 +1,13 @@
+{
+  "notes": "Registration input, not a run input: publishes the stage B feature table back through onboarding (localtables, ADR-0076) so a later modelling run reads it by source and stream, with a snapshot and a content hash, and never by path. `path` is the directory run-features-15m.json's `write` node writes decision_features.jsonl into (a test pins the two equal; `~` expands); layout 'file' names the stream by the file's stem, so the stream is `decision_features`. effective_field decision_ms is the row's decision instant in epoch ms, which the platform dates the observation by; a modelling run reads it with ObservationRows(key_fields [ticker, lead_minutes], ts_field decision_ms, ts_unit ms). Register: python -m dskit.onboarding register-source features-15m --catalog-source features-15m --connector localtables --config @configs/source-features-15m.json --activate --root <store root>; then acquire --source features-15m --stream decision_features --mode backfill after every run of the document (an unchanged table is no new snapshot).",
+  "path": "~/data/crypto_trading/features-15m",
+  "layout": "file",
+  "effective_field": "decision_ms",
+  "effective_unit": "ms",
+  "streams": [
+    "decision_features"
+  ],
+  "formats": [
+    "jsonl"
+  ]
+}

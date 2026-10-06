@@ -1,0 +1,297 @@
+{
+  "name": "crypto-features-15m",
+  "notes": "Stage B of crypto_trading: the feature table and the kill test for the 15-minute Kalshi crypto contracts (KXBTC15M, KXETH15M). One row per settled market and declared lead before its close; each row carries the label, point-in-time spot and volatility from Binance klines and BVOL, the market's own quote from Kalshi 1-minute candles, a realised-vol and an implied-vol fair value, and Kalshi's taker fee. The kill test then asks whether a simple fair value beats the market mid on held-out rows after fees (one decision, made once: if it does not, nothing downstream is built). Run after the stage A acquisitions (docs/plans/2026-10-06-wsl-data-pull-runbook.md, stage B): python -m dskit.pipeline run configs/run-features-15m.json --asof <YYYY-MM-DD>. Nothing here names a path to data: every reader names a source and a stream in the onboarding store at `root` (the one machine-specific value, repeated per node and pinned equal by tests/test_configs.py; `~` expands). Leak rule, enforced and tested: a Binance bar is used only if it had CLOSED before the decision, a BVOL reading only if strictly before it, a Kalshi candle only if it had ENDED by it. HOURLY LADDERS plug in by config once PROPOSED ADR-0236 lands their candles: add the series to `markets.series` and to an asset's `series`, add the candle sources and a reader per source, and the strike types they use are already mapped; no code changes. Settlement is modelled as the CF Benchmarks average over the last 60 seconds; the label is each strike's yes/no result (the realised settlement value waits on ADR-0236).",
+  "pipeline": {
+    "markets": {
+      "uses": "crypto_trading.kalshi_rows:MarketRows",
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "source": "kalshi-crypto",
+        "series": [
+          "KXBTC15M",
+          "KXETH15M"
+        ],
+        "payoff_by_strike_type": {
+          "greater": "above",
+          "greater_or_equal": "above",
+          "less": "below",
+          "less_or_equal": "below",
+          "between": "between"
+        },
+        "result_labels": {
+          "yes": 1,
+          "no": 0
+        },
+        "settled_statuses": [
+          "finalized",
+          "settled"
+        ]
+      },
+      "notes": "Settled markets of the two 15-minute series, labelled 1 when YES settled. The vocabularies are params, not code: the five strike types the stage A suite lets through map to a payoff geometry, result is yes/no only (void or scalar results are excluded by name, never coerced), and the venue spells a settled payload 'finalized'. A market never given a strike (three KXBTC15M rows from 2026-08, 'Target price: TBD') or still unsettled is NOT a row: it lands on the excluded port and the census, by ticker. The 15-minute up/down floor_strike is the window-start target price."
+    },
+    "candles_btc": {
+      "uses": "crypto_trading.kalshi_rows:CandleRows",
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "source": "kalshi-crypto-candles-btc"
+      },
+      "notes": "1-minute candles of KXBTC15M. The reader converts the candle's END instant from the venue's epoch seconds to the epoch milliseconds every other node uses, and refuses a ts that already looks like milliseconds. One reader per candle source because a snapshot holds one source."
+    },
+    "candles_eth": {
+      "uses": "crypto_trading.kalshi_rows:CandleRows",
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "source": "kalshi-crypto-candles-eth"
+      },
+      "notes": "1-minute candles of KXETH15M; see candles_btc."
+    },
+    "candles": {
+      "uses": "concat",
+      "inputs": {
+        "btc": "$candles_btc.records",
+        "eth": "$candles_eth.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance": "candle_source",
+        "key": "ticker"
+      },
+      "notes": "Both assets' candles as one stream. `key: ticker` makes the union refuse a ticker that appears in both ports, which would mean a candle source pulled the wrong series; `provenance` stamps which port each row came from."
+    },
+    "fee_schedules": {
+      "uses": "crypto_trading.kalshi_rows:FeeRows",
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "source": "kalshi-crypto"
+      },
+      "notes": "Each series' fee_type and fee_multiplier as the venue reported them at each retrieval. The venue serves only the CURRENT schedule, so a historical market is priced under the latest retrieval; the table says which (fee_schedule_retrieved)."
+    },
+    "streams": {
+      "uses": "crypto_trading.day_series:StreamManifests",
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "streams": {
+          "BTC_klines": {
+            "source": "binance-btcusdt-1m",
+            "stream": "files"
+          },
+          "BTC_bvol": {
+            "source": "binance-btcbvol",
+            "stream": "files"
+          },
+          "ETH_klines": {
+            "source": "binance-ethusdt-1m",
+            "stream": "files"
+          },
+          "ETH_bvol": {
+            "source": "binance-ethbvol",
+            "stream": "files"
+          }
+        }
+      },
+      "notes": "Puts the four Binance streams into the run identity. The feature node reads their daily parquet files itself, which a transform's fingerprint would not cover; this data node fingerprints each stream's snapshot hash and the feature node refuses a store that moved since. Keys are <ASSET>_<tape> and must match spot.assets (a test pins it)."
+    },
+    "decisions": {
+      "uses": "crypto_trading.decisions:DecisionRows",
+      "inputs": {
+        "records": "$markets.records"
+      },
+      "params": {
+        "leads_minutes": [
+          2,
+          5,
+          10
+        ]
+      },
+      "notes": "One row per market and lead: decision instant = close - lead. The leads are the horizon of the question, a research choice (not a constant of the venue): a 15-minute market is open 15 minutes, so 2, 5 and 10 minutes before the close leave a short, a middle and a long forecast. None may be shorter than the 60-second averaging window (a test pins it). A lead longer than the market had been open is excluded by name, not clamped."
+    },
+    "spot": {
+      "uses": "crypto_trading.spot_features:SpotFeatures",
+      "inputs": {
+        "records": "$decisions.records",
+        "manifests": "$streams.manifests"
+      },
+      "params": {
+        "root": "~/data/crypto_trading/ob",
+        "assets": {
+          "BTC": {
+            "series": [
+              "KXBTC15M"
+            ],
+            "klines": {
+              "source": "binance-btcusdt-1m",
+              "stream": "files"
+            },
+            "bvol": {
+              "source": "binance-btcbvol",
+              "stream": "files"
+            }
+          },
+          "ETH": {
+            "series": [
+              "KXETH15M"
+            ],
+            "klines": {
+              "source": "binance-ethusdt-1m",
+              "stream": "files"
+            },
+            "bvol": {
+              "source": "binance-ethbvol",
+              "stream": "files"
+            }
+          }
+        },
+        "columns": {
+          "klines": {
+            "open_time": "open_time_ms",
+            "close_time": "close_time_ms",
+            "high": "high",
+            "low": "low",
+            "close": "close"
+          },
+          "bvol": {
+            "time": "calc_time_ms",
+            "value": "index_value"
+          }
+        },
+        "day_relpath_template": "{day}.parquet",
+        "bar_ms": 60000,
+        "estimators": [
+          {
+            "kind": "rms",
+            "window": 60
+          },
+          {
+            "kind": "ewma",
+            "half_life": 30,
+            "lookback": 300
+          },
+          {
+            "kind": "high_low",
+            "window": 60
+          }
+        ],
+        "max_spot_age_ms": 120000,
+        "max_bvol_age_ms": 60000,
+        "bvol_scale": 0.01,
+        "seconds_per_year": 31536000
+      },
+      "notes": "Point-in-time spot, log-moneyness ln(K/S), realised vol and BVOL, strictly before the decision. A 1-minute kline counts only once its close_time_ms is before the decision (bars are labelled by their START, so at 01:00:30 the 01:00 bar is not known); BVOL only if calc_time_ms is strictly before it. Vols are the log-return std per sqrt(second): rms = root-mean-square of the last 60 one-minute returns, ewma = half-life 30 bars over the last 300, high_low = Parkinson over 60 bars. A reading older than the age cap is missing (None, flagged), never carried forward; a missing minute blanks the windows it touches. UNVERIFIED: bvol_scale 0.01 assumes the index is published in percentage points (BTC near 50) and seconds_per_year a 365-day year; check one day's file before trusting bvol_per_sqrt_s. bar_ms is the interval of the 1m sources (pinned by a test). Klines are USDT-quoted, a proxy for the USD index Kalshi settles on; CC BY-NC-SA, research only."
+    },
+    "state": {
+      "uses": "crypto_trading.market_state:MarketState",
+      "inputs": {
+        "records": "$spot.records",
+        "candles": "$candles.merged"
+      },
+      "params": {
+        "max_candle_age_ms": 120000,
+        "quote_floor": 0.0,
+        "quote_ceiling": 1.0
+      },
+      "notes": "The market's own YES bid, ask, mid, spread, volume and open interest from the last 1-minute candle that had ended by the decision instant (end <= decision). Candles after it, and above all after the close (settled prices are about 0 or 1), are never read. A candle older than two minutes is missing, not carried. two_sided means a real, uncrossed bid and ask strictly inside (0, 1): the scorer's gate. Never imputed."
+    },
+    "fair_rms": {
+      "uses": "crypto_trading.fair_value:FairValue",
+      "inputs": {
+        "records": "$state.records"
+      },
+      "params": {
+        "vol_field": "rv_rms_60",
+        "fair_field": "fair_rms",
+        "averaging_window_s": 60
+      },
+      "notes": "P(YES) under a driftless lognormal with the 60-minute-window realised vol, over the time left, with the settlement-average adjustment: the CF Benchmarks index averages its last 60 seconds, which cuts the variance by 2/3 of that window's point variance (derivation in fair_value.py). The baseline of the kill test: nothing is fitted."
+    },
+    "fair_ewma": {
+      "uses": "crypto_trading.fair_value:FairValue",
+      "inputs": {
+        "records": "$fair_rms.records"
+      },
+      "params": {
+        "vol_field": "rv_ewma_30",
+        "fair_field": "fair_ewma",
+        "averaging_window_s": 60
+      },
+      "notes": "The same fair value on the EWMA vol (half-life 30 minutes): a faster-reacting realised vol."
+    },
+    "fair_bvol": {
+      "uses": "crypto_trading.fair_value:FairValue",
+      "inputs": {
+        "records": "$fair_ewma.records"
+      },
+      "params": {
+        "vol_field": "bvol_per_sqrt_s",
+        "fair_field": "fair_bvol",
+        "averaging_window_s": 60
+      },
+      "notes": "The same fair value on Binance's BVOL implied vol: the market-implied alternative to the two realised vols. Its 30-day tenor is far from a 15-minute horizon, so expect it to be biased, which is the question."
+    },
+    "fees": {
+      "uses": "crypto_trading.fees:FeeColumns",
+      "inputs": {
+        "records": "$fair_bvol.records",
+        "schedules": "$fee_schedules.records"
+      },
+      "params": {
+        "base_rate_by_type": {
+          "quadratic": 0.07
+        },
+        "contracts": 100
+      },
+      "notes": "Kalshi's taker fee per contract for buying YES at the ask and NO at 1 - bid: the fee of a 100-contract order, rounded up to the cent, divided by 100. The type and multiplier come from the stream; 0.07 is the base coefficient of Kalshi's published quadratic schedule (rate = 0.07 x multiplier). `contracts` sets the order size the per-order rounding applies to: one contract rounds 1.75 cents up to 2, a hundred do not. Makers pay no fee under this type."
+    },
+    "kill_test": {
+      "uses": "crypto_trading.kill_test:KillTestScore",
+      "inputs": {
+        "records": "$fees.records"
+      },
+      "params": {
+        "fair_fields": [
+          "fair_rms",
+          "fair_ewma",
+          "fair_bvol"
+        ],
+        "mid_edges": [
+          0.0,
+          0.1,
+          0.25,
+          0.5,
+          0.75,
+          0.9,
+          1.0
+        ],
+        "margin": 0.02,
+        "segments": {
+          "development": {
+            "end": "2026-09-15T00:00:00Z"
+          },
+          "heldout": {
+            "start": "2026-09-15T00:00:00Z"
+          }
+        },
+        "by": [
+          "lead_minutes"
+        ],
+        "cluster_field": "event_ticker"
+      },
+      "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs kill_test.json and kill_test.md in the run directory. The cut (2026-09-15) and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only, read `heldout` once, and never move the cut afterwards. Standard errors are cluster-robust on the market's event. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
+    },
+    "write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$fees.records"
+      },
+      "params": {
+        "path": "~/data/crypto_trading/features-15m/decision_features.jsonl",
+        "source": "crypto_trading run-features-15m: one row per settled 15-minute market and decision lead",
+        "overwrite": true
+      },
+      "notes": "The feature table as canonical JSON lines (missing values are null). A table a later run reads is published back through onboarding, not read by path: configs/source-features-15m.json registers this directory as a localtables source (runbook, stage B). The directory must exist; `overwrite` is on because the file is a pure function of the run and the snapshot chain keeps every earlier version."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity (hash-excluded)."
+  }
+}

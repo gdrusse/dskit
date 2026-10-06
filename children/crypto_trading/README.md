@@ -1,10 +1,12 @@
 # crypto_trading — a dskit child
 
 Research child for **crypto trading opportunities**. Status: **stage A (data
-pulls) is configured and tested offline, not yet pulled.** The target is a
+pulls) and stage B (feature table and kill test) are configured and tested offline
+on synthetic stores; nothing has been pulled or run on real data.** The target is a
 calibrated short-horizon BTC/ETH distribution at each Kalshi crypto contract's
-settlement (CF Benchmarks RTI, 60-second average), used to quote as maker.
-Stage B (features, models) is not started, and the focus areas in
+settlement (CF Benchmarks RTI, 60-second average), used to quote as maker. Stage B
+asks the first falsification question (does a simple realised-vol fair value beat the
+market mid after fees?); models come only if it survives. The focus areas in
 `docs/research/` still await owner ratification.
 
 | Source (`configs/source-*.json`) | Pulls | Suite (`configs/suite-*.json`) |
@@ -23,6 +25,28 @@ is CC BY-NC-SA: research use only, not for live trading features. Exact commands
 **Not in stage A.** The realised settlement value (the model's label), hourly-ladder
 candles and Kalshi history before 2026-08-07 need PROPOSED ADR-0236; Coinbase, Deribit and
 Kraken need ADR-0237; digest verification ADR-0238. They are dskit changes, not child code.
+
+## Stage B: features and the kill test
+
+`configs/run-features-15m.json` (one pipeline document, `notes` on every node) reads the stage A
+sources and writes one row per settled 15-minute market and declared lead (default 2, 5, 10
+minutes before the close). Hourly series plug in by config once ADR-0236 supplies their candles.
+
+| Node (`crypto_trading.<module>:<Class>`) | Job |
+|---|---|
+| `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` pack's streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants; unsettled and TBD-strike markets dropped by name; candle end seconds to ms |
+| `decisions:DecisionRows` | market x lead: decision instant = close - lead |
+| `day_series:StreamManifests` | puts the Binance streams into the run identity (interim, ADR-0240) |
+| `spot_features:SpotFeatures` | spot, ln(K/S), rolling-RMS / EWMA / high-low vol and BVOL, all strictly before the decision |
+| `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from candles that had ended |
+| `fair_value:FairValue` | driftless lognormal P(YES) with the 60-second settlement-average variance |
+| `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream, rounded per order |
+| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment, plus the after-fee profit of a naive take rule |
+
+The table is written as JSON lines and published back as source `features-15m` through
+`configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
+Interim child classes standing in for PROPOSED dskit ADRs: `day_series.py` (0240),
+`vol_estimators.py` (0241), `fees.py` (0242). Tests: `tests/synthetic.py` builds the offline stores.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -161,11 +185,23 @@ that stays silent can never appear in a served graph.
 
 ```
 crypto_trading/
-├── pyproject.toml         # dependencies = ["dskit"]; extra `parquet` = pyarrow
+├── pyproject.toml         # dependencies = ["dskit"]; extras `parquet` = pyarrow, `features` = numpy + pyarrow
 ├── README.md / CLAUDE.md  # this file; agent orientation
 ├── crypto_trading/           # tier-3 code; import = registration
 │   ├── __init__.py        # curated re-exports
 │   ├── binance_vision.py  # httpblobs transform: Binance daily zip-CSV to parquet
+│   ├── fields.py          # stage B: the row field names every node shares, once
+│   ├── clock.py           # stage B: ISO instant to epoch ms, the one conversion
+│   ├── payoffs.py         # stage B: above / below / between payoff geometries
+│   ├── kalshi_rows.py     # stage B: MarketRows, CandleRows, FeeRows (ObservationRows subclasses)
+│   ├── decisions.py       # stage B: DecisionRows, one row per market and lead
+│   ├── day_series.py      # stage B: day-file parquet series, StreamManifests (interim, ADR-0240)
+│   ├── vol_estimators.py  # stage B: rms / EWMA / high-low estimators (interim, ADR-0241)
+│   ├── spot_features.py   # stage B: point-in-time spot, vol, BVOL, moneyness
+│   ├── market_state.py    # stage B: quote state from ended candles
+│   ├── fair_value.py      # stage B: averaged-lognormal P(YES)
+│   ├── fees.py            # stage B: Kalshi taker fee, per order (interim, ADR-0242)
+│   ├── kill_test.py       # stage B: fair value vs mid, after fees, by segment
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
 │   ├── execution.py       # production seam: the venue executor (fail-closed)
@@ -185,7 +221,9 @@ crypto_trading/
 │   ├── source-binance-{btc,eth}bvol.json # stage A: BVOL implied-vol index
 │   ├── binance_vision_dates.json         # the pinned day list the Binance sources pull
 │   ├── suite-kalshi-crypto-{markets,candles,fees,books}.json # one suite per stream
-│   └── suite-binance-files.json          # the httpblobs inventory gate
+│   ├── suite-binance-files.json          # the httpblobs inventory gate
+│   ├── run-features-15m.json             # stage B: the feature table and kill-test document
+│   └── source-features-15m.json          # stage B: localtables registration of the written table
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
 │   ├── .gitignore         # artifacts are rebuilt, never committed
@@ -201,7 +239,7 @@ crypto_trading/
 │   └── .gitkeep
 ├── docs/plans/            # project-specific plan builds
 │   ├── README.md          # the child's own phased work plans
-│   ├── 2026-10-06-wsl-data-pull-runbook.md # stage A: exact commands, in order
+│   ├── 2026-10-06-wsl-data-pull-runbook.md # stage A and B: exact commands, in order
 │   └── .gitkeep
 ├── docs/research/         # research agent markdown
 │   ├── README.md          # use record-research
@@ -209,7 +247,18 @@ crypto_trading/
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
+    ├── synthetic.py       # offline stores: scripted Kalshi, day-file parquet via localblobs
     ├── test_binance_vision.py # the transform on tiny in-test zips + httpblobs e2e
+    ├── test_day_series.py # day files, strictly-prior lookups, manifests
+    ├── test_decisions.py  # market x lead rows
+    ├── test_fair_value.py # closed forms, the averaging adjustment, payoffs
+    ├── test_features_pipeline.py # run-features-15m.json end to end, publish and read back
+    ├── test_fees.py       # fee rounding, schedule reader, FeeColumns
+    ├── test_kalshi_rows.py # readers: labels, exclusions, seconds to ms
+    ├── test_kill_test.py  # a hand-scored table, clusters, outputs
+    ├── test_market_state.py # candle state and the no-peeking rule
+    ├── test_spot_features.py # strict-prior leak tests with a control
+    ├── test_vol_estimators.py # estimators by hand; causality by prefix
     ├── test_configs.py    # every config validates against its engine; pins
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
     ├── test_kalshi_crypto.py # kalshi sources + suites against a scripted venue

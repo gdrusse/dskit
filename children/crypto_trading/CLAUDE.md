@@ -111,29 +111,59 @@ the settlement value (`expiration_value`, the model's label) and pre-cutoff hist
 PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side. `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
+## Stage B features and the kill test
+
+`configs/run-features-15m.json` is the one document: readers (`kalshi_rows`), decision rows, point-in-time
+features, fair values, fees, the kill test, then `records-write`. Rules that bind any edit:
+
+- **The leak rule is a contract.** A Binance bar is usable only if `close_time_ms < decision_ms`
+  (strictly; bars are labelled by START), BVOL only strictly before it, a Kalshi candle only if
+  `end_ms <= decision_ms`. `tests/test_spot_features.py` and `test_market_state.py` plant spikes at and after
+  the decision and a control just before it; keep both halves when you touch a reader or estimator.
+- **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
+  refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
+- **No imputation.** Missing is `None` plus a `*_missing` / `*_status` column. A reading older than its age
+  cap is missing. Excluded markets and decision rows are listed on ports and censuses, never dropped quietly.
+- **Vocabularies are params** (`payoff_by_strike_type`, `result_labels`, fee `base_rate_by_type`, leads, vol
+  specs, kill-test segments and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
+  to the stage A suites and sources it must agree with.
+- **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`) and 0242
+  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`). Do not grow them; delete them when the ADR lands.
+- **The held-out cut is decided before reading results** and never moved afterward (runbook B5).
+- Stage B nodes are referenced by import path, not registered, and are research-only (Binance CC BY-NC-SA).
+  Nodes that read files themselves take `StreamManifests` as an input so the data is in the run identity.
+  Commands: runbook stage B.
+
 ## Layout
 
 ```
 crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform),
                        #   connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
-                       #   approvals / coordination, all fail-closed
+                       #   approvals / coordination, all fail-closed;
+                       #   stage B: fields, clock, payoffs, kalshi_rows,
+                       #   decisions, day_series, vol_estimators,
+                       #   spot_features, market_state, fair_value, fees,
+                       #   kill_test (see the section above)
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
                        #   source-kalshi-crypto[-candles-*|-books-*] /
                        #   source-binance-* / binance_vision_dates /
-                       #   suite-kalshi-crypto-* / suite-binance-files
+                       #   suite-kalshi-crypto-* / suite-binance-files;
+                       #   stage B: run-features-15m / source-features-15m
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
-docs/plans/            # the child's own plan builds (the WSL data-pull runbook)
+docs/plans/            # the child's own plan builds (the WSL runbook: stage A pulls, stage B run)
 docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   execution/production tests, plus binance_vision
-                       #   and kalshi_crypto (offline, scripted transports)
-pyproject.toml         # dependencies = ["dskit"]; extra `parquet` = pyarrow
+                       #   and kalshi_crypto (offline, scripted transports);
+                       #   stage B: synthetic.py (offline stores) and one
+                       #   test file per module plus test_features_pipeline
+pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```
 
 Keep this tree and README.md's current when files change.

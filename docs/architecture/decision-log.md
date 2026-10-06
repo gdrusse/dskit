@@ -30375,3 +30375,48 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Consequences.** Source configs change (a new declaration digest: a re-pull); the stored parquet columns stay as they are.
 
 **Tests.** The child's transform tests move over: units, BOM, header refusal, duplicates, corrupt zip, determinism under one pyarrow version, an `httpblobs` acquisition end to end.
+
+## ADR-0240 — Many-file parquet series reader, a stream-manifest data node and a strictly-prior as-of lookup
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building `crypto_trading` stage B). Extends ADR-0225 (`payload_files`) and ADR-0228 (`ParquetRows`).
+**Sweep** (`ParquetFiles multi_file many_parquet parquet_dir concat_files`, `asof_join as_of_join strictly_prior merge_asof point_in_time`, origin/main, all branches and worktrees): `ParquetRows` reads ONE file per key; `ObservationTables` as-of matches a DATE key (`max_age_days`); `merge_asof` appears only in an `index_options` study module. Nothing reads many files of one stream, or answers "the last row strictly before this instant".
+
+**Context.** The Binance sources are one parquet per UTC day, about 1,100 files a stream (klines about 1.6M rows; BVOL about one row a second, so tens of millions, unverified). A feature at a decision instant needs the bars before it and the last BVOL second before it. A node that reads files itself also sits outside the run identity, because a transform has no fingerprint.
+
+**Decision (proposed).** A tier-2 module `libs/parquet_series.py`: (1) `ParquetSeries(root, source, stream, relpath_template, time_column, columns)` over `payload_files`, each file's bytes verified against the manifest before parsing, instants required ascending; `load_span(first_ms, last_ms)` (whole days a span touches) and `prior(instants_ms, max_age_ms)` (the last row STRICTLY before each instant and its age; only the days an age cap can reach are read; a day with no file is a gap, never bridged). (2) `prior_index`, the one home of the strictly-before rule. (3) A `data` node `StreamManifests` that fingerprints the snapshot hash of named streams, so a node that reads them by hand takes the manifests as an input, re-checks them and refuses a store that moved. The child's `crypto_trading/day_series.py` is the interim implementation and its tests move over.
+
+**Alternatives rejected.** `foreach` over `ParquetRows` per day (a thousand nodes a stream, and no as-of); holding BVOL as record dicts (tens of millions); widening `ObservationTables` to epoch-ms keys (it is a keyed-table attach with day-sized ages).
+
+**Consequences.** Any project with day-file tapes (ticks, bars, an index) gets a point-in-time read. `ParquetRows` is unchanged.
+
+**Tests.** Span days, verified bytes (a tampered file refuses), a missing column, backwards instants, strictly-before at the exact instant, the age cap, midnight, a missing day not bridged, many instants in any order, manifest fingerprint moves with the store.
+
+## ADR-0241 — Realised-volatility estimators: EWMA and high-low, with a gap rule
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building `crypto_trading` stage B). Extends ADR-0168 (`RealizedVolFeatures`).
+**Sweep** (`realized_vol ewma parkinson garman_klass rolling_std`, origin/main, all branches and worktrees): `libs/numpy.py` has `RealizedVolFeatures` (rolling root-mean-square of one-step log returns) and `rolling_std`; "ewma" appears in a test and a TeX note only; `index_options` computes a daily Parkinson range inside its own panel reader (child code, daily bars).
+
+**Context.** A short-horizon fair value wants a fast vol from 1-minute bars: an exponentially weighted one and a range-based one beside the rolling RMS. `rolling_std` skips NaNs (`nanstd`), so a window holding a missing minute silently becomes a shorter window.
+
+**Decision (proposed).** Add to the numpy pack: ops `ewma_variance(squared_returns, half_life, lookback)` (weights `0.5 ** (age / half_life)` over a truncated window, so the value does not depend on where the loaded history starts) and `parkinson_variance(high, low)` (`ln(H/L)**2 / (4 ln 2)`, undefined unless `0 < L <= H`); a `contiguous_mask(open_times, bar_ms)` rule that makes a return or range at a missing minute NaN so any window holding one is NaN; and estimator members for `RealizedVolFeatures`' family selecting among rms, ewma and high-low by config. The child's `crypto_trading/vol_estimators.py` (estimator objects over `log_return` and `rolling_sum`, imported) is the interim implementation.
+
+**Alternatives rejected.** Reusing `rolling_std` as it is (NaN-skipping bridges gaps); an estimator `if kind ==` chain (a registry of estimator objects instead).
+
+**Consequences.** Existing columns and identities are unchanged; new estimators are opt-in.
+
+**Tests.** Hand-computed rms, EWMA (with a fractional half-life) and Parkinson values; a gap blanks every window that holds it; causality by prefix (cut and corrupt the future); spec validation and duplicate columns.
+
+## ADR-0242 — Venue fee models graduate from `pmquant` into dskit
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building `crypto_trading` stage B). Extends the pmquant fee models (proposal section 8.3, I-217).
+**Sweep** (`kalshi_trading_fee ceil_to_cent trading_fee_for_series`, origin/main, all branches and worktrees): exact only in `children/pmquant/pmquant/fees.py` (Kalshi per-order ceil-to-cent with a float guard; Polymarket nearest 1e-5; fill-fee policies).
+
+**Context.** `crypto_trading` prices Kalshi's taker fee per order and needs the same rounding as `pmquant`. A child may not import a sibling, and a function must not be copied across modules, so the owner of the rule must be dskit. The research notes state no rounding rule: the only record of it is `pmquant/fees.py`.
+
+**Decision (proposed).** A stdlib module `dskit/pipeline/venue_fees.py`: a `FeeModel` ABC, `QuadraticFee` (Kalshi: `ceil_to_cent(rate * C * P * (1 - P))`, the cents snapped to nine decimals first), the Polymarket model, the fill-fee policies, and a registry keyed by the `fee_type` the venue's `fee_schedules` stream reports. The rate is `base_rate_by_type[fee_type] * fee_multiplier`, with the base coefficient a config value from the venue's published schedule, never a literal. `pmquant` and `crypto_trading` import it; their tests pin identical outputs. Until then `crypto_trading/fees.py` carries the Kalshi branch only (interim).
+
+**Alternatives rejected.** Importing `pmquant` from `crypto_trading` (breaks graduation by directory move); a second copy kept forever.
+
+**Consequences.** One fee rule; `pmquant`'s `fees.py` shrinks to the dated fee book. The venue keeps only the CURRENT schedule, so history is priced under it unless a dated book (pmquant's) is supplied.
+
+**Tests.** Move `pmquant/tests/test_fees.py`; add the type-to-rate mapping and an unsupported-type refusal.

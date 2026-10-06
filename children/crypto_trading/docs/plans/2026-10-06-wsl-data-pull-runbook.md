@@ -1,4 +1,4 @@
-# WSL data-pull runbook: crypto_trading stage A
+# WSL runbook: crypto_trading stage A (data pulls) and stage B (features, kill test)
 
 **Problem.** Pull the inputs for a calibrated BTC/ETH distribution at each Kalshi
 crypto contract's settlement (CF Benchmarks RTI, 60-second average): Kalshi
@@ -166,3 +166,107 @@ Reading the data:
   before the 2026-08-07 cutoff: ADR-0236.
 - Coinbase, Deribit and Kraken history: ADR-0237.
 - A one-second book recorder needs a WebSocket client; dskit has none.
+
+---
+
+# Stage B: feature table and kill test
+
+**Problem.** From the stage A acquisitions build one row per settled 15-minute Kalshi market and
+decision lead (2, 5 and 10 minutes before the close): the label, point-in-time spot and volatility,
+the market's own quote, three fair values and Kalshi's taker fee, then ask the kill-test question:
+does a simple fair value beat the market mid on held-out rows after fees? Only the 15-minute
+series have candles; hourly ladders wait on PROPOSED ADR-0236 and plug in by config (see the notes
+of `configs/run-features-15m.json`). Nothing here has run on real data yet.
+
+**Done when.** The run exits 0, `kill_test.md` exists, the table is acquired as `features-15m` and
+`verify` is clean. Paste the section 0 block into every new shell first (it sets `$OB`).
+
+## B1. Set up, once
+
+```bash
+pip install -e ".[parquet,features]"                    # adds numpy beside pyarrow
+python -m pytest tests -q                               # offline, must pass
+mkdir -p ~/data/crypto_trading/features-15m             # where the run writes the table
+```
+
+The document's store root is `~/data/crypto_trading/ob` (every reader names it, `~` expands). If
+your `$OB` differs, change all of them at once and commit nothing else:
+
+```bash
+grep -c '"root"' configs/run-features-15m.json          # how many nodes carry a root
+sed -i "s#~/data/crypto_trading/ob#$OB#g" configs/run-features-15m.json
+```
+
+## B2. Check before the run
+
+```bash
+python -m dskit.pipeline validate configs/run-features-15m.json
+python -m dskit.pipeline plan     configs/run-features-15m.json | head -30
+python - <<'PY'
+import os, pyarrow.parquet as pq
+from dskit.onboarding import payload_files
+got = payload_files(os.path.expanduser(os.environ["OB"]), "binance-btcbvol", "files")
+rel = sorted(r for r in got["files"] if r.endswith(".parquet"))[-1]
+meta = pq.read_metadata(got["files"][rel])
+print(rel, meta.num_rows, "rows;", pq.read_table(got["files"][rel]).slice(0, 3).to_pylist())
+PY
+```
+
+UNVERIFIED until you read that output: the document assumes BVOL is published in percentage points
+(`index_value` near 50 for BTC, so `bvol_scale` 0.01), about one row a second, and a 365-day year.
+If the level or the cadence differs, edit `spot.params.bvol_scale`, `max_bvol_age_ms` or
+`seconds_per_year` and say why in that node's `notes` before running.
+
+## B3. Run
+
+```bash
+python -m dskit.pipeline run configs/run-features-15m.json --asof "$(date -u +%F)"
+```
+
+Exit 0 ran, 1 error (the reason names the node), 3 halted. Time is an estimate, not measured: well
+under an hour, since only the days around the decisions are read. The run directory prints at the
+end. Open:
+
+- `artifacts/kill_test/kill_test.md` (the numbers) and `kill_test.json` (every cell);
+- `result.json` for each node's state. The `spot` node's `provenance` counts missing spot and BVOL
+  readings per asset; the `markets` node's `excluded` and `census` name every market dropped
+  (`no_strike` is the TBD target-price rows, then `not_settled`, `no_result`, and so on).
+
+A refusal "the store moved since the manifest was fingerprinted" means an acquire ran between plan
+and run: run again. "no longer matches the manifest sha256" means a stored file changed on disk:
+`verify` the source before anything else.
+
+## B4. Publish the table back through onboarding
+
+A table a later run reads is a source, not a path (CLAUDE.md). Register once, acquire after every run:
+
+```bash
+python -m dskit.onboarding register-source features-15m --root "$OB" --catalog-source features-15m \
+    --connector localtables --config @configs/source-features-15m.json --activate
+python -m dskit.onboarding acquire --root "$OB" --source features-15m \
+    --stream decision_features --mode backfill
+python -m dskit.onboarding verify --root "$OB"
+git add docs/decisioning && git commit                  # the run and the acquire journaled themselves
+```
+
+An unchanged table makes no new snapshot. A later run reads it with `ObservationRows` (source
+`features-15m`, stream `decision_features`, `key_fields` `[ticker, lead_minutes]`, `ts_field`
+`decision_ms`, `ts_unit` `ms`).
+
+## B5. Read it correctly
+
+- **The cut is decided before you look.** `development` ends 2026-09-15 and `heldout` starts there
+  (`kill_test.params.segments`). Choose the vol window, leads and margin on `development` only,
+  read `heldout` once, and never move the cut after seeing it. Three fair values are scored at
+  once, so one winner of three is weaker evidence than it looks.
+- **Leak rules** (enforced and tested): a Binance bar counts only after its `close_time_ms`; BVOL
+  only strictly before the decision; a Kalshi candle only if it ended by the decision. An old or
+  absent reading is `None` with a `*_missing` flag, never a carried value.
+- **Proxies and caveats.** Klines are USDT-quoted, not the USD index Kalshi settles on; BVOL is a
+  30-day implied vol used at a 15-minute horizon; the fee schedule is today's applied to history
+  (`fee_schedule_retrieved` says which); the label is each strike's yes/no result, not the realised
+  value. A negative held-out Brier difference with a positive after-fee profit, each by a few
+  cluster-robust standard errors, is the only reading that survives; anything else means stop.
+
+Not covered yet: the realised settlement value and every hourly series (ADR-0236), history before
+2026-08-07 (ADR-0236), Coinbase, Deribit and Kraken (ADR-0237).

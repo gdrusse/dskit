@@ -19,6 +19,7 @@ from dskit.onboarding import check_config, load_suite
 from dskit.onboarding.libs import kalshi
 from dskit.onboarding.libs.httpblobs import RECORD_FIELDS, HttpBlobsConnector
 from dskit.onboarding.libs.kalshi import KalshiConnector
+from dskit.onboarding.libs.localtables import LocalTablesConnector
 from dskit.pipeline.document import load_document
 
 from crypto_trading.connectors import SampleConnector
@@ -115,6 +116,8 @@ BINANCE_SOURCES = {
         "crypto_trading.binance_vision:BinanceBvol"),
 }
 DATES_FILE = "binance_vision_dates.json"
+#: registration configs for tables a run of this child derives and a later run reads (localtables)
+DERIVED_SOURCES = ("source-features-15m.json",)
 #: suite file -> the one stream it targets (a snapshot holds one stream, so a
 #: suite naming two would fail the absent one's row_count).
 SUITES = {
@@ -144,7 +147,7 @@ def child_root_env(monkeypatch):
 
 def test_every_source_and_suite_file_is_covered_here():
     found = {os.path.basename(p) for p in glob.glob(_path("source-*.json"))}
-    assert found == {"source-sample.json", *KALSHI_SOURCES, *BINANCE_SOURCES}, (
+    assert found == {"source-sample.json", *KALSHI_SOURCES, *BINANCE_SOURCES, *DERIVED_SOURCES}, (
         "a new source config must be added to this file's tables, not just to configs/")
     suites = {os.path.basename(p) for p in glob.glob(_path("suite-*.json"))}
     assert suites == set(SUITES)
@@ -293,3 +296,151 @@ def test_kalshi_suites_restate_the_series_universe_and_agree_with_the_source(nam
                and r.rule == "accepted_values"]
     assert sorted(rule.kwargs["values"]) == sorted(KALSHI_SERIES)
     assert sorted(rule.kwargs["values"]) == sorted(_load("source-kalshi-crypto.json")["series"])
+
+
+# -- stage B: the feature document and the derived-table registration -------------------
+#
+# Restated, not read from the document: the vocabularies below are what the stage A suites
+# and sources say, so a document that drifted from them fails here.
+
+FEATURES_DOC = "run-features-15m.json"
+STORE_ROOT = "~/data/crypto_trading/ob"
+FEATURES_DIR = "~/data/crypto_trading/features-15m"
+
+
+def _doc():
+    return _load(FEATURES_DOC)
+
+
+def _nodes(uses_suffix):
+    return {key: spec for key, spec in _doc()["pipeline"].items() if spec["uses"].endswith(uses_suffix)}
+
+
+def test_the_features_document_loads_and_every_node_says_why():
+    document = load_document(_path(FEATURES_DOC))
+    assert document.hash
+    raw = _doc()
+    assert raw["notes"].strip()
+    for key, spec in raw["pipeline"].items():
+        assert spec.get("notes", "").strip(), f"node {key!r} has no notes: say why it is wired this way"
+
+
+def test_every_store_root_in_the_document_is_one_value():
+    roots = {spec["params"]["root"] for spec in _doc()["pipeline"].values() if "root" in spec.get("params", {})}
+    assert roots == {STORE_ROOT}, "one store, named once per node: they must agree"
+    for spec in _doc()["pipeline"].values():
+        assert "/home/" not in json.dumps(spec) and "/tmp" not in json.dumps(spec)
+
+
+def test_the_readers_name_the_sources_the_runbook_registers():
+    sources = {os.path.basename(p)[len("source-"):-len(".json")] for p in glob.glob(_path("source-*.json"))}
+    pipeline = _doc()["pipeline"]
+    assert pipeline["markets"]["params"]["source"] == "kalshi-crypto"
+    assert pipeline["fee_schedules"]["params"]["source"] == "kalshi-crypto"
+    assert pipeline["candles_btc"]["params"]["source"] == "kalshi-crypto-candles-btc"
+    assert pipeline["candles_eth"]["params"]["source"] == "kalshi-crypto-candles-eth"
+    named = {pipeline[k]["params"]["source"] for k in ("markets", "fee_schedules", "candles_btc", "candles_eth")}
+    assert named <= sources
+    for tape in pipeline["streams"]["params"]["streams"].values():
+        assert tape["source"] in sources and tape["stream"] == "files"
+
+
+def test_the_document_reads_the_15_minute_series_the_candle_sources_pull():
+    pipeline = _doc()["pipeline"]
+    assert sorted(pipeline["markets"]["params"]["series"]) == sorted(KALSHI_15M)
+    assets = pipeline["spot"]["params"]["assets"]
+    assert sorted(s for a in assets.values() for s in a["series"]) == sorted(KALSHI_15M)
+    assert _load("source-kalshi-crypto-candles-btc.json")["series"] == assets["BTC"]["series"]
+    assert _load("source-kalshi-crypto-candles-eth.json")["series"] == assets["ETH"]["series"]
+
+
+def test_the_market_vocabulary_is_the_one_the_stage_a_suite_gates():
+    from crypto_trading.payoffs import PAYOFFS
+
+    rules = {r.id: r for r in load_suite(_path("suite-kalshi-crypto-markets.json")).rules}
+    params = _doc()["pipeline"]["markets"]["params"]
+    geometries = set(rules["markets-strike-type-set"].kwargs["values"])
+    assert set(params["payoff_by_strike_type"]) == geometries, "every geometry the suite lets through has a payoff"
+    assert set(params["payoff_by_strike_type"].values()) <= set(PAYOFFS)
+    assert set(params["result_labels"]) == set(rules["markets-result-vocabulary"].kwargs["values"])
+    assert set(params["result_labels"].values()) == {0, 1}
+    assert "finalized" in params["settled_statuses"], "the venue spells a settled payload 'finalized'"
+
+
+def test_the_fee_types_the_node_prices_cover_what_the_fee_suite_accepts():
+    from crypto_trading.fees import FEE_MODELS
+
+    (rule,) = [r for r in load_suite(_path("suite-kalshi-crypto-fees.json")).rules
+               if r.kwargs.get("field") == "fee_type"]
+    params = _doc()["pipeline"]["fees"]["params"]
+    assert set(rule.kwargs["values"]) <= set(params["base_rate_by_type"]) <= set(FEE_MODELS)
+
+
+def test_the_bar_and_column_vocabulary_matches_the_binance_files_stage_a_writes():
+    from crypto_trading.binance_vision import BVOL_COLUMNS, KLINE_COLUMNS
+
+    spot = _doc()["pipeline"]["spot"]["params"]
+    assert spot["bar_ms"] == 60_000
+    for name in BINANCE_SOURCES:
+        if "usdt-1m" in name:
+            assert "/1m/" in BINANCE_SOURCES[name][0], "bar_ms is the interval of the klines the source pulls"
+    assert set(spot["columns"]["klines"].values()) <= set(KLINE_COLUMNS)
+    assert set(spot["columns"]["bvol"].values()) <= set(BVOL_COLUMNS)
+    template = _load("source-binance-btcusdt-1m.json")["relpath_template"]
+    assert spot["day_relpath_template"] == template.replace("{entity}", "{day}")
+
+
+def test_the_tape_names_the_manifest_node_declares_are_the_ones_the_spot_node_looks_up():
+    from crypto_trading.day_series import tape_name
+
+    pipeline = _doc()["pipeline"]
+    streams = pipeline["streams"]["params"]["streams"]
+    expected = {}
+    for asset, spec in pipeline["spot"]["params"]["assets"].items():
+        expected[tape_name(asset, "klines")] = spec["klines"]
+        expected[tape_name(asset, "bvol")] = spec["bvol"]
+    assert streams == expected
+
+
+def test_every_fair_value_column_reads_a_volatility_column_that_exists():
+    from crypto_trading.vol_estimators import build_estimators
+
+    spot = _doc()["pipeline"]["spot"]["params"]
+    columns = {e.column() for e in build_estimators(spot["estimators"])} | {"bvol_per_sqrt_s"}
+    fairs = _nodes(":FairValue")
+    assert fairs, "the document prices at least one fair value"
+    for key, spec in fairs.items():
+        assert spec["params"]["vol_field"] in columns, f"{key} reads a column no node writes"
+        assert spec["params"]["averaging_window_s"] == 60, "the BRTI averages the last 60 seconds"
+    kill = _doc()["pipeline"]["kill_test"]["params"]
+    assert kill["fair_fields"] == [s["params"]["fair_field"] for s in fairs.values()]
+
+
+def test_the_leads_never_start_inside_the_averaging_window():
+    pipeline = _doc()["pipeline"]
+    window_min = pipeline["fair_rms"]["params"]["averaging_window_s"] / 60.0
+    assert min(pipeline["decisions"]["params"]["leads_minutes"]) >= window_min
+
+
+def test_the_kill_test_holds_a_segment_out_and_the_two_never_overlap():
+    segments = _doc()["pipeline"]["kill_test"]["params"]["segments"]
+    assert set(segments) == {"development", "heldout"}
+    assert segments["development"]["end"] == segments["heldout"]["start"], "one cut: no row in both, none in neither"
+
+
+def test_the_published_table_registration_matches_what_the_document_writes():
+    config = _load("source-features-15m.json")
+    check_config(LocalTablesConnector(), config)
+    write = _doc()["pipeline"]["write"]["params"]
+    assert os.path.dirname(write["path"]) == config["path"] == FEATURES_DIR
+    assert os.path.basename(write["path"]) == "decision_features.jsonl"
+    assert config["streams"] == ["decision_features"] and config["formats"] == ["jsonl"]
+    assert config["effective_field"] == "decision_ms" and config["effective_unit"] == "ms"
+    assert config["layout"] == "file" and config["notes"].strip()
+
+
+def test_the_runbook_registers_and_publishes_the_feature_table():
+    text = open(os.path.join(CHILD_ROOT, "docs", "plans", "2026-10-06-wsl-data-pull-runbook.md"),
+                encoding="utf-8").read()
+    for needle in (FEATURES_DOC, "source-features-15m.json", "--connector localtables"):
+        assert needle in text, f"the runbook never mentions {needle}"

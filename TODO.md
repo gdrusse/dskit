@@ -2404,3 +2404,12 @@ Found building the child's data pulls (`children/crypto_trading`); the child bui
 - [ ] **ADR-0237 `restapi`: time-window pagination, positional rows, a dynamic record key.** Needed for Coinbase candles, Deribit DVOL and trades, Kraken trades.
 - [ ] **ADR-0238 `httpblobs`: verify a vendor's digest sidecar.** Binance Vision publishes `<file>.zip.CHECKSUM`; the pull records `raw_sha256` but compares it with nothing.
 - [ ] **ADR-0239 tier-2 zip-CSV to parquet `httpblobs` transform.** The child's `ZipCsvParquet` is interim; delete it when this lands.
+
+### crypto_trading stage B: dskit gaps awaiting owner approval (2026-10-06)
+
+Found building the child's feature table and kill test (`children/crypto_trading`); each has an interim child class naming its ADR. Entries are in the decision log, status PROPOSED.
+
+- [ ] **ADR-0240 many-file parquet series reader, `StreamManifests`, strictly-prior as-of lookup.** Interim: `crypto_trading/day_series.py`; delete it and its tests when this lands. Needed by any day-file tape (Binance klines, BVOL).
+- [ ] **ADR-0241 realised-vol estimators: EWMA, high-low, gap rule.** Interim: `crypto_trading/vol_estimators.py`. `rolling_std` skips NaNs, so a missing minute silently shortens a window.
+- [ ] **ADR-0242 venue fee models graduate from `pmquant`.** Interim: the Kalshi branch in `crypto_trading/fees.py`; `pmquant/fees.py` is the owner today.
+- [ ] Candidates to graduate after the first real run (no ADR yet): the digital-option fair value with a settlement-average window (`crypto_trading/fair_value.py`, `payoffs.py`), and bucketed binary scoring with a cluster-robust standard error (`crypto_trading/kill_test.py`; it already calls `dskit.pipeline.metrics`).
