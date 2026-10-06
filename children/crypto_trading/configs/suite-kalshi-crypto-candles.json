@@ -1,0 +1,88 @@
+{
+  "name": "kalshi-crypto-candles",
+  "notes": "Structural gates over one `candles` pull of source kalshi-crypto-candles (1-minute, 15-minute series). Prices are dollars in [0, 1], so a value outside it is a unit slip. A minute with no trade has null prices, which in_range skips by design. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-crypto-candles.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "candles-rows-arrived",
+      "target": "candles",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull means no settled market in range or a wrong series list."
+    },
+    {
+      "id": "candles-ticker-present",
+      "target": "candles",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error",
+      "notes": "Every candle belongs to a market; the reader keys on (ticker, ts)."
+    },
+    {
+      "id": "candles-open-in-dollars",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "open",
+        "min": 0,
+        "max": 1
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-high-in-dollars",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "high",
+        "min": 0,
+        "max": 1
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-low-in-dollars",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "low",
+        "min": 0,
+        "max": 1
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-close-in-dollars",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "close",
+        "min": 0,
+        "max": 1
+      },
+      "severity": "error",
+      "notes": "A contract pays 1 dollar; a price outside [0, 1] is a unit slip upstream."
+    },
+    {
+      "id": "candles-volume-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "volume",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-bitemporal",
+      "target": "candles",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "The pack drops candles still forming at the capture instant; one dated after acquisition is a defect."
+    }
+  ]
+}

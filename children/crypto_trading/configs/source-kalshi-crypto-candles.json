@@ -1,0 +1,17 @@
+{
+  "notes": "Registration input, not a run input: 1-minute candles (period_interval 1) for the two 15-minute up/down series only, from the same kalshi pack as source-kalshi-crypto.json. Why not the hourly ladders: candles cost one request per market (probed 0.44 s each), and an hourly event carries ~190 strikes, so KXBTC, KXBTCD, KXETH and KXETHD since the cutoff would be up to about 1.2M requests (days, all-or-nothing). They wait on the PROPOSED kalshi ADR (a trades stream with taker side, which needs no per-market request, and /historical). The 15-minute series hold one market per event (6,422 settled KXETH15M markets at the probe), so a first pull is about 13k requests, roughly 2.5 hours at pace_s 0.25; a failed pull commits nothing, so re-run it. Later pulls skip markets that closed at or before the candle cursor. Statuses 'settled' for the same reason as the markets source. The series list repeats the 15m subset of source-kalshi-crypto.json; tests/test_configs.py pins the agreement. Register: python -m dskit.onboarding register-source kalshi-crypto-candles --catalog-source kalshi-crypto-candles --connector kalshi --config @configs/source-kalshi-crypto-candles.json --activate --root <store root>; then acquire --source kalshi-crypto-candles --stream candles --mode backfill.",
+  "series": [
+    "KXBTC15M",
+    "KXETH15M"
+  ],
+  "statuses": [
+    "settled"
+  ],
+  "period_interval": 1,
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

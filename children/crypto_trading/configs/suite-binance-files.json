@@ -1,0 +1,56 @@
+{
+  "name": "binance-files",
+  "notes": "Gates over the inventory of any Binance Vision httpblobs pull (klines or BVOL): one row per requested day with status ok or refused. The files themselves are hashed into the snapshot manifest and re-checked by `verify`; this suite checks the inventory. A refused day (Binance lacks it, or it would not reshape) is a WARN: the pull tolerates max_refused of them so a gap is visible and decided, not fatal. Run: python -m dskit.onboarding validate --suite configs/suite-binance-files.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "files-rows-arrived",
+      "target": "files",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "One row per requested day, ok or refused; none means nothing was requested."
+    },
+    {
+      "id": "files-entity-unique",
+      "target": "files",
+      "rule": "unique",
+      "kwargs": {
+        "field": "entity"
+      },
+      "severity": "error",
+      "notes": "One inventory row per day."
+    },
+    {
+      "id": "files-all-ok",
+      "target": "files",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "status",
+        "values": [
+          "ok"
+        ]
+      },
+      "severity": "warn",
+      "notes": "Each refused day is a hole in the series. Read `reason` and `http_status` in the inventory before modelling across it."
+    },
+    {
+      "id": "files-size-positive",
+      "target": "files",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "size",
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "A stored parquet of zero bytes is a writer defect (refused rows carry no size)."
+    },
+    {
+      "id": "files-bitemporal",
+      "target": "files",
+      "rule": "bitemporal",
+      "severity": "error"
+    }
+  ]
+}

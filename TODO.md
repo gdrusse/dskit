@@ -2395,3 +2395,11 @@ Still open:
 - `cdf_study --stage prepare` writes `data.chain_features` to a plain path: onboard its output after each prepare;
 - stock_options readers still use per-run onboarding roots and have not moved to the stock store;
 - SPY is parked in steps 1, 1b, 2 until a keep-one-row-per-date step exists (two same-day expiries on 2012-01-27).
+
+### crypto_trading stage A: dskit gaps awaiting owner approval (2026-10-06)
+
+Found building the child's data pulls (`children/crypto_trading`); the child builds no workaround for any of them. Entries are in the decision log, status PROPOSED.
+
+- [ ] **ADR-0236 `kalshi` pack: `/historical/*` routing, a `trades` stream (taker side), a candle/trade scope knob.** Without it the crypto history stops at the 2026-08-07 cutoff and the four hourly ladders (up to about 1.2M per-market candle requests) cannot be priced. Owner question: which outcome-independent scope filter.
+- [ ] **ADR-0237 `restapi`: time-window pagination, positional rows, a dynamic record key.** Needed for Coinbase candles, Deribit DVOL and trades, Kraken trades.
+- [ ] **ADR-0238 `httpblobs`: verify a vendor's digest sidecar.** Binance Vision publishes `<file>.zip.CHECKSUM`; the pull records `raw_sha256` but compares it with nothing.

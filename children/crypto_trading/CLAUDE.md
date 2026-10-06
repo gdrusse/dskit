@@ -99,24 +99,39 @@ only when its integration is real, and prove the executor with
 `executor_conformance_suite`. `tests/test_production.py` fails the moment a
 template becomes convenient enough to send an order.
 
+## Stage A data pulls
+
+Sources are existing packs (`kalshi`, `httpblobs`) plus configs; the only code is
+`binance_vision.py`, the `httpblobs` transform (one subclass per file layout, no
+knobs). A snapshot holds ONE stream, so each stream has its own suite. The series
+and date lists repeat across configs and suites by design (a suite restates its
+vocabulary); `tests/test_configs.py` pins every repeat, so change both together.
+Candles are 15-minute series only: the hourly ladders wait on PROPOSED ADR-0236.
+Never solve ADR-0236 to 0238 child-side. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
+
 ## Layout
 
 ```
-crypto_trading/           # tier-3 code: connectors.py, nodes.py, and the four
+crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform),
+                       #   connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed
 configs/               # asset-model / source-sample / suite-sample /
-                       #   run-sample / serve-sample
+                       #   run-sample / serve-sample, plus stage A:
+                       #   source-kalshi-crypto[-candles] / source-binance-* /
+                       #   binance_vision_dates / suite-kalshi-crypto-* /
+                       #   suite-binance-files
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
-docs/plans/            # the child's own project-specific plan builds
+docs/plans/            # the child's own plan builds (the WSL data-pull runbook)
 docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
-                       #   execution/production tests
-pyproject.toml         # dependencies = ["dskit"]
+                       #   execution/production tests, plus binance_vision
+                       #   and kalshi_crypto (offline, scripted transports)
+pyproject.toml         # dependencies = ["dskit"]; extra `parquet` = pyarrow
 ```
 
 Keep this tree and README.md's current when files change.

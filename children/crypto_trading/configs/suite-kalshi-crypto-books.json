@@ -1,0 +1,67 @@
+{
+  "name": "kalshi-crypto-books",
+  "notes": "Structural gates over one `orderbooks` capture of source kalshi-crypto: one book per OPEN market at one capture instant. The bid ladders are lists the rule engine cannot inspect; their shape is the pack's contract (tests drive it). Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-crypto-books.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "books-rows-arrived",
+      "target": "orderbooks",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "No open crypto market at capture time is a broken capture, not a quiet one."
+    },
+    {
+      "id": "books-ticker-unique",
+      "target": "orderbooks",
+      "rule": "unique",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error",
+      "notes": "One book per market per capture instant."
+    },
+    {
+      "id": "books-series-universe",
+      "target": "orderbooks",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "series_ticker",
+        "values": [
+          "KXBTC",
+          "KXBTCD",
+          "KXBTC15M",
+          "KXETH",
+          "KXETHD",
+          "KXETH15M"
+        ]
+      },
+      "severity": "error",
+      "notes": "The six series the source pulls, RESTATED here on purpose: a suite must not read its vocabulary from the source it validates. tests/test_configs.py pins the two lists together."
+    },
+    {
+      "id": "books-strike-type",
+      "target": "orderbooks",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal"
+        ]
+      },
+      "severity": "error",
+      "notes": "Same geometry vocabulary as the markets suite."
+    },
+    {
+      "id": "books-bitemporal",
+      "target": "orderbooks",
+      "rule": "bitemporal",
+      "severity": "error"
+    }
+  ]
+}

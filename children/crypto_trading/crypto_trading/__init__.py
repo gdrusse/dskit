@@ -8,12 +8,16 @@ CLI does, so a document can name ``crypto_trading-*`` kinds with no flag
 beyond that one import.
 """
 
+from .binance_vision import BinanceBvol, BinanceKlines, ZipCsvParquet
 from .connectors import SampleConnector
 from .nodes import NODE_KINDS, EnrichRecords, SampleRecords
 
 __all__ = [
+    "BinanceBvol",
+    "BinanceKlines",
     "EnrichRecords",
     "NODE_KINDS",
     "SampleConnector",
     "SampleRecords",
+    "ZipCsvParquet",
 ]

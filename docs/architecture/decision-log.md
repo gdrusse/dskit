@@ -30315,3 +30315,48 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Consequences / risks.** Volume is the `indicative` feed's trade bars, a subset of OPRA: levels are partial, the ranking is what is used. Name-regex ETF filtering is heuristic. A regenerated ranking refuses the pull until `symbols_sha256` is updated deliberately. Funds the regex misses (DXYZ) go in the rank node's `exclude`. ADR-0216 is brought into this log verbatim (it lands with ADR-0235).
 
 **Tests.** Recorded-fake connector tests (filtering, per-session sums, window, both statuses, batching, short calendar, default-deny, symbols file) and `TrailingRank` tests (window, ties, exclusion, aggregates, refusals).
+
+## ADR-0236 — `kalshi` pack: `/historical/*` routing, a `trades` stream, and a candle/trade scope
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull). Extends ADR-0075.
+**Sweep** (`taker_side historical_markets kalshi_trades historical/cutoff`, origin/main, all branches and worktrees): no near matches; the pack has four streams and no `/historical` path.
+
+**Context.** The live API keeps settled markets only back to the historical cutoff (`GET /historical/cutoff`: 2026-08-07 for markets and trades; probe: KXETH15M's oldest live close was 2026-07-31, 6,422 markets); older data sits under `/historical/markets`, `/historical/trades` (probed) and `/historical/markets/{ticker}/candlesticks` (documented, not probed). Trades carry `taker_side`, `yes_price_dollars`, `count_fp`, `created_time`, `trade_id`; the pack emits none. Candles cost one request per market (0.44 s) and an hourly crypto event has about 190 strikes, so the four hourly series since the cutoff are up to about 1.2M requests; `/markets/trades` filters by `ticker`, not series, so trades are also per market.
+
+**Decision (proposed).** (1) `markets` and `candles` route periods before the cutoff to `/historical/*`, the cutoff read once per pull from `GET /historical/cutoff`, never typed. (2) A `trades` stream, key `trade_id`, dated at `created_time`, cursor = max `created_time`, pulled per market with `min_ts`. (3) An outcome-independent scope knob over the markets list that gates the per-market streams (candidate: a minimum `volume_fp`, which the `markets` row would then carry), so a ladder pull needs only the strikes that traded. Open design question for the owner: which filter, since a strike-distance rule would select on the settlement value.
+
+**Alternatives rejected.** Child-side `/historical` calls (generic capability belongs in the pack); pulling all hourly candles (days, and a failed pull commits nothing).
+
+**Consequences.** History before 2026-08-07, taker-side flow and affordable hourly-ladder prices become possible. Rows gain fields only when a new knob is set, so existing pmquant sources keep their identity.
+
+**Tests.** Scripted getter: cutoff routing and the boundary day, `trades` paging and cursor, scope filter, and an unchanged default row set.
+
+## ADR-0237 — `restapi`: time-window pagination, positional rows and a dynamic record key
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull). Extends ADR-0017.
+**Sweep** (`window_pagination time_window row_fields array_rows`, origin/main, all branches and worktrees): no near matches (`RowField` in `dskit/evaluation` is unrelated).
+
+**Context.** Public crypto history is time-window REST that neither `restapi` nor `httpblobs` expresses (probed 2026-10-06): Coinbase `/products/BTC-USD/candles?start&end&granularity` (at most 300 rows a request, array rows `[time, low, high, open, close, volume]`), Deribit `public/get_volatility_index_data?start_timestamp&end_timestamp&resolution` (`result.data` array rows) and Kraken `/0/public/Trades?pair&since` (rows under `result.<pair>`, a key named after the pair, plus a `last` cursor). `restapi` paginates by `none|cursor|page|offset` only and refuses a non-dict record.
+
+**Decision (proposed).** (1) A `window` pagination strategy: `start`, `end` (or now), `step`, `start_param`, `end_param`, `time_format` (`iso|epoch_s|epoch_ms`); one request per window, `max_windows` as the refuse-not-truncate cap. (2) A per-stream `row_fields` list that turns a positional row into a dict. (3) A single `*` segment in `records_path` for one dynamic key. All optional and omitted from the declaration when absent.
+
+**Alternatives rejected.** One child connector per exchange (the pagination mechanism is generic); `httpblobs` with an entity per window (it keeps bytes, not records, and has no cursor).
+
+**Consequences.** Coinbase candles, Deribit DVOL and trades, Kraken trades become configs. Existing `restapi` sources are unchanged.
+
+**Tests.** Scripted transport: window arithmetic and cap, each time format, array rows with and without `row_fields`, the `*` key, a Kraken-shaped cursor, existing-source identity.
+
+## ADR-0238 — `httpblobs`: verify a vendor's published digest sidecar
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull). Extends ADR-0233.
+**Sweep** (`checksum_url sidecar CHECKSUM verify_digest`, origin/main, all branches and worktrees): no near matches; `httpblobs` records `raw_sha256` but compares it with nothing.
+
+**Context.** Binance Vision publishes `<file>.zip.CHECKSUM` beside every zip (`<sha256>  <file>`, probed: it matches `sha256sum` of the zip). Many archives do the same. Today the digest is recorded in the inventory and nobody compares it, so a truncated or tampered download is accepted if it still unzips.
+
+**Decision (proposed).** Optional knob `checksum_url_template` (same placeholders as `url_template`) with `checksum_algorithm` (default `sha256`). The raw body's digest is compared with the sidecar's first token before any transform; a mismatch or missing sidecar is a refused entity (`reason` names it) counted against `max_refused`. The inventory row gains a `checksum` field (`ok`, `mismatch`, `missing`; null when unset). The knobs enter the declaration digest only when present.
+
+**Alternatives rejected.** A transform that fetches the sidecar itself (a second, unthrottled network path hidden in child code); comparing after the fact by hand (the interim in the `crypto_trading` runbook).
+
+**Consequences.** Archive pulls become verifiable end to end; existing sources keep their identity. Doubles the request count of a pull that opts in.
+
+**Tests.** Fake HTTP server: match, mismatch, missing sidecar, throttle across both requests, unchanged-declaration identity without the knob.

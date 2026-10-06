@@ -1,0 +1,21 @@
+{
+  "notes": "Registration input, not a run input: Binance spot 1-minute klines for BTCUSDT, one daily zip per UTC day (httpblobs, ADR-0233), reshaped to parquet by crypto_trading.binance_vision:BinanceKlines (epoch ms; the vendor's microsecond files since 2025-01-01 are floored) and laid out <date>.parquet in stream files. BTCUSDT is quoted in USDT, a proxy for, not a copy of, the USD CF Benchmarks BRTI that Kalshi settles on. LICENCE: Binance Vision data is CC BY-NC-SA (https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf): research use only, not for live trading features. Dates: configs/binance_vision_dates.json, pinned by entities_sha256 (export CRYPTO_TRADING_ROOT=<this child's root>; no machine path is stored). The untouched vendor zip is kept at _raw/<date>.zip and its sha256 is the inventory raw_sha256: compare it with the vendor's <file>.zip.CHECKSUM (automatic verification awaits the PROPOSED httpblobs sidecar ADR, see decision-log). max_refused 5: a day Binance lacks lands as a refused inventory row (suite-binance-files.json warns) instead of aborting a pull of over a thousand files. throttle_s 0.1 is polite to a static archive; max_bytes 50 MB is a sanity cap (a daily zip is about 70 KB). A changed declaration (dates, pin or as_of) re-pulls; an unchanged one is a no-op. Register: python -m dskit.onboarding register-source binance-btcusdt-1m --catalog-source binance-btcusdt-1m --connector httpblobs --config @configs/source-binance-btcusdt-1m.json --activate --root <store root>; then acquire --source binance-btcusdt-1m --stream files --mode backfill; validate with configs/suite-binance-files.json.",
+  "url_template": "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-{entity}.zip",
+  "entities_file": "$CRYPTO_TRADING_ROOT/configs/binance_vision_dates.json",
+  "entities_key": "dates",
+  "entities_sha256": "9a16650edfe8f7ea2ed5d16f5a225367d492b43e431dd134b9ca11d0cef178f6",
+  "relpath_template": "{entity}.parquet",
+  "raw_relpath_template": "_raw/{entity}.zip",
+  "transform": "crypto_trading.binance_vision:BinanceKlines",
+  "transform_params": {},
+  "headers": {
+    "User-Agent": "dskit-research-bot/1.0 (crypto_trading data pull)"
+  },
+  "throttle_s": 0.1,
+  "timeout": 60,
+  "max_retries": 4,
+  "max_refused": 5,
+  "max_bytes": 50000000,
+  "as_of": "2026-10-06T00:00:00+00:00",
+  "stream": "files"
+}

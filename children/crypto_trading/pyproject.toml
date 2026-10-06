@@ -21,5 +21,10 @@ requires-python = ">=3.11"
 # are added here too, but stay imported only inside run()/read().
 dependencies = ["dskit"]
 
+[project.optional-dependencies]
+# pyarrow is imported only inside BinanceKlines/BinanceBvol.transform(); the
+# configs and the rest of the package plan without it.
+parquet = ["pyarrow>=15"]
+
 [tool.setuptools.packages.find]
 include = ["crypto_trading*"]          # <- 3. matches the renamed package dir
