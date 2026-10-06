@@ -10,6 +10,8 @@ back, which is the path a later modelling run takes.
 import json
 import math
 import os
+import re
+import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -45,6 +47,14 @@ MARKETS = [
 ]
 
 
+SPREAD = 0.04
+
+
+def bid_at(market_index, minute):
+    """The fixture's YES bid in the candle that ends ``minute`` minutes after the open: it moves every minute."""
+    return round(0.30 + 0.01 * minute + 0.02 * market_index, 4)
+
+
 def doc_dict():
     with open(DOC, encoding="utf-8") as handle:
         return json.load(handle)
@@ -69,11 +79,11 @@ def build_world(tmp_path, monkeypatch):
         return (bar["open"] + bar["close"]) / 2.0 * (1.0 - DELTA)
 
     markets, candles = [], {}
-    for ticker, asset, close, result in MARKETS:
+    for index, (ticker, asset, close, result) in enumerate(MARKETS):
         floor = round(index_at_open(asset, close), 2)  # strikes are index dollars, set at the open
         markets.append(market_payload(ticker, close, floor=floor, result=result))
-        candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=0.40, ask=0.44,
-                                          price=0.42) for k in range(1, 16)]
+        candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=bid_at(index, k), ask=bid_at(index, k) + SPREAD,
+                                          price=bid_at(index, k) + SPREAD / 2) for k in range(1, 16)]
     api = ScriptedKalshi(markets, candles, {s: ("quadratic", 1) for s in SERIES})
     store.kalshi("kalshi-crypto", "source-kalshi-crypto.json", api, ["markets", "fee_schedules"])
     store.kalshi("kalshi-crypto-candles-btc", "source-kalshi-crypto-candles-btc.json", api, ["candles"])
@@ -88,12 +98,25 @@ def build_world(tmp_path, monkeypatch):
     return store
 
 
+RUNBOOK = os.path.join(CHILD_ROOT, "docs", "plans", "2026-10-06-wsl-data-pull-runbook.md")
+
+
+def runbook_root_command():
+    """The one command the runbook (B1) gives for pointing the document at the owner's store."""
+    text = open(RUNBOOK, encoding="utf-8").read()
+    (line,) = re.findall(r'^(sed -i "s#[^#\n]+#\$OB#g" configs/run-features-15m\.json)$', text, re.M)
+    return line
+
+
 def patched_doc(store, tmp_path):
-    """The shipped document with placement and the held-out cut moved, written to tmp."""
-    doc = doc_dict()
-    for spec in doc["pipeline"].values():
-        if "root" in spec.get("params", {}):
-            spec["params"]["root"] = store.path
+    """The shipped document with its roots rewritten EXACTLY as the runbook says, then placement and the cut moved."""
+    work = tmp_path / "shipped"
+    (work / "configs").mkdir(parents=True)
+    shutil.copy(DOC, work / "configs" / "run-features-15m.json")
+    done = subprocess.run(["bash", "-c", runbook_root_command()], cwd=work, capture_output=True, text=True,
+                          env={**os.environ, "OB": store.path})
+    assert done.returncode == 0, done.stderr
+    doc = json.loads((work / "configs" / "run-features-15m.json").read_text(encoding="utf-8"))
     out = tmp_path / "features"
     out.mkdir()
     doc["pipeline"]["write"]["params"]["path"] = str(out / "decision_features.jsonl")
@@ -134,7 +157,7 @@ def test_the_table_has_one_row_per_market_and_lead_with_the_label(ran):
     for row in rows:
         assert row["label"] == (1 if result_by_ticker[row["ticker"]] == "yes" else 0)
         assert row["close_ms"] - row["decision_ms"] == row["lead_minutes"] * 60_000
-        assert row["tau_s"] == row["lead_minutes"] * 60.0
+        assert row["exec_ms"] == row["decision_ms"] + 5_000 and row["tau_s"] == row["lead_minutes"] * 60.0 - 5
     assert {r["lead_minutes"] for r in rows} == set(LEADS)
 
 
@@ -149,14 +172,33 @@ def test_every_feature_family_is_present_and_leak_free_on_the_pipeline_path(ran)
             assert r["spot"] == usable[-1]["close"], "spot is the last bar closed before the decision"
             assert r["spot_missing"] is False and r["bvol_missing"] is False
             assert r["rv_rms_60"] is not None and r["rv_ewma_30"] is not None
-            assert r["two_sided"] is True and r["mid"] == pytest.approx(0.42)
-            assert r["candle_age_ms"] == 60_000, "the candle ending AT the decision is not yet known"
+            index = [m[0] for m in MARKETS].index(ticker)
+            minute = 15 - lead  # the decision is `lead` minutes before the close; the candle ending then
+            assert r["yes_bid"] == bid_at(index, minute) and r["yes_ask"] == pytest.approx(bid_at(index, minute) + SPREAD)
+            assert r["two_sided"] is True and r["mid"] == pytest.approx(bid_at(index, minute) + SPREAD / 2)
+            assert r["candle_age_ms"] == 0, "the candle ending AT the information instant is the spot bar's minute"
+            assert abs(r["candle_age_ms"] - r["spot_age_ms"]) <= 5_000, "one information instant for spot and quote"
             assert r["basis_missing"] is False and r["basis"] == pytest.approx(1.0 - DELTA, rel=2e-3)
             assert r["spot_brti"] == pytest.approx(r["spot"] * r["basis"])
             assert 0.0 < r["fair_rms"] < 1.0 and r["fair_rms_status"] == "ok"
             assert 0.0 < r["fair_bvol"] < 1.0
-            assert r["fee_buy_yes"] == pytest.approx(0.0173, abs=1e-4) and r["fee_status"] == "ok"
+            ask = bid_at(index, minute) + SPREAD
+            assert r["fee_buy_yes"] == pytest.approx(math.ceil(round(0.07 * 100 * ask * (1 - ask) * 100, 9)) / 100 / 100)
+            assert r["fee_status"] == "ok"
             assert r["ln_floor_over_spot"] == pytest.approx(math.log(store.floors[ticker] / r["spot_brti"]))
+
+
+def test_the_exclusion_lists_and_provenance_are_kept_in_the_run_directory(ran):
+    """The run record keeps only shapes; what was dropped, and why, is an artifact of the node that dropped it."""
+    _, result, _ = ran
+    kept = lambda node, name: json.loads(open(os.path.join(result.run_dir, "artifacts", node, name),  # noqa: E731
+                                              encoding="utf-8").read())
+    assert kept("markets", "census.json") == result.outputs["markets"]["census"] == {"rows": 5, "kept": 5}
+    assert kept("markets", "excluded.json") == result.outputs["markets"]["excluded"] == []
+    assert kept("decisions", "excluded.json") == result.outputs["decisions"]["excluded"]
+    provenance = kept("spot", "provenance.json")
+    assert provenance == result.outputs["spot"]["provenance"]
+    assert provenance["BTC"]["klines"]["manifest_sha256"] and provenance["BTC"]["spot_missing"] == 0
 
 
 def test_the_table_is_written_as_json_lines_for_the_next_run(ran):
@@ -183,6 +225,7 @@ def test_nothing_but_placement_and_the_cut_was_changed_for_this_run(tmp_path, mo
     store = build_world(tmp_path, monkeypatch)
     path, _ = patched_doc(store, tmp_path)
     shipped_doc, patched = doc_dict(), json.loads(path.read_text(encoding="utf-8"))
+    assert all(s["params"]["root"] == store.path for s in patched["pipeline"].values() if "root" in s.get("params", {}))
 
     def strip(doc):
         doc = json.loads(json.dumps(doc))
@@ -240,3 +283,26 @@ def test_the_package_imports_and_the_document_plans_with_numpy_and_pyarrow_block
     done = subprocess.run([sys.executable, "-c", code], cwd=CHILD_ROOT, capture_output=True, text=True,
                           timeout=120)
     assert done.returncode == 0, done.stderr[-2000:]
+
+
+def test_a_fair_value_and_a_kill_test_cell_match_independent_hand_computations(ran):
+    """Quotes move minute by minute in the fixture, so these are real numbers, not a constant surviving a pipeline."""
+    _, result, _ = ran
+    rows = result.outputs["fees"]["records"]
+
+    def phi(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    for r in rows:
+        v = r["rv_rms_60"] ** 2 * (r["tau_s"] - 40.0)  # variance: tau minus 2/3 of the 60 s window
+        expected = phi((math.log(r["spot_brti"] / r["floor_strike"]) - v / 2.0) / math.sqrt(v))
+        assert r["fair_rms"] == pytest.approx(expected, abs=1e-9)
+    held = [r for r in rows if r["close_ms"] >= ms(utc(2026, 9, 3)) and r["lead_minutes"] == 2]
+    assert len(held) == 2 and len({r["mid"] for r in held}) == 2, "two held-out markets, two different quotes"
+    cell = [s for s in result.outputs["kill_test"]["scores"]
+            if (s["model"], s["segment"], s["group"], s["bucket"]) == ("fair_rms", "heldout", "lead_minutes=2", "all")][0]
+    assert cell["n"] == 2
+    assert cell["brier_fair"] == pytest.approx(sum((r["fair_rms"] - r["label"]) ** 2 for r in held) / 2)
+    assert cell["brier_mid"] == pytest.approx(sum((r["mid"] - r["label"]) ** 2 for r in held) / 2)
+    assert cell["mean_mid"] == pytest.approx(sum(r["mid"] for r in held) / 2)
+    assert cell["base_rate"] == pytest.approx(sum(r["label"] for r in held) / 2)

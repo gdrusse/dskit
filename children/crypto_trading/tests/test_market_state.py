@@ -28,37 +28,40 @@ def run(rows, candles, **over):
     return node.run(None, {"records": rows, "candles": candles})["records"]
 
 
-def test_the_state_is_the_last_candle_that_ended_strictly_before_the_decision():
+def test_the_state_is_the_last_candle_that_ended_by_the_information_instant():
     candles = [candle(DECISION - 3 * MINUTE, bid=0.10, ask=0.12),
-               candle(DECISION - MINUTE, bid=0.40, ask=0.44, price=0.42, volume=7.0, interest=120.0)]
+               candle(DECISION, bid=0.40, ask=0.44, price=0.42, volume=7.0, interest=120.0)]
     out = run([row()], candles)[0]
     assert (out["yes_bid"], out["yes_ask"]) == (0.40, 0.44)
     assert out["mid"] == pytest.approx(0.42) and out["spread"] == pytest.approx(0.04)
     assert out["candle_price"] == 0.42 and out["candle_volume"] == 7.0
-    assert out["candle_open_interest"] == 120.0 and out["candle_age_ms"] == MINUTE
+    assert out["candle_open_interest"] == 120.0 and out["candle_age_ms"] == 0
     assert out["quote_missing"] is False and out["two_sided"] is True
 
 
-def test_a_candle_ending_exactly_at_the_decision_is_not_yet_known():
-    # the venue's end_period_ts is the INCLUSIVE end of the minute: its last second is the decision instant
-    out = run([row()], [candle(DECISION - MINUTE), candle(DECISION, bid=0.50, ask=0.54)])[0]
-    assert out["yes_bid"] == 0.40 and out["candle_age_ms"] == MINUTE
-    assert run([row()], [candle(DECISION, bid=0.50, ask=0.54)])[0]["quote_missing"] is True
+def test_the_candle_ending_at_the_instant_is_the_one_that_matches_the_spot_bar():
+    # the spot is the bar [I - 1 min, I) and its close is the last second before I; the candle ending at I covers
+    # (I - 1 min, I] and its close is the last quote of that minute: ONE information instant for both, so the
+    # fair value is never compared with a quote a minute older than the price it was computed from
+    out = run([row()], [candle(DECISION - MINUTE, bid=0.10, ask=0.12), candle(DECISION, bid=0.50, ask=0.54)])[0]
+    assert out["yes_bid"] == 0.50 and out["candle_age_ms"] == 0
+    spot_age_ms = 1  # the bar closes 1 ms before I
+    assert abs(out["candle_age_ms"] - spot_age_ms) <= 5_000
 
 
-def test_a_candle_ending_at_or_after_the_decision_never_reaches_the_row():
-    candles = [candle(DECISION - MINUTE, bid=0.40, ask=0.44),
-               candle(DECISION, bid=0.97, ask=0.98, price=0.97, volume=1e6, interest=1e6),
+def test_a_candle_ending_after_the_information_instant_never_reaches_the_row():
+    candles = [candle(DECISION, bid=0.40, ask=0.44),
                candle(DECISION + 1, bid=0.99, ask=0.995, price=0.99, volume=1e6, interest=1e6),
+               candle(DECISION + 5_000, bid=0.99, ask=0.995),
                candle(DECISION + MINUTE, bid=0.99, ask=0.995)]
     clean = run([row()], candles[:1])[0]
     dirty = run([row()], candles)[0]
-    assert clean == dirty, "the candles at and after the decision are invisible"
+    assert clean == dirty, "anything stamped after the information instant (so any trade instant) is invisible"
     assert dirty["yes_bid"] == 0.40
 
 
-def test_control_the_same_extreme_candle_one_minute_earlier_is_used():
-    out = run([row()], [candle(DECISION - MINUTE, bid=0.97, ask=0.99)])[0]
+def test_control_the_same_extreme_candle_at_the_instant_is_used():
+    out = run([row()], [candle(DECISION, bid=0.97, ask=0.99)])[0]
     assert out["yes_bid"] == 0.97, "so the leak test above is not passing vacuously"
 
 
@@ -108,7 +111,7 @@ def test_bounds_are_params():
 
 def test_rows_keep_their_order_and_other_fields_and_inputs_are_not_mutated():
     rows = [row(DECISION + MINUTE, "A"), row(DECISION, "B")]
-    candles = [candle(DECISION - MINUTE, ticker="A"), candle(DECISION - 2 * MINUTE, ticker="B")]
+    candles = [candle(DECISION, ticker="A"), candle(DECISION - MINUTE, ticker="B")]
     before = [dict(r) for r in rows]
     out = run(rows, candles)
     assert [r["ticker"] for r in out] == ["A", "B"] and all(r["label"] == 1 for r in out)
@@ -123,3 +126,9 @@ def test_default_deny_and_required_knobs():
             MarketState("state", {k: v for k, v in PARAMS.items() if k != knob})
     with pytest.raises(Exception, match="quote_ceiling"):
         MarketState("state", {**PARAMS, "quote_ceiling": 0.0})
+
+
+def test_the_candle_age_cap_is_inclusive_to_the_millisecond():
+    cap = PARAMS["max_candle_age_ms"]
+    assert run([row()], [candle(DECISION - cap)])[0]["yes_bid"] == 0.40, "age == cap is still fresh"
+    assert run([row()], [candle(DECISION - cap - 1)])[0]["quote_missing"] is True, "one millisecond over is stale"

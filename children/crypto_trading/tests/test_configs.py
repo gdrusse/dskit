@@ -304,8 +304,11 @@ def test_kalshi_suites_restate_the_series_universe_and_agree_with_the_source(nam
 # and sources say, so a document that drifted from them fails here.
 
 FEATURES_DOC = "run-features-15m.json"
-STORE_ROOT = "~/data/crypto_trading/ob"
-FEATURES_DIR = "~/data/crypto_trading/features-15m"
+FEATURES_DIR = "~/data/crypto_trading/features-15m"  # the write node and localtables expand ~; the readers do not
+RUNBOOK_TEXT = open(os.path.join(CHILD_ROOT, "docs", "plans", "2026-10-06-wsl-data-pull-runbook.md"),
+                    encoding="utf-8").read()
+#: the store root the runbook asks the owner to set; the stage B document carries the same absolute value
+STORE_ROOT = re.search(r"^export OB=(\S+)", RUNBOOK_TEXT, re.M).group(1)
 
 
 def _doc():
@@ -325,11 +328,29 @@ def test_the_features_document_loads_and_every_node_says_why():
         assert spec.get("notes", "").strip(), f"node {key!r} has no notes: say why it is wired this way"
 
 
-def test_every_store_root_in_the_document_is_one_value():
-    roots = {spec["params"]["root"] for spec in _doc()["pipeline"].values() if "root" in spec.get("params", {})}
-    assert roots == {STORE_ROOT}, "one store, named once per node: they must agree"
-    for spec in _doc()["pipeline"].values():
-        assert "/home/" not in json.dumps(spec) and "/tmp" not in json.dumps(spec)
+def test_every_store_root_in_the_document_is_the_runbooks_absolute_placeholder():
+    """ObservationRows and payload_files do not expand `~`, so a `~` root fails on a fresh clone."""
+    roots = [spec["params"]["root"] for spec in _doc()["pipeline"].values() if "root" in spec.get("params", {})]
+    assert set(roots) == {STORE_ROOT}, "one store, named once per node: they must agree"
+    assert os.path.isabs(STORE_ROOT) and not STORE_ROOT.startswith("~")
+    text = open(_path(FEATURES_DOC), encoding="utf-8").read()
+    assert text.count(STORE_ROOT) == len(roots), "the placeholder appears only as a root, so one sed catches all"
+
+
+def test_the_runbook_rewrites_every_root_with_one_command(tmp_path):
+    import shutil
+    import subprocess
+
+    (line,) = re.findall(r'^(sed -i "s#[^#\n]+#\$OB#g" configs/run-features-15m\.json)$', RUNBOOK_TEXT, re.M)
+    assert f's#{STORE_ROOT}#' in line, "the command rewrites the placeholder the document carries"
+    (tmp_path / "configs").mkdir()
+    shutil.copy(_path(FEATURES_DOC), tmp_path / "configs" / FEATURES_DOC)
+    done = subprocess.run(["bash", "-c", line], cwd=tmp_path, env={**os.environ, "OB": "/data/elsewhere/ob"},
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    rewritten = json.loads((tmp_path / "configs" / FEATURES_DOC).read_text(encoding="utf-8"))
+    roots = {s["params"]["root"] for s in rewritten["pipeline"].values() if "root" in s.get("params", {})}
+    assert roots == {"/data/elsewhere/ob"}, "every node moved together, none was left on the placeholder"
 
 
 def test_the_readers_name_the_sources_the_runbook_registers():
@@ -563,3 +584,60 @@ def test_the_runbook_pull_helper_skips_validate_after_a_no_op_pull(tmp_path):
     out, calls = _run_pull(tmp_path, '{"snapshot": null}')
     assert "acquire" in calls and "validate" not in calls, "a null snapshot has nothing to validate"
     assert "nothing to validate" in out
+
+
+# -- lens-2 review: values the mutation sweep showed nothing pinned -------------------------
+
+
+def test_the_execution_lag_is_positive_and_leaves_the_averaging_window_after_it():
+    pipeline = _doc()["pipeline"]
+    lag = pipeline["decisions"]["params"]["exec_lag_s"]
+    assert lag > 0, "a fill cannot precede the information it acts on; zero lag would re-open the stale-quote bias"
+    window = pipeline["fair_rms"]["params"]["averaging_window_s"]
+    assert min(pipeline["decisions"]["params"]["leads_minutes"]) * 60 - lag >= window
+
+
+def test_the_block_clusters_are_whole_days_because_volatility_regimes_persist():
+    kill = _doc()["pipeline"]["kill_test"]["params"]
+    assert kill["cluster_block_s"] == 86_400, "per-market clustering understates the error about twofold"
+    assert kill["cluster_field"] == "event_ticker", "the per-event error is kept for comparison"
+
+
+def test_bvol_is_published_in_percent_so_the_scale_is_one_hundredth():
+    # confirmed on a real day in the 2026-10-06 review: BTC BVOL reads near 50
+    assert _doc()["pipeline"]["spot"]["params"]["bvol_scale"] == 0.01
+
+
+def test_bvol_is_annualised_on_a_365_day_year():
+    # the convention is UNVERIFIED (runbook B2); pinned so changing it is a decision, not a drift
+    assert _doc()["pipeline"]["spot"]["params"]["seconds_per_year"] == 365 * 24 * 3600
+
+
+def test_each_fair_value_reads_the_volatility_its_name_promises():
+    nodes = _nodes(":FairValue")
+    assert {k: (v["params"]["fair_field"], v["params"]["vol_field"]) for k, v in nodes.items()} == {
+        "fair_rms": ("fair_rms", "rv_rms_60"), "fair_ewma": ("fair_ewma", "rv_ewma_30"),
+        "fair_bvol": ("fair_bvol", "bvol_per_sqrt_s")}
+
+
+def test_the_margin_is_the_one_decided_before_the_held_out_read():
+    assert _doc()["pipeline"]["kill_test"]["params"]["margin"] == 0.02, (
+        "a margin edit is a tuning decision: it must be deliberate and recorded, so it is pinned")
+
+
+def test_the_strike_lag_is_at_least_twice_the_measured_publication_delay():
+    # the review measured the strike appearing about 7 s after the open
+    assert min(_doc()["pipeline"]["markets"]["params"]["strike_known_lag_s"].values()) >= 14
+
+
+def test_the_age_caps_stop_stale_readings_from_being_carried_forward():
+    pipeline = _doc()["pipeline"]
+    spot, state = pipeline["spot"]["params"], pipeline["state"]["params"]
+    assert 0 < spot["max_spot_age_ms"] <= 2 * spot["bar_ms"], "a spot older than two bars is stale"
+    assert 0 < spot["max_bvol_age_ms"] <= 60_000, "BVOL ticks about once a second"
+    assert 0 < state["max_candle_age_ms"] <= 2 * 60_000, "a candle older than two minutes is stale"
+    assert spot["max_basis_age_ms"] <= 30 * 60_000, "a basis older than two strikes' spacing is a different regime"
+
+
+def test_the_settled_statuses_are_the_venues_spelling():
+    assert _doc()["pipeline"]["markets"]["params"]["settled_statuses"] == ["finalized", "settled"]

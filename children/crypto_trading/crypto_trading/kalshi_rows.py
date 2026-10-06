@@ -315,13 +315,25 @@ class MarketRows(_StreamRows):
         self.census = {"rows": len(records), "kept": len(kept), **Counter(e["reason"] for e in excluded)}
         return kept
 
+    def write_dropped(self, ctx):
+        """Keep the dropped markets and the census beside the run: the run record holds only shapes.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            The run frame; with none (a unit test) nothing is written.
+        """
+        if ctx is not None:
+            self.write_artifact(ctx, "excluded.json", self.excluded)
+            self.write_artifact(ctx, "census.json", self.census)
+
     def run(self, ctx, inputs):
-        """Emit the labelled rows, the dropped tickers and the census.
+        """Emit the labelled rows, the dropped tickers and the census, and keep the latter two in the run directory.
 
         Parameters
         ----------
         ctx : NodeContext
-            Unused: a source reads only its params.
+            The run frame; its run directory receives ``excluded.json`` and ``census.json``.
         inputs : dict
             Empty: role ``data`` takes no inputs.
 
@@ -332,6 +344,7 @@ class MarketRows(_StreamRows):
         """
         records = self._scan()
         self.log.info("kept %d market(s), excluded %d", len(records), len(self.excluded))
+        self.write_dropped(ctx)
         return {"records": records, "excluded": self.excluded, "census": self.census}
 
 

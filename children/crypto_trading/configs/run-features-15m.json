@@ -1,11 +1,11 @@
 {
   "name": "crypto-features-15m",
-  "notes": "Stage B of crypto_trading: the feature table and the kill test for the 15-minute Kalshi crypto contracts (KXBTC15M, KXETH15M). One row per settled market and declared lead before its close; each row carries the label, point-in-time spot and volatility from Binance klines and BVOL, the market's own quote from Kalshi 1-minute candles, a realised-vol and an implied-vol fair value, and Kalshi's taker fee. The kill test then asks whether a simple fair value beats the market mid on held-out rows after fees (one decision, made once: if it does not, nothing downstream is built). Run after the stage A acquisitions (docs/plans/2026-10-06-wsl-data-pull-runbook.md, stage B): python -m dskit.pipeline run configs/run-features-15m.json --asof <YYYY-MM-DD>. Nothing here names a path to data: every reader names a source and a stream in the onboarding store at `root` (the one machine-specific value, repeated per node and pinned equal by tests/test_configs.py; `~` expands). Leak rule, enforced and tested: a Binance bar is used only if it had CLOSED before the decision, a BVOL reading and a Kalshi candle only if strictly before it (a candle's end is the inclusive last second of its minute), a strike anchor only once known (strictly before it). UNITS: strikes are settlement-index (BRTI, USD) dollars and Binance is another instrument, on live data about 22 USD higher; the `anchors` and `spot` nodes measure that basis at each market's open and price against the Binance spot restated in index units (spot_brti), or the row is unpriced. HOURLY LADDERS plug in by config once PROPOSED ADR-0236 lands their candles: add the series to `markets.series` and to an asset's `series`, add the candle sources and a reader per source, and the strike types they use are already mapped; no code changes. Settlement is modelled as the CF Benchmarks average over the last 60 seconds; the label is each strike's yes/no result (the realised settlement value waits on ADR-0236).",
+  "notes": "Stage B of crypto_trading: the feature table and the kill test for the 15-minute Kalshi crypto contracts (KXBTC15M, KXETH15M). One row per settled market and declared lead before its close; each row carries the label, point-in-time spot and volatility from Binance klines and BVOL, the market's own quote from Kalshi 1-minute candles, a realised-vol and an implied-vol fair value, and Kalshi's taker fee. The kill test then asks whether a simple fair value beats the market mid on held-out rows after fees (one decision, made once: if it does not, nothing downstream is built). Run after the stage A acquisitions (docs/plans/2026-10-06-wsl-data-pull-runbook.md, stage B): python -m dskit.pipeline run configs/run-features-15m.json --asof <YYYY-MM-DD>. Nothing here names a path to data: every reader names a source and a stream in the onboarding store at `root` (the one machine-specific value, an absolute path because the readers do not expand `~`; it is the runbook's `$OB` placeholder, repeated per node, pinned equal by tests/test_configs.py and rewritten for another store with one sed, runbook B1). Leak rule, enforced and tested: a Binance bar is used only if it had CLOSED before the decision, a BVOL reading strictly before the information instant, a Kalshi candle only if it ended by it (the same minute as the spot bar; an order fills only after, at I + exec_lag_s), a strike anchor only once known (strictly before it). UNITS: strikes are settlement-index (BRTI, USD) dollars and Binance is another instrument, on live data about 22 USD higher; the `anchors` and `spot` nodes measure that basis at each market's open and price against the Binance spot restated in index units (spot_brti), or the row is unpriced. HOURLY LADDERS plug in by config once PROPOSED ADR-0236 lands their candles: add the series to `markets.series` and to an asset's `series`, add the candle sources and a reader per source, and the strike types they use are already mapped; no code changes. Settlement is modelled as the CF Benchmarks average over the last 60 seconds; the label is each strike's yes/no result (the realised settlement value waits on ADR-0236).",
   "pipeline": {
     "markets": {
       "uses": "crypto_trading.kalshi_rows:MarketRows",
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "source": "kalshi-crypto",
         "series": [
           "KXBTC15M",
@@ -49,7 +49,7 @@
     "candles_btc": {
       "uses": "crypto_trading.kalshi_rows:CandleRows",
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "source": "kalshi-crypto-candles-btc"
       },
       "notes": "1-minute candles of KXBTC15M. The reader converts the candle's END instant from the venue's epoch seconds to the epoch milliseconds every other node uses, and refuses a ts that already looks like milliseconds. One reader per candle source because a snapshot holds one source."
@@ -57,7 +57,7 @@
     "candles_eth": {
       "uses": "crypto_trading.kalshi_rows:CandleRows",
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "source": "kalshi-crypto-candles-eth"
       },
       "notes": "1-minute candles of KXETH15M; see candles_btc."
@@ -78,7 +78,7 @@
     "fee_schedules": {
       "uses": "crypto_trading.kalshi_rows:FeeRows",
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "source": "kalshi-crypto"
       },
       "notes": "Each series' fee_type and fee_multiplier as the venue reported them at each retrieval. The venue serves only the CURRENT schedule, so a historical market is priced under the latest retrieval; the table says which (fee_schedule_retrieved)."
@@ -86,7 +86,7 @@
     "streams": {
       "uses": "crypto_trading.day_series:StreamManifests",
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "streams": {
           "BTC_klines": {
             "source": "binance-btcusdt-1m",
@@ -118,9 +118,10 @@
           2,
           5,
           10
-        ]
+        ],
+        "exec_lag_s": 5
       },
-      "notes": "One row per market and lead: decision instant = close - lead. The leads are the horizon of the question, a research choice (not a constant of the venue): a 15-minute market is open 15 minutes, so 2, 5 and 10 minutes before the close leave a short, a middle and a long forecast. None may be shorter than the 60-second averaging window (a test pins it). A lead longer than the market had been open is excluded by name, not clamped. A decision is made only strictly after the strike is known (open + lag): a lead at or above the market's 15 minutes minus the lag is excluded by name (strike_not_known), because there is nothing to price against yet; a test pins the leads below that bound."
+      "notes": "One row per market and lead: the INFORMATION instant I = close - lead (decision_ms), at which the spot (the Binance bar that closed before I) and the market quote (the candle that ended by I, the same minute) are read, and the execution instant E = I + exec_lag_s (5 s, a declared latency, must be positive: a fill cannot precede its information), from which the fair-value horizon runs to the close. Reading a quote a minute older than the spot made a simulated zero-edge market look like a 6-standard-error win and a profitable take rule; the zero-edge test pins that it no longer does. The leads are the horizon of the question, a research choice (not a constant of the venue): a 15-minute market is open 15 minutes, so 2, 5 and 10 minutes before the close leave a short, a middle and a long forecast. None may leave less than the 60-second averaging window after E (a test pins it). A lead longer than the market had been open is excluded by name, not clamped. A decision is made only strictly after the strike is known (open + lag): a lead at or above the market's 15 minutes minus the lag is excluded by name (strike_not_known), because there is nothing to price against yet; a test pins the leads below that bound."
     },
     "spot": {
       "uses": "crypto_trading.spot_features:SpotFeatures",
@@ -130,7 +131,7 @@
         "anchors": "$anchors.records"
       },
       "params": {
-        "root": "~/data/crypto_trading/ob",
+        "root": "/home/russell/data/crypto_trading/ob",
         "assets": {
           "BTC": {
             "series": [
@@ -209,7 +210,7 @@
         "quote_floor": 0.0,
         "quote_ceiling": 1.0
       },
-      "notes": "The market's own YES bid, ask, mid, spread, volume and open interest from the last 1-minute candle that ended strictly before the decision (the venue's end_period_ts is the inclusive last second of its minute, so a candle ending AT the decision still holds the decision's own second). Candles at or after it, and above all after the close (settled prices are about 0 or 1), are never read. A candle older than two minutes is missing, not carried. two_sided means a real, uncrossed bid and ask strictly inside (0, 1): the scorer's gate. Never imputed."
+      "notes": "The market's own YES bid, ask, mid, spread, volume and open interest from the last 1-minute candle that ended at or before the information instant I (the venue's end_period_ts is the inclusive last second of its minute: the candle ending at I covers the same minute as the spot bar, and its close is the last quote in it, so spot and quote carry ONE information instant). A candle that ends after I, and above all after the close (settled prices are about 0 or 1), is never read, and an order fills only at I + the execution lag. A candle older than two minutes is missing, not carried. two_sided means a real, uncrossed bid and ask strictly inside (0, 1): the scorer's gate. Never imputed."
     },
     "fair_rms": {
       "uses": "crypto_trading.fair_value:FairValue",
@@ -299,9 +300,10 @@
         "cluster_field": "event_ticker",
         "report_segments": [
           "development"
-        ]
+        ],
+        "cluster_block_s": 86400
       },
-      "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs kill_test.json and kill_test.md in the run directory. Segments are cut on the market's CLOSE (when its label is settled), so one market never has rows on both sides. The cut (2026-09-15) and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only. `report_segments` lists development only, so this run never prints the held-out numbers; to read them add \"heldout\" to it (a new document hash, so the read is recorded), commit that edit, run once, and never move the cut afterwards. Standard errors are dskit's cluster-robust ones on the market's event (blank below two clusters); kill_test.md also gives mean fair minus base rate per lead, which must be near zero before any edge is claimed. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
+      "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs kill_test.json and kill_test.md in the run directory. Segments are cut on the market's CLOSE (when its label is settled), so one market never has rows on both sides. The cut (2026-09-15) and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only. `report_segments` lists development only, so this run never prints the held-out numbers; to read them add \"heldout\" to it (a new document hash, so the read is recorded), commit that edit, run once, and never move the cut afterwards. Standard errors are dskit's cluster-robust ones, clustered on 1-day blocks of close (cluster_block_s 86400; blank below two clusters), with the per-event error beside them: volatility regimes persist, so neighbouring markets' errors are correlated and clustering on the market alone understates the error about twofold (review simulation: 68 to 77 percent coverage of a nominal 95 percent interval); kill_test.md also gives mean fair minus base rate per lead, which must be near zero before any edge is claimed. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
     },
     "write": {
       "uses": "records-write",

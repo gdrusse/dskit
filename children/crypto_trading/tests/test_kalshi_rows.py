@@ -199,3 +199,20 @@ def test_candles_come_out_ordered_by_ticker_then_end(tmp_path, monkeypatch):
         None, {})["records"]
     assert [r["end_ms"] for r in rows] == [ms(utc(2026, 9, 2, 0, m)) for m in (1, 2, 3)]
     assert rows[0]["yes_bid"] == 0.39 and rows[0]["open_interest"] == 99.0
+
+
+def test_the_dropped_markets_and_census_are_written_beside_the_run_when_there_is_a_run_directory(tmp_path):
+    import json
+    import os
+
+    class Ctx:
+        run_dir = str(tmp_path)
+
+    node, _ = project([raw(), raw("KXBTC15M-26AUG080215-15", strike_type="", floor_strike=None)])
+    out = node.write_dropped(Ctx())
+    directory = os.path.join(str(tmp_path), "artifacts", "markets")
+    assert sorted(os.listdir(directory)) == ["census.json", "excluded.json"]
+    assert json.load(open(os.path.join(directory, "excluded.json"), encoding="utf-8")) == node.excluded
+    assert json.load(open(os.path.join(directory, "census.json"), encoding="utf-8")) == node.census
+    assert out is None
+    node.write_dropped(None)  # a unit test with no run directory is still fine

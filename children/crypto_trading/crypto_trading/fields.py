@@ -20,7 +20,7 @@ Import cost: stdlib only.
 __all__ = [
     "ANCHOR_KNOWN_MS", "ANCHOR_MS", "ANCHOR_VALUE", "BASIS", "BASIS_AGE_MS", "BASIS_MISSING",
     "CAP", "CANDLE_AGE_MS", "CANDLE_OPEN_INTEREST", "CANDLE_PRICE", "CANDLE_VOLUME",
-    "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
+    "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "EXEC_MS", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
     "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
@@ -43,7 +43,10 @@ STRIKE_KNOWN_MS = "strike_known_ms"
 LABEL = "label"
 
 LEAD = "lead_minutes"
+#: The INFORMATION instant I of a decision row (spot and quote are read as of it); the trade can only fill at
+#: ``exec_ms = I + exec_lag_s``, and the fair-value horizon ``tau_s`` runs from there to the close.
 DECISION_MS = "decision_ms"
+EXEC_MS = "exec_ms"
 TAU_S = "tau_s"
 
 #: A Kalshi candle's END instant in epoch ms (the venue sends epoch seconds).

@@ -58,3 +58,8 @@ def test_params_are_validated():
         StrikeAnchors("anchors", {})
     with pytest.raises(Exception, match="surprise"):
         StrikeAnchors("anchors", {"anchor_series": ["KXBTC15M"], "surprise": 1})
+
+
+def test_the_anchor_value_is_the_floor_strike_even_when_a_cap_is_also_present():
+    row = {**market(floor=60000.0), "cap_strike": 61000.0}
+    assert run([row])["records"][0]["anchor_value"] == 60000.0

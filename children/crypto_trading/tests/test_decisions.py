@@ -14,8 +14,11 @@ def market(ticker="T1", close=CLOSE, opened=OPEN, label=1, lag_ms=30_000):
             "open_ms": opened, "close_ms": close, "label": label, "strike_known_ms": opened + lag_ms}
 
 
-def run(rows, leads=(2, 5, 10)):
-    node = DecisionRows("decisions", {"leads_minutes": list(leads)})
+LAG_S = 5  # the execution lag in these tests
+
+
+def run(rows, leads=(2, 5, 10), exec_lag_s=LAG_S):
+    node = DecisionRows("decisions", {"leads_minutes": list(leads), "exec_lag_s": exec_lag_s})
     return node, node.run(None, {"records": rows})
 
 
@@ -25,7 +28,8 @@ def test_one_row_per_market_and_lead_with_the_decision_instant_and_label():
     assert [r["lead_minutes"] for r in rows] == [2, 5, 10]
     assert [r["decision_ms"] for r in rows] == [CLOSE - 2 * 60_000, CLOSE - 5 * 60_000,
                                                 CLOSE - 10 * 60_000]
-    assert [r["tau_s"] for r in rows] == [120.0, 300.0, 600.0]
+    assert [r["exec_ms"] for r in rows] == [r["decision_ms"] + 5_000 for r in rows]
+    assert [r["tau_s"] for r in rows] == [115.0, 295.0, 595.0], "the horizon starts at the EXECUTION instant"
     assert all(r["label"] == 1 and r["ticker"] == "T1" for r in rows)
     assert rows[0]["floor_strike"] == 60000.0, "every market field rides along"
 
@@ -35,7 +39,7 @@ def test_the_leads_are_a_param_not_a_list_in_the_code():
     assert [r["lead_minutes"] for r in out["records"]] == [1, 14]
     _, out = run([market()], leads=[0.5])
     assert out["records"][0]["decision_ms"] == CLOSE - 30_000
-    assert out["records"][0]["tau_s"] == 30.0
+    assert out["records"][0]["tau_s"] == 25.0
 
 
 def test_a_lead_longer_than_the_market_was_open_is_excluded_not_clamped():
@@ -67,17 +71,37 @@ def test_rows_are_ordered_by_market_then_lead_and_inputs_are_not_mutated():
         ("T1", 2), ("T1", 5), ("T1", 10), ("T2", 2), ("T2", 5), ("T2", 10)]
 
 
+def test_the_execution_lag_is_a_param_and_moves_the_trade_not_the_information_instant():
+    _, out = run([market()], leads=[5], exec_lag_s=20)
+    row = out["records"][0]
+    assert row["decision_ms"] == CLOSE - 300_000 and row["exec_ms"] == row["decision_ms"] + 20_000
+    assert row["tau_s"] == 280.0
+
+
+def test_an_execution_at_or_after_the_close_is_excluded_by_name():
+    _, out = run([market()], leads=[1], exec_lag_s=60)
+    assert out["records"] == [] and out["excluded"][0]["reason"] == "exec_not_before_close"
+
+
 @pytest.mark.parametrize("leads", [[], [0], [-1], [2, 2], ["5"], [float("nan")], [True], 5])
 def test_bad_leads_are_refused_at_construction(leads):
     with pytest.raises(Exception, match="leads_minutes"):
-        DecisionRows("decisions", {"leads_minutes": leads})
+        DecisionRows("decisions", {"leads_minutes": leads, "exec_lag_s": 5})
+
+
+@pytest.mark.parametrize("lag", [0, -1, "5", None, True, float("nan")])
+def test_a_zero_or_bad_execution_lag_is_refused_because_a_fill_cannot_precede_its_information(lag):
+    with pytest.raises(Exception, match="exec_lag_s"):
+        DecisionRows("decisions", {"leads_minutes": [2], "exec_lag_s": lag})
 
 
 def test_default_deny_and_required():
     with pytest.raises(Exception, match="surprise"):
-        DecisionRows("decisions", {"leads_minutes": [1], "surprise": 1})
+        DecisionRows("decisions", {"leads_minutes": [1], "exec_lag_s": 5, "surprise": 1})
     with pytest.raises(Exception, match="leads_minutes"):
-        DecisionRows("decisions", {})
+        DecisionRows("decisions", {"exec_lag_s": 5})
+    with pytest.raises(Exception, match="exec_lag_s"):
+        DecisionRows("decisions", {"leads_minutes": [1]})
 
 
 def test_the_decision_instant_is_strictly_before_the_close():

@@ -116,10 +116,12 @@ PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side. `AGENTS.md` mirrors 
 `configs/run-features-15m.json` is the one document: readers (`kalshi_rows`), decision rows, point-in-time
 features, fair values, fees, the kill test, then `records-write`. Rules that bind any edit:
 
-- **The leak rule is a contract.** A Binance bar is usable only if `close_time_ms < decision_ms`
-  (strictly; bars are labelled by START), BVOL and a Kalshi candle only strictly before it (the candle's
-  `end_period_ts` is the inclusive last second of its minute), a strike anchor only once known. `tests/test_spot_features.py` and `test_market_state.py` plant spikes at and after
-  the decision and a control just before it; keep both halves when you touch a reader or estimator.
+- **One information instant, then a trade after it.** `decision_ms` is I: spot = the Binance bar that closed
+  before I, quote = the candle that ended by I (the same minute), BVOL strictly before I, a strike anchor
+  once known. Fills happen at I + `exec_lag_s` (> 0, pinned) and `tau_s` runs from there. A quote older than
+  the spot fakes an edge: `tests/test_zero_edge.py` runs a zero-edge world through the real nodes and a stale
+  control that must fail. The spike-planting tests (`test_spot_features.py`, `test_market_state.py`) keep both
+  halves, spike and control: keep them when you touch a reader or estimator.
 - **Strikes are index dollars, Binance is not.** A 15-minute strike is the previous window's settlement
   value (the BRTI 60 s average), published after the open (`strike_known_lag_s`); Binance runs a few bp
   higher. `StrikeAnchors` + `SpotFeatures` measure the basis at each anchor (strictly before the decision,
@@ -138,7 +140,7 @@ features, fair values, fees, the kill test, then `records-write`. Rules that bin
   (`dskit.production.base.parse_utc_ms`, `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement.
 - **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
   cut on the market's close; the document reports `development` only, and reading `heldout` is a recorded
-  edit of `report_segments`.
+  edit of `report_segments`. Errors cluster on day blocks (`cluster_block_s`), per-event errors beside them.
 - Stage B nodes are referenced by import path, not registered, and are research-only (Binance CC BY-NC-SA).
   Nodes that read files themselves take `StreamManifests` as an input so the data is in the run identity.
   Commands: runbook stage B.
@@ -151,7 +153,7 @@ crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform)
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed;
                        #   stage B: fields, clock, payoffs, kalshi_rows,
-                       #   decisions, anchors, day_series, vol_estimators,
+                       #   decisions, anchors, ports, day_series, vol_estimators,
                        #   spot_features, market_state, fair_value, fees,
                        #   kill_test (see the section above)
 configs/               # asset-model / source-sample / suite-sample /

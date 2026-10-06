@@ -6,6 +6,7 @@ One tiny table is scored by hand (see ``ROWS``); the node must reproduce every n
 import json
 import math
 import os
+import random
 
 import pytest
 
@@ -42,6 +43,7 @@ PARAMS = {
                  "heldout": {"start": "1970-01-11T00:00:00Z"}},
     "by": ["lead_minutes"],
     "cluster_field": "event_ticker",
+    "cluster_block_s": 3600,
     "report_segments": ["development", "heldout"],
 }
 
@@ -180,7 +182,7 @@ def test_the_margin_is_a_param(tmp_path):
     assert tight["n_trades"] == 0 and tight["pnl_total"] == 0.0 and tight["hit_rate"] is None
 
 
-def test_the_cluster_robust_standard_error_is_dskits_with_the_small_sample_correction(tmp_path):
+def test_the_per_event_standard_error_is_dskits_with_the_small_sample_correction(tmp_path):
     a = row("A", 1, 0.40, 0.70, 0.42, 0.38, "x", decision=HELD)
     b = row("B", 0, 0.60, 0.45, 0.62, 0.58, "x", decision=HELD)
     d_a = (0.70 - 1) ** 2 - (0.40 - 1) ** 2
@@ -190,10 +192,44 @@ def test_the_cluster_robust_standard_error_is_dskits_with_the_small_sample_corre
     expected = math.sqrt(2 / 1 * ((d_a - mean) ** 2 + (d_b - mean) ** 2)) / 2
     separate = [a, {**b, "event_ticker": "y"}]
     cell = pick(score(tmp_path, rows=separate))
-    assert cell["brier_diff_se"] == pytest.approx(expected) and cell["n_clusters"] == 2
+    assert cell["brier_diff_se_event"] == pytest.approx(expected) and cell["n_event_clusters"] == 2
     # one cluster has no variance to estimate: the error is undefined, never zero
     cell = pick(score(tmp_path, rows=[a, b]))
-    assert cell["brier_diff_se"] is None and cell["n_clusters"] == 1 and cell["pnl_se"] is None
+    assert cell["brier_diff_se_event"] is None and cell["n_event_clusters"] == 1 and cell["pnl_se_event"] is None
+
+
+def test_the_block_standard_error_groups_markets_by_close_into_time_blocks(tmp_path):
+    hour = 3_600_000
+    rows = [row("A", 1, 0.40, 0.70, 0.42, 0.38, "ea", decision=HELD, close=CUT + 10_000),
+            row("B", 0, 0.60, 0.45, 0.62, 0.58, "eb", decision=HELD, close=CUT + 20_000),
+            row("C", 1, 0.40, 0.55, 0.42, 0.38, "ec", decision=HELD, close=CUT + hour + 5_000)]
+    d = [(0.70 - 1) ** 2 - (0.40 - 1) ** 2, 0.45**2 - 0.60**2, (0.55 - 1) ** 2 - (0.40 - 1) ** 2]
+    theta = sum(d) / 3
+    totals = [(d[0] - theta) + (d[1] - theta), d[2] - theta]  # u_g = T_g - theta * m_g per hour block
+    expected = math.sqrt(2 / 1 * sum(u * u for u in totals)) / 3
+    cell = pick(score(tmp_path, rows=rows, cluster_block_s=3600))
+    assert cell["n_clusters"] == 2 and cell["n_event_clusters"] == 3
+    assert cell["brier_diff_se"] == pytest.approx(expected), "the primary error clusters on the block"
+    one_block = pick(score(tmp_path, rows=rows, cluster_block_s=86_400))
+    assert one_block["brier_diff_se"] is None and one_block["n_clusters"] == 1
+
+
+def test_a_persistent_regime_makes_the_block_error_materially_larger_than_the_per_event_error(tmp_path):
+    """Vol regimes persist: neighbouring markets share one, so per-event clustering understates the error (about 2x)."""
+    rng = random.Random(11)
+    rows = []
+    for day in range(40):
+        p_yes = min(max(0.5 + rng.gauss(0, 0.2), 0.05), 0.95)  # the day's regime: how often the market resolves YES
+        for k in range(96):
+            i = day * 96 + k
+            close = i * 900_000 + 450_000
+            label = 1 if rng.random() < p_yes else 0
+            rows.append(row(f"m{i}", label, 0.5, 0.7, 0.52, 0.48, f"e{i}", decision=close - 300_000, close=close))
+    out = score(tmp_path, rows=rows, segments={"all": {"start": "1970-01-01T00:00:00Z"}}, report_segments=["all"],
+                cluster_block_s=86_400, by=[])
+    cell = pick(out, segment="all")
+    assert cell["n_clusters"] == 40 and cell["n_event_clusters"] == 3840
+    assert cell["brier_diff_se"] > 1.5 * cell["brier_diff_se_event"], (cell["brier_diff_se"], cell["brier_diff_se_event"])
 
 
 def test_a_row_with_no_cluster_is_counted_and_not_scored_as_one_giant_cluster(tmp_path):
@@ -219,7 +255,7 @@ def test_params_are_validated(tmp_path):
         with pytest.raises(Exception, match=knob):
             KillTestScore("kill", {k: v for k, v in PARAMS.items() if k != knob})
     bad = {"mid_edges": [0.5, 0.2], "margin": -0.1, "fair_fields": [], "segments": {},
-           "by": "lead_minutes", "cluster_field": ""}
+           "by": "lead_minutes", "cluster_field": "", "cluster_block_s": 0}
     for knob, value in bad.items():
         with pytest.raises(Exception, match=knob):
             KillTestScore("kill", {**PARAMS, knob: value})
@@ -239,3 +275,14 @@ def test_calibration_in_the_large_is_reported_per_lead(tmp_path):
     assert "Calibration in the large" in text and "lead_minutes=5" in text
     line = [ln for ln in text.splitlines() if ln.startswith("| fair | heldout | lead_minutes=5")][0]
     assert f"{r['mean_fair'] - r['base_rate']:+.4f}" in line, "mean(fair) minus the base rate, signed"
+
+
+def test_a_market_closing_exactly_at_the_cut_is_held_out_and_one_millisecond_earlier_is_not(tmp_path):
+    # start is inclusive and end is exclusive: a 15-minute market closing at 00:00:00.000Z on the cut day
+    # belongs to the segment that STARTS there, so the two segments partition time with no gap and no overlap
+    at_cut = row("X", 1, 0.40, 0.70, 0.42, 0.38, "ex", decision=CUT - 300_000, close=CUT)
+    before = row("Y", 1, 0.40, 0.70, 0.42, 0.38, "ey", decision=CUT - 300_001, close=CUT - 1)
+    out = score(tmp_path, rows=[at_cut, before])
+    assert pick(out, segment="heldout")["n"] == 1 and pick(out, segment="development")["n"] == 1
+    held = [r for r in out["scores"] if r["segment"] == "heldout"][0]
+    assert held["brier_fair"] == pytest.approx((0.70 - 1) ** 2), "the held-out row is the one closing AT the cut"

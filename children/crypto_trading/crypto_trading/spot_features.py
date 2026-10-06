@@ -47,13 +47,14 @@ Import cost: stdlib + dskit; numpy and pyarrow only when ``run`` computes.
 
 import math
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
 from .day_series import ParquetDaySeries, prior_index, stream_problems, tape_name
 from .payoffs import payoff
 from .vol_estimators import Bars, build_estimators
+from .ports import ListPortsNode
 
 __all__ = ["SpotFeatures"]
 
@@ -73,7 +74,7 @@ def _cell(value):
     return None if math.isnan(value) else value
 
 
-class SpotFeatures(Node):
+class SpotFeatures(ListPortsNode):
     """Add point-in-time spot, volatility and BVOL columns to decision rows (role ``transform``).
 
     Inputs: ``records`` (decision rows with ``series``, ``decision_ms``, ``payoff`` and the
@@ -119,6 +120,7 @@ class SpotFeatures(Node):
 
     role = "transform"
     outputs = ("records", "provenance")
+    LIST_PORTS = ("records", "anchors")
     _PARAMS = ("root", "assets", "columns", "day_relpath_template", "bar_ms", "estimators",
                "max_spot_age_ms", "max_bvol_age_ms", "max_basis_age_ms", "bvol_scale", "seconds_per_year")
 
@@ -210,11 +212,7 @@ class SpotFeatures(Node):
         list of str
             One problem per bad port.
         """
-        problems = []
-        if not isinstance(inputs.get("records"), list):
-            problems.append(f"records must be a list of decision rows, got {type(inputs.get('records')).__name__}")
-        if not isinstance(inputs.get("anchors"), list):
-            problems.append(f"anchors must be a list of StrikeAnchors rows, got {type(inputs.get('anchors')).__name__}")
+        problems = super().validate_inputs(inputs)
         if not isinstance(inputs.get("manifests"), dict):
             problems.append(f"manifests must be a StreamManifests output, got {type(inputs.get('manifests')).__name__}")
         return problems
@@ -355,8 +353,8 @@ class SpotFeatures(Node):
 
         Parameters
         ----------
-        ctx : NodeContext
-            Unused.
+        ctx : NodeContext or None
+            The run frame; its run directory receives ``provenance.json`` (the run record holds only shapes).
         inputs : dict
             ``records``, ``manifests`` and ``anchors``.
 
@@ -396,4 +394,6 @@ class SpotFeatures(Node):
                                  "basis_missing": int(np.isnan(kline[f.BASIS]).sum()),
                                  "bvol_missing": int(np.isnan(bvol["value"]).sum())}
         self.log.info("features for %d row(s) over %d asset(s)", len(rows), len(positions))
+        if ctx is not None:
+            self.write_artifact(ctx, "provenance.json", provenance)
         return {"records": out, "provenance": provenance}

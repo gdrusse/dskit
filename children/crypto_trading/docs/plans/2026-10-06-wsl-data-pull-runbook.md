@@ -191,12 +191,12 @@ python -m pytest tests -q                               # offline, must pass
 mkdir -p ~/data/crypto_trading/features-15m             # where the run writes the table
 ```
 
-The document's store root is `~/data/crypto_trading/ob` (every reader names it, `~` expands). If
-your `$OB` differs, change all of them at once and commit nothing else:
+The document's store root is `/home/russell/data/crypto_trading/ob`, the same placeholder as `$OB`
+in section 0 (every reader names it; the readers do not expand `~`). If your `$OB` differs, rewrite all
+of them with this one command and commit nothing else (a test runs exactly this line):
 
 ```bash
-grep -c '"root"' configs/run-features-15m.json          # how many nodes carry a root
-sed -i "s#~/data/crypto_trading/ob#$OB#g" configs/run-features-15m.json
+sed -i "s#/home/russell/data/crypto_trading/ob#$OB#g" configs/run-features-15m.json
 ```
 
 ## B2. Check before the run
@@ -234,11 +234,12 @@ end. Open:
   document reports the `development` segment ONLY (`kill_test.params.report_segments`): this run does
   not print the held-out numbers. Read the calibration table first: mean fair value minus the base rate
   per lead must be near zero before any edge means anything;
-- `result.json` for each node's state. The `spot` node's `provenance` counts missing spot and BVOL
-  readings and missing basis (no usable strike anchor) per asset; the `markets` node's `excluded` and
-  `census` name every market dropped (`no_strike` is the TBD target-price rows, then `not_settled`,
-  `no_result`, and so on); the `decisions` node's `excluded` lists leads at or above the market's
-  duration minus the strike lag (`strike_not_known`).
+- what was dropped and why, kept as run-directory artifacts (`result.json` holds only shapes):
+  `artifacts/markets/excluded.json` and `census.json` (every market dropped by ticker and reason:
+  `no_strike` is the TBD target-price rows, then `not_settled`, `no_result`, and so on),
+  `artifacts/decisions/excluded.json` (a lead before the open, or not strictly after the strike is
+  known, or filled after the close) and `artifacts/spot/provenance.json` (per asset: the manifests
+  read and the counts of missing spot, BVOL and basis, i.e. no usable strike anchor).
 
 A refusal "the store moved since the manifest was fingerprinted" means an acquire ran between plan
 and run: run again. "no longer matches the manifest sha256" means a stored file changed on disk:
@@ -269,10 +270,13 @@ An unchanged table makes no new snapshot. A later run reads it with `Observation
   `kill_test.params.report_segments`, commit that edit (it changes the document hash, so the read is
   recorded), run once and read it. Never move the cut or re-tune afterwards. Three fair values are scored
   at once, so one winner of three is weaker evidence than it looks.
-- **Leak rules** (enforced and tested): a Binance bar counts only after its `close_time_ms`; BVOL and a
-  Kalshi candle only strictly before the decision (a candle's `end_period_ts` is the inclusive last second
-  of its minute); a strike anchor only once known (open plus the lag). An old or absent reading is `None`
-  with a `*_missing` flag, never a carried value.
+- **Timing** (enforced and tested). `decision_ms` is the information instant I: the spot is the Binance bar
+  that closed before I, the quote is the candle that ended by I (the same minute), BVOL is strictly before
+  I, and a strike anchor counts once known (open plus the lag). An order fills only at I plus `exec_lag_s`
+  and the fair-value horizon runs from there. A quote a minute older than the spot made a zero-edge world
+  look like a 6-standard-error win (`tests/test_zero_edge.py` pins that it no longer does). An old or absent
+  reading is `None` with a `*_missing` flag, never a carried value. The fill is priced at the I quote, so
+  latency slippage is NOT modelled: a profit that survives here is an upper bound.
 - **Units.** Strikes are settlement-index (BRTI) dollars; Binance is on average a few bp higher. The
   `anchors` and `spot` nodes measure the basis at each market's open (the strike IS the index's average at
   that instant) and price against `spot_brti`. A large `basis_missing` count in the `spot` provenance means
@@ -280,8 +284,22 @@ An unchanged table makes no new snapshot. A later run reads it with `Observation
 - **Other proxies and caveats.** The basis comes from a 1-minute bar's mean, a proxy for a 60-second
   average, so it is noisy; BVOL is a 30-day implied vol used at a 15-minute horizon; the fee schedule is
   today's applied to history (`fee_schedule_retrieved` says which); the label is each strike's yes/no
-  result, not the realised value. A negative held-out Brier difference with a positive after-fee profit,
-  each by a few cluster-robust standard errors, is the only reading that survives; anything else means stop.
+  result, not the realised value. The standard errors cluster on 1-day blocks of close (per-event errors,
+  also reported, are about half as large because volatility regimes persist). A negative held-out Brier
+  difference with a positive after-fee profit, each by a few block-clustered standard errors, is the only
+  reading that survives; anything else means stop.
 
 Not covered yet: the realised settlement value and every hourly series (ADR-0236), history before
 2026-08-07 (ADR-0236), Coinbase, Deribit and Kraken (ADR-0237).
+
+## Known issues (not fixed; none blocks the first run)
+
+- Fills are priced at the quote of the information instant, so adverse selection during the execution lag
+  is not modelled (see B5).
+- The basis uses the mean of a 1-minute bar's open and close as a proxy for a 60-second average, so each
+  basis is noisy; the strike anchors only exist for the 15-minute series.
+- `ObservationRows` and `scan_stream` do not expand `~` in `root` (the reason the document carries an
+  absolute path): TODO row, a dskit gap.
+- BVOL cadence (about one row a second) and the 365-day year are unverified; the fee schedule is today's.
+- The held-out cut and margin are chosen, not derived; the fair value is not fitted and ignores the
+  Jensen gap of the settlement average.

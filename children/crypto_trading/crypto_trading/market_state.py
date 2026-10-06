@@ -1,12 +1,17 @@
 """The market's own quote at the decision instant, from Kalshi 1-minute candles that had ended.
 
-A candle summarises the minute that ENDS at its ``end_ms``, and the venue's ``end_period_ts`` is the
-INCLUSIVE end of that minute: its last second is the instant ``end_ms`` itself. So a candle is usable at
-a decision only when ``end_ms < decision_ms`` strictly; one ending AT the decision still contains the
-decision's own second. A candle that ends at or after it is never read (and after the close its quotes
-are the post-settlement 0 or 1); the test plants an extreme quote at and after the decision. The last
-usable candle is the state, unless it is older than ``max_candle_age_ms``: then the state is
-missing, never carried forward.
+A candle summarises the minute that ENDS at its ``end_ms`` (the venue's ``end_period_ts`` is the
+inclusive last second of that minute) and its close is the last quote in it. The decision row's
+``decision_ms`` is the INFORMATION instant ``I``: the spot is the Binance bar that closed before ``I`` (it
+covers the minute before ``I``), and the matching quote is the candle that ended AT or before ``I`` (the same
+minute). Reading the candle that ended a minute earlier would compare a fair value computed from the price
+at ``I`` with a quote a minute older: a market that had not yet seen the move, so the fair value would
+appear to beat it (a simulated zero-edge market showed a Brier gain of 0.013, about 6 standard errors, and
+a positive take profit). An order placed on that state fills only at ``I`` plus the declared lag (see
+:class:`~crypto_trading.decisions.DecisionRows`), so a candle that ends after ``I`` (and so anything near
+the execution instant, and above all after the close, where quotes are the post-settlement 0 or 1) is
+never read; the test plants an extreme quote there. The last usable candle is the state, unless it is
+older than ``max_candle_age_ms``: then the state is missing, never carried forward.
 
 Nothing is imputed. A side the candle does not carry is None, ``quote_missing`` says so, and
 ``mid`` and ``spread`` exist only when both sides do. ``two_sided`` is the scorer's gate: both
@@ -16,17 +21,18 @@ floor or an ask at the ceiling is an empty side, not a price.
 Import cost: stdlib + dskit.
 """
 
-from bisect import bisect_left
+from bisect import bisect_right
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
+from .ports import ListPortsNode
 
 __all__ = ["MarketState"]
 
 
-class MarketState(Node):
+class MarketState(ListPortsNode):
     """Add the YES quote, mid, spread, volume and open interest at each decision (role ``transform``).
 
     Inputs: ``records`` (rows with ``ticker`` and ``decision_ms``) and ``candles`` (the
@@ -54,6 +60,7 @@ class MarketState(Node):
 
     role = "transform"
     outputs = ("records",)
+    LIST_PORTS = ('records', 'candles')
     _PARAMS = ("max_candle_age_ms", "quote_floor", "quote_ceiling")
 
     @classmethod
@@ -101,22 +108,6 @@ class MarketState(Node):
         """
         return "pure"
 
-    def validate_inputs(self, inputs):
-        """Refuse a ``records`` or ``candles`` port that is not a list.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired ports.
-
-        Returns
-        -------
-        list of str
-            One problem per port that is not a list.
-        """
-        return [f"{port} must be a list of rows, got {type(inputs.get(port)).__name__}"
-                for port in ("records", "candles") if not isinstance(inputs.get(port), list)]
-
     @staticmethod
     def _by_ticker(candles):
         """Group candles by ticker, each group ascending by end instant."""
@@ -128,9 +119,9 @@ class MarketState(Node):
                 for sorted_group in [sorted(group, key=lambda c: c[f.END_MS])]}
 
     def _last_candle(self, row, groups):
-        """Return the last candle of the row's market that ended strictly before the decision and is fresh enough, or None."""
+        """Return the last candle of the row's market that ended by the information instant and is fresh enough, or None."""
         ends, candles = groups.get(row[f.TICKER], ((), ()))
-        index = bisect_left(ends, row[f.DECISION_MS]) - 1
+        index = bisect_right(ends, row[f.DECISION_MS]) - 1
         if index < 0 or row[f.DECISION_MS] - ends[index] > self.params["max_candle_age_ms"]:
             return None
         return candles[index]

@@ -33,11 +33,12 @@ Import cost: stdlib + dskit.
 import math
 from statistics import NormalDist
 
-from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.node import reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 from .fields import CAP, FLOOR, PAYOFF, TAU_S
 from .payoffs import payoff
+from .ports import ListPortsNode
 
 __all__ = ["AveragedLognormal", "FairValue", "STATUS_OK"]
 
@@ -104,7 +105,7 @@ class AveragedLognormal:
         return _NORMAL.cdf(d)
 
 
-class FairValue(Node):
+class FairValue(ListPortsNode):
     """Add the baseline fair value of YES to each decision row (role ``transform``).
 
     Inputs: ``records`` with the spot column, ``tau_s``, ``payoff``, the strikes and the volatility
@@ -180,23 +181,6 @@ class FairValue(Node):
             ``"pure"``.
         """
         return "pure"
-
-    def validate_inputs(self, inputs):
-        """Refuse a ``records`` port that is not a list of rows.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired ports.
-
-        Returns
-        -------
-        list of str
-            One problem when ``records`` is not a list.
-        """
-        if not isinstance(inputs.get("records"), list):
-            return [f"records must be a list of rows, got {type(inputs.get('records')).__name__}"]
-        return []
 
     def run(self, ctx, inputs):
         """Price every row; rows that cannot be priced say why.

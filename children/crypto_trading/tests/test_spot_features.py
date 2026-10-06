@@ -454,3 +454,19 @@ def test_the_basis_params_are_required_and_the_open_column_is_declared(tmp_path)
     klines = {k: v for k, v in good["columns"]["klines"].items() if k != "open"}
     with pytest.raises(Exception, match="open"):
         SpotFeatures("spot", {**good, "columns": {**good["columns"], "klines": klines}})
+
+
+def test_the_spot_and_basis_age_caps_are_inclusive_to_the_millisecond(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch, btc=walk(START, 200, seed=1))  # the tape's last bar closes at 01:19:59.999
+    last_close = START + 200 * BAR - 1
+    cap = params(store.path)["max_spot_age_ms"]
+    at_cap = one(store, anchors=[], decision=last_close + cap)
+    assert at_cap["spot"] is not None and at_cap["spot_age_ms"] == cap
+    assert one(store, anchors=[], decision=last_close + cap + 1)["spot"] is None, "one millisecond over is stale"
+    # the basis cap: an anchor known exactly max_basis_age_ms before the decision is usable, one ms older is not
+    decision, basis_cap = DECISION, params(store.path)["max_basis_age_ms"]
+    store = world(tmp_path / "second", monkeypatch)
+    edge = {**anchor(store, "BTC", decision - 1_500_000, basis=0.9996), "known_ms": decision - basis_cap}
+    older = {**edge, "known_ms": decision - basis_cap - 1}
+    assert one(store, anchors=[edge])["basis"] == pytest.approx(0.9996)
+    assert one(store, anchors=[older])["basis_missing"] is True

@@ -18,14 +18,15 @@ nothing from the market's own outcome.
 Import cost: stdlib + dskit.
 """
 
-from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.node import reject_unknown_params
 
 from . import fields as f
+from .ports import ListPortsNode
 
 __all__ = ["StrikeAnchors"]
 
 
-class StrikeAnchors(Node):
+class StrikeAnchors(ListPortsNode):
     """Turn the up/down series' strikes into anchor rows (role ``transform``).
 
     Input ``records``: :class:`~crypto_trading.kalshi_rows.MarketRows` rows. Output ``records``: one
@@ -89,23 +90,6 @@ class StrikeAnchors(Node):
             ``"pure"``.
         """
         return "pure"
-
-    def validate_inputs(self, inputs):
-        """Refuse a ``records`` port that is not a list.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired ports.
-
-        Returns
-        -------
-        list of str
-            One problem when ``records`` is not a list.
-        """
-        if not isinstance(inputs.get("records"), list):
-            return [f"records must be a list of market rows, got {type(inputs.get('records')).__name__}"]
-        return []
 
     def run(self, ctx, inputs):
         """Emit the anchors.

@@ -35,20 +35,21 @@ minutes before the close). Hourly series plug in by config once ADR-0236 supplie
 | Node (`crypto_trading.<module>:<Class>`) | Job |
 |---|---|
 | `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` pack's streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants; unsettled and TBD-strike markets dropped by name; candle end seconds to ms |
-| `decisions:DecisionRows` | market x lead: decision instant = close - lead, only strictly after the strike is known (open + lag) |
+| `decisions:DecisionRows` | market x lead: information instant I = close - lead (strictly after the strike is known), fill at I + `exec_lag_s` |
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
 | `day_series:StreamManifests` | puts the Binance streams into the run identity (interim, ADR-0240) |
 | `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol and BVOL, all strictly before the decision |
-| `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the last candle that ended strictly before the decision |
+| `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
 | `fair_value:FairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance |
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream, rounded per order |
-| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close), calibration in the large, cluster-robust errors, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
+| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
 The table is written as JSON lines and published back as source `features-15m` through
 `configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
 Interim child classes standing in for PROPOSED dskit ADRs: `day_series.py` (0240),
 `vol_estimators.py` (0241), `fees.py` (0242), `fair_value.py` + `payoffs.py` + `kill_test.py` (0243).
-Tests: `tests/synthetic.py` builds the offline stores.
+Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
+Known issues and what is not modelled: the runbook's last section.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -193,6 +194,7 @@ crypto_trading/
 │   ├── __init__.py        # curated re-exports
 │   ├── binance_vision.py  # httpblobs transform: Binance daily zip-CSV to parquet
 │   ├── fields.py          # stage B: the row field names every node shares, once
+│   ├── ports.py           # stage B: ListPortsNode, the one list-port check
 │   ├── clock.py           # stage B: ISO instant to epoch ms, the one conversion
 │   ├── payoffs.py         # stage B: above / below / between payoff geometries (interim, ADR-0243)
 │   ├── kalshi_rows.py     # stage B: MarketRows, CandleRows, FeeRows (ObservationRows subclasses)
@@ -263,6 +265,8 @@ crypto_trading/
     ├── test_market_state.py # candle state and the no-peeking rule
     ├── test_spot_features.py # strict-prior leak tests with a control
     ├── test_vol_estimators.py # estimators by hand; causality by prefix
+    ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
+    ├── test_ports_and_markers.py # one list-port owner; INTERIM markers name real ADRs
     ├── test_configs.py    # every config validates against its engine; pins
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
     ├── test_kalshi_crypto.py # kalshi sources + suites against a scripted venue

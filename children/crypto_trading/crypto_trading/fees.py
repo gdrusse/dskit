@@ -27,10 +27,11 @@ Import cost: stdlib + dskit.
 import math
 from abc import ABC, abstractmethod
 
-from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
+from .ports import ListPortsNode
 
 __all__ = ["CENT_ROUNDING_DECIMALS", "FEE_MODELS", "FeeColumns", "FeeModel", "QuadraticFee"]
 
@@ -108,7 +109,7 @@ class QuadraticFee(FeeModel):
 FEE_MODELS = {"quadratic": QuadraticFee()}
 
 
-class FeeColumns(Node):
+class FeeColumns(ListPortsNode):
     """Add taker-fee columns to each row from the ``fee_schedules`` stream (role ``transform``).
 
     Inputs: ``records`` (rows with ``series``, ``yes_bid``, ``yes_ask``) and ``schedules``
@@ -136,6 +137,7 @@ class FeeColumns(Node):
 
     role = "transform"
     outputs = ("records",)
+    LIST_PORTS = ('records', 'schedules')
     _PARAMS = ("base_rate_by_type", "contracts")
 
     @classmethod
@@ -186,22 +188,6 @@ class FeeColumns(Node):
             ``"pure"``.
         """
         return "pure"
-
-    def validate_inputs(self, inputs):
-        """Refuse a ``records`` or ``schedules`` port that is not a list.
-
-        Parameters
-        ----------
-        inputs : dict
-            The wired ports.
-
-        Returns
-        -------
-        list of str
-            One problem per port that is not a list.
-        """
-        return [f"{port} must be a list of rows, got {type(inputs.get(port)).__name__}"
-                for port in ("records", "schedules") if not isinstance(inputs.get(port), list)]
 
     def run(self, ctx, inputs):
         """Add the fee columns to every row.

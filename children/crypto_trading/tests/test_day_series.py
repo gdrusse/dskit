@@ -157,3 +157,12 @@ def test_the_manifest_node_refuses_a_missing_stream_and_unknown_params(tmp_path,
         node.run(None, {})
     with pytest.raises(Exception, match="surprise"):
         StreamManifests("m", {"root": "r", "streams": {}, "surprise": 1})
+
+
+def test_the_age_cap_is_inclusive_to_the_millisecond(tmp_path, monkeypatch):
+    t0 = ms(utc(2026, 9, 2, 1, 0))
+    store = bvol_store(tmp_path, monkeypatch, [(t0 - 60_000, 50.0)])
+    at_cap = bvol_series(store).prior(np.array([t0]), max_age_ms=60_000)
+    assert at_cap["index_value"][0] == 50.0 and at_cap["age_ms"][0] == 60_000
+    one_over = bvol_series(store).prior(np.array([t0 + 1]), max_age_ms=60_000)
+    assert np.isnan(one_over["index_value"][0]), "a row one millisecond past the cap is missing"
