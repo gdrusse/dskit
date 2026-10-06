@@ -18,8 +18,6 @@ Wiring is by import path; the pack registers nothing.
 
 from __future__ import annotations
 
-import hashlib
-
 from dskit.pipeline.distribution_models import ScaleModelLocationScale
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import check_int_param
@@ -207,15 +205,43 @@ class LightGBMScaleLocationScale(ScaleModelLocationScale):
 
         return float(self._booster(model["booster"]).predict(np.asarray([x], dtype=float))[0])
 
+    def predict_scale_many(self, model, xs):
+        """Predict many rows in ONE booster call.
+
+        Trees score each row independently, so the batch answers exactly
+        what :meth:`predict_scale` answers row by row.
+
+        Parameters
+        ----------
+        model : dict
+            ``{"booster": <text model>}``.
+        xs : list of list of float
+            Rows of log features.
+
+        Returns
+        -------
+        list of float
+            One predicted log volatility per row of ``xs``.
+        """
+        import numpy as np
+
+        if type(self).predict_scale is not LightGBMScaleLocationScale.predict_scale:
+            # A subclass that reshapes the one-row hook must still see every row.
+            return super().predict_scale_many(model, xs)
+        if not xs:
+            return []
+        predicted = self._booster(model["booster"]).predict(np.asarray(xs, dtype=float))
+        return [float(value) for value in predicted]
+
     def _booster(self, text):
-        """Restore a booster from its text once per distinct model."""
+        """Restore a booster from its text once per distinct model (keyed by the text)."""
         import lightgbm
 
         cache = self.__dict__.setdefault("_boosters", {})
-        key = hashlib.sha256(text.encode()).hexdigest()
-        if key not in cache:
-            cache[key] = lightgbm.Booster(model_str=text)
-        return cache[key]
+        booster = cache.get(text)
+        if booster is None:
+            booster = cache[text] = lightgbm.Booster(model_str=text)
+        return booster
 
 
 #: Deliberately EMPTY — wired by import path, like the numpy pack.

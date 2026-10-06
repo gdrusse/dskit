@@ -204,6 +204,11 @@ def number_ok(value):
         explicitly — it is an ``int`` in Python, so without the check
         ``True`` would pass as the number 1.
     """
+    # Hot path: an exact float/int answers the same as the general rule
+    # (type(True) is bool, so a flag never takes it); subclasses fall through.
+    cls = type(value)
+    if cls is float or cls is int:
+        return math.isfinite(value)
     return (
         not isinstance(value, bool)
         and isinstance(value, (int, float))

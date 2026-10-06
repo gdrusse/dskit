@@ -946,3 +946,38 @@ def test_structure_max_loss_finds_a_worst_point_at_the_lowest_strike():
 def test_structure_max_loss_refuses_what_it_cannot_value(args):
     with pytest.raises(ValueError):
         contracts.structure_max_loss(*args)
+
+
+# -- the structure_payoff float fast path (a speedup, pinned to the owner's generator) -----------
+
+def _generator_payoff(legs, level, strikes):
+    """The leg-sum as written before the fast path: the reference it must equal."""
+    return sum(sign * contracts.leg_intrinsic(right, k, level)
+               for (right, sign), k in zip(legs, strikes, strict=True))
+
+
+def test_the_float_fast_path_is_bit_identical_to_the_generator():
+    rng = random.Random(11)
+    specials = [0.0, -0.0, math.nan, math.inf, -math.inf]
+    legs_by_name = list(contracts.STRUCTURES.values()) + [
+        contracts.LONG_STRADDLE_LEGS, contracts.LONG_CALL_SPREAD_LEGS,
+        contracts.LONG_PUT_SPREAD_LEGS]
+    for _ in range(20000):
+        legs = rng.choice(legs_by_name)
+        strikes = tuple(rng.choice([rng.uniform(50, 150), float(rng.randint(50, 150)),
+                                    *specials]) for _ in legs)
+        level = rng.choice([rng.uniform(40, 160), rng.choice(strikes), *specials])
+        got, want = contracts.structure_payoff(legs, level, strikes), _generator_payoff(
+            legs, level, strikes)
+        assert repr(got) == repr(want) and type(got) is type(want), (legs, level, strikes)
+
+
+def test_non_float_inputs_keep_the_owners_path():
+    strikes = (Decimal("90"), Decimal("95"), Decimal("105"), Decimal("110"))
+    got = contracts.structure_payoff(contracts.CONDOR_LEGS, Decimal("93.5"), strikes)
+    assert got == Decimal("-1.5") and isinstance(got, Decimal)
+    mixed = (90, 95.0, 105.0, 110.0)
+    for level in (0, 93.0, 93):
+        got = contracts.structure_payoff(contracts.CONDOR_LEGS, level, mixed)
+        want = _generator_payoff(contracts.CONDOR_LEGS, level, mixed)
+        assert repr(got) == repr(want) and type(got) is type(want)

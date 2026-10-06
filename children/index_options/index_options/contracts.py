@@ -213,8 +213,35 @@ def structure_payoff(legs, level, strikes):
         structure_payoff(PUT_SPREAD_LEGS, 93.0, (90.0, 95.0))
         # -> -2.0
     """
+    terms = _float_terms(legs, level, strikes)
+    if terms is not None:
+        return sum(terms)
     return sum(sign * leg_intrinsic(right, k, level)
                for (right, sign), k in zip(legs, strikes, strict=True))
+
+
+def _float_terms(legs, level, strikes):
+    """Return :func:`structure_payoff`'s per-leg terms for an all-float input (the hot case), else ``None``."""
+    # Same rule as leg_intrinsic (the owner), inlined for speed: ``max(0.0, gap)`` is 0.0 unless gap > 0, so every term and the
+    # sum are bit-identical; anything else (Decimal, int, a length mismatch) takes the owner's path.
+    if (type(level) is not float or not isinstance(legs, (tuple, list))
+            or not isinstance(strikes, (tuple, list)) or len(legs) != len(strikes)):
+        return None
+    terms = []
+    for (right, sign), k in zip(legs, strikes):
+        if type(k) is not float:
+            return None
+        gap = k - level if right == "put" else level - k
+        terms.append(sign * (gap if gap > 0.0 else 0.0))
+    return terms
+
+
+def _payoff_total(legs, levels, strikes):
+    """Return ``sum(structure_payoff(legs, level, strikes) for level in levels)``, in that order."""
+    if (type(levels) is list and levels and all(type(level) is float for level in levels)
+            and _float_terms(legs, levels[0], strikes) is not None):
+        return sum([sum(_float_terms(legs, level, strikes)) for level in levels])
+    return sum(structure_payoff(legs, level, strikes) for level in levels)
 
 
 def structure_max_loss(legs, strikes, credit_usd, multiplier):
@@ -279,6 +306,8 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier):
 
 def _amount(value):
     """Say whether ``value`` is a finite Decimal or a finite non-bool number."""
+    if type(value) is float:        # the hot case: number_ok's answer without its isinstance chain
+        return math.isfinite(value)
     if isinstance(value, Decimal):
         return value.is_finite()
     return number_ok(value)

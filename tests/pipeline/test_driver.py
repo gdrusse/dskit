@@ -2066,6 +2066,19 @@ class TestRunAttestationNodeCompleted:
         assert RunAttestation(result.run_dir).node_completed("market") is False
 
 
+class TestOneRunWritesOneDocumentHash:
+    def test_every_record_carries_the_documents_own_hash(self, tmp_path, registry):
+        # The driver derives the hash once from its identity object; every
+        # file must still carry exactly ``document.hash``.
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert read_json(result.run_dir, "resolved.json")["document_hash"] == doc.hash
+        assert read_json(result.run_dir, "result.json")["document_hash"] == doc.hash
+        assert read_json(result.run_dir, "plan.json")["document_hash"] == doc.hash
+        with open(os.path.join(result.run_dir, "report.md"), encoding="utf-8") as fh:
+            assert f"- document hash: `{doc.hash[:16]}…`" in fh.read()
+
+
 class TestRunAttestationBindsDocumentIdentity:
     def test_a_clean_run_binds_its_own_document_hash(self, tmp_path, registry):
         doc = bdoc(tmp_path)

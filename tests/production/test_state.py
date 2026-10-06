@@ -1935,6 +1935,30 @@ def test_reverse_refuses_a_fill_realised_by_going_flat():
     assert book.net_qty("AAA") == Decimal("0")
 
 
+def test_duplicate_detection_tracks_the_live_log_through_reverse_and_flat():
+    # A fill id is a duplicate exactly while it sits in its instrument's
+    # live log: kept ids still refuse after a reverse, the reversed id
+    # (and a realised one, once the position went flat) applies again.
+    book = book_with(
+        fill_body(fill_id="f-1", qty="10", price="100"),
+        fill_body(fill_id="f-2", qty="10", price="120"),
+    )
+    book.reverse("f-2")
+    with pytest.raises(ProductionError, match="'f-1' is already applied to 'AAA'"):
+        book.apply(Fill.from_obj(fill_body(fill_id="f-1", qty="10", price="100")))
+    book.apply(Fill.from_obj(fill_body(fill_id="f-2", qty="10", price="120")))
+    assert book.net_qty("AAA") == Decimal("20")
+    with pytest.raises(ProductionError, match="'f-2' is already applied"):
+        book.apply(Fill.from_obj(fill_body(fill_id="f-2", qty="10", price="120")))
+    book.apply(Fill.from_obj(fill_body(fill_id="f-3", side="sell", qty="20", price="90")))
+    assert book.positions() == ()
+    book.apply(Fill.from_obj(fill_body(fill_id="f-1", qty="1", price="100")))
+    assert book.net_qty("AAA") == Decimal("1")
+    rebuilt = PositionBook.from_obj(book.to_obj())
+    with pytest.raises(ProductionError, match="'f-1' is already applied"):
+        rebuilt.apply(Fill.from_obj(fill_body(fill_id="f-1", qty="1", price="100")))
+
+
 def test_reverse_refuses_an_unknown_fill():
     book = book_with(fill_body(fill_id="f-1", qty="10", price="100"))
     with pytest.raises(ProductionError):

@@ -29,6 +29,7 @@ Import cost: stdlib + :mod:`dskit.assets`.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -130,6 +131,15 @@ def parse_utc(value):
     """
     if not isinstance(value, str) or not value:
         raise AssetError([f"expected an ISO date/datetime string, got {value!r}"])
+    return _parse_utc_str(value)
+
+
+# Pure parsing of an immutable str into an immutable datetime: safe to
+# memoize. Acquisition re-parses the same stamps per record; lru_cache
+# never caches a raise, so a bad spelling refuses afresh every call.
+@functools.lru_cache(maxsize=4096)
+def _parse_utc_str(value):
+    """Parse a non-empty ISO string into an aware UTC datetime (memoized)."""
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:

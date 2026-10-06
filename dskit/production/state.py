@@ -722,6 +722,9 @@ class PositionBook:
     def __init__(self):
         self._logs = {}
         self._held = {}
+        # instrument -> the fill_ids in its live log: the duplicate check in
+        # ``apply`` was a scan of the log, quadratic over a long position.
+        self._ids = {}
 
     def apply(self, fill):
         """Fold one fill into its instrument's position.
@@ -742,7 +745,7 @@ class PositionBook:
             problems.append(f"PositionBook.apply expects a Fill, got {fill!r}")
         elif fill.side not in _SIGNS:
             problems.append(f"a fill with side {fill.side!r} cannot move a position")
-        elif any(entry.fill_id == fill.fill_id for entry in self._logs.get(fill.instrument, ())):
+        elif fill.fill_id in self._ids.get(fill.instrument, ()):
             problems.append(f"fill {fill.fill_id!r} is already applied to {fill.instrument!r}")
         if problems:
             raise ProductionError(problems)
@@ -753,8 +756,10 @@ class PositionBook:
         qty, avg_cost = self._held.get(instrument, (_ZERO, Fraction(0)))
         qty, avg_cost = _step(qty, avg_cost, entry.signed_qty, entry.price)
         self._logs.setdefault(instrument, []).append(entry)
+        self._ids.setdefault(instrument, set()).add(entry.fill_id)
         if qty == 0:
             del self._logs[instrument]
+            del self._ids[instrument]
             self._held.pop(instrument, None)
         else:
             self._held[instrument] = (qty, avg_cost)
@@ -782,6 +787,7 @@ class PositionBook:
                 [f"fill {fill_id!r} is unknown or already realised — nothing to reverse"]
             )
         del self._logs[instrument]
+        del self._ids[instrument]
         self._held.pop(instrument, None)
         for entry in keep:
             self._push(instrument, entry)

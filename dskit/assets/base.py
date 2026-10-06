@@ -25,6 +25,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
+from itertools import repeat
 
 __all__ = [
     "AssetError",
@@ -110,7 +111,7 @@ def check_dict(errors, name, value):
     value : object
         The value to check.
     """
-    if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+    if not isinstance(value, dict) or not all(map(isinstance, value, repeat(str))):
         errors.append(f"{name} must be a dict with string keys, got {value!r}")
 
 

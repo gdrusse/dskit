@@ -410,6 +410,28 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
             The predicted log volatility.
         """
 
+    def predict_scale_many(self, model, xs):
+        """Predict many rows' log forward per-step volatility, in order.
+
+        The batch seam: the default asks :meth:`predict_scale` once per
+        row, so a member that only supplies the one-row hook is unchanged;
+        a member whose model predicts each row independently may answer
+        the whole list at once.
+
+        Parameters
+        ----------
+        model : dict
+            What :meth:`fit_scale` returned.
+        xs : list of list of float
+            Rows of log features.
+
+        Returns
+        -------
+        list of float
+            One predicted log volatility per row of ``xs``.
+        """
+        return [self.predict_scale(model, x) for x in xs]
+
     def log_features(self, row):
         """Return the row's log features, or ``None`` when any is not positive.
 
@@ -485,8 +507,9 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
             )
         model = self.fit_scale([p[1] for p in pairs], [p[2] for p in pairs])
         mult = params.get("scale_multiplier", DEFAULT_SCALE_MULTIPLIER)
-        z = [label / (math.exp(self.predict_scale(model, x)) * mult)
-             for _, x, _, label in pairs]
+        predictions = self.predict_scale_many(model, [x for _, x, _, _ in pairs])
+        z = [label / (math.exp(predicted) * mult)
+             for (_, _, _, label), predicted in zip(pairs, predictions)]
         dist = SampleDistribution(z)
         n = params.get("n_samples", DEFAULT_N_SAMPLES)
         return {"shape": [dist.quantile((k + 0.5) / n) for k in range(n)], "n_fit": len(z),
@@ -521,6 +544,54 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
         """
         predicted = self.predicted_vol(row, state["model"])
         return None if predicted is None else predicted / _number(row[self.params["scale_field"]])
+
+    def apply_state(self, state, rows, params):
+        """Attach draws, the standardized outcome and the divisor to each row.
+
+        The base's rows exactly, with the scale model asked once for every
+        row it forecasts (:meth:`predict_scale_many`) instead of once per
+        row. A member overriding :meth:`relative_scale` or
+        :meth:`predicted_vol` keeps the base's per-row path.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+        rows : list of dict
+            Any rows.
+        params : dict
+            This node's params.
+
+        Returns
+        -------
+        list of dict
+            One new row per input row.
+        """
+        cls = type(self)
+        if (cls.relative_scale is not ScaleModelLocationScale.relative_scale
+                or cls.predicted_vol is not ScaleModelLocationScale.predicted_vol):
+            return super().apply_state(state, rows, params)
+        samples_field = params.get("samples_field", DEFAULT_SAMPLES_FIELD)
+        outcome_field = params.get("outcome_field", DEFAULT_OUTCOME_FIELD)
+        scale_field = self.params["scale_field"]
+        scales, features = [], []
+        for row in rows:
+            scale = self.reference_scale(row)
+            scales.append(scale)
+            features.append(None if scale is None else self.log_features(row))
+        predictions = iter(self.predict_scale_many(
+            state["model"], [x for x in features if x is not None]))
+        out = []
+        for row, scale, x in zip(rows, scales, features):
+            if x is None:
+                stretch = None
+            else:
+                stretch = math.exp(next(predictions)) / _number(row[scale_field])
+            draws = None if stretch is None else [stretch * q for q in state["shape"]]
+            out.append({**row, samples_field: draws,
+                        outcome_field: self.standardized_label(row),
+                        REFERENCE_SCALE_FIELD: scale})
+        return out
 
 
 class LinearScaleLocationScale(ScaleModelLocationScale):

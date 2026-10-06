@@ -203,3 +203,16 @@ def test_structure_payoff_refuses_strikes_that_do_not_match_its_legs():
     for strikes in ((95.0,), (90.0, 95.0, 106.0)):
         with pytest.raises(ValueError):
             distribution.structure_payoff(contracts.PUT_SPREAD_LEGS, 93.0, strikes)
+
+
+def test_evaluate_prices_each_draw_exactly_as_pnl_per_width():
+    # evaluate inlines pnl_per_width with the narrower wing hoisted; the draws' P&L must not move
+    geometry = CondorGeometry([-2.0, -1.0, 1.0, 2.0], 0.3, 0.9)
+    rng = random.Random(5)
+    draws = [rng.gauss(0, 1.5) for _ in range(500)]
+    forward, scale = 101.3, 0.04
+    strikes = geometry.strikes(forward, scale)
+    pnls = [geometry.pnl_per_width(forward * math.exp(scale * z), strikes) for z in draws]
+    report = geometry.evaluate(draws, 0.4, forward, scale)
+    assert report["expected_pnl"] == sum(pnls) / len(pnls)
+    assert report["cvar"] == geometry.cvar(pnls)

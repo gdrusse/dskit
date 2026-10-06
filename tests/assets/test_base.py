@@ -91,3 +91,10 @@ def test_atomic_write_refuses_unserializable_leaving_nothing(tmp_path):
 def test_utc_now_shape():
     stamp = utc_now()
     assert stamp.endswith("+00:00") and "T" in stamp
+
+
+def test_check_dict_refuses_a_non_string_key_and_a_non_dict_alike():
+    for bad in ({"k": 1, 2: 3}, {(1,): 1}, [], None):
+        errors = []
+        _check_dict(errors, "d", bad)
+        assert errors == [f"d must be a dict with string keys, got {bad!r}"]

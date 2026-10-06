@@ -61,6 +61,61 @@ def test_decision_weighted_lightgbm_curve_predicts_directly_at_row_strikes():
             1/(1+np.exp(-cutoff)), abs=1e-12)
 
 
+def test_decision_weighted_lightgbm_vector_expansion_equals_the_event_loop():
+    rng = np.random.default_rng(4)
+    contexts = []
+    for i in range(40):
+        context = _decision_context(("SPY", f"2020-01-{i+1:02d}", "2020-02-21"))
+        if i % 5 == 0:
+            context.update(thresholds=[], weights=[], intervals=[],
+                           status="no_eligible_condor")
+        contexts.append(context)
+    x, y = rng.normal(size=(40, 2)), rng.normal(size=40)
+    inventory = predictive_cdf._decision_threshold_inventory(contexts)
+    model = DecisionWeightedMonotoneCDF(
+        thresholds=[-2., 0., 2.], decision_weight=2., trees=5, leaves=3,
+        min_child=2, threads=1)
+    fast = model._expanded_events(x, y, inventory, model.global_weight/3)
+    slow = model._expanded_events_loop(x, y, inventory, model.global_weight/3)
+    assert np.array_equal(fast[0], slow[0])
+    assert np.array_equal(np.asarray(fast[1], dtype=int), np.asarray(slow[1], dtype=int))
+    assert np.array_equal(np.asarray(fast[2], dtype=float), np.asarray(slow[2], dtype=float))
+    fitted = model.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    reference = DecisionWeightedMonotoneCDF(
+        thresholds=[-2., 0., 2.], decision_weight=2., trees=5, leaves=3,
+        min_child=2, threads=1)
+    reference._expanded_events = reference._expanded_events_loop
+    reference.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    assert (fitted.model.booster_.model_to_string()
+            == reference.model.booster_.model_to_string())
+    batched = fitted.curve_decision_context(x, contexts)
+    for row in (0, 1, 7):
+        cutoffs = np.unique(np.r_[fitted.thresholds, inventory[row][0]])
+        alone = fitted.model.predict_proba(np.column_stack([
+            np.repeat(x[row][None, :], len(cutoffs), axis=0), cutoffs]))[:, 1]
+        assert np.array_equal(batched.probabilities[row, 1:len(cutoffs)+1], alone)
+
+
+def test_decision_weighted_lightgbm_float32_inputs_keep_the_event_loop():
+    rng = np.random.default_rng(5)
+    contexts = [_decision_context(("SPY", f"2020-01-{i+1:02d}", "2020-02-21"))
+                for i in range(40)]
+    x, y = rng.normal(size=(40, 2)), rng.normal(size=40)
+    y[::4] = 0.1    # sits on a threshold, where float32 and float64 disagree
+
+    def fitted(x, y, loop):
+        model = DecisionWeightedMonotoneCDF(
+            thresholds=[-1.1, 0., 1.3], decision_weight=2., trees=5, leaves=3,
+            min_child=2, threads=1)
+        if loop:
+            model._expanded_events = model._expanded_events_loop
+        return model.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+
+    for xs, ys in ((x.astype(np.float32), y), (x, y.astype(np.float32))):
+        assert (fitted(xs, ys, False).model.booster_.model_to_string()
+                == fitted(xs, ys, True).model.booster_.model_to_string())
+
+
 def test_decision_weighted_mlp_requires_context_and_trains_analytic_cdf():
     model = DecisionWeightedMixtureMLPCDF(
         components=1, hidden=[3], epochs=1, batch_size=2, seeds=[3],

@@ -185,6 +185,23 @@ def test_a_row_without_usable_features_gets_no_forecast(ctx):
     assert out["rows"][150]["samples"] is None
 
 
+def test_scale_rung_batched_apply_equals_the_per_row_hooks(ctx):
+    class PerRow(LinearScaleLocationScale):
+        def relative_scale(self, row, state):
+            return super().relative_scale(row, state)
+
+    rows = _scale_rows()
+    rows[150]["vol5"] = 0.0
+    rows[160]["vol"] = -1.0
+    node = LinearScaleLocationScale("har", dict(HAR))
+    assert node.predict_scale_many({"coef": [0.1, 0.6, 0.3]}, [[1.0, 2.0], [0.5, -1.0]]) == [
+        node.predict_scale({"coef": [0.1, 0.6, 0.3]}, x) for x in ([1.0, 2.0], [0.5, -1.0])]
+    batched = node.run(ctx, {"rows": rows})
+    per_row = PerRow("har", dict(HAR)).run(ctx, {"rows": rows})
+    assert batched["rows"] == per_row["rows"]
+    assert batched["transform"].state == per_row["transform"].state
+
+
 def test_ridge_matches_the_closed_form_with_an_unpenalized_intercept(ctx):
     rows = _scale_rows()
     params = dict(HAR, scale_features=["vol"], ridge_alpha=5.0)
