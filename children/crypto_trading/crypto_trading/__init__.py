@@ -12,6 +12,7 @@ beyond that one import.
 
 from .binance_vision import BinanceBvol, BinanceKlines, ZipCsvParquet
 from .connectors import SampleConnector
+from .anchors import StrikeAnchors
 from .day_series import ParquetDaySeries, StreamManifests
 from .decisions import DecisionRows
 from .fair_value import AveragedLognormal, FairValue
@@ -41,6 +42,7 @@ __all__ = [
     "SampleConnector",
     "SampleRecords",
     "SpotFeatures",
+    "StrikeAnchors",
     "StreamManifests",
     "ZipCsvParquet",
 ]

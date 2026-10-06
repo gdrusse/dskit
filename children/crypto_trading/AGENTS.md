@@ -117,9 +117,14 @@ PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side. `AGENTS.md` mirrors 
 features, fair values, fees, the kill test, then `records-write`. Rules that bind any edit:
 
 - **The leak rule is a contract.** A Binance bar is usable only if `close_time_ms < decision_ms`
-  (strictly; bars are labelled by START), BVOL only strictly before it, a Kalshi candle only if
-  `end_ms <= decision_ms`. `tests/test_spot_features.py` and `test_market_state.py` plant spikes at and after
+  (strictly; bars are labelled by START), BVOL and a Kalshi candle only strictly before it (the candle's
+  `end_period_ts` is the inclusive last second of its minute), a strike anchor only once known. `tests/test_spot_features.py` and `test_market_state.py` plant spikes at and after
   the decision and a control just before it; keep both halves when you touch a reader or estimator.
+- **Strikes are index dollars, Binance is not.** A 15-minute strike is the previous window's settlement
+  value (the BRTI 60 s average), published after the open (`strike_known_lag_s`); Binance runs a few bp
+  higher. `StrikeAnchors` + `SpotFeatures` measure the basis at each anchor (strictly before the decision,
+  age-capped) and price `spot_brti`; never feed `FairValue` the raw `spot`. Decisions are made only strictly
+  after the strike is known.
 - **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
   refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
 - **No imputation.** Missing is `None` plus a `*_missing` / `*_status` column. A reading older than its age
@@ -127,9 +132,13 @@ features, fair values, fees, the kill test, then `records-write`. Rules that bin
 - **Vocabularies are params** (`payoff_by_strike_type`, `result_labels`, fee `base_rate_by_type`, leads, vol
   specs, kill-test segments and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
   to the stage A suites and sources it must agree with.
-- **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`) and 0242
-  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`). Do not grow them; delete them when the ADR lands.
-- **The held-out cut is decided before reading results** and never moved afterward (runbook B5).
+- **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`), 0242
+  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`) and 0243 (`fair_value.py`, `payoffs.py`, `kill_test.py`).
+  Do not grow them; delete them when the ADR lands. Parsing and the cluster error are dskit's
+  (`dskit.production.base.parse_utc_ms`, `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement.
+- **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
+  cut on the market's close; the document reports `development` only, and reading `heldout` is a recorded
+  edit of `report_segments`.
 - Stage B nodes are referenced by import path, not registered, and are research-only (Binance CC BY-NC-SA).
   Nodes that read files themselves take `StreamManifests` as an input so the data is in the run identity.
   Commands: runbook stage B.
@@ -142,7 +151,7 @@ crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform)
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed;
                        #   stage B: fields, clock, payoffs, kalshi_rows,
-                       #   decisions, day_series, vol_estimators,
+                       #   decisions, anchors, day_series, vol_estimators,
                        #   spot_features, market_state, fair_value, fees,
                        #   kill_test (see the section above)
 configs/               # asset-model / source-sample / suite-sample /

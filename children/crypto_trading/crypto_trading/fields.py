@@ -18,11 +18,13 @@ Import cost: stdlib only.
 """
 
 __all__ = [
+    "ANCHOR_KNOWN_MS", "ANCHOR_MS", "ANCHOR_VALUE", "BASIS", "BASIS_AGE_MS", "BASIS_MISSING",
     "CAP", "CANDLE_AGE_MS", "CANDLE_OPEN_INTEREST", "CANDLE_PRICE", "CANDLE_VOLUME",
     "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
-    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPREAD", "STRIKE_TYPE", "TAU_S", "TICKER",
+    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
+    "TAU_S", "TICKER",
     "TWO_SIDED", "VOLUME", "YES_ASK", "YES_BID",
 ]
 
@@ -35,6 +37,9 @@ FLOOR = "floor_strike"
 CAP = "cap_strike"
 OPEN_MS = "open_ms"
 CLOSE_MS = "close_ms"
+#: When the strike is known: the open plus the declared publication lag (see ``MarketRows``). A decision
+#: may price a market only strictly after it.
+STRIKE_KNOWN_MS = "strike_known_ms"
 LABEL = "label"
 
 LEAD = "lead_minutes"
@@ -44,7 +49,20 @@ TAU_S = "tau_s"
 #: A Kalshi candle's END instant in epoch ms (the venue sends epoch seconds).
 END_MS = "end_ms"
 
+#: The raw Binance spot, and the same price restated in the settlement index's units (spot times basis).
 SPOT = "spot"
+SPOT_BRTI = "spot_brti"
+
+#: A strike anchor row (``StrikeAnchors``): the index value a market's strike IS, the instant the average
+#: it summarises ended, and the instant it became known.
+ANCHOR_MS = "anchor_ms"
+ANCHOR_KNOWN_MS = "known_ms"
+ANCHOR_VALUE = "anchor_value"
+
+#: Settlement index over Binance at the latest anchor known strictly before a decision, and its age.
+BASIS = "basis"
+BASIS_AGE_MS = "basis_age_ms"
+BASIS_MISSING = "basis_missing"
 
 #: A candle row's own fields (what ``CandleRows`` writes and ``MarketState`` reads).
 PRICE = "price"

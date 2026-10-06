@@ -12,14 +12,26 @@ and the market each believed with what happened:
   minus the price minus the fee. It trades at the TOUCH, so the half-spread is paid; the fee is
   Kalshi's taker fee from the fee column. A row with a missing fee takes no trade and is counted.
 
-Rows are cut into declared ``segments`` by decision instant (``development`` and ``heldout`` in
-the shipped document, one cut, no overlap). Choices such as the volatility window, the leads and
-the margin belong to the development rows; the held-out rows are read once. Within a segment each
-row also lands in a mid ``bucket`` (declared edges; the last bucket is closed on the right), a
-``group`` per ``by`` field (e.g. lead time) and pooled ``all``. Each cell reports the mean of
-the per-row differences with a CLUSTER-ROBUST standard error (rows sharing ``cluster_field``,
-e.g. one event, are correlated and are summed before squaring), so a pile of near-identical
-rows does not look like evidence. Nothing is a pass/fail gate: the report states numbers.
+Rows are cut into declared ``segments`` by the instant their LABEL is settled, the market's close
+(``development`` and ``heldout`` in the shipped document, one cut, no overlap): every decision row of
+one market lands in one segment, even when its decision instants straddle the cut. Choices such as the
+volatility window, the leads and the margin belong to the development rows. ``report_segments`` names the
+segments whose numbers are computed and written; the shipped document lists ``development`` only, so a run
+never prints the held-out numbers by accident, and reading them is a deliberate edit of the document
+(a new identity hash, so every held-out read is a recorded run). Within a segment each row also lands in a
+mid ``bucket`` (declared edges; the last bucket is closed on the right), a ``group`` per ``by`` field
+(e.g. lead time) and pooled ``all``. Each cell reports the mean of the per-row differences with a
+CLUSTER-ROBUST standard error (rows sharing ``cluster_field`` are correlated), dskit's own, from
+:func:`dskit.pipeline.stats.cluster_bootstrap_t` (its ``se`` has the ``n / (n - 1)`` small-sample
+correction and is undefined below two clusters, reported as None), so a pile of near-identical rows does
+not look like evidence. Each cell also gives the mean fair value, mean mid and base rate: a fair value
+whose mean sits away from the base rate is mis-calibrated in the large before any edge is claimed.
+Nothing is a pass/fail gate: the report states numbers.
+
+INTERIM HOME (PROPOSED ADR-0243): bucketed binary scoring with a cluster-robust error is generic; dskit
+has per-observation ``brier``/``logloss`` and ``cluster_bootstrap_t`` but no public cluster-robust mean
+(used here with one replicate, for its ``se``) and no bucketed scorer. A held-out gate for research reads
+does not exist either (``dskit.production``'s consume-once gate is for deployment).
 
 Rows that cannot be scored are counted, never dropped quietly, on ``summary["census"]``.
 Outputs land in the run directory: ``kill_test.json`` (every score) and ``kill_test.md``.
@@ -27,10 +39,9 @@ Outputs land in the run directory: ``kill_test.json`` (every score) and ``kill_t
 Import cost: stdlib + dskit.
 """
 
-import math
-
 from dskit.pipeline.metrics import brier, logloss
 from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.stats import cluster_bootstrap_t
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
@@ -40,17 +51,20 @@ __all__ = ["KillTestScore"]
 
 _ALL = "all"
 
+#: ``cluster_bootstrap_t`` is used only for its cluster-robust ``se`` (dskit has no public cluster-robust
+#: mean without it), so one replicate is the minimum it accepts and all it needs.
+_SE_ONLY_REPLICATES = 1
+_SE_SEED = 0
+
 
 def _cluster_se(pairs):
-    """Return the cluster-robust standard error of the mean of ``(cluster, value)`` pairs, or None below two."""
-    count = len(pairs)
-    if count < 2:
-        return None
-    mean = sum(value for _, value in pairs) / count
-    sums = {}
+    """Return dskit's cluster-robust standard error of the mean of ``(cluster, value)`` pairs, None below 2 clusters."""
+    scores = {}
     for cluster, value in pairs:
-        sums[cluster] = sums.get(cluster, 0.0) + (value - mean)
-    return math.sqrt(sum(total * total for total in sums.values())) / count
+        scores.setdefault(str(cluster), []).append(value)
+    if len(scores) < 2:
+        return None
+    return cluster_bootstrap_t(scores, _SE_ONLY_REPLICATES, _SE_SEED)["se"]
 
 
 def _mean(values):
@@ -64,8 +78,9 @@ class _Cell:
     def __init__(self):
         self.brier, self.logloss, self.pnl = [], [], []
         self.brier_fair, self.brier_mid, self.ll_fair, self.ll_mid = [], [], [], []
+        self.fair, self.mid, self.label = [], [], []
 
-    def add(self, cluster, scores, pnl):
+    def add(self, cluster, scores, pnl, level):
         """Record one scored row: ``scores`` is (fair brier, mid brier, fair logloss, mid logloss)."""
         bf, bm, lf, lm = scores
         self.brier_fair.append(bf)
@@ -74,6 +89,9 @@ class _Cell:
         self.ll_mid.append(lm)
         self.brier.append((cluster, bf - bm))
         self.logloss.append((cluster, lf - lm))
+        self.fair.append(level[0])
+        self.mid.append(level[1])
+        self.label.append(level[2])
         if pnl is not None:
             self.pnl.append((cluster, pnl))
 
@@ -81,7 +99,8 @@ class _Cell:
         """Return the cell's metrics as a dict."""
         pnl = [value for _, value in self.pnl]
         return {
-            "n": len(self.brier),
+            "n": len(self.brier), "n_clusters": len({str(c) for c, _ in self.brier}),
+            "mean_fair": _mean(self.fair), "mean_mid": _mean(self.mid), "base_rate": _mean(self.label),
             "brier_fair": _mean(self.brier_fair), "brier_mid": _mean(self.brier_mid),
             "brier_diff": _mean([v for _, v in self.brier]), "brier_diff_se": _cluster_se(self.brier),
             "logloss_fair": _mean(self.ll_fair), "logloss_mid": _mean(self.ll_mid),
@@ -96,7 +115,7 @@ class KillTestScore(Node):
     """Score fair values against the mid, by segment, group and mid bucket (role ``report``).
 
     Input ``records``: rows with ``label``, ``mid``, ``two_sided``, ``yes_bid``, ``yes_ask``,
-    ``fee_buy_yes``, ``fee_buy_no``, ``decision_ms``, each fair-value column, each ``by`` field
+    ``fee_buy_yes``, ``fee_buy_no``, ``close_ms``, each fair-value column, each ``by`` field
     and the cluster field. Outputs ``scores`` (one dict per model x segment x group x bucket) and
     ``summary`` (the census, and the parameters the scores were made under).
 
@@ -106,9 +125,11 @@ class KillTestScore(Node):
         All REQUIRED. ``fair_fields`` (non-empty list of distinct column names) the models;
         ``mid_edges`` (ascending list of >= 2 numbers) the bucket edges; ``margin`` (number >= 0)
         the take rule's margin over the fee; ``segments`` (non-empty dict) name -> ``{"start"?,
-        "end"?}`` ISO instants, a row belongs when ``start <= decision < end``; ``by`` (list of
+        "end"?}`` ISO instants WITH a zone, a row belongs when ``start <= close < end``; ``by`` (list of
         field names, may be empty) the extra groupings, each pooled alone; ``cluster_field`` (str)
-        the field rows are clustered on.
+        the field rows are clustered on; ``report_segments`` (non-empty list of distinct names of
+        ``segments``) the segments computed and written, development only until a held-out read is
+        deliberately declared.
 
     Examples
     --------
@@ -118,14 +139,15 @@ class KillTestScore(Node):
             "fair_fields": ["fair_rms", "fair_bvol"], "mid_edges": [0, 0.25, 0.5, 0.75, 1],
             "margin": 0.02, "by": ["lead_minutes"], "cluster_field": "event_ticker",
             "segments": {"development": {"end": "2026-09-15T00:00:00Z"},
-                         "heldout": {"start": "2026-09-15T00:00:00Z"}}})
+                         "heldout": {"start": "2026-09-15T00:00:00Z"}},
+            "report_segments": ["development"]})
         out = node.run(ctx, {"records": rows})
         # -> out["scores"][0]["brier_diff"] < 0 means the model beat the mid on that cell
     """
 
     role = "report"
     outputs = ("scores", "summary")
-    _PARAMS = ("fair_fields", "mid_edges", "margin", "segments", "by", "cluster_field")
+    _PARAMS = ("fair_fields", "mid_edges", "margin", "segments", "by", "cluster_field", "report_segments")
 
     @classmethod
     def _names_problems(cls, name, value, *, allow_empty):
@@ -146,6 +168,15 @@ class KillTestScore(Node):
                     or any(instant_ms(v) is None for v in bounds.values())):
                 problems.append(f"segments[{name!r}] must be {{start?, end?}} ISO instants, got {bounds!r}")
         return problems
+
+    @classmethod
+    def _report_problems(cls, report, segments):
+        """Problems with ``report_segments``: distinct names of declared segments, at least one."""
+        declared = list(segments) if isinstance(segments, dict) else []
+        names = cls._names_problems("report_segments", report, allow_empty=False)
+        unknown = [] if names else [r for r in report if r not in declared]
+        return names + ([f"report_segments names {unknown}, which are not among the declared segments {declared}"]
+                        if unknown else [])
 
     @classmethod
     def validate_params(cls, params):
@@ -172,6 +203,7 @@ class KillTestScore(Node):
         if not (number_ok(params.get("margin")) and params["margin"] >= 0):
             problems.append(f"margin is required: a number >= 0, got {params.get('margin')!r}")
         problems += cls._segments_problems(params.get("segments"))
+        problems += cls._report_problems(params.get("report_segments"), params.get("segments"))
         if not isinstance(params.get("cluster_field"), str) or not params.get("cluster_field"):
             problems.append(f"cluster_field is required: a field name, got {params.get('cluster_field')!r}")
         return problems
@@ -193,12 +225,12 @@ class KillTestScore(Node):
             return [f"records must be a list of rows, got {type(inputs.get('records')).__name__}"]
         return []
 
-    def _segments_of(self, decision):
-        """Name the segments whose ``[start, end)`` holds the decision instant."""
+    def _segments_of(self, close_ms):
+        """Name the declared segments whose ``[start, end)`` holds the instant the label was settled."""
         names = []
         for name, bounds in self.params["segments"].items():
             start, end = instant_ms(bounds.get("start")), instant_ms(bounds.get("end"))
-            if (start is None or decision >= start) and (end is None or decision < end):
+            if (start is None or close_ms >= start) and (end is None or close_ms < end):
                 names.append(name)
         return names
 
@@ -227,7 +259,7 @@ class KillTestScore(Node):
         return None
 
     def _observe(self, row, model, census):
-        """Return ``(scores, pnl)`` for one row and model, or None when the row has no fair value."""
+        """Return ``(scores, pnl, (fair, mid, label))`` for one row and model, or None when it has no fair value."""
         fair, mid, label = row.get(model), row[f.MID], float(row[f.LABEL])
         if fair is None:
             census["models"][model]["no_fair"] += 1
@@ -237,24 +269,22 @@ class KillTestScore(Node):
         if pnl is False:
             census["models"][model]["fee_missing"] += 1
             pnl = None
-        return (brier(fair, label), brier(mid, label), logloss(fair, label), logloss(mid, label)), pnl
+        return (brier(fair, label), brier(mid, label), logloss(fair, label), logloss(mid, label)), pnl, (
+            fair, mid, label)
 
     def _score(self, records):
         """Fold the rows into cells keyed by (model, segment, group, bucket) and a census."""
-        census = {"rows": len(records), "not_two_sided": 0, "outside_segments": 0, "outside_buckets": 0,
+        census = {"rows": len(records), "not_two_sided": 0, "outside_segments": 0, "unreported": 0,
+                  "no_cluster": 0, "outside_buckets": 0,
                   "models": {m: {"no_fair": 0, "scored": 0, "fee_missing": 0} for m in self.params["fair_fields"]}}
         cells = {}
         for row in records:
-            if row.get(f.TWO_SIDED) is not True:
-                census["not_two_sided"] += 1
-                continue
-            segments = self._segments_of(row[f.DECISION_MS])
+            segments = self._row_segments(row, census)
             if not segments:
-                census["outside_segments"] += 1
                 continue
             bucket = self._bucket(row[f.MID])
             census["outside_buckets"] += bucket is None
-            cluster = row.get(self.params["cluster_field"])
+            cluster = row[self.params["cluster_field"]]
             for model in self.params["fair_fields"]:
                 observed = self._observe(row, model, census)
                 if observed is None:
@@ -266,12 +296,31 @@ class KillTestScore(Node):
                                 cells.setdefault((model, segment, group, label), _Cell()).add(cluster, *observed)
         return cells, census
 
+    def _row_segments(self, row, census):
+        """Return the REPORTED segments a scorable row belongs to, counting why it is not scorable otherwise."""
+        if row.get(f.TWO_SIDED) is not True:
+            census["not_two_sided"] += 1
+            return []
+        declared = self._segments_of(row[f.CLOSE_MS])
+        if not declared:
+            census["outside_segments"] += 1
+            return []
+        reported = [name for name in declared if name in self.params["report_segments"]]
+        if not reported:
+            census["unreported"] += 1
+        elif row.get(self.params["cluster_field"]) is None:
+            census["no_cluster"] += 1
+            return []
+        return reported
+
     def _render(self, scores, census):
         """Render the scores as a short markdown report."""
+        shown = ", ".join(self.params["report_segments"])
         lines = ["# Kill test: fair value against the market mid, after fees", "",
                  "Negative Brier or log-loss difference = the fair value was closer to the outcome than the mid. "
                  f"The take rule buys at the touch when the edge exceeds the fee plus {self.params['margin']:g}. "
-                 "Standard errors are cluster-robust. Read the held-out rows once.", ""]
+                 f"Standard errors are cluster-robust (blank below two clusters). Segments reported: {shown}. "
+                 "Read the held-out rows once.", ""]
         pooled = [s for s in scores if s["group"] == _ALL and s["bucket"] == _ALL]
         lines += ["| model | segment | n | Brier fair | Brier mid | diff (se) | logloss diff (se) | trades | mean pnl (se) |",
                   "|---|---|---|---|---|---|---|---|---|"]
@@ -280,8 +329,18 @@ class KillTestScore(Node):
                          f"| {_fmt(s['brier_diff'])} ({_fmt(s['brier_diff_se'])}) "
                          f"| {_fmt(s['logloss_diff'])} ({_fmt(s['logloss_diff_se'])}) "
                          f"| {s['n_trades']} | {_fmt(s['pnl_mean'])} ({_fmt(s['pnl_se'])}) |")
+        lines += ["", "## Calibration in the large", "",
+                  "Mean fair value minus the base rate (the share of YES), per lead. A model far from zero here is "
+                  "biased before any edge is claimed.", "",
+                  "| model | segment | group | n | mean fair | mean mid | base rate | fair - base | mid - base |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        for s in (c for c in scores if c["bucket"] == _ALL):
+            lines.append(f"| {s['model']} | {s['segment']} | {s['group']} | {s['n']} | {_fmt(s['mean_fair'])} "
+                         f"| {_fmt(s['mean_mid'])} | {_fmt(s['base_rate'])} "
+                         f"| {s['mean_fair'] - s['base_rate']:+.4f} | {s['mean_mid'] - s['base_rate']:+.4f} |")
         lines += ["", f"Rows read {census['rows']}; not two-sided {census['not_two_sided']}; "
-                      f"outside every segment {census['outside_segments']}; per model {census['models']}.", ""]
+                      f"outside every segment {census['outside_segments']}; in an unreported segment "
+                      f"{census['unreported']}; no cluster {census['no_cluster']}; per model {census['models']}.", ""]
         return "\n".join(lines)
 
     def run(self, ctx, inputs):
@@ -303,7 +362,7 @@ class KillTestScore(Node):
         scores = [{"model": model, "segment": segment, "group": group, "bucket": bucket, **cell.summary()}
                   for (model, segment, group, bucket), cell in sorted(cells.items())]
         summary = {"census": census, "margin": self.params["margin"], "mid_edges": self.params["mid_edges"],
-                   "segments": self.params["segments"]}
+                   "segments": self.params["segments"], "report_segments": self.params["report_segments"]}
         self.write_artifact(ctx, "kill_test.json", {"scores": scores, "summary": summary})
         self.write_artifact_text(ctx, "kill_test.md", self._render(scores, census))
         self.log.info("scored %d cell(s) from %d row(s)", len(scores), census["rows"])

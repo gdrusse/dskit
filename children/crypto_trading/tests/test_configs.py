@@ -444,3 +444,122 @@ def test_the_runbook_registers_and_publishes_the_feature_table():
                 encoding="utf-8").read()
     for needle in (FEATURES_DOC, "source-features-15m.json", "--connector localtables"):
         assert needle in text, f"the runbook never mentions {needle}"
+
+
+# -- stage B review round: the basis anchors, the segments, the fee base, the runbook ------
+
+KALSHI_FEE_BASE = {"quadratic": 0.07}  # Kalshi's published taker coefficient, restated on purpose
+MARKET_MINUTES = 15  # a 15-minute up/down market is open for 15 minutes
+
+
+def test_the_fee_base_rate_is_pinned_at_the_config_level_not_only_in_a_unit_test():
+    assert _doc()["pipeline"]["fees"]["params"]["base_rate_by_type"] == KALSHI_FEE_BASE
+    assert "0.07" in _doc()["pipeline"]["fees"]["notes"]
+
+
+def test_the_fee_suite_warns_when_the_schedule_is_not_the_one_the_base_rate_assumes():
+    rules = {r.id: r for r in load_suite(_path("suite-kalshi-crypto-fees.json")).rules}
+    assert rules["fees-type-is-quadratic"].severity == "warn"
+    rule = rules["fees-multiplier-is-one"]
+    assert (rule.rule, rule.severity, rule.kwargs["field"]) == ("in_range", "warn", "fee_multiplier")
+    assert rule.kwargs["min"] == rule.kwargs["max"] == 1, "the 0.07 base is Kalshi's standard rate: multiplier 1"
+
+
+def test_the_strike_lag_covers_exactly_the_series_whose_strike_is_the_previous_window_average():
+    pipeline = _doc()["pipeline"]
+    lags = pipeline["markets"]["params"]["strike_known_lag_s"]
+    assert sorted(lags) == sorted(KALSHI_15M)
+    assert all(v >= 0 for v in lags.values()), "a publication lag is a wait, never negative"
+    assert sorted(pipeline["anchors"]["params"]["anchor_series"]) == sorted(KALSHI_15M), (
+        "the anchors are the up/down series' strikes; a fixed-strike series has none")
+
+
+def test_the_leads_leave_the_strike_known_before_every_decision():
+    pipeline = _doc()["pipeline"]
+    lag_minutes = max(pipeline["markets"]["params"]["strike_known_lag_s"].values()) / 60.0
+    assert max(pipeline["decisions"]["params"]["leads_minutes"]) < MARKET_MINUTES - lag_minutes
+
+
+def test_the_basis_window_is_the_bar_the_settlement_average_covers():
+    pipeline = _doc()["pipeline"]
+    spot = pipeline["spot"]["params"]
+    window_s = {n["params"]["averaging_window_s"] for n in _nodes(":FairValue").values()}
+    assert window_s == {60} and spot["bar_ms"] == 60 * 1000, (
+        "the anchor is a 60-second average and is compared with ONE 1-minute bar")
+    assert spot["max_basis_age_ms"] >= (MARKET_MINUTES * 60 + max(
+        pipeline["markets"]["params"]["strike_known_lag_s"].values())) * 1000, (
+        "an anchor must stay usable until the next 15-minute market's strike replaces it")
+
+
+def test_every_fair_value_prices_the_index_unit_spot_not_the_raw_binance_price():
+    for key, spec in _nodes(":FairValue").items():
+        assert spec["params"]["spot_field"] == "spot_brti", key
+    assert _doc()["pipeline"]["spot"]["inputs"]["anchors"] == "$anchors.records"
+
+
+def test_the_shipped_document_reports_development_only_and_cuts_on_the_close():
+    kill = _doc()["pipeline"]["kill_test"]["params"]
+    assert kill["report_segments"] == ["development"], "the held-out read is a deliberate, recorded edit"
+    assert set(kill["report_segments"]) <= set(kill["segments"])
+
+
+def test_the_stream_pair_check_has_one_home():
+    from crypto_trading import day_series, spot_features
+
+    assert spot_features.stream_problems is day_series.stream_problems
+    assert day_series.stream_problems("streams['x']", {"source": "s"}), "a pair needs both keys"
+    assert day_series.stream_problems("streams['x']", {"source": "s", "stream": "files"}) == []
+
+
+def test_the_instant_parser_is_dskits_and_refuses_a_naive_stamp():
+    from dskit.production.base import parse_utc_ms
+
+    from crypto_trading.clock import instant_ms
+
+    assert instant_ms("2026-09-02T00:15:00Z") == parse_utc_ms("2026-09-02T00:15:00Z")
+    assert instant_ms("2026-09-02T00:15:00") is None, "a stamp with no zone is a guess"
+    assert instant_ms("") is None and instant_ms(None) is None
+
+
+RUNBOOK = os.path.join(CHILD_ROOT, "docs", "plans", "2026-10-06-wsl-data-pull-runbook.md")
+
+
+def _pull_function():
+    text = open(RUNBOOK, encoding="utf-8").read()
+    start = text.index("pull() {")
+    end = text.index("\n}\n", start) + 3
+    return text[start:end]
+
+
+def _run_pull(tmp_path, acquire_answer):
+    """Run the runbook's pull() under bash with a stubbed `python -m dskit.onboarding`; return the call log."""
+    import subprocess
+
+    calls = tmp_path / "calls.log"
+    script = f"""
+python() {{
+  if [ "$1" = "-m" ]; then
+    echo "$*" >> {calls}
+    [ "$3" = acquire ] && echo '{acquire_answer}'
+    return 0
+  fi
+  command python "$@"
+}}
+OB=/ob
+{_pull_function()}
+pull kalshi-crypto fee_schedules suite-kalshi-crypto-fees.json
+"""
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return done.stdout, calls.read_text(encoding="utf-8") if calls.exists() else ""
+
+
+def test_the_runbook_pull_helper_validates_a_new_snapshot(tmp_path):
+    out, calls = _run_pull(tmp_path, '{"snapshot": "20261006T000000Z-backfill-abc"}')
+    assert "validate" in calls and "--snapshot 20261006T000000Z-backfill-abc" in calls
+
+
+def test_the_runbook_pull_helper_skips_validate_after_a_no_op_pull(tmp_path):
+    out, calls = _run_pull(tmp_path, '{"snapshot": null}')
+    assert "acquire" in calls and "validate" not in calls, "a null snapshot has nothing to validate"
+    assert "nothing to validate" in out

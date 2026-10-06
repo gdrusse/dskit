@@ -5,9 +5,12 @@ the unit of observation is ``(market, lead)``: the decision instant is the close
 lead, and the label is the market's own. Leads are a param, in minutes, because the lead
 that matters is a research question, not a constant.
 
-A lead longer than the market had been open (the decision would fall before the open) is
-not clamped to the open: that row does not exist, and is listed on ``excluded``. A decision
-exactly at the open is allowed.
+A decision is made only strictly AFTER the market's strike is known (``strike_known_ms``: the
+open plus the series' publication lag). A 15-minute up/down strike is the previous window's
+settlement value and is published a few seconds after the open, so a lead at or above the market's
+duration minus that lag has nothing to price against. Such a row is not clamped: it does not exist,
+and is listed on ``excluded`` (``before_open`` when the decision precedes the open, otherwise
+``strike_not_known``).
 
 Import cost: stdlib + dskit.
 """
@@ -29,7 +32,8 @@ class DecisionRows(Node):
     Inputs: ``records``, the :class:`~crypto_trading.kalshi_rows.MarketRows` rows. Outputs:
     ``records`` (every market field plus ``lead_minutes``, ``decision_ms`` and ``tau_s``, the
     seconds from the decision to the close; ordered by market then lead) and ``excluded``
-    (``{"ticker", "lead_minutes", "reason"}`` for a decision before the market opened).
+    (``{"ticker", "lead_minutes", "reason"}`` for a decision before the open or not strictly after the
+    strike is known).
 
     Parameters
     ----------
@@ -114,6 +118,13 @@ class DecisionRows(Node):
         return {**market, f.LEAD: lead, f.DECISION_MS: decision,
                 f.TAU_S: (market[f.CLOSE_MS] - decision) / _MS_PER_S}
 
+    @staticmethod
+    def _exclusion(row):
+        """Return why the decision cannot be made, or None: before the open, or not strictly after the strike is known."""
+        if row[f.DECISION_MS] < row[f.OPEN_MS]:
+            return "before_open"
+        return "strike_not_known" if row[f.DECISION_MS] <= row[f.STRIKE_KNOWN_MS] else None
+
     def run(self, ctx, inputs):
         """Expand the markets into decision rows.
 
@@ -133,10 +144,11 @@ class DecisionRows(Node):
         for market in sorted(inputs["records"], key=lambda m: (m[f.CLOSE_MS], m[f.TICKER])):
             for lead in sorted(self.params["leads_minutes"]):
                 row = self._decision(market, lead)
-                if row[f.DECISION_MS] < market[f.OPEN_MS]:
-                    excluded.append({"ticker": market[f.TICKER], f.LEAD: lead, "reason": "before_open"})
+                reason = self._exclusion(row)
+                if reason:
+                    excluded.append({"ticker": market[f.TICKER], f.LEAD: lead, "reason": reason})
                 else:
                     rows.append(row)
-        self.log.info("%d decision row(s) from %d market(s); %d before open",
+        self.log.info("%d decision row(s) from %d market(s); %d excluded",
                       len(rows), len(inputs["records"]), len(excluded))
         return {"records": rows, "excluded": excluded}

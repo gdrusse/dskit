@@ -8,10 +8,10 @@ CLOSE = 1_788_307_200_000  # a close instant, epoch ms
 OPEN = CLOSE - 15 * 60_000
 
 
-def market(ticker="T1", close=CLOSE, opened=OPEN, label=1):
+def market(ticker="T1", close=CLOSE, opened=OPEN, label=1, lag_ms=30_000):
     return {"ticker": ticker, "event_ticker": "E", "series": "KXBTC15M", "payoff": "above",
             "strike_type": "greater_or_equal", "floor_strike": 60000.0, "cap_strike": None,
-            "open_ms": opened, "close_ms": close, "label": label}
+            "open_ms": opened, "close_ms": close, "label": label, "strike_known_ms": opened + lag_ms}
 
 
 def run(rows, leads=(2, 5, 10)):
@@ -39,10 +39,22 @@ def test_the_leads_are_a_param_not_a_list_in_the_code():
 
 
 def test_a_lead_longer_than_the_market_was_open_is_excluded_not_clamped():
-    node, out = run([market()], leads=[5, 15, 20])
-    # open for 15 minutes: lead 15 decides exactly at the open (allowed), lead 20 is before it
-    assert [r["lead_minutes"] for r in out["records"]] == [5, 15]
+    node, out = run([market(lag_ms=0)], leads=[5, 14, 20])
+    assert [r["lead_minutes"] for r in out["records"]] == [5, 14]
     assert out["excluded"] == [{"ticker": "T1", "lead_minutes": 20, "reason": "before_open"}]
+
+
+def test_a_decision_is_priced_only_strictly_after_its_strike_is_known():
+    # open for 15 minutes, strike published 30 s after the open: lead 14.5 decides AT that instant
+    node, out = run([market()], leads=[5, 14, 14.5, 15])
+    assert [r["lead_minutes"] for r in out["records"]] == [5, 14]
+    assert out["excluded"] == [
+        {"ticker": "T1", "lead_minutes": 14.5, "reason": "strike_not_known"},
+        {"ticker": "T1", "lead_minutes": 15, "reason": "strike_not_known"}], (
+        "the strike is the previous window's settlement average: before it is out there is nothing to price against")
+    # lead 15 decides exactly at the open: even with no lag the strike must be strictly before the decision
+    _, out = run([market(lag_ms=0)], leads=[15])
+    assert out["records"] == [] and out["excluded"][0]["reason"] == "strike_not_known"
 
 
 def test_rows_are_ordered_by_market_then_lead_and_inputs_are_not_mutated():

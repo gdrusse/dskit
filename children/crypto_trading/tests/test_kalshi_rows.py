@@ -19,6 +19,7 @@ PARAMS = {
                               "less": "below", "less_or_equal": "below", "between": "between"},
     "result_labels": {"yes": 1, "no": 0},
     "settled_statuses": ["finalized", "settled"],
+    "strike_known_lag_s": {"KXBTC15M": 30, "KXETH15M": 30},
 }
 CLOSE = utc(2026, 9, 2, 0, 15)
 
@@ -45,7 +46,15 @@ def test_a_settled_market_becomes_one_row_in_the_child_vocabulary():
         "ticker": "KXBTC15M-26SEP020015-15", "event_ticker": "KXBTC15M-26SEP020015",
         "series": "KXBTC15M", "strike_type": "greater_or_equal", "payoff": "above",
         "floor_strike": 60000.0, "cap_strike": None,
-        "open_ms": ms(utc(2026, 9, 2, 0, 0)), "close_ms": ms(CLOSE), "label": 1}]
+        "open_ms": ms(utc(2026, 9, 2, 0, 0)), "close_ms": ms(CLOSE), "label": 1,
+        "strike_known_ms": ms(utc(2026, 9, 2, 0, 0)) + 30_000}]
+
+
+def test_the_strike_is_known_a_declared_lag_after_the_open_and_at_the_open_otherwise():
+    # a 15-minute up/down strike is the previous window's settlement average, published shortly after the open
+    _, rows = project([raw(), raw("KXETH15M-26SEP020015-15")], strike_known_lag_s={"KXBTC15M": 45})
+    assert rows[0]["strike_known_ms"] == rows[0]["open_ms"] + 45_000
+    assert rows[1]["strike_known_ms"] == rows[1]["open_ms"], "a series with no lag listed has its strike at the open"
 
 
 @pytest.mark.parametrize("strike_type, floor, cap, payoff", [
@@ -101,9 +110,12 @@ def test_the_vocabularies_are_params_a_new_geometry_is_config_not_code():
     bad = {**PARAMS, "payoff_by_strike_type": {"greater": "mystery"}}
     with pytest.raises(Exception, match="mystery"):
         MarketRows("markets", bad)
-    for knob in ("series", "payoff_by_strike_type", "result_labels", "settled_statuses"):
+    for knob in ("series", "payoff_by_strike_type", "result_labels", "settled_statuses", "strike_known_lag_s"):
         with pytest.raises(Exception, match=knob):
             MarketRows("markets", {k: v for k, v in PARAMS.items() if k != knob})
+    for bad_lag in ({"KXSOL15M": 30}, {"KXBTC15M": -1}, {"KXBTC15M": "30"}, ["KXBTC15M"]):
+        with pytest.raises(Exception, match="strike_known_lag_s"):
+            MarketRows("markets", {**PARAMS, "strike_known_lag_s": bad_lag})
     with pytest.raises(Exception, match="surprise"):
         MarketRows("markets", {**PARAMS, "surprise": 1})
     with pytest.raises(Exception, match="result_labels"):
@@ -114,8 +126,8 @@ def test_pinned_vocabulary_knobs_are_narrowed_away_not_left_to_the_document():
     for cls in (MarketRows, CandleRows):
         assert accessor_narrowing_problems(cls) == []
         node = cls("n", {**{k: PARAMS[k] for k in ("root", "source")},
-                        **({k: PARAMS[k] for k in ("series", "payoff_by_strike_type",
-                                                   "result_labels", "settled_statuses")}
+                        **({k: PARAMS[k] for k in ("series", "payoff_by_strike_type", "result_labels",
+                                                   "settled_statuses", "strike_known_lag_s")}
                            if cls is MarketRows else {})})
         assert node.stream() == ("markets" if cls is MarketRows else "candles")
     with pytest.raises(Exception, match="stream"):

@@ -25,11 +25,12 @@ variable the configs name, and the `pull` helper). Nothing else carries state.
 cd <worktree on branch claude/crypto-trading-child>/children/crypto_trading
 export CRYPTO_TRADING_ROOT=$PWD                  # configs name this variable, never a path
 export OB=/home/russell/data/crypto_trading/ob   # PLACEHOLDER: the owner picks the store root
-pull() {   # pull <source> <stream> <suite> [mode]: acquire, print, validate its snapshot
+pull() {   # pull <source> <stream> <suite> [mode]: acquire, print, validate its snapshot (none to validate on a no-op)
   out=$(python -m dskit.onboarding acquire --root "$OB" --source "$1" --stream "$2" --mode "${4:-backfill}") || return 1
   echo "$out"
-  python -m dskit.onboarding validate --root "$OB" --suite "configs/$3" \
-    --snapshot "$(echo "$out" | python -c 'import json,sys; print(json.load(sys.stdin)["snapshot"])')"
+  snap=$(echo "$out" | python -c 'import json,sys; print(json.load(sys.stdin)["snapshot"] or "")')
+  [ -n "$snap" ] || { echo "no new snapshot (declaration unchanged): nothing to validate"; return 0; }
+  python -m dskit.onboarding validate --root "$OB" --suite "configs/$3" --snapshot "$snap"
 }
 ```
 
@@ -76,7 +77,8 @@ pull kalshi-crypto-candles-eth candles    suite-kalshi-crypto-candles.json  # ~1
 ```
 
 - A failed pull commits nothing and keeps the old cursor: rerun it. An unchanged
-  Binance declaration answers `"snapshot": null`.
+  Binance declaration answers `"snapshot": null`, and `pull` then skips validate (the earlier
+  snapshot already passed).
 - Candles run last, one series per pull, so a failure costs about an hour; stop WSL sleeping.
 - `block` on a Kalshi suite names the tripped rule. Do not edit the suite to get green;
   amend it deliberately (a new hash) if the venue changed its vocabulary.
@@ -212,10 +214,11 @@ print(rel, meta.num_rows, "rows;", pq.read_table(got["files"][rel]).slice(0, 3).
 PY
 ```
 
-UNVERIFIED until you read that output: the document assumes BVOL is published in percentage points
-(`index_value` near 50 for BTC, so `bvol_scale` 0.01), about one row a second, and a 365-day year.
-If the level or the cadence differs, edit `spot.params.bvol_scale`, `max_bvol_age_ms` or
-`seconds_per_year` and say why in that node's `notes` before running.
+The document assumes BVOL is published in percentage points (`index_value` near 50 for BTC, so
+`bvol_scale` 0.01; confirmed on a real day in the 2026-10-06 review). UNVERIFIED until you read that
+output: about one row a second (`max_bvol_age_ms` 60000 assumes it) and a 365-day year. If the cadence
+or basis differs, edit `spot.params.max_bvol_age_ms` or `seconds_per_year` and say why in that node's
+`notes` before running.
 
 ## B3. Run
 
@@ -227,10 +230,15 @@ Exit 0 ran, 1 error (the reason names the node), 3 halted. Time is an estimate, 
 under an hour, since only the days around the decisions are read. The run directory prints at the
 end. Open:
 
-- `artifacts/kill_test/kill_test.md` (the numbers) and `kill_test.json` (every cell);
+- `artifacts/kill_test/kill_test.md` (the numbers) and `kill_test.json` (every cell). The shipped
+  document reports the `development` segment ONLY (`kill_test.params.report_segments`): this run does
+  not print the held-out numbers. Read the calibration table first: mean fair value minus the base rate
+  per lead must be near zero before any edge means anything;
 - `result.json` for each node's state. The `spot` node's `provenance` counts missing spot and BVOL
-  readings per asset; the `markets` node's `excluded` and `census` name every market dropped
-  (`no_strike` is the TBD target-price rows, then `not_settled`, `no_result`, and so on).
+  readings and missing basis (no usable strike anchor) per asset; the `markets` node's `excluded` and
+  `census` name every market dropped (`no_strike` is the TBD target-price rows, then `not_settled`,
+  `no_result`, and so on); the `decisions` node's `excluded` lists leads at or above the market's
+  duration minus the strike lag (`strike_not_known`).
 
 A refusal "the store moved since the manifest was fingerprinted" means an acquire ran between plan
 and run: run again. "no longer matches the manifest sha256" means a stored file changed on disk:
@@ -253,20 +261,27 @@ An unchanged table makes no new snapshot. A later run reads it with `Observation
 `features-15m`, stream `decision_features`, `key_fields` `[ticker, lead_minutes]`, `ts_field`
 `decision_ms`, `ts_unit` `ms`).
 
-## B5. Read it correctly
+## B5. Read the held-out set once, then read it correctly
 
 - **The cut is decided before you look.** `development` ends 2026-09-15 and `heldout` starts there
-  (`kill_test.params.segments`). Choose the vol window, leads and margin on `development` only,
-  read `heldout` once, and never move the cut after seeing it. Three fair values are scored at
-  once, so one winner of three is weaker evidence than it looks.
-- **Leak rules** (enforced and tested): a Binance bar counts only after its `close_time_ms`; BVOL
-  only strictly before the decision; a Kalshi candle only if it ended by the decision. An old or
-  absent reading is `None` with a `*_missing` flag, never a carried value.
-- **Proxies and caveats.** Klines are USDT-quoted, not the USD index Kalshi settles on; BVOL is a
-  30-day implied vol used at a 15-minute horizon; the fee schedule is today's applied to history
-  (`fee_schedule_retrieved` says which); the label is each strike's yes/no result, not the realised
-  value. A negative held-out Brier difference with a positive after-fee profit, each by a few
-  cluster-robust standard errors, is the only reading that survives; anything else means stop.
+  (`kill_test.params.segments`, cut on each market's CLOSE so a market's rows never straddle it).
+  Choose the vol window, leads and margin on `development` only. When you are done, add `"heldout"` to
+  `kill_test.params.report_segments`, commit that edit (it changes the document hash, so the read is
+  recorded), run once and read it. Never move the cut or re-tune afterwards. Three fair values are scored
+  at once, so one winner of three is weaker evidence than it looks.
+- **Leak rules** (enforced and tested): a Binance bar counts only after its `close_time_ms`; BVOL and a
+  Kalshi candle only strictly before the decision (a candle's `end_period_ts` is the inclusive last second
+  of its minute); a strike anchor only once known (open plus the lag). An old or absent reading is `None`
+  with a `*_missing` flag, never a carried value.
+- **Units.** Strikes are settlement-index (BRTI) dollars; Binance is on average a few bp higher. The
+  `anchors` and `spot` nodes measure the basis at each market's open (the strike IS the index's average at
+  that instant) and price against `spot_brti`. A large `basis_missing` count in the `spot` provenance means
+  rows were dropped for lack of an anchor, not priced against the wrong unit.
+- **Other proxies and caveats.** The basis comes from a 1-minute bar's mean, a proxy for a 60-second
+  average, so it is noisy; BVOL is a 30-day implied vol used at a 15-minute horizon; the fee schedule is
+  today's applied to history (`fee_schedule_retrieved` says which); the label is each strike's yes/no
+  result, not the realised value. A negative held-out Brier difference with a positive after-fee profit,
+  each by a few cluster-robust standard errors, is the only reading that survives; anything else means stop.
 
 Not covered yet: the realised settlement value and every hourly series (ADR-0236), history before
 2026-08-07 (ADR-0236), Coinbase, Deribit and Kraken (ADR-0237).

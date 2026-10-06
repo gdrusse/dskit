@@ -20,6 +20,10 @@ so ``ln A ~ Normal(ln S_0 - v/2, v)`` and ``P(A >= K) = Phi((ln(S_0/K) - v/2) / 
 A discrete 60-print average has variance ``tau - 2W/3`` to within 0.2% at ``tau`` = 400
 and ``W`` = 60 (a test checks this exactly).
 
+INTERIM HOME (PROPOSED ADR-0243): a digital option on an averaged index is generic (nothing here is
+crypto-specific) and dskit has no such pricer (``black76`` prices calls and puts on a forward); this module
+and :mod:`crypto_trading.payoffs` move there when the ADR lands.
+
 The model needs ``tau >= W``: inside the window part of ``A`` is already observed. A row
 there is marked, never priced. Nothing here is fitted; ``sigma`` comes from a column.
 
@@ -32,7 +36,7 @@ from statistics import NormalDist
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
-from .fields import CAP, FLOOR, PAYOFF, SPOT, TAU_S
+from .fields import CAP, FLOOR, PAYOFF, TAU_S
 from .payoffs import payoff
 
 __all__ = ["AveragedLognormal", "FairValue", "STATUS_OK"]
@@ -103,8 +107,10 @@ class AveragedLognormal:
 class FairValue(Node):
     """Add the baseline fair value of YES to each decision row (role ``transform``).
 
-    Inputs: ``records`` with ``spot``, ``tau_s``, ``payoff``, the strikes and the volatility
-    column. Output ``records``: every row with three more columns, ``<fair_field>`` (P(YES),
+    Inputs: ``records`` with the spot column, ``tau_s``, ``payoff``, the strikes and the volatility
+    column. The spot must be in the units the STRIKES are in (for Kalshi's crypto contracts, the
+    settlement index's dollars: ``SpotFeatures`` writes ``spot_brti`` for this), never a raw price from
+    another venue. Output ``records``: every row with three more columns, ``<fair_field>`` (P(YES),
     or None), ``<fair_field>_var`` (the log variance of the settlement value) and
     ``<fair_field>_status`` (``ok`` or why the row was not priced: ``no_spot``, ``no_vol``,
     ``no_tau``, ``tau_inside_window``). A row that cannot be priced is never guessed.
@@ -113,6 +119,7 @@ class FairValue(Node):
     ----------
     params : dict
         ``vol_field`` (str, REQUIRED) the column holding sigma per sqrt second;
+        ``spot_field`` (str, REQUIRED) the column holding the spot in the strikes' units;
         ``fair_field`` (str, REQUIRED) the output column; ``averaging_window_s`` (number
         >= 0, REQUIRED) the settlement average's length, 60 for the BRTI.
 
@@ -120,15 +127,15 @@ class FairValue(Node):
     --------
     Price every row from a realised-vol column::
 
-        node = FairValue("fair", {"vol_field": "rv_rms_60", "fair_field": "fair_rms",
-                                  "averaging_window_s": 60})
+        node = FairValue("fair", {"vol_field": "rv_rms_60", "spot_field": "spot_brti",
+                                  "fair_field": "fair_rms", "averaging_window_s": 60})
         out = node.run(ctx, {"records": rows})
         # -> out["records"][0]["fair_rms"] is P(YES), or None with fair_rms_status saying why
     """
 
     role = "transform"
     outputs = ("records",)
-    _PARAMS = ("vol_field", "fair_field", "averaging_window_s")
+    _PARAMS = ("vol_field", "fair_field", "spot_field", "averaging_window_s")
 
     @classmethod
     def validate_params(cls, params):
@@ -146,7 +153,7 @@ class FairValue(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        for name in ("vol_field", "fair_field"):
+        for name in ("vol_field", "fair_field", "spot_field"):
             value = params.get(name)
             if not isinstance(value, str) or not value:
                 problems.append(f"{name} is required: a non-empty column name, got {value!r}")
@@ -219,7 +226,7 @@ class FairValue(Node):
         """Return why ``row`` cannot be priced, or None when it can."""
         window = self.params["averaging_window_s"]
         sigma, tau = row.get(self.params["vol_field"]), row.get(TAU_S)
-        if not price_ok(row.get(SPOT)):
+        if not price_ok(row.get(self.params["spot_field"])):
             return "no_spot"
         if not (number_ok(sigma) and sigma > 0.0):
             return "no_vol"
@@ -237,7 +244,7 @@ class FairValue(Node):
         model = AveragedLognormal(row[self.params["vol_field"]], row[TAU_S],
                                   self.params["averaging_window_s"])
         shape = payoff(row[PAYOFF])
-        spot = row[SPOT]
+        spot = row[self.params["spot_field"]]
         row[name] = shape.yes_probability(lambda k: model.survival(spot, k), row.get(FLOOR), row.get(CAP))
         row[f"{name}_var"] = model.variance
         row[self._status_name()] = STATUS_OK

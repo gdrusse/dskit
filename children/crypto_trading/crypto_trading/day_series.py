@@ -29,7 +29,7 @@ from datetime import date, timedelta
 from dskit.onboarding import file_digest, payload_files
 from dskit.pipeline.node import Node, reject_unknown_params
 
-__all__ = ["ParquetDaySeries", "StreamManifests", "manifest_entry", "prior_index", "tape_name"]
+__all__ = ["ParquetDaySeries", "StreamManifests", "manifest_entry", "prior_index", "stream_problems", "tape_name"]
 
 _DAY = "{day}"
 _DAY_MS = 86_400_000
@@ -90,6 +90,29 @@ def manifest_entry(got):
     """
     return {"source": got["source"], "stream": got["stream"], "snapshot": got["snapshot"],
             "manifest_sha256": got["manifest_sha256"], "files": len(got["files"])}
+
+
+def stream_problems(name, spec):
+    """List problems with one onboarded stream reference: exactly ``{"source", "stream"}`` strings.
+
+    The one home of the check every node that names a stream applies to its params.
+
+    Parameters
+    ----------
+    name : str
+        How a refusal names the reference (``"streams['BTC_klines']"``).
+    spec : object
+        The declared reference.
+
+    Returns
+    -------
+    list of str
+        One problem when ``spec`` is not exactly two non-empty strings; empty when it is.
+    """
+    if (not isinstance(spec, dict) or set(spec) != {"source", "stream"}
+            or any(not isinstance(v, str) or not v for v in spec.values())):
+        return [f"{name} must be exactly {{source, stream}} strings, got {spec!r}"]
+    return []
 
 
 def _day_name(index):
@@ -306,9 +329,7 @@ class StreamManifests(Node):
             problems.append(f"streams is required: a map name -> {{source, stream}}, got {streams!r}")
         else:
             for name, spec in streams.items():
-                if (not isinstance(spec, dict) or set(spec) != {"source", "stream"}
-                        or any(not isinstance(v, str) or not v for v in spec.values())):
-                    problems.append(f"streams[{name!r}] must be exactly {{source, stream}} strings, got {spec!r}")
+                problems += stream_problems(f"streams[{name!r}]", spec)
         return problems
 
     def _manifests(self):

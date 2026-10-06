@@ -16,13 +16,14 @@ CUT = 10 * DAY  # development rows decide before it, held-out rows at or after i
 
 
 def row(ticker, label, mid, fair, ask, bid, event, *, decision=0, lead=5, two_sided=True,
-        fee_yes=0.02, fee_no=0.02, fair_b=None):
+        fee_yes=0.02, fee_no=0.02, fair_b=None, close=None):
     return {"ticker": ticker, "event_ticker": event, "label": label, "mid": mid, "fair": fair,
             "fair_b": fair_b, "yes_ask": ask, "yes_bid": bid, "two_sided": two_sided,
-            "fee_buy_yes": fee_yes, "fee_buy_no": fee_no, "decision_ms": decision, "lead_minutes": lead}
+            "fee_buy_yes": fee_yes, "fee_buy_no": fee_no, "decision_ms": decision, "lead_minutes": lead,
+            "close_ms": decision + lead * 60_000 if close is None else close}
 
 
-# Every row is in the held-out segment; margin 0.05, so a trade needs |fair - mid| > fee + 0.05.
+# Every row but G closes in the held-out segment (segments cut on the CLOSE, when the label is settled); margin 0.05, so a trade needs |fair - mid| > fee + 0.05.
 HELD = CUT + 1000
 ROWS = [
     row("A", 1, 0.40, 0.70, 0.42, 0.38, "e1", decision=HELD),            # buy YES: 1-0.42-0.02 = 0.56
@@ -41,6 +42,7 @@ PARAMS = {
                  "heldout": {"start": "1970-01-11T00:00:00Z"}},
     "by": ["lead_minutes"],
     "cluster_field": "event_ticker",
+    "report_segments": ["development", "heldout"],
 }
 
 
@@ -100,7 +102,7 @@ def test_pooled_row_and_the_by_lead_row_agree_when_there_is_one_lead(tmp_path):
 def test_rows_that_cannot_be_scored_are_counted_by_reason_not_silently_dropped(tmp_path):
     census = score(tmp_path)["summary"]["census"]
     assert census["rows"] == 7
-    assert census["not_two_sided"] == 1 and census["outside_segments"] == 0
+    assert census["not_two_sided"] == 1 and census["outside_segments"] == 0 and census["no_cluster"] == 0
     assert census["models"]["fair"] == {"no_fair": 1, "scored": 5, "fee_missing": 0}
     # scored = four held-out rows and the development row
 
@@ -113,10 +115,44 @@ def test_segments_keep_development_and_heldout_apart(tmp_path):
     assert pick(out, segment="heldout")["n"] == 4
 
 
+def test_a_market_belongs_to_the_segment_it_closes_in_whatever_the_decision_instant(tmp_path):
+    # decisions straddle the cut: 100 s before it, but the market closes after it, so its label is held out
+    straddler = row("S", 1, 0.40, 0.70, 0.42, 0.38, "es", decision=CUT - 100_000, close=CUT + 200_000)
+    before = row("B", 1, 0.40, 0.70, 0.42, 0.38, "eb", decision=CUT - 400_000, close=CUT - 100_000)
+    out = score(tmp_path, rows=[straddler, before])
+    assert pick(out, segment="heldout")["n"] == 1 and pick(out, segment="development")["n"] == 1
+    # the two decisions of ONE market never land on both sides
+    same = [row("M", 1, 0.40, 0.70, 0.42, 0.38, "em", decision=CUT - 100_000, lead=5, close=CUT + 200_000),
+            row("M", 1, 0.40, 0.70, 0.42, 0.38, "em", decision=CUT + 50_000, lead=2, close=CUT + 200_000)]
+    out = score(tmp_path, rows=same)
+    assert pick(out, segment="heldout")["n"] == 2
+    assert not [r for r in out["scores"] if r["segment"] == "development"]
+
+
 def test_a_row_outside_every_segment_is_counted(tmp_path):
     narrow = {"heldout": {"start": "1970-01-11T00:00:00Z"}}
-    out = score(tmp_path, segments=narrow)
+    out = score(tmp_path, segments=narrow, report_segments=["heldout"])
     assert out["summary"]["census"]["outside_segments"] == 1
+
+
+def test_only_the_reported_segments_are_computed_or_written(tmp_path):
+    out = score(tmp_path, report_segments=["development"])
+    assert {r["segment"] for r in out["scores"]} == {"development"}
+    artifacts = os.path.join(str(tmp_path), "artifacts", "kill")
+    text = open(os.path.join(artifacts, "kill_test.md"), encoding="utf-8").read()
+    with open(os.path.join(artifacts, "kill_test.json"), encoding="utf-8") as handle:
+        saved = json.load(handle)
+    assert {r["segment"] for r in saved["scores"]} == {"development"}
+    assert "| heldout |" not in text and "| development |" in text
+    assert out["summary"]["report_segments"] == ["development"]
+    # the held-out numbers are not merely hidden: nothing downstream receives them
+    assert not [r for r in out["scores"] if r["segment"] == "heldout"]
+
+
+def test_report_segments_must_name_declared_segments(tmp_path):
+    for bad in ([], ["nope"], ["development", "development"], "development"):
+        with pytest.raises(Exception, match="report_segments"):
+            KillTestScore("kill", {**PARAMS, "report_segments": bad})
 
 
 def test_a_missing_fee_means_no_trade_is_priced_and_it_is_counted(tmp_path):
@@ -144,17 +180,27 @@ def test_the_margin_is_a_param(tmp_path):
     assert tight["n_trades"] == 0 and tight["pnl_total"] == 0.0 and tight["hit_rate"] is None
 
 
-def test_the_cluster_robust_standard_error(tmp_path):
+def test_the_cluster_robust_standard_error_is_dskits_with_the_small_sample_correction(tmp_path):
     a = row("A", 1, 0.40, 0.70, 0.42, 0.38, "x", decision=HELD)
     b = row("B", 0, 0.60, 0.45, 0.62, 0.58, "x", decision=HELD)
     d_a = (0.70 - 1) ** 2 - (0.40 - 1) ** 2
     d_b = 0.45**2 - 0.60**2
     mean = (d_a + d_b) / 2
-    iid = math.sqrt((d_a - mean) ** 2 + (d_b - mean) ** 2) / 2
+    # two singleton clusters: s / sqrt(n) with s the ddof=1 deviation, i.e. sqrt(n / (n - 1) * sum u^2) / n
+    expected = math.sqrt(2 / 1 * ((d_a - mean) ** 2 + (d_b - mean) ** 2)) / 2
     separate = [a, {**b, "event_ticker": "y"}]
-    assert pick(score(tmp_path, rows=separate))["brier_diff_se"] == pytest.approx(iid)
-    # one cluster: the two deviations cancel inside it, so the clustered error is zero
-    assert pick(score(tmp_path, rows=[a, b]))["brier_diff_se"] == pytest.approx(0.0, abs=1e-12)
+    cell = pick(score(tmp_path, rows=separate))
+    assert cell["brier_diff_se"] == pytest.approx(expected) and cell["n_clusters"] == 2
+    # one cluster has no variance to estimate: the error is undefined, never zero
+    cell = pick(score(tmp_path, rows=[a, b]))
+    assert cell["brier_diff_se"] is None and cell["n_clusters"] == 1 and cell["pnl_se"] is None
+
+
+def test_a_row_with_no_cluster_is_counted_and_not_scored_as_one_giant_cluster(tmp_path):
+    rows = [row("A", 1, 0.40, 0.70, 0.42, 0.38, None, decision=HELD), *ROWS[1:4]]
+    out = score(tmp_path, rows=rows)
+    assert out["summary"]["census"]["no_cluster"] == 1
+    assert pick(out)["n"] == 3
 
 
 def test_outputs_land_in_the_run_directory_as_json_and_markdown(tmp_path):
@@ -181,3 +227,15 @@ def test_params_are_validated(tmp_path):
         KillTestScore("kill", {**PARAMS, "surprise": 1})
     with pytest.raises(Exception, match="segments"):
         KillTestScore("kill", {**PARAMS, "segments": {"x": {"start": "not a time"}}})
+
+
+def test_calibration_in_the_large_is_reported_per_lead(tmp_path):
+    out = score(tmp_path)
+    r = pick(out, group="lead_minutes=5")
+    assert r["mean_fair"] == pytest.approx((0.70 + 0.30 + 0.58 + 0.10) / 4)
+    assert r["mean_mid"] == pytest.approx((0.40 + 0.60 + 0.55 + 0.20) / 4)
+    assert r["base_rate"] == pytest.approx(0.5)
+    text = open(os.path.join(str(tmp_path), "artifacts", "kill", "kill_test.md"), encoding="utf-8").read()
+    assert "Calibration in the large" in text and "lead_minutes=5" in text
+    line = [ln for ln in text.splitlines() if ln.startswith("| fair | heldout | lead_minutes=5")][0]
+    assert f"{r['mean_fair'] - r['base_rate']:+.4f}" in line, "mean(fair) minus the base rate, signed"

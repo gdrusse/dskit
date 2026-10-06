@@ -35,18 +35,20 @@ minutes before the close). Hourly series plug in by config once ADR-0236 supplie
 | Node (`crypto_trading.<module>:<Class>`) | Job |
 |---|---|
 | `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` pack's streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants; unsettled and TBD-strike markets dropped by name; candle end seconds to ms |
-| `decisions:DecisionRows` | market x lead: decision instant = close - lead |
+| `decisions:DecisionRows` | market x lead: decision instant = close - lead, only strictly after the strike is known (open + lag) |
+| `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
 | `day_series:StreamManifests` | puts the Binance streams into the run identity (interim, ADR-0240) |
-| `spot_features:SpotFeatures` | spot, ln(K/S), rolling-RMS / EWMA / high-low vol and BVOL, all strictly before the decision |
-| `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from candles that had ended |
-| `fair_value:FairValue` | driftless lognormal P(YES) with the 60-second settlement-average variance |
+| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol and BVOL, all strictly before the decision |
+| `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the last candle that ended strictly before the decision |
+| `fair_value:FairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance |
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream, rounded per order |
-| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment, plus the after-fee profit of a naive take rule |
+| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close), calibration in the large, cluster-robust errors, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
 The table is written as JSON lines and published back as source `features-15m` through
 `configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
 Interim child classes standing in for PROPOSED dskit ADRs: `day_series.py` (0240),
-`vol_estimators.py` (0241), `fees.py` (0242). Tests: `tests/synthetic.py` builds the offline stores.
+`vol_estimators.py` (0241), `fees.py` (0242), `fair_value.py` + `payoffs.py` + `kill_test.py` (0243).
+Tests: `tests/synthetic.py` builds the offline stores.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -192,16 +194,17 @@ crypto_trading/
 │   ├── binance_vision.py  # httpblobs transform: Binance daily zip-CSV to parquet
 │   ├── fields.py          # stage B: the row field names every node shares, once
 │   ├── clock.py           # stage B: ISO instant to epoch ms, the one conversion
-│   ├── payoffs.py         # stage B: above / below / between payoff geometries
+│   ├── payoffs.py         # stage B: above / below / between payoff geometries (interim, ADR-0243)
 │   ├── kalshi_rows.py     # stage B: MarketRows, CandleRows, FeeRows (ObservationRows subclasses)
 │   ├── decisions.py       # stage B: DecisionRows, one row per market and lead
+│   ├── anchors.py         # stage B: StrikeAnchors, strikes as index observations
 │   ├── day_series.py      # stage B: day-file parquet series, StreamManifests (interim, ADR-0240)
 │   ├── vol_estimators.py  # stage B: rms / EWMA / high-low estimators (interim, ADR-0241)
 │   ├── spot_features.py   # stage B: point-in-time spot, vol, BVOL, moneyness
 │   ├── market_state.py    # stage B: quote state from ended candles
-│   ├── fair_value.py      # stage B: averaged-lognormal P(YES)
+│   ├── fair_value.py      # stage B: averaged-lognormal P(YES) (interim, ADR-0243)
 │   ├── fees.py            # stage B: Kalshi taker fee, per order (interim, ADR-0242)
-│   ├── kill_test.py       # stage B: fair value vs mid, after fees, by segment
+│   ├── kill_test.py       # stage B: fair value vs mid, after fees, by segment (interim, ADR-0243)
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
 │   ├── execution.py       # production seam: the venue executor (fail-closed)
@@ -249,6 +252,7 @@ crypto_trading/
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── synthetic.py       # offline stores: scripted Kalshi, day-file parquet via localblobs
     ├── test_binance_vision.py # the transform on tiny in-test zips + httpblobs e2e
+    ├── test_anchors.py    # strikes as index observations
     ├── test_day_series.py # day files, strictly-prior lookups, manifests
     ├── test_decisions.py  # market x lead rows
     ├── test_fair_value.py # closed forms, the averaging adjustment, payoffs

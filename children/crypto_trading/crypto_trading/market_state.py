@@ -1,9 +1,10 @@
 """The market's own quote at the decision instant, from Kalshi 1-minute candles that had ended.
 
-A candle summarises the minute that ENDS at its ``end_ms``. It is usable at a decision when
-``end_ms <= decision_ms``: the minute is over, so everything in it was known. A candle that ends
-later summarises time the decision cannot see (and after the close its quotes are the
-post-settlement 0 or 1), so it is never read; the test plants an extreme quote there. The last
+A candle summarises the minute that ENDS at its ``end_ms``, and the venue's ``end_period_ts`` is the
+INCLUSIVE end of that minute: its last second is the instant ``end_ms`` itself. So a candle is usable at
+a decision only when ``end_ms < decision_ms`` strictly; one ending AT the decision still contains the
+decision's own second. A candle that ends at or after it is never read (and after the close its quotes
+are the post-settlement 0 or 1); the test plants an extreme quote at and after the decision. The last
 usable candle is the state, unless it is older than ``max_candle_age_ms``: then the state is
 missing, never carried forward.
 
@@ -15,7 +16,7 @@ floor or an ask at the ceiling is an empty side, not a price.
 Import cost: stdlib + dskit.
 """
 
-from bisect import bisect_right
+from bisect import bisect_left
 
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
@@ -127,9 +128,9 @@ class MarketState(Node):
                 for sorted_group in [sorted(group, key=lambda c: c[f.END_MS])]}
 
     def _last_candle(self, row, groups):
-        """Return the last candle of the row's market that ended by the decision and is fresh enough, or None."""
+        """Return the last candle of the row's market that ended strictly before the decision and is fresh enough, or None."""
         ends, candles = groups.get(row[f.TICKER], ((), ()))
-        index = bisect_right(ends, row[f.DECISION_MS]) - 1
+        index = bisect_left(ends, row[f.DECISION_MS]) - 1
         if index < 0 or row[f.DECISION_MS] - ends[index] > self.params["max_candle_age_ms"]:
             return None
         return candles[index]

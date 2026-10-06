@@ -89,7 +89,7 @@ def test_the_payoff_vocabulary_is_closed_and_names_its_strikes():
 
 # -- the node --------------------------------------------------------------------
 
-PARAMS = {"vol_field": "rv", "fair_field": "fair", "averaging_window_s": 60}
+PARAMS = {"vol_field": "rv", "fair_field": "fair", "spot_field": "spot", "averaging_window_s": 60}
 
 
 def row(**over):
@@ -146,3 +146,14 @@ def test_node_refuses_unknown_and_missing_params():
 def test_window_length_is_a_param_not_a_literal():
     wide = run([row(tau_s=400.0)], averaging_window_s=120)[0]
     assert wide["fair_var"] == pytest.approx(SIGMA**2 * (400.0 - 80.0))
+
+
+def test_the_spot_column_is_a_param_so_a_unit_corrected_spot_can_be_priced():
+    # the same strike against the raw and the index-unit spot prices differently; neither is a literal
+    raw = run([row(spot=100.0, spot_brti=99.96)], spot_field="spot")[0]["fair"]
+    adjusted = run([row(spot=100.0, spot_brti=99.96)], spot_field="spot_brti")[0]["fair"]
+    model = AveragedLognormal(SIGMA, TAU, 60.0)
+    assert raw == pytest.approx(model.survival(100.0, 100.0))
+    assert adjusted == pytest.approx(model.survival(99.96, 100.0)) and adjusted < raw
+    missing = run([row(spot_brti=None)], spot_field="spot_brti")[0]
+    assert missing["fair"] is None and missing["fair_status"] == "no_spot"

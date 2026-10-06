@@ -33,14 +33,15 @@ DOC = os.path.join(CHILD_ROOT, "configs", "run-features-15m.json")
 SERIES = ("KXBTC", "KXBTCD", "KXBTC15M", "KXETH", "KXETHD", "KXETH15M")
 CUT = "2026-09-03T00:00:00Z"
 LEADS = (2, 5, 10)
+DELTA = 4e-4  # the settlement index sits this far below Binance in the fixtures (about 24 USD at 60000)
 
-#: (ticker tail, asset series, close instant, strike offset from spot in ln, result)
+#: (ticker, asset, close instant, result); each strike is the index at the market's open
 MARKETS = [
-    ("KXBTC15M-26SEP020115-15", "BTC", utc(2026, 9, 2, 1, 15), 0.001, "yes"),
-    ("KXBTC15M-26SEP020130-30", "BTC", utc(2026, 9, 2, 1, 30), -0.002, "no"),
-    ("KXBTC15M-26SEP030115-15", "BTC", utc(2026, 9, 3, 1, 15), 0.0, "yes"),
-    ("KXETH15M-26SEP020115-15", "ETH", utc(2026, 9, 2, 1, 15), 0.002, "no"),
-    ("KXETH15M-26SEP030130-30", "ETH", utc(2026, 9, 3, 1, 30), -0.001, "yes"),
+    ("KXBTC15M-26SEP020115-15", "BTC", utc(2026, 9, 2, 1, 15), "yes"),
+    ("KXBTC15M-26SEP020130-30", "BTC", utc(2026, 9, 2, 1, 30), "no"),
+    ("KXBTC15M-26SEP030115-15", "BTC", utc(2026, 9, 3, 1, 15), "yes"),
+    ("KXETH15M-26SEP020115-15", "ETH", utc(2026, 9, 2, 1, 15), "no"),
+    ("KXETH15M-26SEP030130-30", "ETH", utc(2026, 9, 3, 1, 30), "yes"),
 ]
 
 
@@ -50,7 +51,7 @@ def doc_dict():
 
 
 def decision_instants():
-    return [ms(close - timedelta(minutes=lead)) for _, _, close, _, _ in MARKETS for lead in LEADS]
+    return [ms(close - timedelta(minutes=lead)) for _, _, close, _ in MARKETS for lead in LEADS]
 
 
 def build_world(tmp_path, monkeypatch):
@@ -60,13 +61,16 @@ def build_world(tmp_path, monkeypatch):
     bars = {"BTC": walk(start, 35 * 60, price=60000.0, seed=11),
             "ETH": walk(start, 35 * 60, price=3000.0, seed=12)}
 
-    def spot_at(asset, close):
-        before = [b for b in bars[asset] if b["close_time_ms"] < ms(close - timedelta(minutes=5))]
-        return before[-1]["close"]
+    def index_at_open(asset, close):
+        """The strike of a 15-minute up/down market: the index (Binance mid of the minute before the open, less
+        the fixture's basis) at the market's open."""
+        opened = ms(close - timedelta(minutes=15))
+        bar = [b for b in bars[asset] if b["open_time_ms"] == opened - 60_000][0]
+        return (bar["open"] + bar["close"]) / 2.0 * (1.0 - DELTA)
 
     markets, candles = [], {}
-    for ticker, asset, close, offset, result in MARKETS:
-        floor = round(spot_at(asset, close) * math.exp(offset), 2)
+    for ticker, asset, close, result in MARKETS:
+        floor = round(index_at_open(asset, close), 2)  # strikes are index dollars, set at the open
         markets.append(market_payload(ticker, close, floor=floor, result=result))
         candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=0.40, ask=0.44,
                                           price=0.42) for k in range(1, 16)]
@@ -93,9 +97,10 @@ def patched_doc(store, tmp_path):
     out = tmp_path / "features"
     out.mkdir()
     doc["pipeline"]["write"]["params"]["path"] = str(out / "decision_features.jsonl")
-    segments = doc["pipeline"]["kill_test"]["params"]["segments"]
-    segments["development"]["end"] = CUT
-    segments["heldout"]["start"] = CUT
+    kill = doc["pipeline"]["kill_test"]["params"]
+    kill["segments"]["development"]["end"] = CUT
+    kill["segments"]["heldout"]["start"] = CUT
+    kill["report_segments"] = ["development", "heldout"]  # the shipped document reports development only
     path = tmp_path / "run.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path, out
@@ -125,7 +130,7 @@ def test_the_table_has_one_row_per_market_and_lead_with_the_label(ran):
     _, result, _ = ran
     rows = result.outputs["fees"]["records"]
     assert len(rows) == len(MARKETS) * len(LEADS)
-    result_by_ticker = {t: r for t, _, _, _, r in MARKETS}
+    result_by_ticker = {t: r for t, _, _, r in MARKETS}
     for row in rows:
         assert row["label"] == (1 if result_by_ticker[row["ticker"]] == "yes" else 0)
         assert row["close_ms"] - row["decision_ms"] == row["lead_minutes"] * 60_000
@@ -136,7 +141,7 @@ def test_the_table_has_one_row_per_market_and_lead_with_the_label(ran):
 def test_every_feature_family_is_present_and_leak_free_on_the_pipeline_path(ran):
     store, result, _ = ran
     rows = {(r["ticker"], r["lead_minutes"]): r for r in result.outputs["fees"]["records"]}
-    for ticker, asset, close, _, _ in MARKETS:
+    for ticker, asset, close, _ in MARKETS:
         for lead in LEADS:
             r = rows[(ticker, lead)]
             decision = ms(close - timedelta(minutes=lead))
@@ -145,11 +150,13 @@ def test_every_feature_family_is_present_and_leak_free_on_the_pipeline_path(ran)
             assert r["spot_missing"] is False and r["bvol_missing"] is False
             assert r["rv_rms_60"] is not None and r["rv_ewma_30"] is not None
             assert r["two_sided"] is True and r["mid"] == pytest.approx(0.42)
-            assert r["candle_age_ms"] == 0, "a candle ends exactly on every whole-minute decision"
+            assert r["candle_age_ms"] == 60_000, "the candle ending AT the decision is not yet known"
+            assert r["basis_missing"] is False and r["basis"] == pytest.approx(1.0 - DELTA, rel=2e-3)
+            assert r["spot_brti"] == pytest.approx(r["spot"] * r["basis"])
             assert 0.0 < r["fair_rms"] < 1.0 and r["fair_rms_status"] == "ok"
             assert 0.0 < r["fair_bvol"] < 1.0
             assert r["fee_buy_yes"] == pytest.approx(0.0173, abs=1e-4) and r["fee_status"] == "ok"
-            assert r["ln_floor_over_spot"] == pytest.approx(math.log(store.floors[ticker] / r["spot"]))
+            assert r["ln_floor_over_spot"] == pytest.approx(math.log(store.floors[ticker] / r["spot_brti"]))
 
 
 def test_the_table_is_written_as_json_lines_for_the_next_run(ran):
@@ -183,6 +190,7 @@ def test_nothing_but_placement_and_the_cut_was_changed_for_this_run(tmp_path, mo
             spec.get("params", {}).pop("root", None)
         doc["pipeline"]["write"]["params"].pop("path")
         doc["pipeline"]["kill_test"]["params"]["segments"] = None
+        doc["pipeline"]["kill_test"]["params"]["report_segments"] = None
         return doc
 
     assert strip(patched) == strip(shipped_doc)
@@ -204,6 +212,10 @@ def test_the_feature_table_publishes_through_localtables_and_reads_back(ran, tmp
     assert {(r["ticker"], r["lead_minutes"]) for r in rows} == {
         (r["ticker"], r["lead_minutes"]) for r in written}
     assert all(r["asof_ms"] == r["decision_ms"] for r in rows)
+
+
+def test_the_shipped_document_does_not_report_the_held_out_segment():
+    assert doc_dict()["pipeline"]["kill_test"]["params"]["report_segments"] == ["development"]
 
 
 def test_the_shipped_document_validates_and_plans_without_any_store(capsys):

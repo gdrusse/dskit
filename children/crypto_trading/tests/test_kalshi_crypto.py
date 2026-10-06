@@ -204,6 +204,19 @@ def test_fee_schedules_one_row_per_series_and_a_maker_fee_type_warns(tmp_path, m
     assert result["gating"] == "warn", "a maker fee changes the quoting economics; it must be seen"
 
 
+@pytest.mark.parametrize("config, rule", [
+    ({"fee_multiplier": 0.5}, "fees-multiplier-is-one"),
+    ({"fee_multiplier": 2}, "fees-multiplier-is-one"),
+    ({"fee_type": "quadratic_with_maker_fees"}, "fees-type-is-quadratic"),
+])
+def test_fee_suite_warns_on_a_schedule_the_base_rate_does_not_assume(tmp_path, monkeypatch, config, rule):
+    root, registry, out = acquire(tmp_path, monkeypatch, "source-kalshi-crypto.json",
+                                  "fee_schedules", FakeKalshi(**config))
+    result = verdict(root, registry, "suite-kalshi-crypto-fees.json", out)
+    assert result["gating"] == "warn"
+    assert {r["id"] for r in result["statistics"]["results"] if r["tripped"]} == {rule}
+
+
 def test_fee_suite_blocks_a_negative_multiplier(tmp_path, monkeypatch):
     root, registry, out = acquire(tmp_path, monkeypatch, "source-kalshi-crypto.json",
                                   "fee_schedules", FakeKalshi(fee_multiplier=-1))

@@ -8,7 +8,9 @@ and the content fingerprint stay the seam's one implementation, and overrides on
 them (narrowing the knob away) rather than leaving them to the document.
 
 - :class:`MarketRows` turns a settled market into one row with the payoff geometry, the strikes,
-  the open and close instants (epoch ms) and the label (1 when YES settled, 0 for NO). A row
+  the open and close instants (epoch ms), when the strike is KNOWN and the label (1 when YES settled,
+  0 for NO). A 15-minute up/down market's strike is the previous window's settlement value, published
+  a few seconds after this market opens, so ``strike_known_ms`` is the open plus a declared lag per series. A row
   that cannot be labelled or placed is NOT emitted: it is listed by ticker with a reason on
   the ``excluded`` port and counted on ``census``, never guessed (an unsettled market, a
   result that is not yes/no, a market never given a strike, a strike its geometry needs but
@@ -158,13 +160,15 @@ class MarketRows(_StreamRows):
             "root": "./ob", "source": "kalshi-crypto", "series": ["KXBTC15M", "KXETH15M"],
             "payoff_by_strike_type": {"greater_or_equal": "above", "less": "below",
                                       "between": "between"},
-            "result_labels": {"yes": 1, "no": 0}, "settled_statuses": ["finalized"]})
+            "result_labels": {"yes": 1, "no": 0}, "settled_statuses": ["finalized"],
+            "strike_known_lag_s": {"KXBTC15M": 30, "KXETH15M": 30}})
         out = node.run(ctx, {})
         # -> out["records"][0]["label"] is 1 or 0; out["excluded"] names every dropped ticker
     """
 
     outputs = ("records", "excluded", "census")
-    _PARAMS = _StreamRows._PARAMS + ("series", "payoff_by_strike_type", "result_labels", "settled_statuses")
+    _PARAMS = _StreamRows._PARAMS + ("series", "payoff_by_strike_type", "result_labels", "settled_statuses",
+                                     "strike_known_lag_s")
 
     #: Set by :meth:`project`: the dropped markets and the census of the last projection.
     excluded = None
@@ -199,7 +203,18 @@ class MarketRows(_StreamRows):
         if not isinstance(labels, dict) or not labels or any(
                 isinstance(v, bool) or v not in (0, 1) for v in labels.values()):
             problems.append(f"result_labels is required: a map result -> 0 or 1, got {labels!r}")
+        problems += cls._lag_problems(params.get("strike_known_lag_s"), params.get("series"))
         return problems
+
+    @staticmethod
+    def _lag_problems(lags, series):
+        """Problems with ``strike_known_lag_s``: a map of listed series to non-negative seconds."""
+        if not isinstance(lags, dict):
+            return [f"strike_known_lag_s is required: a map series -> seconds (may be empty), got {lags!r}"]
+        listed = series if isinstance(series, list) else []
+        return [f"strike_known_lag_s[{k!r}] must be a number of seconds >= 0 for a series in {listed}, got {v!r}"
+                for k, v in lags.items()
+                if k not in listed or isinstance(v, bool) or not (number_ok(v) and v >= 0)]
 
     def stream(self):
         """Name the stream: the pack's ``markets``.
@@ -266,8 +281,13 @@ class MarketRows(_StreamRows):
             f.PAYOFF: self.params["payoff_by_strike_type"][record["strike_type"]],
             f.FLOOR: _number(record.get("floor_strike")), f.CAP: _number(record.get("cap_strike")),
             f.OPEN_MS: instant_ms(record["open_time"]), f.CLOSE_MS: instant_ms(record["close_time"]),
+            f.STRIKE_KNOWN_MS: instant_ms(record["open_time"]) + self._lag_ms(record["series_ticker"]),
             f.LABEL: self.params["result_labels"][record["result"]],
         }
+
+    def _lag_ms(self, series):
+        """Return the publication lag of a series' strike in ms: 0 for a series with none declared."""
+        return round(self.params["strike_known_lag_s"].get(series, 0) * _MS_PER_S)
 
     def project(self, records):
         """Turn the winning market rows into labelled rows, listing every market dropped.

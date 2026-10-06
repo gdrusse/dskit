@@ -12,12 +12,17 @@ import pytest
 from synthetic import Store, bvol_days, kline_days, ms, utc, walk
 
 from crypto_trading.day_series import StreamManifests
+from crypto_trading.fair_value import FairValue
 from crypto_trading.spot_features import SpotFeatures
 
 START = ms(utc(2026, 9, 1, 22, 0))
 BARS = 360  # 22:00 on the 1st to 04:00 on the 2nd
 DECISION = ms(utc(2026, 9, 2, 1, 0))
 SQRT_BAR_S = math.sqrt(60.0)
+
+ASSET_OF = {"KXBTC15M": "BTC", "KXBTC": "BTC", "KXETH15M": "ETH"}
+LAG_MS = 30_000
+BAR = 60_000
 
 STREAMS = {
     "BTC_klines": {"source": "btc-1m", "stream": "files"},
@@ -35,8 +40,8 @@ def params(root, **over):
             "ETH": {"series": ["KXETH15M"], "klines": STREAMS["ETH_klines"], "bvol": STREAMS["ETH_bvol"]},
         },
         "columns": {
-            "klines": {"open_time": "open_time_ms", "close_time": "close_time_ms", "high": "high",
-                       "low": "low", "close": "close"},
+            "klines": {"open_time": "open_time_ms", "close_time": "close_time_ms", "open": "open",
+                       "high": "high", "low": "low", "close": "close"},
             "bvol": {"time": "calc_time_ms", "value": "index_value"},
         },
         "day_relpath_template": "{day}.parquet",
@@ -45,6 +50,7 @@ def params(root, **over):
                        {"kind": "high_low", "window": 30}],
         "max_spot_age_ms": 120_000,
         "max_bvol_age_ms": 120_000,
+        "max_basis_age_ms": 1_200_000,
         "bvol_scale": 0.01,
         "seconds_per_year": 31_536_000,
     }
@@ -77,15 +83,39 @@ def decision_row(decision=DECISION, series="KXBTC15M", payoff="above", floor=600
     return row
 
 
-def spot(store, rows, **over):
+def reference(store, asset, anchor_ms):
+    """The Binance price the anchor is compared with: mid of open and close of the bar before its window end."""
+    bar = [b for b in store.bars[asset] if b["open_time_ms"] == anchor_ms - BAR]
+    return (bar[0]["open"] + bar[0]["close"]) / 2.0 if bar else None
+
+
+def anchor(store, asset, anchor_ms, basis=1.0, series="KXBTC15M", lag_ms=LAG_MS):
+    """An anchor whose value is ``basis`` times the Binance reference (None when there is no bar)."""
+    ref = reference(store, asset, anchor_ms)
+    if ref is None:
+        return None
+    return {"ticker": f"{series}-A{anchor_ms}", "series": series, "anchor_ms": anchor_ms,
+            "known_ms": anchor_ms + lag_ms, "anchor_value": ref * basis}
+
+
+def unit_anchors(store, rows, basis=1.0):
+    """One anchor per row, 10 minutes before its decision, at a constant ``basis`` to Binance."""
+    out = [anchor(store, ASSET_OF[r["series"]], r["decision_ms"] - 600_000, basis,
+                  series="KXETH15M" if ASSET_OF[r["series"]] == "ETH" else "KXBTC15M")
+           for r in rows if r["series"] in ASSET_OF]
+    return [a for a in out if a is not None]
+
+
+def spot(store, rows, anchors=None, **over):
     manifests = StreamManifests("manifests", {"root": store.path, "streams": STREAMS}).run(
         None, {})["manifests"]
     node = SpotFeatures("spot", params(store.path, **over))
-    return node.run(None, {"records": rows, "manifests": manifests})
+    given = unit_anchors(store, rows) if anchors is None else anchors
+    return node.run(None, {"records": rows, "manifests": manifests, "anchors": given})
 
 
-def one(store, **kw):
-    return spot(store, [decision_row(**kw)])["records"][0]
+def one(store, anchors=None, **kw):
+    return spot(store, [decision_row(**kw)], anchors=anchors)["records"][0]
 
 
 # -- restated expectations ----------------------------------------------------------
@@ -266,7 +296,7 @@ def test_the_run_refuses_a_store_that_moved_since_the_manifest_was_fingerprinted
     manifests["BTC_klines"] = {**manifests["BTC_klines"], "manifest_sha256": "0" * 64}
     node = SpotFeatures("spot", params(store.path))
     with pytest.raises(ValueError, match="BTC_klines.*moved"):
-        node.run(None, {"records": [decision_row()], "manifests": manifests})
+        node.run(None, {"records": [decision_row()], "manifests": manifests, "anchors": []})
 
 
 def test_default_deny_required_params_and_the_serving_class(tmp_path):
@@ -282,3 +312,145 @@ def test_default_deny_required_params_and_the_serving_class(tmp_path):
         SpotFeatures("spot", {**good, "assets": {
             "BTC": good["assets"]["BTC"], "ETH": {**good["assets"]["ETH"], "series": ["KXBTC15M"]}}})
     assert SpotFeatures.serving_effect({}, {}) == "forbidden", "Binance data is research-only"
+
+
+# -- the settlement-index basis (a strike anchor against Binance) ------------------------
+
+DELTA = 4e-4  # BRTI sits this far BELOW Binance in the fixtures, as it did on average in real data
+
+
+def test_a_row_with_a_usable_anchor_gets_the_basis_its_age_and_a_brti_unit_spot(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    anchors = [anchor(store, "BTC", DECISION - 600_000, basis=1.0 - DELTA)]
+    out = one(store, anchors=anchors)
+    assert out["basis"] == pytest.approx(1.0 - DELTA)
+    assert out["basis_age_ms"] == 600_000 - LAG_MS and out["basis_missing"] is False
+    assert out["spot_brti"] == pytest.approx(out["spot"] * (1.0 - DELTA))
+    assert out["spot"] == store.bars["BTC"][last_closed(store.bars["BTC"], DECISION)]["close"], "raw spot is kept"
+
+
+def test_moneyness_is_measured_against_the_brti_unit_spot(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    anchors = [anchor(store, "BTC", DECISION - 600_000, basis=1.0 - DELTA)]
+    raw = store.bars["BTC"][last_closed(store.bars["BTC"], DECISION)]["close"]
+    strike = raw * (1.0 - DELTA) * math.exp(0.01)
+    out = one(store, anchors=anchors, floor=strike)
+    assert out["log_moneyness"] == pytest.approx(0.01), "K is in index units, so S must be too"
+    assert out["ln_floor_over_spot"] == pytest.approx(0.01)
+
+
+def test_the_latest_anchor_known_strictly_before_the_decision_is_used(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    early = anchor(store, "BTC", DECISION - 900_000, basis=0.9996)
+    later = anchor(store, "BTC", DECISION - 300_000, basis=0.9990)
+    at_decision = {**anchor(store, "BTC", DECISION - 60_000, basis=0.5), "known_ms": DECISION}
+    published_after = {**anchor(store, "BTC", DECISION - 60_000, basis=2.0), "known_ms": DECISION + 7_000}
+    out = one(store, anchors=[early, published_after, later, at_decision])
+    assert out["basis"] == pytest.approx(0.9990), "the anchor known AT the decision, or after it, is invisible"
+    assert out["basis_age_ms"] == 300_000 - LAG_MS
+
+
+def test_an_anchor_published_after_the_decision_is_never_used(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    legal = anchor(store, "BTC", DECISION - 600_000, basis=0.9996)
+    future = [anchor(store, "BTC", DECISION + 60_000 * k, basis=3.0) for k in range(1, 6)]
+    clean, dirty = one(store, anchors=[legal]), one(store, anchors=[legal, *future])
+    assert {k: clean[k] for k in ("basis", "basis_age_ms", "spot_brti")} == {
+        k: dirty[k] for k in ("basis", "basis_age_ms", "spot_brti")}
+    # control: the same wild anchor, known before the decision, does move it
+    wild = anchor(store, "BTC", DECISION - 300_000, basis=3.0)
+    assert one(store, anchors=[legal, wild])["basis"] == pytest.approx(3.0)
+
+
+def test_the_reference_bar_ends_before_the_anchor_is_known(tmp_path, monkeypatch):
+    # the anchor averages the minute BEFORE its window end; Binance's minute that opens at the window end
+    # is not part of it and must not move the basis
+    clean = world(tmp_path / "clean", monkeypatch)
+    anchor_ms = DECISION - 600_000
+    legal = anchor(clean, "BTC", anchor_ms, basis=0.9996)
+    dirty = world(tmp_path / "dirty", monkeypatch, btc=spiked(clean.bars["BTC"], anchor_ms))
+    assert one(dirty, anchors=[legal])["basis"] == one(clean, anchors=[legal])["basis"]
+    # control: a spike in the bar that IS the reference does move it
+    inside = world(tmp_path / "inside", monkeypatch, btc=spiked(clean.bars["BTC"], anchor_ms - BAR))
+    assert one(inside, anchors=[legal])["basis"] != one(clean, anchors=[legal])["basis"]
+
+
+def test_a_stale_anchor_is_missing_never_carried_forward(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    old = anchor(store, "BTC", DECISION - 1_500_000, basis=0.9996)  # known 24.5 minutes ago, cap is 20
+    out = one(store, anchors=[old])
+    assert out["basis"] is None and out["basis_age_ms"] is None and out["basis_missing"] is True
+    assert out["spot_brti"] is None and out["log_moneyness"] is None and out["ln_floor_over_spot"] is None
+    assert out["spot"] is not None and out["rv_rms_30"] is not None, "only the index-unit columns are blanked"
+    wider = spot(store, [decision_row()], anchors=[old], max_basis_age_ms=1_800_000)["records"][0]
+    assert wider["basis"] == pytest.approx(0.9996)
+
+
+def test_no_anchor_at_all_is_a_missing_basis(tmp_path, monkeypatch):
+    out = one(world(tmp_path, monkeypatch), anchors=[])
+    assert out["basis_missing"] is True and out["spot_brti"] is None
+
+
+def test_an_anchor_with_no_binance_bar_to_compare_with_is_skipped_for_an_earlier_one(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    good = anchor(store, "BTC", DECISION - 900_000, basis=0.9996)
+    no_bar = {**good, "anchor_ms": START - 3_600_000, "known_ms": DECISION - 400_000}  # window before the tape
+    out = one(store, anchors=[good, no_bar])
+    assert out["basis"] == pytest.approx(0.9996), "an anchor that cannot be compared is not an anchor"
+
+
+def test_hourly_rows_use_the_15_minute_anchors_of_their_asset(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    btc = anchor(store, "BTC", DECISION - 600_000, basis=0.9996)
+    eth = anchor(store, "ETH", DECISION - 300_000, basis=0.9900, series="KXETH15M")
+    rows = [decision_row(series="KXBTC", floor=60000.0), decision_row(series="KXBTC15M"),
+            decision_row(series="KXETH15M", floor=3000.0)]
+    base = params(store.path)["assets"]
+    assets = {**base, "BTC": {**base["BTC"], "series": ["KXBTC15M", "KXBTC"]}}
+    out = spot(store, rows, anchors=[btc, eth], assets=assets)["records"]
+    assert out[0]["basis"] == pytest.approx(0.9996), "a KXBTC row prices off the KXBTC15M anchor"
+    assert out[1]["basis"] == pytest.approx(0.9996)
+    assert out[2]["basis"] == pytest.approx(0.9900), "ETH has its own basis"
+
+
+def test_an_anchor_of_a_series_no_asset_claims_is_refused_by_name(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    bad = {**anchor(store, "BTC", DECISION - 600_000), "series": "KXSOL15M"}
+    with pytest.raises(ValueError, match="KXSOL15M"):
+        one(store, anchors=[bad])
+
+
+def test_a_constant_unit_basis_does_not_bias_the_fair_value(tmp_path, monkeypatch):
+    """Strikes are in index (BRTI) dollars and Binance is a few bp above them: the fair value of a coin flip.
+
+    Binance is flat from 12 minutes before the decision, so at the decision it sits exactly where it
+    was when the strike was set; the contract is then a fair coin whatever the units. Priced against the raw
+    Binance price the strike looks 4 bp out of the money in the wrong direction and the probability is far
+    from one half.
+    """
+    flat_from, level = DECISION - 12 * BAR, 60000.0
+    bars = [b if b["open_time_ms"] < flat_from or b["open_time_ms"] >= DECISION + 5 * BAR
+            else {**b, "open": level, "high": level, "low": level, "close": level}
+            for b in walk(START, BARS, price=level, seed=5)]
+    store = world(tmp_path, monkeypatch, btc=bars)
+    open_ms = DECISION - 10 * BAR
+    anchors = [anchor(store, "BTC", open_ms, basis=1.0 - DELTA)]
+    strike = anchors[0]["anchor_value"]
+    assert strike == pytest.approx(level * (1.0 - DELTA)), "premise: the strike is in index units"
+    row = decision_row(floor=strike, tau_s=300.0)
+    out = spot(store, [row], anchors=anchors)["records"]
+    price = lambda field: FairValue("fair", {"vol_field": "rv_rms_30", "fair_field": "fair",  # noqa: E731
+                                            "spot_field": field, "averaging_window_s": 60}
+                                    ).run(None, {"records": out})["records"][0]["fair"]
+    assert out[0]["basis"] == pytest.approx(1.0 - DELTA)
+    assert price("spot_brti") == pytest.approx(0.5, abs=0.005)
+    assert price("spot") > 0.6, "what the raw Binance price would have said: a unit mismatch, not an edge"
+
+
+def test_the_basis_params_are_required_and_the_open_column_is_declared(tmp_path):
+    good = params("/r")
+    with pytest.raises(Exception, match="max_basis_age_ms"):
+        SpotFeatures("spot", {k: v for k, v in good.items() if k != "max_basis_age_ms"})
+    klines = {k: v for k, v in good["columns"]["klines"].items() if k != "open"}
+    with pytest.raises(Exception, match="open"):
+        SpotFeatures("spot", {**good, "columns": {**good["columns"], "klines": klines}})

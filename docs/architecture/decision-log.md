@@ -30420,3 +30420,19 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Consequences.** One fee rule; `pmquant`'s `fees.py` shrinks to the dated fee book. The venue keeps only the CURRENT schedule, so history is priced under it unless a dated book (pmquant's) is supplied.
 
 **Tests.** Move `pmquant/tests/test_fees.py`; add the type-to-rate mapping and an unsupported-type refusal.
+
+## ADR-0243 — Binary-contract fair value on a settlement average, payoff geometries, bucketed binary scoring with a cluster-robust error
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; review finding on `crypto_trading` stage B: generic capability with no ADR). Extends `libs`-level pricing (`black76`) and ADR-0025 (per-observation metrics).
+**Sweep** (`digital_option norm_cdf binary_probability`, `brier logloss calibration_table reliability`, `cluster_se cluster_bootstrap pooled_mean_and_se`, `consume_once heldout_gate`, `report_segments segment_field`, origin/main, all branches and worktrees): `option_pricing.black76` prices calls and puts on a forward (no digital, no averaging window); `metrics.brier` / `logloss` are per-observation; `stats.cluster_bootstrap_t` is the only public cluster-robust estimator and returns its `se` only inside a bootstrap; `_pooled_mean_and_se` is private; the one consume-once gate (ADR-0147) guards deployment, not research reads. No bucketed binary scorer, no payoff geometry set, no research held-out gate.
+
+**Context.** `crypto_trading` prices a contract that pays 1 when a settlement value, the average of an index over its last `W` seconds, lands in a region, and scores the price against the market's own. Nothing about it is crypto-specific: a prediction market on any averaged index, or a digital option, needs the same pieces.
+
+**Decision (proposed).** (1) A tier-1 pricer: `AveragedLognormal(sigma, tau, window)` (a martingale spot, log-variance `sigma^2 (tau - 2W/3)`, the averaging window removing two thirds of its own point variance; the derivation and a discrete-average check live in the module) and `BinaryPayoff` geometries (above, below, between) over a survival function, plus a `FairValue` node. (2) A `KillTestScore`-shaped scorer: Brier and log-loss of a model against a mid per bucket, group and segment, a take-rule profit net of fees, and mean model, mean market and base rate per cell. (3) A public `cluster_se(cluster_scores)` in `dskit.pipeline.stats` (the existing `_pooled_mean_and_se`, with the `n / (n - 1)` correction, undefined below two clusters), so no caller runs a bootstrap for its `se`. (4) A research held-out gate: segments cut on the instant the label is settled, and a `report_segments` list so a document reports the held-out segment only by an explicit, hash-changing edit. Until then the child's `fair_value.py`, `payoffs.py` and `kill_test.py` are interim (the latter calls `cluster_bootstrap_t` with one replicate for its `se`).
+
+**Alternatives rejected.** Keeping them child-side forever (the next prediction-market child rewrites them); a Monte Carlo pricer (the closed form matches Monte Carlo on the reviewer's check and is exact).
+
+**Consequences.** The child's classes move to dskit and its tests with them. `kill_test.md`'s calibration-in-the-large table becomes the generic report.
+
+**Tests.** The closed forms (ATM, averaging variance, discrete 60-print average), payoff consistency, the hand-scored table, clustering below and above two clusters, segments cut on the close, unreported segments never emitted.
+

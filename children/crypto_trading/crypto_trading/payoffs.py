@@ -10,6 +10,9 @@ never a branch in a node.
 - ``below``   (Kalshi ``less`` / ``less_or_equal``): YES when ``A < cap``.
 - ``between`` (Kalshi ``between``): YES when ``floor <= A < cap``.
 
+INTERIM HOME (PROPOSED ADR-0243): the geometries are generic to any binary contract on a value; they move to
+dskit with the pricer in :mod:`crypto_trading.fair_value`.
+
 Which Kalshi ``strike_type`` maps to which geometry is configuration (the document's
 ``payoff_by_strike_type``), so the venue's vocabulary never lives in code.
 

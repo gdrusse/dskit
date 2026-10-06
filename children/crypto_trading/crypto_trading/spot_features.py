@@ -17,10 +17,21 @@ row's asset and writes what was KNOWN just before ``decision_ms``:
 - **Units.** Times are epoch ms (Binance's, the pipeline's); every volatility column is the
   standard deviation of the log return per sqrt(second): a per-bar variance divided by the bar's
   seconds, or the annualised BVOL (``index_value * bvol_scale``) over ``sqrt(seconds_per_year)``.
-- **Moneyness.** ``ln_floor_over_spot`` and ``ln_cap_over_spot`` are ``ln(K / S)`` for the strikes
-  the row's payoff reads (None for the other); ``log_moneyness`` is the single strike's value for
-  ``above`` / ``below`` and None for ``between``. For the 15-minute up/down market the floor
-  strike IS the window-start target price.
+- **Basis.** Strikes are in settlement-index dollars (CF Benchmarks' BRTI, USD) and Binance is a
+  different instrument (USDT-quoted; on live data the index averaged about 22 USD BELOW Binance, which
+  alone biased every fair value up by about 11 percentage points). The ``anchors`` input
+  (:class:`~crypto_trading.anchors.StrikeAnchors`) carries observations of the index: each anchor is the
+  index's 60-second average ending at ``anchor_ms``, known from ``known_ms``. Its Binance counterpart
+  is the mean of the open and close of the ONE 1-minute bar that starts ``bar_ms`` before ``anchor_ms``
+  (it closes at ``anchor_ms - 1 ms``, so it is strictly before the anchor is known) and ``basis = anchor /
+  Binance``. A decision uses the latest anchor whose ``known_ms`` is STRICTLY before it and no older than
+  ``max_basis_age_ms``; the row carries ``basis``, ``basis_age_ms``, ``basis_missing`` and
+  ``spot_brti = spot * basis`` (the Binance spot in index units). An anchor with no bar to compare with is
+  skipped; none usable means missing (None), never a stale or unit-less price. Anchors are rows of an
+  asset, not of a market, so an hourly row can use the 15-minute series' anchors of the same asset.
+- **Moneyness.** ``ln_floor_over_spot`` and ``ln_cap_over_spot`` are ``ln(K / spot_brti)`` for the
+  strikes the row's payoff reads (None for the other); ``log_moneyness`` is the single strike's value for
+  ``above`` / ``below`` and None for ``between``.
 
 Klines are USDT-quoted, a proxy for the USD index Kalshi settles on, and CC BY-NC-SA: research
 use only, so the node is forbidden in a served graph.
@@ -40,14 +51,14 @@ from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
-from .day_series import ParquetDaySeries, prior_index, tape_name
+from .day_series import ParquetDaySeries, prior_index, stream_problems, tape_name
 from .payoffs import payoff
 from .vol_estimators import Bars, build_estimators
 
 __all__ = ["SpotFeatures"]
 
 _MS_PER_S = 1000
-_KLINE_COLUMNS = ("open_time", "close_time", "high", "low", "close")
+_KLINE_COLUMNS = ("open_time", "close_time", "open", "high", "low", "close")
 _BVOL_COLUMNS = ("time", "value")
 _ASSET_KEYS = ("series", "klines", "bvol")
 _MONEYNESS = {f.FLOOR: "ln_floor_over_spot", f.CAP: "ln_cap_over_spot"}
@@ -62,20 +73,13 @@ def _cell(value):
     return None if math.isnan(value) else value
 
 
-def _stream_problems(name, spec):
-    """Problems with one ``{"source", "stream"}`` pair."""
-    if (not isinstance(spec, dict) or set(spec) != {"source", "stream"}
-            or any(not isinstance(v, str) or not v for v in spec.values())):
-        return [f"{name} must be exactly {{source, stream}} strings, got {spec!r}"]
-    return []
-
-
 class SpotFeatures(Node):
     """Add point-in-time spot, volatility and BVOL columns to decision rows (role ``transform``).
 
     Inputs: ``records`` (decision rows with ``series``, ``decision_ms``, ``payoff`` and the
-    strikes) and ``manifests`` (a :class:`~crypto_trading.day_series.StreamManifests` output).
-    Outputs: ``records`` (every row plus the columns above, one ``rv_*`` column per estimator)
+    strikes), ``manifests`` (a :class:`~crypto_trading.day_series.StreamManifests` output) and
+    ``anchors`` (:class:`~crypto_trading.anchors.StrikeAnchors` rows; may be empty, then every basis is
+    missing). Outputs: ``records`` (every row plus the columns above, one ``rv_*`` column per estimator)
     and ``provenance`` (per asset: the manifests read and the counts of missing readings).
 
     Parameters
@@ -84,11 +88,12 @@ class SpotFeatures(Node):
         All REQUIRED. ``root`` (str) the onboarding root. ``assets`` (dict) asset ->
         ``{"series": [...], "klines": {"source", "stream"}, "bvol": {"source", "stream"}}``; a
         series belongs to one asset and a row of any other series is refused. ``columns`` (dict)
-        the files' column names: ``{"klines": {open_time, close_time, high, low, close},
+        the files' column names: ``{"klines": {open_time, close_time, open, high, low, close},
         "bvol": {time, value}}``. ``day_relpath_template`` (str with one ``{day}``).
         ``bar_ms`` (int >= 1) the kline interval. ``estimators`` (list) specs for
         :func:`~crypto_trading.vol_estimators.build_estimators`. ``max_spot_age_ms`` and
-        ``max_bvol_age_ms`` (int >= 1) how old a reading may be. ``bvol_scale`` (number > 0)
+        ``max_bvol_age_ms`` (int >= 1) how old a reading may be; ``max_basis_age_ms`` (int >= 1) how old the
+        anchor behind the basis may be. ``bvol_scale`` (number > 0)
         turns the index value into an annualised fraction (0.01 when published in percent).
         ``seconds_per_year`` (number > 0) the annualisation basis of that index.
 
@@ -102,20 +107,20 @@ class SpotFeatures(Node):
                                "klines": {"source": "binance-btcusdt-1m", "stream": "files"},
                                "bvol": {"source": "binance-btcbvol", "stream": "files"}}},
             "columns": {"klines": {"open_time": "open_time_ms", "close_time": "close_time_ms",
-                                   "high": "high", "low": "low", "close": "close"},
+                                   "open": "open", "high": "high", "low": "low", "close": "close"},
                         "bvol": {"time": "calc_time_ms", "value": "index_value"}},
             "day_relpath_template": "{day}.parquet", "bar_ms": 60000,
             "estimators": [{"kind": "rms", "window": 60}],
-            "max_spot_age_ms": 120000, "max_bvol_age_ms": 60000,
+            "max_spot_age_ms": 120000, "max_bvol_age_ms": 60000, "max_basis_age_ms": 1200000,
             "bvol_scale": 0.01, "seconds_per_year": 31536000})
-        out = node.run(ctx, {"records": rows, "manifests": manifests})
+        out = node.run(ctx, {"records": rows, "manifests": manifests, "anchors": anchors})
         # -> out["records"][0]["spot"] is the close of the last bar closed before decision_ms
     """
 
     role = "transform"
     outputs = ("records", "provenance")
     _PARAMS = ("root", "assets", "columns", "day_relpath_template", "bar_ms", "estimators",
-               "max_spot_age_ms", "max_bvol_age_ms", "bvol_scale", "seconds_per_year")
+               "max_spot_age_ms", "max_bvol_age_ms", "max_basis_age_ms", "bvol_scale", "seconds_per_year")
 
     @classmethod
     def _assets_problems(cls, assets):
@@ -132,7 +137,7 @@ class SpotFeatures(Node):
                 problems.append(f"assets[{asset!r}].series must be a non-empty list of strings, got {series!r}")
                 continue
             for tape in ("klines", "bvol"):
-                problems += _stream_problems(f"assets[{asset!r}].{tape}", spec[tape])
+                problems += stream_problems(f"assets[{asset!r}].{tape}", spec[tape])
             for name in series:
                 if owner.setdefault(name, asset) != asset:
                     problems.append(f"series {name!r} is claimed by both asset {owner[name]!r} and {asset!r}")
@@ -175,7 +180,7 @@ class SpotFeatures(Node):
         template = params.get("day_relpath_template")
         if not isinstance(template, str) or template.count("{day}") != 1:
             problems.append(f"day_relpath_template is required: a file name with one {{day}}, got {template!r}")
-        for name in ("bar_ms", "max_spot_age_ms", "max_bvol_age_ms"):
+        for name in ("bar_ms", "max_spot_age_ms", "max_bvol_age_ms", "max_basis_age_ms"):
             if name not in params:
                 problems.append(f"{name} is required")
             else:
@@ -193,7 +198,7 @@ class SpotFeatures(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Refuse a ``records`` port that is not a list or a ``manifests`` port that is not a dict.
+        """Refuse a ``records`` or ``anchors`` port that is not a list or a ``manifests`` port that is not a dict.
 
         Parameters
         ----------
@@ -208,6 +213,8 @@ class SpotFeatures(Node):
         problems = []
         if not isinstance(inputs.get("records"), list):
             problems.append(f"records must be a list of decision rows, got {type(inputs.get('records')).__name__}")
+        if not isinstance(inputs.get("anchors"), list):
+            problems.append(f"anchors must be a list of StrikeAnchors rows, got {type(inputs.get('anchors')).__name__}")
         if not isinstance(inputs.get("manifests"), dict):
             problems.append(f"manifests must be a StreamManifests output, got {type(inputs.get('manifests')).__name__}")
         return problems
@@ -233,26 +240,29 @@ class SpotFeatures(Node):
                              f"({held['manifest_sha256'][:12]} then {now['manifest_sha256'][:12]}); rerun")
         return series, now
 
-    def _bars(self, series, instants, estimators):
-        """Load the klines that can matter for ``instants`` and return ``(bars, close times)``."""
+    def _bars(self, series, instants, estimators, anchors):
+        """Load the klines that can matter for ``instants`` and their anchors; return ``(bars, columns)``."""
         cols = self.params["columns"]["klines"]
         bar_ms = self.params["bar_ms"]
         reach = max([e.lookback_bars() for e in estimators] + [1]) + 1
-        lead_in = reach * bar_ms + self.params["max_spot_age_ms"]
-        got = series.load_span(int(instants.min()) - lead_in, int(instants.max()))
+        first = int(instants.min()) - reach * bar_ms - self.params["max_spot_age_ms"]
+        recent = [a[f.ANCHOR_MS] for a in anchors
+                  if int(instants.min()) - self.params["max_basis_age_ms"] <= a[f.ANCHOR_KNOWN_MS] < int(instants.max())]
+        got = series.load_span(min([first] + [m - bar_ms for m in recent]), int(instants.max()))
         bars = Bars(got[cols["open_time"]], got[cols["high"]], got[cols["low"]], got[cols["close"]], bar_ms)
-        return bars, got[cols["close_time"]]
+        return bars, got
 
-    def _kline_arrays(self, asset, instants, wired, estimators):
-        """Return per-instant spot, age and one volatility array per estimator, NaN where unknown."""
+    def _kline_arrays(self, asset, instants, wired, estimators, anchors):
+        """Return per-instant spot, age, basis and one volatility array per estimator, NaN where unknown."""
         import numpy as np
 
         cols = self.params["columns"]["klines"]
         series, manifest = self._tape(asset, "klines", wired, [cols[k] for k in _KLINE_COLUMNS],
                                       cols["close_time"])
-        names = [f.SPOT, _SPOT_AGE] + [e.column() for e in estimators]
+        names = [f.SPOT, _SPOT_AGE, f.BASIS, f.BASIS_AGE_MS] + [e.column() for e in estimators]
         out = {name: np.full(instants.size, np.nan) for name in names}
-        bars, closes = self._bars(series, instants, estimators)
+        bars, got = self._bars(series, instants, estimators, anchors)
+        closes = got[cols["close_time"]]
         if closes.size == 0:
             return out, manifest
         index = prior_index(closes, instants)
@@ -266,7 +276,33 @@ class SpotFeatures(Node):
             with np.errstate(invalid="ignore"):
                 out[estimator.column()] = np.where(
                     usable, np.sqrt(estimator.variance(bars)[safe] / seconds), np.nan)
+        out[f.BASIS], out[f.BASIS_AGE_MS] = self._basis_arrays(bars, got[cols["open"]], anchors, instants)
         return out, manifest
+
+    def _basis_arrays(self, bars, opens, anchors, instants):
+        """Return per-instant basis and its age from the latest usable anchor known strictly before it."""
+        import numpy as np
+
+        bar_ms = self.params["bar_ms"]
+        known, basis = [], []
+        for anchor in anchors:
+            at = int(np.searchsorted(bars.open_time, anchor[f.ANCHOR_MS] - bar_ms))
+            if at >= bars.open_time.size or bars.open_time[at] != anchor[f.ANCHOR_MS] - bar_ms:
+                continue  # no bar to compare with: not an anchor
+            reference = (opens[at] + bars.close[at]) / 2.0
+            if np.isfinite(reference) and reference > 0 and number_ok(anchor[f.ANCHOR_VALUE]) and anchor[f.ANCHOR_VALUE] > 0:
+                known.append(anchor[f.ANCHOR_KNOWN_MS])
+                basis.append(anchor[f.ANCHOR_VALUE] / reference)
+        empty = np.full(instants.size, np.nan)
+        if not known:
+            return empty, empty.copy()
+        order = np.argsort(known, kind="stable")
+        known, basis = np.asarray(known, dtype=np.int64)[order], np.asarray(basis)[order]
+        index = prior_index(known, instants)
+        safe = np.where(index >= 0, index, 0)
+        age = instants - known[safe]
+        usable = (index >= 0) & (age <= self.params["max_basis_age_ms"])
+        return np.where(usable, basis[safe], np.nan), np.where(usable, age, np.nan)
 
     def _bvol_arrays(self, asset, instants, wired):
         """Return per-instant BVOL value and age (NaN where unknown)."""
@@ -276,7 +312,7 @@ class SpotFeatures(Node):
         return {"value": got[cols["value"]], "age": got["age_ms"]}, manifest
 
     def _moneyness(self, row, spot):
-        """Return the ln(K / S) columns for the strikes the row's payoff reads."""
+        """Return the ln(K / S) columns for the strikes the row's payoff reads, S in index units."""
         shape = payoff(row[f.PAYOFF])
         out = {name: None for name in _MONEYNESS.values()}
         if spot is not None:
@@ -288,17 +324,31 @@ class SpotFeatures(Node):
 
     def _row(self, record, k, kline, bvol, estimators):
         """Build the output row for input ``record`` at position ``k`` of its asset's arrays."""
-        spot = _cell(kline[f.SPOT][k])
-        age = _cell(kline[_SPOT_AGE][k])
+        spot, age = _cell(kline[f.SPOT][k]), _cell(kline[_SPOT_AGE][k])
+        basis, basis_age = _cell(kline[f.BASIS][k]), _cell(kline[f.BASIS_AGE_MS][k])
+        spot_brti = None if spot is None or basis is None else spot * basis
         value, bvol_age = _cell(bvol["value"][k]), _cell(bvol["age"][k])
         iv = None if value is None else value * self.params["bvol_scale"]
         row = dict(record)
         row.update({f.SPOT: spot, _SPOT_AGE: None if age is None else int(age), _SPOT_MISSING: spot is None})
         row.update({e.column(): _cell(kline[e.column()][k]) for e in estimators})
-        row.update(self._moneyness(record, spot))
+        row.update({f.BASIS: basis, f.BASIS_AGE_MS: None if basis_age is None else int(basis_age),
+                    f.BASIS_MISSING: basis is None, f.SPOT_BRTI: spot_brti})
+        row.update(self._moneyness(record, spot_brti))
         row.update({_BVOL_IV: iv, _BVOL_VOL: None if iv is None else iv / math.sqrt(self.params["seconds_per_year"]),
                     _BVOL_AGE: None if bvol_age is None else int(bvol_age), _BVOL_MISSING: iv is None})
         return row
+
+    def _anchors_by_asset(self, anchors, asset_of):
+        """Group the anchor rows by the asset of their series; refuse a series no asset claims."""
+        by_asset = {}
+        for anchor in anchors:
+            asset = asset_of.get(anchor[f.SERIES])
+            if asset is None:
+                raise ValueError(f"{self.key}: anchor {anchor.get(f.TICKER)!r} has series {anchor[f.SERIES]!r}, "
+                                 f"which no asset claims; assets: {self.params['assets']}")
+            by_asset.setdefault(asset, []).append(anchor)
+        return by_asset
 
     def run(self, ctx, inputs):
         """Add the point-in-time columns to every row.
@@ -308,7 +358,7 @@ class SpotFeatures(Node):
         ctx : NodeContext
             Unused.
         inputs : dict
-            ``records`` and ``manifests``.
+            ``records``, ``manifests`` and ``anchors``.
 
         Returns
         -------
@@ -318,8 +368,8 @@ class SpotFeatures(Node):
         Raises
         ------
         ValueError
-            On a row of a series no asset claims, a store that moved since its manifest, a
-            drifted or malformed file.
+            On a row or an anchor of a series no asset claims, a store that moved since its
+            manifest, a drifted or malformed file.
         """
         import numpy as np
 
@@ -332,15 +382,18 @@ class SpotFeatures(Node):
                                  f"which no asset claims; assets: {self.params['assets']}")
             positions.setdefault(asset, []).append(position)
         estimators = build_estimators(self.params["estimators"])
+        by_asset = self._anchors_by_asset(inputs["anchors"], asset_of)
         out, provenance = [None] * len(rows), {}
         for asset, where in positions.items():
             instants = np.array([rows[p][f.DECISION_MS] for p in where], dtype=np.int64)
-            kline, kline_manifest = self._kline_arrays(asset, instants, inputs["manifests"], estimators)
+            kline, kline_manifest = self._kline_arrays(asset, instants, inputs["manifests"], estimators,
+                                                       by_asset.get(asset, []))
             bvol, bvol_manifest = self._bvol_arrays(asset, instants, inputs["manifests"])
             for k, position in enumerate(where):
                 out[position] = self._row(rows[position], k, kline, bvol, estimators)
             provenance[asset] = {"rows": len(where), "klines": kline_manifest, "bvol": bvol_manifest,
                                  "spot_missing": int(np.isnan(kline[f.SPOT]).sum()),
+                                 "basis_missing": int(np.isnan(kline[f.BASIS]).sum()),
                                  "bvol_missing": int(np.isnan(bvol["value"]).sum())}
         self.log.info("features for %d row(s) over %d asset(s)", len(rows), len(positions))
         return {"records": out, "provenance": provenance}
