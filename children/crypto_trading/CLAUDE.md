@@ -103,11 +103,13 @@ template becomes convenient enough to send an order.
 
 Sources are existing packs (`kalshi`, `httpblobs`) plus configs; the only code is
 `binance_vision.py`, the `httpblobs` transform (one subclass per file layout, no
-knobs). A snapshot holds ONE stream, so each stream has its own suite. The series
-and date lists repeat across configs and suites by design (a suite restates its
-vocabulary); `tests/test_configs.py` pins every repeat, so change both together.
-Candles are 15-minute series only: the hourly ladders wait on PROPOSED ADR-0236.
-Never solve ADR-0236 to 0238 child-side. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
+knobs; interim until PROPOSED ADR-0239). A snapshot holds ONE stream, so each stream has
+its own suite. Series and date lists repeat across configs and suites by design (a
+suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
+both together. Candles are the two 15-minute series, one source each; hourly candles,
+the settlement value (`expiration_value`, the model's label) and pre-cutoff history wait on
+PROPOSED ADR-0236. Never solve ADR-0236 to 0239 child-side. `AGENTS.md` mirrors this file
+(a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 ## Layout
 
@@ -118,9 +120,9 @@ crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform)
                        #   approvals / coordination, all fail-closed
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
-                       #   source-kalshi-crypto[-candles] / source-binance-* /
-                       #   binance_vision_dates / suite-kalshi-crypto-* /
-                       #   suite-binance-files
+                       #   source-kalshi-crypto[-candles-*|-books-*] /
+                       #   source-binance-* / binance_vision_dates /
+                       #   suite-kalshi-crypto-* / suite-binance-files
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated

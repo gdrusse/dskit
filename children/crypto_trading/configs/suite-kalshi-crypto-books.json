@@ -51,11 +51,29 @@
           "less_or_equal",
           "between",
           "greater",
-          "greater_or_equal"
+          "greater_or_equal",
+          ""
         ]
       },
       "severity": "error",
-      "notes": "Same geometry vocabulary as the markets suite."
+      "notes": "A value that is neither a known geometry nor empty is a new market type: block. Same vocabulary as the markets suite; empty is allowed here and warned by books-strike-type-set."
+    },
+    {
+      "id": "books-strike-type-set",
+      "target": "orderbooks",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal"
+        ]
+      },
+      "severity": "warn",
+      "notes": "A 15-minute market lists before its target price is set, so an open book can carry an empty strike_type ('Target price: TBD'). Warn, not block: the book is real, its strike is unknown until set."
     },
     {
       "id": "books-bitemporal",

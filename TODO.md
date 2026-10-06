@@ -2400,6 +2400,7 @@ Still open:
 
 Found building the child's data pulls (`children/crypto_trading`); the child builds no workaround for any of them. Entries are in the decision log, status PROPOSED.
 
-- [ ] **ADR-0236 `kalshi` pack: `/historical/*` routing, a `trades` stream (taker side), a candle/trade scope knob.** Without it the crypto history stops at the 2026-08-07 cutoff and the four hourly ladders (up to about 1.2M per-market candle requests) cannot be priced. Owner question: which outcome-independent scope filter.
+- [ ] **ADR-0236 `kalshi` pack: `/historical/*`, event-level candles, a `trades` stream, settlement fields (`expiration_value`, `settlement_ts`, `volume`), a per-book `observed_at`.** Gates the modelling label: stage A stores only each strike's yes/no result, not the realised settlement value. Also unlocks hourly-ladder candles (about 25k requests, not 1.2M) and history before 2026-08-07.
 - [ ] **ADR-0237 `restapi`: time-window pagination, positional rows, a dynamic record key.** Needed for Coinbase candles, Deribit DVOL and trades, Kraken trades.
 - [ ] **ADR-0238 `httpblobs`: verify a vendor's digest sidecar.** Binance Vision publishes `<file>.zip.CHECKSUM`; the pull records `raw_sha256` but compares it with nothing.
+- [ ] **ADR-0239 tier-2 zip-CSV to parquet `httpblobs` transform.** The child's `ZipCsvParquet` is interim; delete it when this lands.

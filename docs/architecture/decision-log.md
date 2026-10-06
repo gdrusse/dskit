@@ -30316,20 +30316,20 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 
 **Tests.** Recorded-fake connector tests (filtering, per-session sums, window, both statuses, batching, short calendar, default-deny, symbols file) and `TrailingRank` tests (window, ties, exclusion, aggregates, refusals).
 
-## ADR-0236 — `kalshi` pack: `/historical/*` routing, a `trades` stream, and a candle/trade scope
+## ADR-0236 — `kalshi` pack: `/historical/*` routing, event-level candles, a `trades` stream, settlement fields and a per-book observed instant
 
-**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull). Extends ADR-0075.
-**Sweep** (`taker_side historical_markets kalshi_trades historical/cutoff`, origin/main, all branches and worktrees): no near matches; the pack has four streams and no `/historical` path.
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull; amended the same day after review). Extends ADR-0075. **Gates the modelling label** (item 4): stage A stores no realised settlement value until it lands.
+**Sweep** (`taker_side historical_markets kalshi_trades historical/cutoff`, `expiration_value`, `events/candlesticks`, origin/main, all branches and worktrees): no near matches; the pack has four streams and no `/historical` path. (`observed_at` exists in other packs as an unrelated private helper.)
 
-**Context.** The live API keeps settled markets only back to the historical cutoff (`GET /historical/cutoff`: 2026-08-07 for markets and trades; probe: KXETH15M's oldest live close was 2026-07-31, 6,422 markets); older data sits under `/historical/markets`, `/historical/trades` (probed) and `/historical/markets/{ticker}/candlesticks` (documented, not probed). Trades carry `taker_side`, `yes_price_dollars`, `count_fp`, `created_time`, `trade_id`; the pack emits none. Candles cost one request per market (0.44 s) and an hourly crypto event has about 190 strikes, so the four hourly series since the cutoff are up to about 1.2M requests; `/markets/trades` filters by `ticker`, not series, so trades are also per market.
+**Context.** (a) The live API keeps settled markets only back to the historical cutoff (`GET /historical/cutoff`: 2026-08-07 for markets and trades; probe: KXETH15M's oldest live close was 2026-07-31, 6,422 markets); older data sits under `/historical/markets` and `/historical/trades` (probed) and `/historical/markets/{ticker}/candlesticks` (documented, not probed). (b) The pack requests candles per market, about 190 strikes per hourly event. The API also serves `GET /series/{s}/events/{e}/candlesticks?start_ts&end_ts&period_interval=1`, every strike of an event in one call (probed: 188 markets, 0.32 s, cut at `adjusted_end_ts` after 26 minutes, so an hour needs about 3 calls following it; the follow-up calls were not probed), and `GET /markets/candlesticks?market_tickers=a,b` batching tickers (probed with two). About 9k hourly events since 2026-07-31 (review count) is roughly 25k requests (about 4 hours), not the 1.2M a per-market walk needs. (c) Trades (`/markets/trades`, `/historical/trades`) carry `taker_side`, `yes_price_dollars`, `count_fp`, `created_time`, `trade_id`, filter by `ticker` not series, and the pack emits none. (d) Every market payload carries `expiration_value` (the CF Benchmarks RTI 60-second average, identical on every strike of an event: 85735.80 on all 188 strikes of KXBTCD-26OCT0612), `settlement_ts` and `volume_fp`; the `markets` row keeps none of them, so the label of a settlement-distribution model is not stored. (e) `orderbooks` rows are dated `captured_at`, the pass start floored to the minute, and a pass over about 1,400 open markets takes about 10 minutes.
 
-**Decision (proposed).** (1) `markets` and `candles` route periods before the cutoff to `/historical/*`, the cutoff read once per pull from `GET /historical/cutoff`, never typed. (2) A `trades` stream, key `trade_id`, dated at `created_time`, cursor = max `created_time`, pulled per market with `min_ts`. (3) An outcome-independent scope knob over the markets list that gates the per-market streams (candidate: a minimum `volume_fp`, which the `markets` row would then carry), so a ladder pull needs only the strikes that traded. Open design question for the owner: which filter, since a strike-distance rule would select on the settlement value.
+**Decision (proposed).** (1) `markets` and `candles` route periods before the cutoff to `/historical/*`, the cutoff read once per pull from `GET /historical/cutoff`, never typed. (2) `candles` requests per event (following `adjusted_end_ts`) and, where a ladder is not wanted, in ticker batches; the row shape is unchanged. (3) A `trades` stream, key `trade_id`, dated at `created_time`, cursor = max `created_time`, pulled per market with `min_ts`. (4) Additive `markets` fields `expiration_value` (float), `settlement_ts` (ISO) and `volume` (from `volume_fp`). (5) An additive `orderbooks` field `observed_at`: the instant that book's response returned; `captured_at` is unchanged.
 
-**Alternatives rejected.** Child-side `/historical` calls (generic capability belongs in the pack); pulling all hourly candles (days, and a failed pull commits nothing).
+**Alternatives rejected.** Child-side `/historical` calls (generic capability belongs in the pack); a candle or trade scope filter by volume or strike distance (the strike rule selects on the settlement value, and event-level candles make full ladders affordable); a `restapi` source over `/markets` as the label store (re-implements the pack's paging and row shape).
 
-**Consequences.** History before 2026-08-07, taker-side flow and affordable hourly-ladder prices become possible. Rows gain fields only when a new knob is set, so existing pmquant sources keep their identity.
+**Consequences.** History before 2026-08-07, the realised settlement value, taker-side flow and every hourly ladder's 1-minute prices become possible; a book carries its true read time. New fields appear only on new pulls, so existing pmquant sources keep their identity.
 
-**Tests.** Scripted getter: cutoff routing and the boundary day, `trades` paging and cursor, scope filter, and an unchanged default row set.
+**Tests.** Scripted getter: cutoff routing and the boundary day, event candles following `adjusted_end_ts`, ticker batching, `trades` paging and cursor, the three new `markets` fields, `observed_at` per book, and an unchanged default row set.
 
 ## ADR-0237 — `restapi`: time-window pagination, positional rows and a dynamic record key
 
@@ -30360,3 +30360,18 @@ the stop rule, an end-to-end loop through the runner, role/self-ref/literal refu
 **Consequences.** Archive pulls become verifiable end to end; existing sources keep their identity. Doubles the request count of a pull that opts in.
 
 **Tests.** Fake HTTP server: match, mismatch, missing sidecar, throttle across both requests, unchanged-declaration identity without the knob.
+
+## ADR-0239 — A tier-2 zip-CSV to parquet transform for `httpblobs`
+
+**Status:** **PROPOSED — awaiting owner approval** (2026-10-06; found building the `crypto_trading` stage-A data pull). Extends ADR-0233.
+**Sweep** (`ZipCsvParquet zip_csv csv_to_parquet`, origin/main, all branches and worktrees): only the child's own copy, `children/crypto_trading/crypto_trading/binance_vision.py`.
+
+**Context.** Vendors publish a zip of one CSV per day or symbol. `crypto_trading.binance_vision.ZipCsvParquet` reshapes it to typed parquet: one zip member, CRC check, UTF-8 with a BOM stripped, header-or-none with a name check, an epoch unit normalised to milliseconds, duplicate and out-of-order flags, and a refusal naming the line. Only the column layout is Binance's; the mechanism is generic, so it is capability sitting in tier 3.
+
+**Decision (proposed).** A tier-2 module in `dskit/onboarding/libs/` whose class is the `httpblobs` `transform` and reads its layout from `transform_params` (`columns`: vendor name, output name or drop, kind; `unique_instants`). The Binance layouts become two JSON blocks in the child's source configs and the child class is deleted. Until then the child copy is interim.
+
+**Alternatives rejected.** Keeping it child-side (the next vendor copies it); putting Binance's layouts in dskit (a domain in a pack).
+
+**Consequences.** Source configs change (a new declaration digest: a re-pull); the stored parquet columns stay as they are.
+
+**Tests.** The child's transform tests move over: units, BOM, header refusal, duplicates, corrupt zip, determinism under one pyarrow version, an `httpblobs` acquisition end to end.

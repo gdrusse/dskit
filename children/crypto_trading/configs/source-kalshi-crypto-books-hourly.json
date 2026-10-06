@@ -1,0 +1,14 @@
+{
+  "notes": "Registration input, not a run input: the live order-book recorder for the four hourly series (KXBTC, KXBTCD, KXETH, KXETHD), from the same kalshi pack as source-kalshi-crypto.json. Pull ONLY the orderbooks stream from this source: acquire --source kalshi-crypto-books-hourly --stream orderbooks --mode live, repeated by `watch` (it exits on the first error, so supervise it; see the runbook). The orderbooks stream lists OPEN markets whatever `statuses` says, so none is set. A pass is one request per open market. TIMING: each row's captured_at is the pass START floored to the minute, so it is a LOWER bound on when that book was read; the snapshot's acquired_at (commit, after the whole pass) is the UPPER bound. These series carry about 1,400 open markets across the four (review count 2026-10-06), so one pass takes about 10 minutes: a book read near the end of a pass is stamped captured_at up to ten minutes before it was read, so captured_at is not the observation instant (a per-row observed instant is PROPOSED in ADR-0236). Poll every 15 minutes or slower. `watch --every-seconds N` sleeps N after a pass ends, so the cadence is pass time + N. retries 6 so a 429 burst does not end an unattended recorder. Bids are stored as served (YES and NO bids, best first), never mirrored. Register: python -m dskit.onboarding register-source kalshi-crypto-books-hourly --catalog-source kalshi-crypto-books-hourly --connector kalshi --config @configs/source-kalshi-crypto-books-hourly.json --activate --root <store root>.",
+  "series": [
+    "KXBTC",
+    "KXBTCD",
+    "KXETH",
+    "KXETHD"
+  ],
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

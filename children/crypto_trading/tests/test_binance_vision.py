@@ -126,6 +126,28 @@ def test_same_bytes_give_same_output():
         BinanceKlines({}, AS_OF).transform(DAY, body)
 
 
+def test_a_byte_order_mark_does_not_turn_the_first_data_row_into_a_header():
+    for cls, text in ((BinanceKlines, "\ufeff" + KLINES_US),
+                      (BinanceBvol, "\ufeff" + BVOL_HEADER + BVOL)):
+        assert table(cls({}, AS_OF).transform(DAY, make_zip(text))).num_rows == 3, (
+            "a BOM glued to a number must not hide that row as a header")
+
+
+def test_a_header_that_is_not_the_expected_layout_refuses():
+    with pytest.raises(ValueError, match="header"):
+        BinanceBvol({}, AS_OF).transform(DAY, make_zip("t,sym,b,q,v\n" + BVOL))
+
+
+def test_duplicate_instants_refuse_a_kline_file_and_are_flagged_in_a_bvol_note():
+    twice = KLINES_US + KLINES_US.splitlines(keepends=True)[0]
+    with pytest.raises(ValueError, match="duplicate"):
+        BinanceKlines({}, AS_OF).transform(DAY, make_zip(twice))
+    bvol = BinanceBvol({}, AS_OF)
+    body = make_zip(BVOL_HEADER + BVOL + BVOL.splitlines(keepends=True)[0])
+    assert bvol.note(DAY, body).endswith("DUPLICATE INSTANTS 1")
+    assert table(bvol.transform(DAY, body)).num_rows == 4, "BVOL keeps what the vendor published"
+
+
 def test_note_reports_rows_and_span_and_flags_disorder():
     klines = BinanceKlines({}, AS_OF)
     note = klines.note(DAY, make_zip(KLINES_US))
@@ -241,6 +263,7 @@ def test_a_missing_day_is_a_recorded_refusal_the_suite_warns_but_does_not_block(
     verdict = run_suite(root, registry, load_suite(os.path.join(CONFIGS, "suite-binance-files.json")),
                         out["snapshot"])
     assert verdict["gating"] == "warn", verdict["statistics"]
+    assert {r["id"] for r in verdict["statistics"]["results"] if r["tripped"]} == {"files-all-ok"}
 
 
 def test_a_day_that_cannot_be_reshaped_is_refused_not_stored(tmp_path, monkeypatch):

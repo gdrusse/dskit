@@ -17,12 +17,32 @@ is the same shape on every day:
   is dropped. Nothing else is derived, filled or resampled.
 
 A file that cannot be reshaped (not a zip, a bad CRC, no rows, a wrong column
-count, an unparseable value) raises ``ValueError``, which ``httpblobs`` records
-as a refused entity and moves on. Row order is NOT enforced: a file out of order
-is reshaped as given and :meth:`ZipCsvParquet.note` says so in the inventory.
+count, an unparseable value, a header that is not the expected one, a duplicate
+kline instant) raises ``ValueError``, which ``httpblobs`` records as a refused
+entity and moves on. Row order is NOT enforced: a file out of order is reshaped
+as given, and :meth:`ZipCsvParquet.note` flags it in the inventory, as it flags
+duplicate instants in a layout that tolerates them (BVOL). A UTF-8 byte-order
+mark on the first row is stripped, so it cannot turn a data row into a "header".
+
+Time conventions a reader must not mix up:
+
+- A kline is labelled by its bar START (``open_time_ms``). The bar is known only
+  after ``close_time_ms``: a feature at decision time ``t`` may use only bars with
+  ``close_time_ms <= t``, never one merely opened before ``t``.
+- Binance columns here are epoch MILLISECONDS; a Kalshi candle's ``ts`` (the pack's
+  ``end_period_ts``) is epoch SECONDS at the END of its minute. Convert before joining.
+
+The parquet bytes are deterministic for the same input only within one pyarrow
+version (the writer stamps its version into the file), so a re-pull under another
+pyarrow can change a stored file's sha256; the pinned identity is the declaration
+in the source config, never these bytes.
 
 The vendor's data is CC BY-NC-SA, research use only: nothing stored through
 this module may feed a live trading decision (see each source config's notes).
+
+INTERIM HOME: :class:`ZipCsvParquet` is generic (a vendor zip of one CSV to parquet
+under a declared layout), so it belongs in a tier-2 dskit pack. It lives here
+only until PROPOSED ADR-0239 is decided; the Binance layouts stay child code.
 
 Import cost: stdlib; ``pyarrow`` only inside :meth:`ZipCsvParquet.transform`.
 """
@@ -119,7 +139,8 @@ class ZipCsvParquet(ABC):
         key is refused (default-deny).
     as_of : str
         The pull's declared ISO instant, handed over by ``httpblobs``; the files
-        written here carry no stamp, so equal input bytes give equal output bytes.
+        written here carry no stamp, so equal input bytes give equal output bytes
+        under one pyarrow version.
 
     Examples
     --------
@@ -134,6 +155,9 @@ class ZipCsvParquet(ABC):
     """
 
     _PARAMS = ()
+    #: True makes a repeated instant a refusal (a key the vendor promises unique);
+    #: False keeps the rows and flags the repeat in :meth:`note`.
+    UNIQUE_INSTANTS = False
 
     def __init__(self, params, as_of):
         params = {} if params is None else params
@@ -167,9 +191,16 @@ class ZipCsvParquet(ABC):
                     raise ValueError("no .csv member in the archive")
                 if len(names) != 1:
                     raise ValueError(f"exactly one .csv member expected, got {len(names)}")
-                return archive.read(names[0]).decode("utf-8")
+                return archive.read(names[0]).decode("utf-8-sig")
         except (zipfile.BadZipFile, zlib.error, EOFError, UnicodeDecodeError) as exc:
             raise ValueError(f"not a zip archive of UTF-8 CSV, or corrupt: {exc}") from exc
+
+    @staticmethod
+    def _check_header(row, layout, line):
+        """Refuse a header row whose names are not the layout's vendor names."""
+        names, expected = [cell.strip() for cell in row], [name for name, _, _ in layout]
+        if names != expected:
+            raise ValueError(f"line {line}: unexpected header {names}; expected {expected}")
 
     def _parse(self, body):
         """Return ``{output name: [values]}`` for one zip, memoised on the body object."""
@@ -185,7 +216,8 @@ class ZipCsvParquet(ABC):
             if first:
                 first = False
                 if not _is_number(row[0]):
-                    continue  # a header row
+                    self._check_header(row, layout, reader.line_num)
+                    continue
             if len(row) != len(layout):
                 raise ValueError(f"line {reader.line_num}: expected {len(layout)} columns, got {len(row)}")
             for (name, out, kind), cell in zip(layout, row):
@@ -197,8 +229,16 @@ class ZipCsvParquet(ABC):
                     raise ValueError(f"line {reader.line_num}: column {name!r}: {exc}") from exc
         if not next(iter(columns.values())):
             raise ValueError("no rows in the CSV")
+        repeats = self._repeats(columns)
+        if repeats and self.UNIQUE_INSTANTS:
+            raise ValueError(f"{repeats} duplicate row instant(s); this layout's instant is a unique key")
         self._memo = (body, columns)
         return columns
+
+    def _repeats(self, columns):
+        """Return how many rows repeat an earlier row's instant."""
+        instants = self._instants(columns)
+        return len(instants) - len(set(instants))
 
     def _instants(self, columns):
         """Return the row-instant column: the layout's first ``ts`` column."""
@@ -218,7 +258,8 @@ class ZipCsvParquet(ABC):
         -------
         str
             ``"rows N, <first instant> .. <last instant>"``, with ``" OUT OF ORDER"``
-            appended when the instants are not non-decreasing in file order.
+            appended when the instants are not non-decreasing in file order and
+            ``" DUPLICATE INSTANTS n"`` when ``n`` rows repeat an instant.
 
         Raises
         ------
@@ -228,7 +269,9 @@ class ZipCsvParquet(ABC):
         instants = self._instants(self._parse(body))
         ordered = all(a <= b for a, b in zip(instants, instants[1:]))
         text = f"rows {len(instants)}, {_iso(instants[0])} .. {_iso(instants[-1])}"
-        return text if ordered else text + " OUT OF ORDER"
+        text += "" if ordered else " OUT OF ORDER"
+        repeats = self._repeats(self._parse(body))
+        return text + (f" DUPLICATE INSTANTS {repeats}" if repeats else "")
 
     def transform(self, entity, body):
         """Return the parquet file bytes for one day's zip.
@@ -267,8 +310,10 @@ class BinanceKlines(ZipCsvParquet):
 
     Columns: :data:`KLINE_COLUMNS` — open time and close time in epoch ms (the
     vendor's microsecond files are floored), OHLC, base volume, quote volume,
-    trade count and the taker-buy volumes. Spot klines are quoted in USDT, not
-    USD: a proxy for, not a copy of, the CF Benchmarks BRTI that Kalshi settles on.
+    trade count and the taker-buy volumes. A bar is labelled by its START: it is
+    known only after ``close_time_ms``. A repeated ``open_time_ms`` refuses the
+    file (``UNIQUE_INSTANTS``). Spot klines are quoted in USDT, not USD: a proxy
+    for, not a copy of, the CF Benchmarks BRTI that Kalshi settles on.
 
     Parameters
     ----------
@@ -290,6 +335,8 @@ class BinanceKlines(ZipCsvParquet):
         parquet_bytes = klines.transform("2026-10-01", zip_bytes)
     """
 
+    UNIQUE_INSTANTS = True
+
     @classmethod
     def layout(cls):
         """Return the 12-column klines layout.
@@ -307,7 +354,8 @@ class BinanceBvol(ZipCsvParquet):
 
     Columns: :data:`BVOL_COLUMNS` — the index instant in epoch ms, the index
     symbol, its base and quote asset, and ``index_value`` (Binance's implied
-    volatility index, about one value a second).
+    volatility index, about one value a second); repeated instants are kept and
+    flagged in the note.
 
     Parameters
     ----------

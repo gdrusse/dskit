@@ -1,0 +1,16 @@
+{
+  "notes": "Registration input, not a run input: 1-minute candles (period_interval 1) for KXBTC15M only, from the same kalshi pack as source-kalshi-crypto.json. One source per series because a failed pull commits nothing: split, a failure costs about 1.25 hours, not 2.5. The 15-minute series hold one market per event (6,422 settled KXETH15M markets at the probe), so a first pull is about 6.4k requests (0.44 s each probed, plus pace_s 0.25). Later pulls skip markets that closed at or before the candle cursor. Hourly ladders are NOT here: this pack requests candles per market (about 190 strikes an event), which is too many requests; PROPOSED ADR-0236 adds the event-level and batch candle endpoints (about 3 calls an event), and hourly candles stay pending that ADR. Candle `ts` is the END of the minute in epoch SECONDS (Binance columns are ms). Never use a candle taken after the market closed as a feature for it (post-settlement prices are about 0 or 1). The series list is one of the 15-minute pair in source-kalshi-crypto.json; tests/test_configs.py pins the agreement. Register: python -m dskit.onboarding register-source kalshi-crypto-candles-btc --catalog-source kalshi-crypto-candles-btc --connector kalshi --config @configs/source-kalshi-crypto-candles-btc.json --activate --root <store root>; then acquire --source kalshi-crypto-candles-btc --stream candles --mode backfill.",
+  "series": [
+    "KXBTC15M"
+  ],
+  "statuses": [
+    "settled"
+  ],
+  "period_interval": 1,
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

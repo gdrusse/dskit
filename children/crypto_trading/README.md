@@ -9,16 +9,20 @@ Stage B (features, models) is not started, and the focus areas in
 
 | Source (`configs/source-*.json`) | Pulls | Suite (`configs/suite-*.json`) |
 |---|---|---|
-| `kalshi-crypto` | KXBTC, KXBTCD, KXBTC15M, KXETH, KXETHD, KXETH15M: settled `markets`, `fee_schedules`, live `orderbooks` | `kalshi-crypto-{markets,fees,books}` |
-| `kalshi-crypto-candles` | 1-minute `candles`, 15-minute series only | `kalshi-crypto-candles` |
+| `kalshi-crypto` | KXBTC, KXBTCD, KXBTC15M, KXETH, KXETHD, KXETH15M: settled `markets`, `fee_schedules` | `kalshi-crypto-{markets,fees}` |
+| `kalshi-crypto-candles-{btc,eth}` | 1-minute `candles`, one 15-minute series each | `kalshi-crypto-candles` |
+| `kalshi-crypto-books-{15m,hourly}` | live `orderbooks` recorders (`captured_at` is a lower bound) | `kalshi-crypto-books` |
 | `binance-{btcusdt,ethusdt}-1m` | Binance Vision spot 1-minute klines, daily zips to parquet | `binance-files` |
-| `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet | `binance-files` |
+| `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet (26 known missing days) | `binance-files` |
 
 Existing packs only (`kalshi`, `httpblobs`); the child adds the zip-to-parquet
-transform `crypto_trading/binance_vision.py`. Binance Vision is CC BY-NC-SA:
-research use only, not for live trading features. Exact commands:
-`docs/plans/2026-10-06-wsl-data-pull-runbook.md`. Gaps that need dskit changes
-are PROPOSED ADRs 0236 to 0238, not child code.
+transform `crypto_trading/binance_vision.py` (interim, see ADR-0239). Binance Vision
+is CC BY-NC-SA: research use only, not for live trading features. Exact commands:
+`docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
+
+**Not in stage A.** The realised settlement value (the model's label), hourly-ladder
+candles and Kalshi history before 2026-08-07 need PROPOSED ADR-0236; Coinbase, Deribit and
+Kraken need ADR-0237; digest verification ADR-0238. They are dskit changes, not child code.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -156,7 +160,7 @@ that stays silent can never appear in a served graph.
 ## Layout
 
 ```
-_skeleton/
+crypto_trading/
 ├── pyproject.toml         # dependencies = ["dskit"]; extra `parquet` = pyarrow
 ├── README.md / CLAUDE.md  # this file; agent orientation
 ├── crypto_trading/           # tier-3 code; import = registration
@@ -174,8 +178,9 @@ _skeleton/
 │   ├── suite-sample.json  # a validation suite
 │   ├── run-sample.json    # a pipeline document
 │   ├── serve-sample.json  # a serve document — the run, served forward
-│   ├── source-kalshi-crypto.json         # stage A: six crypto series, markets/fees/books
-│   ├── source-kalshi-crypto-candles.json # stage A: 1-minute candles, 15-minute series
+│   ├── source-kalshi-crypto.json         # stage A: six crypto series, markets + fees
+│   ├── source-kalshi-crypto-candles-{btc,eth}.json # stage A: 1-minute candles, one 15m series each
+│   ├── source-kalshi-crypto-books-{15m,hourly}.json # stage A: live orderbook recorders
 │   ├── source-binance-{btcusdt,ethusdt}-1m.json # stage A: spot klines
 │   ├── source-binance-{btc,eth}bvol.json # stage A: BVOL implied-vol index
 │   ├── binance_vision_dates.json         # the pinned day list the Binance sources pull

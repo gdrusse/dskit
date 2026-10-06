@@ -16,7 +16,8 @@ import pytest
 
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
-from dskit.onboarding.libs.httpblobs import HttpBlobsConnector
+from dskit.onboarding.libs import kalshi
+from dskit.onboarding.libs.httpblobs import RECORD_FIELDS, HttpBlobsConnector
 from dskit.onboarding.libs.kalshi import KalshiConnector
 from dskit.pipeline.document import load_document
 
@@ -75,9 +76,27 @@ def test_source_sample_validates_against_the_connectors_spec():
 # from the config it checks would assert nothing. Where two configs must agree
 # the test pins that agreement.
 
-KALSHI_SOURCES = ("source-kalshi-crypto.json", "source-kalshi-crypto-candles.json")
+KALSHI_SOURCES = (
+    "source-kalshi-crypto.json",
+    "source-kalshi-crypto-candles-btc.json",
+    "source-kalshi-crypto-candles-eth.json",
+    "source-kalshi-crypto-books-15m.json",
+    "source-kalshi-crypto-books-hourly.json",
+)
+#: sources that pull settled history (the books sources read open markets only)
+KALSHI_HISTORY = KALSHI_SOURCES[:3]
 KALSHI_SERIES = ("KXBTC", "KXBTCD", "KXBTC15M", "KXETH", "KXETHD", "KXETH15M")
 KALSHI_15M = ("KXBTC15M", "KXETH15M")
+KALSHI_HOURLY = ("KXBTC", "KXBTCD", "KXETH", "KXETHD")
+#: suite file -> the field set the pack emits for its stream, so a rule naming a
+#: field the pack does not emit fails here instead of passing vacuously.
+SUITE_FIELDS = {
+    "suite-kalshi-crypto-markets.json": kalshi.MARKET_FIELDS,
+    "suite-kalshi-crypto-candles.json": kalshi.CANDLE_FIELDS,
+    "suite-kalshi-crypto-fees.json": kalshi.FEE_FIELDS,
+    "suite-kalshi-crypto-books.json": kalshi.ORDERBOOK_FIELDS,
+    "suite-binance-files.json": RECORD_FIELDS,
+}
 #: source file -> (vendor URL template, the transform class)
 BINANCE_SOURCES = {
     "source-binance-btcusdt-1m.json": (
@@ -137,22 +156,28 @@ def test_kalshi_sources_pass_default_deny_and_resolve_their_knobs(name):
     connector = KalshiConnector()
     check_config(connector, config)
     knobs = connector.resolve_knobs(_strip_platform(config))
-    assert knobs["statuses"] == ["settled"], (
-        "history is settled markets; the live recorder reads open books by itself")
+    if name in KALSHI_HISTORY:
+        assert knobs["statuses"] == ["settled"], "history is settled markets, every row final"
+    else:
+        assert "statuses" not in config, "the orderbooks stream ignores statuses; do not imply it matters"
 
 
-def test_the_candle_source_asks_for_one_minute_candles():
-    knobs = KalshiConnector().resolve_knobs(_load("source-kalshi-crypto-candles.json"))
+@pytest.mark.parametrize("name", KALSHI_HISTORY[1:])
+def test_the_candle_sources_ask_for_one_minute_candles(name):
+    knobs = KalshiConnector().resolve_knobs(_load(name))
     assert knobs["period_interval"] == 1, "1-minute candles are the modelling resolution"
 
 
-def test_kalshi_series_universe_and_the_candle_subset():
-    markets = _load("source-kalshi-crypto.json")["series"]
-    candles = _load("source-kalshi-crypto-candles.json")["series"]
-    assert sorted(markets) == sorted(KALSHI_SERIES)
-    assert sorted(candles) == sorted(KALSHI_15M), (
-        "hourly ladders carry ~190 strikes an event: per-market candles would be ~1.2M "
-        "requests (see the runbook and the PROPOSED kalshi ADR); they await the trades stream")
+def test_kalshi_series_universe_and_how_each_source_slices_it():
+    series = {name: sorted(_load(name)["series"]) for name in KALSHI_SOURCES}
+    assert series["source-kalshi-crypto.json"] == sorted(KALSHI_SERIES)
+    assert series["source-kalshi-crypto-candles-btc.json"] == ["KXBTC15M"]
+    assert series["source-kalshi-crypto-candles-eth.json"] == ["KXETH15M"]
+    assert series["source-kalshi-crypto-books-15m.json"] == sorted(KALSHI_15M), (
+        "the 15-minute books are a few requests a pass: a short cadence, their own source")
+    assert series["source-kalshi-crypto-books-hourly.json"] == sorted(KALSHI_HOURLY)
+    assert sorted(KALSHI_15M + KALSHI_HOURLY) == sorted(KALSHI_SERIES), (
+        "the two books sources partition the six series: none missed, none read twice")
 
 
 @pytest.mark.parametrize("name", sorted(BINANCE_SOURCES))
@@ -175,11 +200,34 @@ def test_binance_sources_pass_default_deny_and_resolve_their_knobs(name, child_r
 def test_binance_sources_agree_where_they_must(child_root_env):
     configs = [_load(name) for name in BINANCE_SOURCES]
     for knob in ("entities_file", "entities_key", "entities_sha256", "as_of", "headers",
-                 "throttle_s", "timeout", "max_retries", "max_refused", "max_bytes", "stream",
+                 "throttle_s", "timeout", "max_retries", "max_bytes", "stream",
                  "relpath_template", "raw_relpath_template"):
         assert len({json.dumps(c[knob], sort_keys=True) for c in configs}) == 1, knob
     with open(_path(DATES_FILE), "rb") as handle:
         assert configs[0]["entities_sha256"] == hashlib.sha256(handle.read()).hexdigest()
+
+
+#: HEAD sweep of every URL on 2026-10-06 (data.binance.vision answered 404 NoSuchKey): missing days
+#: per source and the range endpoints the notes must name. Restated, not read from the configs.
+KNOWN_MISSING = {
+    "source-binance-btcusdt-1m.json": (0, ()),
+    "source-binance-ethusdt-1m.json": (0, ()),
+    "source-binance-btcbvol.json": (26, ("2023-09-25", "2023-10-24", "2024-06-11", "2024-06-12",
+                                         "2024-06-30", "2025-12-15", "2026-01-04")),
+    "source-binance-ethbvol.json": (26, ("2023-09-25", "2023-10-24", "2024-06-11", "2024-06-12",
+                                         "2024-06-30", "2025-12-15", "2026-01-04")),
+}
+
+
+@pytest.mark.parametrize("name, known", sorted(KNOWN_MISSING.items()))
+def test_max_refused_covers_the_measured_missing_days_with_headroom_and_the_notes_say_so(name, known):
+    count, endpoints = known
+    config = _load(name)
+    assert count < config["max_refused"] <= count + 10, (
+        "a pull that tolerates fewer refusals than the vendor lacks aborts after an hour of work")
+    assert "HEAD sweep 2026-10-06" in config["notes"] and f"{count} days returned 404" in config["notes"]
+    for day in endpoints:
+        assert day in config["notes"], f"{name}: the notes must list the missing range ending {day}"
 
 
 def test_binance_dates_are_whole_consecutive_utc_days_ending_before_as_of():
@@ -204,6 +252,28 @@ def test_configs_carry_no_machine_path_and_one_env_variable():
             assert needle not in text, f"{os.path.basename(path)} names a machine path: {needle}"
         variables = set(re.findall(r"\$([A-Z_]+)", text))
         assert variables <= {"CRYPTO_TRADING_ROOT"}, os.path.basename(path)
+
+
+@pytest.mark.parametrize("name, fields", sorted(SUITE_FIELDS.items()))
+def test_every_field_a_suite_rule_names_is_one_the_pack_emits(name, fields):
+    for rule in load_suite(_path(name)).rules:
+        named = [rule.kwargs[k] for k in ("field", "group_by") if k in rule.kwargs]
+        for field in [f for n in named for f in (n if isinstance(n, list) else [n])]:
+            assert field in fields, f"{name}: rule {rule.id!r} names {field!r}, not in {tuple(fields)}"
+
+
+@pytest.mark.parametrize("name", ["suite-kalshi-crypto-markets.json", "suite-kalshi-crypto-fees.json"])
+def test_the_distinct_series_count_equals_the_source_series_list(name):
+    expected = len(_load("source-kalshi-crypto.json")["series"])
+    (rule,) = [r for r in load_suite(_path(name)).rules if r.rule == "distinct_count"]
+    assert rule.kwargs["min"] == rule.kwargs["max"] == expected
+
+
+def test_agents_md_mirrors_claude_md_but_for_its_title():
+    claude = open(os.path.join(CHILD_ROOT, "CLAUDE.md"), encoding="utf-8").read().splitlines()
+    agents = open(os.path.join(CHILD_ROOT, "AGENTS.md"), encoding="utf-8").read().splitlines()
+    assert [a for a, c in zip(agents, claude) if a != c] == ["# AGENTS.md — crypto_trading (a dskit child)"]
+    assert len(agents) == len(claude)
 
 
 @pytest.mark.parametrize("name, stream", sorted(SUITES.items()))
