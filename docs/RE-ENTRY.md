@@ -1,6 +1,6 @@
-# Active handoff — 2026-10-06: behavior-identical speedups (PR, not merged)
+# Active handoff — 2026-10-06: behavior-identical speedups (merged)
 
-**Branch `perf/speedups-2026-10-05`, PR open, base `f9f2f905`.** Pure speedups across
+**Merged to main as `2ef373d9` (PR #18, fast-forward from `f9f2f905`).** Pure speedups across
 index_options (quote/debit backtests: sorted-quotable-strike bisect, per-entry `_expected`
 memo, float fast paths, sliced American charges; cdf_study: groupby-indices instead of
 per-row filters, linear settled-event history, positional term slopes, files hashed once;
@@ -23,7 +23,9 @@ and `number_ok` for floats (marked "same rule as"); decision-region panel lookup
 `_verified_partition` digest reuse have no randomized old-vs-new pin; batched LightGBM
 raises ValueError (not LightGBMError) on ragged rows, unreachable.
 
-**Next.** Owner reviews and merges the PR. `torch.py` was left untouched (byte-pinned).
+**Next.** Remote branches `perf/speedups-2026-10-05`, `claude/zealous-goodall-kdllva` and
+`run-steps` are fully in main but still exist: this session's proxy refused the deletes.
+Four other branches hold unmerged commits and were kept. `torch.py` untouched (byte-pinned).
 
 # Active handoff — 2026-10-04: 300 more stocks pulled; pooled-heads study run
 
