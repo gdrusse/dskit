@@ -1,0 +1,47 @@
+{
+  "snapshot": "2026-10-06 12:49:16 UTC",
+  "report_sha256": "9734d423c137582c2ed36f5292cda1a2f457207db2569b52e3d38752beb3ff1f",
+  "data_sha256": "abd42f1aaacb29822018180e656d8aeeea43f555f4dcdd16913248d56f973aff",
+  "config_sha256": "1f7ba634b0168ea76d4affe7303df5e16337a17544929cdcb8fd0c496a601e0f",
+  "verified_files": 125130,
+  "validation": {
+    "checked_at": "2026-10-06T12:59:52.793Z",
+    "comparison_filter_combinations": 180,
+    "detail_filter_combinations": 135,
+    "tests": "PASS: render logic, filter handlers, pagination, empty coverage, finite formatting, embedded summary arithmetic, element identities",
+    "visual_preview": "Unavailable: Codex browser tool failed at startup with Windows sandbox helper path-length error",
+    "rows": 42357,
+    "successful_fits": 9425,
+    "common_cells": 570
+  },
+  "report": "advanced-interim-performance.html",
+  "kind": "interim exploratory evaluation; training remains active",
+  "training_candidate": "29d3bec1eac19ade16800384bcd7f98f094855ed",
+  "source_terminal_inventory_sha256": "fcd8c08a69c7bd81aa8ccabafe4ce2b3b8c67a23558e1f91c0fb772cff59e0ad",
+  "successful_fits": 9425,
+  "pooled_fits": 86,
+  "unpooled_fits": 9339,
+  "explicit_skipped_fits": 2716,
+  "score_summaries": 42357,
+  "strict_common_panel": {
+    "tickers": 172,
+    "ticker_window_cells": 570,
+    "forecast_identities_per_regime_per_architecture": 17090,
+    "eligible_architectures": 12,
+    "folds": [
+      33,
+      34,
+      35,
+      36
+    ]
+  },
+  "retained_locally": "Original score shards, weights, fit histories, terminal manifests, extraction recipe, and full source inventory. None of the raw observations or weights is included in this report commit.",
+  "checks": "Exact individual forecast identity and baseline pairing verified before aggregation. All-period skill uses sums of losses. Source/checkpoint/shard hashes verified. Rendering logic and filters tested in WSL Node. Visual preview unavailable due Codex browser helper startup error.",
+  "limitations": [
+    "Incomplete coverage; successful-fit subset is not representative.",
+    "Exploratory 2024-2025 evaluation; no 2026 holdout access.",
+    "No significance or final winner claim.",
+    "No matched comparison against previous simple models yet.",
+    "The four final reports and their later push remain outstanding."
+  ]
+}
