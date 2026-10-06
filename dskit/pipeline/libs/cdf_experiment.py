@@ -180,16 +180,43 @@ class CDFExperiment:
             s["target"], s["reference"], s["horizon"],
             *(f for arm in c["arms"].values() for f in arm["features"]),
             *(f for arm in c["arms"].values() for f in arm["observed_columns"])]))
+        # Null predicate values would disappear before row validation. Inspect
+        # metadata only: never load locked-holdout rows to establish this gate.
+        import pyarrow.parquet as pq
+        try:
+            parquet = pq.ParquetFile(c["panel"])
+            for name in (s["date"], s["end"]):
+                index = parquet.schema.names.index(name)
+                for group in range(parquet.metadata.num_row_groups):
+                    stats = parquet.metadata.row_group(group).column(index).statistics
+                    if stats is None or stats.null_count != 0:
+                        raise IntegrityError("null or unverified temporal predicate column")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise IntegrityError("invalid temporal predicate metadata") from error
         frame = pd.read_parquet(c["panel"], columns=columns, filters=[
             (s["date"], "<", c["date_upper_exclusive"]),
             (s["end"], "<", c["end_upper_exclusive"])])
+        # Validate admitted data before model-specific exception handling.
+        required = list(dict.fromkeys([*s["identity"], s["group"], s["date"],
+                                       s["end"], s["horizon"]]))
+        self.check_pairing(frame, frame, required)
+        try:
+            numeric = frame[[s["target"], s["reference"], s["horizon"]]].to_numpy(dtype=float)
+            for key in (s["date"], s["end"]):
+                pd.to_datetime(frame[key], format="%Y-%m-%d", errors="raise")
+            features = list(dict.fromkeys(f for arm in c["arms"].values()
+                                         for f in [*arm["features"], *arm["observed_columns"]]))
+            inputs = frame[features].to_numpy(dtype=float)
+            if (not np.isfinite(numeric).all() or np.isinf(inputs).any()
+                    or (frame[s["reference"]] <= 0).any()
+                    or (frame[s["horizon"]] <= 0).any()
+                    or (frame[s["end"]] < frame[s["date"]]).any()):
+                raise IntegrityError("invalid panel labels, horizons, features or reference scales")
+            self.study.plan.lock(frame)
+        except (ValueError, TypeError, KeyError) as error:
+            raise IntegrityError("invalid panel data contract") from error
         frame = frame[frame[s["group"]].isin(c["tickers"])].sort_values(s["identity"])
-        self.study.plan.lock(frame)
-        if (frame.duplicated(s["identity"]).any()
-                or not np.isfinite(frame[[s["target"], s["reference"]]]).all().all()
-                or (frame[s["reference"]] <= 0).any()
-                or (frame[s["end"]] < frame[s["date"]]).any()):
-            raise IntegrityError("invalid panel identities, labels or reference scales")
+        self.check_pairing(frame, frame, s["identity"])
         return frame
 
     @staticmethod
@@ -204,10 +231,21 @@ class CDFExperiment:
     @staticmethod
     def check_pairing(expected, actual, identity):
         """Refuse duplicate, missing, or substituted forecast identities."""
-        left = expected[identity].sort_values(identity).reset_index(drop=True)
-        right = actual[identity].sort_values(identity).reset_index(drop=True)
-        if left.duplicated().any() or right.duplicated().any() or not left.equals(right):
-            raise IntegrityError("forecast identity pairing mismatch")
+        try:
+            if not identity:
+                raise IntegrityError("empty forecast identity schema")
+            for frame in (expected, actual):
+                values = frame[identity]
+                if (values.isna().any().any()
+                        or values.apply(lambda col: col.map(
+                            lambda v: isinstance(v, str) and not v.strip())).any().any()):
+                    raise IntegrityError("missing forecast identity component")
+            left = expected[identity].sort_values(identity).reset_index(drop=True)
+            right = actual[identity].sort_values(identity).reset_index(drop=True)
+            if left.duplicated().any() or right.duplicated().any() or not left.equals(right):
+                raise IntegrityError("forecast identity pairing mismatch")
+        except (ValueError, TypeError, KeyError) as error:
+            raise IntegrityError("malformed forecast identity schema") from error
 
     def _bands(self, frame, calendar, fold, arm):
         s = self.config["study"]
@@ -295,7 +333,10 @@ class CDFExperiment:
             return model, arrays, record
         model = TorchCDF(**params)
         model.validate_encoder(len(arm["features"]))
-        model.fit_decision_context(*(self.study.decision_context_rows(b) for b in bands[:2]))
+        try:
+            model.fit_decision_context(*(self.study.decision_context_rows(b) for b in bands[:2]))
+        except (ValueError, TypeError, KeyError) as error:
+            raise IntegrityError("invalid fitting/monitoring decision identities") from error
         y = [(b[s["target"]]/b[s["reference"]]).to_numpy() for b in bands[:2]]
         started = time.monotonic()
         model.fit(arrays[0], y[0], arrays[1], y[1])
@@ -359,7 +400,7 @@ class CDFExperiment:
             store.publish({"scores.parquet": buffer.getvalue(),
                            "link.json": self.json_bytes({"checkpoint": checkpoint_hash, "n": len(scores)})})
 
-    def _resume_state(self, root, identity, groups):
+    def _resume_state(self, root, identity, groups, bands):
         """Validate all published ancestors/dependants before any fit or skip."""
         if (root/"skipped").exists() and (root/"completed").exists():
             raise IntegrityError("conflicting completed and skipped terminal states")
@@ -383,10 +424,23 @@ class CDFExperiment:
         for path in published:
             AtomicFitStore(path, {"fit": identity, "checkpoint": checkpoint,
                                  "ticker": path.name}).verify()
+            import numpy as np
+            import pandas as pd
+            s = self.config["study"]
+            try:
+                scores = pd.read_parquet(path/"scores.parquet")
+                self.check_pairing(bands[2][bands[2][s["group"]] == path.name],
+                                   scores, s["identity"])
+                metrics = [label+"_"+metric for label in ("model", "baseline")
+                           for metric in ("crps", "tail_crps", "weighted_crps")]
+                if not np.isfinite(scores[metrics].to_numpy(dtype=float)).all():
+                    raise IntegrityError("nonfinite resumed paired scores")
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise IntegrityError("invalid resumed score contract") from error
 
     def _cell(self, root, identity, bands, groups, admission, arm, candidate, regime):
         root.mkdir(parents=True, exist_ok=True)
-        self._resume_state(root, identity, groups)
+        self._resume_state(root, identity, groups, bands)
         skip = AtomicFitStore(root/"skipped", identity)
         if skip.path.exists():
             skip.verify()

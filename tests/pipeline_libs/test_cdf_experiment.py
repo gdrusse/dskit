@@ -295,3 +295,65 @@ def test_unfitted_checkpoint_and_nonsequence_validation_refuse(tmp_path):
                    {"kind":"tail_crps","weight":1.}],device="cpu")
     with pytest.raises(ValueError,match="sequence"):
         m.validate_encoder(3)
+
+
+@pytest.mark.parametrize("band_index", [0, 20, -1])
+@pytest.mark.parametrize("column,value", [("expiry", None), ("expiry", ""), ("quote_date", None), ("settlement_date", None),
+    ("actual_calendar_dte", float("nan")), ("terminal_return", float("nan"))])
+def test_bad_panel_contract_halts_all_bands(experiment_config, band_index, column, value):
+    import pandas as pd
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, AtomicFitStore, IntegrityError
+    frame = pd.read_parquet(experiment_config["panel"])
+    frame.loc[frame.index[band_index], column] = value
+    frame.to_parquet(experiment_config["panel"])
+    experiment_config["panel_sha256"] = AtomicFitStore.file_hash(experiment_config["panel"])
+    with pytest.raises(IntegrityError):
+        CDFExperiment(experiment_config).run("pooled")
+    assert not list(Path(experiment_config["output"]).rglob("reason.json"))
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_pairing_rejects_shared_missing_identity(value):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+    frame = pd.DataFrame({"ticker": ["A"], "expiry": [value]})
+    with pytest.raises(IntegrityError):
+        CDFExperiment.check_pairing(frame, frame.copy(), ["ticker", "expiry"])
+
+
+def test_resume_rejects_hash_valid_missing_forecast_identity(experiment_config, monkeypatch):
+    import json
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+    exp, root = _interrupt_after_one_score(experiment_config, monkeypatch)
+    path = root/"scores/AAA"
+    scores = pd.read_parquet(path/"scores.parquet")
+    scores.loc[0, "expiry"] = None
+    scores.to_parquet(path/"scores.parquet", index=False)
+    manifest = json.loads((path/"complete.json").read_text())
+    manifest["files"]["scores.parquet"] = AtomicFitStore.file_hash(path/"scores.parquet")
+    (path/"complete.json").write_text(json.dumps(manifest))
+    with pytest.raises(IntegrityError):
+        exp.run("pooled")
+    assert not (root/"skipped").exists()
+
+
+def test_pairing_missing_schema_is_integrity_error():
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+    with pytest.raises(IntegrityError):
+        CDFExperiment.check_pairing(pd.DataFrame({"a":[1]}), pd.DataFrame({"a":[1]}), ["b"])
+
+
+def test_missing_predicate_statistics_refuses_without_row_read(experiment_config, monkeypatch):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, AtomicFitStore, IntegrityError
+    frame = pd.read_parquet(experiment_config["panel"])
+    frame.to_parquet(experiment_config["panel"], write_statistics=False)
+    experiment_config["panel_sha256"] = AtomicFitStore.file_hash(experiment_config["panel"])
+    def no_read(*args, **kwargs):
+        raise AssertionError("rows read before metadata gate")
+    monkeypatch.setattr(pd, "read_parquet", no_read)
+    with pytest.raises(IntegrityError, match="temporal predicate"):
+        CDFExperiment(experiment_config).load_panel()
