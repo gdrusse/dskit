@@ -1,0 +1,29 @@
+{
+  "notes": "A worked `restwindow` config for a CANDLES endpoint shaped like Coinbase Exchange's /products/<id>/candles (probed 2026-10-06): the response body IS a bare list of positional rows [time, low, high, open, close, volume], newest first, with `time` an epoch in SECONDS, a request takes `start` and `end` as ISO-8601 instants, both bounds are INCLUSIVE, and the vendor refuses (HTTP 400) a range of more than 300 granules. Register it with `python -m dskit.onboarding register-source candles --connector dskit.onboarding.libs.restwindow:RestWindowConnector --config @examples/onboarding/source-restwindow-candles.json`; swap base_url, path and params for another venue's candles and nothing else changes. No credential: the endpoint is public.",
+  "base_url": "https://api.example.test",
+  "streams": {
+    "candles-btc-usd": {
+      "notes": "`row_fields` names the six positions so each row becomes a dict; `epoch` reads the `time` field as epoch seconds and writes the ISO effective instant into `time_iso` (the raw `time` stays in the row, so nothing is lost). `primary_key` is the raw epoch, one row per candle.",
+      "path": "/products/BTC-USD/candles",
+      "params": {"granularity": 60},
+      "row_fields": ["time", "low", "high", "open", "close", "volume"],
+      "epoch": {"field": "time", "unit": "s"},
+      "effective_field": "time_iso",
+      "primary_key": ["time"],
+      "pagination": {
+        "notes": "One request per window of `step` seconds: 17940 s is 299 one-minute granules, so a request whose two inclusive bounds both return a row is 300 rows, inside the vendor's 300-granule cap. The connector keeps only the rows inside the half-open window [lo, hi), so the row both neighbours return at a shared bound is emitted once. `lag` is the candle length: with no `end` the span stops at now minus 60 s, so the candle still forming at the pull is never stored as if it were final (a later pull cannot correct a row the cursor already passed). `max_windows` refuses, before any request, a span that would need more windows than this: at 299 minutes a window, 2000 windows is about 415 days.",
+        "strategy": "window",
+        "start": "2024-01-01T00:00:00Z",
+        "step": 17940,
+        "start_param": "start",
+        "end_param": "end",
+        "time_format": "iso",
+        "lag": 60,
+        "max_windows": 2000
+      }
+    }
+  },
+  "timeout": 30,
+  "max_retries": 3,
+  "pace_s": 0.2
+}

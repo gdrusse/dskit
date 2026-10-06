@@ -1,0 +1,30 @@
+{
+  "notes": "A worked `restwindow` config for an INDEX-SERIES endpoint shaped like Deribit's public/get_volatility_index_data (probed 2026-10-06): a JSON-RPC envelope whose rows sit at result.data as positional arrays [timestamp_ms, open, high, low, close], with `start_timestamp` and `end_timestamp` in epoch MILLISECONDS. The vendor returns at most 1000 rows and, when it cut the range short, keeps the NEWEST rows and puts a non-null marker at result.continuation: a silent truncation, so this config declares `truncated_path` and the connector refuses that window instead of storing a partial one. Register it as in source-restwindow-candles.json. No credential: the endpoint is public.",
+  "base_url": "https://api.example.test",
+  "streams": {
+    "index-btc-60s": {
+      "notes": "Rows are arrays, so `row_fields` names them; `epoch` reads `ts` as epoch milliseconds and writes the ISO effective instant into `ts_iso`.",
+      "path": "/api/v2/public/get_volatility_index_data",
+      "params": {"currency": "BTC", "resolution": "60"},
+      "records_path": "result.data",
+      "row_fields": ["ts", "open", "high", "low", "close"],
+      "epoch": {"field": "ts", "unit": "ms"},
+      "effective_field": "ts_iso",
+      "primary_key": ["ts"],
+      "pagination": {
+        "notes": "A 43200 s window is 720 one-minute rows, under the 1000-row cap, so the continuation marker stays null. `time_format` epoch_ms renders the window bounds the way the vendor reads them. `lag` is the row length (60 s): the minute still forming at the pull is not stored. A finer `resolution` puts more rows in each window: lower `step` with it, or the vendor starts cutting windows short and the connector refuses the first one.",
+        "strategy": "window",
+        "start": "2024-01-01T00:00:00Z",
+        "step": 43200,
+        "start_param": "start_timestamp",
+        "end_param": "end_timestamp",
+        "time_format": "epoch_ms",
+        "truncated_path": "result.continuation",
+        "lag": 60,
+        "max_windows": 5000
+      }
+    }
+  },
+  "timeout": 30,
+  "max_retries": 3
+}
