@@ -1,3 +1,38 @@
+# Active handoff — 2026-10-06: crypto_trading child, data pulls + features ready for WSL
+
+**Landed on branch `claude/crypto-trading-child` (not merged to main; candidate lock `1e7557f`).**
+New child `children/crypto_trading`. Stage A sources/suites: Kalshi BTC/ETH hourly + 15-minute contracts
+(markets, fees, 15-minute candles, live books split 15m/hourly) and Binance Vision BTC/ETH 1-minute klines
++ BVOL (research-only licence). Stage B document `configs/run-features-15m.json`: point-in-time features,
+a BRTI basis from strike anchors, a 60 s-average lognormal fair value, the Kalshi fee, and a kill test with
+day-block SEs and held-out only on an explicit edit; per-run published feature tables. The child suite is
+413 passed, 9 skipped.
+
+**Why.** Research notes A0001 (ranked focus) and A0002 (data sources + live arbitrage snapshot) in the
+child's journal. Chosen problem: a calibrated short-horizon BTC/ETH settlement distribution, used to quote
+Kalshi crypto ladders as maker.
+
+**Review status.** Sonnet builder; two independent Sonnet final skeptics (correctness/leakage;
+tests/integration), 0 open Critical/Major on `1e7557f` after 4 fix rounds. Open Minors/Nits: for 15M markets
+moneyness reduces to ln(ref/spot), so the strike drops out (documented choice pending); fills are priced at
+the information-instant quote with no adverse selection, so profit is an upper bound; tau is measured from
+E, not I (at most +0.8 pp); an uppercase run name is refused only after compute; child `nodes.py` has a
+ruff D ignore; README and runbook are long. Unverified: BVOL cadence, the 365-day year, today's fee
+schedule applied to history.
+
+**Owner decisions pending.** Approve or reject PROPOSED ADR-0236 through ADR-0244; ADR-0236 (Kalshi
+historical endpoints, trades, event-level candles, `expiration_value`) gates the hourly series and the
+continuous label. Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s, strike
+lag 30 s, and the store path placeholder `$OB`.
+
+**Next (on WSL).** Fetch the branch; follow
+`children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md` (stage A acquisitions, then
+B1-B5); read the development kill-test report; only then decide on the held-out read.
+
+**Known failures, not from this branch.** `tests/children` index_options (environment), plus 11 in
+`tests/pipeline` + `tests/onboarding` (test_alpaca, test_runs, test_uncertainty_set), identical on
+origin/main.
+
 # Active handoff — 2026-10-04: 300 more stocks pulled; pooled-heads study run
 
 **Landed on main (through `524928e0`).** Window fix for the price-calendar panel (`fbb111c9`).
