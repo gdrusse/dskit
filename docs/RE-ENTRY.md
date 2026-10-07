@@ -1,3 +1,19 @@
+# Continuation — 2026-10-07: explicit MIO handoff and Stage-0 census
+
+[The production development report](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+contains a concise calibration → nominal probabilities/grid/radius/bands → MIO
+inner LP/dual → robust trade/no-trade explanation, plus the complete pickup steps.
+This is an editorial restatement of reviewed U1, not an implemented solver.
+
+The first configured-source date-only census covers 393 tickers and 833,637
+pre-2026 price dates; none predates 2016 and 308 tickers have COVID-window dates.
+These are source counts, not admitted training rows. Evidence/script/config identities
+are saved in the local durable data directory named in the report.
+Broader history, split/vintage, panel/fold and storage/restore gates remain open.
+The backup destination preference is pending. No fit, new provider request,
+protected-row inspection or behavioral source/config change occurred.
+Continue the report's final “Pick up here” instructions; preserve the 216-attempt cap.
+
 # Active handoff — 2026-10-07: retain artifacts and define uncertainty
 
 The [production proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
