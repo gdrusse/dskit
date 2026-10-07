@@ -1,0 +1,15 @@
+{
+  "notes": "Registration input, not a run input: every trade of the four hourly series (KXBTC, KXBTCD, KXETH, KXETHD) from the kalshi_history pack (ADR-0239): trade_id, ticker, created_time, yes_price (dollars), count (contracts) and taker_side. Pulled PER MARKET: each market is asked of the archive that owns each period of its life (/historical/trades before the venue's trades_created_ts cutoff, /markets/trades from it), so a market that straddles the cutoff is asked of both and a trade seen by both is stored once. Each hourly event has about 190 strikes, so the pull is about 190 request chains per event, measured about 0.9 s a market on 2026-10-07 (a chain pages at limit 1000, so a liquid market costs more than one request): COUNT the archived hourly markets first (runbook section 7) and do not start it until that cost is accepted; the pack has no date bound. The four 'hourly' series also list 25 h daily and 7 d weekly ladders, which every pull pools: source-kalshi-history-candles-hourly-btc.json says what that means, and the runbook's open-length census (section 7c) counts them. Trades are dated at created_time and a trade created after the pull's capture instant is not emitted (the next pull asks again), so nothing is future-dated. A resumed pull skips markets that closed at or before the cursor and asks for trades from the cursor's whole second; statuses are the pack default [settled, closed, open] for the reason given in source-kalshi-history-candles-hourly-btc.json. A trade is an event of the market's life, not a quote: a feature at decision time I may use only trades with created_time before I. One source per family because a failed pull commits nothing. Register: python -m dskit.onboarding register-source kalshi-history-trades-hourly --catalog-source kalshi-history-trades-hourly --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-trades-hourly.json --activate --root <store root>; then acquire --source kalshi-history-trades-hourly --stream trades --mode backfill; validate with configs/suite-kalshi-history-trades.json.",
+  "series": [
+    "KXBTC",
+    "KXBTCD",
+    "KXETH",
+    "KXETHD"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

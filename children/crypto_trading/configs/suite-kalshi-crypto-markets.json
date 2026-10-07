@@ -1,0 +1,134 @@
+{
+  "name": "kalshi-crypto-markets",
+  "notes": "Structural gates over one `markets` pull of source kalshi-crypto (settled history). Structure only: every row arrives final (settled, yes/no), on a known series and strike geometry. Whether a market is usable for calibration (lead time, a quote to compare) is the model's call. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-crypto-markets.json --snapshot <snapshot-vid> --root <store root>. A snapshot holds one stream, so each stream has its own suite.",
+  "rules": [
+    {
+      "id": "markets-rows-arrived",
+      "target": "markets",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken pull (wrong series, API change), never a quiet day."
+    },
+    {
+      "id": "markets-ticker-unique",
+      "target": "markets",
+      "rule": "unique",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error",
+      "notes": "One row per market per pull; a duplicate means two status walks overlapped."
+    },
+    {
+      "id": "markets-every-series-present",
+      "target": "markets",
+      "rule": "distinct_count",
+      "kwargs": {
+        "field": "series_ticker",
+        "min": 6,
+        "max": 6
+      },
+      "severity": "error",
+      "notes": "Each of the six series returned at least one settled market; a missing one is a ticker change or an empty walk. Six restates the series list; the pin test keeps them equal."
+    },
+    {
+      "id": "markets-series-universe",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "series_ticker",
+        "values": [
+          "KXBTC",
+          "KXBTCD",
+          "KXBTC15M",
+          "KXETH",
+          "KXETHD",
+          "KXETH15M"
+        ]
+      },
+      "severity": "error",
+      "notes": "The six series the source pulls, RESTATED here on purpose: a suite must not read its vocabulary from the source it validates. tests/test_configs.py pins the two lists together."
+    },
+    {
+      "id": "markets-result-vocabulary",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "result",
+        "values": [
+          "yes",
+          "no"
+        ]
+      },
+      "severity": "error",
+      "notes": "A settled market reads yes or no. '' means unsettled and anything else (void, scalar) is a settlement the calibration test must handle by name: fail here so it is decided, then amend the suite (a new, auditable hash)."
+    },
+    {
+      "id": "markets-strike-type",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal",
+          ""
+        ]
+      },
+      "severity": "error",
+      "notes": "A value that is neither a known geometry nor empty is a new market type: block until a payoff rule exists. Known: greater, between, less (hourly) and greater_or_equal (15-minute up/down) were seen 2026-10-06; less_or_equal is documented, not seen. Empty is allowed here and WARNED by markets-strike-type-set. functional, structured and custom need a payoff rule before they can be calibrated, so they block."
+    },
+    {
+      "id": "markets-strike-type-set",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal"
+        ]
+      },
+      "severity": "warn",
+      "notes": "An EMPTY strike_type is a market that was never given a strike: three real settled KXBTC15M rows from 2026-08 (KXBTC15M-26AUG080215-15, -26AUG101145-45, -26AUG140315-15) are finalized with a result, strike_type empty, floor_strike null and 'Target price: TBD'. They cannot be placed on a ladder: warn, then drop them by name; never guess a strike."
+    },
+    {
+      "id": "markets-floor-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "floor_strike",
+        "min": 100
+      },
+      "severity": "warn",
+      "notes": "Strikes are USD prices of BTC or ETH, far above 100; a negative, non-numeric or sub-100 one is a unit slip (the history archive holds five such markets of 2026-04-13, see suite-kalshi-history-markets.json): read it before modelling."
+    },
+    {
+      "id": "markets-cap-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "cap_strike",
+        "min": 100
+      },
+      "severity": "warn",
+      "notes": "As floor_strike, for the upper edge of a range or a 'less' market (the same unit-slip floor of 100 USD)."
+    },
+    {
+      "id": "markets-bitemporal",
+      "target": "markets",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "A market dated after it was acquired cannot be point-in-time."
+    }
+  ]
+}

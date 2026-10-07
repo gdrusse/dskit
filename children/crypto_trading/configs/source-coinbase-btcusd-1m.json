@@ -1,0 +1,47 @@
+{
+  "notes": "Registration input, not a run input: Coinbase Exchange BTC-USD 1-minute candles from the public REST endpoint (no credential), through the restwindow pack (ADR-0240, named by import path). WHY: Coinbase is a US venue and one of the constituent exchanges of CF Benchmarks' BRTI, the index Kalshi settles on, quoted in USD; Binance's klines are USDT-quoted (another instrument, a proxy) and CC BY-NC-SA, research use only. Coinbase is the LIVE-SAFE alternative to Binance for a spot input: confirm Coinbase's current market-data terms at go-live (this repo stores no licence text and no credential). The shipped run documents still read Binance: their spot node reads day-file parquet, and a Coinbase-backed reader is not built, so this source is acquired and validated now and wired in a later step. The response is a bare list of rows [time, low, high, open, close, volume], newest first; `time` is epoch SECONDS and the START of the minute (a candle is complete only at time + 60 s: use only candles that had ended before a decision instant), written beside an ISO effective instant `time_iso`. Windows: Coinbase refuses a span of more than 300 granules (probed 2026-10-07: 18000 s, 300 granules, answers 301 rows with both bounds; 18060 s is an HTTP 400), so step 17940 s is 299 granules, one under that ceiling and 300 rows with both bounds, and the connector keeps only [lo, hi) of each window (the row both neighbours return is stored once). lag 60 stops the span a minute before now so the candle still forming is never stored. start 2024-01-01 is a choice (edit it to widen); from there to 2026-10-07 is about 4,860 windows and max_windows 6000 refuses, before any request, a span that has outgrown it (about 235 days of headroom). pace_s 0.2 is 5 requests a second, inside the venue's public limit. Register: python -m dskit.onboarding register-source coinbase-btcusd-1m --catalog-source coinbase-btcusd-1m --connector dskit.onboarding.libs.restwindow:RestWindowConnector --config @configs/source-coinbase-btcusd-1m.json --activate --root <store root>; then acquire --source coinbase-btcusd-1m --stream candles --mode backfill; validate with configs/suite-coinbase-candles.json.",
+  "base_url": "https://api.exchange.coinbase.com",
+  "streams": {
+    "candles": {
+      "notes": "row_fields names the six positions so each row is a dict; epoch reads `time` as epoch seconds and writes the ISO effective instant into time_iso (the raw time stays). primary_key is the raw epoch: one row per candle.",
+      "path": "/products/BTC-USD/candles",
+      "params": {
+        "granularity": 60
+      },
+      "row_fields": [
+        "time",
+        "low",
+        "high",
+        "open",
+        "close",
+        "volume"
+      ],
+      "epoch": {
+        "field": "time",
+        "unit": "s"
+      },
+      "effective_field": "time_iso",
+      "primary_key": [
+        "time"
+      ],
+      "pagination": {
+        "notes": "299 one-minute granules a window: 300 rows with both inclusive bounds, one granule under the venue's ceiling of 300 granules a span (18000 s answers 301 rows, 18060 s is a 400). Probed 2026-10-07: start 00:00:00 and end 00:03:00 returned four candles.",
+        "strategy": "window",
+        "start": "2024-01-01T00:00:00Z",
+        "step": 17940,
+        "start_param": "start",
+        "end_param": "end",
+        "time_format": "iso",
+        "lag": 60,
+        "max_windows": 6000
+      }
+    }
+  },
+  "timeout": 30,
+  "max_retries": 4,
+  "pace_s": 0.2,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

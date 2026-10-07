@@ -1,0 +1,95 @@
+{
+  "name": "kalshi-crypto-fees",
+  "notes": "Structural gates over one `fee_schedules` pull of source kalshi-crypto: one row per series, as the venue reports it today. The fee model decides whether a maker quote has edge, so a change of fee TYPE must be seen. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-crypto-fees.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "fees-rows-arrived",
+      "target": "fee_schedules",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error"
+    },
+    {
+      "id": "fees-every-series-once",
+      "target": "fee_schedules",
+      "rule": "distinct_count",
+      "kwargs": {
+        "field": "series_ticker",
+        "min": 6,
+        "max": 6
+      },
+      "severity": "error",
+      "notes": "One schedule per series. Six restates the series list; the pin test keeps them equal."
+    },
+    {
+      "id": "fees-series-universe",
+      "target": "fee_schedules",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "series_ticker",
+        "values": [
+          "KXBTC",
+          "KXBTCD",
+          "KXBTC15M",
+          "KXETH",
+          "KXETHD",
+          "KXETH15M"
+        ]
+      },
+      "severity": "error",
+      "notes": "The six series the source pulls, RESTATED here on purpose: a suite must not read its vocabulary from the source it validates. tests/test_configs.py pins the two lists together."
+    },
+    {
+      "id": "fees-multiplier-present",
+      "target": "fee_schedules",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "fee_multiplier"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "fees-multiplier-nonnegative",
+      "target": "fee_schedules",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "fee_multiplier",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "fees-type-is-quadratic",
+      "target": "fee_schedules",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "fee_type",
+        "values": [
+          "quadratic"
+        ]
+      },
+      "severity": "warn",
+      "notes": "All six read quadratic on 2026-10-06. Another type (for example the variant that charges makers) changes the quoting economics: warn so the fee model is re-read, not blocked."
+    },
+    {
+      "id": "fees-multiplier-is-one",
+      "target": "fee_schedules",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "fee_multiplier",
+        "min": 1,
+        "max": 1
+      },
+      "severity": "warn",
+      "notes": "The stage B fee model prices rate = 0.07 x fee_multiplier, and 0.07 is Kalshi's standard taker coefficient; all six series read multiplier 1 on 2026-10-06. Another value is read and priced, but warn so a changed schedule is seen, never silently absorbed."
+    },
+    {
+      "id": "fees-bitemporal",
+      "target": "fee_schedules",
+      "rule": "bitemporal",
+      "severity": "error"
+    }
+  ]
+}

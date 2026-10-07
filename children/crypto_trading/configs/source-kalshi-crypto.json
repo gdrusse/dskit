@@ -1,0 +1,20 @@
+{
+  "notes": "Registration input, not a run input: Kalshi's public trade API v2 (no credential, the existing kalshi pack, ADR-0075) for the six crypto series probed 2026-10-06: KXBTC and KXETH (hourly range), KXBTCD and KXETHD (hourly above/below), KXBTC15M and KXETH15M (15-minute up/down). All settle on the CF Benchmarks Real Time Index, the average of its 60 prices in the last minute. Streams used here: markets (strikes, result, close_time; ~190 markets per hourly event, 1000 a page) and fee_schedules (fee_type and multiplier per series, read from the venue, never typed). Books and candles are separate sources (source-kalshi-crypto-books-*.json, source-kalshi-crypto-candles-*.json). statuses is ['settled']: history is settled markets only, so every row is final; the live API serves them back to about the 2026-08-07 historical cutoff (probe: KXETH15M's oldest close was 2026-07-31), and earlier markets, with the realised settlement value, come from source-kalshi-history-crypto.json (the kalshi_history pack, ADR-0239). THIS pull stores only each strike's yes/no result: the pack's markets row has no expiration_value (the BRTI 60-second average, identical on every strike of an event) and no settlement_ts, so the stored result only brackets the value; the continuous label is source-kalshi-history-crypto's, gated on its settlement_ts. Never use a settled market's yes_bid, yes_ask or last_price as a feature: after close they are post-settlement values (about 0 or 1, probed), not what the market quoted. A few settled 15-minute markets (2026-08) were never given a strike (strike_type empty, 'Target price: TBD'); the suite warns on them. pace_s 0.25 and retries 6 are slower and more patient than the pack defaults: a failed pull commits nothing, so a long walk should ride out 429s. Register: python -m dskit.onboarding register-source kalshi-crypto --catalog-source kalshi-crypto --connector kalshi --config @configs/source-kalshi-crypto.json --activate --root <store root>; then acquire --stream markets and --stream fee_schedules.",
+  "series": [
+    "KXBTC",
+    "KXBTCD",
+    "KXBTC15M",
+    "KXETH",
+    "KXETHD",
+    "KXETH15M"
+  ],
+  "statuses": [
+    "settled"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

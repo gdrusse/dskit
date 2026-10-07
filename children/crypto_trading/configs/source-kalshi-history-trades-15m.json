@@ -1,0 +1,13 @@
+{
+  "notes": "Registration input, not a run input: every trade of the two 15-minute series (KXBTC15M, KXETH15M) from the kalshi_history pack (ADR-0239): trade_id, ticker, created_time, yes_price (dollars), count (contracts) and taker_side. Pulled PER MARKET: each market is asked of the archive that owns each period of its life (/historical/trades before the venue's trades_created_ts cutoff, /markets/trades from it), so a market that straddles the cutoff is asked of both and a trade seen by both is stored once. The pair has 96 markets a day each, so the pull is about 192 request chains a day of history, and a chain PAGES (limit 1000): measured 2026-10-07 over 40 markets, 14,955 trades and 9.5 to 12.3 s a market, so the full pull (about 56,000 settled markets) is about 6 to 8 days in one all-or-nothing acquire, about 0.84 billion rows and about 52 GB. It is the heaviest family, not the cheapest: pull it LAST, and only after the count and these figures are accepted (runbook section 7, step 7e); the pack has no date bound, so a bounded pull needs a new dskit knob (an ADR). ITS SNAPSHOT CANNOT BE GATED: validate holds every row of a snapshot in memory, about 2 KB a row (469 MB for 226,000 real trades, measured 2026-10-07), so the full pull is about 1.7 TB; run acquire alone (runbook 7e, never the pull helper) until an ADR gives validate a streaming evaluator. Trades are dated at created_time and a trade created after the pull's capture instant is not emitted (the next pull asks again), so nothing is future-dated. A resumed pull skips markets that closed at or before the cursor and asks for trades from the cursor's whole second; statuses are the pack default [settled, closed, open] for the reason given in source-kalshi-history-candles-hourly-btc.json. A trade is an event of the market's life, not a quote: a feature at decision time I may use only trades with created_time before I. One source per family because a failed pull commits nothing. Register: python -m dskit.onboarding register-source kalshi-history-trades-15m --catalog-source kalshi-history-trades-15m --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector --config @configs/source-kalshi-history-trades-15m.json --activate --root <store root>; then acquire --source kalshi-history-trades-15m --stream trades --mode backfill; validate a BOUNDED pull of the family only (configs/suite-kalshi-history-trades.json), never the full one.",
+  "series": [
+    "KXBTC15M",
+    "KXETH15M"
+  ],
+  "pace_s": 0.25,
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

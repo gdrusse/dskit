@@ -157,6 +157,7 @@ convention = "numpy"
 # driver.py was drained that way — the pattern to copy.
 # ---------------------------------------------------------------------
 "children/_skeleton/yourproject/nodes.py" = ["D"]
+"children/crypto_trading/crypto_trading/nodes.py" = ["D"]
 "dskit/assets/__main__.py" = ["D"]
 "dskit/assets/libs/parquet.py" = ["D"]
 "dskit/assets/libs/sqlite.py" = ["D"]

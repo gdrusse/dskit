@@ -702,6 +702,25 @@ run directory and its `$prev` series. Install it with
 Synthetic nodes (`synthetic_nodes.py`) mirror every role for demos and tests;
 they register only into private registries, never the default one.
 
+**ADR-0243..0247 additions (all by import path; none edits an existing module):**
+
+- `libs/parquet_series.py` (ADR-0243): `ParquetSeries(root, source, stream, relpath_template, time_column, columns)`
+  reads the `{day}`-named parquet files of an onboarded stream, hashes the bytes it parses against the manifest,
+  and answers `prior(instants_ms, max_age_ms)` (the last row STRICTLY before each instant, with its age). The
+  `stream-manifests` data node (opt-in `register()`) fingerprints streams a transform reads by hand. A file whose
+  instants are not integer epoch ms, ascending, and inside its own UTC day refuses by name.
+- `libs/vol_estimators.py` (ADR-0244): `VolEstimatorFeatures` emits per-bar VARIANCE (`var_rms_60`, `var_ewma_30`,
+  `var_hl_60`; `column_prefix`, `bar_ms`, `close_field` / `high_field` / `low_field`), and a window holding a
+  missing bar is None, never shortened.
+- `fee_mechanics.py` (ADR-0245): `fee_model_from_spec({"mechanic": ..., "rounding": {"policy": ...}})`; the rate is
+  an argument of each call, so a venue's fee types, rates and tick live in the project's own config.
+- `binary_pricing.py` and `binary_scoring.py` (ADR-0246): price a contract on a settlement average
+  (`BinaryFairValue`), then score it against the market (`BucketedBinaryScore`; `segments` + `report_segments`
+  are the held-out gate, `cluster_block_s` sets the primary error).
+- `kinds_run_write.py` (ADR-0247): `records-write-run` needs exactly one `{run}` in the file stem of `path`. The
+  document-name half of the run-name rule cannot be checked at plan time; apply `run_name_problems(document.name)`
+  in a config test.
+
 ## Writing your own node
 
 ```python
@@ -824,6 +843,7 @@ dskit/pipeline/
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
+├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085;
 │                      horizon-pairs: entry/settle pairs + log return, ADR-0228)
@@ -859,6 +879,12 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
+│                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
+├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
+│                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
+├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
+│                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
@@ -913,13 +939,18 @@ dskit/pipeline/
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
 │                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
-│                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment)
+│                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
+│                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
+│                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```
 
 Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
+ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
+`tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
+(the `*_golden` file holds the former child's output, frozen in `golden/`).
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and

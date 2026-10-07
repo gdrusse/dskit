@@ -1,0 +1,3 @@
+id,category,step,executed_at,inputs,outputs,db_location,notes
+A0001,research,focus-areas/2026-10-06-ranked-opportunities,2026-10-06T14:38:09+00:00,Rank crypto trading focus areas by net-of-cost evidence,docs/research/focus-areas/2026-10-06-ranked-opportunities.md,docs/research/focus-areas/2026-10-06-ranked-opportunities.md,
+A0002,research,data-and-arbitrage/2026-10-06-sources-and-gaps,2026-10-06T16:09:09+00:00,Map scalable crypto data sources and test arbitrage gaps,docs/research/data-and-arbitrage/2026-10-06-sources-and-gaps.md,docs/research/data-and-arbitrage/2026-10-06-sources-and-gaps.md,

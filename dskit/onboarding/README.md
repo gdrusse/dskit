@@ -185,6 +185,15 @@ after close), `candles` (`(ticker, ts)`), `fee_schedules` and `orderbooks`
 (provider-shaped bids, never mirrored) — through one injectable getter with
 pacing and 429/5xx retry; `libs/kalshi.py` is the knob reference.
 
+The `kalshi_history` kind (ADR-0239) is a standalone sibling of `kalshi` for HISTORY: `markets` (adds
+`expiration_value`, `settlement_ts`, `volume`), `candles` (per event, or in ticker batches; archived markets
+one by one), `trades` (key `trade_id`, with `taker_side`) and `orderbooks` (adds `observed_at`). A market the
+archive's own listing holds is the archive's (its live copy is dropped, whatever its settlement time); `trades`
+split at the venue's `trades_created_ts`, read once per pull from `/historical/cutoff`.
+`series` is required; `statuses` defaults to `settled, closed, open` (keep `closed`, or a cursor can skip a
+market for good). A label exists only from `settlement_ts`: join on it, never on `effective_date`.
+`libs/kalshi_history.py` is the knob reference.
+
 The `cboe` kind (ADR-0182) pulls Cboe's public CDN with no credential for a
 declared `symbols` list — `index_daily` (`(symbol, date)`: the daily
 history CSV, `DATE,OPEN,HIGH,LOW,CLOSE` or a close-only `DATE,<SYMBOL>`,
@@ -278,6 +287,22 @@ raw_sha256, origin, reason}`. `throttle_s`, `timeout`, `max_retries` and static
 exhausted retries abort with no cursor. `transform` (`pkg.module:Class`) reshapes
 a response in your code, `raw_relpath_template` keeps the raw bytes, and
 `cache_dir` re-derives from raw responses already on disk without the network.
+
+The `restwindow` kind (ADR-0240) declares the time-window REST that `restapi` cannot: `pagination` is `window`
+(one request per `step` seconds over `[start, end)`; `max_windows` refuses rather than truncates, `lag` keeps
+forming rows out, `truncated_path` refuses a vendor-cut response) or `cursor` (a token read from each response
+and sent back; a short `page_size` page ends the walk). `row_fields` names positional array rows, `epoch`
+writes the ISO instant from an epoch number, and one `*` in `records_path` matches a key named after the thing
+asked for. No credential. Worked configs:
+[`candles`](../../examples/onboarding/source-restwindow-candles.json),
+[`index-series`](../../examples/onboarding/source-restwindow-index-series.json) and
+[`trades`](../../examples/onboarding/source-restwindow-trades.json); `libs/restwindow.py` is the knob reference.
+
+`libs/zipcsv.py` (ADR-0242) is an `httpblobs` `transform`, named by import path
+(`dskit.onboarding.libs.zipcsv:ZipCsvToParquet`): a vendor zip of one CSV becomes typed parquet under a
+`transform_params` layout (`columns`: vendor name, `output` or null to drop, `kind` `float|int|text|ts`, a `ts`
+`unit`; `header`, `unique_instants`, `instant`, `max_member_bytes`). Epochs are written in milliseconds; the
+block takes no `notes` (it feeds the declaration digest). Nothing registers it.
 
 ## OAuth authorization
 
@@ -390,6 +415,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
+│   ├── kalshi_history.py Kalshi history: /historical routing, event-level candles, trades, settlement fields, per-book observed_at; standalone (stdlib urllib, ADR-0239)
 │   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file, fingerprint cursor (stdlib, ADR-0225)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
@@ -398,7 +424,9 @@ dskit/onboarding/
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
+│   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
 │   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
+│   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding
@@ -408,7 +436,9 @@ dskit/onboarding/
 
 Tests: `python -m pytest tests/onboarding -q` (purity gate, model-hash
 parity with the architecture doc, connector conformance, CLI e2e through
-`sync-published`).
+`sync-published`). The ADR-0239/0240/0242 packs have their own suites:
+`tests/onboarding/test_kalshi_history.py`, `test_restwindow.py`, `test_zipcsv.py`, with boundary pins in
+`test_{kalshi_history,restwindow}_pins.py` and `test_zipcsv_golden.py` (the former child's output, frozen in `golden/`).
 
 ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
 SHA-256-pinned local files through PinnedArchiveConnector. No provider access.

@@ -1,0 +1,12 @@
+{
+  "notes": "Registration input, not a run input: the live order-book recorder for the two 15-minute up/down series (KXBTC15M, KXETH15M), from the same kalshi pack as source-kalshi-crypto.json. Pull ONLY the orderbooks stream from this source: acquire --source kalshi-crypto-books-15m --stream orderbooks --mode live, repeated by `watch` (it exits on the first error, so supervise it; see the runbook). The orderbooks stream lists OPEN markets whatever `statuses` says, so none is set. A pass is one request per open market. TIMING: each row's captured_at is the pass START floored to the minute, so it is a LOWER bound on when that book was read; the snapshot's acquired_at (commit, after the whole pass) is the UPPER bound. These series hold about one open market each, so a pass is a few requests (seconds) and a 60-second cadence is realistic: captured_at is then within a minute or two of the read. `watch --every-seconds N` sleeps N after a pass ends, so the cadence is pass time + N. retries 6 so a 429 burst does not end an unattended recorder. Bids are stored as served (YES and NO bids, best first), never mirrored. Register: python -m dskit.onboarding register-source kalshi-crypto-books-15m --catalog-source kalshi-crypto-books-15m --connector kalshi --config @configs/source-kalshi-crypto-books-15m.json --activate --root <store root>.",
+  "series": [
+    "KXBTC15M",
+    "KXETH15M"
+  ],
+  "retries": 6,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
