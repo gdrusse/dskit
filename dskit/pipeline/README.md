@@ -937,8 +937,8 @@ dskit/pipeline/
 Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
 ADR-0240..0244 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
-`tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden,vol_estimators_parity}.py`
-(the `*_golden` file holds the former child's output, frozen in `golden/`; the `*_parity` file skips now that child module is gone).
+`tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
+(the `*_golden` file holds the former child's output, frozen in `golden/`).
 
 ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and

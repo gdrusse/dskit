@@ -2,8 +2,10 @@
 
 A runbook line nobody executes rots. These tests read ``docs/plans/2026-10-06-wsl-data-pull-runbook.md`` and check, offline,
 that each ``register-source`` names a config and a connector that agree, that each ``pull`` names a source, the stream its
-suite gates and that suite, and that the two inline python snippets (the archive census, the gap count) run over the
-synthetic stores. The shell around them (``curl``, paths, ``tmux``) is the one part a test cannot run.
+suite gates and that suite, and that the inline python snippets (the censuses, the gap count, the B6 size count) run over the
+synthetic stores. The B6 sizing block is pasted into a bash with a bare HOME, as written, and must run to completion and be
+repeatable; the section 1 gate and the B4 ``publish`` helper run under a stubbed ``python``. The network (``curl``) and
+``tmux`` are the parts a test cannot run.
 """
 
 import glob
@@ -13,13 +15,10 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import replace
 
 from dskit.onboarding import check_config, load_suite, resolve_connector
-from dskit.pipeline import OutputsConfig, run_document
-from dskit.pipeline.document import load_document
 from synthetic import shipped
-from test_hourly_pipeline import CUT_MS, CUTOFF, DOC as HOURLY_DOC, World, runbook_root_command
+from test_hourly_pipeline import CUTOFF, DOC as HOURLY_DOC, World, runbook_root_command
 from test_restwindow_sources import START, FakeCoinbase, acquire
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -182,39 +181,84 @@ def test_the_hourly_size_snippet_counts_settled_hourly_markets_times_leads_and_a
     assert "9.7 KB a row" in TEXT and "9.7" in code, "the figure the prose gives is the one the snippet multiplies by"
 
 
-def test_the_sizing_copy_is_a_real_document_over_one_series_and_one_lead(tmp_path, monkeypatch):
-    """LB2-01: the bounded path the runbook gives today runs, is its own run, and writes its table apart from the real one."""
+def pasted(marker):
+    """The runbook's fenced ``bash`` block that holds ``marker``, exactly as the owner would paste it."""
+    start = TEXT.rindex("```bash\n", 0, TEXT.index(marker)) + len("```bash\n")
+    return TEXT[start:TEXT.index("```", start)]
+
+
+class Owner:
+    """The owner's shell: a HOME and a store of its own, ``python`` is this interpreter, the child is importable."""
+
+    def __init__(self, tmp_path, world):
+        self.home, self.work, self.store = tmp_path / "home", tmp_path / "work", world.store.path
+        (self.work / "configs").mkdir(parents=True)
+        self.home.mkdir()
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "python").symlink_to(sys.executable)
+        shutil.copy(HOURLY_DOC, self.work / "configs" / "run-features-hourly.json")
+        self.env = {**os.environ, "HOME": str(self.home), "OB": self.store, "PYTHONPATH": CHILD_ROOT,
+                    "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+
+    def paste(self, text):
+        return subprocess.run(["bash", "-c", text], cwd=self.work, env=self.env, capture_output=True, text=True, timeout=300)
+
+    def sizing_dir(self):
+        return self.home / "data" / "crypto_trading" / "features-hourly-sizing"
+
+
+def test_the_sizing_copy_runs_as_pasted_and_is_repeatable_after_a_failed_attempt(tmp_path, monkeypatch):
+    """B3-01: the bounded path the runbook gives runs from a bare HOME with no mkdir, and a failed try leaves nothing behind."""
     world = World(tmp_path, monkeypatch)
-    work = tmp_path / "work"
-    (work / "configs").mkdir(parents=True)
-    shutil.copy(HOURLY_DOC, work / "configs" / "run-features-hourly.json")
-    done = subprocess.run(["bash", "-c", runbook_root_command()], cwd=work, capture_output=True, text=True,
-                          env={**os.environ, "OB": world.store.path})
-    assert done.returncode == 0, done.stderr
-    sizing = tmp_path / "run-features-hourly-sizing.json"
-    run_snippet_in(snippet("python - /tmp/run-features-hourly-sizing.json"), work, str(sizing))
-    doc = json.loads(sizing.read_text(encoding="utf-8"))
-    shipped_doc = json.load(open(HOURLY_DOC, encoding="utf-8"))
-    assert doc["name"] == shipped_doc["name"] + "-sizing"
-    assert "features-hourly-sizing" in doc["pipeline"]["write"]["params"]["path"], "never in the directory the acquire loop reads"
-    assert "features-hourly/" in shipped_doc["pipeline"]["write"]["params"]["path"]
-    out = tmp_path / "features"
-    out.mkdir()
-    doc["pipeline"]["write"]["params"]["path"] = str(out / "decision_features-{run}.jsonl")
-    kill = doc["pipeline"]["kill_test"]["params"]
-    kill["segments"]["development"]["end_ms"] = kill["segments"]["heldout"]["start_ms"] = CUT_MS
-    kill["report_segments"] = ["development", "heldout"]
-    sizing.write_text(json.dumps(doc), encoding="utf-8")
-    result = run_document(replace(load_document(str(sizing)), outputs=OutputsConfig(run_root=str(tmp_path / "runs"))),
-                          asof="2026-10-06")
-    assert result.state == "ran", (result.state, result.error)
-    rows = result.outputs["fees"]["records"]
+    owner = Owner(tmp_path, world)
+    block = pasted("# B6 sizing copy")
+    assert owner.paste(runbook_root_command()).returncode == 0
+    assert not (owner.home / "data").exists(), "a bare HOME: the block must make every directory it writes into"
+    done = owner.paste(block)
+    assert done.returncode == 0, done.stderr[-1500:]
+    stale = owner.sizing_dir() / "runs" / "an-earlier-failed-run"  # what a run that died on its last node leaves
+    stale.mkdir(parents=True)
+    (stale / "result.json").write_text("{}")
+    (owner.sizing_dir() / "decision_features-an-earlier-failed-run.jsonl").write_text("{}\n")
+    for attempt in ("after a failed attempt", "again after a success (the same run name and hash)"):
+        done = owner.paste(block)
+        assert done.returncode == 0, (attempt, done.stderr[-1500:])
+        assert not stale.exists() and not list(owner.sizing_dir().glob("decision_features-an-earlier*")), "rebuilt from scratch"
+    rows = [json.loads(line) for path in owner.sizing_dir().glob("decision_features-*.jsonl") for line in path.read_text().splitlines()]
     assert {r["series"] for r in rows} == {"KXBTCD"} and {r["lead_minutes"] for r in rows} == {15}
     assert len(rows) == 4, "two BTC strikes of each of the two events, one lead"
-    assert [p.name for p in out.iterdir()] and not (tmp_path / "features-hourly").exists()
+    doc = json.loads((owner.sizing_dir() / "run.json").read_text(encoding="utf-8"))
+    shipped_doc = json.load(open(HOURLY_DOC, encoding="utf-8"))
+    assert doc["name"] == shipped_doc["name"] + "-sizing"
+    assert not (owner.home / "data" / "crypto_trading" / "features-hourly").exists(), "never the directory the acquire loop reads"
+    assert not (owner.work / "pipeline_runs").exists(), "the run directory is the copy's own"
 
 
-def run_snippet_in(code, cwd, *argv):
-    done = subprocess.run([sys.executable, "-c", code, *argv], capture_output=True, text=True, timeout=120, cwd=cwd)
-    assert done.returncode == 0, done.stderr[-2000:]
-    return done.stdout
+def test_the_setup_gate_fails_when_pytest_cannot_run_or_a_test_was_skipped():
+    """B3-03: a gate that passes when pytest is missing (its error text holds no 'skip') proves nothing."""
+    (line,) = re.findall(r"^(out=\$\(python -m pytest tests/test_binance_vision\.py[^\n]*)$", TEXT, re.M)
+    def gate(output, status):
+        script = f"python() {{ echo '{output}'; return {status}; }}\n{line}"
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60).returncode
+    assert gate("12 passed in 1s", 0) == 0
+    assert gate("11 passed, 1 skipped in 1s", 0) != 0, "a skipped transform test"
+    assert gate("No module named pytest", 1) != 0, "pytest itself could not run"
+    assert gate("1 failed, 11 passed", 1) != 0
+
+
+def test_the_publish_helper_acquires_every_run_table_then_verifies(tmp_path):
+    """B4 and B6 share one loop: each ``decision_features-<run>.jsonl`` is its own stream, and a verify follows."""
+    start = TEXT.index("publish() {")
+    helper = TEXT[start:TEXT.index("\n}\n", start) + 3]
+    table = tmp_path / "data" / "crypto_trading" / "features-hourly"
+    table.mkdir(parents=True)
+    for run in ("a", "b"):
+        (table / f"decision_features-{run}.jsonl").write_text("{}\n")
+    calls = tmp_path / "calls.log"
+    script = f"python() {{ echo \"$*\" >> {calls}; }}\nOB=/ob\n{helper}\npublish features-hourly"
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, env={**os.environ, "HOME": str(tmp_path)})
+    assert done.returncode == 0, done.stderr
+    assert calls.read_text().splitlines() == [
+        "-m dskit.onboarding acquire --root /ob --source features-hourly --stream decision_features-a --mode backfill",
+        "-m dskit.onboarding acquire --root /ob --source features-hourly --stream decision_features-b --mode backfill",
+        "-m dskit.onboarding verify --root /ob"]

@@ -198,7 +198,7 @@ tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   file per child module, test_features_pipeline,
                        #   test_hourly_pipeline (leak tests by a second world)
                        #   test_migration_golden (golden/: the
-                       #   pre-migration outputs of two worlds) and test_guard_pins (each
+                       #   pre-migration outputs of three worlds) and test_guard_pins (each
                        #   edge-of-data and bad-input guard, one case)
 pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```

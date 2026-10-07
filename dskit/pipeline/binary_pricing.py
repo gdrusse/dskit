@@ -407,7 +407,8 @@ class BinaryFairValue(Node):
         if not isinstance(name, str) or not name:
             return []
         outputs = {name, name + VAR_SUFFIX, name + TAU_SUFFIX, name + STATUS_SUFFIX}
-        clash = sorted(outputs & {params.get(k) for k in cls._INPUT_FIELDS})
+        named = {params.get(k) for k in cls._INPUT_FIELDS if isinstance(params.get(k), str)}  # a mistyped knob is its own problem
+        clash = sorted(outputs & named)
         return ([f"fair_field {name!r} writes the columns {sorted(outputs)}, which would overwrite the input "
                  f"column(s) {clash}"] if clash else [])
 
@@ -434,7 +435,7 @@ class BinaryFairValue(Node):
         window, lag = params.get("averaging_window_s"), params.get("exec_lag_s")
         if not (number_ok(window) and window >= 0.0):
             problems.append(f"averaging_window_s is required: a number of seconds >= 0, got {window!r}")
-        if not (number_ok(lag) and _ms(lag) >= 1):
+        if not (number_ok(lag) and math.isfinite(lag * _MS_PER_S) and _ms(lag) >= 1):
             problems.append(f"exec_lag_s is required: a number of seconds of at least one millisecond "
                             f"(a fill cannot precede its information), got {lag!r}")
         return problems + cls._collision_problems(params)

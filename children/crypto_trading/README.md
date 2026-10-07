@@ -61,9 +61,11 @@ The table is written (dskit's `RecordsWriteRun`, ADR-0244) as JSON lines, one fi
 `configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
 The generic parts are dskit's (ADR-0239 to 0244, named in the table); this child keeps the Kalshi mapping, the row
 vocabulary and the readers. The move from the child's interim copies changed no number:
-`tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit, in a world with one UTC day a side and one with two,
-where the cluster-robust errors are numbers (the identity hash and the Binance declaration digests moved by design;
-the runbook states both).
+`tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit in three worlds: one UTC day a side,
+two (the cluster-robust errors are numbers), and one with unpriced, unscored and on-the-cut rows. Moved by design: the identity
+hash, the Binance declaration digests, the report files (`binary_score.*`), the score keys (`model`/`market`), and two fair-value
+statuses (a fill at or after settlement, once `tau_inside_window`, is `exec_not_before_settle`; `no_tau` is `no_instant`), so a
+downstream filter on a status must use the new strings.
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 
@@ -272,7 +274,7 @@ crypto_trading/
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── synthetic.py       # offline stores: scripted Kalshi, day-file parquet via localblobs
-    ├── golden/            # the pre-migration stage B outputs of two worlds (two JSONs, never regenerated)
+    ├── golden/            # the pre-migration stage B outputs of three worlds (three JSONs, never regenerated)
     ├── test_binance_vision.py # the two Binance layouts through dskit's zip transform + httpblobs e2e
     ├── test_anchors.py    # strikes as index observations
     ├── test_decisions.py  # market x lead rows

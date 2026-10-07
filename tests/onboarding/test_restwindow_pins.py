@@ -106,6 +106,25 @@ def test_a_failed_first_probe_names_the_first_of_the_windows_it_would_pull():
         conn.check(plain())
 
 
+# -- order and arguments (B3-04) -------------------------------------------------------------------------------------
+
+
+def test_rows_are_emitted_in_the_order_of_their_instants_not_of_the_vendors_text():
+    """'00:30:00Z' sorts before '01:00:00+02:00' as text, though the second is the earlier instant (23:00Z the day before)."""
+    rows = [{"ts": "2026-01-01T00:30:00Z", "v": 1}, {"ts": "2026-01-01T01:00:00+02:00", "v": 2}]
+    conn, _, _ = connector({SERIES: lambda p: {"rows": rows}})
+    msgs = read(conn, plain(pagination={"start": "2025-12-31T22:00:00Z", "end": "2026-01-01T01:00:00Z", "step": 10800}), ["s"])
+    assert [m["data"]["v"] for m in records(msgs)] == [2, 1]
+
+
+@pytest.mark.parametrize("streams", [["s", 1], [1], ["s", None], [None], ["s", ["s"]]])
+def test_a_streams_list_holding_anything_but_names_is_refused_before_any_request(streams):
+    conn, script, _ = connector({})
+    with pytest.raises(AssetError, match="streams must be a non-empty list of names"):
+        list(conn.read(plain(), streams, {}, "backfill"))
+    assert script.calls == []
+
+
 # -- config refusals (LB2-04: each went through no door of its own) -----------------------------------------------------
 
 

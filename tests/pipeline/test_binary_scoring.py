@@ -13,6 +13,7 @@ import pytest
 
 from dskit.pipeline import binary_scoring
 from dskit.pipeline.base import ConfigError
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.binary_scoring import BucketedBinaryScore
 
 DAY = 86_400_000
@@ -552,3 +553,16 @@ def test_the_calibration_table_holds_one_row_per_model_segment_and_group_and_nev
         assert r[3] == str(cell["n"]) and float(r[4]) == pytest.approx(cell["mean_model"], abs=5e-5)
         assert r[7] == f"{cell['mean_model'] - cell['base_rate']:+.4f}"
         assert r[8] == f"{cell['mean_market'] - cell['base_rate']:+.4f}"
+
+
+# -- the platform bar -----------------------------------------------------------------------------
+
+
+def _probes(tmp_path):
+    return {"bucketed-binary-score": NodeProbe(params=dict(PARAMS), required=tuple(k for k in PARAMS if k != "eligible_field"), inputs={"records": ROWS},
+                                               stream_ports=("records",), runnable=True)}
+
+
+TestBucketedBinaryScoreConformance = conformance_suite(
+    registry=(("bucketed-binary-score", BucketedBinaryScore),), module="dskit.pipeline.binary_scoring", probes=_probes,
+    expected_roles={"bucketed-binary-score": "report"}, name="TestBucketedBinaryScoreConformance")

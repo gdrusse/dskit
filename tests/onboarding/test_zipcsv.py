@@ -1,17 +1,14 @@
 """libs/zipcsv.py: a vendor zip of one CSV -> typed parquet, the layout from config (ADR-0239).
 
 Fixtures are built in the test (a tiny zip), never fetched. The generic cases use a
-neutral ``ticks`` layout. The parity section drives the SAME bytes through this pack
-and through the ``crypto_trading`` child's interim ``binance_vision`` module (loaded
-by file path, skipped once the child no longer sits beside this repo) and asserts the
-identical parquet. The last section runs a real ``httpblobs`` acquisition against a
-local stdlib HTTP server (no private seam).
+neutral ``ticks`` layout. The comparison with the vendor layouts the pack graduated from is
+frozen data in ``test_zipcsv_golden.py``. The last section runs a real ``httpblobs``
+acquisition against a local stdlib HTTP server (no private seam).
 """
 
 import copy
 import hashlib
 import http.server
-import importlib.util
 import io
 import json
 import pathlib
@@ -600,171 +597,6 @@ def test_importing_the_pack_loads_neither_pyarrow_nor_anything_third_party():
 def test_the_module_names_no_vendor_or_venue():
     text = pathlib.Path(zipcsv.__file__).read_text(encoding="utf-8").lower()
     assert not [word for word in ("binance", "kalshi", "coinbase", "kraken", "deribit") if word in text]
-
-
-# -- parity with the child's interim implementation -------------------------------------
-
-CHILD_FILE = REPO / "children" / "crypto_trading" / "crypto_trading" / "binance_vision.py"
-
-# The two layouts a source config would carry for the vendor the child was written for,
-# copied here as DATA (and pinned equal to the child's own below, so they cannot drift).
-KLINES_PARAMS = {"unique_instants": True, "columns": [
-    {"vendor": "open_time", "output": "open_time_ms", "kind": "ts"},
-    {"vendor": "open", "output": "open", "kind": "float"},
-    {"vendor": "high", "output": "high", "kind": "float"},
-    {"vendor": "low", "output": "low", "kind": "float"},
-    {"vendor": "close", "output": "close", "kind": "float"},
-    {"vendor": "volume", "output": "volume", "kind": "float"},
-    {"vendor": "close_time", "output": "close_time_ms", "kind": "ts"},
-    {"vendor": "quote_volume", "output": "quote_volume", "kind": "float"},
-    {"vendor": "count", "output": "trades", "kind": "int"},
-    {"vendor": "taker_buy_volume", "output": "taker_buy_volume", "kind": "float"},
-    {"vendor": "taker_buy_quote_volume", "output": "taker_buy_quote_volume", "kind": "float"},
-    {"vendor": "ignore", "output": None, "kind": "int"},
-]}
-BVOL_PARAMS = {"columns": [
-    {"vendor": "calc_time", "output": "calc_time_ms", "kind": "ts"},
-    {"vendor": "symbol", "output": "symbol", "kind": "text"},
-    {"vendor": "base_asset", "output": "base_asset", "kind": "text"},
-    {"vendor": "quote_asset", "output": "quote_asset", "kind": "text"},
-    {"vendor": "index_value", "output": "index_value", "kind": "float"},
-]}
-
-KLINES_US = (
-    "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,"
-    "28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n"
-    "1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,"
-    "12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n"
-    "1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,"
-    "6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n"
-)
-KLINES_MS = (KLINES_US.replace("1790812800000000", "1790812800000")
-             .replace("1790812859999999", "1790812859999")
-             .replace("1790812860000000", "1790812860000")
-             .replace("1790812919999999", "1790812919999")
-             .replace("1790812920000000", "1790812920000")
-             .replace("1790812979999999", "1790812979999"))
-KLINES_HEADER = ("open_time,open,high,low,close,volume,close_time,quote_volume,count,"
-                 "taker_buy_volume,taker_buy_quote_volume,ignore\n")
-BVOL_HEADER = "calc_time,symbol,base_asset,quote_asset,index_value\n"
-BVOL = ("1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n"
-        "1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n"
-        "1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n")
-
-PARITY_FIXTURES = {
-    "klines": {
-        "microseconds": KLINES_US,
-        "milliseconds": KLINES_MS,
-        "header": KLINES_HEADER + KLINES_US,
-        "bom": "﻿" + KLINES_US,
-        "bom header": "﻿" + KLINES_HEADER + KLINES_US,
-        "out of order": "".join(reversed(KLINES_US.splitlines(keepends=True))),
-        "blank lines": "\n" + KLINES_US.replace("\n", "\n\n"),
-        "crlf": KLINES_US.replace("\n", "\r\n"),
-        "one row": KLINES_US.splitlines(keepends=True)[0],
-    },
-    "bvol": {
-        "header": BVOL_HEADER + BVOL,
-        "headerless": BVOL,
-        "bom header": "﻿" + BVOL_HEADER + BVOL,
-        "duplicate instant": BVOL_HEADER + BVOL + BVOL.splitlines(keepends=True)[0],
-        "out of order": BVOL_HEADER + "".join(reversed(BVOL.splitlines(keepends=True))),
-        "one row": BVOL_HEADER + BVOL.splitlines(keepends=True)[0],
-    },
-}
-PARITY_REFUSALS = {
-    "klines": {
-        "duplicate instant": KLINES_US + KLINES_US.splitlines(keepends=True)[0],
-        "not a header": "o,h,l,c\n" + KLINES_US,
-        "empty": "",
-        "short row": KLINES_US.replace(",0\n", "\n"),
-        "long row": KLINES_US.replace(",0\n", ",0,1\n"),
-        "bad float": KLINES_US.replace("83623.59000000", "abc", 1),
-        "bad int": KLINES_US.replace("4552", "45.5", 1),
-        "non-finite": KLINES_US.replace("83623.59000000", "nan", 1),
-        "bad epoch": KLINES_US.replace("1790812800000000", "17908128.5", 1),
-    },
-    "bvol": {
-        "wrong header": "t,sym,b,q,v\n" + BVOL,
-        "short row": BVOL_HEADER + BVOL.replace(",37.2172\n", "\n", 1),
-        "bad float": BVOL_HEADER + BVOL.replace("37.2172", "x", 1),
-    },
-}
-
-
-@pytest.fixture(scope="module")
-def child():
-    """The child's interim module, loaded by file path (it imports stdlib only)."""
-    if not CHILD_FILE.is_file():
-        pytest.skip(f"the interim module {CHILD_FILE.name} is gone: the child moved to dskit's zipcsv; the golden files hold the comparison")
-    spec = importlib.util.spec_from_file_location("_zipcsv_parity_binance_vision", CHILD_FILE)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def pair(child, layout):
-    """``(the child's class, this pack's instance)`` for ``klines`` or ``bvol``."""
-    if layout == "klines":
-        return child.BinanceKlines({}, AS_OF), ZipCsvToParquet(copy.deepcopy(KLINES_PARAMS), AS_OF)
-    return child.BinanceBvol({}, AS_OF), ZipCsvToParquet(copy.deepcopy(BVOL_PARAMS), AS_OF)
-
-
-def test_the_two_layout_blocks_are_the_childs_own_layouts(child):
-    for cls, block in ((child.BinanceKlines, KLINES_PARAMS), (child.BinanceBvol, BVOL_PARAMS)):
-        declared = [(c["vendor"], c["output"], c["kind"]) for c in block["columns"]]
-        assert declared == list(cls.layout())
-        assert block.get("unique_instants", False) == cls.UNIQUE_INSTANTS
-
-
-@pytest.mark.parametrize("layout, name", [(layout, name) for layout, cases in PARITY_FIXTURES.items()
-                                          for name in cases])
-def test_same_fixture_bytes_give_the_identical_parquet_table_note_and_bytes(child, layout, name):
-    mine_child, mine = pair(child, layout)
-    body = make_zip(PARITY_FIXTURES[layout][name])
-    theirs, ours = mine_child.transform(DAY, body), mine.transform(DAY, body)
-    assert table(ours).equals(table(theirs)), (layout, name)
-    assert table(ours).schema.equals(table(theirs).schema)
-    assert ours == theirs, "the parquet bytes match too (one pyarrow version in one process)"
-    assert mine.note(DAY, body) == mine_child.note(DAY, body)
-
-
-@pytest.mark.parametrize("layout, name", [(layout, name) for layout, cases in PARITY_REFUSALS.items()
-                                          for name in cases])
-def test_a_file_the_child_refuses_this_pack_refuses_with_the_same_words(child, layout, name):
-    mine_child, mine = pair(child, layout)
-    body = make_zip(PARITY_REFUSALS[layout][name])
-    with pytest.raises(ValueError) as theirs:
-        mine_child.transform(DAY, body)
-    with pytest.raises(ValueError) as ours:
-        mine.transform(DAY, body)
-    assert str(ours.value) == str(theirs.value), (layout, name)
-
-
-@pytest.mark.parametrize("body", [
-    pytest.param(b"not a zip at all", id="not a zip"),
-    pytest.param(make_zip("", name="notes.txt"), id="no csv member"),
-    pytest.param(make_zip(KLINES_US, extra=[("again.csv", KLINES_US)]), id="two csv members"),
-    pytest.param(make_zip(KLINES_US, compression=zipfile.ZIP_STORED)[:-30], id="truncated zip"),
-])
-def test_a_container_the_child_refuses_this_pack_refuses_with_the_same_words(child, body):
-    mine_child, mine = pair(child, "klines")
-    with pytest.raises(ValueError) as theirs:
-        mine_child.transform(DAY, body)
-    with pytest.raises(ValueError) as ours:
-        mine.transform(DAY, body)
-    assert str(ours.value) == str(theirs.value)
-
-
-def test_a_corrupt_member_gives_the_same_words(child):
-    body = bytearray(make_zip(KLINES_US * 50))
-    body[len(body) // 3] ^= 0xFF
-    mine_child, mine = pair(child, "klines")
-    with pytest.raises(ValueError) as theirs:
-        mine_child.transform(DAY, bytes(body))
-    with pytest.raises(ValueError) as ours:
-        mine.transform(DAY, bytes(body))
-    assert str(ours.value) == str(theirs.value)
 
 
 # -- a real httpblobs acquisition ---------------------------------------------------------

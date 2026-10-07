@@ -1,7 +1,7 @@
 """zipcsv against the behaviour it graduated from, frozen as data (ADR-0239), plus its range-boundary pins.
 
-``test_zipcsv.py`` held the pack to the crypto_trading child's interim Binance module by loading it from disk. The child moved
-onto the pack and the module was deleted, so those comparisons skip. ``golden/zipcsv_reference.json`` is that module's output
+The pack graduated from the crypto_trading child's interim Binance module, which an earlier parity test loaded from disk. The
+child moved onto the pack and the module was deleted, so that test was removed and nothing skips. ``golden/zipcsv_reference.json`` is that module's output
 (taken at the last commit that had it, ``a2749a3``) over the same fixtures: both Binance layouts, the microsecond, millisecond,
 header, BOM, blank-line, CRLF, out-of-order and duplicate-instant paths, every refusal message, and the container refusals.
 The file IS the reference now: nothing regenerates it.

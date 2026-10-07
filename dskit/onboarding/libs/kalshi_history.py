@@ -490,7 +490,11 @@ class _Venue:
         return when
 
     def pages(self, path, params, key, where):
-        """Yield ``(label, raw)`` for every item of ``key`` across the cursor pages of ``path``."""
+        """Yield ``(label, raw)`` for every item of ``key`` across the cursor pages of ``path``.
+
+        The walk ends only when the venue returns no cursor: a page with no rows that still carries one is followed, a cursor
+        that does not advance is refused, and a walk past ``max_pages`` is refused rather than truncated.
+        """
         cursor = None
         for page in range(self._knobs["max_pages"]):
             body = self.get(path, {**params, "limit": self._knobs["limit"], "cursor": cursor})
@@ -501,8 +505,8 @@ class _Venue:
             for i, raw in enumerate(rows):
                 yield f"{label} item {i}", raw
             following = body.get("cursor") or None
-            if not following or not rows:
-                return
+            if not following:
+                return  # the venue's own end: an empty page that still carries a cursor is followed, never taken for it
             if not isinstance(following, str):
                 raise AssetError([f"{label}: cursor is not a string, got {following!r}"])
             if following == cursor:

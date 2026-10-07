@@ -10,11 +10,15 @@ test runs the document as it ships now over the same store and demands:
 - the census is equal under its new names, and every data row of the markdown report is identical;
 - the published table file holds the same rows plus ``run_id``.
 
-Two worlds are pinned. The five-market one (``stage-b-15m-before-migration.json``) has one UTC day on each side
+Three worlds are pinned. The five-market one (``stage-b-15m-before-migration.json``) has one UTC day on each side
 of the cut, so every cell has ONE cluster and every cluster-robust standard error is blank. The nine-market one
 (``stage-b-15m-two-days-before-migration.json``, captured the same way from the child at a2749a3) puts two
 UTC days on each side of its cut (2026-09-04), so the cluster-robust errors that head the report are numbers and
-are compared bit for bit too (A2-02: a regression in the time block moved no cell of the first world).
+are compared bit for bit too (A2-02: a regression in the time block moved no cell of the first world). The ten-market
+one (``stage-b-15m-unpriced-before-migration.json``, the same way) holds the rows the first two never had: fair
+values that are ``no_vol`` and ``no_spot``, a market with no ask, a fee type the document does not name, and a market
+closing exactly on the cut (A3-02: every row above was priced, two-sided and fee-bearing, so the unpriced branches
+and the segment boundary were pinned by dskit's own tests only).
 
 What is NOT pinned, and why: the document's identity hash and the source declaration digests moved by
 design (the runbook states both), snapshot ids carry the acquisition clock, and the report's header
@@ -48,11 +52,25 @@ CLUSTER_MARKETS = [
 CLUSTER_WORLD = {"fixtures": CLUSTER_MARKETS, "first_bar": utc(2026, 9, 1, 16, 0), "hours": 83}
 CLUSTER_CUT_MS = ms(utc(2026, 9, 4))
 
+#: The third world: the nine markets above plus a tenth that closes exactly ON the cut (a row that sits on the segment
+#: boundary), and the branches that leave a row unpriced or unscored: two BTC minutes missing before the first
+#: market's decisions (the rolling vol windows are undefined), four before the fourth's (no usable spot at its first
+#: lead), a market quoting a bid and no ask, and ETH series whose schedule reports a fee type the document does not name.
+UNPRICED_MARKETS = [*CLUSTER_MARKETS, ("KXBTC15M-26SEP040000-00", "BTC", utc(2026, 9, 4, 0, 0), "yes")]
+UNPRICED_WORLD = {
+    "fixtures": UNPRICED_MARKETS, "first_bar": utc(2026, 9, 1, 16, 0), "hours": 83,
+    "missing_bars": [ms(utc(2026, 9, 2, 0, 50)), ms(utc(2026, 9, 2, 0, 51)),
+                     *(ms(utc(2026, 9, 3, 1, minute)) for minute in (24, 25, 26, 27))],
+    "one_sided": ["KXBTC15M-26SEP030115-15"],
+    "fee_types": {"KXETH15M": ("flat", 1)},
+}
+
 #: world name -> (golden file, build_world arguments, rows, score cells, held-out cut in epoch ms or None for the
 #: harness's own); the counts restate the golden's own.
 WORLDS = {
     "one-day-blocks": ("stage-b-15m-before-migration.json", {}, 15, 63, None),
     "two-day-blocks": ("stage-b-15m-two-days-before-migration.json", CLUSTER_WORLD, 27, 63, CLUSTER_CUT_MS),
+    "unpriced-rows": ("stage-b-15m-unpriced-before-migration.json", UNPRICED_WORLD, 30, 63, CLUSTER_CUT_MS),
 }
 
 #: dskit's venue-neutral score keys for the ones this child used to spell fair/mid.
@@ -158,3 +176,18 @@ def test_the_one_day_golden_has_no_cluster_robust_error_and_the_two_day_one_has_
     assert {c["n_clusters"] for c in shown} == {2}, "two UTC days on a side"
     assert all(c["segment"] in ("development", "heldout") for c in shown)
     assert {c["segment"] for c in shown} == {"development", "heldout"}
+
+
+def test_the_unpriced_golden_holds_every_branch_it_exists_to_pin():
+    """A3-02: a pin that never meets an unpriced, unscored or boundary row claims coverage it lacks."""
+    gold = golden("unpriced-rows")
+    rows = gold["rows"]
+    seen = {column: {r[column] for r in rows} for column in ("fair_rms_status", "fair_ewma_status", "fair_bvol_status", "fee_status")}
+    assert {"ok", "no_vol", "no_spot"} <= seen["fair_rms_status"] and {"ok", "no_vol", "no_spot"} <= seen["fair_ewma_status"]
+    assert {"ok", "no_spot"} <= seen["fair_bvol_status"], "the BVOL fair value survives a missing vol minute but not a missing spot"
+    assert {"ok", "no_quote", "unsupported_fee_type"} <= seen["fee_status"]
+    assert any(r["two_sided"] is False for r in rows) and any(r["two_sided"] is True for r in rows)
+    assert {r["lead_minutes"] for r in rows if r["close_ms"] == CLUSTER_CUT_MS} == {2, 5, 10}, "a market closes ON the cut"
+    census = gold["census"]
+    assert census["not_two_sided"] == 3 and census["rows"] == 30
+    assert all(m["fee_missing"] == 12 and m["no_fair"] >= 1 and m["scored"] >= 23 for m in census["models"].values())

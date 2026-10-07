@@ -12,6 +12,7 @@ import pytest
 
 from dskit.pipeline import binary_pricing
 from dskit.pipeline.base import ConfigError
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.binary_pricing import (
     PAYOFFS,
     STATUS_OK,
@@ -336,3 +337,32 @@ def test_node_declares_its_contract():
 def test_the_module_declares_its_public_api_and_leaks_no_underscore_name():
     assert not [n for n in binary_pricing.__all__ if n.startswith("_")]
     assert {"AveragedLognormal", "BinaryFairValue", "BinaryPayoff", "PAYOFFS", "payoff"} <= set(binary_pricing.__all__)
+
+
+@pytest.mark.parametrize("field", ["vol_field", "spot_field", "payoff_field", "lower_field", "upper_field", "decision_field",
+                                   "settle_field"])
+@pytest.mark.parametrize("bad", [["rv"], [], {}, {"nested": 1}, 7, None])
+def test_a_mistyped_column_knob_is_a_problem_naming_it_never_an_exception(field, bad):
+    """B3-02: the clash check hashed every input column name, so a list there raised TypeError at plan time."""
+    problems = BinaryFairValue.validate_params({**PARAMS, field: bad})
+    assert any(field in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("lag", [1e308, -1e308, 1e306, 0.0004, 0, -5])
+def test_an_exec_lag_that_does_not_fit_whole_milliseconds_is_a_problem_never_an_overflow(lag):
+    """A lag finite in seconds but infinite in milliseconds made ``round`` raise OverflowError at plan time."""
+    problems = BinaryFairValue.validate_params({**PARAMS, "exec_lag_s": lag})
+    assert any("exec_lag_s" in problem for problem in problems), problems
+
+
+# -- the platform bar -----------------------------------------------------------------------------
+
+
+def _probes(tmp_path):
+    return {"binary-fair-value": NodeProbe(params=dict(PARAMS), required=tuple(PARAMS), inputs={"records": [row()]},
+                                           stream_ports=("records",), runnable=True)}
+
+
+TestBinaryFairValueConformance = conformance_suite(
+    registry=(("binary-fair-value", BinaryFairValue),), module="dskit.pipeline.binary_pricing", probes=_probes,
+    expected_roles={"binary-fair-value": "transform"}, name="TestBinaryFairValueConformance")

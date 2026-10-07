@@ -51,6 +51,13 @@ def test_the_ceiling_itself_reads_as_milliseconds_and_is_refused():
         candles(SECONDS_CEILING)
 
 
+def test_the_seconds_ceiling_is_year_5138_by_an_independent_literal():
+    """The two tests above import the constant, so a changed constant moved them with it; these numbers are written out."""
+    assert candles(99_999_999_999)[0]["end_ms"] == 99_999_999_999_000
+    with pytest.raises(ValueError, match="milliseconds"):
+        candles(100_000_000_000)
+
+
 def test_a_fee_schedule_row_without_a_usable_retrieved_instant_is_refused_by_series():
     node = FeeRows("fee_schedules", {"root": "r", "source": "s"})
     good = {"series_ticker": "KXBTC15M", "fee_type": "quadratic", "fee_multiplier": 1, "retrieved": "2026-10-06T00:00:00+00:00"}

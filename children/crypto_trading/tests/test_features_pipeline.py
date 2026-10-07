@@ -64,11 +64,15 @@ def decision_instants(fixtures=MARKETS):
     return [ms(close - timedelta(minutes=lead)) for _, _, close, _ in fixtures for lead in LEADS]
 
 
-def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 1, 16, 0), hours=35):
+def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 1, 16, 0), hours=35, *,
+                missing_bars=(), one_sided=(), fee_types=None):
     """Markets, candles, fees, klines and BVOL for the fixture markets (``fixtures``: the five of ``MARKETS`` unless given).
 
     ``first_bar`` and ``hours`` size the Binance history: at least 9 hours before the first decision (EWMA needs
-    300 bars) and bars past the last close.
+    300 bars) and bars past the last close. The three keyword knobs build a world with rows the document cannot
+    price or score: ``missing_bars`` are BTC bar open instants (epoch ms) left out of the klines (the strikes still
+    come from the full walk), ``one_sided`` are tickers whose candles quote a bid and no ask, and ``fee_types`` maps a
+    series to the ``(fee_type, multiplier)`` its schedule reports in place of the quadratic one.
     """
     store = Store(tmp_path / "world", monkeypatch)
     start = ms(first_bar)
@@ -86,14 +90,15 @@ def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 
     for index, (ticker, asset, close, result) in enumerate(fixtures):
         floor = round(index_at_open(asset, close), 2)  # strikes are index dollars, set at the open
         markets.append(market_payload(ticker, close, floor=floor, result=result))
-        candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=bid_at(index, k), ask=bid_at(index, k) + SPREAD,
+        candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=bid_at(index, k),
+                                          ask=None if ticker in one_sided else bid_at(index, k) + SPREAD,
                                           price=bid_at(index, k) + SPREAD / 2) for k in range(1, 16)]
-    api = ScriptedKalshi(markets, candles, {s: ("quadratic", 1) for s in SERIES})
+    api = ScriptedKalshi(markets, candles, {**{s: ("quadratic", 1) for s in SERIES}, **(fee_types or {})})
     store.kalshi("kalshi-crypto", "source-kalshi-crypto.json", api, ["markets", "fee_schedules"])
     store.kalshi("kalshi-crypto-candles-btc", "source-kalshi-crypto-candles-btc.json", api, ["candles"])
     store.kalshi("kalshi-crypto-candles-eth", "source-kalshi-crypto-candles-eth.json", api, ["candles"])
     bvol = sorted({(d - 1000 * k, 50.0 + k) for d in decision_instants(fixtures) for k in (0, 1, 2)})
-    store.blobs("binance-btcusdt-1m", kline_days(bars["BTC"]))
+    store.blobs("binance-btcusdt-1m", kline_days([b for b in bars["BTC"] if b["open_time_ms"] not in set(missing_bars)]))
     store.blobs("binance-ethusdt-1m", kline_days(bars["ETH"]))
     store.blobs("binance-btcbvol", bvol_days(bvol))
     store.blobs("binance-ethbvol", bvol_days(bvol, symbol="ETHBVOLUSDT"))
@@ -221,6 +226,18 @@ def test_the_table_is_written_as_json_lines_for_the_next_run(ran):
     assert {"ticker", "decision_ms", "label", "spot", "fair_rms", "fee_buy_yes"} <= set(first)
     assert {json.loads(line)["run_id"] for line in lines} == {os.path.basename(result.run_dir)}, (
         "every row says which run produced it")
+
+
+def test_repeating_a_run_after_removing_its_directory_rewrites_the_same_table(ran, tmp_path):
+    """The runbook says to remove a run directory deliberately to repeat: the table beside it is rewritten, not refused."""
+    store, first, out = ran
+    (table,) = list(out.iterdir())
+    before = table.read_bytes()
+    shutil.rmtree(first.run_dir)
+    second, _ = run(store, tmp_path, name="again.json")
+    assert second.state == "ran" and second.run_dir == first.run_dir, (second.state, second.error)
+    assert table.read_bytes() == before
+    assert json.loads(open(DOC, encoding="utf-8").read())["pipeline"]["write"]["params"]["overwrite"] is True
 
 
 def test_the_kill_test_scores_both_segments_and_writes_its_report(ran):

@@ -1,8 +1,8 @@
 """vol_estimators against the behaviour it graduated from, frozen as data (ADR-0241), plus its price-range pins.
 
-``test_vol_estimators_parity.py`` held the pack to the crypto_trading child's interim module by loading it from disk. The child
-moved onto the pack and the module was deleted, so those comparisons skip. ``golden/vol_estimators_reference.json`` is that
-module's output (taken at the last commit that had it, ``a2749a3``) over one 500-bar fixture with every hard case: missing
+The pack graduated from the crypto_trading child's interim module, which an earlier parity test loaded from disk. The child
+moved onto the pack and the module was deleted, so that test was removed and nothing skips. ``golden/vol_estimators_reference.json``
+is that module's output (taken at the last commit that had it, ``a2749a3``) over one 500-bar fixture with every hard case: missing
 minutes (two back to back), a high below its low, a zero low, a missing high, a missing close and a bar priced below one.
 The fixture's inputs are frozen with it, since a random generator's stream is not a stable reference. The file IS the
 reference now: nothing regenerates it.

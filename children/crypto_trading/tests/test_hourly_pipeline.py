@@ -211,6 +211,18 @@ def test_the_document_runs_and_every_node_is_ok(ran):
     assert set(result.node_states) == set(json.load(open(DOC, encoding="utf-8"))["pipeline"])
 
 
+def test_repeating_a_run_after_removing_its_directory_rewrites_the_same_table(ran, tmp_path):
+    """The runbook says to remove a run directory deliberately to repeat: the table beside it is rewritten, not refused."""
+    world, first, out = ran
+    (table,) = list(out.iterdir())
+    before = table.read_bytes()
+    shutil.rmtree(first.run_dir)
+    second, _ = run(world, tmp_path, name="again.json")
+    assert second.state == "ran" and second.run_dir == first.run_dir, (second.state, second.error)
+    assert table.read_bytes() == before
+    assert json.load(open(DOC, encoding="utf-8"))["pipeline"]["write"]["params"]["overwrite"] is True
+
+
 def test_one_row_per_hourly_market_and_lead_and_not_one_for_the_fifteen_minute_markets(ran):
     world, result, _ = ran
     rows = result.outputs["fees"]["records"]

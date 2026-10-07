@@ -1,12 +1,12 @@
 # Active handoff — 2026-10-06: crypto_trading child, data pulls + features ready for WSL
 
-**Landed on branch `claude/crypto-trading-child` (not merged to main; candidate lock `1e7557f`).**
+**Landed on branch `claude/crypto-trading-child` (not merged to main; not yet locked).**
 New child `children/crypto_trading`. Stage A sources/suites: Kalshi BTC/ETH hourly + 15-minute contracts
 (markets, fees, 15-minute candles, live books split 15m/hourly) and Binance Vision BTC/ETH 1-minute klines
 + BVOL (research-only licence). Stage B document `configs/run-features-15m.json`: point-in-time features,
 a BRTI basis from strike anchors, a 60 s-average lognormal fair value, the Kalshi fee, and a kill test with
 day-block SEs and held-out only on an explicit edit; per-run published feature tables. The child suite is
-490 passed, 9 skipped (2026-10-07).
+584 passed, 9 skipped (2026-10-07).
 
 **Why.** Research notes A0001 (ranked focus) and A0002 (data sources + live arbitrage snapshot) in the
 child's journal. Chosen problem: a calibrated short-horizon BTC/ETH settlement distribution, used to quote
@@ -17,7 +17,7 @@ tests/integration), 0 open Critical/Major on `1e7557f` after 4 fix rounds. Open 
 moneyness reduces to ln(ref/spot), so the strike drops out (documented choice pending); fills are priced at
 the information-instant quote with no adverse selection, so profit is an upper bound; tau is measured from
 E, not I (at most +0.8 pp); an uppercase run name is refused only after compute; child `nodes.py` has a
-ruff D ignore; README and runbook are long. Unverified: BVOL cadence, the 365-day year, today's fee
+ruff D ignore; the child README is long (the runbook is a short checklist, about 2,500 words). Unverified: BVOL cadence, the 365-day year, today's fee
 schedule applied to history.
 
 **Update 2026-10-07.** ADR-0236 to ADR-0244 are ACCEPTED and IMPLEMENTED, with new dskit files only
@@ -26,20 +26,29 @@ and onboarding README and CLAUDE trees). `crypto_trading` moved onto them (inter
 `tests/test_migration_golden.py` pins the old rows) and gained `run-features-hourly.json`, the
 `kalshi-history-*`, Coinbase and Deribit sources and runbook sections 7 and 8. Measured: the 15-minute trades
 pull is about 6 to 8 days and 52 GB in one all-or-nothing acquire (runbook 7e), so it runs last and only
-after the count; the four "hourly" series also hold daily and weekly ladders, pooled (7c census).
+after the count; the four "hourly" series also hold daily and weekly ladders, pooled (7c census). Last final review: 0 Critical, 1 Major (B3-01,
+the B6 sizing block did not run as pasted), now fixed and pinned (the block runs from a bare HOME and repeats after a failure); the
+rest are fixed or listed in `TODO.md`.
 
 **Owner decisions pending.** Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s,
 strike lag 30 s, and the store path placeholder `$OB`. A date bound for `kalshi_history` pulls (an ADR), a
 filter on open-to-close duration for the hourly document (an ADR), and whether the hourly run should refuse a
 row count past a memory budget (runbook B6 measures about 9.7 KB a decision row: 60 GB for the live days alone;
-the runbook's sizing copy is the bound usable today). Attribution of the six ADR-stream merge commits
+the runbook's sizing copy is the bound usable today). Two owner rulings conflict on restated helpers (B3-08):
+"additive only" forces `kalshi_history` to restate `kalshi`'s row helpers and `restwindow` `restapi._pluck` (tests pin both equal to
+the originals), while "a function is never repeated" forbids it; `binary_scoring` and `binary_pricing` also share an identical
+`validate_inputs`, which can get one home in the next code round. Attribution of the six ADR-stream merge commits
 (`Claude Opus 5.5`, the rest `Claude Sonnet 5.5`) is unconfirmed.
 
 **Open in candidate code (new files on this branch, so not blocked by the additive-only rule; they wait for the
 next code round).** `CeilToTick(guard_decimals=0)` snaps to the nearest tick before the ceiling (F4). Fixed in
 round 2: the `kalshi_history` routing (A2-01: the archive's own listing decides, not `market_settled_ts`),
 `zipcsv._MAX_EPOCH_MS` (Z1-1), the `kalshi_history` status list, the `Above`/`Below`/`Between` examples and the
-zipcsv parity skip text. An earlier note called these "edits to existing dskit code, refused"; they were not.
+zipcsv parity skip text. Round 3: a `kalshi_history` walk ends only on an empty cursor (A3-01); `BinaryFairValue.validate_params`
+no longer raises on a mistyped column or an overflowing lag, and both binary nodes carry the conformance suite (B3-02); the two
+skipped parity test files are gone, the frozen goldens hold the comparison (B3-07); a third migration golden pins the unpriced rows
+and a row on the cut (A3-02). An earlier note called these "edits to existing dskit code, refused"; they were not. The diff
+rule is read as code-only: `git diff --name-status a2749a3..HEAD -- dskit tests` is A for every `.py` and golden, plus the four doc M rows.
 
 **Next (on WSL).** Fetch the branch; follow
 `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md` (stage A acquisitions, then

@@ -1051,13 +1051,35 @@ def test_markets_refuse_a_stuck_or_truncated_walk_in_either_archive():
             list(conn.read({**CONFIG, "max_pages": 3}, ["markets"], {}, "live"))
 
 
-def test_markets_an_empty_page_ends_the_walk_even_with_a_cursor():
-    # The same rule as the kalshi pack's: no rows on a page means the end.
-    conn, script, _ = connector({
-        "/historical/markets": {"markets": [], "cursor": "more"},
-        "/markets": by_status()})
-    assert data(read(conn, ["markets"])) == []
-    assert script.paths().count("/historical/markets") == 1
+@pytest.mark.parametrize("path", ["/historical/markets", "/markets"])
+def test_markets_an_empty_page_that_carries_a_cursor_is_followed_not_taken_for_the_end(path):
+    """A3-01: a walk ends only on an empty cursor (refuse, never truncate); the ``kalshi`` pack's older rule is not this pack's."""
+    routes = {"/historical/markets": {"markets": [], "cursor": ""}, "/markets": by_status()}
+    routes[path] = lambda p: ({"markets": [], "cursor": "more"} if "cursor" not in p else
+                              {"markets": [OLD if path == "/historical/markets" else NEW], "cursor": ""})
+    conn, script, _ = connector(routes)
+    assert [row["ticker"] for row in data(read(conn, ["markets"]))] == [OLD["ticker"] if path == "/historical/markets" else NEW["ticker"]]
+    assert [p.get("cursor") for p in script.params(path)][:2] == [None, "more"], "the second page was asked for"
+
+
+@pytest.mark.parametrize("path", ["/historical/markets", "/markets"])
+def test_markets_an_empty_page_that_repeats_its_cursor_refuses_rather_than_loops(path):
+    routes = {"/historical/markets": {"markets": [], "cursor": ""}, "/markets": by_status()}
+    routes[path] = lambda p: {"markets": [], "cursor": "stuck"}
+    conn, _, _ = connector(routes)
+    with pytest.raises(AssetError, match="did not advance"):
+        list(conn.read(CONFIG, ["markets"], {}, "live"))
+
+
+@pytest.mark.parametrize("path", ["/historical/trades", "/markets/trades"])
+def test_trades_an_empty_page_that_carries_a_cursor_is_followed_not_taken_for_the_end(path):
+    a_trade = trade("t-after-the-gap", "2026-10-07T00:10:00Z", OLD["ticker"] if path == "/historical/trades" else NEW["ticker"])
+    routes = trade_routes(settled=(NEW,), history=(OLD,), **{
+        "/historical/trades": {"trades": [], "cursor": ""}, "/markets/trades": {"trades": [], "cursor": ""}})
+    routes[path] = lambda p: ({"trades": [], "cursor": "more"} if "cursor" not in p else {"trades": [a_trade], "cursor": ""})
+    conn, script, _ = connector(routes)
+    assert [row["trade_id"] for row in data(read(conn, ["trades"]))] == ["t-after-the-gap"]
+    assert "more" in [p.get("cursor") for p in script.params(path)]
 
 
 def test_markets_refuse_malformed_pages():
