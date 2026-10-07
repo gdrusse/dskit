@@ -1,10 +1,16 @@
-# Active handoff — 2026-10-07: CDF production proposal, publication reviewed
+# Active handoff — 2026-10-07: CDF production proposal, pushed and wrapped
 
 Owner requested synthesis after the four advanced reports were verified on main
 (`f98af937`). [The proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
 recommends pooled PatchTST with 42 base inputs, CNN/VanillaTransformer challengers,
 and a bounded feature/HPO/confirmation plan (204 fit cells, 216-attempt first-pass cap).
 This is a proposal, not an approved run or production release.
+
+Publication verified on remote main at `77ca80aca592e883cc7eb8f35f859897a7bceac5`.
+Proposal SHA256: `3233e06d2f6190f28e33fb73cd09aa414c668b4c2b629f8a9dc8560b039bd2f9`.
+All four existing report blobs remain identical. The task remote branch does not
+exist; the clean local task branch may be removed after this evidence-only wrap.
+Historical training checkouts and retained artifacts must remain available.
 
 Two fresh independent design skeptics on `ca9b2102` returned zero Critical/Major;
 their sole shared Minor (TiDE rounding) is corrected editorially. Full reviewer
