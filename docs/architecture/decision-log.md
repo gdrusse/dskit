@@ -30554,7 +30554,7 @@ The final integration skeptic demonstrated that hashing absolute paths in the pr
 
 ## ADR-0248 — Venue-neutral binary-market rows, decision instants and quote state graduate from `crypto_trading`
 
-**Status:** **PROPOSED 2026-10-07 — awaiting owner approval. No code until approved.** Found planning `correlation_arb`, the second child that needs these readers: a child may not import a sibling, and a copy is the duplication CLAUDE.md forbids.
+**Status:** **ACCEPTED 2026-10-07 by the owner (approved ADR-0248 and ADR-0249 together: 'A').** Was PROPOSED 2026-10-07. Found planning `correlation_arb`, the second child that needs these readers: a child may not import a sibling, and a copy is the duplication CLAUDE.md forbids.
 **Compatibility.** Additive only: new dskit modules; no existing dskit file, kind, field, default or identity changes. `crypto_trading` migrates by its own later step, as under ADR-0245/0246/0247.
 **Sweep** (`MarketRows CandleRows FeeRows DecisionRows MarketState FeeColumns decision_ms strike_known_ms two_sided quote_state`, origin/main, all branches and worktrees): the only implementations are `children/crypto_trading/crypto_trading/{kalshi_rows,decisions,market_state,fees}.py` (about 1,030 lines with `fields.py`). dskit has the read seam (`libs/observations.ObservationRows`), the as-of rule (`libs/parquet_series.prior_index`, ADR-0243), the payoffs (`binary_pricing.PAYOFFS`, ADR-0246) and the fee mechanics (`fee_mechanics`, ADR-0245); nothing turns a binary market's stream into labelled decision rows.
 
@@ -30570,7 +30570,7 @@ The final integration skeptic demonstrated that hashing absolute paths in the pr
 
 ## ADR-0249 — Executable digital bounds, pricing a binary from any CDF curve, and a coherence check across linked binaries
 
-**Status:** **PROPOSED 2026-10-07 — awaiting owner approval. No code until approved.** From `correlation_arb` Stage 1 and Stage 3 (`children/correlation_arb/docs/plans/2026-10-07-implementation-plan.md`).
+**Status:** **ACCEPTED 2026-10-07 by the owner (approved ADR-0248 and ADR-0249 together: 'A').** Was PROPOSED 2026-10-07. From `correlation_arb` Stage 1 and Stage 3 (`children/correlation_arb/docs/plans/2026-10-07-implementation-plan.md`).
 **Compatibility.** Additive only: new modules; `OptionPriceCDF`, `BinaryFairValue`, `PyomoSolve` and `index_options` are not edited.
 **Sweep** (`vertical spread digital bound super-replicat sub-replicat survival curve GridCurve coherence dutch book arbitrage-free projection isotonic ladder`, origin/main, all branches and worktrees): `OptionPriceCDF` (libs/predictive_cdf.py:6861) prices on mid only; `BinaryPayoff` takes a `survival` callable but only `AveragedLognormal` supplies one; pmquant's crossed-book check is per contract, never across rungs. None of the three exists.
 
