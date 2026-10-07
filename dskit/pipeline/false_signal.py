@@ -276,7 +276,7 @@ class SignalEvidence:
                     f"null_draws[{i}] must be a finite number, got {value!r}"
                 )
         object.__setattr__(self, "statistic", float(self.statistic))
-        object.__setattr__(self, "null_draws", tuple(float(v) for v in draws))
+        object.__setattr__(self, "null_draws", tuple(map(float, draws)))
 
     def exceedances(self):
         """Count the draws that match or beat the observed statistic.

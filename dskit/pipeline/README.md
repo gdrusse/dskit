@@ -151,7 +151,8 @@ legacy stage-list grammar (below).
   runs single-fold documents as child processes under one caller-supplied
   `RLIMIT_AS` cap, at most `$DSKIT_FOLD_WORKERS` (or the caller's own
   variable) at once, results in input order; `measure_one` is its one
-  memory reading. `FOLD_FIELDS` / `FOLD_OPTIONAL_FIELDS`, `aggregate_folds`
+  memory reading. `declared_width` is the one width rule (an explicit int,
+  else the variable, else 1), which the CDF study's group workers share. `FOLD_FIELDS` / `FOLD_OPTIONAL_FIELDS`, `aggregate_folds`
   and `write_walkforward_summary` (`driver.py`) own the fold-row shape, and
   `single_fold_row` (`runs.py`) reads one back.
 - **Reading runs back** — `scan_runs` → `RunSummary` / `RunProblem`,
@@ -293,7 +294,9 @@ legacy stage-list grammar (below).
 estimators: empirical, monotone boosted CDF, LightGBM quantiles, a
 Gaussian-mixture MLP, quantile forest, Normal-CRP NGBoost and convex curves.
 `ChronologicalCDFStudy` compares common rows/features with purged training,
-held-out calibration and later annual evaluation. Its JSON configuration names
+held-out calibration and later annual evaluation. With `$DSKIT_GROUP_WORKERS`
+above 1 (ADR-0236 amendment 3) it fits its groups in that many spawned
+processes and writes exactly what one process writes; pooled models keep one. Its JSON configuration names
 all estimators and budgets; it is not a serving or trading artifact contract.
 ADR-0190 extends this same pack with fixed-degree Student mixtures, configurable
 MLP trunks, optional one-hot-routed heads, and pooled train-only preprocessing.
@@ -311,6 +314,14 @@ local `decision_brier`, `decision_log`, `wing_twcrps` (ADR-0218). One global
 and one local term are required. Optional `family` is `{"kind": "student",
 "degrees": k}` (integer `k >= 3`); absent means Gaussian components.
 No instrument or index is encoded in this estimator.
+ADR-0236 adds encoders `lstm` (GRU's keys) and `cnn` (`channels`,
+`kernel_size`, `dilations`, `pooling`), per-task heads (`head_features`,
+excluded from `feature_indices`), the local term `tail_crps` (unit-weight
+twCRPS = the study's `tail_crps`; `wing_twcrps` is density-normalized), and
+`BoostedTorchCDF`: LightGBM on the SAME composite loss (custom objective, exact
+Hessian diagonal, heads as one categorical column). Study key `tail_weight`
+scores `weighted_crps = crps + tail_weight * tail_crps`, a valid
+`selection_metric` that the report's paired intervals also carry.
 `DecisionRegionScores` consumes caller-bound threshold/weight inventories;
 the domain adapter owns the source clock and listed-wing eligibility.
 Local loss means divide by eligible rows, while global terms use all rows.
@@ -691,22 +702,22 @@ run directory and its `$prev` series. Install it with
 Synthetic nodes (`synthetic_nodes.py`) mirror every role for demos and tests;
 they register only into private registries, never the default one.
 
-**ADR-0240..0244 additions (all by import path; none edits an existing module):**
+**ADR-0243..0247 additions (all by import path; none edits an existing module):**
 
-- `libs/parquet_series.py` (ADR-0240): `ParquetSeries(root, source, stream, relpath_template, time_column, columns)`
+- `libs/parquet_series.py` (ADR-0243): `ParquetSeries(root, source, stream, relpath_template, time_column, columns)`
   reads the `{day}`-named parquet files of an onboarded stream, hashes the bytes it parses against the manifest,
   and answers `prior(instants_ms, max_age_ms)` (the last row STRICTLY before each instant, with its age). The
   `stream-manifests` data node (opt-in `register()`) fingerprints streams a transform reads by hand. A file whose
   instants are not integer epoch ms, ascending, and inside its own UTC day refuses by name.
-- `libs/vol_estimators.py` (ADR-0241): `VolEstimatorFeatures` emits per-bar VARIANCE (`var_rms_60`, `var_ewma_30`,
+- `libs/vol_estimators.py` (ADR-0244): `VolEstimatorFeatures` emits per-bar VARIANCE (`var_rms_60`, `var_ewma_30`,
   `var_hl_60`; `column_prefix`, `bar_ms`, `close_field` / `high_field` / `low_field`), and a window holding a
   missing bar is None, never shortened.
-- `fee_mechanics.py` (ADR-0242): `fee_model_from_spec({"mechanic": ..., "rounding": {"policy": ...}})`; the rate is
+- `fee_mechanics.py` (ADR-0245): `fee_model_from_spec({"mechanic": ..., "rounding": {"policy": ...}})`; the rate is
   an argument of each call, so a venue's fee types, rates and tick live in the project's own config.
-- `binary_pricing.py` and `binary_scoring.py` (ADR-0243): price a contract on a settlement average
+- `binary_pricing.py` and `binary_scoring.py` (ADR-0246): price a contract on a settlement average
   (`BinaryFairValue`), then score it against the market (`BucketedBinaryScore`; `segments` + `report_segments`
   are the held-out gate, `cluster_block_s` sets the primary error).
-- `kinds_run_write.py` (ADR-0244): `records-write-run` needs exactly one `{run}` in the file stem of `path`. The
+- `kinds_run_write.py` (ADR-0247): `records-write-run` needs exactly one `{run}` in the file stem of `path`. The
   document-name half of the run-name rule cannot be checked at plan time; apply `run_name_problems(document.name)`
   in a config test.
 
@@ -808,7 +819,8 @@ dskit/pipeline/
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
 │                      over config-declared checks + slice stability (ADR-0107)
 ├── folds.py           BoundedFoldRunner: a walk's folds as capped child processes at
-│                      the width the ENVIRONMENT declares; measure_one (ADR-0093)
+│                      the width the ENVIRONMENT declares; measure_one (ADR-0093);
+│                      declared_width, the one width rule
 ├── release_rotation.py pure ReleaseRotationCalendar values: explicit UTC
 │                      anchor/cadence/training/embargo -> bounded pinned windows
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
@@ -831,7 +843,7 @@ dskit/pipeline/
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
-├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0244)
+├── kinds_run_write.py RecordsWriteRun (records-write-run): a table file, and so a published stream, named by the run; `{run}` in the path stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085;
 │                      horizon-pairs: entry/settle pairs + log return, ADR-0228)
@@ -868,11 +880,11 @@ dskit/pipeline/
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  fair value of a binary contract that settles on an average: AveragedLognormal law,
-│                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0243)
+│                      Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market Brier / log-loss, take-rule profit, a
-│                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0243)
+│                      settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
-│                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0242)
+│                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
@@ -925,18 +937,18 @@ dskit/pipeline/
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
-│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228),
+│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
-│                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0240),
-│                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0241)
+│                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
+│                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```
 
 Tests: `python -m pytest tests/pipeline -q` (tier-1 + purity gate),
 `tests/pipeline_libs -q` (tier-2 packs, importorskip per library).
-ADR-0240..0244 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
+ADR-0243..0247 suites: `tests/pipeline/test_{binary_pricing,binary_scoring,binary_contract_e2e,binary_contract_pins,fee_mechanics,fee_mechanics_pins,kinds_run_write}.py`,
 `tests/pipeline_libs/test_{parquet_series,parquet_series_guards,vol_estimators,vol_estimators_golden}.py`
 (the `*_golden` file holds the former child's output, frozen in `golden/`).
 

@@ -2,7 +2,7 @@
 
 import math
 from abc import ABC, abstractmethod
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from datetime import date, timedelta
 from itertools import product
@@ -41,6 +41,7 @@ from .contracts import (
     _IndexSettlement,
     _day,
     _decimal,
+    _payoff_total,
     _instant,
     _integer,
     _text,
@@ -987,6 +988,15 @@ class CondorBacktest(_CondorBacktestBase):
                 "years_to_expiry": self._years, "metrics": metrics, "ledger": ledger}
 
 
+def _iso_day(value):
+    """Say whether ``value`` is a ``YYYY-MM-DD`` string that ``contracts._day`` accepts unchanged."""
+    try:
+        _day(value, "date")
+    except ValueError:
+        return False
+    return True
+
+
 def _sides_of(legs):
     """Return the distinct rights of a leg tuple in leg order: one wing of the P&L each."""
     return tuple(dict.fromkeys(right for right, _sign in legs))
@@ -1203,8 +1213,12 @@ class CondorQuoteBacktest(_CondorBacktestBase):
                              "wrong symbol")
         lo, hi = self.params["dte_min"], self.params["dte_max"]
         self._chain, dates = {}, []
+        self._reset_entry_caches()
+        need = frozenset(self._CHAIN_FIELDS)
         for n, row in enumerate(chain, start=1):
-            missing = [f for f in self._CHAIN_FIELDS if f not in row]
+            # a dict holding every field is the common case; anything else builds the message
+            missing = (None if type(row) is dict and row.keys() >= need
+                       else [f for f in self._CHAIN_FIELDS if f not in row])
             if missing:
                 raise ValueError(f"{self.key}: chain row {n} lacks {missing}")
             if not lo <= row["dte"] <= hi:
@@ -1226,6 +1240,9 @@ class CondorQuoteBacktest(_CondorBacktestBase):
             rows.sort(key=lambda r: r["date"])
             if any(a["date"] == b["date"] for a, b in zip(rows, rows[1:])):
                 raise ValueError(f"{self.key}: the underlying series repeats a date")
+        self._close_dates = {inst: [r["date"] for r in rows] for inst, rows in self._closes.items()}
+        self._closes_iso = {inst: all(_iso_day(d) for d in dates)
+                            for inst, dates in self._close_dates.items()}
 
     # -- the walk's hooks ---------------------------------------------------
 
@@ -1248,7 +1265,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
     def _settlement(self, instrument, settle_date):
         """Return the ``(date, close)`` the entry settles at, or ``None`` when it cannot."""
         rows = self._closes.get(instrument, [])
-        dates = [r["date"] for r in rows]
+        dates = self._close_dates.get(instrument, [])
         at = bisect_right(dates, settle_date) - 1
         if at < 0 or at + 1 >= len(rows):
             return None
@@ -1307,11 +1324,49 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         band = self.params["max_abs_log_moneyness"]
         return any(abs(scale * z) > band for z in exponents)
 
+    def _reset_entry_caches(self):
+        """Forget the per-entry quotable-strike and expected-payoff memos."""
+        self._quotable_cache, self._expected_cache = {}, {}
+
+    def _quotable_strikes(self, rows, side):
+        """Return the ascending non-NaN strikes of ``rows`` quotable on ``side``, or ``None`` when a row cannot be judged up front."""
+        # Memoized per entry (every snap, candidate and book reads the same expiry), keyed by
+        # the dict itself so a different ``listed`` never hits. A NaN strike is never picked by
+        # the scans this replaces (every comparison with it is False), so it is left out.
+        if "_quotable_cache" not in self.__dict__:       # a hook called outside a walk
+            self._reset_entry_caches()
+        key = (id(rows), side)
+        hit = self._quotable_cache.get(key)
+        if hit is not None and hit[0] is rows:
+            return hit[1]
+        try:
+            strikes = sorted(k for k, row in rows.items() if k == k and self._quotable(row, side))
+        except Exception:      # noqa: BLE001 -- any refusal is the scan's to make, or not
+            # judging a row the scan would never reach (an int size past float range) could
+            # raise where the scan does not: the caller falls back to the scan instead
+            strikes = None
+        self._quotable_cache[key] = (rows, strikes)
+        return strikes
+
     def _snap_put(self, listed, forward, scale, z_put, wing):
         """Snap the put wing outward onto quotable strikes: ``(long, short)`` or ``None``."""
         long_target, short_target = (forward * math.exp(scale * z)
                                      for z in self._put_exponents(z_put, wing))
         puts = listed["put"]
+        sells, buys = self._quotable_strikes(puts, "sell"), self._quotable_strikes(puts, "buy")
+        if sells is None or buys is None or long_target != long_target \
+                or short_target != short_target:     # a NaN target: no bisect order to use
+            return self._scan_put(puts, long_target, short_target)
+        # the largest quotable strike <= the target, as the scan's max(); the long also < short
+        at = bisect_right(sells, short_target)
+        if at == 0:
+            return None
+        short = sells[at - 1]
+        at = min(bisect_right(buys, long_target), bisect_left(buys, short))
+        return None if at == 0 else (buys[at - 1], short)
+
+    def _scan_put(self, puts, long_target, short_target):
+        """Snap the put wing by a full scan: the reference :meth:`_snap_put` bisects."""
         short = max((k for k, r in puts.items() if k <= short_target
                      and self._quotable(r, "sell")), default=None)
         if short is None:
@@ -1325,6 +1380,20 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         short_target, long_target = (forward * math.exp(scale * z)
                                      for z in self._call_exponents(z_call, wing))
         calls = listed["call"]
+        sells, buys = self._quotable_strikes(calls, "sell"), self._quotable_strikes(calls, "buy")
+        if sells is None or buys is None or long_target != long_target \
+                or short_target != short_target:     # a NaN target: no bisect order to use
+            return self._scan_call(calls, short_target, long_target)
+        # the smallest quotable strike >= the target, as the scan's min(); the long also > short
+        at = bisect_left(sells, short_target)
+        if at == len(sells):
+            return None
+        short = sells[at]
+        at = max(bisect_left(buys, long_target), bisect_right(buys, short))
+        return None if at == len(buys) else (short, buys[at])
+
+    def _scan_call(self, calls, short_target, long_target):
+        """Snap the call wing by a full scan: the reference :meth:`_snap_call` bisects."""
         short = min((k for k, r in calls.items() if k >= short_target
                      and self._quotable(r, "sell")), default=None)
         if short is None:
@@ -1390,9 +1459,20 @@ class CondorQuoteBacktest(_CondorBacktestBase):
     def _expected(self, credit, legs, strikes, scale, facts):
         """Return ``credit + multiplier x`` the mean payoff over the forecast draws, each priced at ``scale``."""
         samples = facts.dist.samples
-        return credit + self.params["multiplier"] * sum(
-            structure_payoff(legs, facts.forward * math.exp(scale * z), strikes)
-            for z in samples) / len(samples)
+        # memoized per entry: the selector scores many candidates at one scale, and the model
+        # book re-prices its winner; the arithmetic (and its order) is the unmemoized one's
+        if "_expected_cache" not in self.__dict__:       # a hook called outside a walk
+            self._reset_entry_caches()
+        cache, key = self._expected_cache, (id(facts), scale, tuple(legs), tuple(strikes))
+        hit = cache.get(key)
+        if hit is None or hit[0] is not facts:
+            levels_key = (id(facts), scale)
+            levels = cache.get(levels_key)
+            if levels is None or levels[0] is not facts:
+                levels = cache[levels_key] = (facts, [facts.forward * math.exp(scale * z)
+                                                      for z in samples])
+            hit = cache[key] = (facts, _payoff_total(legs, levels[1], strikes))
+        return credit + self.params["multiplier"] * hit[1] / len(samples)
 
     def _book(self, book, strikes, reason, scale, facts, legs=None):
         """Price, gate and settle one book's cell of ``legs`` (this node's :attr:`LEGS` by default)."""
@@ -1439,9 +1519,21 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         """Return the strike of the short ``right`` leg in ``legs``, or ``None`` when it has none."""
         return next((k for (r, sign), k in zip(legs, strikes) if (r, sign) == (right, -1)), None)
 
+    def _charge_window(self, instrument, day, settle_date):
+        """Return the closes a charge reads: the ``[day, settle_date]`` slice when every date is canonical ISO, else them all."""
+        # The charge owners parse every row's date and drop those outside the window; canonical
+        # ISO strings sort as dates do, and _prepare already refused a bad close or a repeated
+        # date, so the slice is exactly the rows they keep. Otherwise they see the full list and
+        # refuse as before.
+        rows = self._closes[instrument]
+        if not (self._closes_iso[instrument] and _iso_day(day) and _iso_day(settle_date)):
+            return rows
+        dates = self._close_dates[instrument]
+        return rows[bisect_left(dates, day):bisect_right(dates, settle_date)]
+
     def _american_charge(self, instrument, legs, strikes, day, settle_date):
         """Return the early-exercise charge as ``(total_usd, {side: usd})``: put carry at the short put, call dividends at the short call, each only where ``legs`` holds it."""
-        closes, multiplier = self._closes[instrument], self.params["multiplier"]
+        closes, multiplier = self._charge_window(instrument, day, settle_date), self.params["multiplier"]
         charges = {}
         put = self._short_strike(legs, strikes, "put")
         if put is not None:
@@ -1469,7 +1561,8 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         years = facts.dte / 365
         delta = sum(sign * black76_delta(right, facts.forward, k, iv, years)
                     for (right, sign), k, iv in zip(legs, strikes, ivs))
-        paid = dividends_paid(self._closes[facts.instrument], facts.day, facts.settle_date)
+        paid = dividends_paid(self._charge_window(facts.instrument, facts.day, facts.settle_date),
+                              facts.day, facts.settle_date)
         return delta, delta * self.params["multiplier"] * (
             facts.settlement - facts.forward + paid)
 
@@ -1493,6 +1586,7 @@ class CondorQuoteBacktest(_CondorBacktestBase):
 
     def _entry(self, row, dist, outcome_z):
         """Price and settle one entry from that date's chain, or say why it cannot enter."""
+        self._reset_entry_caches()
         instrument, day = str(row.get("instrument")), row["date"]
         quotes = self._chain.get((instrument, day))
         if not quotes:
@@ -1822,10 +1916,16 @@ class LongStraddleQuoteBacktest(DebitStructureQuoteBacktest):
     def _target_strikes(self, listed, forward, scale, quantile):
         """Return the strike nearest ``forward`` (the lower on a tie) where both legs can be bought, inside the band; else ``no_quotable_strike``."""
         band = self.params["max_abs_log_moneyness"]
-        both = [k for k in sorted(listed["put"].keys() & listed["call"].keys())
-                if k > 0 and abs(math.log(k / forward)) <= band
-                and self._quotable(listed["put"][k], "buy")
-                and self._quotable(listed["call"][k], "buy")]
+        puts, calls = (self._quotable_strikes(listed[right], "buy") for right in ("put", "call"))
+        if puts is None or calls is None:
+            both = [k for k in sorted(listed["put"].keys() & listed["call"].keys())
+                    if k > 0 and abs(math.log(k / forward)) <= band
+                    and self._quotable(listed["put"][k], "buy")
+                    and self._quotable(listed["call"][k], "buy")]
+        else:      # the same filter, quotability read from the per-entry memo
+            puts, calls = set(puts), set(calls)
+            both = [k for k in sorted(listed["put"].keys() & listed["call"].keys())
+                    if k > 0 and abs(math.log(k / forward)) <= band and k in puts and k in calls]
         if not both:
             return None, "no_quotable_strike"
         strike = min(both, key=lambda k: abs(k - forward))     # ascending: min keeps the lower of a tie
@@ -1865,6 +1965,9 @@ class _LongVerticalQuoteBacktest(DebitStructureQuoteBacktest):
 
     def _snap_outward(self, rows, targets, sides, direction):
         """Snap each target, in order from the money outward, onto the nearest strike at or beyond it that is quotable for its side and strictly beyond the one before; ``None`` when a leg has none."""
+        picked = self._bisect_outward(rows, targets, sides, direction)
+        if picked is not False:
+            return picked
         picked = []
         for target, side in zip(targets, sides):
             beyond = [k for k, row in rows.items()
@@ -1874,6 +1977,29 @@ class _LongVerticalQuoteBacktest(DebitStructureQuoteBacktest):
             if not beyond:
                 return None
             picked.append(min(beyond, key=lambda k: direction * k))
+        return tuple(picked)
+
+    def _bisect_outward(self, rows, targets, sides, direction):
+        """Return :meth:`_snap_outward`'s answer by bisecting the per-entry quotable strikes, or ``False`` when only the scan can say."""
+        picked = []
+        for target, side in zip(targets, sides):
+            strikes = self._quotable_strikes(rows, side)
+            if strikes is None or target != target:
+                return False
+            if direction > 0:      # the smallest k >= target (and > the previous pick)
+                at = bisect_left(strikes, target)
+                if picked:
+                    at = max(at, bisect_right(strikes, picked[-1]))
+                if at == len(strikes):
+                    return None
+                picked.append(strikes[at])
+            else:                  # the largest k <= target (and < the previous pick)
+                at = bisect_right(strikes, target)
+                if picked:
+                    at = min(at, bisect_left(strikes, picked[-1]))
+                if at == 0:
+                    return None
+                picked.append(strikes[at - 1])
         return tuple(picked)
 
     def _target_strikes(self, listed, forward, scale, quantile):
@@ -2641,7 +2767,8 @@ class ExactExpiryPanelRead(Node):
         (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`)
         and, ADR-0230, ``exact_dte`` (keep one horizon), ``reader`` (``price_calendar``
         builds the panel from a price file alone), ``keyed_tables`` and
-        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`).
+        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`), and
+        ``as_of_acquisition_ms`` (the observation reads' vintage, ADR-0236 amendment 3).
 
     Examples
     --------
@@ -2664,8 +2791,9 @@ class ExactExpiryPanelRead(Node):
                  "symbols", "windows")
     #: ``surface`` and ``lifecycle`` are required only while no ``reader`` is selected (ADR-0230).
     _SURFACE_REQUIRED = ("lifecycle", "surface")
-    _OPTIONAL = ("calendar", "calendar_pad_days", "chain_features", "change_lags",
-                 "cohort_columns", "corporate_actions", "directional_windows", "dividend_field", "exact_dte",
+    _OPTIONAL = ("as_of_acquisition_ms", "calendar", "calendar_pad_days", "chain_features",
+                 "change_lags", "cohort_columns", "corporate_actions", "directional_windows",
+                 "dividend_field", "exact_dte",
                  "fred_market_symbols", "keyed_tables", "market_symbols", "matched_dte_vrp",
                  "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
                  "surface_features")
@@ -2710,10 +2838,9 @@ class ExactExpiryPanelRead(Node):
         for name in ("surface", "lifecycle", "chain_features"):
             if params.get(name) is not None:
                 problems += entry_problems(name, params[name])
-        if "exact_dte" in params:
-            check_int_param(problems, "exact_dte", params["exact_dte"], ge=1)
-        # the one owners of the convention and reader-selection rules
-        from .cdf_study import panel_convention_problems, panel_reader_problems
+        # the one owners of the integer-knob, convention and reader-selection rules
+        from .cdf_study import panel_convention_problems, panel_int_problems, panel_reader_problems
+        problems += panel_int_problems(params)
         problems += panel_convention_problems(params)
         problems += panel_reader_problems(params)
         return problems

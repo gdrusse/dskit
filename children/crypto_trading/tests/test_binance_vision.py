@@ -1,4 +1,4 @@
-"""The Binance Vision layouts: daily zip-CSV -> parquet through dskit's ``ZipCsvToParquet`` (ADR-0239).
+"""The Binance Vision layouts: daily zip-CSV -> parquet through dskit's ``ZipCsvToParquet`` (ADR-0242).
 
 The mechanism (zip, header, epoch, refusals) is dskit's and tested there; what is the CHILD's is the
 two vendor layouts the shipped source configs declare in ``transform_params``. These tests build

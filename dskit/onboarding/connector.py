@@ -143,6 +143,10 @@ _MESSAGE_KEYS = {
     "FILE": ("protocol", "type", "stream", "relpath", "path"),
 }
 
+# The same sets frozen once: a subset test answers the common no-unknown
+# case without the sort ``_check_unknown`` would do to append nothing.
+_MESSAGE_KEYSETS = {mtype: frozenset(keys) for mtype, keys in _MESSAGE_KEYS.items()}
+
 # Allowed keys in one spec() knob declaration.
 _KNOB_KEYS = ("required", "secret", "notes")
 
@@ -344,7 +348,8 @@ def check_message(msg):
         _raise_if(errors)
         return None
 
-    _check_unknown(errors, msg, _MESSAGE_KEYS[mtype], f"{mtype} message")
+    if not msg.keys() <= _MESSAGE_KEYSETS[mtype]:
+        _check_unknown(errors, msg, _MESSAGE_KEYS[mtype], f"{mtype} message")
     if mtype == "RECORD":
         _check_str(errors, "RECORD.stream", msg.get("stream", ""))
         _check_dict(errors, "RECORD.data", msg.get("data"))

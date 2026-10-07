@@ -1,4 +1,4 @@
-"""``restwindow`` — declarative time-window REST connector (stdlib urllib; ADR-0237).
+"""``restwindow`` — declarative time-window REST connector (stdlib urllib; ADR-0240).
 
 Some public JSON APIs serve history only as a time WINDOW: ``start`` and
 ``end`` query parameters, a cap on the rows a request may return, rows

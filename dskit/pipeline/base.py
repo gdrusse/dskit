@@ -108,6 +108,7 @@ __all__ = [
     "register_transform_kind",
     "resolve_refs",
     "split_from_obj",
+    "value_hash",
 ]
 
 
@@ -270,6 +271,41 @@ def config_hash(cfg, exclude=NON_IDENTITY_SECTIONS) -> str:
     return hashlib.sha256(canon.encode("ascii")).hexdigest()
 
 
+class _Value:
+    """A plain JSON value in the shape :func:`config_hash` reads."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def to_obj(self):
+        """Return the value itself."""
+        return self.value
+
+
+def value_hash(value):
+    """Return :func:`config_hash` of a plain JSON value, nothing excluded but ``notes``.
+
+    The one way to digest a dict, list or scalar by its canonical JSON (a
+    stage identity, a memo key) without wrapping it in a config object.
+
+    Parameters
+    ----------
+    value : object
+        JSON-serializable.
+
+    Returns
+    -------
+    str
+        A sha256 hex digest.
+
+    Raises
+    ------
+    ConfigError
+        When ``value`` holds NaN or infinity.
+    """
+    return config_hash(_Value(value), exclude=())
+
+
 def _strip_notes(obj):
     if isinstance(obj, dict):
         return {k: _strip_notes(v) for k, v in obj.items() if k != "notes"}
@@ -278,19 +314,26 @@ def _strip_notes(obj):
     return obj
 
 
+#: Dataclass field names per class — fixed at class creation, so read once.
+_FIELD_NAMES = {}
+
+
 def _dataclass_to_obj(cfg) -> dict:
     """Default ``to_obj``: field order preserved, nested configs recursed,
     tuples -> lists, open dicts deep-copied (never shared with the caller)."""
+    names = _FIELD_NAMES.get(type(cfg))
+    if names is None:
+        names = _FIELD_NAMES[type(cfg)] = tuple(f.name for f in fields(cfg))
     out = {}
-    for f in fields(cfg):
-        v = getattr(cfg, f.name)
+    for name in names:
+        v = getattr(cfg, name)
         if hasattr(v, "to_obj"):
             v = v.to_obj()
         elif isinstance(v, tuple):
             v = list(v)
         elif isinstance(v, dict):
             v = copy.deepcopy(v)
-        out[f.name] = v
+        out[name] = v
     return out
 
 
@@ -971,11 +1014,12 @@ class OptimizationConfig:
 # ---------------------------------------------------------------------------
 
 _CLASS_REF_OK = r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$"
+_CLASS_REF_MATCH = re.compile(_CLASS_REF_OK).match  # compiled once; asked per node
 
 
 def is_class_ref(kind) -> bool:
     """True iff ``kind`` is an import reference (``pkg.module:Attr``)."""
-    return isinstance(kind, str) and bool(re.match(_CLASS_REF_OK, kind))
+    return isinstance(kind, str) and bool(_CLASS_REF_MATCH(kind))
 
 
 def import_ref(ref):

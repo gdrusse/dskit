@@ -1,4 +1,4 @@
-"""Volatility estimators (ADR-0241): EWMA, high-low and rolling mean-square, with a gap rule.
+"""Volatility estimators (ADR-0244): EWMA, high-low and rolling mean-square, with a gap rule.
 
 Every expected number is computed by hand in plain Python from the same toy closes, so the
 numpy path is checked against an independent restatement. The estimators return a PER-BAR

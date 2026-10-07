@@ -14,6 +14,7 @@ channel-major; the ONE reshape lives in ``build_module``.
 """
 
 from __future__ import annotations
+from abc import ABC, abstractmethod
 
 from dskit.pipeline.libs.torch import DEFAULT_LOSS, TorchPredict, TorchTrain
 from dskit.pipeline.node import (
@@ -23,6 +24,7 @@ from dskit.pipeline.node import (
 
 __all__ = [
     "ARCHS",
+    "SequenceEncoderAdapter",
     "CategoricalEmbeddingMLPRegressor",
     "CategoricalRecurrentFusionRegressor",
     "CategoricalTemporalFusionRegressor",
@@ -1839,3 +1841,21 @@ def register(registry=None):
         if name not in registry:
             registry.register(name, cls, owned=False)
     return registry
+
+
+class SequenceEncoderAdapter(ABC):
+    """Library-neutral builder of a row-independent (batch,time,channel) encoder.
+
+    Subclasses return a torch module at runtime; no library imports at discovery.
+    The output is a learned representation, not a forecast in physical units.
+    """
+
+    @abstractmethod
+    def output_width(self, channels):
+        """Return the encoded width for the declared input channels."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_module(self, sequence_length, channels):
+        """Build a torch sequence encoder without a training loop."""
+        raise NotImplementedError

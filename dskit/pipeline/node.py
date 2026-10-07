@@ -68,6 +68,7 @@ __all__ = [
 
 _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
+_NODE_KEY_MATCH = re.compile(_NODE_KEY_OK).match  # compiled once; hot in validation
 
 
 @dataclass(frozen=True)
@@ -497,7 +498,7 @@ class Node(ABC):
     supported_split_kinds = None
 
     def __init__(self, key, params=None, *, mode=None, artifact=""):
-        if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+        if not isinstance(key, str) or not _NODE_KEY_MATCH(key):
             raise ConfigError([f"node key must match {_NODE_KEY_OK}, got {key!r}"])
         if params is None:
             params = {}

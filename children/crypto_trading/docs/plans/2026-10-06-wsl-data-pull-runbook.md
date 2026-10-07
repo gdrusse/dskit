@@ -96,7 +96,7 @@ python -m dskit.onboarding verify --root "$OB"           # re-hash every snapsho
 git add docs/decisioning && git commit                   # the acquires journaled themselves
 ```
 
-Digest spot check (ADR-0238 is withdrawn: this is the permanent check), both lines print the same hash:
+Digest spot check (ADR-0241 is withdrawn: this is the permanent check), both lines print the same hash:
 
 ```bash
 python -c "import hashlib; from dskit.onboarding import payload_files as p; \
@@ -123,7 +123,7 @@ dskit lacks.
 
 ## 7. History: the settlement value, hourly candles, trades (`kalshi_history`)
 
-Five sources over dskit's `kalshi_history` pack (ADR-0236): the realised `expiration_value` (a LABEL), markets from BEFORE the
+Five sources over dskit's `kalshi_history` pack (ADR-0239): the realised `expiration_value` (a LABEL), markets from BEFORE the
 live cutoff, hourly event candles and every trade.
 
 **7a. Register, then 7b. Markets first: it is also the measurement** (a full re-pull of six series from both archives; its row
@@ -211,7 +211,7 @@ python -m dskit.onboarding verify --root "$OB"
 
 ## 8. Coinbase and Deribit (`restwindow`)
 
-Coinbase BTC-USD, ETH-USD and Deribit BTC, ETH DVOL at 1 minute (dskit's `restwindow`, ADR-0237). **Coinbase is the live-safe
+Coinbase BTC-USD, ETH-USD and Deribit BTC, ETH DVOL at 1 minute (dskit's `restwindow`, ADR-0240). **Coinbase is the live-safe
 alternative to Binance** (confirm its terms at go-live); no node reads it yet.
 
 ```bash
@@ -375,5 +375,5 @@ ladders are pooled (7c counts them); most strikes have no two-sided quote: read 
 - Not modelled: latency slippage, the Jensen gap of the 60-second average. The basis is noisy (a 1-minute bar's mean). Unverified:
   BVOL cadence, the 365-day year. The fee schedule is today's.
 - `ObservationRows` and `scan_stream` do not expand `~` in `root`.
-- Migrated to dskit's modules (ADR-0239 to 0244; `tests/test_migration_golden.py` pins every row and score): the 15-minute
+- Migrated to dskit's modules (ADR-0242 to 0247; `tests/test_migration_golden.py` pins every row and score): the 15-minute
   document hash and the four Binance declaration digests moved by design.

@@ -53,7 +53,8 @@ import re
 import stat
 from datetime import datetime, timezone
 
-from .base import AssetError, _check_segment, _raise_if, file_digest, parse_utc
+from .base import (AssetError, _check_segment, _raise_if, file_digest, file_signature,
+                   parse_utc)
 from .codec import iter_text_lines, resolve_stream_file
 from .layout import OnboardingRoot
 from .snapshot import find_snapshot_dir, verify_snapshot
@@ -282,11 +283,7 @@ def stream_members(root, source, stream):
         path = resolve_stream_file(directory, stream)
         if path is None:
             continue
-        try:
-            info = os.stat(path)
-        except OSError as exc:
-            raise AssetError([f"cannot stat {path}: {exc}"]) from exc
-        members.append((name, os.path.basename(path), info.st_size, info.st_mtime_ns))
+        members.append((name, os.path.basename(path), *file_signature(path)))
     return tuple(members)
 
 
@@ -804,7 +801,7 @@ def _pick_winners(args, key_fields):
     for path, n, data, when, acquired, _stamp in _intake(*args):
         key = _winner_key(path, n, data, key_fields)
         if path not in ordinals:
-            ordinals[path] = (len(ordinals), _member_stat(path))
+            ordinals[path] = (len(ordinals), file_signature(path))
         ordinal = (ordinals[path][0], n)
         try:
             digest = hash(json.dumps(data, sort_keys=True))
@@ -828,22 +825,13 @@ def _pick_winners(args, key_fields):
     return best, ordinals
 
 
-def _member_stat(path):
-    """Return a member file's (size, mtime_ns), the identity pass two re-checks."""
-    try:
-        info = os.stat(path)
-    except OSError as exc:
-        raise AssetError([f"cannot stat {path}: {exc}"]) from exc
-    return info.st_size, info.st_mtime_ns
-
-
 def _winning_rows(args, key_fields, fields, ts_field, ts_out):
     """Yield the winners; the first next() runs pass one, then pass two streams them."""
     best, ordinals = _pick_winners(args, key_fields)
     checked = set()
     for path, n, data, _when, _acquired, stamp in _intake(*args):
         if path not in checked:
-            if path not in ordinals or _member_stat(path) != ordinals[path][1]:
+            if path not in ordinals or file_signature(path) != ordinals[path][1]:
                 raise AssetError([f"{path}: changed between the two passes of iter_stream; refusing"])
             checked.add(path)
         key = _winner_key(path, n, data, key_fields)

@@ -17,13 +17,13 @@ market mid after fees?); models come only if it survives. The focus areas in
 | `kalshi-crypto-books-{15m,hourly}` | live `orderbooks` recorders (`captured_at` is a lower bound) | `kalshi-crypto-books` |
 | `binance-{btcusdt,ethusdt}-1m` | Binance Vision spot 1-minute klines, daily zips to parquet (dskit's `zipcsv` transform, layout in `transform_params`) | `binance-files` |
 | `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet (26 known missing days) | `binance-files` |
-| `kalshi-history-crypto` | the six series' settled `markets` from the live API AND the archive (`kalshi_history`, ADR-0236), with `expiration_value` (the realised settlement value, a label), `settlement_ts`, `volume` | `kalshi-history-markets` |
+| `kalshi-history-crypto` | the six series' settled `markets` from the live API AND the archive (`kalshi_history`, ADR-0239), with `expiration_value` (the realised settlement value, a label), `settlement_ts`, `volume` | `kalshi-history-markets` |
 | `kalshi-history-candles-hourly-{btc,eth}` | event-level 1-minute `candles` of the four hourly series | `kalshi-history-candles` |
 | `kalshi-history-trades-{15m,hourly}` | every `trades` row of the 15-minute / the hourly series | `kalshi-history-trades` |
-| `coinbase-{btcusd,ethusd}-1m` | Coinbase Exchange 1-minute candles (`restwindow`, ADR-0237): the live-safe alternative to Binance | `coinbase-candles` |
+| `coinbase-{btcusd,ethusd}-1m` | Coinbase Exchange 1-minute candles (`restwindow`, ADR-0240): the live-safe alternative to Binance | `coinbase-candles` |
 | `deribit-{btc,eth}-dvol` | Deribit DVOL implied-vol index, 1 minute | `deribit-dvol` |
 
-Existing packs (`kalshi`, `httpblobs`) and dskit's `zipcsv` transform (ADR-0239): the Binance column layouts are
+Existing packs (`kalshi`, `httpblobs`) and dskit's `zipcsv` transform (ADR-0242): the Binance column layouts are
 each source's `transform_params`, so the pull needs no child code. Binance Vision
 is CC BY-NC-SA: research use only, not for live trading features. Exact commands:
 `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
@@ -33,7 +33,7 @@ is CC BY-NC-SA: research use only, not for live trading features. Exact commands
 gated on that instant, never a feature. Coinbase is the live-safe spot alternative (Binance is research-only);
 no node reads it yet, so the shipped documents still read Binance. The hourly candle and trade pulls cost a request
 chain per ARCHIVED market and the pack has no date bound: the runbook (7c) counts the archive first. Kraken has no
-source here. Digest verification stays a manual spot check in the runbook (child-side; ADR-0238 withdrawn).
+source here. Digest verification stays a manual spot check in the runbook (child-side; ADR-0241 withdrawn).
 
 ## Stage B: features and the kill test
 
@@ -49,17 +49,17 @@ held-out cut are the 15-minute document's, pinned equal by tests. Its rows also 
 | `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` and `kalshi_history` packs' streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants (and, from the history stream, `settle_value` and `settlement_ms`); unsettled, TBD-strike and no-settlement-instant markets dropped by name; candle end seconds to ms |
 | `decisions:DecisionRows` | market x lead: information instant I = close - lead (strictly after the strike is known), fill at I + `exec_lag_s` |
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
-| `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0240) |
-| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0241, square-rooted here) and BVOL, all strictly before the decision; an anchor outside `basis_range` and a strike beyond `max_abs_log_moneyness` of `spot_brti` (the archive holds strikes off by 10,000) are refused, counted in the provenance, and leave the row unpriced |
+| `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0243) |
+| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0244, square-rooted here) and BVOL, all strictly before the decision; an anchor outside `basis_range` and a strike beyond `max_abs_log_moneyness` of `spot_brti` (the archive holds strikes off by 10,000) are refused, counted in the provenance, and leave the row unpriced |
 | `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
-| `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0243) |
-| `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0242), rounded per order |
+| `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0246) |
+| `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0245), rounded per order |
 | `dskit.pipeline.binary_scoring:BucketedBinaryScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close in the 15-minute document, on `settlement_ms` in the hourly one; epoch-ms bounds), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
-The table is written (dskit's `RecordsWriteRun`, ADR-0244) as JSON lines, one file and one stream per run
+The table is written (dskit's `RecordsWriteRun`, ADR-0247) as JSON lines, one file and one stream per run
 (`decision_features-<run>`, rows carry `run_id`), and published back as source `features-15m` through
 `configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
-The generic parts are dskit's (ADR-0239 to 0244, named in the table); this child keeps the Kalshi mapping, the row
+The generic parts are dskit's (ADR-0242 to 0247, named in the table); this child keeps the Kalshi mapping, the row
 vocabulary and the readers. The move from the child's interim copies changed no number:
 `tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit in three worlds: one UTC day a side,
 two (the cluster-robust errors are numbers), and one with unpriced, unscored and on-the-cut rows. Moved by design: the identity

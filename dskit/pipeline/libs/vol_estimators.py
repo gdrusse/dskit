@@ -4,7 +4,7 @@
 the last ``w`` one-step log returns. A short-horizon model wants two more reads of the same
 bars, an exponentially weighted one that reacts faster and a range-based one that uses the
 high and the low, and it wants them to refuse a window that holds a missing bar. That is this
-module. It is a NEW pack beside the numpy one and edits nothing in it (ADR-0241).
+module. It is a NEW pack beside the numpy one and edits nothing in it (ADR-0244).
 
 **Every estimator returns a per-bar VARIANCE** of the one-bar log return, in the units of one
 bar. The value at bar ``i`` reads bars ``0..i`` and nothing after, so the numpy pack's

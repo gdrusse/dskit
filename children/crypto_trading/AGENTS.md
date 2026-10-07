@@ -102,16 +102,16 @@ template becomes convenient enough to send an order.
 ## Stage A data pulls
 
 Sources are dskit packs (`kalshi`, `httpblobs`, and by import path `kalshi_history`, `restwindow`) plus configs, and no child code: the Binance
-daily zips become parquet through dskit's `ZipCsvToParquet` (ADR-0239), the column layout being each
+daily zips become parquet through dskit's `ZipCsvToParquet` (ADR-0242), the column layout being each
 source's `transform_params` (a layout is config; it takes no `notes`, because the block feeds the
 declaration digest). A snapshot holds ONE stream, so each stream has its own suite. Series and date lists repeat across configs and suites by design (a
 suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
-both together. The 15-minute candles are one source per series. `kalshi_history` (ADR-0236) adds the
+both together. The 15-minute candles are one source per series. `kalshi_history` (ADR-0239) adds the
 settlement value (`expiration_value`, a LABEL known only from `settlement_ts`: gate on it, never a feature), history
-before the live cutoff, event-level hourly candles and trades; `restwindow` (ADR-0237) adds Coinbase (the live-safe spot
+before the live cutoff, event-level hourly candles and trades; `restwindow` (ADR-0240) adds Coinbase (the live-safe spot
 alternative to Binance, which is research-only; no node reads it yet) and Deribit DVOL. Their hourly candle and trade
 pulls cost a request chain per ARCHIVED market and the pack has no date bound: count first (runbook 7c); a bound is a
-new dskit knob, never child code. The digest check is child-side by ruling (ADR-0238 withdrawn). `AGENTS.md` mirrors this file
+new dskit knob, never child code. The digest check is child-side by ruling (ADR-0241 withdrawn). `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 ## Stage B features and the kill test
@@ -147,8 +147,8 @@ that bind any edit:
   specs, kill-test segments in epoch ms and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
   to the stage A suites and sources it must agree with.
 - **The generic parts are dskit's, named by import path in the document**: `libs.parquet_series` (day files,
-  `StreamManifests`, ADR-0240), `libs.vol_estimators` (variance; `spot` takes the root and sets the column prefix,
-  ADR-0241), `fee_mechanics` (ADR-0242), `binary_pricing` + `binary_scoring` (ADR-0243), `kinds_run_write` (ADR-0244).
+  `StreamManifests`, ADR-0243), `libs.vol_estimators` (variance; `spot` takes the root and sets the column prefix,
+  ADR-0244), `fee_mechanics` (ADR-0245), `binary_pricing` + `binary_scoring` (ADR-0246), `kinds_run_write` (ADR-0247).
   The child keeps only what is Kalshi's or the row vocabulary: the `fees` node's `fee_types` (which fee type means which
   mechanic and base rate), `spot_features`, the readers. No venue name belongs in dskit; no generic rule is copied
   back here. Parsing and the cluster error are dskit's too (`dskit.production.base.parse_utc_ms`,

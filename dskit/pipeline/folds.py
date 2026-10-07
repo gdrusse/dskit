@@ -43,7 +43,7 @@ import secrets
 import subprocess
 import sys
 
-__all__ = ["BoundedFoldRunner"]
+__all__ = ["BoundedFoldRunner", "declared_width"]
 
 #: How many trailing characters of a failed fold's output ride in its error.
 _OUTPUT_TAIL = 4000
@@ -91,8 +91,32 @@ _MEASURE = (
 _RU_MAXRSS_UNIT = 1 if sys.platform == "darwin" else 1024
 
 
-def _declared_width(workers, env_var):
-    """Resolve the fold width: an explicit int, else the environment, else 1."""
+def declared_width(workers, env_var):
+    """Resolve a process width: an explicit int, else the environment, else 1.
+
+    The one rule for a machine-chosen width (ADR-0093): the fold runner's and the
+    CDF study's group workers (ADR-0236 amendment 3) both read it, so neither
+    restates what an empty or malformed variable means.
+
+    Parameters
+    ----------
+    workers : int or None
+        An explicit width (>= 1, never a bool), which wins; None reads ``env_var``.
+    env_var : str
+        The environment variable naming the width. Unset means 1.
+
+    Returns
+    -------
+    int
+        The width, at least 1.
+
+    Raises
+    ------
+    ValueError
+        When ``workers`` is not a positive int, or ``env_var`` is set to anything
+        but a positive integer (an empty value is refused: ``export VAR=`` is an
+        accident, not a request for the default).
+    """
     if workers is not None:
         if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
             raise ValueError(f"workers must be a positive int, got {workers!r}")
@@ -208,7 +232,7 @@ class BoundedFoldRunner:
             raise ValueError(f"env_var must be a non-empty string, got {env_var!r}")
         self.memory_limit_bytes = memory_limit_bytes
         self.env_var = env_var
-        self.workers = _declared_width(workers, env_var)
+        self.workers = declared_width(workers, env_var)
 
     def run(self, commands, cwd=None, env=None):
         """Run every command, at most ``workers`` at once, under the cap.

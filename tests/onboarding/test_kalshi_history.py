@@ -1,4 +1,4 @@
-"""libs/kalshi_history.py: the standalone Kalshi /historical pack (ADR-0236).
+"""libs/kalshi_history.py: the standalone Kalshi /historical pack (ADR-0239).
 
 No network anywhere: every test injects the ``getter`` transport, a
 recording ``sleeper`` and a fixed ``clock``, so cutoff routing, pacing, retry,

@@ -14,7 +14,9 @@ import json
 from pathlib import Path
 import time
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import date_problem
+from dskit.pipeline.folds import declared_width
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import Node, JsonArtifact, reject_unknown_params
 
@@ -29,7 +31,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
-           "DiscreteCDFGrid", "TorchCDF", "DecisionRegionScores",
+           "DiscreteCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
@@ -38,6 +40,9 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
 _QUADRATURE_NODES = 64
 # Positive remainder terms of the Student lower-tail series (ADR-0218).
 _STUDENT_TAIL_TERMS = 64
+#: The fit-row floor a study that declares no ``min_task_fit_rows`` is checked
+#: against: one row, which its every-band rule already requires (ADR-0236 amendment).
+_DEFAULT_MIN_TASK_FIT_ROWS = 1
 
 
 @lru_cache(maxsize=None)
@@ -784,6 +789,9 @@ class HorizonEmpiricalCDF(CDFEstimator):
         model = HorizonEmpiricalCDF(0, 1, 401)
     """
 
+    #: Its fit never reads the calibration rows, so a study may hand it none (ADR-0236 amendment 2).
+    ignores_calibration_rows = True
+
     def __init__(self, horizon_index, reference_index, knots, condition_indices=None):
         self.horizon_index, self.reference_index, self.knots = horizon_index, reference_index, knots
         self.condition_indices = tuple(condition_indices or [horizon_index])
@@ -1073,8 +1081,41 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
         if not hasattr(self, "_fit_decisions") or len(self._fit_decisions) != len(x):
             raise ValueError("identity-keyed decision context was not attached")
         inventory = self._fit_decisions
-        expanded, labels, weights = [], [], []
         global_mass = self.global_weight/len(self.thresholds)
+        # The vector path matches the loop bit for bit only on float64 rows:
+        # the loop keeps a narrower row or outcome dtype and compares in it.
+        if (not len(inventory) or len(y) != len(inventory)
+                or np.asarray(x).dtype != np.float64
+                or np.asarray(y).dtype != np.float64):
+            expanded, labels, weights = self._expanded_events_loop(x, y, inventory, global_mass)
+        else:
+            expanded, labels, weights = self._expanded_events(x, y, inventory, global_mass)
+        self.model = LGBMClassifier(
+            **self.settings, monotone_constraints=[0]*np.asarray(x).shape[1]+[1])
+        self.model.fit(expanded, np.asarray(labels, dtype=int),
+                       sample_weight=np.asarray(weights, dtype=float))
+        return self
+
+    def _expanded_events(self, x, y, inventory, global_mass):
+        """Each row's global then strike events as arrays, in the loop's order."""
+        import numpy as np
+
+        rows = np.asarray(x)
+        thresholds = np.asarray(self.thresholds, dtype=float)
+        counts = [len(self.thresholds)+len(cutoffs) for cutoffs, _ in inventory]
+        cutoffs = np.concatenate([np.r_[thresholds, own] for own, _ in inventory])
+        expanded = np.column_stack([np.repeat(rows, counts, axis=0), cutoffs]).astype(float)
+        labels = np.repeat(np.asarray(y), counts) <= cutoffs
+        weights = np.concatenate([
+            np.r_[np.full(len(self.thresholds), global_mass), self.decision_weight*own]
+            for _, own in inventory])
+        return expanded, labels, weights
+
+    def _expanded_events_loop(self, x, y, inventory, global_mass):
+        """Expand per event, the reference path kept for an empty or ragged inventory."""
+        import numpy as np
+
+        expanded, labels, weights = [], [], []
         for row, outcome, (cutoffs, strike_weights) in zip(np.asarray(x), y, inventory):
             for cutoff in self.thresholds:
                 expanded.append(np.r_[row, cutoff])
@@ -1084,12 +1125,7 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
                 expanded.append(np.r_[row, cutoff])
                 labels.append(outcome <= cutoff)
                 weights.append(self.decision_weight*weight)
-        expanded = np.asarray(expanded, dtype=float)
-        self.model = LGBMClassifier(
-            **self.settings, monotone_constraints=[0]*np.asarray(x).shape[1]+[1])
-        self.model.fit(expanded, np.asarray(labels, dtype=int),
-                       sample_weight=np.asarray(weights, dtype=float))
-        return self
+        return np.asarray(expanded, dtype=float), labels, weights
 
     def curve_decision_context(self, x, context):
         """Predict directly at every row's decision strikes, without interpolation."""
@@ -1103,10 +1139,16 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
         width = max(len(values) for values in knots)+2
         values = np.empty((len(x), width), dtype=float)
         probabilities = np.empty_like(values)
-        for row, (features, cutoffs) in enumerate(zip(np.asarray(x), knots)):
-            expanded = np.column_stack([
-                np.repeat(features[None, :], len(cutoffs), axis=0), cutoffs])
-            p = self.model.predict_proba(expanded)[:, 1]
+        rows = np.asarray(x)
+        # One predict_proba over every row's knots: trees score each event
+        # row independently, so the slices equal the per-row calls exactly.
+        everything = self.model.predict_proba(np.column_stack([
+            np.repeat(rows, [len(cutoffs) for cutoffs in knots], axis=0),
+            np.concatenate(knots)]))[:, 1]
+        offset = 0
+        for row, cutoffs in enumerate(knots):
+            p = everything[offset:offset+len(cutoffs)]
+            offset += len(cutoffs)
             if (np.diff(p) < -1e-10).any():
                 raise ValueError("monotone classifier returned crossing CDFs")
             grid = np.r_[cutoffs[0]-self.tail_width, cutoffs,
@@ -2177,14 +2219,179 @@ class _PatienceStop:
         self.history.append(loss)
         if self.best is None or loss < self.best:
             self.best, self.best_epoch = loss, len(self.history)
-            self.state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            self.state = self._snapshot(model)
         return len(self.history)-self.best_epoch >= self.patience
+
+    def _snapshot(self, model):
+        """Return a copy of the weights ``restore`` puts back."""
+        return {k: v.detach().clone() for k, v in model.state_dict().items()}
 
     def restore(self, model):
         model.load_state_dict(self.state)
 
 
-class MixtureMLPCDF(CDFEstimator):
+class _RoundPatienceStop(_PatienceStop):
+    """The same rule over boosting rounds: the best round count IS the state."""
+
+    def _snapshot(self, model):
+        """Keep nothing: the booster is truncated at ``best_epoch`` rounds."""
+        return None
+
+
+#: The positive standardized scale floor of every mixture parameter transform.
+_MIN_SCALE = .1
+
+
+class _MixtureParameterCDF(CDFEstimator):
+    """Estimator predicting ``3 * components`` raw mixture parameters per row.
+
+    Owns what the network and boosted mixtures share: task-head routing from
+    raw one-hot columns (``head_features``), the plain-input column pick
+    (``feature_indices``), the raw-to-mixture transform (log-softmax weights,
+    means, softplus scales above ``min_scale``) and the deterministic context.
+    Subclasses set ``head_features`` (tuple), ``feature_indices`` (tuple or
+    None), ``min_scale``, ``device`` and ``deterministic``.
+
+    Examples
+    --------
+    A concrete member::
+
+        model = MixtureMLPCDF(components=3, device="cpu")
+    """
+
+    @staticmethod
+    def _checked_heads(head_features):
+        """Return head positions as a tuple, refusing empty, repeated or negative ones."""
+        if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
+                or any(type(v) is not int or v < 0 for v in head_features)):
+            raise ValueError("invalid head feature positions")
+        return tuple(head_features or ())
+
+    @staticmethod
+    def _checked_indices(feature_indices):
+        """Return the input column pick as a tuple or None, refusing a malformed one."""
+        if (feature_indices is not None and
+                (not isinstance(feature_indices, (list, tuple)) or not feature_indices
+                 or any(type(v) is not int or v < 0 for v in feature_indices)
+                 or len(set(feature_indices)) != len(feature_indices))):
+            raise ValueError("invalid feature indices")
+        return None if feature_indices is None else tuple(feature_indices)
+
+    @staticmethod
+    def _finite(value):
+        """Say whether a knob is a finite real number (never a bool): the one numeric-knob rule."""
+        import math
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value))
+
+    @classmethod
+    def _shared_settings_ok(cls, components, batch_size, learning_rate, min_scale, deterministic):
+        """Say whether the knobs every mixture estimator shares hold: positive counts, rates, a bool."""
+        return (all(type(v) is int and v >= 1 for v in (components, batch_size))
+                and all(cls._finite(v) and v > 0 for v in (learning_rate, min_scale))
+                and type(deterministic) is bool)
+
+    @staticmethod
+    def _checked_patience(patience):
+        """Return patience, refusing anything but an integer >= 1 or None."""
+        if patience is not None and (type(patience) is not int or patience < 1):
+            raise ValueError("invalid patience: an integer >= 1 or absent")
+        return patience
+
+    def _refuse_head_inputs(self):
+        """Refuse task columns that would also enter the model as plain inputs."""
+        if self.head_features and (self.feature_indices is None
+                                   or set(self.head_features) & set(self.feature_indices)):
+            raise ValueError(f"{type(self).__name__} head_features must be excluded from "
+                             "feature_indices: a task column routes its head and is never "
+                             "a plain input")
+
+    def _deterministic_context(self):
+        from contextlib import contextmanager
+        import os
+        import torch
+
+        @contextmanager
+        def configured():
+            if not self.deterministic:
+                yield
+                return
+            if (self.device.startswith("cuda")
+                    and os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in (":4096:8", ":16:8")):
+                raise ValueError("deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG before launch")
+            old_algorithms = torch.are_deterministic_algorithms_enabled()
+            old_cudnn = getattr(torch.backends.cudnn, "deterministic", False)
+            old_benchmark = getattr(torch.backends.cudnn, "benchmark", False)
+            torch.use_deterministic_algorithms(True)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            try:
+                yield
+            finally:
+                torch.use_deterministic_algorithms(old_algorithms)
+                torch.backends.cudnn.deterministic = old_cudnn
+                torch.backends.cudnn.benchmark = old_benchmark
+        return configured()
+
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit the subclass's ``_fit`` under the deterministic context.
+
+        Parameters
+        ----------
+        x, y, cal_x, cal_y : array-like
+            Training and separate calibration arrays. The calibration rows are
+            read only when ``patience`` is set, as the stop rule's monitor.
+
+        Returns
+        -------
+        self
+            The fitted estimator (networks, or LightGBM text truncated at the
+            kept round), retained for exact CDF queries.
+
+        Raises
+        ------
+        ValueError
+            What ``_fit`` refuses: unattached context, unseen calibration heads,
+            a nonfinite loss or gradient, patience not exhausted within the
+            ceiling, and the booster's own (a task too rare to bin, a start scale
+            at ``min_scale``, a design LightGBM cannot split).
+        """
+        with self._deterministic_context():
+            return self._fit(x, y, cal_x, cal_y)
+
+    def _validate_x(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if self.head_features:
+            if x.ndim != 2 or max(self.head_features) >= x.shape[1]:
+                raise ValueError("head feature positions outside input")
+            ids = x[:, self.head_features]
+            if (not np.isfinite(ids).all() or not np.isin(ids, [0, 1]).all()
+                    or not (ids.sum(1) == 1).all()):
+                raise ValueError("head identifiers must be finite binary one-hot")
+
+    def _heads(self, x):
+        import numpy as np
+        self._validate_x(x)
+        return np.asarray(x)[:, self.head_features].argmax(1) if self.head_features else np.zeros(len(x), dtype=int)
+
+    def _features(self, x):
+        import numpy as np
+        x = np.asarray(x)
+        if x.ndim != 2 or (self.feature_indices is not None
+                            and max(self.feature_indices) >= x.shape[1]):
+            raise ValueError("feature indices outside input")
+        return x if self.feature_indices is None else x[:, self.feature_indices]
+
+    def _parts(self, output):
+        import torch
+
+        logits, means, raw_scale = output.chunk(3, dim=1)
+        return (torch.log_softmax(logits, dim=1), means,
+                torch.nn.functional.softplus(raw_scale) + self.min_scale)
+
+
+class MixtureMLPCDF(_MixtureParameterCDF):
     """Small Gaussian mixture MLP ensemble trained with log likelihood.
 
     Parameters
@@ -2218,23 +2425,22 @@ class MixtureMLPCDF(CDFEstimator):
 
     def __init__(self, components=3, hidden=32, epochs=20, batch_size=1024,
                  seeds=(11, 29), device="cuda", learning_rate=.001,
-                 weight_decay=.01, min_scale=.1, activation="tanh", dropout=0.,
+                 weight_decay=.01, min_scale=_MIN_SCALE, activation="tanh", dropout=0.,
                  head_features=None, deterministic=False, left_cdf_weight=0.,
                  left_cdf_bounds=(-6., 0.), left_cdf_points=61, feature_indices=None,
-                 patience=None):
+                 patience=None, max_parameters=None, mask_constant_features=False,
+                 training_telemetry=False):
         import math
         widths = [hidden, hidden] if type(hidden) is int else hidden
         if (not isinstance(widths, (list, tuple)) or not widths
-                or any(type(v) is not int or v <= 0 for v in [components, epochs, batch_size, *widths])
-                or any(not math.isfinite(v) for v in [learning_rate, weight_decay, min_scale, dropout])
-                or min(learning_rate, min_scale) <= 0 or weight_decay < 0
+                or any(type(v) is not int or v <= 0 for v in [epochs, *widths])
+                or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
+                                                deterministic)
+                or not all(self._finite(v) for v in [weight_decay, dropout]) or weight_decay < 0
                 or not 0 <= dropout < 1 or activation not in ("tanh", "relu", "silu")
-                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)
-                or type(deterministic) is not bool):
+                or not seeds or any(type(v) is not int for v in seeds) or len(set(seeds)) != len(seeds)):
             raise ValueError("invalid mixture training parameters")
-        if head_features is not None and (not head_features or len(set(head_features)) != len(head_features)
-                or any(type(v) is not int or v < 0 for v in head_features)):
-            raise ValueError("invalid head feature positions")
+        head_features = self._checked_heads(head_features)
         if (isinstance(left_cdf_weight, bool) or not math.isfinite(left_cdf_weight)
                 or left_cdf_weight < 0 or not isinstance(left_cdf_bounds, (list, tuple))
                 or len(left_cdf_bounds) != 2
@@ -2242,79 +2448,34 @@ class MixtureMLPCDF(CDFEstimator):
                 or left_cdf_bounds[0] >= left_cdf_bounds[1] or left_cdf_bounds[1] > 0
                 or type(left_cdf_points) is not int or left_cdf_points < 2):
             raise ValueError("invalid left CDF training parameters")
-        if (feature_indices is not None and
-                (not isinstance(feature_indices, (list, tuple)) or not feature_indices
-                 or any(type(v) is not int or v < 0 for v in feature_indices)
-                 or len(set(feature_indices)) != len(feature_indices))):
-            raise ValueError("invalid feature indices")
-        if patience is not None and (type(patience) is not int or patience < 1):
-            raise ValueError("invalid patience: an integer >= 1 or absent")
-        self.patience = patience
+        feature_indices = self._checked_indices(feature_indices)
+        if max_parameters is not None and (type(max_parameters) is not int or max_parameters < 1):
+            raise ValueError("max_parameters must be a positive integer")
+        if type(mask_constant_features) is not bool or type(training_telemetry) is not bool:
+            raise ValueError("mask and telemetry controls must be bool")
+        self.max_parameters = max_parameters
+        self.mask_constant_features = mask_constant_features
+        self.training_telemetry = training_telemetry
+        self.patience = self._checked_patience(patience)
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
         self.batch_size, self.seeds, self.device = batch_size, seeds, device
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
         self.activation, self.dropout = activation, dropout
-        self.head_features = tuple(head_features or ())
+        self.head_features = head_features
         self.deterministic = deterministic
         self.left_cdf_weight = float(left_cdf_weight)
         self.left_cdf_bounds = tuple(float(v) for v in left_cdf_bounds)
         self.left_cdf_points = left_cdf_points
-        self.feature_indices = None if feature_indices is None else tuple(feature_indices)
+        self.feature_indices = feature_indices
 
-    def _deterministic_context(self):
-        from contextlib import contextmanager
-        import os
+    def _activation(self):
+        """Return the configured hidden activation's torch module class."""
         import torch
-
-        @contextmanager
-        def configured():
-            if not self.deterministic:
-                yield
-                return
-            if (self.device.startswith("cuda")
-                    and os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in (":4096:8", ":16:8")):
-                raise ValueError("deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG before launch")
-            old_algorithms = torch.are_deterministic_algorithms_enabled()
-            old_cudnn = getattr(torch.backends.cudnn, "deterministic", False)
-            old_benchmark = getattr(torch.backends.cudnn, "benchmark", False)
-            torch.use_deterministic_algorithms(True)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-            try:
-                yield
-            finally:
-                torch.use_deterministic_algorithms(old_algorithms)
-                torch.backends.cudnn.deterministic = old_cudnn
-                torch.backends.cudnn.benchmark = old_benchmark
-        return configured()
-
-    def _validate_x(self, x):
-        import numpy as np
-        x = np.asarray(x)
-        if self.head_features:
-            if x.ndim != 2 or max(self.head_features) >= x.shape[1]:
-                raise ValueError("head feature positions outside input")
-            ids = x[:, self.head_features]
-            if (not np.isfinite(ids).all() or not np.isin(ids, [0, 1]).all()
-                    or not (ids.sum(1) == 1).all()):
-                raise ValueError("head identifiers must be finite binary one-hot")
-
-    def _heads(self, x):
-        import numpy as np
-        self._validate_x(x)
-        return np.asarray(x)[:, self.head_features].argmax(1) if self.head_features else np.zeros(len(x), dtype=int)
-
-    def _features(self, x):
-        import numpy as np
-        x = np.asarray(x)
-        if x.ndim != 2 or (self.feature_indices is not None
-                            and max(self.feature_indices) >= x.shape[1]):
-            raise ValueError("feature indices outside input")
-        return x if self.feature_indices is None else x[:, self.feature_indices]
+        return {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
 
     def _build_module(self, features):
         import torch
-        activation = {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU, "silu": torch.nn.SiLU}[self.activation]
+        activation = self._activation()
         layers = []
         for width in self.hidden:
             layers.extend([torch.nn.Linear(features, width), activation()])
@@ -2361,7 +2522,7 @@ class MixtureMLPCDF(CDFEstimator):
         heads = self._heads(cal_x)
         if not set(heads).issubset(self.seen_heads):
             raise ValueError("unseen head in the calibration rows")
-        return (torch.tensor(self.scaler.transform(self._features(cal_x)),
+        return (torch.tensor(self._scaled_features(cal_x),
                              dtype=torch.float32, device=self.device),
                 self._target_tensor(np.asarray(cal_y)),
                 torch.tensor(heads, dtype=torch.long, device=self.device),
@@ -2397,30 +2558,6 @@ class MixtureMLPCDF(CDFEstimator):
     def _curve(self, weights, means, scales):
         return MixtureCurve(weights, means, scales)
 
-    def _parts(self, output):
-        import torch
-
-        logits, means, raw_scale = output.chunk(3, dim=1)
-        return (torch.log_softmax(logits, dim=1), means,
-                torch.nn.functional.softplus(raw_scale) + self.min_scale)
-
-    def fit(self, x, y, cal_x, cal_y):
-        """Train with train-only scaling, fixed epochs and explicit seeds.
-
-        Parameters
-        ----------
-        x, y, cal_x, cal_y : array-like
-            Training and separate calibration arrays. The calibration rows are
-            read only when ``patience`` is set, as the stop rule's monitor.
-
-        Returns
-        -------
-        self
-            Fitted ensemble, retaining networks for exact CDF queries.
-        """
-        with self._deterministic_context():
-            return self._fit(x, y, cal_x, cal_y)
-
     def _target_tensor(self, y):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float32, device=self.device)
@@ -2430,6 +2567,7 @@ class MixtureMLPCDF(CDFEstimator):
         import torch
         from sklearn.preprocessing import StandardScaler
 
+        self._checkpoint_ready = False
         self._validate_x(cal_x)
         self._features(cal_x)
         heads = self._heads(x)
@@ -2437,14 +2575,24 @@ class MixtureMLPCDF(CDFEstimator):
         self.seen_heads = set(heads)
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
         self.scaler = StandardScaler().fit(features)
-        xx = torch.tensor(self.scaler.transform(features), dtype=torch.float32, device=self.device)
+        xx = torch.tensor(self._scaled_features(x), dtype=torch.float32, device=self.device)
         yy = self._target_tensor(y)
         training_context = self._training_context(x)
         monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
         self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
+        self.training_diagnostics = []
+        diagnostic_monitor = (self._monitor_set(cal_x, cal_y)
+                              if self.training_telemetry and monitor is None else monitor)
         for seed in self.seeds:
             torch.manual_seed(seed)
             model = self._build_module(features.shape[1])
+            parameter_count = sum(p.numel()*(2 if p.is_complex() else 1) for p in model.parameters() if p.requires_grad)
+            if self.max_parameters is not None and parameter_count > self.max_parameters:
+                raise ValueError(f"parameter budget exceeded: {parameter_count} > {self.max_parameters}")
+            initial = [p.detach().clone() for p in model.parameters()] if self.training_telemetry else None
+            epoch_zero = (self._monitor_loss(model, diagnostic_monitor)
+                          if self.training_telemetry else None)
+            steps = 0
             optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
                                           weight_decay=self.weight_decay)
             losses = []
@@ -2461,8 +2609,11 @@ class MixtureMLPCDF(CDFEstimator):
                         raise ValueError("nonfinite mixture likelihood")
                     optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                    if not torch.isfinite(norm):
+                        raise ValueError("nonfinite mixture gradient")
                     optimizer.step()
+                    steps += 1
                     total += loss.item()*len(ix)
                 losses.append(total/len(xx))
                 if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
@@ -2477,6 +2628,12 @@ class MixtureMLPCDF(CDFEstimator):
                 stop.restore(model)
                 self.monitor_losses.append(stop.history)
                 self.best_epochs.append(stop.best_epoch)
+            if self.training_telemetry:
+                delta = sum((p.detach()-v).abs().double().square().sum().item()
+                            for p, v in zip(model.parameters(), initial))**.5
+                self.training_diagnostics.append({"parameters": parameter_count,
+                    "optimizer_steps": steps, "parameter_delta_l2": delta,
+                    "epoch_zero_monitor_loss": epoch_zero, "finite_gradients": True})
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
@@ -2484,7 +2641,95 @@ class MixtureMLPCDF(CDFEstimator):
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
+        self._checkpoint_ready = True
         return self
+
+
+    def parameter_count(self, features):
+        """Count all instantiated trainable parameters without retaining a model."""
+        import torch
+        with torch.random.fork_rng(devices=[]):
+            module = self._build_module(features)
+            return sum(p.numel()*(2 if p.is_complex() else 1) for p in module.parameters() if p.requires_grad)
+
+    def _scaled_features(self, x):
+        values = self.scaler.transform(self._features(x))
+        if self.mask_constant_features:
+            values[:, self.scaler.var_ == 0] = 0.
+        return values
+
+    @classmethod
+    def _check_checkpoint_support(cls):
+        if cls is not MixtureMLPCDF:
+            raise ValueError("checkpoint serialization unsupported for "+cls.__name__)
+
+    def _checkpoint_settings(self):
+        return self._equivalence_settings()
+
+    def save_checkpoint(self, path):
+        """Persist this fitted model as JSON and tensor-only weights, atomically.
+
+        The directory is immutable. Caller preprocessing and forecast identities
+        belong in the enclosing fit manifest.
+        """
+        self._check_checkpoint_support()
+        if not getattr(self, "_checkpoint_ready", False):
+            raise ValueError("checkpoint requires a successfully fitted model")
+        import os
+        import tempfile
+        import torch
+        path = Path(path)
+        if path.exists():
+            raise ValueError("checkpoint already exists")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = Path(tempfile.mkdtemp(prefix=path.name+".", dir=path.parent))
+        state = {"class": type(self).__name__, "settings": self._checkpoint_settings(),
+                 "scaler": {k: getattr(self.scaler, k).tolist()
+                            for k in ("mean_", "scale_", "var_")},
+                 "seen_heads": sorted(int(i) for i in self.seen_heads),
+                 "losses": self.losses, "monitor_losses": self.monitor_losses,
+                 "best_epochs": self.best_epochs,
+                 "diagnostics": self.training_diagnostics}
+        torch.save([m.state_dict() for m in self.models], temp/"weights.pt")
+        state["weights_sha256"] = hashlib.sha256((temp/"weights.pt").read_bytes()).hexdigest()
+        (temp/"state.json").write_text(json.dumps(state, allow_nan=False))
+        os.rename(temp, path)
+
+    @classmethod
+    def load_checkpoint(cls, path):
+        """Restore the same estimator type, refusing modified tensor payloads."""
+        cls._check_checkpoint_support()
+        import numpy as np
+        import torch
+        from sklearn.preprocessing import StandardScaler
+        path = Path(path)
+        state = json.loads((path/"state.json").read_text())
+        if state["class"] != cls.__name__:
+            raise ValueError("checkpoint estimator type mismatch")
+        if hashlib.sha256((path/"weights.pt").read_bytes()).hexdigest() != state["weights_sha256"]:
+            raise ValueError("checkpoint weights hash mismatch")
+        if not state["settings"].get("head_features"):
+            state["settings"]["head_features"] = None
+        model = cls(**state["settings"])
+        model.scaler = StandardScaler()
+        for key, value in state["scaler"].items():
+            setattr(model.scaler, key, np.asarray(value))
+        model.scaler.n_features_in_ = len(model.scaler.mean_)
+        model.seen_heads = set(state["seen_heads"])
+        weights = torch.load(path/"weights.pt", map_location=model.device, weights_only=True)
+        if len(weights) != len(model.seeds):
+            raise ValueError("checkpoint seed inventory mismatch")
+        model.models = []
+        for seed, values in zip(model.seeds, weights):
+            torch.manual_seed(seed)
+            module = model._build_module(model.scaler.n_features_in_)
+            module.load_state_dict(values, strict=True)
+            model.models.append(module.eval())
+        model.losses, model.monitor_losses = state["losses"], state["monitor_losses"]
+        model.best_epochs = state["best_epochs"]
+        model.training_diagnostics = state["diagnostics"]
+        model._checkpoint_ready = True
+        return model
 
     def _equivalence_settings(self):
         """Return the settings the equivalence digest covers."""
@@ -2496,6 +2741,12 @@ class MixtureMLPCDF(CDFEstimator):
                     "activation": self.activation, "dropout": self.dropout,
                     "head_features": self.head_features,
                     "deterministic": self.deterministic}
+        if self.max_parameters is not None:
+            settings["max_parameters"] = self.max_parameters
+        if self.mask_constant_features:
+            settings["mask_constant_features"] = True
+        if self.training_telemetry:
+            settings["training_telemetry"] = True
         if self.feature_indices is not None:
             settings["feature_indices"] = self.feature_indices
         if self.patience is not None:
@@ -2534,7 +2785,6 @@ class MixtureMLPCDF(CDFEstimator):
         MixtureCurve
             Ensemble curve; components times seeds Gaussian terms.
         """
-        import gc
         import numpy as np
         import torch
 
@@ -2542,7 +2792,7 @@ class MixtureMLPCDF(CDFEstimator):
         if not set(heads).issubset(self.seen_heads):
             raise ValueError("unseen head requested")
         hh = torch.tensor(heads, dtype=torch.long, device=self.device)
-        xx = torch.tensor(self.scaler.transform(self._features(x)), dtype=torch.float32, device=self.device)
+        xx = torch.tensor(self._scaled_features(x), dtype=torch.float32, device=self.device)
         weights, means, scales = [], [], []
         with torch.no_grad():
             for model in self.models:
@@ -2552,8 +2802,10 @@ class MixtureMLPCDF(CDFEstimator):
                 scales.append(sigma.cpu().numpy())
         result = self._curve(np.concatenate(weights, 1), np.concatenate(means, 1),
                              np.concatenate(scales, 1))
+        # The tensors hold no reference cycles, so dropping them frees them; a full
+        # gc.collect here cost ~0.1 s per call, seven calls per model and ticker-fold
+        # in a pooled study (ADR-0236 amendment 2).
         del xx, hh, logw, mu, sigma
-        gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         return result
@@ -2839,38 +3091,76 @@ class _CDFMLPEncoder:
         return MixtureMLPCDF._build_module(owner, features)
 
 
-class _CDFGRUEncoder:
+class _CDFSequenceEncoder(ABC):
+    """Sequence-plus-context encoder feeding the owner's mixture head(s).
+
+    ``sequence_indices`` lists the steps oldest to newest, each a list of the
+    same width (the per-step channels); ``context_indices`` are plain columns
+    joined after the sequence summary. Together they partition the model
+    inputs (positions within ``feature_indices`` when it is set). A member
+    names its extra settings in ``_SETTINGS``, validates them in
+    ``_settings_ok`` and builds the torch module in ``_module``.
+    """
+
+    NAME = ""
+    _SETTINGS = ()
+
     def __init__(self, config):
-        required = {"kind", "sequence_indices", "context_indices", "hidden_size", "num_layers"}
-        if set(config) != required:
-            raise ValueError("invalid GRU encoder settings")
+        if set(config) != {"kind", "sequence_indices", "context_indices", *self._SETTINGS}:
+            raise ValueError(f"invalid {self.NAME} encoder settings")
         sequence, context = config["sequence_indices"], config["context_indices"]
         if (not isinstance(sequence, list) or not sequence
                 or any(not isinstance(row, list) or not row for row in sequence)
                 or len({len(row) for row in sequence}) != 1
                 or not isinstance(context, list)):
-            raise ValueError("invalid GRU sequence/context indices")
+            raise ValueError(f"invalid {self.NAME} sequence/context indices")
         flat = [v for row in sequence for v in row] + context
         if (any(type(v) is not int or v < 0 for v in flat)
                 or len(set(flat)) != len(flat)
-                or any(type(config[k]) is not int or config[k] < 1
-                       for k in ("hidden_size", "num_layers"))):
-            raise ValueError("invalid GRU dimensions or duplicate indices")
+                or not self._settings_ok(config)):
+            raise ValueError(f"invalid {self.NAME} dimensions or duplicate indices")
         self.config = config
 
+    @abstractmethod
+    def _settings_ok(self, config):
+        """Return whether the member's own settings are valid."""
+
+    @abstractmethod
+    def _module(self, owner, sequence, context):
+        """Return the torch module, before it is moved to the owner's device."""
+
     def build(self, owner, features):
-        import torch
         config = self.config
         sequence, context = config["sequence_indices"], config["context_indices"]
         flat = [v for row in sequence for v in row] + context
         if set(flat) != set(range(features)):
-            raise ValueError(f"GRU indices must partition the {features} model input "
+            raise ValueError(f"{self.NAME} indices must partition the {features} model input "
                              "features (positions within feature_indices when set)")
+        return self._module(owner, sequence, context).to(owner.device)
+
+
+class _CDFRecurrentEncoder(_CDFSequenceEncoder):
+    """Recurrent encoder: the last step's hidden state joins the context.
+
+    ``CELL`` names the ``torch.nn`` recurrent class; ``hidden_size`` and
+    ``num_layers`` are its width and depth.
+    """
+
+    CELL = ""
+    _SETTINGS = ("hidden_size", "num_layers")
+
+    def _settings_ok(self, config):
+        return all(type(config[k]) is int and config[k] >= 1 for k in self._SETTINGS)
+
+    def _module(self, owner, sequence, context):
+        import torch
+        config, cell = self.config, getattr(torch.nn, self.CELL)
+
         class Module(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.rnn = torch.nn.GRU(len(sequence[0]), config["hidden_size"],
-                                        config["num_layers"], batch_first=True)
+                self.rnn = cell(len(sequence[0]), config["hidden_size"],
+                                config["num_layers"], batch_first=True)
                 self.head = MixtureMLPCDF._build_module(
                     owner, config["hidden_size"] + len(context))
 
@@ -2878,7 +3168,101 @@ class _CDFGRUEncoder:
                 sequence_output, _ = self.rnn(x[:, sequence])
                 return self.head(torch.cat(
                     [sequence_output[:, -1], x[:, context]], dim=1))
-        return Module().to(owner.device)
+        return Module()
+
+
+class _CDFGRUEncoder(_CDFRecurrentEncoder):
+    NAME = CELL = "GRU"
+
+
+class _CDFLSTMEncoder(_CDFRecurrentEncoder):
+    NAME = CELL = "LSTM"
+
+
+class _CDFCNNEncoder(_CDFSequenceEncoder):
+    """Causal dilated 1-D convolution over the steps, pooled, joined with context.
+
+    ``channels`` filters per layer, one layer per entry of ``dilations``, each
+    left-padded by ``(kernel_size - 1) * dilation`` so a step sees only itself
+    and older steps; the owner's ``activation`` follows every layer.
+    ``pooling`` ``last`` keeps the newest step (receptive field
+    ``1 + (kernel_size - 1) * sum(dilations)`` steps), ``mean`` averages all.
+    """
+
+    NAME = "CNN"
+    _SETTINGS = ("channels", "kernel_size", "dilations", "pooling")
+    _POOLING = {"last": lambda h: h[:, :, -1], "mean": lambda h: h.mean(-1)}
+
+    def _settings_ok(self, config):
+        dilations = config["dilations"]
+        return (all(type(config[k]) is int and config[k] >= 1 for k in ("channels", "kernel_size"))
+                and isinstance(dilations, list) and bool(dilations)
+                and all(type(d) is int and d >= 1 for d in dilations)
+                and isinstance(config["pooling"], str) and config["pooling"] in self._POOLING)
+
+    def _module(self, owner, sequence, context):
+        import torch
+        config = self.config
+        kernel, dilations = config["kernel_size"], config["dilations"]
+        widths = [len(sequence[0])] + [config["channels"]]*len(dilations)
+        pool, activation = self._POOLING[config["pooling"]], owner._activation()
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.convs = torch.nn.ModuleList(
+                    torch.nn.Conv1d(a, b, kernel, dilation=d)
+                    for a, b, d in zip(widths, widths[1:], dilations))
+                self.activation = activation()
+                self.head = MixtureMLPCDF._build_module(owner, widths[-1] + len(context))
+
+            def forward(self, x):
+                h = x[:, sequence].transpose(1, 2)
+                for conv, d in zip(self.convs, dilations):
+                    h = self.activation(conv(torch.nn.functional.pad(h, ((kernel-1)*d, 0))))
+                return self.head(torch.cat([pool(h), x[:, context]], dim=1))
+        return Module()
+
+
+
+
+class _CDFExternalEncoder(_CDFSequenceEncoder):
+    """A public library adapter feeding the existing common mixture head."""
+
+    NAME = "external"
+    _SETTINGS = ("adapter",)
+
+    def _settings_ok(self, config):
+        from dskit.pipeline.libs.torch_ts import SequenceEncoderAdapter
+        spec = config["adapter"]
+        if (not isinstance(spec, dict) or set(spec) != {"class", "params"}
+                or not isinstance(spec["class"], str) or ":" not in spec["class"]
+                or not isinstance(spec["params"], dict)):
+            return False
+        module, name = spec["class"].split(":")
+        cls = getattr(importlib.import_module(module), name)
+        if not isinstance(cls, type) or not issubclass(cls, SequenceEncoderAdapter):
+            return False
+        self.adapter = cls(**spec["params"])
+        return True
+
+    def _module(self, owner, sequence, context):
+        import torch
+        encoder = self.adapter.build_module(len(sequence), len(sequence[0]))
+        width = self.adapter.output_width(len(sequence[0]))
+        head = MixtureMLPCDF._build_module(owner, width + len(context))
+
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder, self.head = encoder, head
+
+            def forward(self, x):
+                h = self.encoder(x[:, sequence])
+                if h.ndim != 2 or h.shape != (len(x), width):
+                    raise ValueError("external encoder violated row/width contract")
+                return self.head(torch.cat([h, x[:, context]], dim=1))
+        return Module()
 
 
 class _MixtureFamily(ABC):
@@ -2890,6 +3274,8 @@ class _MixtureFamily(ABC):
 
     KIND = ""
     _KEYS = frozenset({"kind"})
+    #: A component's variance divided by its squared scale.
+    variance_factor = 1.
 
     def __init__(self, config):
         if (not isinstance(config, dict) or set(config) != self._KEYS
@@ -2996,6 +3382,7 @@ class _StudentFamily(_MixtureFamily):
         if type(nu) is not int or nu < 3:
             raise ValueError("invalid CDF family settings")
         self.degrees = nu
+        self.variance_factor = nu/(nu-2)
         self._head = nu//2
         ratio = ((lambda k: (2*k-1)/(2*k)) if nu % 2 == 0
                  else (lambda k: 2*k/(2*k+1)))
@@ -3172,10 +3559,15 @@ class _CDFWingTwCRPS(_CDFLossTerm):
     def eligible(self, context):
         return context["density"].sum(1) > 0
 
+    def _segment_weights(self, density):
+        """Return each segment's weight: its normalized wing density."""
+        return density
+
     def values(self, y, logw, mu, sigma, context):
         import torch
         logw, mu, sigma = (a.to(y.dtype) for a in (logw, mu, sigma))
         lower, upper, density = (context[k].to(y.dtype) for k in self.context_keys)
+        density = self._segment_weights(density)
         x, g = _gauss_legendre(_QUADRATURE_NODES)
         nodes, weights = (torch.as_tensor(a, dtype=y.dtype, device=y.device) for a in (x, g))
         cut = torch.minimum(torch.maximum(y, lower), upper)
@@ -3197,64 +3589,47 @@ class _CDFWingTwCRPS(_CDFLossTerm):
         return total.index_add(0, row, density[row, segment]*piece), self.eligible(context)
 
 
-class TorchCDF(MixtureMLPCDF):
-    """Configurable encoder, family and composite proper scores for scalar CDFs.
+class _CDFTailCRPS(_CDFWingTwCRPS):
+    """Unit-weight twCRPS over the same intervals: the study's ``tail_crps``.
 
-    The loss is ``sum_g w_g * mean_over_all_rows(g) + sum_l w_l *
-    mean_over_eligible_rows(l)``: a global term (``nll`` or ``crps``) models
-    every date, a local term scores the dates that have decision structure and
-    never dilutes its weight on dates without it (minibatches are rescaled by
-    the full-training eligible fraction).
-
-    Parameters
-    ----------
-    encoder : dict
-        kind=mlp, or kind=gru with explicit oldest-to-newest sequence_indices,
-        disjoint context_indices, hidden_size and num_layers.
-    losses : list of dict
-        Unique ``{"kind", "weight"}`` terms, weight above zero, at least one
-        global (``nll``, ``crps``) and one local (``decision_brier``,
-        ``decision_log``, ``wing_twcrps``). ``wing_twcrps`` is the
-        indicator-weighted CRPS over the condor wings, read from each record's
-        ``intervals``.
-    family : dict or None
-        Absent means Gaussian components. ``{"kind": "student", "degrees": k}``
-        with integer ``k >= 3`` selects Student components; ``{"kind":
-        "gaussian"}`` names the default explicitly.
-    settings : dict
-        Existing mixture training and output-head settings. ``feature_indices``
-        (the base class's one rule; absent = every column) picks the encoder's
-        input columns, and GRU indices are then positions WITHIN that subset.
-        Task heads and the legacy left-tail penalty are deliberately refused.
-
-    Examples
-    --------
-    A plain encoder, a global CRPS term and the wing term, Student components::
-
-        model = TorchCDF(encoder={"kind": "mlp"},
-                         family={"kind": "student", "degrees": 5},
-                         losses=[{"kind": "crps", "weight": 1.0},
-                                 {"kind": "wing_twcrps", "weight": 0.5}],
-                         device="cpu")
+    Per row ``sum_s int_{lo_s}^{hi_s} (F(z) - 1{y <= z})**2 dz`` over each
+    record's merged wing segments, by the wing term's exact quadrature (the
+    wing term weights a segment by its normalized density instead). With no
+    study ``decision_context`` every record's intervals are the study's
+    ``tail_intervals``, so this is the per-row ``tail_crps`` metric (which
+    integrates each declared interval: the two differ only where intervals
+    overlap), and ``crps`` plus ``w`` times this term trains on the study's
+    ``weighted_crps`` at ``tail_weight = w`` (ADR-0236).
     """
 
-    _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder}
+    def _segment_weights(self, density):
+        """Return one per unit length on every non-empty segment."""
+        return (density > 0).to(density.dtype)
+
+
+class _CompositeLossCDF:
+    """The composite proper-score objective over a mixture family (ADR-0236).
+
+    The loss is ``sum_g w_g * mean_over_all_rows(g) + sum_l w_l *
+    mean_over_eligible_rows(l)`` over the configured ``losses`` terms, with
+    the component family's exact scores. ``TorchCDF`` (a network) and
+    ``BoostedTorchCDF`` (a booster) both inherit it, so the two minimize ONE
+    loss. The class it is mixed into supplies ``curve``, ``device`` and
+    ``batch_size``, and calls ``_set_composite`` from its constructor.
+    """
+
     _FAMILIES = {_GaussianFamily.KIND: _GaussianFamily,
                  _StudentFamily.KIND: _StudentFamily}
     _DEFAULT_FAMILY = _GaussianFamily.KIND
     _LOSSES = {"nll": _CDFNLL, "crps": _CDFCRPS, "decision_brier": _CDFDecisionBrier,
-               "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS}
+               "decision_log": _CDFDecisionLog, "wing_twcrps": _CDFWingTwCRPS,
+               "tail_crps": _CDFTailCRPS}
     _WING_KEYS = _CDFWingTwCRPS.context_keys
 
-    def __init__(self, encoder, losses, family=None, **settings):
+    def _set_composite(self, losses, family):
+        """Validate and bind the loss terms and the component family."""
         import copy
         import math
-        super().__init__(**settings)
-        if self.head_features or self.left_cdf_weight:
-            raise ValueError("TorchCDF refuses head_features and left_cdf_weight: "
-                             "it uses explicit encoder columns and composite losses")
-        if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
-            raise ValueError("unknown CDF encoder")
         if family is not None and (not isinstance(family, dict)
                                    or family.get("kind") not in self._FAMILIES):
             raise ValueError("unknown CDF family")
@@ -3268,22 +3643,15 @@ class TorchCDF(MixtureMLPCDF):
                 or {self._LOSSES[term["kind"]].scope for term in losses}
                 != {"global", "local"}):
             raise ValueError("invalid composite loss terms")
-        self.encoder_config, self.loss_config = copy.deepcopy(encoder), copy.deepcopy(losses)
+        self.loss_config = copy.deepcopy(losses)
         self.family_config = copy.deepcopy(family)
         self.family = self._FAMILIES[
             self._DEFAULT_FAMILY if family is None else family["kind"]](
             self.family_config or {"kind": self._DEFAULT_FAMILY})
         self._terms = [self._LOSSES[term["kind"]](self.family) for term in losses]
-        self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
 
     def _curve(self, weights, means, scales):
         return self.family.curve(weights, means, scales)
-
-    def _equivalence_settings(self):
-        settings = super()._equivalence_settings()
-        if self.family_config is not None:
-            settings["family"] = self.family_config
-        return settings
 
     def _context_arrays(self, scorer):
         """Return the numpy context arrays the configured terms read, refusing early."""
@@ -3300,12 +3668,32 @@ class TorchCDF(MixtureMLPCDF):
         self._context_arrays(self._cal_context)
         return self
 
+    def fit(self, x, y, cal_x, cal_y):
+        """Fit as the host estimator does, then drop the attached fit-time contexts.
+
+        The inventories (one record per training and calibration row, ~0.9 kB
+        each) are read only while fitting; a pooled study keeps every fold's
+        fitted model, so holding them grew memory with folds x candidates
+        (ADR-0236 amendment 2). A refit attaches them again first.
+
+        Parameters
+        ----------
+        x, y, cal_x, cal_y : array-like
+            As the host estimator's ``fit``.
+
+        Returns
+        -------
+        self
+            The fitted estimator.
+        """
+        try:
+            return super().fit(x, y, cal_x, cal_y)
+        finally:
+            self._fit_context = self._cal_context = None
+
     def _target_tensor(self, y):
         import torch
         return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
-
-    def _build_module(self, features):
-        return self.encoder.build(self, features)
 
     def _context_tensors(self, scorer, x, kind, rows):
         """Return one row set's context as tensors, refusing an unattached or empty one."""
@@ -3373,6 +3761,109 @@ class TorchCDF(MixtureMLPCDF):
                 "terms": terms, "n": len(y), "eligible_n": int((counts > 0).sum()),
                 "threshold_n": int(counts.sum())}
 
+
+class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
+    """Configurable encoder, family and composite proper scores for scalar CDFs.
+
+    The loss is ``_CompositeLossCDF``'s: ``sum_g w_g * mean_over_all_rows(g) +
+    sum_l w_l * mean_over_eligible_rows(l)``: a global term (``nll`` or
+    ``crps``) models every date, a local term scores the dates that have
+    decision structure and never dilutes its weight on dates without it
+    (minibatches are rescaled by the full-training eligible fraction).
+
+    Parameters
+    ----------
+    encoder : dict
+        kind=mlp; kind=gru or kind=lstm with explicit oldest-to-newest
+        sequence_indices, disjoint context_indices, hidden_size and num_layers;
+        or kind=cnn with the same indices plus channels, kernel_size,
+        dilations (one causal layer each) and pooling (``last`` or ``mean``).
+    losses : list of dict
+        Unique ``{"kind", "weight"}`` terms, weight above zero, at least one
+        global (``nll``, ``crps``) and one local (``decision_brier``,
+        ``decision_log``, ``wing_twcrps``, ``tail_crps``). ``wing_twcrps`` is
+        the indicator-weighted CRPS over the condor wings, read from each
+        record's ``intervals`` with normalized density; ``tail_crps`` is the
+        same integral at unit weight, the study's ``tail_crps`` metric.
+    family : dict or None
+        Absent means Gaussian components. ``{"kind": "student", "degrees": k}``
+        with integer ``k >= 3`` selects Student components; ``{"kind":
+        "gaussian"}`` names the default explicitly.
+    settings : dict
+        Existing mixture training and output-head settings. ``feature_indices``
+        (the base class's one rule; absent = every column) picks the encoder's
+        input columns, and sequence indices are then positions WITHIN that
+        subset. ``head_features`` (one-hot task positions, which must be
+        excluded from ``feature_indices``) gives one mixture head per task over
+        the shared encoder. The legacy left-tail penalty is refused.
+
+    Examples
+    --------
+    A plain encoder, a global CRPS term and the wing term, Student components::
+
+        model = TorchCDF(encoder={"kind": "mlp"},
+                         family={"kind": "student", "degrees": 5},
+                         losses=[{"kind": "crps", "weight": 1.0},
+                                 {"kind": "wing_twcrps", "weight": 0.5}],
+                         device="cpu")
+    """
+
+    _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder, "lstm": _CDFLSTMEncoder,
+                 "cnn": _CDFCNNEncoder, "external": _CDFExternalEncoder}
+
+    def __init__(self, encoder, losses, family=None, **settings):
+        import copy
+        super().__init__(**settings)
+        if self.left_cdf_weight:
+            raise ValueError("TorchCDF refuses left_cdf_weight: it trains on composite losses")
+        self._refuse_head_inputs()
+        if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
+            raise ValueError("unknown CDF encoder")
+        self._set_composite(losses, family)
+        self.encoder_config = copy.deepcopy(encoder)
+        self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
+
+    @classmethod
+    def _check_checkpoint_support(cls):
+        if cls is not TorchCDF:
+            raise ValueError("checkpoint serialization unsupported for "+cls.__name__)
+
+    def _checkpoint_settings(self):
+        return {**self._equivalence_settings(), "encoder": self.encoder_config,
+                "losses": self.loss_config}
+
+    def validate_encoder(self, features):
+        """Check a sequence encoder; MLP has no sequence and is refused."""
+        if not {"sequence_indices", "context_indices"} <= set(self.encoder_config):
+            raise ValueError("validation requires an explicit sequence encoder layout")
+        import torch
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(271)
+            module = self._build_module(features).eval()
+            x = torch.randn(3, features, device=self.device, requires_grad=True)
+            out = module(x)
+            for actual in (module(x), torch.cat([module(x[i:i+1]) for i in range(3)])):
+                torch.testing.assert_close(out, actual, atol=1e-5, rtol=1e-5)
+            module.train()
+            module(x).square().sum().backward()
+            if not torch.isfinite(out).all() or not torch.isfinite(x.grad).all():
+                raise ValueError("nonfinite adapter output/gradient")
+            sequence = [i for row in self.encoder_config["sequence_indices"] for i in row]
+            context = self.encoder_config["context_indices"]
+            if x.grad[:, sequence[:max(1, len(sequence)//4)]].abs().sum() == 0:
+                raise ValueError("old sequence inputs have no gradient")
+            if context and x.grad[:, context].abs().sum() == 0:
+                raise ValueError("context inputs have no gradient")
+
+    def _equivalence_settings(self):
+        settings = super()._equivalence_settings()
+        if self.family_config is not None:
+            settings["family"] = self.family_config
+        return settings
+
+    def _build_module(self, features):
+        return self.encoder.build(self, features)
+
     def _research_state(self):
         import torch
         state = {"encoder": self.encoder_config, "losses": self.loss_config,
@@ -3383,9 +3874,401 @@ class TorchCDF(MixtureMLPCDF):
                                                if self.device.startswith("cuda") else 0)}
         if self.family_config is not None:
             state["family"] = self.family_config
+        if self.head_features:
+            state["head_features"] = list(self.head_features)
         if self.patience is not None:
             state.update(patience=self.patience, best_epoch_by_seed=self.best_epochs,
                          monitor_loss_by_seed=self.monitor_losses)
+        return state
+
+
+class BoostedTorchCDF(_CompositeLossCDF, _MixtureParameterCDF):
+    """LightGBM boosting of the mixture parameters on TorchCDF's composite loss.
+
+    One booster with ``3 * components`` outputs per row (LightGBM's
+    multi-output custom objective, ``num_class = 3 * components``) learns the
+    raw logits, means and scales that TorchCDF's transform maps to the
+    mixture, so its curve is the same type and the study scores it the same
+    way. Each round the custom objective returns, by torch autograd, the
+    gradient of the composite loss summed over rows (the same ``losses`` and
+    ``family`` as TorchCDF) and, with ``hessian="exact"``, its EXACT Hessian
+    diagonal: rows are independent, so one second backward pass per output
+    column yields every row's own second derivatives. Mixture losses are not
+    convex, so a diagonal entry can be zero or negative; it is floored at
+    ``hessian_floor`` before LightGBM's Newton leaf step. ``hessian="constant"``
+    returns unit Hessians instead: first-order boosting of the same loss (a
+    leaf moves by ``learning_rate`` times its mean negative gradient, before
+    ``lambda_l2``), several times cheaper per round because the second
+    backward passes dominate the exact cost.
+
+    Rounds start from one constant row: equal weights, means at the
+    ``components`` midpoint quantiles of the training outcomes and a common
+    scale that makes the mixture variance equal theirs. Declared task heads
+    (``head_features``) collapse to ONE integer column that LightGBM splits as
+    a native categorical, the booster's per-task analogue of TorchCDF's heads.
+
+    Parameters
+    ----------
+    losses, family : list of dict, dict or None
+        TorchCDF's composite terms and component family, same validation.
+    components : int
+        Mixture components (>= 1).
+    n_estimators : int
+        Boosting rounds: exactly this many without ``patience``, else the ceiling.
+    num_leaves, min_data_in_leaf : int
+        Leaves per tree (>= 2) and training rows per leaf (>= 1).
+    learning_rate, feature_fraction, lambda_l2 : float
+        Shrinkage (> 0), column fraction per tree in (0, 1], L2 leaf penalty (>= 0).
+    seed, num_threads : int
+        LightGBM seed (>= 0) and threads (>= 1). LightGBM runs deterministic
+        and column-wise; a result is pinned for one thread count.
+    hessian : str
+        ``exact`` (default, the floored second-derivative diagonal) or
+        ``constant`` (unit Hessians, first-order steps).
+    hessian_floor : float
+        Positive floor on the exact Hessian diagonal (unused by ``constant``).
+    min_scale : float
+        Positive component-scale floor of the parameter transform.
+    batch_size : int
+        Rows per torch loss evaluation; memory only, rows are independent.
+    device : str
+        ``cpu`` or ``cuda[:n]`` for the torch loss; LightGBM runs on CPU.
+    deterministic : bool
+        Torch deterministic algorithms for the loss (CUDA also needs
+        ``CUBLAS_WORKSPACE_CONFIG`` set before launch).
+    patience : int or None
+        As MixtureMLPCDF's: absent trains ``n_estimators`` rounds; an integer
+        scores the composite on the calibration rows after every round, keeps
+        the best round and stops after ``patience`` rounds without a strict
+        improvement; reaching ``n_estimators`` first raises.
+    head_features, feature_indices : list of int or None
+        One-hot task positions (excluded from ``feature_indices``) and the
+        plain input columns (absent = every column, only without heads).
+    max_bin : int
+        Histogram bins per plain column (>= 2, LightGBM's default 255). The
+        task column always gets one bin per training task; binning reads
+        every training row (no sampling).
+
+    Examples
+    --------
+    The weighted CRPS at unit tail weight, early-stopped on calibration rows::
+
+        model = BoostedTorchCDF(losses=[{"kind": "crps", "weight": 1.0},
+                                        {"kind": "tail_crps", "weight": 1.0}],
+                                components=3, n_estimators=400, patience=20)
+    """
+
+    #: Each ``hessian`` mode and the derivative order its objective computes.
+    _HESSIAN_ORDERS = {"exact": 2, "constant": 1}
+
+    def __init__(self, losses, family=None, components=3, n_estimators=500, num_leaves=15,
+                 min_data_in_leaf=100, learning_rate=.05, feature_fraction=1., lambda_l2=1.,
+                 seed=0, num_threads=1, hessian_floor=1e-6, min_scale=_MIN_SCALE,
+                 batch_size=4096, device="cpu", deterministic=False, patience=None,
+                 head_features=None, feature_indices=None, max_bin=255, hessian="exact"):
+        counts = ((n_estimators, 1), (num_leaves, 2), (min_data_in_leaf, 1),
+                  (seed, 0), (num_threads, 1), (max_bin, 2))
+        rates = (feature_fraction, lambda_l2, hessian_floor)
+        if (any(type(v) is not int or v < low for v, low in counts)
+                or not self._shared_settings_ok(components, batch_size, learning_rate, min_scale,
+                                                deterministic)
+                or not all(self._finite(v) for v in rates)
+                or hessian_floor <= 0 or lambda_l2 < 0
+                or not 0 < feature_fraction <= 1
+                or not isinstance(device, str)
+                or not (device == "cpu" or device.startswith("cuda"))
+                or not isinstance(hessian, str) or hessian not in self._HESSIAN_ORDERS):
+            raise ValueError("invalid boosted CDF parameters")
+        self.hessian = hessian
+        self.patience = self._checked_patience(patience)
+        self.head_features = self._checked_heads(head_features)
+        self.feature_indices = self._checked_indices(feature_indices)
+        self._refuse_head_inputs()
+        self._set_composite(losses, family)
+        self.components, self.n_estimators, self.num_leaves = components, n_estimators, num_leaves
+        self.min_data_in_leaf, self.learning_rate = min_data_in_leaf, float(learning_rate)
+        self.feature_fraction, self.lambda_l2 = float(feature_fraction), float(lambda_l2)
+        self.seed, self.num_threads = seed, num_threads
+        self.hessian_floor, self.min_scale = float(hessian_floor), float(min_scale)
+        self.batch_size, self.device, self.deterministic = batch_size, device, deterministic
+        self.max_bin = max_bin
+
+    def _booster_params(self):
+        """Return LightGBM's parameters: the knobs plus the forced custom-objective ones."""
+        return {"objective": "none", "num_class": 3*self.components, "metric": "None",
+                "num_leaves": self.num_leaves, "min_data_in_leaf": self.min_data_in_leaf,
+                "learning_rate": self.learning_rate, "feature_fraction": self.feature_fraction,
+                "lambda_l2": self.lambda_l2, "seed": self.seed, "num_threads": self.num_threads,
+                "deterministic": True, "force_col_wise": True, "verbosity": -1}
+
+    def _design(self, x, heads):
+        """Return the booster input: the plain columns, then the task code under heads."""
+        import numpy as np
+        features = np.asarray(self._features(x), dtype=float)
+        return np.column_stack([features, heads]) if self.head_features else features
+
+    def _dataset_params(self, design):
+        """Return the parameters every dataset of a fit on ``design`` shares.
+
+        A dataset's construction (binning, the ``min_data_in_leaf`` feature
+        pre-filter) reads only its own parameters, never the booster's. Binning
+        samples every row (plus the task reference's one missing-task row), and
+        all datasets carry the same values, so none overrides its reference.
+        """
+        rows = len(design) + bool(self.head_features)
+        params = {**self._booster_params(), "bin_construct_sample_cnt": rows}
+        if not self.head_features:
+            return {**params, "max_bin": self.max_bin}
+        tasks = len(self.head_features)+1  # every task plus the missing-value bin
+        return {**params, "max_bin_by_feature": [self.max_bin]*(design.shape[1]-1) + [
+            max(self.max_bin, tasks)]}
+
+    def _task_bins(self, design, params):
+        """Return a binning reference that gives every training task its own bin.
+
+        LightGBM bins a categorical column into a missing-value bin plus at
+        most ``min(distinct values, max_bin)`` categories, dropping the rarest
+        once the rest cover 99% of the rows; with no missing value present the
+        rarest task would silently share the unseen bin. One extra row with a
+        missing task code lifts that cap. A task with fewer rows than LightGBM's
+        ``min_data_in_bin`` (default 3) is still dropped, and refused here. A
+        column LightGBM pre-filters as unsplittable (zero bins: one task, or
+        no split ``min_data_in_leaf`` allows) loses nothing and is accepted.
+        """
+        import lightgbm
+        import numpy as np
+        missing = design[:1].copy()
+        missing[0, -1] = np.nan
+        binning = lightgbm.Dataset(
+            np.vstack([design, missing]), categorical_feature=[design.shape[1]-1],
+            free_raw_data=False, params=params).construct()
+        bins = binning.feature_num_bin(design.shape[1]-1)
+        if bins and bins != len(self.seen_heads)+1:
+            raise ValueError(
+                f"LightGBM binned {bins-1} of {len(self.seen_heads)} training tasks: every "
+                "task needs at least min_data_in_bin (default 3) training rows")
+        return binning
+
+    def _dataset(self, design, y, reference, params):
+        """Return a LightGBM dataset starting every row at the constant start."""
+        import lightgbm
+        import numpy as np
+        return lightgbm.Dataset(
+            design, label=y, init_score=np.tile(self.start, (len(design), 1)),
+            categorical_feature=[design.shape[1]-1] if self.head_features else "auto",
+            reference=reference, free_raw_data=False, params=params)
+
+    def _moment_start(self, y):
+        """Return the constant raw start row: quantile means, variance-matched scale."""
+        import numpy as np
+        k = self.components
+        means = np.quantile(y, (np.arange(k)+.5)/k)
+        scale = np.sqrt(max(y.var()-means.var(), 0.)/self.family.variance_factor)
+        if not scale > self.min_scale:
+            raise ValueError(f"training outcomes too concentrated: the start scale {scale:.4g} "
+                             f"does not exceed min_scale {self.min_scale}")
+        return np.concatenate([np.zeros(k), means,
+                               np.full(k, np.log(np.expm1(scale-self.min_scale)))])
+
+    @staticmethod
+    def _derivatives(loss, theta, order):
+        """Return the gradient and, at ``order`` 2, the exact Hessian diagonal (else None)."""
+        import torch
+        (gradient,) = torch.autograd.grad(loss, theta, create_graph=order == 2)
+        if order < 2:
+            return gradient.detach().cpu().numpy(), None
+        diagonal = []
+        for j in range(theta.shape[1]):
+            column = gradient[:, j].sum()
+            second = (torch.autograd.grad(column, theta, retain_graph=True, allow_unused=True)[0]
+                      if column.requires_grad else None)
+            diagonal.append(torch.zeros_like(theta[:, j]) if second is None else second[:, j])
+        return (gradient.detach().cpu().numpy(),
+                torch.stack(diagonal, 1).detach().cpu().numpy())
+
+    def _raw_composite(self, raw, y, context, order):
+        """Return the composite summed over rows at raw outputs, with derivatives to ``order``.
+
+        Parameters
+        ----------
+        raw : ndarray
+            (rows, 3 * components) raw outputs, start included.
+        y : Tensor
+            The rows' outcomes, from ``_target_tensor``.
+        context : dict
+            The rows' full context tensors (training or calibration).
+        order : int
+            0: the value only; 1: also the gradient; 2: also the exact Hessian
+            diagonal.
+
+        Returns
+        -------
+        tuple
+            ``(total, gradient, hessian)``: rows times the composite mean, and
+            arrays shaped like ``raw`` (None beyond ``order``).
+        """
+        import numpy as np
+        import torch
+        raw = np.asarray(raw, dtype=float)
+        total, gradients, hessians = 0., [], []
+        for start in range(0, len(raw), self.batch_size):
+            stop = min(start+self.batch_size, len(raw))
+            ix = torch.arange(start, stop, device=self.device)
+            theta = torch.tensor(raw[start:stop], dtype=torch.float64, device=self.device,
+                                 requires_grad=order > 0)
+            with torch.set_grad_enabled(order > 0):
+                logw, mu, sigma = self._parts(theta)
+                # A chunk's composite times its rows is its exact share of the sum.
+                loss = self._objective_loss(y[ix], logw, mu, sigma, ix, context)*(stop-start)
+            total += loss.item()
+            if order:
+                gradient, hessian = self._derivatives(loss, theta, order)
+                gradients.append(gradient)
+                hessians.append(hessian)
+        return (total, np.concatenate(gradients) if order else None,
+                np.concatenate(hessians) if order == 2 else None)
+
+    def _boosting_step(self, preds, y, context):
+        """Return one round's (grad, hess) for ``hessian`` and record the training composite."""
+        import numpy as np
+        total, gradient, hessian = self._raw_composite(
+            preds, y, context, self._HESSIAN_ORDERS[self.hessian])
+        hessian = np.ones_like(gradient) if hessian is None else np.maximum(
+            hessian, self.hessian_floor)
+        if not (np.isfinite(gradient).all() and np.isfinite(hessian).all()):
+            raise ValueError("nonfinite boosted CDF gradient")
+        self.losses.append(total/len(gradient))
+        return gradient, hessian
+
+    def _monitor_round(self, booster, monitor):
+        """Return the composite mean on the calibration rows after this round."""
+        (result,) = booster.eval_valid(feval=lambda preds, _: (
+            "composite", self._raw_composite(preds, *monitor, 0)[0]/len(preds), False))
+        return result[2]
+
+    def _boost(self, booster, target, context):
+        """Run one round; return True once LightGBM can add no further split."""
+        import lightgbm
+        try:
+            return booster.update(fobj=lambda preds, _: self._boosting_step(
+                preds, target, context))
+        except lightgbm.basic.LightGBMError as err:
+            raise ValueError(f"LightGBM refused the boosted CDF fit (no usable feature, or "
+                             f"too few rows for min_data_in_leaf): {err}") from err
+
+    def _fit(self, x, y, cal_x, cal_y):
+        import lightgbm
+        import numpy as np
+        self._validate_x(cal_x)
+        self._features(cal_x)
+        y = np.asarray(y, dtype=float)
+        heads = self._heads(x)
+        self.seen_heads = set(heads)
+        target, context = self._target_tensor(y), self._training_context(x)
+        self.start = self._moment_start(y)
+        design = self._design(x, heads)
+        params = self._dataset_params(design)
+        reference = self._task_bins(design, params) if self.head_features else None
+        train = self._dataset(design, y, reference, params)
+        booster = lightgbm.Booster(params=self._booster_params(), train_set=train)
+        stop = monitor = None
+        if self.patience is not None:
+            cal_heads = self._heads(cal_x)
+            if not set(cal_heads).issubset(self.seen_heads):
+                raise ValueError("unseen head in the calibration rows")
+            cal_y = np.asarray(cal_y, dtype=float)
+            booster.add_valid(self._dataset(self._design(cal_x, cal_heads), cal_y, train,
+                                            params), "calibration")
+            monitor = (self._target_tensor(cal_y), self._monitor_context(cal_x))
+            stop = _RoundPatienceStop(self.patience)
+        self.losses, self.no_split_left, self.patience_exhausted = [], False, False
+        for _ in range(self.n_estimators):
+            if self._boost(booster, target, context):
+                # LightGBM keeps no tree from a round with no split left, and the
+                # monitored loss can no longer change: drop the round and stop.
+                self.losses.pop()
+                self.no_split_left = True
+                break
+            if stop is not None and stop.exhausted(self._monitor_round(booster, monitor), None):
+                self.patience_exhausted = True
+                break
+        else:
+            if stop is not None:
+                raise ValueError(
+                    f"patience {self.patience} was not exhausted within n_estimators "
+                    f"{self.n_estimators}: the monitored loss may still be improving; "
+                    "raise n_estimators, the ceiling")
+        self.rounds = (stop.best_epoch if stop is not None and stop.history
+                       else booster.current_iteration())
+        self.monitor_losses = [] if stop is None else stop.history
+        self.booster_text = booster.model_to_string(num_iteration=self.rounds)
+        self.booster = lightgbm.Booster(model_str=self.booster_text)
+        return self
+
+    def curve(self, x):
+        """Map the booster's raw outputs plus the start to the family's mixture.
+
+        Parameters
+        ----------
+        x : array-like
+            Feature rows, task columns included when heads are declared.
+
+        Returns
+        -------
+        MixtureCurve or StudentMixtureCurve
+            One mixture per row, ``components`` terms.
+        """
+        import numpy as np
+        import torch
+        heads = self._heads(x)
+        if not set(heads).issubset(self.seen_heads):
+            raise ValueError("unseen head requested")
+        raw = self.booster.predict(self._design(x, heads), raw_score=True)
+        raw = np.asarray(raw, dtype=float).reshape(len(heads), -1) + self.start
+        with torch.no_grad():
+            logw, mu, sigma = self._parts(torch.as_tensor(raw, dtype=torch.float64))
+        return self._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+
+    def _equivalence_settings(self):
+        """Return the settings the equivalence digest covers."""
+        settings = {"components": self.components, "losses": self.loss_config,
+                    "n_estimators": self.n_estimators, "num_leaves": self.num_leaves,
+                    "min_data_in_leaf": self.min_data_in_leaf,
+                    "learning_rate": self.learning_rate,
+                    "feature_fraction": self.feature_fraction, "lambda_l2": self.lambda_l2,
+                    "seed": self.seed, "num_threads": self.num_threads,
+                    "hessian": self.hessian, "hessian_floor": self.hessian_floor,
+                    "min_scale": self.min_scale, "max_bin": self.max_bin,
+                    "batch_size": self.batch_size, "device": self.device,
+                    "deterministic": self.deterministic, "head_features": self.head_features}
+        optional = {"family": self.family_config, "feature_indices": self.feature_indices,
+                    "patience": self.patience}
+        settings.update({k: v for k, v in optional.items() if v is not None})
+        return settings
+
+    def _equivalence_state(self):
+        """Digest the settings, the constant start and the fitted text model."""
+        import numpy as np
+        digest = hashlib.sha256()
+        digest.update(json.dumps(self._equivalence_settings(), sort_keys=True).encode())
+        digest.update(np.asarray(self.start, dtype="<f8").tobytes())
+        digest.update(self.booster_text.encode())
+        return digest.hexdigest()
+
+    def _research_state(self):
+        # training_composite_by_round[r] is the composite ENTERING round r+1
+        # (its objective call); monitor_loss_by_round[r] is scored AFTER it.
+        state = {"losses": self.loss_config, "training_composite_by_round": self.losses,
+                 "rounds_run": len(self.losses), "best_round": self.rounds,
+                 "stopped_by_patience": self.patience_exhausted,
+                 "no_split_left": self.no_split_left,
+                 "start": [float(v) for v in self.start]}
+        if self.family_config is not None:
+            state["family"] = self.family_config
+        if self.head_features:
+            state["head_features"] = list(self.head_features)
+        if self.patience is not None:
+            state.update(patience=self.patience, monitor_loss_by_round=self.monitor_losses)
         return state
 
 
@@ -3525,7 +4408,15 @@ class SetMixtureCDF(MixtureMLPCDF):
         settings.pop("head_features", None)
         if settings.get("patience") is not None:
             raise ValueError("SetMixtureCDF trains its own loop: patience is unsupported")
+        if (settings.get("max_parameters") is not None
+                or settings.get("mask_constant_features", False) is not False
+                or settings.get("training_telemetry", False) is not False):
+            raise ValueError("mixture-loop controls are unsupported by SetMixtureCDF")
         super().__init__(feature_indices=None, head_features=None, **settings)
+
+    def parameter_count(self, features):
+        """Refuse the dense-loop counter: this encoder builds a different module."""
+        raise ValueError("mixture-loop parameter counting is unsupported by SetMixtureCDF")
 
     def _validate_x(self, x):
         import numpy as np
@@ -3944,12 +4835,36 @@ class _SplitPlan(ABC):
     ``column`` names the score column that carries the split id. The study
     asks the plan for every split-shaped fact (ids, bands, the rows a split
     evaluates), so a new grammar is a subclass, never a branch in the study.
+
+    Task admission (ADR-0236 amendment, owner option B) is every grammar's,
+    once a study declares ``min_task_fit_rows`` (``admits``): a group WAITS in
+    a split while its fit band holds fewer rows, and sits the split out: its
+    fit, calibration and evaluation rows are dropped for every model alike
+    (a head fitted on a few rows would never be scored). ``min_task_cal_rows``
+    (optional beside it, ADR-0236 amendment 3) also makes a group wait while
+    its calibration band holds fewer rows: a per-group fit that early-stops on
+    its own calibration rows cannot fit without them. An admitted group
+    with no evaluation row has nothing to score in that split. Undeclared,
+    the study keeps its old rule: every group needs rows in every band of
+    every split.
     """
 
     column = ""
+    #: The three band names, in ``bands`` order, as the admission ledger counts them.
+    BANDS = ("fit", "calibration", "evaluation")
 
     def __init__(self, config):
-        self.date, self.end = config["date"], config["end"]
+        self.date, self.end, self.group = config["date"], config["end"], config["group"]
+        self.admits = "min_task_fit_rows" in config
+        self.min_task_fit_rows = config.get("min_task_fit_rows", _DEFAULT_MIN_TASK_FIT_ROWS)
+        if type(self.min_task_fit_rows) is not int or self.min_task_fit_rows < 1:
+            raise ValueError("min_task_fit_rows must be an integer >= 1")
+        self.min_task_cal_rows = config.get("min_task_cal_rows", 0)
+        if "min_task_cal_rows" in config and (
+                not self.admits or type(self.min_task_cal_rows) is not int
+                or self.min_task_cal_rows < 1):
+            raise ValueError("min_task_cal_rows must be an integer >= 1, declared beside "
+                             "min_task_fit_rows")
 
     @abstractmethod
     def ids(self):
@@ -3960,8 +4875,85 @@ class _SplitPlan(ABC):
         """Return the (fit, calibration, evaluation) rows of one split of ``frame``."""
 
     @abstractmethod
+    def evaluation(self, frame, split):
+        """Return the evaluation rows of one split of ``frame``, before admission."""
+
+    def band_counts(self, frame, split, calendar):
+        """Return each group's row count in each band of one split.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            The run's rows; only the group, date and end columns are read.
+        split : int
+            One split id.
+        calendar : list or None
+            The run's calendar (see :meth:`calendar`).
+
+        Returns
+        -------
+        DataFrame
+            One row per group of ``frame`` (zeros where it has no row in the
+            split), one int column per :attr:`BANDS` name, sorted by group.
+        """
+        import pandas as pd
+        narrow = frame[list(dict.fromkeys([self.group, self.date, self.end]))]
+        counts = pd.DataFrame({name: band[self.group].value_counts() for name, band in
+                               zip(self.BANDS, self.bands(narrow, split, calendar))},
+                              columns=list(self.BANDS))
+        groups = sorted(pd.unique(narrow[self.group]))
+        return counts.reindex(groups).fillna(0).astype(int)
+
+    def waiting(self, counts):
+        """Return the groups of :meth:`band_counts` whose fit or calibration band is below its minimum."""
+        return set(counts.index[(counts["fit"] < self.min_task_fit_rows)
+                                | (counts["calibration"] < self.min_task_cal_rows)])
+
+    def evaluated(self, counts):
+        """Return the groups a split scores: admitted, with an evaluation row (the one rule)."""
+        return set(counts.index[counts["evaluation"] > 0]) - self.waiting(counts)
+
+    def admission(self, counts, split):
+        """Return the ledger rows of the groups one split does not evaluate.
+
+        Parameters
+        ----------
+        counts : DataFrame
+            :meth:`band_counts` of the split.
+        split : int
+            The split id the rows name.
+
+        Returns
+        -------
+        list of dict
+            Per group of the frame, in group order: ``reason`` (``waiting``: fit
+            band below ``min_task_fit_rows`` or calibration band below
+            ``min_task_cal_rows``, every band's rows dropped, none
+            when it has no row in the split; ``no_evaluation_rows``: admitted,
+            nothing to score), the three band counts and the rows dropped from
+            each.
+        """
+        rows, waiting, evaluated = [], self.waiting(counts), self.evaluated(counts)
+        for group, n in counts.iterrows():
+            if group in evaluated:
+                continue
+            dropped = group in waiting
+            rows.append({"group": group, self.column: split,
+                         "reason": "waiting" if dropped else "no_evaluation_rows",
+                         **{f"{band}_rows": int(n[band]) for band in self.BANDS},
+                         **{f"dropped_{band}_rows": int(n[band]) if dropped else 0
+                            for band in self.BANDS}})
+        return rows
+
     def expected(self, frame, ids):
-        """Return the rows the splits ``ids`` evaluate."""
+        """Return the rows the splits ``ids`` evaluate: every admitted group's evaluation rows."""
+        import pandas as pd
+        calendar, parts = self.calendar(frame), []
+        for split in ids:
+            rows = self.evaluation(frame, split)
+            scored = self.evaluated(self.band_counts(frame, split, calendar))
+            parts.append(rows[rows[self.group].isin(scored)])
+        return pd.concat(parts)
 
     @abstractmethod
     def assigned(self, dates):
@@ -3994,8 +4986,8 @@ class _YearPlan(_SplitPlan):
     def bands(self, frame, split, calendar):
         return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)
 
-    def expected(self, frame, ids):
-        return frame[frame[self.date].str[:4].astype(int).isin(ids)]
+    def evaluation(self, frame, split):
+        return ChronologicalCDFStudy._split_validated(frame, split, self.date, self.end)[2]
 
     def assigned(self, dates):
         return dates.str[:4].astype(int)
@@ -4088,9 +5080,9 @@ class _FoldPlan(_SplitPlan):
     def calendar(self, frame):
         return sorted(frame[self.date].unique())
 
-    def _val(self, frame, fold):
+    def evaluation(self, frame, split):
         """Return a fold's evaluation rows, warm-up ones cut at the scored seam."""
-        date = frame[self.date]
+        fold, date = self.folds[split], frame[self.date]
         rows = (date >= fold["val_start"]) & (date <= fold["val_end"])
         if fold["role"] == "warmup":
             rows &= ~label_reaches(frame[self.end], self.scored_start)
@@ -4104,11 +5096,7 @@ class _FoldPlan(_SplitPlan):
         train = (date >= fold["train_start"]) & (date <= fold["train_end"])
         return (frame[train & (date < start) & ~label_reaches(end, start)],
                 frame[train & (date >= start) & ~label_reaches(end, fold["val_start"])],
-                self._val(frame, fold))
-
-    def expected(self, frame, ids):
-        import pandas as pd
-        return pd.concat([self._val(frame, self.folds[i]) for i in ids])
+                self.evaluation(frame, split))
 
     def assigned(self, dates):
         import pandas as pd
@@ -4156,13 +5144,25 @@ class ChronologicalCDFStudy:
             "calibration_knots", "development_end", "bootstrap", "reference_model",
             "comparison_references", "identity", "series_identity", "tail_probabilities",
             "decision_context", "frozen_variants", "promotion_guard", "decision_acceptance",
-            "wing_metrics", "fold_table", "notes"}
+            "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows",
+            "min_task_cal_rows", "notes"}
+    #: The per-row ``crps + tail_weight * tail_crps`` column, scored (and the
+    #: development selection and paired intervals extended to it) only when
+    #: ``tail_weight`` is declared (ADR-0236).
+    WEIGHTED_METRIC = "weighted_crps"
+    #: The task-admission ledger every run writes beside ``counts.json`` (ADR-0236 amendment).
+    ADMISSION_FILE = "admission.json"
+    #: The environment variable naming how many processes fit groups at once (ADR-0236
+    #: amendment 3); unset means 1, the in-process loop. A machine's width, never a
+    #: document's (ADR-0093): a graded knob would move the study identity when tuned.
+    GROUP_WORKERS_ENV = "DSKIT_GROUP_WORKERS"
 
     def __init__(self, config):
         unknown = set(config)-self.KEYS
         optional = {"notes", "tail_probabilities", "decision_context",
                     "frozen_variants", "promotion_guard", "decision_acceptance",
-                    "wing_metrics", "fold_table"}
+                    "wing_metrics", "fold_table", "tail_weight", "min_task_fit_rows",
+                    "min_task_cal_rows"}
         folds = "fold_table" in config
         year_keys = {"years", "development_end"}
         missing = self.KEYS-optional-set(config)-(year_keys if folds else set())
@@ -4175,19 +5175,21 @@ class ChronologicalCDFStudy:
                                          or (config["wing_metrics"]
                                              and not config.get("decision_context"))):
             raise ValueError("wing metrics must be a bool and need a decision context")
+        if "tail_weight" in config:
+            import math
+            weight = config["tail_weight"]
+            if type(weight) not in (int, float) or not math.isfinite(weight) or weight <= 0:
+                raise ValueError("tail_weight must be a finite number above zero")
+            self._pin_tail_weight(config)
         for spec in config["models"].values():
             if (set(spec)-{"class", "params", "calibrate", "pooled", "equivalence", "notes"}
                     or not {"class", "params", "calibrate"}.issubset(spec)
-                    or type(spec.get("pooled", False)) is not bool
+                    or type(self._pooled(spec)) is not bool
                     or ("equivalence" in spec and (not isinstance(spec["equivalence"], str)
                                                    or not spec["equivalence"]))):
                 raise ValueError("invalid model specification keys or pooled flag")
-            if spec["calibrate"]:
-                module, cls = spec["class"].split(":")
-                estimator = getattr(importlib.import_module(module), cls)
-                if (getattr(estimator, "consumes_calibration_labels", False)
-                        or spec["params"].get("patience") is not None):
-                    raise ValueError("estimator consumes calibration labels; second map refused")
+            if spec["calibrate"] and self._consumes_calibration(spec):
+                raise ValueError("estimator consumes calibration labels; second map refused")
         frozen = config.get("frozen_variants")
         if (frozen is not None
                 and (set(frozen) != set(config["models"])
@@ -4241,6 +5243,106 @@ class ChronologicalCDFStudy:
     def to_obj(self):
         """Return the JSON configuration for the canonical identity owner."""
         return self.config
+
+    @staticmethod
+    def _estimator(spec):
+        """Return the estimator class a model spec names."""
+        module, cls = spec["class"].split(":")
+        return getattr(importlib.import_module(module), cls)
+
+    @staticmethod
+    def _pooled(spec):
+        """Say whether a model spec fits once over every group (``pooled``, default False)."""
+        return spec.get("pooled", False)
+
+    @classmethod
+    def _consumes_calibration(cls, spec):
+        """Say whether a model's fit reads its calibration rows' labels (a monitor or a map)."""
+        return bool(getattr(cls._estimator(spec), "consumes_calibration_labels", False)
+                    or spec["params"].get("patience") is not None)
+
+    def _reads_group_calibration(self, spec):
+        """Say whether a model needs the group's own calibration rows in a split.
+
+        A calibrated variant maps through them, and a per-group (unpooled) fit is
+        handed them unless its class declares ``ignores_calibration_rows``; a
+        pooled fit monitors on the pooled calibration slice, never one group's.
+        """
+        return spec["calibrate"] or not (
+            self._pooled(spec)
+            or getattr(self._estimator(spec), "ignores_calibration_rows", False))
+
+    def _admission(self, frame, calendar):
+        """Return each split's band counts and write the run's admission ledger."""
+        counts = {split: self.plan.band_counts(frame, split, calendar) for split in self.plan.ids()}
+        rows = [row for split, n in counts.items() for row in self.plan.admission(n, split)]
+        # The calibration floor is recorded only when declared, so older ledgers do not move.
+        floor = self.plan.min_task_cal_rows
+        ledger = {"min_task_fit_rows": self.plan.min_task_fit_rows,
+                  **({"min_task_cal_rows": floor} if floor else {}),
+                  "split": self.plan.column,
+                  "not_evaluated": rows,
+                  "dropped_rows": {band: sum(r[f"dropped_{band}_rows"] for r in rows)
+                                   for band in self.plan.BANDS}}
+        (Path(self.config["output"])/self.ADMISSION_FILE).write_text(
+            json.dumps(ledger, indent=2, default=int))
+        return counts
+
+    @staticmethod
+    def _transform(imputer, band, features):
+        """Impute a band's features; an empty band gives an empty matrix, not a refusal."""
+        import numpy as np
+        if band.empty:
+            return np.empty((0, len(features)))
+        return imputer.transform(band[features])
+
+    @staticmethod
+    def _pin_tail_weight(config):
+        """Refuse a model that trains on ``tail_crps`` but not on this study's ``weighted_crps``.
+
+        Parameters
+        ----------
+        config : dict
+            A study configuration declaring ``tail_weight``.
+
+        Raises
+        ------
+        ValueError
+            When a model's ``losses`` hold ``tail_crps`` and are not exactly
+            ``crps`` and ``tail_crps`` at weights in the ratio 1 : ``tail_weight``
+            (any common scale is the same objective), or when a
+            ``decision_context`` is declared: its wings, not ``tail_intervals``,
+            would then be the loss's intervals; or when ``tail_intervals``
+            overlap (the loss integrates their union, the metric each one).
+        """
+        import math
+        weight = config["tail_weight"]
+        for name, spec in config["models"].items():
+            params = spec.get("params") if isinstance(spec, dict) else None
+            losses = params.get("losses") if isinstance(params, dict) else None
+            if not isinstance(losses, list):
+                continue
+            terms = {t.get("kind"): t.get("weight") for t in losses if isinstance(t, dict)}
+            if "tail_crps" not in terms:
+                continue
+            if config.get("decision_context"):
+                raise ValueError(f"{name} trains on tail_crps under a decision_context: its "
+                                 "wings, not tail_intervals, would be integrated")
+            pairs = sorted(DecisionRegionScores._checked_intervals(
+                config["tail_intervals"]).tolist())
+            if any(b[0] < a[1] for a, b in zip(pairs, pairs[1:])):
+                raise ValueError(f"{name} trains on tail_crps over overlapping tail_intervals: "
+                                 "the loss integrates their union, tail_crps each interval")
+            if (set(terms) != {"crps", "tail_crps"}
+                    or any(type(terms[k]) not in (int, float) for k in terms)
+                    or not math.isclose(terms["tail_crps"], weight*terms["crps"], rel_tol=1e-9)):
+                raise ValueError(f"{name} trains on tail_crps but not on exactly crps + "
+                                 f"tail_weight ({weight}) x tail_crps, the weighted_crps "
+                                 "this study scores")
+
+    def decision_context_rows(self, frame):
+        """Return identity-bound fixed-tail or caller-supplied training context."""
+        return self._decision_context_rows(frame)
 
     def _decision_context_rows(self, frame):
         """Return context only after binding every record to its frame identity.
@@ -4314,7 +5416,7 @@ class ChronologicalCDFStudy:
     #: group, fold and trained model), and the research-state fields it carries.
     FOLD_LOSSES_FILE = "fold_losses.csv"
     LOSS_STATE_FIELDS = ("epochs_run_by_seed", "best_epoch_by_seed", "stopped_by_patience",
-                         "patience")
+                         "patience", "rounds_run", "best_round")
     LOSS_SUFFIX, STATE_SUFFIX = "_losses", "_research_state"
 
     @classmethod
@@ -4344,6 +5446,9 @@ class ChronologicalCDFStudy:
         c = self.config
         result = {}
         for label, band in (("training", fit), ("calibration", cal), ("validation", val)):
+            if band.empty:  # an admitted group's calibration band may be (ADR-0236 amendment)
+                result[label] = {"n": 0, "scope": "reported_group_slice", "dates": 0}
+                continue
             bx = imputer.transform(band[c["features"]])
             by = (band[c["target"]]/band[c["reference"]]).to_numpy()
             context = self._decision_context_rows(band)
@@ -4399,8 +5504,11 @@ class ChronologicalCDFStudy:
         split = self.plan.column
         dev = scores[scores[split] <= self.plan.development_end]
         later = scores[scores[split] > self.plan.development_end]
+        weighted = [self.WEIGHTED_METRIC] if "tail_weight" in c else []
+        if weighted and self.WEIGHTED_METRIC not in scores:
+            raise ValueError("tail_weight is declared but the scores carry no weighted_crps")
         selection_metric = ("decision_strike_brier"
-                            if "decision_strike_brier" in dev else "crps")
+                            if "decision_strike_brier" in dev else (weighted or ["crps"])[0])
         dev_means = dev.groupby(cells+["model", "variant"])[selection_metric].mean().unstack(["model", "variant"])
         # Equal-cell relative score uses a fixed raw horizon-empirical reference.
         baseline = c["reference_model"]
@@ -4421,7 +5529,7 @@ class ChronologicalCDFStudy:
             selected = selected_variants
         picked = pd.concat([later[(later.model == name) & (later.variant == variant)]
                             for name, variant in selected.items()])
-        metrics = ["crps", "tail_crps", "lower_tail_quantile_score",
+        metrics = ["crps", "tail_crps", *weighted, "lower_tail_quantile_score",
                    "upper_tail_quantile_score", "raw_return_crps", "strike_brier", "condor_loss_mse",
                    "condor_loss_bias", "below_05", "above_95", "payoff_quadrature_gap"]
         if "decision_strike_brier" in scores:
@@ -4459,7 +5567,8 @@ class ChronologicalCDFStudy:
                                 "mean": float(f[metric].mean()),
                                 "equal_cell_skill": (float(100*(1-ratio[model].mean()))
                     if metric in (*DecisionRegionScores.PROPER_METRICS, "crps", "tail_crps",
-                                  "raw_return_crps", "strike_brier", "condor_loss_mse")
+                                  self.WEIGHTED_METRIC, "raw_return_crps", "strike_brier",
+                                  "condor_loss_mse")
                                                      and np.isfinite(ratio[model].mean()) else None)})
             if metric not in ("decision_bias", "condor_loss_bias", "below_05", "above_95",
                               "payoff_quadrature_gap"):
@@ -4475,8 +5584,8 @@ class ChronologicalCDFStudy:
         intervals = []
         # Same entry date carries ALL indexes/horizons together. Sum within cell;
         # paired denominators cancel in each cell's candidate/reference ratio.
-        interval_metrics = ["crps"]+[m for m in DecisionRegionScores.PROPER_METRICS
-                                     if m in picked]
+        interval_metrics = ["crps", *weighted]+[m for m in DecisionRegionScores.PROPER_METRICS
+                                                if m in picked]
         for interval_metric in interval_metrics:
           for reference in c["comparison_references"]:
             base_rows = picked[picked.model == reference].set_index(keys)[interval_metric].dropna()
@@ -4682,15 +5791,25 @@ class ChronologicalCDFStudy:
                                                    else (pit > level)).astype(float)
         return result, q
 
-    def run(self, frame, diagnostic=None):
+    def run(self, frame, diagnostic=None, label=None):
         """Fit paired splits (years or fold-table folds); retain scores, counts, curves.
+
+        Groups are fitted one after another in this process or, when the environment
+        variable :attr:`GROUP_WORKERS_ENV` names a width above 1, in that many spawned
+        processes (ADR-0236 amendment 3), each fitting one group's splits and models.
+        Outputs are gathered in group order, so every file equals the one-process run's
+        on the same device and thread count (``counts.json``'s timings aside). Each group's completion prints one
+        ``[ticker-done]`` line (point skill on its own rows; the summary is canonical).
 
         Parameters
         ----------
         frame : DataFrame
             Complete labels, causal features and metadata.
         diagnostic : callable or None
-            Optional domain diagnostic(frame, curve, draws) returning row metrics.
+            Optional domain diagnostic(frame, curve, draws) returning row metrics;
+            pickled to the group workers when there are any.
+        label : str or None
+            Names the run on the progress lines; None uses the output directory's name.
 
         Returns
         -------
@@ -4700,16 +5819,27 @@ class ChronologicalCDFStudy:
         Raises
         ------
         ValueError
-            For missing/empty bands or invalid labels/reference scales, or, with a
-            fold table, a row dated or settling on or after ``holdout_start``.
+            For missing/empty bands or invalid labels/reference scales; with a fold
+            table, a row dated or settling on or after ``holdout_start``; a malformed
+            :attr:`GROUP_WORKERS_ENV`; a width above 1 with a pooled model (a pooled
+            fit spans every group), refused before any output is written; an
+            evaluated group's empty calibration band that a model reads, refused
+            before any fit. A group's exception is re-raised as the group raised it,
+            with a note naming the group (every group in flight, for a worker that
+            died).
         FileExistsError
             If the output directory exists; no research evidence is overwritten.
         """
         import numpy as np
         import pandas as pd
-        from sklearn.impute import SimpleImputer
 
         c = self.config
+        workers = declared_width(None, self.GROUP_WORKERS_ENV)
+        pooled = sorted(name for name, spec in c["models"].items() if self._pooled(spec))
+        if workers > 1 and pooled:
+            raise ValueError(f"{self.GROUP_WORKERS_ENV}={workers} fits each group in its own "
+                             f"process, but {pooled} fit once over every group: run them with "
+                             "one worker")
         _validate_temporal_frame(frame, c["date"], c["end"])
         self.plan.lock(frame)
         output = Path(c["output"])
@@ -4740,135 +5870,23 @@ class ChronologicalCDFStudy:
             raise ValueError("invalid target, reference or nonfuture outcome date")
         if frame[c["identity"]].isna().any().any() or frame.duplicated(c["identity"]).any():
             raise ValueError("missing or duplicate forecast identity")
-        results, counts, pooled_cache = [], [], {}
-        equivalence = {}
         calendar = self.plan.calendar(frame)
-        for group, group_frame in frame.groupby(c["group"]):
-            for split in self.plan.ids():
-                fit, cal, val = self.plan.bands(group_frame, split, calendar)
-                if min(len(fit), len(cal), len(val)) < 1:
-                    raise ValueError(f"empty band: {group} {split}")
-                if c.get("wing_metrics"):
-                    # Refuse malformed wing intervals before any model is fitted.
-                    for band in (fit, cal, val):
-                        DecisionRegionScores(self._decision_context_rows(band)).segment_arrays()
-                count = {"group": group, self.plan.column: split}
-                for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
-                    count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
-                                   "ends": band[c["end"]].nunique(),
-                                   "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
-                                   "first": band[c["date"]].min(), "last": band[c["date"]].max(),
-                                   "latest_label": band[c["end"]].max()}
-                yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
-                model_items = sorted(c["models"].items(),
-                                     key=lambda item: item[0] != c["reference_model"])
-                for name, spec in model_items:
-                    start = time.monotonic()
-                    key = (split, name, json.dumps(spec, sort_keys=True))
-                    pooled = spec.get("pooled", False)
-                    new_fit = not (pooled and key in pooled_cache)
-                    if new_fit:
-                        model_fit, model_cal, _ = self.plan.bands(
-                            frame, split, calendar) if pooled else (fit, cal, val)
-                        module, cls = spec["class"].split(":")
-                        model = getattr(importlib.import_module(module), cls)(**spec["params"])
-                        for band in (model_fit, model_cal, val):
-                            model._validate_x(band[c["features"]].to_numpy())
-                        imputer = SimpleImputer(strategy="median", keep_empty_features=True)
-                        x = imputer.fit_transform(model_fit[c["features"]])
-                        if hasattr(model, "fit_decision_context"):
-                            model.fit_decision_context(
-                                self._decision_context_rows(model_fit),
-                                self._decision_context_rows(model_cal))
-                        model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
-                                  imputer.transform(model_cal[c["features"]]),
-                                  (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
-                        if hasattr(model, "fit_context"):
-                            model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
-                        label = spec.get("equivalence")
-                        if label:
-                            if not hasattr(model, "_equivalence_state"):
-                                raise ValueError("equivalence model does not expose fitted state")
-                            state = model._equivalence_state()
-                            population = "pooled" if pooled else str(group)
-                            equivalence_key = (int(split), population, label)
-                            record = equivalence.setdefault(
-                                equivalence_key, {"digest": state, "members": []})
-                            if record["digest"] != state:
-                                raise ValueError("equivalence state mismatch")
-                            record["members"].append(name)
-                        fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
-                                     "groups": model_fit.groupby(c["group"]).size().to_dict(),
-                                     "latest_label": model_fit[c["end"]].max()}
-                        if pooled:
-                            pooled_cache[key] = model, imputer, fit_count
-                    else:
-                        model, imputer, fit_count = pooled_cache[key]
-                    for band in (cal, val):
-                        model._validate_x(band[c["features"]].to_numpy())
-                    xc, xv = [imputer.transform(b[c["features"]]) for b in (cal, val)]
-                    count[name+"_fit"] = {**fit_count, "new_fit": new_fit}
-                    if hasattr(model, "curve_decision_context"):
-                        raw = model.curve_decision_context(
-                            xv, self._decision_context_rows(val))
-                    else:
-                        raw = (model.curve_context(
-                        xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
-                        if hasattr(model, "curve_context") else model.curve(xv))
-                    variants = {"raw": raw}
-                    if spec["calibrate"]:
-                        calibration_curve = (model.curve_decision_context(
-                            xc, self._decision_context_rows(cal))
-                            if hasattr(model, "curve_decision_context")
-                            else model.curve(xc))
-                        pit = calibration_curve.cdf(yc[:, None])[:, 0]
-                        variants["calibrated"] = CalibratedCurve(raw, pit, c["calibration_knots"])
-                    else:
-                        variants["calibrated"] = raw
-                    for variant, curve in variants.items():
-                        scored, draws = self.scores(
-                            curve, yv, c["samples"], c["tail_intervals"], c["tail_points"],
-                            c.get("tail_probabilities"))
-                        columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
-                                                      c["group"], c["date"], c["end"], c["horizon"]]))
-                        part = val[columns].copy()
-                        part[self.plan.column], part["model"], part["variant"] = split, name, variant
-                        for metric, values in scored.items():
-                            part[metric] = values
-                        part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
-                        if diagnostic:
-                            for metric, values in diagnostic(val, curve, draws).items():
-                                part[metric] = values
-                        if c.get("decision_context"):
-                            scorer = DecisionRegionScores(self._decision_context_rows(val))
-                            for metric, values in scorer.score(curve, yv).items():
-                                part[metric] = values
-                            if c.get("wing_metrics"):
-                                for metric, values in scorer.wing_score(curve, yv).items():
-                                    part[metric] = values
-                        results.append(part)
-                        # Retain both exact grids/maps/mixtures and quadrature draws.
-                        # This is numerical research evidence, not a serving artifact.
-                        if split == max(self.plan.ids()):
-                            np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
-                                                draws=draws.astype("float32"),
-                                                reference=val[c["reference"]].to_numpy(),
-                                                identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
-                                                row_index=val.index.to_numpy(), **curve._arrays())
-                    count[name+"_seconds"] = time.monotonic()-start
-                    if hasattr(model, "_research_state"):
-                        count[name+"_research_state"] = model._research_state()
-                    if name == c["reference_model"]:
-                        reference_model, reference_imputer = model, imputer
-                    if isinstance(model, TorchCDF):
-                        count[name+"_losses"] = self._loss_telemetry(
-                            model, imputer, reference_model, reference_imputer, fit, cal, val)
-                    elif isinstance(model, MixtureMLPCDF):
-                        count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
-                    print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
-                counts.append(count)
-                pd.concat(results, ignore_index=True).to_parquet(output/"scores.parquet", index=False)
-                (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
+        admitted = self._admission(frame, calendar)
+        shared = _GroupRun(calendar, admitted,
+                           {split: self.plan.evaluated(n) for split, n in admitted.items()},
+                           diagnostic, frame if pooled else None)
+        self._refuse_unread_calibration(shared)
+        results, counts, equivalence = [], [], {}
+        for parts, group_counts, records in self._group_outputs(
+                frame, shared, workers, label or output.name):
+            results.extend(parts)
+            counts.extend(group_counts)
+            self._merge_equivalence(equivalence, records)
+        # Written once: rewriting both after every group made a run quadratic in its
+        # groups x splits (ADR-0236 amendment 2); a stage that dies is rerun whole anyway.
+        scores = pd.concat(results, ignore_index=True)
+        scores.to_parquet(output/"scores.parquet", index=False)
+        (output/"counts.json").write_text(json.dumps(counts, indent=2, default=int))
         loss_rows = self._loss_rows(counts, self.plan.column)
         if loss_rows:
             pd.DataFrame(loss_rows).to_csv(output/self.FOLD_LOSSES_FILE, index=False)
@@ -4878,7 +5896,340 @@ class ChronologicalCDFStudy:
                      "status": ("verified" if len(set(record["members"])) >= 2 else "unverified")}
                     for (split, population, label), record in sorted(equivalence.items())]
         (output/"equivalence.json").write_text(json.dumps(evidence, indent=2))
-        return pd.concat(results, ignore_index=True)
+        return scores
+
+    def _refuse_unread_calibration(self, shared):
+        """Refuse, before any fit, an evaluated group whose empty calibration band a model reads.
+
+        An admitted group with no calibration row is scored, unless ``min_task_cal_rows``
+        makes it wait; a model that reads that band (see :meth:`_reads_group_calibration`)
+        cannot fit there, so the run stops here rather than hours into the fits.
+        """
+        if not self.plan.admits:
+            return   # every band of every split must hold rows: _fit_group refuses
+        readers = [n for n, s in self.config["models"].items() if self._reads_group_calibration(s)]
+        empty = sorted((group, split) for split, n in shared.admitted.items()
+                       for group in n.index[n["calibration"] == 0]
+                       if group in shared.evaluated[split])
+        if readers and empty:
+            group, split = empty[0]
+            raise ValueError(f"empty calibration band: {group} {split}, which {readers} read "
+                             f"({len(empty)} group-split(s) in all; min_task_cal_rows makes "
+                             "them wait)")
+
+    def _group_outputs(self, frame, shared, workers, label):
+        """Yield each fitted group's ``_fit_group`` output in group order, printing progress.
+
+        At most ``2 * workers - 1`` groups are submitted and unfinished at once: one in
+        process, so a failure surfaces before the next group is fitted, and a window
+        beyond the width in a pool, so a worker never waits for the parent. A group no
+        split scores is skipped (it has nothing to fit) unless the study keeps the
+        every-band rule, whose refusal it must still raise.
+        """
+        import concurrent.futures as futures
+        import itertools
+
+        c = self.config
+        scored = set().union(*shared.evaluated.values())
+        names = {g for g in frame[c["group"]].unique() if g in scored or not self.plan.admits}
+        pending = enumerate((g, rows) for g, rows in frame.groupby(c["group"]) if g in names)
+        pool = self._group_pool(workers)
+        running, ready, emitted, done = {}, {}, 0, 0
+        try:
+            while True:
+                for index, (group, rows) in itertools.islice(pending, 2*workers-1-len(running)):
+                    running[pool.submit(self._fit_group, group, rows, shared)] = index, group
+                if not running:
+                    return
+                finished, _ = futures.wait(running, return_when=futures.FIRST_COMPLETED)
+                for future in sorted(finished, key=lambda f: running[f][0]):
+                    index, group = running.pop(future)
+                    ready[index] = self._group_result(future, group, running)
+                    done += 1
+                    print(self._progress(label, group, ready[index][0], done, len(names)),
+                          flush=True)
+                while emitted in ready:
+                    yield ready.pop(emitted)
+                    emitted += 1
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _group_pool(self, workers):
+        """Return the executor groups are fitted in: this process, or a spawn pool.
+
+        Spawn, never fork: CUDA and OpenMP do not survive a fork. A worker takes this
+        process's torch intra-op thread count, so its fits equal this process's.
+        """
+        import concurrent.futures as futures
+        import multiprocessing
+
+        import torch
+
+        if workers == 1:
+            return _InlineExecutor()
+        return futures.ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=self._init_group_worker, initargs=(torch.get_num_threads(),))
+
+    @staticmethod
+    def _group_result(future, group, running):
+        """Return a finished group's output, or re-raise its error noting the group.
+
+        A worker that died (killed, out of memory) breaks every unfinished future, so its
+        note names every group then submitted and unfinished rather than guessing one.
+        """
+        import concurrent.futures as futures
+
+        try:
+            return future.result()
+        except futures.process.BrokenProcessPool as err:
+            others = sorted(str(g) for _, g in running.values())
+            err.add_note(f"a group worker died; groups then unfinished: {[str(group), *others]}")
+            raise
+        except Exception as err:
+            err.add_note(f"raised while fitting group {group!r}")
+            raise
+
+    @staticmethod
+    def _init_group_worker(threads):
+        """Give a group worker the parent's torch intra-op threads (equal results)."""
+        import torch
+        torch.set_num_threads(threads)
+
+    def _progress(self, label, group, parts, done, total):
+        """Return a finished group's live line: point skill per model on its own rows."""
+        import pandas as pd
+        c, reference = self.config, self.config["reference_model"]
+        metric = self.WEIGHTED_METRIC if "tail_weight" in c else "crps"
+        raw = pd.concat(parts)   # a fitted group scores every model in some split
+        raw = raw[raw.variant == "raw"]
+        means = raw.groupby("model")[metric].mean()
+        skills = [f"{name}={100*(1-means[name]/means[reference]):.2f}"
+                  for name in c["models"] if name != reference]
+        n = int((raw.model == reference).sum())
+        return " ".join(["[ticker-done]", label, str(group), f"n={n}", *skills,
+                         f"[{done}/{total}]"])
+
+    @staticmethod
+    def _merge_equivalence(held, records):
+        """Add equivalence records to ``held``, refusing a digest its peers disagree with."""
+        for key, record in records.items():
+            entry = held.setdefault(key, {"digest": record["digest"], "members": []})
+            if entry["digest"] != record["digest"]:
+                raise ValueError("equivalence state mismatch")
+            entry["members"].extend(record["members"])
+
+    def _fit_group(self, group, group_frame, shared):
+        """Fit and score one group's splits and models.
+
+        Parameters
+        ----------
+        group : object
+            The group's key.
+        group_frame : DataFrame
+            Every row of the group.
+        shared : _GroupRun
+            The run's calendar, admission and diagnostic and, for a pooled model, the
+            whole frame and the fits every group reuses.
+
+        Returns
+        -------
+        tuple
+            ``(parts, counts, equivalence)``: the group's score frames and ``counts.json``
+            entries in split then model order, and its equivalence records keyed by
+            ``(split, population, label)``.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`run`, for this group.
+        """
+        import numpy as np
+        from sklearn.impute import SimpleImputer
+
+        c, output, calendar = self.config, Path(self.config["output"]), shared.calendar
+        parts, counts, equivalence = [], [], {}
+        for split in self.plan.ids():
+            evaluated = group in shared.evaluated[split]
+            if not (evaluated or self.plan.admits):
+                raise ValueError(f"empty band: {group} {split}")
+            if not evaluated:
+                continue  # waiting, or nothing to score: in the admission ledger
+            fit, cal, val = self.plan.bands(group_frame, split, calendar)
+            if cal.empty and not self.plan.admits:
+                raise ValueError(f"empty band: {group} {split}")
+            if c.get("wing_metrics"):
+                # Refuse malformed wing intervals before any model is fitted.
+                for band in (fit, cal, val):
+                    if len(band):
+                        DecisionRegionScores(
+                            self._decision_context_rows(band)).segment_arrays()
+            count = {"group": group, self.plan.column: split}
+            for name, band in [("fit", fit), ("cal", cal), ("val", val)]:
+                count[name] = {"n": len(band), "dates": band[c["date"]].nunique(),
+                               "ends": band[c["end"]].nunique(),
+                               "expiry_series": band[c["series_identity"]].drop_duplicates().shape[0],
+                               "first": band[c["date"]].min() if len(band) else None,
+                               "last": band[c["date"]].max() if len(band) else None,
+                               "latest_label": band[c["end"]].max() if len(band) else None}
+            yc, yv = [(b[c["target"]]/b[c["reference"]]).to_numpy() for b in (cal, val)]
+            model_items = sorted(c["models"].items(),
+                                 key=lambda item: item[0] != c["reference_model"])
+            for name, spec in model_items:
+                start = time.monotonic()
+                key = (split, name, json.dumps(spec, sort_keys=True))
+                pooled = self._pooled(spec)
+                new_fit = not (pooled and key in shared.pooled_cache)
+                if new_fit:
+                    if pooled:
+                        model_fit, model_cal, _ = self.plan.bands(shared.frame, split, calendar)
+                        # A waiting group sits the split out: a head fitted on a few
+                        # rows is never scored (and LightGBM refuses a task under 3).
+                        waiting = self.plan.waiting(shared.admitted[split])
+                        model_fit = model_fit[~model_fit[c["group"]].isin(waiting)]
+                        model_cal = model_cal[~model_cal[c["group"]].isin(waiting)]
+                    else:
+                        model_fit, model_cal = fit, cal
+                    model = self._estimator(spec)(**spec["params"])
+                    if pooled:
+                        print(f"fit {name} {self.plan.column} {split} on {len(model_fit)} "
+                              "pooled rows", flush=True)
+                    for band in (model_fit, model_cal, val):
+                        model._validate_x(band[c["features"]].to_numpy())
+                    imputer = SimpleImputer(strategy="median", keep_empty_features=True)
+                    x = imputer.fit_transform(model_fit[c["features"]])
+                    if hasattr(model, "fit_decision_context"):
+                        model.fit_decision_context(
+                            self._decision_context_rows(model_fit),
+                            self._decision_context_rows(model_cal))
+                    model.fit(x, (model_fit[c["target"]]/model_fit[c["reference"]]).to_numpy(),
+                              self._transform(imputer, model_cal, c["features"]),
+                              (model_cal[c["target"]]/model_cal[c["reference"]]).to_numpy())
+                    if hasattr(model, "fit_context"):
+                        model.fit_context(model_cal, date_field=c["date"], end_field=c["end"])
+                    label = spec.get("equivalence")
+                    if label:
+                        if not hasattr(model, "_equivalence_state"):
+                            raise ValueError("equivalence model does not expose fitted state")
+                        population = "pooled" if pooled else str(group)
+                        self._merge_equivalence(equivalence, {(int(split), population, label): {
+                            "digest": model._equivalence_state(), "members": [name]}})
+                    fit_count = {"n": len(model_fit), "dates": model_fit[c["date"]].nunique(),
+                                 "groups": model_fit.groupby(c["group"]).size().to_dict(),
+                                 "latest_label": model_fit[c["end"]].max()}
+                    # A pooled fit band is most of the panel: never hold it (or its
+                    # imputed copy) through the per-group scoring that follows.
+                    del model_fit, model_cal, x
+                    if pooled:
+                        shared.pooled_cache[key] = model, imputer, fit_count
+                else:
+                    model, imputer, fit_count = shared.pooled_cache[key]
+                for band in (cal, val):
+                    model._validate_x(band[c["features"]].to_numpy())
+                xc, xv = [self._transform(imputer, b, c["features"]) for b in (cal, val)]
+                # A pooled fit's per-group row map goes on the entry that fitted it only:
+                # repeated on every group, counts.json grew with groups squared.
+                count[name+"_fit"] = {**{k: v for k, v in fit_count.items()
+                                         if new_fit or k != "groups"}, "new_fit": new_fit}
+                if hasattr(model, "curve_decision_context"):
+                    raw = model.curve_decision_context(
+                        xv, self._decision_context_rows(val))
+                else:
+                    raw = (model.curve_context(
+                    xv, val[c["date"]].to_numpy(), val[c["end"]].to_numpy(), yv)
+                    if hasattr(model, "curve_context") else model.curve(xv))
+                variants = {"raw": raw}
+                if spec["calibrate"]:
+                    calibration_curve = (model.curve_decision_context(
+                        xc, self._decision_context_rows(cal))
+                        if hasattr(model, "curve_decision_context")
+                        else model.curve(xc))
+                    pit = calibration_curve.cdf(yc[:, None])[:, 0]
+                    variants["calibrated"] = CalibratedCurve(raw, pit, c["calibration_knots"])
+                else:
+                    variants["calibrated"] = raw
+                for variant, curve in variants.items():
+                    scored, draws = self.scores(
+                        curve, yv, c["samples"], c["tail_intervals"], c["tail_points"],
+                        c.get("tail_probabilities"))
+                    columns = list(dict.fromkeys([*c["identity"], *c["series_identity"],
+                                                  c["group"], c["date"], c["end"], c["horizon"]]))
+                    part = val[columns].copy()
+                    part[self.plan.column], part["model"], part["variant"] = split, name, variant
+                    for metric, values in scored.items():
+                        part[metric] = values
+                    if "tail_weight" in c:
+                        part[self.WEIGHTED_METRIC] = (
+                            scored["crps"] + c["tail_weight"]*scored["tail_crps"])
+                    part["raw_return_crps"] = part.crps.to_numpy()*val[c["reference"]].to_numpy()
+                    if shared.diagnostic:
+                        for metric, values in shared.diagnostic(val, curve, draws).items():
+                            part[metric] = values
+                    if c.get("decision_context"):
+                        scorer = DecisionRegionScores(self._decision_context_rows(val))
+                        for metric, values in scorer.score(curve, yv).items():
+                            part[metric] = values
+                        if c.get("wing_metrics"):
+                            for metric, values in scorer.wing_score(curve, yv).items():
+                                part[metric] = values
+                    parts.append(part)
+                    # Retain both exact grids/maps/mixtures and quadrature draws.
+                    # This is numerical research evidence, not a serving artifact.
+                    if split == max(self.plan.ids()):
+                        np.savez_compressed(output/f"{group}-{name}-{variant}-curves.npz",
+                                            draws=draws.astype("float32"),
+                                            reference=val[c["reference"]].to_numpy(),
+                                            identities=val[c["identity"]].astype(str).to_numpy(dtype=str),
+                                            row_index=val.index.to_numpy(), **curve._arrays())
+                count[name+"_seconds"] = time.monotonic()-start
+                if hasattr(model, "_research_state"):
+                    count[name+"_research_state"] = model._research_state()
+                if name == c["reference_model"]:
+                    reference_model, reference_imputer = model, imputer
+                if isinstance(model, _CompositeLossCDF):
+                    count[name+"_losses"] = self._loss_telemetry(
+                        model, imputer, reference_model, reference_imputer, fit, cal, val)
+                elif isinstance(model, MixtureMLPCDF):
+                    count[name+"_training_nll_by_seed"] = [loss[-1] for loss in model.losses]
+                print(group, split, name, round(count[name+"_seconds"], 2), flush=True)
+            counts.append(count)
+        return parts, counts, equivalence
+
+
+class _InlineExecutor:
+    """Run each submitted call at once, in this process: one group worker, today's loop.
+
+    Its futures are already done when returned, so the group loop treats one worker
+    exactly as it treats a process pool, and a pooled model keeps its shared cache.
+    """
+
+    @staticmethod
+    def submit(fn, *args):
+        """Return a done future holding ``fn(*args)``'s result or exception."""
+        import concurrent.futures as futures
+
+        future = futures.Future()
+        try:
+            future.set_result(fn(*args))
+        except Exception as err:
+            future.set_exception(err)
+        return future
+
+    @staticmethod
+    def shutdown(wait=True, cancel_futures=False):
+        """Do nothing: no process was started."""
+
+
+class _GroupRun:
+    """What every group of one ``ChronologicalCDFStudy.run`` shares, pickled to group workers.
+
+    ``frame`` and ``pooled_cache`` serve pooled models only, which never run in a worker,
+    so a worker's copy holds no panel: it is handed one group's rows per task.
+    """
+
+    def __init__(self, calendar, admitted, evaluated, diagnostic, frame):
+        self.calendar, self.admitted, self.evaluated = calendar, admitted, evaluated
+        self.diagnostic, self.frame, self.pooled_cache = diagnostic, frame, {}
 
 
 class CDFHyperparameterStudy:
@@ -4930,7 +6281,11 @@ class CDFHyperparameterStudy:
             raise ValueError("unknown or missing experiment keys")
         metric = e.get("selection_metric", "crps")
         proper = DecisionRegionScores.PROPER_METRICS
-        if (metric not in ("crps", *proper)
+        weighted = ChronologicalCDFStudy.WEIGHTED_METRIC
+        # A declared tail_weight IS the study's weighted metric: plain crps would
+        # select on one score and report variants on another.
+        if (metric not in ("crps", weighted, *proper)
+                or (metric == weighted) != (metric not in proper and "tail_weight" in c)
                 or (metric in proper and not c.get("decision_context"))
                 or (metric in DecisionRegionScores.WING_METRICS and not c.get("wing_metrics"))):
             raise ValueError("invalid primary selection metric")
@@ -5009,20 +6364,20 @@ class CDFHyperparameterStudy:
                 cls = {"normal": "MixtureMLPCDF", "student": "StudentMixtureMLPCDF"}.get(label["family"])
                 if (cls is None or spec["class"] != f"dskit.pipeline.libs.predictive_cdf:{cls}"
                         or label["sharing"] not in ("separate", "pooled", "heads")
-                        or spec.get("pooled", False) != (label["sharing"] != "separate")
+                        or ChronologicalCDFStudy._pooled(spec) != (label["sharing"] != "separate")
                         or p.get("head_features", []) != (head_positions if label["sharing"] == "heads" else [])
                         or p.get("seeds") != [e["screen_seed"]]):
                     raise ValueError("candidate labels, class, heads or seed disagree")
             cls = spec["class"].rsplit(":", 1)[-1]
             ChronologicalCDFStudy({**c, "models": {name: spec}})
-            module, class_name = spec["class"].split(":")
-            getattr(importlib.import_module(module), class_name)(**spec["params"])
+            ChronologicalCDFStudy._estimator(spec)(**spec["params"])
         if self.grouped:
             inventory_specs = {**c["models"], **e["candidates"]}
             labels = {}
             for name, spec in inventory_specs.items():
                 if spec.get("equivalence"):
-                    labels.setdefault(spec["equivalence"], []).append((name, spec.get("pooled", False)))
+                    labels.setdefault(spec["equivalence"], []).append(
+                        (name, ChronologicalCDFStudy._pooled(spec)))
             if any(len(members) < 2 or len({pooled for _, pooled in members}) != 1
                    for members in labels.values()):
                 raise ValueError("equivalence group needs pooled-compatible peers")
@@ -5074,13 +6429,9 @@ class CDFHyperparameterStudy:
             names.append("catboost")
         if "SplineFlowCDF" in classes:
             names.append("nflows")
+        if "BoostedTorchCDF" in classes:
+            names.append("lightgbm")
         return {name: version(name) for name in sorted(names)}
-
-    @staticmethod
-    def _digest(value):
-        from types import SimpleNamespace
-        from dskit.pipeline.base import config_hash
-        return config_hash(SimpleNamespace(to_obj=lambda: value), exclude=())
 
     @staticmethod
     def _file_hash(path):
@@ -5090,7 +6441,7 @@ class CDFHyperparameterStudy:
     def _frame_hash(self, frame, keys):
         import pandas as pd
         f = frame.sort_values(keys).reindex(sorted(frame.columns), axis=1)
-        schema = self._digest({k: str(v) for k, v in f.dtypes.items()})
+        schema = value_hash({k: str(v) for k, v in f.dtypes.items()})
         field = self.base.get("decision_context")
         if field and field in f:
             f = f.copy()
@@ -5322,7 +6673,7 @@ class CDFHyperparameterStudy:
                    "skill_pct": {key: 100*(1-value) for key, value in rankings.items()},
                    "selection_guard": self.experiment.get("selection_guard"),
                    "selection_guard_evidence": guard_evidence,
-                   "screen_spec_hash": self._digest(screen_specs), "final_spec_hash": self._digest(selected),
+                   "screen_spec_hash": value_hash(screen_specs), "final_spec_hash": value_hash(selected),
                    "screen_specs": screen_specs, "expected_identity_hash": self._frame_hash(expected[c["identity"]], c["identity"]),
                    "n": len(expected), "cells": len(expected[[c["group"], c["horizon"]]].drop_duplicates())}
         path = self.output/"selection"
@@ -5443,8 +6794,8 @@ class CDFHyperparameterStudy:
         dev = frame[~label_reaches(frame[c["end"]], self.cutoff)]
         self._check_cells(self._expected(dev, self.development), "development")
         self._check_cells(self._expected(frame, self.later), "evaluation")
-        identity = {"config": self._digest(self.config), "panel": self._frame_hash(frame, c["identity"]),
-                    "provenance": self._digest(provenance), "inventory": self.inventory.digest,
+        identity = {"config": value_hash(self.config), "panel": self._frame_hash(frame, c["identity"]),
+                    "provenance": value_hash(provenance), "inventory": self.inventory.digest,
                     "implementation": self._file_hash(__file__),
                     "resolutions": e["resolutions"],
                     "dependencies": self._dependency_versions()}
@@ -5464,7 +6815,7 @@ class CDFHyperparameterStudy:
             if stage == "report":
                 if partition is not None:
                     raise ValueError("report does not accept partition")
-                parts, paths = [], []
+                parts, paths, admission = [], [], {}
                 for name, years in self.partitions.items():
                     path = self.output/"evaluate"/name
                     record = self._load(path, identity, "evaluate", name)
@@ -5474,11 +6825,14 @@ class CDFHyperparameterStudy:
                     self._check_scores(part, self._expected(dev if name == "development" else frame, years), models)
                     parts.append(part)
                     paths.append(path)
+                    admission[name] = json.loads(
+                        (path/ChronologicalCDFStudy.ADMISSION_FILE).read_text())
                 scores = pd.concat(parts, ignore_index=True)
                 path = self.output/"report"
                 path.mkdir(parents=True, exist_ok=False)
                 study = ChronologicalCDFStudy({**c, "output": str(path), "models": models})
                 result = study.summarize(scores, selection["variants"])
+                self._write(path/ChronologicalCDFStudy.ADMISSION_FILE, admission)
                 scores.to_parquet(path/"scores.parquet", index=False)
                 self._write(path/"convergence.json", self._audit(paths, frame, diagnostic))
                 self._write(path/"public_probes.json", {
@@ -5493,10 +6847,11 @@ class CDFHyperparameterStudy:
             years = self.partitions[partition]
             panel = dev if partition == "development" else frame
             samples = e["resolutions"]["final_samples"]
+        del dev  # the scored partition fits on the whole panel: never hold a second copy
         path = self.output/stage/partition
         study = ChronologicalCDFStudy({**c, "output": str(path), **self.plan.stage(years),
                                        "samples": samples, "models": models})
-        scores = study.run(panel, diagnostic)
+        scores = study.run(panel, diagnostic, label=" ".join([stage, partition]))
         self._check_scores(scores, self._expected(panel, years), models)
         self._write(path/"data_provenance.json", provenance)
         self._complete(path, identity, stage, partition, selection_hash=selection_hash)

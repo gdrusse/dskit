@@ -536,6 +536,7 @@ class EventGrid(Node):
 #: document enforces on wired ports, so a declared port and a wired port
 #: are never distinguishable by their names alone.
 _PORT_OK = r"^[a-z_][a-z0-9_]*$"
+_PORT_MATCH = re.compile(_PORT_OK).match  # compiled once; asked per port
 
 #: What :class:`Concat` may union. ``"records"`` is a SEQUENCE of rows —
 #: the record streams two venues emit. ``"table"`` is a MAPPING keyed by
@@ -625,7 +626,7 @@ def _declared_tables_problems(problems, params, *, values_must_be):
         )
         return
     for port, table in tables.items():
-        if not isinstance(port, str) or not re.match(_PORT_OK, port):
+        if not isinstance(port, str) or not _PORT_MATCH(port):
             problems.append(f"tables: port names must match {_PORT_OK}, got {port!r}")
         if not isinstance(table, dict):
             problems.append(

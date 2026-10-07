@@ -702,15 +702,19 @@ on it without breaking its rulings.
 - **`predictive_cdf._QUADRATURE_NODES` is shared by training and evaluation**:
   the Torch wing/CRPS terms and `_Curve._segment_integrals` read it, and a test
   pins that they agree. Change it in one place, never per side.
+- **`wing_twcrps` is NOT the study's `tail_crps`** (ADR-0236): it weighs each
+  wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
+  Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
+  `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
 - **No venue name in a fee model (owner ruling 2026-10-06).** `fee_mechanics.py`
   takes the rate as a call argument and the grid as a policy; a venue's fee-type
-  names, rates, multipliers and tick belong to the child's config (ADR-0242).
+  names, rates, multipliers and tick belong to the child's config (ADR-0245).
 - **A node sees no document name until `run()`.** `records-write-run` therefore
   refuses a bad `path` at validation but the run-name rule (`run_name_problems`)
-  only at run; apply it to `document.name` in a config test (ADR-0244).
+  only at run; apply it to `document.name` in a config test (ADR-0247).
 - **`ParquetSeries` reads bytes once**: it hashes the bytes it then parses, so
   a file that drifts refuses the run. Its age cap can reach over a missing day;
-  `age_ms` reports it (ADR-0240).
+  `age_ms` reports it (ADR-0243).
 
 ## Contents
 
@@ -736,7 +740,7 @@ dskit/pipeline/
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
 │                      config-declared checks + slice stability (ADR-0107)
-├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning;
+├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning; declared_width;
 │                      spawn is the hook, measure_one the one reading (ADR-0093)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
@@ -758,7 +762,7 @@ dskit/pipeline/
 │                      scored roles; label_reaches is the one purge rule (ADR-0215)
 ├── kinds_availability.py  family-availability (ADR-0226)
 ├── kinds_rank.py      TrailingRank: top-N entities by an aggregate over the trailing window (by import path)
-├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0244)
+├── kinds_run_write.py RecordsWriteRun (records-write-run, a RecordsWrite subclass): `{run}` in the file stem, `run_id` on every row (by import path, ADR-0247)
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085),
 │                      horizon-pairs (dated close paired with the close H days later, ADR-0228)
 ├── kinds_stats.py     owned validate + stat_test
@@ -788,9 +792,9 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
-├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0243)
-├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0243)
-├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0242
+├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
+├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)
+├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
@@ -827,11 +831,11 @@ dskit/pipeline/
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228),
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment),
-│                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0240),
-│                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0241)
+│                      parquet_series (ParquetSeries + prior_index + the stream-manifests node, ADR-0243),
+│                      vol_estimators (VolEstimatorFeatures: rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```

@@ -65,6 +65,34 @@ def test_twcrps_exact_integration_matches_brute_force_and_is_additive():
     assert both <= Crps().score(dist, y)
 
 
+def _twcrps_by_bisect(rule, dist, y):
+    """The pre-counter form of the score, restated as an independent reference."""
+    points = sorted(set(dist.samples) | {float(y)})
+    total = 0.0
+    for left, right in zip(points, points[1:]):
+        gap = (dist.cdf(left) - (1.0 if y <= left else 0.0)) ** 2
+        if gap:
+            total += gap * sum(
+                max(0.0, min(right, hi) - max(left, lo)) for lo, hi in rule.intervals
+            )
+    return total
+
+
+def test_twcrps_counter_walk_is_bit_identical_to_bisecting_including_nan():
+    rng = random.Random(11)
+    rules = [ThresholdWeightedCrps([[-2.5, -0.5], [0.5, 2.5]]),
+             ThresholdWeightedCrps([[-INF, -1.0], [1.0, INF]]),
+             ThresholdWeightedCrps([[-INF, INF]])]
+    for _ in range(400):
+        xs = [rng.choice([rng.gauss(0, 1.5), float(rng.randint(-2, 2)), -0.0])
+              for _ in range(rng.choice([1, 2, 7, 40]))]
+        dist = SampleDistribution(xs)
+        y = rng.choice([rng.gauss(0, 2), xs[0], math.nan, INF, -INF, 0, -0.0])
+        for rule in rules:
+            got, want = rule.score(dist, y), _twcrps_by_bisect(rule, dist, y)
+            assert got == want or (got != got and want != want), (xs, y)
+
+
 def test_twcrps_ignores_errors_outside_the_region():
     dist = SampleDistribution([0.0])
     assert ThresholdWeightedCrps([[1.0, 2.0]]).score(dist, 0.5) == 0.0
@@ -205,6 +233,14 @@ def test_score_node_reads_only_its_split_and_counts_skips():
     assert math.isfinite(metrics["berkowitz_pvalue"]) and metrics["pit_ks_pvalue"] > 0
     assert isinstance(out["report"], JsonArtifact)
     assert set(out["report"].value["brier_by_threshold"]) == {"-1.0", "1.0"}
+
+
+def test_score_node_brier_mean_is_the_rule_score_mean_exactly():
+    node = ScoreDistributions("score", dict(PARAMS))
+    out = node.run(SimpleNamespace(splits=_HalfSplit()), {"forecasts": _rows()})
+    pairs, _ = node._scored_rows(SimpleNamespace(splits=_HalfSplit()), _rows())
+    rule = ThresholdBrier(PARAMS["thresholds"])
+    assert out["metrics"]["brier"] == sum(rule.score(d, y) for d, y in pairs) / len(pairs)
 
 
 def test_score_node_refuses_a_run_with_no_splits():

@@ -1,4 +1,4 @@
-"""kalshi_history pins (ADR-0236): the boundaries and refusals the main file left to mutation.
+"""kalshi_history pins (ADR-0239): the boundaries and refusals the main file left to mutation.
 
 - A status the pack does not rank is scanned FIRST, whatever ranked statuses sit beside it. The documented rule ("one the
   pack does not rank goes first, as given") was pinned only beside ``settled``, whose rank is the highest, so an unranked

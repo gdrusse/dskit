@@ -1,6 +1,9 @@
 """MarketRecord envelope shape rules + the accounting split arithmetic."""
 
+import math
 from datetime import date, datetime, timedelta
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -117,6 +120,35 @@ class TestTheClusterIdentityIsOneRule:
 
     def test_an_unusable_group_falls_back_the_way_the_envelope_would(self):
         assert cluster_of({CLUSTER_FIELD: 3, CONTRACT_FIELD: "C-1"}) == "C-1"
+
+
+class TestNumberOkFastPath:
+    """``number_ok`` short-circuits an exact ``float``/``int``; every other
+    type must answer exactly as the general rule does."""
+
+    def _general(self, value):
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+        )
+
+    def test_every_edge_answers_as_the_general_rule(self):
+        class Int(int):
+            pass
+
+        class Flt(float):
+            pass
+
+        cases = [0, 1, -1, True, False, 0.0, -0.0, 1.5, math.nan, math.inf,
+                 -math.inf, Int(3), Flt(2.0), Flt("nan"), Decimal(1),
+                 Fraction(1, 2), None, "1", [1], 1j, 10**300]
+        for value in cases:
+            assert records.number_ok(value) is self._general(value), value
+
+    def test_an_int_too_big_for_a_float_still_raises(self):
+        with pytest.raises(OverflowError):
+            records.number_ok(10**400)
 
 
 class TestAccountingSplit:

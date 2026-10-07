@@ -29,6 +29,7 @@ Import cost: stdlib + :mod:`dskit.assets`.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -60,6 +61,7 @@ __all__ = [
     "durable_write_json",
     "dir_digest",
     "file_digest",
+    "file_signature",
     "fsync_dir",
     "parse_utc",
     "utc_now",
@@ -130,6 +132,15 @@ def parse_utc(value):
     """
     if not isinstance(value, str) or not value:
         raise AssetError([f"expected an ISO date/datetime string, got {value!r}"])
+    return _parse_utc_str(value)
+
+
+# Pure parsing of an immutable str into an immutable datetime: safe to
+# memoize. Acquisition re-parses the same stamps per record; lru_cache
+# never caches a raise, so a bad spelling refuses afresh every call.
+@functools.lru_cache(maxsize=4096)
+def _parse_utc_str(value):
+    """Parse a non-empty ISO string into an aware UTC datetime (memoized)."""
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
@@ -398,3 +409,31 @@ def file_digest(path) -> str:
     except OSError as exc:
         raise AssetError([f"cannot read {path!r}: {exc}"]) from exc
     return h.hexdigest()
+
+
+def file_signature(path):
+    """Return a file's ``(size, mtime_ns)``, the cheap identity a re-check compares.
+
+    The one owner of that rule: a scan's member check, a pull's mid-copy check
+    and a memo key all stat files this way.
+
+    Parameters
+    ----------
+    path : str
+        The file.
+
+    Returns
+    -------
+    tuple of int
+        ``(st_size, st_mtime_ns)``.
+
+    Raises
+    ------
+    AssetError
+        When the file cannot be stat'ed.
+    """
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+    return info.st_size, info.st_mtime_ns

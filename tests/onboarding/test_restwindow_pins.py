@@ -1,4 +1,4 @@
-"""restwindow pins (ADR-0237): the restated transport agrees with the packs it was restated from, and its refusals are exact.
+"""restwindow pins (ADR-0240): the restated transport agrees with the packs it was restated from, and its refusals are exact.
 
 ``restwindow`` restates ``restapi``'s transport rather than importing an underscore name of it (so a private rename cannot
 break it), which makes agreement something a test must hold: the retried statuses, the client name sent and the dot-path

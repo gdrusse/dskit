@@ -172,6 +172,11 @@ _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
 _NAME_OK = r"^[a-z0-9][a-z0-9._-]*$"
 _SEGMENT_OK = r"^[A-Za-z_][A-Za-z0-9_]*$"
+# Compiled once for the reference walkers' hot paths; the string forms
+# above stay the named grammar (and appear in error messages).
+_NODE_KEY_MATCH = re.compile(_NODE_KEY_OK).match
+_KIND_MATCH = re.compile(_KIND_OK).match
+_SEGMENT_MATCH = re.compile(_SEGMENT_OK).match
 
 def _copy_mapping_or_raw(value):
     """Copy a JSON object, leaving invalid shapes for validation."""
@@ -276,8 +281,8 @@ def parse_node_ref(value):
     parts = body.split(".") if body else []
     if (
         len(parts) < 2
-        or not re.match(_NODE_KEY_OK, parts[0])
-        or not all(re.match(_SEGMENT_OK, p) for p in parts[1:])
+        or not _NODE_KEY_MATCH(parts[0])
+        or not all(_SEGMENT_MATCH(p) for p in parts[1:])
     ):
         raise ConfigError(
             [
@@ -450,8 +455,8 @@ def parse_prev_ref(value):
     parts = target.split(".") if isinstance(target, str) else []
     if (
         len(parts) < 2
-        or not re.match(_NODE_KEY_OK, parts[0])
-        or not all(re.match(_SEGMENT_OK, p) for p in parts[1:])
+        or not _NODE_KEY_MATCH(parts[0])
+        or not all(_SEGMENT_MATCH(p) for p in parts[1:])
     ):
         raise ConfigError(
             [
@@ -493,7 +498,7 @@ def _spellable_keys(value):
     """Return the keys of ``value`` a path segment can name — () for a non-dict."""
     if not isinstance(value, dict):
         return ()
-    return tuple(k for k in value if isinstance(k, str) and re.match(_SEGMENT_OK, k))
+    return tuple(k for k in value if isinstance(k, str) and _SEGMENT_MATCH(k))
 
 
 def flatten_param_paths(node_key, params):
@@ -564,7 +569,7 @@ def flatten_param_paths(node_key, params):
         return {}
     out = {}
     for name, value in params.items():
-        if isinstance(name, str) and re.match(_SEGMENT_OK, name):
+        if isinstance(name, str) and _SEGMENT_MATCH(name):
             _flatten_into(out, f"{node_key}.{name}", value)
     return out
 
@@ -656,7 +661,7 @@ class NodeSpec:
         if (
             isinstance(self.uses, str)
             and self.uses
-            and not (re.match(_KIND_OK, self.uses) or is_class_ref(self.uses))
+            and not (_KIND_MATCH(self.uses) or is_class_ref(self.uses))
         ):
             errors.append(
                 f"uses must be a registered kind name (like 'stat_test') or an "
@@ -668,7 +673,7 @@ class NodeSpec:
             )
         else:
             for port, ref in self.inputs.items():
-                if not isinstance(port, str) or not re.match(_NODE_KEY_OK, port):
+                if not isinstance(port, str) or not _NODE_KEY_MATCH(port):
                     errors.append(
                         f"inputs: port names must match {_NODE_KEY_OK}, got {port!r}"
                     )
@@ -979,7 +984,7 @@ class StageSpec:
         if (
             isinstance(self.uses, str)
             and self.uses
-            and not (re.match(_KIND_OK, self.uses) or is_class_ref(self.uses))
+            and not (_KIND_MATCH(self.uses) or is_class_ref(self.uses))
         ):
             errors.append(
                 "uses must be a registered stage kind or an import "
@@ -989,7 +994,7 @@ class StageSpec:
             errors.append(f"inputs must be a dict, got {self.inputs!r}")
         else:
             for port, ref in self.inputs.items():
-                if not isinstance(port, str) or not re.match(_NODE_KEY_OK, port):
+                if not isinstance(port, str) or not _NODE_KEY_MATCH(port):
                     errors.append(f"inputs: bad port name {port!r}")
                 if not is_node_ref(ref):
                     errors.append(
@@ -1688,7 +1693,7 @@ class ForeachSpec:
             )
             return
         for key, spec in self.pipeline.items():
-            if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+            if not isinstance(key, str) or not _NODE_KEY_MATCH(key):
                 errors.append(
                     f"foreach.pipeline: template keys must match "
                     f"{_NODE_KEY_OK}, got {key!r}"
@@ -2202,7 +2207,7 @@ class PipelineDocument:
             )
         else:
             for key, spec in self.pipeline.items():
-                if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+                if not isinstance(key, str) or not _NODE_KEY_MATCH(key):
                     errors.append(
                         f"pipeline: node keys must match {_NODE_KEY_OK}, got {key!r}"
                     )
@@ -2236,7 +2241,7 @@ class PipelineDocument:
                 errors.append("stages must be a non-empty map when declared")
             else:
                 for key, spec in self.stages.items():
-                    if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+                    if not isinstance(key, str) or not _NODE_KEY_MATCH(key):
                         errors.append(
                             f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
                         )

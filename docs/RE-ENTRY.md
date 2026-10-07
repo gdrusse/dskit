@@ -1,62 +1,157 @@
-# Active handoff — 2026-10-06: crypto_trading child, data pulls + features ready for WSL
+# Active handoff — 2026-10-07: crypto_trading child + additive dskit packs, merged to main
 
-**Landed on branch `claude/crypto-trading-child` (not merged to main; not yet locked).**
-New child `children/crypto_trading`. Stage A sources/suites: Kalshi BTC/ETH hourly + 15-minute contracts
-(markets, fees, 15-minute candles, live books split 15m/hourly) and Binance Vision BTC/ETH 1-minute klines
-+ BVOL (research-only licence). Stage B document `configs/run-features-15m.json`: point-in-time features,
-a BRTI basis from strike anchors, a 60 s-average lognormal fair value, the Kalshi fee, and a kill test with
-day-block SEs and held-out only on an explicit edit; per-run published feature tables. The child suite is
-584 passed, 9 skipped (2026-10-07).
+**Landed on main.** New child `children/crypto_trading` and nine additive dskit modules (ADR-0239..0247; ADR-0241
+withdrawn). Our ADRs were renumbered at merge from 0236..0244 because main took 0236..0238. Packs:
+`kalshi_history`, `restwindow`, `zipcsv`, `parquet_series`, `kinds_run_write`, `vol_estimators`,
+`binary_pricing`, `binary_scoring` and `fee_mechanics` (venue-neutral; Kalshi's fee mapping stays in the child).
+No pre-existing dskit code changed. Child: Kalshi, Binance Vision (research licence only), Coinbase and Deribit
+sources with suites; `run-features-15m.json` and `run-features-hourly.json` (point-in-time features, BRTI basis,
+60 s-average lognormal fair value, fee, kill test with day-block SEs, held-out only on an explicit edit).
+Child suite: 643 passed, 9 skipped.
 
-**Why.** Research notes A0001 (ranked focus) and A0002 (data sources + live arbitrage snapshot) in the
-child's journal. Chosen problem: a calibrated short-horizon BTC/ETH settlement distribution, used to quote
-Kalshi crypto ladders as maker.
+**Why.** Journal A0001 (ranked focus) and A0002 (sources + live arbitrage snapshot). Problem: a calibrated
+short-horizon BTC/ETH settlement distribution, used to quote Kalshi crypto ladders as maker.
 
-**Review status.** Sonnet builder; two independent Sonnet final skeptics (correctness/leakage;
-tests/integration), 0 open Critical/Major on `1e7557f` after 4 fix rounds. Open Minors/Nits: for 15M markets
-moneyness reduces to ln(ref/spot), so the strike drops out (documented choice pending); fills are priced at
-the information-instant quote with no adverse selection, so profit is an upper bound; tau is measured from
-E, not I (at most +0.8 pp); an uppercase run name is refused only after compute; child `nodes.py` has a
-ruff D ignore; the child README is long (the runbook is a short checklist, about 2,500 words). Unverified: BVOL cadence, the 365-day year, today's fee
-schedule applied to history.
+**Review.** Sonnet builders; Sonnet skeptic loops per stream, then two-lens final loops. 0 Critical/Major on
+`07e68ca` (phase-3 round 2). After the main merge, the dskit suites' FAILED set equals origin/main's
+(environment: missing optional libraries). Open Minors/Nits:
+- the runbook's rerun-after-kill notes (7d/7e) and the 7c memory bound;
+- runbook length;
+- `CeilToTick(guard_decimals=0)` snaps before the ceiling;
+- restated helpers forced by "additive only" (`kalshi_history`/`restwindow`);
+- one duplicate `validate_inputs`;
+- for 15M markets the strike drops out of moneyness;
+- fills priced at the information-instant quote, so profit is an upper bound;
+- tau runs from E, not I.
 
-**Update 2026-10-07.** ADR-0236 to ADR-0244 are ACCEPTED and IMPLEMENTED, with new dskit files only
-(`git diff --name-status a2749a3..HEAD -- dskit tests` is A for every `.py`; its four M rows are the pipeline
-and onboarding README and CLAUDE trees). `crypto_trading` moved onto them (interim modules deleted;
-`tests/test_migration_golden.py` pins the old rows) and gained `run-features-hourly.json`, the
-`kalshi-history-*`, Coinbase and Deribit sources and runbook sections 7 and 8. Measured: the 15-minute trades
-pull is about 6 to 8 days and 52 GB in one all-or-nothing acquire (runbook 7e), so it runs last and only
-after the count; the four "hourly" series also hold daily and weekly ladders, pooled (7c census). Last final review: 0 Critical, 1 Major (B3-01,
-the B6 sizing block did not run as pasted), now fixed and pinned (the block runs from a bare HOME and repeats after a failure); the
-rest are fixed or listed in `TODO.md`.
+The per-ADR backlog is in `TODO.md`.
 
-**Owner decisions pending.** Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s,
-strike lag 30 s, and the store path placeholder `$OB`. A date bound for `kalshi_history` pulls (an ADR), a
-filter on open-to-close duration for the hourly document (an ADR), and whether the hourly run should refuse a
-row count past a memory budget (runbook B6 measures about 9.7 KB a decision row: 60 GB for the live days alone;
-the runbook's sizing copy is the bound usable today). Two owner rulings conflict on restated helpers (B3-08):
-"additive only" forces `kalshi_history` to restate `kalshi`'s row helpers and `restwindow` `restapi._pluck` (tests pin both equal to
-the originals), while "a function is never repeated" forbids it; `binary_scoring` and `binary_pricing` also share an identical
-`validate_inputs`, which can get one home in the next code round. Attribution of the six ADR-stream merge commits
-(`Claude Opus 5.5`, the rest `Claude Sonnet 5.5`) is unconfirmed.
+**Owner decisions pending.**
+- Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s and strike lag 30 s.
+- Set the store path `$OB`.
+- Optional ADRs: a date bound for `kalshi_history` pulls, an open-to-close duration filter for the hourly
+  document, and a memory budget refusal for hourly runs. The runbook's B6 gives about 9.7 KB a decision row.
 
-**Open in candidate code (new files on this branch, so not blocked by the additive-only rule; they wait for the
-next code round).** `CeilToTick(guard_decimals=0)` snaps to the nearest tick before the ceiling (F4). Fixed in
-round 2: the `kalshi_history` routing (A2-01: the archive's own listing decides, not `market_settled_ts`),
-`zipcsv._MAX_EPOCH_MS` (Z1-1), the `kalshi_history` status list, the `Above`/`Below`/`Between` examples and the
-zipcsv parity skip text. Round 3: a `kalshi_history` walk ends only on an empty cursor (A3-01); `BinaryFairValue.validate_params`
-no longer raises on a mistyped column or an overflowing lag, and both binary nodes carry the conformance suite (B3-02); the two
-skipped parity test files are gone, the frozen goldens hold the comparison (B3-07); a third migration golden pins the unpriced rows
-and a row on the cut (A3-02). An earlier note called these "edits to existing dskit code, refused"; they were not. The diff
-rule is read as code-only: `git diff --name-status a2749a3..HEAD -- dskit tests` is A for every `.py` and golden, plus the four doc M rows.
+**Next (on WSL).** `git pull` main. Follow `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md`
+in order:
+1. Stage A acquisitions.
+2. The 15-minute features run (B1-B5).
+3. Read the development kill-test report.
+4. Only then decide on held-out.
 
-**Next (on WSL).** Fetch the branch; follow
-`children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md` (stage A acquisitions, then
-B1-B5); read the development kill-test report; only then decide on the held-out read.
+Pull the 15-minute trades (about 6-8 days, 52 GB) and the hourly history last.
 
-**Known failures, not from this branch.** `tests/children` index_options (environment), plus 11 in
-`tests/pipeline` + `tests/onboarding` (test_alpaca, test_runs, test_uncertainty_set), identical on
-origin/main.
+# Continuation — 2026-10-07: explicit MIO handoff and Stage-0 census
+
+[The production development report](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+contains a concise calibration → nominal probabilities/grid/radius/bands → MIO
+inner LP/dual → robust trade/no-trade explanation, plus the complete pickup steps.
+This is an editorial restatement of reviewed U1, not an implemented solver.
+
+The first configured-source date-only census covers 393 tickers and 833,637
+pre-2026 price dates; none predates 2016 and 308 tickers have COVID-window dates.
+These are source counts, not admitted training rows. Evidence/script/config identities
+are saved in the local durable data directory named in the report.
+Broader history, split/vintage, panel/fold and storage/restore gates remain open.
+The backup destination preference is pending. No fit, new provider request,
+protected-row inspection or behavioral source/config change occurred.
+Continue the report's final “Pick up here” instructions; preserve the 216-attempt cap.
+
+# Active handoff — 2026-10-07: retain artifacts and define uncertainty
+
+The [production proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+now adds R1/U1 to H1/C1/S1: retain owned inputs, all trial checkpoints and forecasts,
+selection/calibration evidence, champion/reserve packages and verified backup/restore
+receipts. Existing fitted checkpoints do not resume interrupted optimizer state.
+Reuse the existing coherent Wasserstein-ball research; empirically calibrate its
+radius from settled chronological forecasts under explicit assumptions, then freeze
+and validate later. Early-stop monitoring is not independent calibration.
+The current radius is not estimated and no conditional-coverage guarantee is claimed.
+
+Next session must satisfy these Stage-0 gates before the authorized bounded run.
+Keep the 216-fit-attempt cap and all protected-data/provider/cloud/deployment limits.
+No training, backup migration, new solver or adaptive policy is implemented here.
+Two fresh sequential design reviews closed candidate 44b06166 with zero
+Critical/Major/Minor/Nit; their actual outputs and dependency identities are in the
+proposal. One focused manifest test passed; links and unchanged source/config/report
+bytes verified. This closure is documentation readiness, not implementation readiness.
+
+# Active handoff — 2026-10-07: history/COVID/split requirements for next run
+
+The owner requests these changes now or as an actionable next-session handoff,
+and permits the bounded pre-holdout cycle after the implementation/review gates.
+[The amended proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+is the controlling contract; its original publication reviews are historical.
+
+Next session: audit all usable owned history and source/panel coverage; verify
+split-adjusted versus as-traded prices, volumes, features, targets and applicable
+option terms; implement demonstrated generic gaps and verify split/vintage
+invariance. Replace 2020 H2 with a February–June 2020 development stress fold,
+report crash/rebound quote-date cohorts, and keep the total cap at 216 attempts.
+Then run reviewed pilots and Stages 1–4, deliver reports and wrap/push.
+No run was started by this amendment. Protected holdout, new provider acquisition,
+cloud spending and deployment/live trading remain excluded. Stage 5 needs a
+separate decision; monthly refitting remains separately unqualified.
+Two fresh sequential design reviews closed on `e78ec1be` with zero
+Critical/Major/Minor/Nit. Their actual outputs are retained in the proposal.
+One focused manifest test passed; links, old review identity, unchanged source/
+config/report bytes and clean diff verified. Future implementation still needs
+its own tests and final review gates before training.
+
+# Active handoff — 2026-10-07: CDF production proposal, pushed and wrapped
+
+Owner requested synthesis after the four advanced reports were verified on main
+(`f98af937`). [The proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+recommends pooled PatchTST with 42 base inputs, CNN/VanillaTransformer challengers,
+and a bounded feature/HPO/confirmation plan (204 fit cells, 216-attempt first-pass cap).
+This is a proposal, not an approved run or production release.
+
+Publication verified on remote main at `77ca80aca592e883cc7eb8f35f859897a7bceac5`.
+Proposal SHA256: `3233e06d2f6190f28e33fb73cd09aa414c668b4c2b629f8a9dc8560b039bd2f9`.
+All four existing report blobs remain identical. The task remote branch does not
+exist; the clean local task branch may be removed after this evidence-only wrap.
+Historical training checkouts and retained artifacts must remain available.
+
+Two fresh independent design skeptics on `ca9b2102` returned zero Critical/Major;
+their sole shared Minor (TiDE rounding) is corrected editorially. Full reviewer
+outputs and unresolved execution prerequisites are retained in the proposal.
+One focused manifest/parity test passed; aggregate hashes, metrics and links checked.
+Source/config/report bytes remain unchanged. No training, 2026 holdout access,
+providers, live trading or full suite occurred.
+
+Next: owner decision on the proposed run, then Stage-0 source/universe/clock/fold
+and search-integration gates. Later-2026 ticker selection cannot validate an
+earlier-2026 independent test without a point-in-time universe reconstruction.
+A monthly refit policy needs separate validation from the proposed static test.
+
+# Active handoff — 2026-10-06: behavior-identical speedups (merged)
+
+**Merged to main as `2ef373d9` (PR #18, fast-forward from `f9f2f905`).** Pure speedups across
+index_options (quote/debit backtests: sorted-quotable-strike bisect, per-entry `_expected`
+memo, float fast paths, sliced American charges; cdf_study: groupby-indices instead of
+per-row filters, linear settled-event history, positional term slopes, files hashed once;
+grid: no redundant deepcopies) and dskit (`number_ok` fast path, precompiled ref regexes,
+one document hash per run, twCRPS counter walk, batched LightGBM scale/curve predictions,
+numpy-pack column reads, `parse_utc` cache, restamp splice, O(1) duplicate-fill check,
+metadata read once). Every rewrite keeps the HEAD path as a fallback for subclasses,
+non-float/non-ns inputs and errors.
+
+**Evidence.** Full suite (`tests` + index_options) on base and candidate: every baseline
+test has the same outcome (10 pre-existing failures, environment-only); 30 new pinning
+tests compare fast paths to the original code. Ruff counts unchanged. Measured: PayoffSelect
+walk 4.8x, LightGBM rung 20k rows 53s -> 0.6s, decision-weighted curves 32x, candidate
+lookup per row 78ms -> 0.07ms, term slopes ~3x, `_read_inventory` 1.6x.
+
+**Review.** Three independent skeptic passes (correctness, tests/integration, closing
+correctness): all Critical/Major fixed (subclass `predict_scale` bypass; float32 inputs;
+out-of-range macro dates). Open Minors: index_options fast paths restate `leg_intrinsic`
+and `number_ok` for floats (marked "same rule as"); decision-region panel lookups and
+`_verified_partition` digest reuse have no randomized old-vs-new pin; batched LightGBM
+raises ValueError (not LightGBMError) on ragged rows, unreachable.
+
+**Next.** Remote branches `perf/speedups-2026-10-05`, `claude/zealous-goodall-kdllva` and
+`run-steps` are fully in main but still exist: this session's proxy refused the deletes.
+Four other branches hold unmerged commits and were kept. `torch.py` untouched (byte-pinned).
 
 # Active handoff — 2026-10-04: 300 more stocks pulled; pooled-heads study run
 
@@ -116871,3 +116966,18 @@ P10 used pooled 25-asset fits and a study-wide 200-cell max-statistic
 correction. Gate 2 retained QQQ at three minutes and NFLX at ten; both later
 failed Gate 3's frozen null-spread calibration. P11 changes the estimand and
 must not overwrite or reinterpret those artifacts.
+
+
+## 2026-10-07 advanced CDF final delivery checkpoint
+
+Frozen training candidate 29d3bec1 finished all queues; 48,073 completed fits and 21,467 explicit skips account for all 318,330 expanded outcomes. Four final reports and the results memo are prepared under children/index_options/docs. Independent payload/capacity audit passed; browser summary and paired-table arithmetic passed. Integration branch codex/advanced-interim-report-20261006 includes main 21821e2b and frozen study source. A proven provenance guard defect is corrected: nonempty source pins now bind both the declared checkout and executing/imported package sources; the historical configuration refuses under changed integrated code. Its original frozen empirical artifacts remain unchanged. Final candidate reviews and remote delivery remain pending; do not infer closure from the original training R4 gate. Other branch cleanup removed three already-merged remote refs; unresolved or active branches and all concurrent checkouts were preserved.
+
+
+### 2026-10-07 advanced CDF delivery gate closed
+
+Candidate 5b150ca578b7eada44ff05aa5cbba03d138e18a7: fresh correctness and tests/integration lenses both zero Critical/Major; 331 and 1,288 focused tests respectively. Four reports regenerated exactly; full 318,330-outcome and 406,865-payload audit passed. One documentary CSS input omission is resolved by an evidence-only path/hash/retention append accepted by the reviewer. No code/tests/config/report/ADR change after lock. Memo and full review outputs are in children/index_options/docs/memos/2026-10-07-advanced-architecture-results.md and docs/reports/advanced-cdf-zoo-20261006/final-verification.json. Owner-authorized next step is normal fast-forward publication to main and contained task-branch deletion; preserve frozen workspaces/artifacts and other branches. No 2026 holdout, new fitting or trading authorized.
+
+
+### 2026-10-07 verified advanced study publication
+
+Reviewed release d4d00d395a6fe44f35139ebb5f2180178054afb0 is on remote main; all four report blobs match local/view copies. Task remote branch codex/advanced-interim-report-20261006 deleted with expected-head guard and absence verified. Durable receipt and three earlier contained-branch removals are in final-verification.json. This follow-up is evidence-only; reviewed code/tests/config/HTML/ADR blobs remain unchanged. Preserve frozen run artifacts/local recipes and unreviewed/concurrent work. Disable the task monitor after final receipt commit verification.

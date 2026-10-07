@@ -42,8 +42,8 @@ row's asset and writes what was KNOWN just before ``decision_ms``:
 Klines are USDT-quoted, a proxy for the USD index Kalshi settles on, and CC BY-NC-SA: research
 use only, so the node is forbidden in a served graph.
 
-The streams are read through :class:`dskit.pipeline.libs.parquet_series.ParquetSeries` (ADR-0240)
-and the estimators come from :mod:`dskit.pipeline.libs.vol_estimators` (ADR-0241), which emit a
+The streams are read through :class:`dskit.pipeline.libs.parquet_series.ParquetSeries` (ADR-0243)
+and the estimators come from :mod:`dskit.pipeline.libs.vol_estimators` (ADR-0244), which emit a
 per-bar VARIANCE: the square root and the per-second unit are this node's thin step. The ``manifests``
 input, from a :class:`dskit.pipeline.libs.parquet_series.StreamManifests` node, puts the store into
 the run identity; a store that moved since is refused.

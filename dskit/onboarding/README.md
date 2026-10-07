@@ -185,7 +185,7 @@ after close), `candles` (`(ticker, ts)`), `fee_schedules` and `orderbooks`
 (provider-shaped bids, never mirrored) — through one injectable getter with
 pacing and 429/5xx retry; `libs/kalshi.py` is the knob reference.
 
-The `kalshi_history` kind (ADR-0236) is a standalone sibling of `kalshi` for HISTORY: `markets` (adds
+The `kalshi_history` kind (ADR-0239) is a standalone sibling of `kalshi` for HISTORY: `markets` (adds
 `expiration_value`, `settlement_ts`, `volume`), `candles` (per event, or in ticker batches; archived markets
 one by one), `trades` (key `trade_id`, with `taker_side`) and `orderbooks` (adds `observed_at`). A market the
 archive's own listing holds is the archive's (its live copy is dropped, whatever its settlement time); `trades`
@@ -288,7 +288,7 @@ exhausted retries abort with no cursor. `transform` (`pkg.module:Class`) reshape
 a response in your code, `raw_relpath_template` keeps the raw bytes, and
 `cache_dir` re-derives from raw responses already on disk without the network.
 
-The `restwindow` kind (ADR-0237) declares the time-window REST that `restapi` cannot: `pagination` is `window`
+The `restwindow` kind (ADR-0240) declares the time-window REST that `restapi` cannot: `pagination` is `window`
 (one request per `step` seconds over `[start, end)`; `max_windows` refuses rather than truncates, `lag` keeps
 forming rows out, `truncated_path` refuses a vendor-cut response) or `cursor` (a token read from each response
 and sent back; a short `page_size` page ends the walk). `row_fields` names positional array rows, `epoch`
@@ -298,7 +298,7 @@ asked for. No credential. Worked configs:
 [`index-series`](../../examples/onboarding/source-restwindow-index-series.json) and
 [`trades`](../../examples/onboarding/source-restwindow-trades.json); `libs/restwindow.py` is the knob reference.
 
-`libs/zipcsv.py` (ADR-0239) is an `httpblobs` `transform`, named by import path
+`libs/zipcsv.py` (ADR-0242) is an `httpblobs` `transform`, named by import path
 (`dskit.onboarding.libs.zipcsv:ZipCsvToParquet`): a vendor zip of one CSV becomes typed parquet under a
 `transform_params` layout (`columns`: vendor name, `output` or null to drop, `kind` `float|int|text|ts`, a `ts`
 `unit`; `header`, `unique_instants`, `instant`, `max_member_bytes`). Epochs are written in milliseconds; the
@@ -395,7 +395,7 @@ dskit/onboarding/
 ├── __init__.py        public surface: OnboardingRoot, Connector, run_acquisition, ...
 ├── base.py            reuse from assets (hash, errors) + fsync durability + parse_utc
 ├── default_model.py   the ratified P2 model as data (hash-pinned to the ADR doc)
-├── layout.py          OnboardingRoot: every path in the estate
+├── layout.py          OnboardingRoot: every path in the estate; content_token / files_token (memo keys, ADR-0236 amendment)
 ├── connector.py       Connector ABC, message envelope, check_config, resolve_connector
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
@@ -415,7 +415,7 @@ dskit/onboarding/
 │   ├── cboe.py        Cboe daily index history CSVs + delayed option chains, OCC-parsed (stdlib urllib, ADR-0182)
 │   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
-│   ├── kalshi_history.py Kalshi history: /historical routing, event-level candles, trades, settlement fields, per-book observed_at; standalone (stdlib urllib, ADR-0236)
+│   ├── kalshi_history.py Kalshi history: /historical routing, event-level candles, trades, settlement fields, per-book observed_at; standalone (stdlib urllib, ADR-0239)
 │   ├── httpblobs.py   one HTTP GET per entity as hashed FILEs + inventory RECORD; throttle, retry, 404 refusal, transform hook, read-through cache (stdlib, ADR-0233)
 │   ├── localblobs.py  local files as hashed binary artifacts: FILE + inventory RECORD per file, fingerprint cursor (stdlib, ADR-0225)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
@@ -424,9 +424,9 @@ dskit/onboarding/
 │   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
-│   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0237)
+│   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
 │   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
-│   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0239)
+│   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding
@@ -436,7 +436,7 @@ dskit/onboarding/
 
 Tests: `python -m pytest tests/onboarding -q` (purity gate, model-hash
 parity with the architecture doc, connector conformance, CLI e2e through
-`sync-published`). The ADR-0236/0237/0239 packs have their own suites:
+`sync-published`). The ADR-0239/0240/0242 packs have their own suites:
 `tests/onboarding/test_kalshi_history.py`, `test_restwindow.py`, `test_zipcsv.py`, with boundary pins in
 `test_{kalshi_history,restwindow}_pins.py` and `test_zipcsv_golden.py` (the former child's output, frozen in `golden/`).
 

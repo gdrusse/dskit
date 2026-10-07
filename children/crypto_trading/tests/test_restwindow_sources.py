@@ -1,4 +1,4 @@
-"""The shipped Coinbase and Deribit sources and suites against scripted vendors (ADR-0237).
+"""The shipped Coinbase and Deribit sources and suites against scripted vendors (ADR-0240).
 
 The restwindow pack's one HTTP seam (``getter``) is a fake that answers the shapes probed from the two public
 APIs on 2026-10-07: Coinbase Exchange's candles (a bare list of positional rows, newest first, epoch seconds, both

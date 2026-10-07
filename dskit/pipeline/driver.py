@@ -1985,13 +1985,17 @@ def _resolve_run(document, the_plan, asof):
         _strip_notes(document.to_obj()), DOC_NON_IDENTITY_SECTIONS
     )
     run_hash = _canonical_hash({"document": identity, "data_fingerprint": fingerprints})
+    # ``identity`` is exactly what ``config_hash`` canonicalizes, so this IS
+    # ``document.hash`` without a second to_obj/strip pass; the run reads it
+    # back from ``payload`` rather than re-deriving it at every write.
+    document_hash = _canonical_hash(identity)
     run_dir, prev_dir, prev = _open_run_dir(document, asof, run_hash)
 
     os.makedirs(run_dir, exist_ok=True)
     _write_json(os.path.join(run_dir, "config.json"), document.to_obj())
     _write_json(os.path.join(run_dir, "plan.json"), the_plan.to_obj())
     payload = {
-        "document_hash": document.hash,
+        "document_hash": document_hash,
         "run_hash": run_hash,
         "asof": asof,
         "splits": splits_info,
@@ -2268,7 +2272,7 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
         {
             "name": document.name,
             "asof": ctx.asof,
-            "document_hash": document.hash,
+            "document_hash": resolved.payload["document_hash"],
             "run_hash": resolved.run_hash,
             "nodes": ",".join(the_plan.order),
             **_tracked_params(document.expanded, the_plan.order),
@@ -2371,7 +2375,7 @@ def _report_lines(document, asof, the_plan, resolved, run, result):
     )
     lines += [
         f"- run: `{document.name}-{asof}-{resolved.run_hash[:8]}`",
-        f"- document hash: `{document.hash[:16]}…`",
+        f"- document hash: `{resolved.payload['document_hash'][:16]}…`",
         f"- previous run: {previous}",
         "",
         "| node | role | status | seconds |",
@@ -2417,7 +2421,7 @@ def _record_run(document, asof, the_plan, resolved, run):
         {
             "name": document.name,
             "asof": asof,
-            "document_hash": document.hash,
+            "document_hash": resolved.payload["document_hash"],
             "run_hash": resolved.run_hash,
             "state": run.state,
             "exit_code": result.exit_code,

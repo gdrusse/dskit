@@ -44,7 +44,7 @@ from abc import ABC, abstractmethod
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.workflow import EXIT_ERROR, EXIT_OK, LANE_SEP, LEDGER_NAME, path_hash
 from dskit.pipeline.workflow_batch import STATUS_OK, STATUS_PENDING, land_bytes
-from dskit.pipeline.workflow_report import READERS
+from dskit.pipeline.workflow_report import READERS, row_matches
 
 __all__ = [
     "RollupError", "ColumnKind", "CellColumn", "CountColumn", "COLUMN_KINDS",
@@ -115,8 +115,8 @@ def _expand(template, **values):
 
 
 def _matches(row, where, lane):
-    """Return True when every ``where`` field equals its (lane-expanded) value."""
-    return all(str(row.get(k)) == _expand(v, lane=lane) for k, v in (where or {}).items())
+    """Return True when every ``where`` field reads as its (lane-expanded) value."""
+    return row_matches(row, {k: _expand(v, lane=lane) for k, v in (where or {}).items()})
 
 
 def _number(value):

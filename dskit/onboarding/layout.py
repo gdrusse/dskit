@@ -39,13 +39,63 @@ from .base import (
     _check_segment,
     _check_str,
     _raise_if,
+    canonical_hash,
+    file_signature,
 )
 from .default_model import onboarding_model
 
-__all__ = ["OnboardingRoot"]
+__all__ = ["OnboardingRoot", "files_token"]
 
 #: The top-level directories ``create`` builds — the whole P2 estate.
 _SUBDIRS = ("store", "raw", "observations", "forecasts", "state", "published")
+#: The directories whose committed files a read consumes: snapshots, rows, forecasts.
+_READ_SUBDIRS = ("raw", "observations", "forecasts")
+
+
+def files_token(paths):
+    """Return a digest of every file under ``paths`` by path and :func:`file_signature`.
+
+    A directory is walked (links are not followed into; a directory it
+    cannot list refuses); a missing path is recorded as missing, and a file
+    gone mid-walk is left out. Nothing is
+    opened: the token is cheap, and it moves when a file is added, removed,
+    resized or touched, which for write-once acquisitions is every change a
+    reader could see.
+
+    Parameters
+    ----------
+    paths : iterable of str
+        Files or directories; their order does not matter.
+
+    Returns
+    -------
+    str
+        A sha256 hex digest.
+
+    Raises
+    ------
+    AssetError
+        When a directory under ``paths`` cannot be listed: a subtree the
+        walk silently skipped would drop out of the token.
+    """
+    def unlistable(error):
+        raise AssetError([f"cannot list {error.filename}: {error}"]) from error
+
+    tops = []
+    for top in sorted({os.path.abspath(p) for p in paths}):
+        entries = [[top, None, None]] if not os.path.exists(top) else []
+        walk = os.walk(top, onerror=unlistable) if os.path.isdir(top) else [
+            (os.path.dirname(top), [], [os.path.basename(top)])]
+        for folder, dirs, files in walk:
+            dirs.sort()
+            for name in sorted(files):
+                path = os.path.join(folder, name)
+                try:
+                    entries.append([path, *file_signature(path)])
+                except AssetError:
+                    continue
+        tops.append(entries)
+    return canonical_hash(tops)
 
 
 class OnboardingRoot:
@@ -189,6 +239,22 @@ class OnboardingRoot:
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)
+
+    def content_token(self):
+        """Return a token that moves whenever a read of this root could read something new.
+
+        The key of a memo built from the root's acquisitions (a cached
+        panel, ADR-0236 amendment): equal tokens mean no snapshot was
+        added, removed or touched since. Only directory entries are read.
+
+        Returns
+        -------
+        str
+            :func:`files_token` over the root's ``raw/``, ``observations/``
+            and ``forecasts/``; ``state/``, ``published/`` and ``store/`` are
+            bookkeeping no read consumes, so they never move it.
+        """
+        return files_token(os.path.join(self.root, sub) for sub in _READ_SUBDIRS)
 
     # -- path helpers: every path in the estate comes from here ------------
 

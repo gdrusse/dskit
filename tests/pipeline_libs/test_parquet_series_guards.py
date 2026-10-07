@@ -1,4 +1,4 @@
-"""ParquetSeries guard pins (ADR-0240): each ordering, range and window rule has a case that only IT refuses or answers.
+"""ParquetSeries guard pins (ADR-0243): each ordering, range and window rule has a case that only IT refuses or answers.
 
 ``test_parquet_series.py`` pins the contract; a mutation pass over ``parquet_series.py`` found 22 single-token changes in
 these guards that every test still passed (a weaker ordering check, a loosened bound, a window cut a day early). Each case

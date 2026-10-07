@@ -183,9 +183,152 @@ def test_a_drifted_file_refuses(store, tmp_path):
         node.run(_ctx(tmp_path), {})
 
 
+# -- ParquetFrameCache (ADR-0236 amendment): build a frame once per identity ----------------------
+
+def _builder(calls, frame=None):
+    import pandas as pd
+
+    def build():
+        calls.append(1)
+        built = pd.DataFrame({"a": [1, 2], "b": ["x", None]}) if frame is None else frame
+        return built, {"rows": len(built), "pair": (1, 2), 3: "int key"}
+    return build
+
+
+def test_a_frame_is_built_once_and_reused_while_its_identity_holds(tmp_path):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    frame, payload, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert (state, calls) == ("stored", [1])
+    assert payload == {"rows": 2, "pair": [1, 2], "3": "int key"}  # what a reuse will return
+    again, reused, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert (state, calls, reused) == ("reused", [1], payload)
+    pd.testing.assert_frame_equal(frame, again)  # a build hands back the stored frame too
+
+
+def test_a_moved_identity_rebuilds_into_the_one_slot(tmp_path):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    other = pd.DataFrame({"a": [7]})
+    frame, _, state = cache.load_or_build(lambda: {"v": 2}, _builder(calls, other))
+    assert state == "stored" and calls == [1, 1] and frame.a.tolist() == [7]
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "stored" and calls == [1, 1, 1]  # one slot: the first was replaced
+    assert sorted(p.name for p in (tmp_path / "cache").iterdir()) == ["frame.parquet",
+                                                                        "record.json"]
+
+
+def test_a_frame_file_that_no_longer_matches_its_digest_is_rebuilt(tmp_path):
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    stored = tmp_path / "cache" / "frame.parquet"
+    stored.write_bytes(stored.read_bytes() + b"\0")
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "stored" and calls == [1, 1]
+
+
+def test_an_identity_that_moves_during_the_build_is_not_stored(tmp_path):
+    cache, calls, ticks = pack.ParquetFrameCache(tmp_path / "cache"), [], itertools.count()
+    frame, _, state = cache.load_or_build(lambda: {"v": next(ticks)}, _builder(calls))
+    assert state == "unstored" and len(frame) == 2 and not (tmp_path / "cache").exists()
+
+
+def test_a_frame_holding_containers_is_never_stored(tmp_path):
+    # Parquet hands a dict's lists back as arrays: such a frame is rebuilt, never reused.
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    contexts = pd.DataFrame({"a": [1, 2], "context": [{"t": [1.0]}, {"t": [2.0]}]})
+    for _ in range(2):
+        frame, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls, contexts))
+        assert state == "unstored" and frame.context[0] == {"t": [1.0]}
+    assert calls == [1, 1] and not (tmp_path / "cache").exists()
+    assert pack.ParquetFrameCache.storable(pd.DataFrame({"s": ["x", None], "n": [1, 2]}))
+    with pytest.raises(ValueError, match="container"):
+        cache.store({"v": 1}, contexts, {})
+
+
+def test_a_failed_write_or_a_lost_slot_degrades_to_an_unstored_build(tmp_path, monkeypatch):
+    import pandas as pd
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    real = pd.DataFrame.to_parquet
+
+    def full_disk(self, path, **kw):
+        real(self, path, **kw)
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", full_disk)
+    frame, payload, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "unstored" and len(frame) == 2 and payload["pair"] == [1, 2]
+    assert list((tmp_path / "cache").iterdir()) == []      # no partial file is left behind
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", real)
+    monkeypatch.setattr(cache, "load", lambda identity: None)   # another writer took the slot
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "unstored" and calls == [1, 1]
+    assert not pack.ParquetFrameCache.storable(pd.DataFrame([[1, 2]], columns=["a", "a"]))
+    assert not pack.ParquetFrameCache.storable(pd.DataFrame({0: [1]}))
+
+
+def test_the_code_digest_names_the_code_that_built_a_frame(tmp_path):
+    import types
+    package = types.ModuleType("pkg")
+    package.__file__ = str(tmp_path / "pkg" / "__init__.py")
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    module = tmp_path / "pkg" / "sub" / "rule.py"
+    module.write_text("LIMIT = 1\n")
+    (tmp_path / "pkg" / "notes.txt").write_text("not code")
+    first = pack.ParquetFrameCache.code_digest(package)
+    assert pack.ParquetFrameCache.code_digest(package) == first and len(first) == 64
+    (tmp_path / "pkg" / "notes.txt").write_text("still not code")
+    (tmp_path / "pkg" / "sub" / "rule.cpython-312.pyc").write_bytes(b"compiled")
+    assert pack.ParquetFrameCache.code_digest(package) == first
+    module.write_text("LIMIT = 2\n")
+    assert pack.ParquetFrameCache.code_digest(package) != first
+
+
 def test_pyarrow_is_imported_only_inside_run():
     tree = ast.parse(Path(pack.__file__).read_text())
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [a.name for a in node.names] + [getattr(node, "module", "") or ""]
             assert not any("pyarrow" in n for n in names)
+
+
+def test_a_damaged_slot_is_a_miss_that_rebuilds(tmp_path):
+    # Review round 6: a record that does not parse, lacks its payload, or names bytes that
+    # hash right but are not parquet never crashes a caller; the next build replaces it.
+    import json
+    cache, calls = pack.ParquetFrameCache(tmp_path / "cache"), []
+    record, frame = tmp_path / "cache" / "record.json", tmp_path / "cache" / "frame.parquet"
+    cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    stored = json.loads(record.read_text())
+    without_payload = {k: v for k, v in stored.items() if k != "payload"}
+    for damage in ("{not json", json.dumps([1]), json.dumps(without_payload)):
+        record.write_text(damage)
+        assert cache.load({"v": 1}) is None
+    frame.write_bytes(b"not parquet at all")
+    record.write_text(json.dumps({**stored, "frame_sha256": pack._sha256(frame)}))
+    assert cache.load({"v": 1}) is None
+    _, _, state = cache.load_or_build(lambda: {"v": 1}, _builder(calls))
+    assert state == "stored" and calls == [1, 1]
+    with pytest.raises(FileNotFoundError):
+        pack._sha256(tmp_path / "missing.parquet")
+
+
+def test_the_code_digest_moves_when_a_module_is_renamed(tmp_path):
+    import types
+    package = types.ModuleType("pkg")
+    package.__file__ = str(tmp_path / "pkg" / "__init__.py")
+    module = _write_module(tmp_path / "pkg", "rule.py")
+    first = pack.ParquetFrameCache.code_digest(package)
+    module.rename(tmp_path / "pkg" / "renamed.py")      # same bytes, new name
+    assert pack.ParquetFrameCache.code_digest(package) != first
+
+
+def _write_module(folder, name):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "__init__.py").write_text("")
+    path = folder / name
+    path.write_text("LIMIT = 1\n")
+    return path

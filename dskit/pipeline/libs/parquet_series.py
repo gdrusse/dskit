@@ -1,4 +1,4 @@
-"""Many day-named parquet files of one onboarded stream, read as a point-in-time series (ADR-0240).
+"""Many day-named parquet files of one onboarded stream, read as a point-in-time series (ADR-0243).
 
 A tape of ticks, bars or an index is often stored as one parquet file per UTC day, a thousand
 files or more in one stream. ``ParquetRows`` (ADR-0228) reads ONE file a key names, and the

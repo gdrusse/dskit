@@ -83,6 +83,15 @@ __all__ = ["find_active_source", "run_acquisition"]
 # raw/ or the records roots.
 _PENDING_STAMP = "pending"
 
+# One encoder, reused: ``json.dumps`` with a keyword builds a fresh
+# JSONEncoder per call. Identical output to ``json.dumps(o, sort_keys=True)``.
+_ROW_ENCODER = json.JSONEncoder(sort_keys=True)
+
+# Every staged row is written by ``_ROW_ENCODER`` from a dict whose
+# top-level keys are fixed, so ``acquired_at`` sorts first and every line
+# opens with exactly this prefix — what lets ``_restamp_rows`` splice.
+_PENDING_PREFIX = '{"acquired_at": ' + _ROW_ENCODER.encode(_PENDING_STAMP) + ", "
+
 
 def find_active_source(registry, name) -> str:
     """Return the version_id of the single ACTIVE ``source_config`` named ``name``.
@@ -256,6 +265,11 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     seen_files = set()
     pending_state, logs = None, []
     eff_min = eff_max = None
+    eff_min_dt = eff_max_dt = None  # parsed twins: never re-parse the bounds
+    # The splice is byte-identical only while every nested dict key is a
+    # str (a re-sort after json.loads can differ otherwise); one row that
+    # fails the check sends the whole restamp down the round-trip.
+    splice_ok = True
     latest_obs = None  # (parsed, raw, message index) — judged at commit
     try:
         payload_dir = os.path.join(staged, "payload")
@@ -313,7 +327,7 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                     continue
 
                 # RECORD and SCHEMA are the payload — bronze, as received.
-                raw_fh.write(json.dumps(msg, sort_keys=True) + "\n")
+                raw_fh.write(_ROW_ENCODER.encode(msg) + "\n")
                 payload_lines += 1
                 if mtype != "RECORD":
                     continue
@@ -344,17 +358,19 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                             storage["observations_codec"],
                         )
                     )
-                fh.write(json.dumps(row, sort_keys=True) + "\n")
+                fh.write(_ROW_ENCODER.encode(row) + "\n")
+                if splice_ok:
+                    splice_ok = _str_keys_only(msg["data"])
                 if kind == "forecast":
                     forecasts += 1
                 else:
                     records += 1
                 # Range bounds compare PARSED datetimes — mixed string
                 # formats must not corrupt the window lexicographically.
-                if eff_min is None or eff_dt < parse_utc(eff_min):
-                    eff_min = eff
-                if eff_max is None or eff_dt > parse_utc(eff_max):
-                    eff_max = eff
+                if eff_min is None or eff_dt < eff_min_dt:
+                    eff_min, eff_min_dt = eff, eff_dt
+                if eff_max is None or eff_dt > eff_max_dt:
+                    eff_max, eff_max_dt = eff, eff_dt
 
         # -- the commit instant (ADR-0079): stamped only now, with read()
         # exhausted, so nothing observed during the pull can post-date it.
@@ -388,7 +404,8 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                 stream_filename(stream, storage["observations_codec"]),
             )
             if os.path.exists(path):
-                _restamp_rows(path, storage["observations_codec"], acquired_at)
+                _restamp_rows(path, storage["observations_codec"], acquired_at,
+                              splice=splice_ok)
 
         # -- pre-commit member check (compressed files only): every staged
         # member must decode back to the line count that was written,
@@ -476,15 +493,37 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             "skipped": skipped, "logs": logs, "state_saved": state_saved}
 
 
-def _restamp_rows(path, codec, acquired_at):
+def _restamp_rows(path, codec, acquired_at, splice=False):
     """Settle ``acquired_at`` onto every row of ``path``, one line at a time."""
     settled = path + ".restamp"
+    stamped = '{"acquired_at": ' + _ROW_ENCODER.encode(acquired_at) + ", "
+    cut = len(_PENDING_PREFIX)
     with open_text_writer(settled, codec) as fh:
         for line in iter_text_lines(path):
+            if splice and line.startswith(_PENDING_PREFIX) and line.endswith("\n"):
+                # Swapping the stamp in place equals the round-trip below
+                # byte for byte (``splice`` vouches every key is a str).
+                fh.write(stamped + line[cut:])
+                continue
             row = json.loads(line)
             row["acquired_at"] = acquired_at
-            fh.write(json.dumps(row, sort_keys=True) + "\n")
+            fh.write(_ROW_ENCODER.encode(row) + "\n")
     os.replace(settled, path)
+
+
+def _str_keys_only(value):
+    """Say whether every dict key at any depth of ``value`` is a str."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    return False
+                stack.append(child)
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return True
 
 
 def _place_file(files_dir, stream, seen, msg, index):

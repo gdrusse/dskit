@@ -1,4 +1,4 @@
-"""vol_estimators against the behaviour it graduated from, frozen as data (ADR-0241), plus its price-range pins.
+"""vol_estimators against the behaviour it graduated from, frozen as data (ADR-0244), plus its price-range pins.
 
 The pack graduated from the crypto_trading child's interim module, which an earlier parity test loaded from disk. The child
 moved onto the pack and the module was deleted, so that test was removed and nothing skips. ``golden/vol_estimators_reference.json``

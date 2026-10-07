@@ -1,4 +1,4 @@
-"""``records-write-run`` (ADR-0244): a table writer whose file, and so whose published stream, is named by the run.
+"""``records-write-run`` (ADR-0247): a table writer whose file, and so whose published stream, is named by the run.
 
 Three layers: the node on its own (expansion, stamping, refusals), the plan-time refusals through the
 real planner and driver, and the whole point of the kind, end to end through a real ``localtables``
@@ -204,7 +204,7 @@ def test_a_path_that_cannot_make_one_stream_per_run_is_refused_at_validation(pat
 
 @pytest.mark.parametrize("path", ["out/table.{run}", "table.{run}", "out/t.x.{run}"])
 def test_a_run_placeholder_in_the_extension_is_refused_or_every_run_would_write_one_stem(path):
-    """B1-05 (ADR-0244 F2): the stream is named by the stem, so ``table`` + ``.{run}`` would be one stream for every run."""
+    """B1-05 (ADR-0247 F2): the stream is named by the stem, so ``table`` + ``.{run}`` would be one stream for every run."""
     problems = RecordsWriteRun.validate_params({"path": path, "source": "x"})
     assert any("before the extension" in p for p in problems), problems
     with pytest.raises(ConfigError, match="before the extension"):

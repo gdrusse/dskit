@@ -126,7 +126,7 @@ BINANCE_SOURCES = {
 DATES_FILE = "binance_vision_dates.json"
 #: registration configs for tables a run of this child derives and a later run reads (localtables)
 DERIVED_SOURCES = ("source-features-15m.json", "source-features-hourly.json")
-#: kalshi_history sources (ADR-0236): markets with the realised settlement value, hourly event-level candles, trades
+#: kalshi_history sources (ADR-0239): markets with the realised settlement value, hourly event-level candles, trades
 HISTORY_SOURCES = (
     "source-kalshi-history-crypto.json",
     "source-kalshi-history-candles-hourly-btc.json",
@@ -134,7 +134,7 @@ HISTORY_SOURCES = (
     "source-kalshi-history-trades-15m.json",
     "source-kalshi-history-trades-hourly.json",
 )
-#: restwindow sources (ADR-0237): the live-safe spot candles and the Deribit implied-vol index
+#: restwindow sources (ADR-0240): the live-safe spot candles and the Deribit implied-vol index
 RESTWINDOW_SOURCES = (
     "source-coinbase-btcusd-1m.json",
     "source-coinbase-ethusd-1m.json",
@@ -942,8 +942,8 @@ def test_the_hourly_table_registration_matches_what_the_document_writes():
 
 def test_no_note_still_says_the_label_is_yes_no_only_or_waits_on_a_proposed_adr():
     """The history pack landed: the realised value is pulled, and the hourly candles and the Coinbase/Deribit sources exist."""
-    stale = ("waits on ADR-0236", "wait on PROPOSED ADR-0236", "PROPOSED kalshi /historical", "LABEL GAP",
-             "the realised settlement value waits", "need ADR-0237", "PROPOSED ADR-0236", "PROPOSED in ADR-0236")
+    stale = ("waits on ADR-0239", "wait on PROPOSED ADR-0239", "PROPOSED kalshi /historical", "LABEL GAP",
+             "the realised settlement value waits", "need ADR-0240", "PROPOSED ADR-0239", "PROPOSED in ADR-0239")
     texts = {name: open(_path(name), encoding="utf-8").read() for name in os.listdir(CONFIGS) if name.endswith(".json")}
     for name, text in texts.items():
         for phrase in stale:

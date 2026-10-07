@@ -1,4 +1,4 @@
-"""``records-write-run`` — a record-stream writer whose file, and so whose published stream, is named by the run (ADR-0244).
+"""``records-write-run`` — a record-stream writer whose file, and so whose published stream, is named by the run (ADR-0247).
 
 Why. A table that a later run reads is published back through onboarding, and the
 ``localtables`` connector is INCREMENTAL: a pull emits the rows strictly after the stream's cursor.

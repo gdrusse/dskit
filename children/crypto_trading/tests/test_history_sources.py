@@ -1,4 +1,4 @@
-"""The shipped kalshi_history sources and suites against a scripted venue (ADR-0236).
+"""The shipped kalshi_history sources and suites against a scripted venue (ADR-0239).
 
 The history pack's one HTTP seam (``getter``) is a fake serving the endpoints it walks (the cutoff, the live
 and archived market listings, event-level and archived candlesticks, trades), in the payload shapes probed from

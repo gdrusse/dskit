@@ -72,7 +72,7 @@ def test_the_marker_scan_finds_a_marker_and_the_adr_it_names():
 
 #: The ADRs whose NEW dskit modules the child now uses (the interim copies were deleted): a marker for
 #: one of them is a stale claim that capability still lives here.
-MIGRATED = {"0239", "0240", "0241", "0242", "0243", "0244"}
+MIGRATED = {"0242", "0243", "0244", "0245", "0246", "0247"}
 
 
 def test_every_interim_marker_names_an_adr_the_decision_log_holds():

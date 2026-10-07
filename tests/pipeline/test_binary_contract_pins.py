@@ -1,4 +1,4 @@
-"""Boundary pins for the binary-contract pricer and scorer (ADR-0243): the exact-equality and tiny-horizon cases.
+"""Boundary pins for the binary-contract pricer and scorer (ADR-0246): the exact-equality and tiny-horizon cases.
 
 A mutation pass over ``binary_pricing.py`` and ``binary_scoring.py`` found single-token changes that every test still passed:
 the take rule at exact equality, a trade that earns exactly nothing, a horizon under one second, a range with one usable bound

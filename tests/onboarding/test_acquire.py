@@ -353,6 +353,73 @@ def test_restamp_is_byte_for_byte_a_single_pass_write(
                 assert _PENDING_STAMP.encode() not in fh.read(), full
 
 
+def _round_trip_restamp(lines, acquired_at):
+    """The pre-splice recipe, restated: json.loads, stamp, sorted dumps."""
+    import json
+
+    out = []
+    for line in lines:
+        row = json.loads(line)
+        row["acquired_at"] = acquired_at
+        out.append(json.dumps(row, sort_keys=True) + "\n")
+    return out
+
+
+def test_restamp_splice_is_byte_identical_to_the_round_trip(tmp_path):
+    # The splice must equal the loads/dumps recipe byte for byte; and a
+    # nested non-str key (which json.loads turns into a str that re-sorts
+    # differently) must take the round-trip fallback, never the splice.
+    import json
+
+    from dskit.onboarding.acquire import (
+        _PENDING_STAMP,
+        _restamp_rows,
+        _str_keys_only,
+    )
+
+    def staged(data):
+        return json.dumps({"stream": "s", "mode": "live", "kind": "observation",
+                           "effective_date": T1, "acquired_at": _PENDING_STAMP,
+                           "data": data}, sort_keys=True) + "\n"
+
+    plain = {"z": 1e16, "a": [1.0, -0.0, 2**70, 'é "\\ ', None, True],
+             "n": {"y": {"k": 3.14159}}, "1": "s"}
+    mixed = {"x": {10: 1, 2.5: 2}}  # dumps sorts 2.5 < 10; reloaded "10" < "2.5"
+    assert _str_keys_only(plain) and not _str_keys_only(mixed)
+    lines = [staged(plain), staged(mixed)]
+    assert _round_trip_restamp(lines, T2)[1] != staged(mixed).replace(
+        json.dumps(_PENDING_STAMP), json.dumps(T2))  # the splice WOULD be wrong
+    for splice, rows in ((True, [plain, plain]), (False, [plain, mixed])):
+        path = str(tmp_path / f"rows-{splice}.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.writelines(staged(r) for r in rows)
+        with open(path, encoding="utf-8") as fh:
+            want = _round_trip_restamp(fh.readlines(), T2)
+        _restamp_rows(path, "none", T2, splice=splice)
+        with open(path, encoding="utf-8") as fh:
+            assert fh.readlines() == want
+
+
+def test_a_non_str_nested_key_restamps_through_the_round_trip(
+    root, registry, fake_source, monkeypatch
+):
+    # End to end: acquire must notice the int-keyed dict and settle the
+    # rows exactly as the json round-trip would, not by splicing.
+    import json
+
+    from dskit.onboarding.codec import iter_text_lines, resolve_stream_file
+
+    data = {"m": {10: "a", 2.5: "b"}}
+    clock = _clock(monkeypatch, T0)
+    FakeConnector.script = _pull(clock, [record("books", T1, data)], T2)
+    s = run_acquisition(root, registry, "fake", "books", "live")
+    path = resolve_stream_file(root.records_dir("fake", s["acq_id"]), "books")
+    staged = json.dumps({"stream": "books", "mode": "live", "kind": "observation",
+                         "effective_date": T1, "acquired_at": "x", "data": data},
+                        sort_keys=True) + "\n"
+    assert list(iter_text_lines(path)) == _round_trip_restamp([staged], T2)
+
+
 def test_empty_pull_shape_survives_the_commit_stamp(
     root, registry, fake_source, monkeypatch
 ):

@@ -1,4 +1,4 @@
-"""Kalshi trade-API v2 HISTORY through the onboarding contract (ADR-0236).
+"""Kalshi trade-API v2 HISTORY through the onboarding contract (ADR-0239).
 
 The live Kalshi API keeps settled markets only back to a moving archive
 cutoff; older markets, trades and candlesticks sit under ``/historical/*``.

@@ -1,4 +1,4 @@
-"""libs/restwindow.py: the time-window REST pack, driven through the contract (ADR-0237).
+"""libs/restwindow.py: the time-window REST pack, driven through the contract (ADR-0240).
 
 No network anywhere except a loopback server: every test but the transport
 and parity ones injects the ``getter`` transport, a recording ``sleeper``

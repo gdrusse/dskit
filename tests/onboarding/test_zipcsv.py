@@ -1,4 +1,4 @@
-"""libs/zipcsv.py: a vendor zip of one CSV -> typed parquet, the layout from config (ADR-0239).
+"""libs/zipcsv.py: a vendor zip of one CSV -> typed parquet, the layout from config (ADR-0242).
 
 Fixtures are built in the test (a tiny zip), never fetched. The generic cases use a
 neutral ``ticks`` layout. The comparison with the vendor layouts the pack graduated from is

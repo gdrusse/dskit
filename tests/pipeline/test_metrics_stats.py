@@ -106,6 +106,27 @@ class TestMetrics:
 
 
 class TestClusterBootstrap:
+    def test_p_matches_the_per_draw_summing_reference_exactly(self):
+        # Pins the precomputed cluster sums to the original per-draw sum.
+        import random as _random
+
+        from dskit.pipeline.stats import _bootstrap_rng
+
+        rng = _random.Random(3)
+        scores = {f"c{i}": [rng.gauss(0.05, 1.0) for _ in range(rng.randint(1, 6))]
+                  for i in range(17)}
+        draw = _bootstrap_rng(5, "L")
+        clusters = sorted(scores)
+        below = 0
+        for _ in range(250):
+            total, count = 0.0, 0
+            for _ in range(len(clusters)):
+                picked = scores[clusters[draw.randrange(len(clusters))]]
+                total += sum(picked)
+                count += len(picked)
+            below += total / count <= 0.0
+        assert cluster_bootstrap_pvalue(scores, 250, 5, label="L") == (1 + below) / 251
+
     def test_clear_edge_gets_small_p(self):
         scores = {f"ev{i}": [0.5 + 0.01 * (i % 3)] for i in range(40)}
         assert cluster_bootstrap_pvalue(scores, 200, 0, label="X") < 0.01

@@ -1,4 +1,4 @@
-"""ParquetSeries (ADR-0240): many day-named parquet files of one onboarded stream as a time series.
+"""ParquetSeries (ADR-0243): many day-named parquet files of one onboarded stream as a time series.
 
 Fixtures are real acquisitions (``localblobs``) read through ``payload_files``, so the manifest,
 the snapshot hash and the verified-bytes rule are the platform's own. Nothing here names a venue:

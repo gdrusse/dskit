@@ -11,20 +11,32 @@ import the purity gate keeps out of the core) is imported only inside
 
 Which file is a per-key lookup (``relpath_by_key``), so a ``foreach`` chain
 passes its key and the document never types a file name twice.
+
+``ParquetFrameCache`` (ADR-0236 amendment) is the pack's other half: one built
+DataFrame kept as parquet under a caller-named identity, so a multi-stage study
+builds an expensive panel once and every later stage reuses it.
 """
 
 from __future__ import annotations
 
 import datetime
-import hashlib
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
-__all__ = ["NODE_KINDS", "ParquetRows", "register"]
+__all__ = ["NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
 
-#: Bytes per hashing read; a price file is small, an options file is not.
-_CHUNK = 1 << 20
+
+def _sha256(path):
+    """Return a file's sha256 hex digest by the pipeline's one file-hash rule (``path_hash``)."""
+    import os
+
+    from dskit.pipeline.workflow import path_hash
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"no file to hash at {path}")
+    return path_hash(str(path))
+
 
 
 class ParquetRows(Node):
@@ -162,11 +174,7 @@ class ParquetRows(Node):
     @staticmethod
     def _verified_bytes_ok(path, digest):
         """Say whether the file at ``path`` hashes to ``digest``."""
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for block in iter(lambda: fh.read(_CHUNK), b""):
-                h.update(block)
-        return h.hexdigest() == digest
+        return _sha256(path) == digest
 
     @staticmethod
     def _day(value, field):
@@ -268,6 +276,216 @@ class ParquetRows(Node):
         records = self._windowed(records)
         self.log.info("read %d row(s) of %s", len(records), rel)
         return {"records": records}
+
+
+class ParquetFrameCache:
+    """Keep one built DataFrame on disk per identity, and reuse it while the identity holds.
+
+    A memo, never a data source (ADR-0236 amendment): the caller's identity
+    names everything the frame is a function of (its config, the store tokens
+    of what it read, the code and environment that built it), so a reuse is
+    the frame a rebuild would give. One slot per directory: a build under a
+    new identity replaces the old frame. Every caller, the building one
+    included, gets the frame and payload read back from disk, so a reuse and
+    a build can never differ in dtype or JSON shape. A frame whose object
+    columns hold anything but scalars (dicts, lists) is never stored: parquet
+    would hand its containers back as arrays.
+
+    Parameters
+    ----------
+    directory : str or Path
+        The slot: ``frame.parquet`` and ``record.json`` (the identity, the
+        frame's sha256 and the caller's JSON payload).
+
+    Examples
+    --------
+    Build a panel once per data identity::
+
+        cache = ParquetFrameCache("runs/study/panel-cache")
+        frame, payload, state = cache.load_or_build(
+            lambda: {"config": digest, "store": token}, lambda: (build(), {"rows": 3}))
+        # state: "reused", "stored" or "unstored"
+    """
+
+    FRAME, RECORD = "frame.parquet", "record.json"
+    #: What ``pandas.api.types.infer_dtype`` may call an object column of a storable frame.
+    SCALAR_KINDS = frozenset({"string", "bytes", "empty", "boolean", "integer", "floating",
+                              "mixed-integer-float", "decimal"})
+
+    def __init__(self, directory):
+        from pathlib import Path
+        self.directory = Path(directory)
+
+    def load(self, identity):
+        """Return ``(frame, payload)`` stored under ``identity``, or None.
+
+        Parameters
+        ----------
+        identity : dict
+            JSON-serializable; compared by its canonical digest.
+
+        Returns
+        -------
+        tuple or None
+            None when the slot is empty, holds another identity, its record
+            is unreadable, or its frame no longer hashes to the recorded digest
+            or does not parse.
+        """
+        import json
+
+        import pandas as pd
+
+        record, frame = self.directory/self.RECORD, self.directory/self.FRAME
+        if not (record.is_file() and frame.is_file()):
+            return None
+        try:
+            stored = json.loads(record.read_text())
+        except ValueError:
+            return None
+        if (not isinstance(stored, dict) or "payload" not in stored
+                or stored.get("identity_sha256") != value_hash(identity)
+                or _sha256(frame) != stored.get("frame_sha256")):
+            return None
+        try:
+            return pd.read_parquet(frame), stored["payload"]
+        except (OSError, ValueError, TypeError, NotImplementedError):
+            return None   # bytes that hash right but do not parse are a miss, never a crash
+
+    @classmethod
+    def storable(cls, frame):
+        """Say whether parquet hands ``frame`` back unchanged.
+
+        Every column label must be a unique string and every object column
+        scalar: parquet returns a container's lists as arrays.
+
+        Parameters
+        ----------
+        frame : DataFrame
+
+        Returns
+        -------
+        bool
+        """
+        from pandas.api.types import infer_dtype
+        return (frame.columns.is_unique and all(isinstance(n, str) for n in frame.columns)
+                and all(infer_dtype(frame[name], skipna=True) in cls.SCALAR_KINDS
+                        for name in frame.columns if frame[name].dtype == object))
+
+    def store(self, identity, frame, payload):
+        """Replace the slot with ``frame`` and ``payload`` under ``identity``.
+
+        Parameters
+        ----------
+        identity : dict
+            JSON-serializable; recorded by its canonical digest.
+        frame : DataFrame
+            A :meth:`storable` frame, written as parquet without its index.
+        payload : dict
+            JSON-serializable; stored and returned as JSON gives it back.
+
+        Raises
+        ------
+        ValueError
+            When ``frame`` is not :meth:`storable`; whatever writing raises,
+            with no partial file left behind.
+        """
+        import json
+        import os
+        import tempfile
+
+        from dskit.pipeline.node import atomic_write
+
+        if not self.storable(frame):
+            raise ValueError("a frame with container-valued object columns is not stored")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory/self.RECORD).unlink(missing_ok=True)  # never a record over a new frame
+        handle, partial = tempfile.mkstemp(dir=self.directory, suffix=".partial")
+        os.close(handle)
+        try:
+            frame.to_parquet(partial, index=False)
+            digest = _sha256(partial)  # of these bytes: another writer's frame cannot pass load
+            os.replace(partial, self.directory/self.FRAME)
+        finally:
+            if os.path.exists(partial):
+                os.unlink(partial)
+        atomic_write(str(self.directory/self.RECORD), json.dumps({
+            "identity_sha256": value_hash(identity), "frame_sha256": digest,
+            "payload": payload}, indent=1, allow_nan=False).encode())
+
+    def load_or_build(self, identity, build):
+        """Return the stored frame for the current identity, building and storing it if absent.
+
+        A memo degrades, it never fails a caller: a frame it cannot store is
+        handed back as built.
+
+        Parameters
+        ----------
+        identity : callable
+            Returns the JSON identity; asked before and after a build, and a
+            build during which it moved is returned but never stored.
+        build : callable
+            Returns ``(frame, payload)``.
+
+        Returns
+        -------
+        tuple
+            ``(frame, payload, state)``: ``reused`` (from the slot), ``stored``
+            (built, stored and read back) or ``unstored`` (built; not
+            :meth:`storable`, the identity moved, writing failed, or another
+            writer took the slot).
+        """
+        before = identity()
+        held = self.load(before)
+        if held is not None:
+            return (*held, "reused")
+        frame, payload = build()
+        if self.storable(frame) and value_hash(identity()) == value_hash(before):
+            try:
+                self.store(before, frame, payload)
+                held = self.load(before)
+            except (OSError, ValueError, TypeError, NotImplementedError):
+                held = None   # parquet refused a column or a read-back, or the disk is full
+            if held is not None:
+                return (*held, "stored")
+        return frame, self.as_stored(payload), "unstored"
+
+    @staticmethod
+    def as_stored(payload):
+        """Return ``payload`` as the slot gives it back: through JSON (tuples become lists).
+
+        Parameters
+        ----------
+        payload : dict
+            JSON-serializable.
+
+        Returns
+        -------
+        dict
+        """
+        import json
+        return json.loads(json.dumps(payload))
+
+    @staticmethod
+    def code_digest(*packages):
+        """Return a sha256 over every ``.py`` file of the given packages, by path and bytes.
+
+        Parameters
+        ----------
+        *packages : module
+            Packages (or modules) whose directory holds the code that builds a frame.
+
+        Returns
+        -------
+        str
+            A hex digest that moves with any edit of that code (compiled files
+            and data beside it never move it).
+        """
+        from pathlib import Path
+
+        return value_hash([[package.__name__, path.relative_to(top).as_posix(), _sha256(path)]
+                           for package in packages
+                           for top in [Path(package.__file__).parent]
+                           for path in sorted(top.rglob("*.py"))])
 
 
 #: The pack's kinds.

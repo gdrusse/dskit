@@ -178,6 +178,156 @@ def test_the_provenance_names_the_price_file_hash(make):
     assert panel.provenance()["sha256"] == {"price:AAA": finger["sha256"]}
 
 
+# -- the panel cache (ADR-0236 amendment): one build per data identity, reused by every stage ------
+
+def test_a_cached_read_is_built_once_and_reused_until_an_input_moves(
+        make, tmp_path, blob_store, monkeypatch):
+    config = make().config                  # acquires the price source once
+    cache, built, read = tmp_path/"panel-cache", [], PriceCalendarCDFPanel.read
+    monkeypatch.setattr(PriceCalendarCDFPanel, "read", lambda self: built.append(1) or read(self))
+
+    def stage(data=config, holdout=None):
+        return PriceCalendarCDFPanel(data, holdout_start=holdout).cached_read(cache)[:2]
+
+    frame, provenance = stage()
+    again, provenance_again = stage()
+    assert built == [1] and provenance_again == provenance
+    pd.testing.assert_frame_equal(again, frame)
+    pd.testing.assert_frame_equal(frame, read(PriceCalendarCDFPanel(config)))  # it IS the read
+    stage({**config, "lags": 6})            # a data-config change rebuilds
+    assert built == [1, 1]
+    locked, _ = stage(holdout=DATES[80])    # so does a holdout, whose rows it never serves
+    assert built == [1, 1, 1]
+    assert (locked.quote_date < DATES[80]).all() and (locked.settlement_date < DATES[80]).all()
+    assert stage(holdout=DATES[80]) and built == [1, 1, 1]
+    folder = tmp_path/"prices-src"
+    _price_table(close={DATES[50]: CLOSE[DATES[50]]*1.01}).to_parquet(folder/"aaa"/"p.parquet")
+    blob_store.add("prices", folder)        # a new snapshot of a read source rebuilds
+    moved, _ = stage(holdout=DATES[80])
+    assert built == [1, 1, 1, 1]
+    assert moved.loc[moved.quote_date == DATES[50], "spot"].tolist() == pytest.approx(
+        [CLOSE[DATES[50]]*1.01])
+
+
+def test_a_cached_read_keys_on_every_store_root_and_existing_path_the_config_names(
+        make, tmp_path, monkeypatch):
+    panel = make()
+    legacy = tmp_path/"legacy.parquet"
+    legacy.write_bytes(b"x")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    table = {"root": str(tmp_path/"elsewhere"), "path": str(legacy), "relpath": "a/b.parquet",
+             "home": "~/legacy.parquet", "here": ".", "notes": str(tmp_path/"noted.txt")}
+    (tmp_path/"noted.txt").write_text("documentation")
+    roots, paths = PriceCalendarCDFPanel({**panel.config, "extra": table})._locations()
+    assert roots == sorted({panel.config["root"], str(tmp_path/"elsewhere")})
+    # a store relpath names no file here, "~" expands, the working directory and notes are
+    # never data, and a legacy file brings its source-hash sidecar
+    assert paths == [str(legacy), str(legacy)+".sources.json"]
+
+
+def test_every_part_of_the_cache_key_rebuilds_the_panel(make, tmp_path, monkeypatch):
+    # ADR-0236 amendment 2: a key missing a part would serve a stale panel (review round 2).
+    from dskit.pipeline.libs.parquet import ParquetFrameCache
+    from dskit.production.release import RuntimeFingerprint
+
+    legacy = tmp_path/"surface.parquet"
+    legacy.write_bytes(b"one")
+    config = {**make().config, "extra": str(legacy)}
+    cache, built, read = tmp_path/"panel-cache", [], PriceCalendarCDFPanel.read
+    monkeypatch.setattr(PriceCalendarCDFPanel, "read", lambda self: built.append(1) or read(self))
+    fingerprint = RuntimeFingerprint.capture().to_obj()
+    assert set(PriceCalendarCDFPanel(config).cache_identity(fingerprint)) == {
+        "reader", "config", "holdout_start", "code", "environment", "stores", "paths"}
+
+    def stage(cls=PriceCalendarCDFPanel):
+        cls(config).cached_read(cache)
+        return len(built)
+
+    assert (stage(), stage()) == (1, 1)
+    legacy.write_bytes(b"two!")                                      # a legacy file
+    assert stage() == 2
+    real = ParquetFrameCache.code_digest
+    monkeypatch.setattr(ParquetFrameCache, "code_digest", lambda *p: "edited" + real(*p))
+    assert stage() == 3                                              # the code
+    capture = RuntimeFingerprint.capture
+    monkeypatch.setattr(RuntimeFingerprint, "capture", classmethod(
+        lambda cls: type("F", (), {"to_obj": lambda s: {**capture().to_obj(), "x": 1}})()))
+    assert stage() == 4                                              # the environment
+
+    class Other(PriceCalendarCDFPanel):
+        """Another reader class."""
+
+    assert stage(Other) == 5                                         # the reader
+
+
+def test_a_cached_read_forgets_resolved_snapshots_and_reads_uncached_without_a_fingerprint(
+        make, tmp_path, monkeypatch, capsys):
+    from index_options import datafiles
+    from dskit.production.base import ProductionError
+    from dskit.production.release import RuntimeFingerprint
+
+    panel = make()
+    datafiles._SNAPSHOTS["stale"] = {"snapshot": "old"}
+    panel.cached_read(tmp_path/"cache")
+    assert "stale" not in datafiles._SNAPSHOTS
+
+    def broken(cls):
+        raise ProductionError(["distribution at x has no Name/Version metadata"])
+
+    monkeypatch.setattr(RuntimeFingerprint, "capture", classmethod(broken))
+    frame, provenance, state = PriceCalendarCDFPanel(panel.config).cached_read(tmp_path/"other")
+    assert len(frame) and provenance["sha256"] and not (tmp_path/"other").exists()
+    assert state == "off"
+    assert "panel cache off" in capsys.readouterr().out
+
+
+# -- per-symbol price sources (ADR-0236): disjoint universes in separate onboarded sources --------
+
+def _second_source(tmp_path, blob_store, table):
+    """Acquire ``bbb/q.parquet`` into a second source, ``prices-b``."""
+    folder = tmp_path/"prices-b-src"
+    (folder/"bbb").mkdir(parents=True, exist_ok=True)
+    table.to_parquet(folder/"bbb"/"q.parquet")
+    blob_store.add("prices-b", folder)
+
+
+def test_a_symbol_may_name_its_own_price_source(make, tmp_path, blob_store):
+    other = _price_table(close={d: CLOSE[d]*2 for d in DATES})
+    one = make()   # acquires the default source first
+    _second_source(tmp_path, blob_store, other)
+    relpath = {"AAA": "aaa/p.parquet",
+               "BBB": {"source": "prices-b", "stream": "files", "relpath": "bbb/q.parquet"}}
+    panel = make(symbols={"AAA": "VOL", "BBB": "VOL"},
+                 price_source={**one.config["price_source"], "relpath": relpath})
+    frame = panel.read()
+    alone = one.read()
+    a, b = frame[frame.symbol == "AAA"], frame[frame.symbol == "BBB"]
+    pd.testing.assert_frame_equal(a[list(alone.columns)].reset_index(drop=True),
+                                  alone.reset_index(drop=True))
+    assert b.spot.tolist() == pytest.approx([2*CLOSE[d] for d in b.quote_date])
+    readers = panel.provenance()["readers"]
+    assert readers["AAA"] == one.provenance()["readers"]["AAA"]   # a file entry is unchanged
+    assert readers["BBB"]["source"] == "prices-b" and readers["BBB"]["stream"] == "files"
+    assert readers["BBB"]["relpath"] == "bbb/q.parquet" and len(readers["BBB"]["sha256"]) == 64
+    assert panel.provenance()["sha256"]["price:BBB"] == readers["BBB"]["sha256"]
+
+
+@pytest.mark.parametrize("entry", [
+    {"source": "prices-b", "stream": "files"}, {"source": "", "stream": "files", "relpath": "x"},
+    {"source": "s", "stream": "files", "relpath": "x", "typo": 1}, "", 3,
+    {"source": "s", "stream": "files", "relpath": "/abs/x"},
+    {"source": "s", "stream": "files", "relpath": "x", "manifest_sha256": "0"*64}])
+def test_a_malformed_price_location_is_refused(make, entry):
+    with pytest.raises(ValueError, match="price_source"):
+        make(price_source={"source": "prices", "stream": "files", "columns": COLUMNS,
+                           "relpath": {"AAA": entry}})
+
+
+def test_a_symbol_without_a_price_location_is_refused_by_name(make):
+    with pytest.raises(ValueError, match="BBB"):
+        make(symbols={"AAA": "VOL", "BBB": "VOL"}).read()
+
+
 # -- keyed tables ------------------------------------------------------------------------------
 
 class _Table(ObservationTables):
@@ -503,3 +653,78 @@ def test_the_windowed_cohort_equals_step_1s_target_dates(make):
     ).run(None, {"records": cut})["records"]
     listed = [r["d"] for r in step1 if _expiry(r["d"]) == _settlement(r["d"])]
     assert _with_window(make, _window()).read().quote_date.tolist() == listed
+
+
+# -- ADR-0236 amendment 3: the observation reads' vintage --------------------------------------
+
+@pytest.mark.parametrize("vintage", [None, 1_759_670_000_000])
+def test_a_declared_vintage_bounds_every_observation_read_of_the_panel(make, monkeypatch, vintage):
+    # A stage that rebuilds the panel after a scheduled acquisition must read what the
+    # first stage read: the index-close, market-symbol and FRED reads all take the vintage.
+    seen = []
+
+    class _Seen(_Vol):
+        def __init__(self, key, params):
+            super().__init__(key, params)
+            self.vintage = params.get("as_of_acquisition_ms", "absent")
+
+        def run(self, ctx, inputs):   # a read; the price projection constructs but never reads
+            seen.append(("index", self.vintage))
+            return super().run(ctx, inputs)
+
+    class _Rates:
+        def __init__(self, key, params):
+            self.vintage = params.get("as_of_acquisition_ms", "absent")
+
+        def run(self, ctx, inputs):
+            seen.append(("fred", self.vintage))
+            return {"records": [{"observation_date": d, "DFF": 5.} for d in DATES]}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    monkeypatch.setattr(cdf_study, "IndexCloseRows", _Seen)
+    monkeypatch.setattr(cdf_study, "ObservationRows", _Rates)
+    declared = {} if vintage is None else {"as_of_acquisition_ms": vintage}
+    make(market_symbols={"market_vix9d": {"symbol": "VIX9D", "max_age_days": 7}},
+         fred_market_symbols={"rate_dff": {"stream": "dff", "field": "DFF", "lag_sessions": 1,
+                                           "max_age_days": 7}}, **declared).read()
+    expected = "absent" if vintage is None else vintage
+    assert seen == [("index", expected), ("index", expected), ("fred", expected)]
+
+
+@pytest.mark.parametrize("vintage", [None, 1_759_670_000_000])
+def test_the_surface_readers_price_read_takes_the_vintage_too(make, monkeypatch, vintage):
+    # Review round 1 (M3): the option-surface reader reads its prices as observations.
+    seen = []
+
+    class _Prices(IndexCloseRows):
+        def run(self, ctx, inputs):
+            seen.append(self.params.get("as_of_acquisition_ms", "absent"))
+            return {"records": []}
+
+        def fingerprint(self):
+            return {"sha256": "fixture"}
+
+    declared = {} if vintage is None else {"as_of_acquisition_ms": vintage}
+    panel = make(**declared)
+    monkeypatch.setattr(cdf_study, "IndexCloseRows", _Prices)
+    panel.config = {**panel.config, "price_source": "prices"}   # the surface reader's form
+    panel.reader_fingerprints = {}
+    ExactExpiryCDFPanel._price_records(panel, "AAA")
+    assert seen == ["absent" if vintage is None else vintage]
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "1759670000000"])
+def test_a_malformed_vintage_refuses_the_panel_and_its_node(make, value):
+    with pytest.raises(ValueError, match="as_of_acquisition_ms"):
+        make(as_of_acquisition_ms=value)
+    params = {"root": "x", "surface": "s.parquet", "lifecycle": "l.parquet",
+              "symbols": {"QQQ": "VXN"}, "price_source": "p", "iv_source": "i",
+              "since": "2020-01-01", "max_dte": 45, "lags": 22, "windows": [1, 5, 22],
+              "feature_gap_days": 7, "reference_floor": 0.001, "spot_tolerance": 0.02,
+              "columns": ["symbol", "quote_date"], "as_of_acquisition_ms": value}
+    assert any("as_of_acquisition_ms" in p for p in ExactExpiryPanelRead.validate_params(params))
+    params["as_of_acquisition_ms"] = 0
+    assert not any("as_of_acquisition_ms" in p
+                   for p in ExactExpiryPanelRead.validate_params(params))

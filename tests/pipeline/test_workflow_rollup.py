@@ -255,3 +255,12 @@ def test_block_without_a_finite_lower_bound_gets_a_note(spec, tmp_path):
     path.write_text(path.read_text().replace('"lo": 0.5', '"lo": NaN'))
     up = _rows(spec)["UP"]
     assert up["verdict"] == "unscored" and "no finite lower bound at block 30" in up["failures"]
+
+
+def test_where_reads_cells_by_the_report_s_table_text_with_the_lane_filled_in():
+    # ADR-0236 amendment 2: one matching rule, workflow_report.row_matches, for both modules.
+    from dskit.pipeline.workflow_rollup import _matches
+    assert _matches({"metric": "crps", "lane": "UP"}, {"metric": "crps", "lane": "{lane}"}, "UP")
+    assert not _matches({"metric": "crps"}, {"metric": "{lane}"}, "UP")
+    assert _matches({"metric": None}, {"metric": "n/a"}, "UP")       # an empty cell reads n/a
+    assert _matches({"block": 30}, {"block": "30"}, "UP") and _matches({}, None, "UP")

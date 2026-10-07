@@ -1,4 +1,4 @@
-"""zipcsv against the behaviour it graduated from, frozen as data (ADR-0239), plus its range-boundary pins.
+"""zipcsv against the behaviour it graduated from, frozen as data (ADR-0242), plus its range-boundary pins.
 
 The pack graduated from the crypto_trading child's interim Binance module, which an earlier parity test loaded from disk. The
 child moved onto the pack and the module was deleted, so that test was removed and nothing skips. ``golden/zipcsv_reference.json`` is that module's output

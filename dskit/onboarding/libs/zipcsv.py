@@ -2,7 +2,7 @@
 
 Vendors publish history as one zip per day or per symbol, each holding one CSV.
 :class:`ZipCsvToParquet` is the ``httpblobs`` ``transform`` hook (ADR-0233,
-ADR-0239) for that shape: ``Class(transform_params, as_of)`` is built once and
+ADR-0242) for that shape: ``Class(transform_params, as_of)`` is built once and
 called ``transform(entity, body)`` -> parquet bytes, with ``note(entity, body)``
 feeding the inventory row. Nothing about a vendor lives in the code: the column
 layout is the ``transform_params`` JSON block of the source config, so a new

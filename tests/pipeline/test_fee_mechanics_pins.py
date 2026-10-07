@@ -1,4 +1,4 @@
-"""Boundary pin for the ceil-to-tick rounding guard (ADR-0242): ``guard_decimals`` may be 0, never negative.
+"""Boundary pin for the ceil-to-tick rounding guard (ADR-0245): ``guard_decimals`` may be 0, never negative.
 
 A mutation pass found the lower bound of the guard width unpinned (``< 0`` could become ``<= 0`` or ``< 1`` and every test
 passed). Only the acceptance and the on-grid result are pinned: what a guard of 0 does to an OFF-grid amount (it snaps to the

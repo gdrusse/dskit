@@ -295,3 +295,13 @@ class TestResolveLayer:
         with pytest.raises(FileNotFoundError, match="create=True"):
             cfg.resolve()
         assert cfg.resolve(create=True) == str(tmp_path / "models")
+
+
+def test_value_hash_is_config_hash_of_a_plain_value():
+    # ADR-0236 amendment 2: the one digest of a plain JSON value (stage identity, memo key).
+    from dskit.pipeline.base import ConfigError, value_hash
+    assert value_hash({"b": [1, 2], "a": "x"}) == value_hash({"a": "x", "b": [1, 2]})
+    assert value_hash({"a": 1, "notes": "why"}) == value_hash({"a": 1})  # notes never count
+    assert value_hash({"a": 1}) != value_hash({"a": 2}) and len(value_hash([])) == 64
+    with pytest.raises(ConfigError, match="canonically"):
+        value_hash({"a": float("nan")})

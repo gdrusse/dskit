@@ -6,6 +6,7 @@ observation, numpy feature and payoff owners.
 """
 
 import argparse
+import bisect
 import hashlib
 import json
 from pathlib import Path
@@ -18,19 +19,68 @@ from dskit.pipeline.libs.predictive_cdf import (
     DiscreteCDFGrid, GridCurve,
 )
 from dskit.pipeline.libs.observations import ObservationRows
-from .datafiles import DataFiles, DataTree, archive_relpath, entry_problems
+from .datafiles import (DataFiles, DataTree, archive_relpath, clear_snapshot_cache,
+                        entry_problems)
 from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
-           "OPTION_SOURCE_KEYS", "PRICE_FIELDS", "PriceCalendarCDFPanel", "READERS",
-           "panel_class", "panel_convention_problems", "panel_reader_problems",
+           "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PANEL_VINTAGE", "PRICE_FIELDS",
+           "PriceCalendarCDFPanel", "READERS",
+           "panel_class", "panel_convention_problems", "panel_int_problems",
+           "panel_reader_problems",
            "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
            "CausalStrikeCDFCorrection", "AdaptiveWassersteinRadius",
            "RobustCorrectionStudy"]
+
+
+def _wanted_mask(frame, wanted):
+    """Return the boolean array of a chain batch's rows whose (date, expiration) is wanted."""
+    import numpy as np
+
+    # A bool array, not a list: ``frame.loc`` takes it without re-validating every element.
+    return np.fromiter((key in wanted for key in zip(frame.date, frame.expiration)),
+                       dtype=bool, count=len(frame))
+
+
+class _ColumnLog:
+    """Append-only dict rows mirrored as numpy columns, so a causal filter is one vector mask."""
+
+    def __init__(self, strings, numbers):
+        self.rows, self._size = [], 0
+        self._dtypes = {**{name: object for name in strings}, **{name: float for name in numbers}}
+        self._buffers = {name: None for name in self._dtypes}
+
+    def extend(self, items):
+        """Append rows that all carry the declared fields (buffers double, so appends amortize)."""
+        import numpy as np
+
+        items = list(items)
+        end = self._size+len(items)
+        for name, dtype in self._dtypes.items():
+            buffer = self._buffers[name]
+            if buffer is None or len(buffer) < end:
+                grown = np.empty(max(end, 2*(0 if buffer is None else len(buffer)), 64),
+                                 dtype=dtype)
+                if buffer is not None:
+                    grown[:self._size] = buffer[:self._size]
+                self._buffers[name] = buffer = grown
+            # Element by element: an object column must hold each string itself.
+            for offset, item in enumerate(items):
+                buffer[self._size+offset] = item[name]
+        self.rows.extend(items)
+        self._size = end
+
+    def columns(self):
+        """Return every declared field as an array view over all rows."""
+        import numpy as np
+
+        return {name: (np.empty(0, dtype=dtype) if self._buffers[name] is None
+                       else self._buffers[name][:self._size])
+                for name, dtype in self._dtypes.items()}
 
 
 class CausalStrikeCDFCorrection:
@@ -247,32 +297,33 @@ class EligibleCondorChain:
             raise ValueError("a span rule has no condor candidates")
         eligible = self._eligible(chain, spot, executable)
         result = []
+        # The call-wing pairs do not depend on the put wing: list them once, in loop order.
+        call_wings = [(short_call, long_call)
+                      for short_call in eligible["call"]["sell"]
+                      for long_call in eligible["call"]["buy"]
+                      if short_call.strike < long_call.strike
+                      and self.min_width <= long_call.strike-short_call.strike <= self.max_width]
         for long_put in eligible["put"]["buy"]:
             for short_put in eligible["put"]["sell"]:
                 if not (long_put.strike < short_put.strike
                         and self.min_width <= short_put.strike-long_put.strike
                         <= self.max_width):
                     continue
-                for short_call in eligible["call"]["sell"]:
-                    for long_call in eligible["call"]["buy"]:
-                        if not (short_call.strike < long_call.strike
-                                and self.min_width <= long_call.strike-short_call.strike
-                                <= self.max_width):
-                            continue
-                        strikes = (long_put.strike, short_put.strike,
-                                   short_call.strike, long_call.strike)
-                        legs = (long_put, short_put, short_call, long_call)
-                        credit, widths = condor_credit(
-                            strikes, [(row.bid, row.ask) for row in legs])
-                        if not 0 < credit < min(widths):
-                            continue
-                        net = credit-4*self.fee/self.multiplier
-                        if net <= 0:
-                            continue
-                        result.append({"id": "-".join(str(k) for k in strikes),
-                                       "strikes": strikes, "net_credit": float(net)})
-                        if len(result) > self.max_candidates:
-                            raise ValueError("candidate universe exceeds declared cap")
+                for short_call, long_call in call_wings:
+                    strikes = (long_put.strike, short_put.strike,
+                               short_call.strike, long_call.strike)
+                    legs = (long_put, short_put, short_call, long_call)
+                    credit, widths = condor_credit(
+                        strikes, [(row.bid, row.ask) for row in legs])
+                    if not 0 < credit < min(widths):
+                        continue
+                    net = credit-4*self.fee/self.multiplier
+                    if net <= 0:
+                        continue
+                    result.append({"id": "-".join(str(k) for k in strikes),
+                                   "strikes": strikes, "net_credit": float(net)})
+                    if len(result) > self.max_candidates:
+                        raise ValueError("candidate universe exceeds declared cap")
         return sorted(result, key=lambda item: item["strikes"])
 
     def span(self, chain, spot, *, executable=False):
@@ -365,9 +416,8 @@ class DecisionRegionContextBuilder:
                     columns=list(self.COLUMNS), batch_size=250_000,
                     use_threads=False):
                 frame = batch.to_pandas()
-                mask = [(date, expiry) in wanted for date, expiry in
-                        zip(frame.date, frame.expiration)]
-                if any(mask):
+                mask = _wanted_mask(frame, wanted)
+                if mask.any():
                     chosen = frame.loc[mask]
                     retained += len(chosen)
                     if retained > self.config["max_chain_rows"]:
@@ -699,6 +749,16 @@ class DecisionRegionStudy:
                 raise ValueError("decision-region pilot requires raw GridCurve archives")
 
     def _verified_partition(self, partition):
+        # Each file is hashed once and its digest reused for the returned sources (a memo,
+        # so the checks still hash, and fail, in their original order).
+        seen = {}
+
+        def digest(path):
+            key = str(path)
+            if key not in seen:
+                seen[key] = self._digest(path)
+            return seen[key]
+
         marker = partition/"complete.json"
         try:
             record = json.loads(marker.read_text())
@@ -709,7 +769,7 @@ class DecisionRegionStudy:
         if (record.get("stage") != "evaluate"
                 or record.get("partition") != self.config["partition"]
                 or not isinstance(record.get("identity"), dict)
-                or record.get("selection_hash") != self._digest(selected_path)
+                or record.get("selection_hash") != digest(selected_path)
                 or not isinstance(record.get("files"), dict)
                 or any(selected.get("variants", {}).get(model) != variant
                        for model, variant in self.config["models"].items())):
@@ -719,11 +779,11 @@ class DecisionRegionStudy:
                    for symbol in self.config["symbols"]
                    for model in self.config["models"])]
         for path in paths:
-            if record["files"].get(path.name) != self._digest(path):
+            if record["files"].get(path.name) != digest(path):
                 raise ValueError(f"frozen completion hash mismatch: {path.name}")
         for path in paths[2:]:
             self._check_curve_archive(path)
-        return {str(path): self._digest(path) for path in
+        return {str(path): digest(path) for path in
                 [marker, selected_path, *paths]}
 
     @staticmethod
@@ -788,7 +848,9 @@ class DecisionRegionStudy:
                 if paired is not None and set(keys) != paired:
                     raise ValueError("models lack identical OOF forecast identities")
                 paired = set(keys)
-                sources[str(path)] = self._digest(path)
+                # _verified_partition already hashed every curve archive into ``sources``.
+                sources[str(path)] = (sources[str(path)] if str(path) in sources
+                                      else self._digest(path))
             ordered = sorted(paired)
             count = min(len(ordered), self.config["max_rows_per_symbol"])
             indices = np.linspace(0, len(ordered)-1, count, dtype=int)
@@ -809,9 +871,8 @@ class DecisionRegionStudy:
             for batch in pq.ParquetFile(source).iter_batches(
                     columns=list(self.CHAIN_COLUMNS), batch_size=250_000):
                 frame = batch.to_pandas()
-                mask = [(date, expiry) in wanted for date, expiry in
-                        zip(frame.date, frame.expiration)]
-                if any(mask):
+                mask = _wanted_mask(frame, wanted)
+                if mask.any():
                     chosen = frame.loc[mask]
                     retained += len(chosen)
                     if retained > self.config["limits"]["max_chain_rows"]:
@@ -909,6 +970,12 @@ class DecisionRegionStudy:
             close_fingerprints[symbol] = reader.fingerprint()
         closes = {symbol: {item["date"]: item for item in rows}
                   for symbol, rows in close_rows.items()}
+        # Each charge window is a date slice of the oldest-first closes: bisect it when the dates
+        # are sorted (they are, stamped from the date), else scan as before.
+        close_dates = {symbol: [item["date"] for item in rows]
+                       for symbol, rows in close_rows.items()}
+        dates_sorted = {symbol: all(a <= b for a, b in zip(dates, dates[1:]))
+                        for symbol, dates in close_dates.items()}
         inventory = {}
         charges = {}
         for key, row in zip(identities, panel.itertuples(index=False)):
@@ -924,8 +991,13 @@ class DecisionRegionStudy:
             if not bool(row.dividends_known):
                 charges[key] = {item["id"]: None for item in inventory[key]}
                 continue
-            window = [item for item in close_rows[key[0]]
-                      if key[1] <= item["date"] <= row.settlement_date]
+            if dates_sorted[key[0]]:
+                dates = close_dates[key[0]]
+                window = close_rows[key[0]][bisect.bisect_left(dates, key[1]):
+                                            bisect.bisect_right(dates, row.settlement_date)]
+            else:
+                window = [item for item in close_rows[key[0]]
+                          if key[1] <= item["date"] <= row.settlement_date]
             charges[key] = {
                 item["id"]: american_short_charge(
                     window, item["strikes"][1], item["strikes"][2],
@@ -933,6 +1005,10 @@ class DecisionRegionStudy:
                     self.rule.multiplier)["total_usd"]/self.rule.multiplier
                 for item in inventory[key]}
         records, candidate_records = [], []
+        # First panel position of each identity: the row the per-key boolean mask used to find.
+        panel_position = {}
+        for position, key in enumerate(identities):
+            panel_position.setdefault(key, position)
         scorer = CondorDecisionAudit(self.config["audit"]["mesh_tolerance"],
                                      self.config["audit"]["floor"])
         for symbol in self.config["symbols"]:
@@ -943,9 +1019,7 @@ class DecisionRegionStudy:
                     if not set(keys).issubset(lookup):
                         raise ValueError("prepared identity absent from saved model")
                     for key in keys:
-                        row = panel.loc[(panel.symbol == key[0])
-                                        & (panel.quote_date == key[1])
-                                        & (panel.expiry == key[2])].iloc[0]
+                        row = panel.iloc[panel_position[key]]
                         candidates = inventory[key]
                         if not candidates:
                             records.append({**dict(zip(self.IDENTITY, key)),
@@ -1293,12 +1367,16 @@ class RobustCorrectionStudy:
         paths = {"panel": prepare/"panel.parquet", "chain": prepare/"chain.parquet",
                  "scores": evaluated/"scores.parquet",
                  "candidate_scores": evaluated/"candidate_scores.parquet"}
-        if (self._digest(paths["panel"]) != p_manifest["panel_sha256"]
-                or self._digest(paths["chain"]) != p_manifest["chain_sha256"]
-                or self._digest(paths["scores"]) != e_manifest["scores_sha256"]
-                or self._digest(paths["candidate_scores"])
-                != e_manifest["candidate_scores_sha256"]):
-            raise ValueError("decision-region source hash mismatch")
+        digests = {}
+        # Hash each input once, in the original order, and reuse it for the returned sources.
+        for name, manifest, field in (("panel", p_manifest, "panel_sha256"),
+                                      ("chain", p_manifest, "chain_sha256"),
+                                      ("scores", e_manifest, "scores_sha256"),
+                                      ("candidate_scores", e_manifest,
+                                       "candidate_scores_sha256")):
+            digests[name] = self._digest(paths[name])
+            if digests[name] != manifest[field]:
+                raise ValueError("decision-region source hash mismatch")
         panel = pd.read_parquet(paths["panel"])
         scores = pd.read_parquet(paths["scores"])
         candidates = pd.read_parquet(paths["candidate_scores"])
@@ -1310,8 +1388,8 @@ class RobustCorrectionStudy:
                 or scores.duplicated(list(self.IDENTITY)).any()
                 or candidates.duplicated([*self.IDENTITY, "id"]).any()):
             raise ValueError("missing or duplicate base decision rows")
-        return panel, scores, candidates, {str(p): self._digest(p)
-                                           for p in paths.values()}
+        return panel, scores, candidates, {str(paths[name]): digests[name]
+                                           for name in paths}
 
     def _curve_path(self, symbol):
         return (Path(self.config["forecast_root"])/"evaluate"/
@@ -1354,6 +1432,49 @@ class RobustCorrectionStudy:
                 and item["settlement_date"] < quote_date
                 and item["tenor_band"] == tenor_band]
 
+    #: The settled-event rows' fields, in the order each event dict is built.
+    _EVENT_FIELDS = ("quote_date", "settlement_date", "tenor_band",
+                     "probability", "event", "weight")
+
+    @classmethod
+    def _event_log(cls):
+        """Return an empty settled-event history for :meth:`_settled_frame`."""
+        return _ColumnLog(cls._EVENT_FIELDS[:3], cls._EVENT_FIELDS[3:])
+
+    @classmethod
+    def _settled_frame(cls, history, quote_date, tenor_band):
+        """Return ``pd.DataFrame(_settled_events(history.rows, ...))`` from one vector mask."""
+        import pandas as pd
+
+        # Same rule as _settled_events; the columns are those dicts' values, in order.
+        c = history.columns()
+        mask = ((c["quote_date"] < quote_date) & (c["settlement_date"] < quote_date)
+                & (c["tenor_band"] == tenor_band))
+        if not mask.any():
+            return pd.DataFrame([])
+        # Copies, not views: the log's buffers keep growing under the frame.
+        return pd.DataFrame({name: c[name][mask] for name in cls._EVENT_FIELDS})
+
+    @classmethod
+    def _policy_log(cls):
+        """Return an empty radius-policy log for :meth:`_policy_history`."""
+        return _ColumnLog(("quote_date", "settlement_date", "symbol", "tenor_band"), ())
+
+    @classmethod
+    def _policy_history(cls, policies, quote_date, symbol, tenor_band, start):
+        """Return ``_radius_history(policies.rows, ...)``, selecting the rows by one vector mask."""
+        import numpy as np
+        import pandas as pd
+
+        c = policies.columns()
+        mask = ((start <= c["quote_date"]) & (c["quote_date"] < quote_date)
+                & (c["settlement_date"] < quote_date) & (c["symbol"] == symbol)
+                & (c["tenor_band"] == tenor_band))
+        rows = [policies.rows[i] for i in np.flatnonzero(mask)]
+        return pd.DataFrame(rows, columns=["quote_date", "settlement_date",
+                                           "symbol", "tenor_band", "radius",
+                                           "residual"])
+
     @staticmethod
     def _radius_history(policies, quote_date, symbol, tenor_band, start):
         """Return the independent post-selection, pre-decision residual band."""
@@ -1385,6 +1506,8 @@ class RobustCorrectionStudy:
         score_rows, event_rows = [], []
         labels = [("identity", None), *[(self._label(v), float(v))
                                         for v in correction["prior_strengths"]]]
+        # Each identity's candidate rows, in source order: what the per-row column filters found.
+        candidate_positions = candidate_source.groupby(list(self.IDENTITY), sort=False).indices
         for symbol in sorted(score_source.symbol.unique()):
             curve_path = self._curve_path(symbol)
             sources[str(curve_path)] = self._digest(curve_path)
@@ -1394,7 +1517,7 @@ class RobustCorrectionStudy:
                 lookup = {tuple(row): i for i, row in enumerate(archive["identities"])}
                 symbol_scores = score_source[score_source.symbol == symbol].sort_values(
                     ["quote_date", "expiry"])
-                history = []
+                history = self._event_log()
                 for quote_date, dated in symbol_scores.groupby("quote_date", sort=True):
                     pending = []
                     for source_row in dated.itertuples(index=False):
@@ -1402,9 +1525,7 @@ class RobustCorrectionStudy:
                         if key not in lookup or key not in panel_lookup.index:
                             raise ValueError("source identity absent from raw curve or panel")
                         row = panel_lookup.loc[key]
-                        selected = candidate_source
-                        for name, value in zip(self.IDENTITY, key):
-                            selected = selected[selected[name] == value]
+                        selected = candidate_source.iloc[candidate_positions.get(key, [])]
                         if selected.empty:
                             raise ValueError("eligible decision row lacks candidates")
                         candidates = [{"id": item.id,
@@ -1422,9 +1543,8 @@ class RobustCorrectionStudy:
                             row.reference_scale)
                         base_probability = base.cdf(strike_z)[0]
                         event = (float(row.terminal_price) <= np.asarray(unique_strikes)).astype(float)
-                        eligible_history = self._settled_events(
+                        history_frame = self._settled_frame(
                             history, quote_date, source_row.tenor_band)
-                        history_frame = pd.DataFrame(eligible_history)
                         grid = self._price_grid(unique_strikes, float(row.spot))
                         y = float(row.terminal_return/row.reference_scale)
                         for label, strength in labels:
@@ -1588,11 +1708,12 @@ class RobustCorrectionStudy:
         strength = strength_lookup.get(label)
         scorer = CondorDecisionAudit(self.config["audit"]["mesh_tolerance"],
                                      self.config["audit"]["floor"])
-        policies, decisions = [], []
+        policies, decisions = self._policy_log(), []
+        candidate_positions = candidate_source.groupby(list(self.IDENTITY), sort=False).indices
         for symbol in sorted(score_source.symbol.unique()):
             with np.load(self._curve_path(symbol), allow_pickle=False) as archive:
                 lookup = {tuple(row): i for i, row in enumerate(archive["identities"])}
-                history_events = []
+                history_events = self._event_log()
                 symbol_scores = score_source[score_source.symbol == symbol].sort_values(
                     ["quote_date", "expiry"])
                 for quote_date, dated in symbol_scores.groupby("quote_date", sort=True):
@@ -1600,10 +1721,8 @@ class RobustCorrectionStudy:
                     for source_row in dated.itertuples(index=False):
                         key = tuple(getattr(source_row, name) for name in self.IDENTITY)
                         row = panel_lookup.loc[key]
-                        selected_candidates = candidate_source
-                        for name, value in zip(self.IDENTITY, key):
-                            selected_candidates = selected_candidates[
-                                selected_candidates[name] == value]
+                        selected_candidates = candidate_source.iloc[
+                            candidate_positions.get(key, [])]
                         candidates = [{"id": item.id,
                                        "strikes": self._strikes(item.id),
                                        "net_credit": float(item.net_credit)}
@@ -1623,8 +1742,8 @@ class RobustCorrectionStudy:
                         if strength is None:
                             curve = base
                         else:
-                            settled = pd.DataFrame(self._settled_events(
-                                history_events, quote_date, source_row.tenor_band))
+                            settled = self._settled_frame(
+                                history_events, quote_date, source_row.tenor_band)
                             try:
                                 owner = CausalStrikeCDFCorrection(
                                     strength, self.config["correction"]["knots"],
@@ -1680,10 +1799,10 @@ class RobustCorrectionStudy:
                                         "residual": actual_loss-choice["worst_loss"],
                                         "realized_pnl": pnl, "regret": oracle-pnl,
                                         "oracle_pnl": oracle}
-                                policies.append(item)
+                                policies.extend([item])
                                 current.append(item)
                             if quote_date >= self.config["optimization_cutoff"]:
-                                history = self._radius_history(
+                                history = self._policy_history(
                                     policies, quote_date, symbol,
                                     source_row.tenor_band,
                                     self.config["selection_cutoff"])
@@ -1717,7 +1836,7 @@ class RobustCorrectionStudy:
             print("robust-correction optimize", symbol, len(symbol_scores), flush=True)
         frame = pd.DataFrame(decisions)
         stage.mkdir(parents=True)
-        pd.DataFrame(policies).to_parquet(stage/"policies.parquet", index=False)
+        pd.DataFrame(policies.rows).to_parquet(stage/"policies.parquet", index=False)
         frame.to_parquet(stage/"decisions.parquet", index=False)
         record = {"config_sha256": self._config_digest(),
                   "implementation_sha256": self._digest(__file__),
@@ -1814,11 +1933,13 @@ class RawChainFeatureBuilder:
                  & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
         return rows.loc[valid].sort_values(["strike", "type"], kind="mergesort").copy()
 
-    def _proxy(self, rows, spot):
+    def _proxy(self, rows, spot, usable=False):
         from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
+        # ``usable``: the rows already passed _usable_quotes, whose second pass is a no-op.
         proxy = OptionPriceCDF(
             self.proxy_probabilities, 1, self.min_wing_nodes,
-            self.max_inner_gap, self.max_outer_gap).estimate(self._usable_quotes(rows), spot)
+            self.max_inner_gap, self.max_outer_gap).estimate(
+                rows if usable else self._usable_quotes(rows), spot)
         if not proxy["eligible"]:
             return None
         import numpy as np
@@ -1851,23 +1972,32 @@ class RawChainFeatureBuilder:
                 rows["depth"] = rows.bid_size.fillna(0)+rows.ask_size.fillna(0)
                 rows["open_interest"] = rows.open_interest.fillna(0)
                 rows["rel_spread"] = (rows.ask-rows.bid)/rows.mark
-                proxy = self._proxy(rows, spot)
+                proxy = self._proxy(rows, spot, usable=True)
+                # Each right's node candidates once per key, not once per node.
+                base = rows.implied_volatility.gt(0) & rows.mark.gt(0) & rows.rel_spread.ge(0)
+                sides = {}
+                for right in ("put", "call"):
+                    side = rows[(rows.type == right) & base]
+                    # Per column, so each field keeps its own dtype.
+                    sides[right] = (side.log_moneyness.to_numpy(), [
+                        side[name].to_numpy() for name in (
+                            "log_moneyness", "implied_volatility", "rel_spread",
+                            "open_interest", "depth")])
             else:
                 rows = None
             for i, center in enumerate(centers):
                 chosen = None
                 if rows is not None:
-                    right = "put" if center < 0 else "call"
-                    candidates = rows[(rows.type == right) & rows.implied_volatility.gt(0)
-                                      & rows.mark.gt(0) & rows.rel_spread.ge(0)]
-                    if len(candidates):
-                        distance = abs(candidates.log_moneyness-center)
-                        if distance.min() <= self.max_node_gap:
-                            chosen = candidates.loc[distance.sort_values(kind="mergesort").index[0]]
-                values = ([chosen.log_moneyness, chosen.implied_volatility,
-                           np.log1p(chosen.rel_spread), np.log1p(max(chosen.open_interest, 0)),
-                           np.log1p(max(chosen.depth, 0))] if chosen is not None
-                          else [np.nan]*len(self.NODE_FIELDS))
+                    moneyness, fields = sides["put" if center < 0 else "call"]
+                    if len(moneyness):
+                        distance = np.abs(moneyness-center)
+                        # argmin takes the first minimum, as the stable sort's head did.
+                        nearest = int(np.argmin(distance))
+                        if distance[nearest] <= self.max_node_gap:
+                            chosen = [column[nearest] for column in fields]
+                values = ([chosen[0], chosen[1], np.log1p(chosen[2]),
+                           np.log1p(max(chosen[3], 0)), np.log1p(max(chosen[4], 0))]
+                          if chosen is not None else [np.nan]*len(self.NODE_FIELDS))
                 for field, value in zip(self.NODE_FIELDS, values):
                     record[f"chain_node_{i:02d}_{field}"] = value
                 record[f"chain_node_{i:02d}_mask"] = int(chosen is not None)
@@ -1985,8 +2115,8 @@ class RawChainFeatureBuilder:
             selected_columns = [name for name in columns if name in available]
             for batch in parquet.iter_batches(columns=selected_columns, batch_size=250_000):
                 frame = batch.to_pandas()
-                mask = [key in wanted for key in zip(frame.date, frame.expiration)]
-                if any(mask):
+                mask = _wanted_mask(frame, wanted)
+                if mask.any():
                     selected.append(frame[mask])
             chain = pd.concat(selected, ignore_index=True) if selected else pd.DataFrame(columns=columns)
             part = self.transform(chain, requested)
@@ -1999,7 +2129,7 @@ class RawChainFeatureBuilder:
         target = Path(output); target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix+".tmp")
         result.to_parquet(temporary, index=False); temporary.replace(target)
-        manifest = Path(str(target)+".sources.json")
+        manifest = Path(str(target)+_SOURCES_SIDECAR)
         temporary_manifest = manifest.with_suffix(manifest.suffix+".tmp")
         sidecar = {"metadata_columns": metadata_columns,
                    "metadata_sha256": metadata_sha256,
@@ -2084,6 +2214,10 @@ PRICE_FIELDS = ("date", "close", "open", "high", "low", "volume", "dividend_amou
                 "split_coefficient")
 _PRICE_REQUIRED = ("date", "close")
 _CALENDAR_READER = "price_calendar"
+#: Where an HPO experiment keeps the panel its first stage built, under ``experiment.output``.
+PANEL_CACHE_DIR = "panel-cache"
+#: The source-hash sidecar written beside a raw-chain feature file and read with it.
+_SOURCES_SIDECAR = ".sources.json"
 _KEYED_KEYS = ("key", "tables", "age_suffix", "missing_suffix")
 _ACTION_KEYS = ("max_dividend_yield", "max_abs_jump", "windows")
 
@@ -2220,6 +2354,34 @@ class CorporateActionRule:
         return cumulative[np.asarray(end_index)+1]-cumulative[np.asarray(start_index)] > 0
 
 
+#: The panel key naming its observation reads' vintage (ADR-0236 amendment 3): it is
+#: ``ObservationRows``' own read-vintage param (ADR-0154), handed to every read as is.
+PANEL_VINTAGE = "as_of_acquisition_ms"
+#: The panel's optional integer knobs and their floors.
+_PANEL_INTS = (("exact_dte", 1), (PANEL_VINTAGE, 0))
+
+
+def panel_int_problems(config):
+    """List what is wrong with a panel config's optional integer knobs.
+
+    Parameters
+    ----------
+    config : dict
+        A panel config. ``exact_dte`` (ADR-0230) is an int >= 1 and ``as_of_acquisition_ms``
+        (:data:`PANEL_VINTAGE`) an int >= 0, each when present.
+
+    Returns
+    -------
+    list of str
+        Every problem; empty when the knobs are usable or absent.
+    """
+    problems = []
+    for name, low in _PANEL_INTS:
+        if name in config:
+            check_int_param(problems, name, config[name], ge=low)
+    return problems
+
+
 def panel_reader_problems(config):
     """List what is wrong with the reader-selection keys of a panel config (ADR-0230).
 
@@ -2266,7 +2428,10 @@ class ExactExpiryCDFPanel:
         file by store reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``,
         resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
-        absent keeps every horizon up to ``max_dte``.
+        absent keeps every horizon up to ``max_dte``. Optional ``as_of_acquisition_ms``
+        (int >= 0, ADR-0154's read vintage) bounds the acquisitions every observation read
+        sees (index closes, market symbols, FRED, the surface reader's prices); keyed tables
+        and price files are not bounded.
         Study conventions (see ``panel_convention_problems``): ``reference_window``,
         ``change_lags``, ``directional_windows``, ``periods_per_year``, ``calendar``,
         ``calendar_pad_days``, and ``dividend_field`` (absent: dividends known zero).
@@ -2284,12 +2449,7 @@ class ExactExpiryCDFPanel:
     def __init__(self, config, holdout_start=None):
         if holdout_start is not None and date_problem(holdout_start):
             raise ValueError("holdout_start must be an ISO date or None")
-        if "exact_dte" in config:
-            problems = []
-            check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
-            if problems:
-                raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
-        problems = type(self).reader_problems(config)
+        problems = panel_int_problems(config) + type(self).reader_problems(config)
         if problems:
             raise ValueError("; ".join(problems))
         self.config, self.holdout_start = config, holdout_start
@@ -2440,6 +2600,7 @@ class ExactExpiryCDFPanel:
     @staticmethod
     def add_macro_event_features(frame, calendars):
         """Count only events whose scheduled date was known by each entry."""
+        import numpy as np
         import pandas as pd
 
         if calendars is None:
@@ -2449,17 +2610,35 @@ class ExactExpiryCDFPanel:
             raise ValueError("macro event calendars must be a non-empty mapping")
         quote = pd.to_datetime(frame.quote_date)
         end = pd.to_datetime(frame.planned_settlement_date)
+        # The comparisons run on the datetime64 arrays (same values, no per-event Series).
+        quote_values, end_values = quote.to_numpy(), end.to_numpy()
+        # The fast path needs naive nanosecond values on both sides; anything
+        # else (zones, out-of-range sentinels) keeps the Series semantics.
+        naive_ns = quote.dtype == "datetime64[ns]" and end.dtype == "datetime64[ns]"
         total = None
         for family, records in sorted(calendars.items()):
             if not isinstance(family, str) or not family or not isinstance(records, list):
                 raise ValueError("invalid macro event calendar family")
-            count = pd.Series(0, index=frame.index, dtype=int)
+            counts = np.zeros(len(frame), dtype=int)
             for record in records:
                 if not isinstance(record, dict) or set(record) != {"event_date", "known_at"}:
                     raise ValueError("macro events require event_date and known_at")
                 event = pd.Timestamp(record["event_date"])
                 known = pd.Timestamp(record["known_at"])
-                count += ((known <= quote) & (event > quote) & (event <= end)).astype(int)
+                fast = naive_ns and event.tz is None and known.tz is None
+                if fast:
+                    try:
+                        event_value = event.as_unit("ns").to_datetime64()
+                        known_value = known.as_unit("ns").to_datetime64()
+                    except (OverflowError, ValueError):
+                        fast = False
+                if not fast:
+                    counts += ((known <= quote) & (event > quote)
+                               & (event <= end)).astype(int).to_numpy()
+                    continue
+                counts += ((known_value <= quote_values) & (event_value > quote_values)
+                           & (event_value <= end_values))
+            count = pd.Series(counts, index=frame.index, dtype=int)
             frame[f"macro_{family}_count"] = count
             frame[f"macro_{family}_inside"] = (count > 0).astype(int)
             total = count.copy() if total is None else total+count
@@ -2586,18 +2765,7 @@ class ExactExpiryCDFPanel:
             frame.chain_atm_iv**2/float(periods_per_year)
             -frame[f"rv_{reference_window}"]**2)
 
-        frame["term_slope_prev"] = np.nan
-        frame["term_slope_next"] = np.nan
-        for _, index in frame.groupby(["symbol", "quote_date"], sort=False).groups.items():
-            ordered = frame.loc[index].sort_values("actual_calendar_dte")
-            dte = ordered.actual_calendar_dte.to_numpy(dtype=float)
-            iv = ordered.chain_log_atm_iv.to_numpy(dtype=float)
-            if len(ordered) > 1:
-                delta = np.diff(dte)
-                slope = np.divide(np.diff(iv), delta, out=np.full(len(delta), np.nan),
-                                  where=delta != 0)
-                frame.loc[ordered.index[1:], "term_slope_prev"] = slope
-                frame.loc[ordered.index[:-1], "term_slope_next"] = slope
+        ExactExpiryCDFPanel._add_term_slopes(frame)
 
         qnames = [RawChainFeatureBuilder._qname(p) for p in proxy_probabilities]
         q = frame[qnames].to_numpy(dtype=float)
@@ -2620,6 +2788,55 @@ class ExactExpiryCDFPanel:
             frame[column] = values
         return frame.sort_index()
 
+    @staticmethod
+    def _add_term_slopes(frame):
+        """Write each expiry's log-ATM-IV slope to its previous and next listed expiry."""
+        import numpy as np
+
+        frame["term_slope_prev"] = np.nan
+        frame["term_slope_next"] = np.nan
+        dte_column = frame.actual_calendar_dte
+        if (not frame.index.is_unique or dte_column.isna().any()
+                or dte_column.dtype.kind not in "iuf"):
+            # The label-based reference, for a frame the positional path cannot mirror exactly.
+            for _, index in frame.groupby(["symbol", "quote_date"], sort=False).groups.items():
+                ordered = frame.loc[index].sort_values("actual_calendar_dte")
+                dte = ordered.actual_calendar_dte.to_numpy(dtype=float)
+                iv = ordered.chain_log_atm_iv.to_numpy(dtype=float)
+                if len(ordered) > 1:
+                    delta = np.diff(dte)
+                    slope = np.divide(np.diff(iv), delta, out=np.full(len(delta), np.nan),
+                                      where=delta != 0)
+                    frame.loc[ordered.index[1:], "term_slope_prev"] = slope
+                    frame.loc[ordered.index[:-1], "term_slope_next"] = slope
+            return
+        # Positional twin: a group's positions ascend in frame order (as its .loc rows did) and
+        # NaN-free sort_values is numpy's default-kind argsort, so ties order identically.
+        raw = dte_column.to_numpy()
+        dte_all = dte_column.to_numpy(dtype=float)
+        iv_all = frame.chain_log_atm_iv.to_numpy(dtype=float)
+        previous, following = np.full(len(frame), np.nan), np.full(len(frame), np.nan)
+        for positions in frame.groupby(["symbol", "quote_date"], sort=False).indices.values():
+            if len(positions) < 2:
+                continue
+            ordered = positions[raw[positions].argsort(kind="quicksort")]
+            delta = np.diff(dte_all[ordered])
+            slope = np.divide(np.diff(iv_all[ordered]), delta, out=np.full(len(delta), np.nan),
+                              where=delta != 0)
+            previous[ordered[1:]] = slope
+            following[ordered[:-1]] = slope
+        frame["term_slope_prev"] = previous
+        frame["term_slope_next"] = following
+    def _vintage(self):
+        """Return the read vintage every observation read of the panel takes, when declared.
+
+        ``as_of_acquisition_ms`` (ADR-0154) hides rows acquired after it from the observation
+        reads (index closes, market symbols, FRED, and the surface reader's prices), so a stage
+        that rebuilds the panel after a scheduled acquisition reads what the first stage read
+        (ADR-0236 amendment 3).
+        """
+        return {PANEL_VINTAGE: self.config[PANEL_VINTAGE]} if PANEL_VINTAGE in self.config else {}
+
     def _join_fred_features(self, frame, specifications):
         """Join pinned market observations at their conservative availability dates."""
         import numpy as np
@@ -2632,7 +2849,7 @@ class ExactExpiryCDFPanel:
             reader = ObservationRows(feature, {
                 "root": self.config["root"], "source": "fred-market-features",
                 "stream": spec["stream"], "key_fields": ["observation_date"],
-                "ts_field": "observation_date",
+                "ts_field": "observation_date", **self._vintage(),
             })
             records = reader.run(None, {})["records"]
             self.reader_fingerprints[f"fred:{spec['stream']}"] = reader.fingerprint()
@@ -2714,7 +2931,7 @@ class ExactExpiryCDFPanel:
         c = self.config
         price_reader = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"],
                                            "since_ms": int(pd.Timestamp(c["since"]).timestamp()*1000),
-                                           "symbol": symbol})
+                                           "symbol": symbol, **self._vintage()})
         prices = price_reader.run(None, {})["records"]
         self.reader_fingerprints[symbol] = price_reader.fingerprint()
         return prices
@@ -2835,9 +3052,9 @@ class ExactExpiryCDFPanel:
         c = self.config
         hashes = {name: files.sha256(c[name]) for name in self._source_names()}
         if c.get("chain_features"):
-            if not files.has(c["chain_features"], ".sources.json"):
+            if not files.has(c["chain_features"], _SOURCES_SIDECAR):
                 raise ValueError("raw-chain source hash manifest is missing")
-            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], ".sources.json")
+            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], _SOURCES_SIDECAR)
         return hashes
 
     def read(self):
@@ -2884,10 +3101,12 @@ class ExactExpiryCDFPanel:
             expiry = pd.DatetimeIndex(pd.to_datetime(rows.expiry))
             end_index = sessions.searchsorted(expiry, side="right")-1
             rows["settlement_date"] = sessions[end_index].strftime("%Y-%m-%d")
-            rows["actual_calendar_dte"] = (pd.to_datetime(rows.settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
+            # One parse of the unfiltered rows' quote dates serves both horizons below.
+            quote_dates = pd.to_datetime(rows.quote_date)
+            rows["actual_calendar_dte"] = (pd.to_datetime(rows.settlement_date)-quote_dates).dt.days
             planned_end = planned[planned.searchsorted(expiry, side="right")-1]
             rows["planned_settlement_date"] = planned_end.strftime("%Y-%m-%d")
-            rows["calendar_dte"] = (pd.to_datetime(rows.planned_settlement_date)-pd.to_datetime(rows.quote_date)).dt.days
+            rows["calendar_dte"] = (pd.to_datetime(rows.planned_settlement_date)-quote_dates).dt.days
             rows = self._horizon_cohort(
                 rows[(rows.actual_calendar_dte >= 1) & (rows.calendar_dte <= c["max_dte"])]).copy()
             locked = None
@@ -2942,16 +3161,19 @@ class ExactExpiryCDFPanel:
                 if "date_ohlc" in rows:
                     rows = rows.drop(columns=["date_ohlc"])
             iv_reader = IndexCloseRows("iv", {"root": c["root"], "source": c["iv_source"],
-                                              "symbol": iv_symbol})
+                                              "symbol": iv_symbol, **self._vintage()})
             iv = iv_reader.run(None, {})["records"]
             self.reader_fingerprints[iv_symbol] = iv_reader.fingerprint()
             iv_by_date = {r["date"]: r["close"] for r in iv}
             rows["own_iv"] = rows.quote_date.map(iv_by_date)
             rows["log_calendar_dte"] = np.log(rows.calendar_dte)
             rows["log_sessions_to_expiry"] = np.log(rows.sessions_to_expiry)
-            rows["series_age_calendar"] = (pd.to_datetime(rows.quote_date)-pd.to_datetime(rows.first_seen_date)).dt.days
-            first_index = sessions.searchsorted(pd.to_datetime(rows.first_seen_date))
-            entry_index = sessions.get_indexer(pd.to_datetime(rows.quote_date))
+            # The final rows' dates, parsed once each for the calendar age and session positions.
+            quote_dates = pd.to_datetime(rows.quote_date)
+            first_seen = pd.to_datetime(rows.first_seen_date)
+            rows["series_age_calendar"] = (quote_dates-first_seen).dt.days
+            first_index = sessions.searchsorted(first_seen)
+            entry_index = sessions.get_indexer(quote_dates)
             rows["series_age_sessions"] = entry_index-first_index
             rows["series_total_tenor_calendar"] = rows.series_age_calendar+rows.calendar_dte
             rows["series_total_tenor_sessions"] = rows.series_age_sessions+rows.sessions_to_expiry
@@ -2994,7 +3216,7 @@ class ExactExpiryCDFPanel:
             for feature, spec in c["market_symbols"].items():
                 symbol = spec["symbol"]
                 reader = IndexCloseRows(feature, {"root": c["root"], "source": c["iv_source"],
-                                                   "symbol": symbol})
+                                                   "symbol": symbol, **self._vintage()})
                 records = reader.run(None, {})["records"]
                 self.reader_fingerprints[symbol] = reader.fingerprint()
                 values = pd.DataFrame(records)[["date", "close"]].drop_duplicates("date")
@@ -3074,6 +3296,115 @@ class ExactExpiryCDFPanel:
             result["keyed_tables"] = self.keyed_provenance
         return result
 
+    def _locations(self):
+        """Return the store roots and the existing filesystem paths this config names.
+
+        Every ``root`` value, at any depth, is a store root (a run config's one
+        absolute-path convention); any other string naming an existing file or
+        directory is a data path (a legacy entry), with the source-hash sidecar a
+        raw-chain file is read with. The whole config is walked, so a key added
+        later is covered without editing this; the working directory and its
+        parents are never a data path.
+
+        Returns
+        -------
+        tuple of list
+            Sorted absolute roots, and sorted absolute paths that are not roots.
+        """
+        import os
+
+        roots, paths, here = set(), set(), os.path.abspath(os.curdir)
+
+        def walk(value, key):
+            if isinstance(value, dict):
+                for name, item in value.items():
+                    if name != "notes":
+                        walk(item, name)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, key)
+            elif isinstance(value, str) and value:
+                where = os.path.abspath(os.path.expanduser(value))
+                if key == "root":
+                    roots.add(where)
+                elif os.path.exists(where) and os.path.commonpath([where, here]) != where:
+                    paths.update((where, where+_SOURCES_SIDECAR))
+
+        walk(self.config, None)
+        return sorted(roots), sorted(paths-roots)
+
+    def cache_identity(self, environment):
+        """Return everything this panel's read is a function of (ADR-0236 amendment).
+
+        Parameters
+        ----------
+        environment : dict
+            The runtime fingerprint the caller captured once
+            (:class:`~dskit.production.release.RuntimeFingerprint`: interpreter,
+            platform, every installed distribution).
+
+        Returns
+        -------
+        dict
+            ``reader`` (the class), ``config`` (the config itself; the cache digests
+            it without its ``notes``), ``holdout_start``, ``code`` (every module of
+            dskit and of this package), ``environment``, ``stores`` (each named
+            root's content token) and ``paths`` (a stat token over every other
+            existing path the config names).
+        """
+        import sys
+
+        import dskit
+        from dskit.onboarding import OnboardingRoot, files_token
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+
+        roots, paths = self._locations()
+        return {"reader": f"{type(self).__module__}:{type(self).__qualname__}",
+                "config": self.config, "holdout_start": self.holdout_start,
+                "code": ParquetFrameCache.code_digest(dskit, sys.modules[__package__]),
+                "environment": environment,
+                "stores": {root: OnboardingRoot(root).content_token() for root in roots},
+                "paths": files_token(paths)}
+
+    def cached_read(self, directory):
+        """Return ``(read(), provenance())``, reusing the panel a same-identity read stored.
+
+        The store snapshots this process resolved before are forgotten first, so a
+        build reads the snapshots the identity's tokens name. A panel that cannot be
+        stored (container-valued columns, such as a decision context) is read afresh
+        by every stage, as without a cache; so is every panel when the runtime cannot
+        be fingerprinted (a distribution without a name or version), since no key
+        could then be trusted.
+
+        Parameters
+        ----------
+        directory : str or Path
+            The cache slot (a :class:`~dskit.pipeline.libs.parquet.ParquetFrameCache`).
+
+        Returns
+        -------
+        tuple
+            ``(frame, provenance, state)``: the panel and its provenance as stored,
+            so the building call and every reuse hand a study the same frame and
+            the same dict, and how it was had (``reused``, ``stored``, ``unstored``,
+            or ``off`` without a fingerprint).
+        """
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+        from dskit.production.base import ProductionError
+        from dskit.production.release import RuntimeFingerprint
+
+        clear_snapshot_cache()
+        try:
+            environment = RuntimeFingerprint.capture().to_obj()
+        except ProductionError as err:
+            print("panel cache off: the runtime has no fingerprint:", err, flush=True)
+            frame = self.read()
+            return frame, ParquetFrameCache.as_stored(self.provenance()), "off"
+        frame, provenance, state = ParquetFrameCache(directory).load_or_build(
+            lambda: self.cache_identity(environment), lambda: (self.read(), self.provenance()))
+        print("panel", state, frame.shape, flush=True)
+        return frame, provenance, state
+
 
 class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     """Build the panel from one daily price file per symbol, with no option surface (ADR-0230).
@@ -3090,7 +3421,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     config : dict
         The base keys, with ``reader`` ``"price_calendar"``, ``exact_dte`` (required),
         ``price_source`` ``{source, stream, relpath {symbol: file}, columns {file column:
-        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). ``price_source``
+        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). A ``relpath``
+        entry may instead be ``{source, stream, relpath}``: that symbol's file lives in another
+        onboarded source (disjoint universes in separate sources, ADR-0236), and its reader
+        fingerprint names the source and stream. ``price_source``
         may carry ``window`` (``ParquetRows``' block, ``field`` a mapped field): ENTRY dates
         are cut to it, price records before ``start`` stay for the features' lookback, and
         records after ``end`` are cut, so settlement follows step 1's rule. Optional
@@ -3125,6 +3459,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         source = config.get("price_source")
         ok = (isinstance(source, dict) and isinstance(source.get("source"), str)
               and isinstance(source.get("stream"), str) and isinstance(source.get("relpath"), dict)
+              and all(cls._location_ok(v) for v in source["relpath"].values())
               and isinstance(source.get("columns"), dict)
               and set(source["columns"].values()) <= set(PRICE_FIELDS)
               and set(_PRICE_REQUIRED) <= set(source["columns"].values()))
@@ -3137,12 +3472,34 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
             if isinstance(window, dict) and window.get("field") not in (None, "date"):
                 problems.append("price_source.window.field must be 'date', the panel's date field")
         if not ok:
-            problems.append("price_source must be {source, stream, relpath {symbol: file}, columns "
-                            "{file column: field}} writing fields from "
-                            f"{PRICE_FIELDS} (including {_PRICE_REQUIRED}), got {source!r}")
+            problems.append("price_source must be {source, stream, relpath {symbol: file or "
+                            "{source, stream, relpath}}, columns {file column: field}} writing "
+                            f"fields from {PRICE_FIELDS} (including {_PRICE_REQUIRED}), "
+                            f"got {source!r}")
         problems += [f"{name} is an option-surface key; reader {cls.READER!r} has none"
                      for name in OPTION_SOURCE_KEYS if config.get(name) not in (None, {}, False)]
         return problems
+
+    @staticmethod
+    def _location_ok(entry):
+        """Say whether a ``relpath`` entry is a file name or a store reference to one file.
+
+        The reference rule is :func:`~index_options.datafiles.entry_problems`'s; a
+        ``manifest_sha256`` pin is refused, since the price reader pins each file by its
+        own manifest digest instead.
+        """
+        return not entry_problems("price_source.relpath entry", entry) and not (
+            isinstance(entry, dict) and "manifest_sha256" in entry)
+
+    def _location(self, symbol):
+        """Return the symbol's price file as ``(source, stream, relpath)``, defaults filled in."""
+        source = self.config["price_source"]
+        entry = source["relpath"].get(symbol)
+        if entry is None:
+            raise ValueError(f"price_source.relpath has no file for symbol {symbol!r}")
+        if isinstance(entry, str):
+            return source["source"], source["stream"], entry
+        return entry["source"], entry["stream"], entry["relpath"]
 
     @classmethod
     def action_problems(cls, spec):
@@ -3189,20 +3546,28 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         return self._records[symbol]
 
     def _file_rows(self, symbol):
-        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint."""
+        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint.
+
+        A symbol whose ``relpath`` entry names its own source gets a fingerprint that also
+        names that source and stream; a plain file entry's fingerprint is unchanged.
+        """
         from dskit.pipeline.libs.parquet import ParquetRows
 
         c, source = self.config, self.config["price_source"]
+        name, stream, relpath = self._location(symbol)
         reader = ParquetRows("prices", {
-            "root": c["root"], "source": source["source"], "stream": source["stream"],
-            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"],
+            "root": c["root"], "source": name, "stream": stream,
+            "relpath_by_key": {symbol: relpath}, "key": symbol, "columns": source["columns"],
             "window": self._end_window(source.get("window"))})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
         if repeated:
             raise ValueError(f"{symbol}: price file repeats date(s) {repeated[:3]}")
-        return rows, reader.fingerprint()
+        fingerprint = reader.fingerprint()
+        if not isinstance(source["relpath"][symbol], str):
+            fingerprint = {**fingerprint, "source": name, "stream": stream}
+        return rows, fingerprint
 
     @staticmethod
     def _end_window(window):
@@ -3221,7 +3586,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     def _project(self, symbol, raw):
         """Project file rows to price envelopes by the index reader's own rules."""
         c = self.config
-        owner = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"]["source"],
+        owner = IndexCloseRows("prices", {"root": c["root"], "source": self._location(symbol)[0],
                                           "symbol": symbol})
         stamped = [{**{k: v for k, v in r.items() if k != "split_coefficient"},
                     "symbol": symbol, "asof_ms": self._stamp(r["date"])} for r in raw]
@@ -3670,7 +4035,8 @@ class DecisionStrikeDiagnosisStudy:
 def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
+    parser.add_argument("--stage", choices=["prepare", "panel", "search", "select", "evaluate",
+                                            "report"])
     parser.add_argument("--partition")
     parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
@@ -3724,20 +4090,32 @@ def _main():
     fold_table = config.get("study", {}).get("fold_table")
     adapter = panel_class(config["data"])(
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
-    frame = adapter.read()
-    provenance = adapter.provenance()
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:
-        if not args.stage:
-            parser.error("HPO requires an explicit --stage")
-        CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
-                                            partition=args.partition, provenance=provenance)
+        if not args.stage or (args.stage == "panel" and args.partition):
+            parser.error("HPO requires an explicit --stage; panel takes no partition")
+        label = " ".join(filter(None, [args.stage, args.partition]))
+        print(f"[cdf_study] {label} start", flush=True)
+        study = CDFHyperparameterStudy(config)   # a bad document refuses before any read
+        # Every stage reads the panel the first one built (ADR-0236 amendment); the
+        # panel stage only builds it, in a process that then fits nothing.
+        frame, provenance, state = adapter.cached_read(
+            Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
+        if args.stage == "panel" and state not in ("reused", "stored"):
+            raise ValueError(f"the panel stage could not cache the panel ({state}): every "
+                             "later stage would read it afresh")
+        if args.stage != "panel":
+            study.run(frame, diagnostic, stage=args.stage, partition=args.partition,
+                      provenance=provenance)
+        print(f"[cdf_study] {label} end", flush=True)
         if config.get("data", {}).get("decision_regions"):
             import signal
             signal.setitimer(signal.ITIMER_REAL, 0.)
         return
     if args.stage or args.partition:
         parser.error("stage/partition require an experiment document")
+    frame = adapter.read()
+    provenance = adapter.provenance()
     output = Path(config["study"]["output"])
     if output.exists():
         raise FileExistsError(output)

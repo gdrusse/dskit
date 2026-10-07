@@ -61,6 +61,61 @@ def test_decision_weighted_lightgbm_curve_predicts_directly_at_row_strikes():
             1/(1+np.exp(-cutoff)), abs=1e-12)
 
 
+def test_decision_weighted_lightgbm_vector_expansion_equals_the_event_loop():
+    rng = np.random.default_rng(4)
+    contexts = []
+    for i in range(40):
+        context = _decision_context(("SPY", f"2020-01-{i+1:02d}", "2020-02-21"))
+        if i % 5 == 0:
+            context.update(thresholds=[], weights=[], intervals=[],
+                           status="no_eligible_condor")
+        contexts.append(context)
+    x, y = rng.normal(size=(40, 2)), rng.normal(size=40)
+    inventory = predictive_cdf._decision_threshold_inventory(contexts)
+    model = DecisionWeightedMonotoneCDF(
+        thresholds=[-2., 0., 2.], decision_weight=2., trees=5, leaves=3,
+        min_child=2, threads=1)
+    fast = model._expanded_events(x, y, inventory, model.global_weight/3)
+    slow = model._expanded_events_loop(x, y, inventory, model.global_weight/3)
+    assert np.array_equal(fast[0], slow[0])
+    assert np.array_equal(np.asarray(fast[1], dtype=int), np.asarray(slow[1], dtype=int))
+    assert np.array_equal(np.asarray(fast[2], dtype=float), np.asarray(slow[2], dtype=float))
+    fitted = model.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    reference = DecisionWeightedMonotoneCDF(
+        thresholds=[-2., 0., 2.], decision_weight=2., trees=5, leaves=3,
+        min_child=2, threads=1)
+    reference._expanded_events = reference._expanded_events_loop
+    reference.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+    assert (fitted.model.booster_.model_to_string()
+            == reference.model.booster_.model_to_string())
+    batched = fitted.curve_decision_context(x, contexts)
+    for row in (0, 1, 7):
+        cutoffs = np.unique(np.r_[fitted.thresholds, inventory[row][0]])
+        alone = fitted.model.predict_proba(np.column_stack([
+            np.repeat(x[row][None, :], len(cutoffs), axis=0), cutoffs]))[:, 1]
+        assert np.array_equal(batched.probabilities[row, 1:len(cutoffs)+1], alone)
+
+
+def test_decision_weighted_lightgbm_float32_inputs_keep_the_event_loop():
+    rng = np.random.default_rng(5)
+    contexts = [_decision_context(("SPY", f"2020-01-{i+1:02d}", "2020-02-21"))
+                for i in range(40)]
+    x, y = rng.normal(size=(40, 2)), rng.normal(size=40)
+    y[::4] = 0.1    # sits on a threshold, where float32 and float64 disagree
+
+    def fitted(x, y, loop):
+        model = DecisionWeightedMonotoneCDF(
+            thresholds=[-1.1, 0., 1.3], decision_weight=2., trees=5, leaves=3,
+            min_child=2, threads=1)
+        if loop:
+            model._expanded_events = model._expanded_events_loop
+        return model.fit_decision_context(contexts, contexts).fit(x, y, x, y)
+
+    for xs, ys in ((x.astype(np.float32), y), (x, y.astype(np.float32))):
+        assert (fitted(xs, ys, False).model.booster_.model_to_string()
+                == fitted(xs, ys, True).model.booster_.model_to_string())
+
+
 def test_decision_weighted_mlp_requires_context_and_trains_analytic_cdf():
     model = DecisionWeightedMixtureMLPCDF(
         components=1, hidden=[3], epochs=1, batch_size=2, seeds=[3],
@@ -1099,7 +1154,8 @@ def test_pooled_study_fits_once_and_keeps_index_calibration_and_counts(tmp_path,
     assert len(scores) == 4 and set(scores.unit) == {'A', 'B'}
     counts = json.loads((tmp_path/'pool'/'counts.json').read_text())
     assert all(r['pool_fit']['n'] == 5 for r in counts)
-    assert all(r['pool_fit']['groups'] == {'A': 3, 'B': 2} for r in counts)
+    # The per-group map rides on the entry that fitted only (ADR-0236 amendment 2).
+    assert [r['pool_fit'].get('groups') for r in counts] == [{'A': 3, 'B': 2}, None]
     assert sum(r['pool_fit']['new_fit'] for r in counts) == 1
     c['models']['pool']['pooled_typo'] = True
     with pytest.raises(ValueError, match='model'):
@@ -1696,13 +1752,16 @@ def test_decision_hpo_ranks_local_score_not_global_crps(tmp_path):
     assert rank[("candidate", "raw")] == pytest.approx(.5)
 
 
-@pytest.mark.parametrize("kind", ["mlp", "gru"])
+@pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
 def test_torch_cdf_encoders_are_row_local_and_calibration_does_not_train(kind):
     torch = pytest.importorskip("torch")
     torch.set_num_threads(1)
-    encoder = {"kind": "mlp"} if kind == "mlp" else {
-        "kind": "gru", "sequence_indices": [[2], [1], [0]],
-        "context_indices": [3], "hidden_size": 4, "num_layers": 1}
+    sequence = {"sequence_indices": [[2], [1], [0]], "context_indices": [3]}
+    encoder = {"mlp": {"kind": "mlp"},
+               "gru": {"kind": "gru", **sequence, "hidden_size": 4, "num_layers": 1},
+               "lstm": {"kind": "lstm", **sequence, "hidden_size": 4, "num_layers": 1},
+               "cnn": {"kind": "cnn", **sequence, "channels": 3, "kernel_size": 2,
+                       "dilations": [1, 2], "pooling": "last"}}[kind]
     losses = [{"kind": "nll", "weight": .1}, {"kind": "decision_brier", "weight": 1.},
               {"kind": "decision_log", "weight": .2}]
     x = np.random.default_rng(1).normal(size=(6, 4))
@@ -1726,8 +1785,8 @@ def test_torch_cdf_encoders_are_row_local_and_calibration_does_not_train(kind):
     assert report["composite"] == pytest.approx(sum(
         term["mean"]*term["weight"] for term in report["terms"].values()))
     assert np.isfinite(report["composite"])
-    # Genuine ordered sequence: flipping lag columns alters the fitted GRU forecast.
-    if kind == "gru":
+    # Genuine ordered sequence: flipping lag columns alters a fitted sequence forecast.
+    if kind != "mlp":
         changed = x.copy()
         changed[:, :3] = changed[:, :3][:, ::-1]
         assert not np.allclose(model.curve(changed).cdf([0]), model.curve(x).cdf([0]))
@@ -1753,7 +1812,7 @@ def test_torch_loss_proper_scores_and_eligible_denominator():
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda e,terms: e.update(kind="lstm"),
+    lambda e,terms: e.update(kind="transformer"),
     lambda e,terms: e.update(unknown=1),
     lambda e,terms: terms.append(dict(terms[0])),
     lambda e,terms: terms[0].update(weight=-1),
@@ -2002,11 +2061,14 @@ def test_torch_cdf_feature_subset_refuses_mixed_encoder_positions_and_bad_indice
         _subset_fit({"kind": "mlp"}, [0, 0], x, y)
     with pytest.raises(ValueError, match="feature indices outside input"):
         _subset_fit({"kind": "mlp"}, [0, 9], x, y)
-    # Head routing and the legacy left-tail penalty stay refused beside the subset.
-    for refused in ({"head_features": [0, 1]}, {"left_cdf_weight": .5}):
-        with pytest.raises(ValueError, match="head_features and left_cdf_weight"):
-            predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
-                                    feature_indices=[2, 3], device="cpu", **refused)
+    # The legacy left-tail penalty stays refused beside the subset (ADR-0236 lifts
+    # the head refusal; a head column inside the subset is refused instead).
+    with pytest.raises(ValueError, match="left_cdf_weight"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
+                                feature_indices=[2, 3], device="cpu", left_cdf_weight=.5)
+    with pytest.raises(ValueError, match="excluded from feature_indices"):
+        predictive_cdf.TorchCDF(encoder={"kind": "mlp"}, losses=_SUBSET_LOSSES,
+                                feature_indices=[2, 3], device="cpu", head_features=[3, 4])
 
 
 @pytest.mark.parametrize("global_kind", ["nll", "crps"])
@@ -2457,8 +2519,9 @@ def test_losses_registry_adds_crps_and_wing_with_declared_scopes():
     assert {"nll", "crps", "decision_brier", "decision_log", "wing_twcrps"} <= set(registry)
     assert {k: registry[k].scope for k in registry} == {
         "nll": "global", "crps": "global", "decision_brier": "local",
-        "decision_log": "local", "wing_twcrps": "local"}
+        "decision_log": "local", "wing_twcrps": "local", "tail_crps": "local"}
     assert registry["wing_twcrps"].context_keys == ("lower", "upper", "density")
+    assert registry["tail_crps"].context_keys == registry["wing_twcrps"].context_keys
     assert registry["decision_brier"].context_keys == ("thresholds", "weights")
     assert registry["nll"].context_keys == () == registry["crps"].context_keys
 
@@ -3440,6 +3503,284 @@ def test_fold_table_pooled_models_fit_once_per_fold_on_the_pooled_bands(tmp_path
         assert max(train_t) < min(monitor_t)
 
 
+# ---- ADR-0236 amendment (owner option B, 2026-10-04): a task enters once seen ----------------
+
+LATE = '2020-01-24'  # fold 1's val_start: B lists here, so folds 1-2 hold no B fit row
+
+
+def _late_rows(start=LATE, missing=()):
+    """Group A on every day; group B only from ``start``, and never on the ``missing`` days."""
+    return [r for r in _fold_rows(groups=('A', 'B'))
+            if r['unit'] == 'A' or (r['date'] >= start and r['date'] not in missing)]
+
+
+def _restated_bands(fold, days, ends, seam, cal_n=5):
+    """A fold's fit, calibration and evaluation dates, restated from ADR-0223's rule."""
+    train = [d for d in days if fold['train_start'] <= d <= fold['train_end']]
+    tail = train[-cal_n:]
+    fit = [d for d in train[:-cal_n] if ends[d] < tail[0]]
+    cal = [d for d in tail if ends[d] < fold['val_start']]
+    val = [d for d in days if fold['val_start'] <= d <= fold['val_end']]
+    if fold['role'] == 'warmup':
+        val = [d for d in val if ends[d] < seam]
+    return fit, cal, val
+
+
+class _TaskSpyCDF(HorizonEmpiricalCDF):
+    """Records the task flag (the last input) of every fit and monitor row it is given."""
+    seen = []
+
+    def fit(self, x, y, cal_x, cal_y):
+        type(self).seen.append((set(np.array(x)[:, -1]), set(np.array(cal_x)[:, -1])))
+        return super().fit(x, y, cal_x, cal_y)
+
+
+def _admission_config(tmp_path, spec, minimum=None, calibrate=False):
+    config = _fold_config(tmp_path, spec)
+    config['features'] = ['h', 'scale', 't', 'is_B']
+    config['models']['reference']['calibrate'] = calibrate
+    config['models']['spy'] = {'class': 'dskit.pipeline.libs.predictive_cdf:_TaskSpyCDF',
+                               'params': {'horizon_index': 0, 'reference_index': 1, 'knots': 41},
+                               'calibrate': False, 'pooled': True}
+    if minimum is not None:
+        config['min_task_fit_rows'] = minimum
+    return config
+
+
+def test_an_undeclared_minimum_keeps_the_every_band_refusal(tmp_path, monkeypatch):
+    # Owner: the default keeps today's behaviour. A late task's empty fit band refuses,
+    # and so does an empty calibration band.
+    rows = _late_rows()
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    with pytest.raises(ValueError, match='empty band: B 1'):
+        ChronologicalCDFStudy(_admission_config(tmp_path, spec)).run(frame)
+    holes = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01'}
+    rows = _late_rows(start='2020-01-01', missing=holes)   # fold 3: no B calibration row
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config = _admission_config(tmp_path, spec)
+    config['output'] = str(tmp_path/'cal-hole')
+    with pytest.raises(ValueError, match='empty band: B 3'):
+        ChronologicalCDFStudy(config).run(frame)
+
+
+@pytest.mark.parametrize(('minimum', 'waits'), [(1, [1, 2]), (4, [1, 2, 3])])
+def test_a_late_task_waits_until_its_fit_band_holds_min_task_fit_rows(
+        tmp_path, monkeypatch, minimum, waits):
+    rows = _late_rows()
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    _TaskSpyCDF.seen = []
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, minimum)).run(frame)
+    days, ends = sorted(frame.date.unique()), dict(zip(frame.date, frame.end))
+    late = set(frame[frame.unit == 'B'].date)
+    seam, floor = plan['metrics']['scored_start'], minimum or 1
+    want, ledger = [], json.loads((tmp_path/'out/admission.json').read_text())
+    assert len(_TaskSpyCDF.seen) == len(plan['records'])  # the pooled fit still runs once a fold
+    for fold, (fit_flags, monitor_flags) in zip(plan['records'], _TaskSpyCDF.seen):
+        fit, cal, val = [[d for d in band if d in late]
+                         for band in _restated_bands(fold, days, ends, seam)]
+        joined = len(fit) >= floor
+        got = scores[(scores.fold == fold['fold']) & (scores.unit == 'B')]
+        assert set(got.date) == (set(val) if joined else set()), fold['fold']
+        assert set(got.model) == ({'reference', 'spy'} if joined and val else set())
+        assert (1 in monitor_flags) == (joined and bool(cal))   # the monitor waits too
+        assert (1 in fit_flags) == (joined and bool(fit))      # it sits the fold out
+        if not joined:
+            want.append({'group': 'B', 'fold': fold['fold'], 'reason': 'waiting',
+                         'fit_rows': len(fit), 'calibration_rows': len(cal),
+                         'evaluation_rows': len(val), 'dropped_fit_rows': len(fit),
+                         'dropped_calibration_rows': len(cal),
+                         'dropped_evaluation_rows': len(val)})
+    assert [w['fold'] for w in want] == waits                   # the fixture exercises the rule
+    assert any(w['fit_rows'] for w in want) or floor == 1      # a waiting fit band is dropped
+    assert ledger == {'min_task_fit_rows': floor, 'split': 'fold', 'not_evaluated': want,
+                      'dropped_rows': {band: sum(w[f'dropped_{band}_rows'] for w in want)
+                                       for band in ('fit', 'calibration', 'evaluation')}}
+    assert not (scores.unit == 'A').groupby(scores.fold).sum().eq(0).any()  # A never waits
+
+
+@pytest.mark.parametrize('value', [0, -1, True, 1.5, '4', None])
+def test_min_task_fit_rows_is_an_integer_of_at_least_one(tmp_path, value):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    config['min_task_fit_rows'] = value
+    with pytest.raises(ValueError, match='min_task_fit_rows'):
+        ChronologicalCDFStudy(config)
+    config['min_task_fit_rows'] = 1
+    ChronologicalCDFStudy(config)
+
+
+def test_an_admitted_task_without_evaluation_rows_is_skipped_and_without_calibration_is_scored(
+        tmp_path, monkeypatch):
+    # B misses 01-28..02-02: fold 2 holds no B evaluation row; fold 3 holds no B calibration row.
+    missing = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01', '2020-02-02'}
+    rows = _late_rows(start='2020-01-01', missing=missing)
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    _TaskSpyCDF.seen = []
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    b = scores[scores.unit == 'B']
+    assert 2 not in set(b.fold) and set(b[b.fold == 3].date) == {
+        '2020-02-03', '2020-02-04', '2020-02-05', '2020-02-06', '2020-02-07'}
+    text = (tmp_path/'out/counts.json').read_text()
+    counts = json.loads(text)
+    entry = next(c for c in counts if c['group'] == 'B' and c['fold'] == 3)
+    assert entry['cal']['n'] == 0 and entry['val']['n'] == 5
+    assert entry['cal']['first'] is None and 'NaN' not in text   # strict JSON
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['not_evaluated'] == [{
+        'group': 'B', 'fold': 2, 'reason': 'no_evaluation_rows', 'fit_rows': 14,
+        'calibration_rows': 5, 'evaluation_rows': 0, 'dropped_fit_rows': 0,
+        'dropped_calibration_rows': 0, 'dropped_evaluation_rows': 0}]
+    calibrated = _admission_config(tmp_path, spec, 4, calibrate=True)
+    calibrated['output'] = str(tmp_path/'calibrated')
+    with pytest.raises(ValueError, match='empty calibration band: B 3'):
+        ChronologicalCDFStudy(calibrated).run(frame)
+    # A per-group fit is handed its calibration rows unless its class declares it ignores
+    # them: ScaledEmpiricalCDF learns its shape there, flagged or not.
+    scaled = _admission_config(tmp_path, spec, 4)
+    scaled['output'] = str(tmp_path/'scaled')
+    scaled['models']['scaled'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
+        'params': {'alpha': 1., 'floor': .01, 'knots': 11}, 'calibrate': False}
+    with pytest.raises(ValueError, match=r"empty calibration band: B 3, which \['scaled'\]"):
+        ChronologicalCDFStudy(scaled).run(frame)
+
+
+def test_the_ledger_lists_a_task_with_no_row_in_a_fold(tmp_path, monkeypatch):
+    # B lists after fold 1's bands: it holds no row there, nothing is dropped, it is listed.
+    rows = _late_rows(start='2020-02-10')
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['not_evaluated'][0] == {
+        'group': 'B', 'fold': 1, 'reason': 'waiting', 'fit_rows': 0, 'calibration_rows': 0,
+        'evaluation_rows': 0, 'dropped_fit_rows': 0, 'dropped_calibration_rows': 0,
+        'dropped_evaluation_rows': 0}
+
+
+def test_a_waiting_task_with_a_row_or_two_never_reaches_a_pooled_booster(tmp_path):
+    # Review round 3: LightGBM cannot bin a task under three rows, and a waiting ticker's
+    # few fit rows used to train the pooled fit; it now sits the fold out entirely.
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rows = _late_rows(start='2020-01-20')          # fold 2 holds B's first two fit rows
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config = _fold_config(tmp_path, spec)
+    config.update(features=['h', 'scale', 't', 'is_A', 'is_B'], min_task_fit_rows=4)
+    config['models']['reference']['calibrate'] = False
+    config['models']['boost'] = {
+        'class': 'dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF', 'calibrate': False,
+        'pooled': True, 'params': {
+            'losses': [{'kind': 'crps', 'weight': 1.}, {'kind': 'tail_crps', 'weight': 1.}],
+            'components': 1, 'n_estimators': 3, 'num_leaves': 2, 'min_data_in_leaf': 2,
+            'device': 'cpu', 'head_features': [3, 4], 'feature_indices': [2]}}
+    scores = ChronologicalCDFStudy(config).run(frame)
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    fold2 = next(r for r in ledger['not_evaluated'] if r['fold'] == 2)
+    assert (fold2['group'], fold2['fit_rows'], fold2['dropped_fit_rows']) == ('B', 2, 2)
+    assert set(scores[scores.unit == 'B'].fold) == {3, 4, 5, 6}
+
+
+def test_the_year_grammar_admits_a_task_by_the_same_rule(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    study = dict(config['study'], output=str(tmp_path/'years'), min_task_fit_rows=1)
+    frame = frame[(frame.unit == 'A') | (frame.date >= '2016-01-01')]
+    scores = ChronologicalCDFStudy(study).run(frame)
+    assert set(scores[scores.unit == 'B'].year) == {2019}
+    ledger = json.loads((tmp_path/'years/admission.json').read_text())
+    assert ledger['not_evaluated'] == [{
+        'group': 'B', 'year': 2017, 'reason': 'waiting', 'fit_rows': 0,
+        'calibration_rows': 5, 'evaluation_rows': 5, 'dropped_fit_rows': 0,
+        'dropped_calibration_rows': 5, 'dropped_evaluation_rows': 5}]
+
+
+def test_a_run_writes_its_scores_and_counts_once(tmp_path, monkeypatch):
+    # ADR-0236 amendment 2: rewriting both after every group made a pooled run quadratic.
+    rows = _late_rows(start='2020-01-01')
+    spec, plan = _fold_table(tmp_path, rows, 1)
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    monkeypatch.setattr(predictive_cdf, '_TaskSpyCDF', _TaskSpyCDF, raising=False)
+    import pathlib
+    written, write, text = [], pd.DataFrame.to_parquet, pathlib.Path.write_text
+    monkeypatch.setattr(pd.DataFrame, 'to_parquet',
+                        lambda self, path, **kw: written.append(str(path).rsplit('/', 1)[-1])
+                        or write(self, path, **kw))
+    monkeypatch.setattr(pathlib.Path, 'write_text',
+                        lambda self, data, **kw: written.append(self.name) or text(self, data, **kw))
+    scores = ChronologicalCDFStudy(_admission_config(tmp_path, spec, 4)).run(frame)
+    assert written.count('scores.parquet') == written.count('counts.json') == 1
+    stored = pd.read_parquet(tmp_path/'out/scores.parquet')
+    pd.testing.assert_frame_equal(stored, scores.reset_index(drop=True))
+    counts = json.loads((tmp_path/'out/counts.json').read_text())
+    assert len(counts) == 2*len(plan['records'])  # every group and fold, in loop order
+
+
+def test_a_composite_fit_drops_its_attached_contexts_and_a_refit_needs_them_again():
+    # ADR-0236 amendment 2: a pooled study keeps every fold's model; the per-row
+    # inventories must not ride along.
+    pytest.importorskip("torch")
+    n = 24
+    x, y = np.random.default_rng(3).normal(size=(n, 4)), np.random.default_rng(4).normal(size=n)
+    context = _zoo_context(n)
+    for model in (_zoo_torch("mlp"), _boosted()):
+        fitted = model.fit_decision_context(context, context).fit(x, y, x, y)
+        assert fitted._fit_context is None and fitted._cal_context is None
+        assert fitted.curve(x).cdf(np.zeros((n, 1))).shape == (n, 1)
+        with pytest.raises(ValueError, match="context was not attached"):
+            fitted.fit(x, y, x, y)
+
+
+def test_a_mixture_curve_never_runs_a_full_garbage_collection(monkeypatch):
+    # It cost ~0.1 s a call, seven calls per model and ticker-fold in a pooled study.
+    import gc
+    pytest.importorskip("torch")
+    n = 24
+    x, y = np.random.default_rng(3).normal(size=(n, 4)), np.random.default_rng(4).normal(size=n)
+    model = _zoo_torch("mlp").fit_decision_context(_zoo_context(n), _zoo_context(n))
+    model.fit(x, y, x, y)
+    calls = []
+    monkeypatch.setattr(gc, "collect", lambda *a: calls.append(1) or 0)
+    model.curve(x)
+    assert calls == []
+
+
+def test_hpo_expected_cells_stage_outputs_and_report_carry_the_admission(tmp_path):
+    config, _, plan = _fold_hpo_fixture(tmp_path)
+    rows = _late_rows()
+    frame = pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+    config['study']['min_task_fit_rows'] = 4
+    config['experiment']['expected_cells'] = {'development': {'A': [1]},
+                                              'evaluation': {'A': [1], 'B': [1]}}
+    study = CDFHyperparameterStudy(config)
+    provenance = {'sources': {'test': 'pinned'}}
+    for stage, partition in (('search', 'separate'), ('select', None),
+                             ('evaluate', 'development'), ('evaluate', 'later'),
+                             ('report', None)):
+        study.run(frame, stage=stage, partition=partition, provenance=provenance)
+    search = json.loads((tmp_path/'hpo/search/separate/admission.json').read_text())
+    assert [(r['group'], r['fold']) for r in search['not_evaluated']] == [('B', 1)]
+    report = json.loads((tmp_path/'hpo/report/admission.json').read_text())
+    assert {name: [(r['group'], r['fold'], r['reason']) for r in part['not_evaluated']]
+            for name, part in report.items()} == {
+        'development': [('B', 1, 'waiting')],
+        'later': [('B', 2, 'waiting'), ('B', 3, 'waiting')]}
+    later = pd.read_parquet(tmp_path/'hpo/evaluate/later/scores.parquet')
+    assert set(later[later.unit == 'B'].fold) == {4, 5, 6}
+    config['experiment']['expected_cells']['development']['B'] = [1]
+    config['experiment']['output'] = str(tmp_path/'hpo-stale-cells')
+    with pytest.raises(ValueError, match='development cell set mismatch'):
+        CDFHyperparameterStudy(config).run(frame, stage='search', partition='separate',
+                                           provenance=provenance)
+
+
 WINGS = [[-2.5, -.5], [.5, 2.5]]
 
 
@@ -3472,3 +3813,973 @@ def test_the_fixed_wing_context_trains_the_composite_loss():
                                     losses=[{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}])
     model.fit_decision_context(rows, rows)
     assert model._training_context(np.zeros((2, 1)))["weights"].shape[0] == 2
+
+
+# ---- ADR-0236: the pooled zoo -- heads, lstm/cnn, tail_crps, BoostedTorchCDF,
+# ---- and the weighted_crps selection metric ---------------------------------
+
+_ZOO_LOSSES = [{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]
+_ZOO_SEQUENCE = {"sequence_indices": [[2], [1], [0]], "context_indices": [3]}
+_ZOO_ENCODERS = {
+    "mlp": {"kind": "mlp"},
+    "gru": {"kind": "gru", **_ZOO_SEQUENCE, "hidden_size": 4, "num_layers": 1},
+    "lstm": {"kind": "lstm", **_ZOO_SEQUENCE, "hidden_size": 4, "num_layers": 2},
+    "cnn": {"kind": "cnn", **_ZOO_SEQUENCE, "channels": 3, "kernel_size": 2,
+            "dilations": [1, 2], "pooling": "last"},
+}
+
+
+def _zoo_context(n, prefix="r"):
+    """The study's own rows with no decision_context: every row gets the fixed WINGS."""
+    frame = pd.DataFrame({"symbol": ["A"]*n, "day": [f"{prefix}{i}" for i in range(n)]})
+    return _context_study()._decision_context_rows(frame)
+
+
+def _zoo_torch(kind, **settings):
+    return predictive_cdf.TorchCDF(
+        encoder=copy.deepcopy(_ZOO_ENCODERS[kind]), losses=_ZOO_LOSSES, **{
+            "components": 2, "hidden": [4], "epochs": 3, "batch_size": 6, "seeds": [7],
+            "device": "cpu", "deterministic": True, **settings})
+
+
+@pytest.mark.parametrize(("kind", "digest"), [
+    ("mlp", "2a54fe5bbcf143aae3133d9ec3daf605898ff583d029a6d0662bc2cb2d1979d3"),
+    ("gru", "92b5fe465fa7aad250bfa02188dccb1d8860c539c04150a4e6270c6649692038")])
+def test_torch_cdf_without_heads_fits_byte_identically_to_before_the_zoo(kind, digest):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    encoder = {"kind": "mlp"} if kind == "mlp" else {
+        "kind": "gru", "sequence_indices": [[2], [1], [0]], "context_indices": [3, 4],
+        "hidden_size": 4, "num_layers": 1}
+    x = np.random.default_rng(5).normal(size=(12, 5))
+    y = np.random.default_rng(6).normal(size=12)
+    context = [{"identity": [str(i)], "thresholds": [-2.5, -.5, .5, 2.5], "weights": [.25]*4,
+                "intervals": WINGS} for i in range(12)]
+    model = predictive_cdf.TorchCDF(
+        encoder=encoder, components=2, hidden=[4], epochs=3, batch_size=5, seeds=[7],
+        device="cpu", deterministic=True,
+        losses=[{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 1.}])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    # Recorded on base f9f2f905, before heads, lstm/cnn and the recurrent base
+    # existed (CPU, one thread): every fitted tensor is unchanged.
+    assert model._equivalence_state() == digest
+
+
+@pytest.mark.parametrize("kind", ["mlp", "gru", "lstm", "cnn"])
+def test_torch_cdf_task_heads_share_one_encoder_and_route_each_row_to_its_head(kind):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    rng = np.random.default_rng(2)
+    tasks = np.arange(18) % 3
+    x = np.column_stack([rng.normal(size=(18, 4)), np.eye(3)[tasks]])
+    y = rng.normal(size=18)*(1+tasks)
+    context = _zoo_context(18)
+    model = _zoo_torch(kind, feature_indices=[0, 1, 2, 3], head_features=[4, 5, 6])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    last = [m for m in model.models[0].modules() if isinstance(m, torch.nn.Linear)][-1]
+    assert last.out_features == 3*2*3  # one 3K-wide mixture head per task
+    probe = np.repeat(x[:1], 3, axis=0)
+    probe[:, 4:] = np.eye(3)
+    curves = model.curve(probe).cdf([-.5, .5])
+    assert not np.allclose(curves[0], curves[1]) and not np.allclose(curves[1], curves[2])
+    np.testing.assert_allclose(model.curve(probe[1:2]).cdf([-.5, .5])[0], curves[1], atol=1e-7)
+    # Row h carries task h: its curve is head h's slice of the shared output, no other.
+    xx = torch.tensor(model.scaler.transform(model._features(probe)), dtype=torch.float32)
+    with torch.no_grad():
+        full = model.models[0](xx).reshape(3, 3, 3*2)
+    means = model.curve(probe).means
+    for h in range(3):
+        np.testing.assert_allclose(means[h], model._parts(full[h, h][None])[1][0].numpy(),
+                                   atol=1e-6)
+        other = model._parts(full[h, (h+1) % 3][None])[1][0].numpy()
+        assert not np.allclose(means[h], other)
+    assert model.seen_heads == {0, 1, 2}
+    assert model._equivalence_settings()["head_features"] == (4, 5, 6)
+    assert model._research_state()["head_features"] == [4, 5, 6]
+
+
+def test_torch_cdf_without_heads_keeps_its_research_state_unchanged():
+    model = _zoo_torch("mlp")
+    model.losses = []
+    assert "head_features" not in model._research_state()
+
+
+def test_torch_cdf_heads_refuse_task_columns_as_plain_inputs_and_unseen_tasks():
+    pytest.importorskip("torch")
+    for extra in ({"head_features": [2, 3]},
+                  {"head_features": [2, 3], "feature_indices": [0, 1, 2]}):
+        with pytest.raises(ValueError, match="excluded from feature_indices"):
+            _zoo_torch("mlp", **extra)
+    with pytest.raises(ValueError, match="left_cdf_weight"):
+        _zoo_torch("mlp", left_cdf_weight=.5)
+    x = np.column_stack([np.linspace(-1, 1, 6), np.ones(6), np.zeros(6)])
+    y = np.linspace(-1, 1, 6)
+    context = _zoo_context(6)
+    model = _zoo_torch("mlp", feature_indices=[0], head_features=[1, 2])
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    with pytest.raises(ValueError, match="unseen head"):
+        model.curve(np.array([[0., 0., 1.]]))
+
+
+def test_lstm_encoder_is_the_recurrent_base_with_an_lstm_cell():
+    torch = pytest.importorskip("torch")
+    lstm = _zoo_torch("lstm")._build_module(4)
+    assert type(lstm.rnn) is torch.nn.LSTM
+    assert (lstm.rnn.hidden_size, lstm.rnn.num_layers, lstm.rnn.input_size) == (4, 2, 1)
+    assert type(_zoo_torch("gru")._build_module(4).rnn) is torch.nn.GRU
+    for encoder in (predictive_cdf._CDFGRUEncoder, predictive_cdf._CDFLSTMEncoder):
+        assert issubclass(encoder, predictive_cdf._CDFRecurrentEncoder)
+
+
+@pytest.mark.parametrize(("pooling", "reaches_oldest"), [("last", False), ("mean", True)])
+def test_cnn_encoder_is_causal_and_its_pooling_sets_the_receptive_field(pooling, reaches_oldest):
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    encoder = {"kind": "cnn", "sequence_indices": [[5], [4], [3], [2], [1]],
+               "context_indices": [0], "channels": 3, "kernel_size": 2, "dilations": [1],
+               "pooling": pooling}
+    module = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, components=2,
+                                     hidden=[4], device="cpu")._build_module(6)
+    x = torch.randn(4, 6)
+    oldest, newest, previous = x.clone(), x.clone(), x.clone()
+    oldest[:, 5] += 3.
+    newest[:, 1] += 3.
+    previous[:, 2] += 3.  # one step before the newest: inside a causal kernel of 2
+    with torch.no_grad():
+        base, old, new, prev = module(x), module(oldest), module(newest), module(previous)
+    assert not torch.allclose(base, new) and not torch.allclose(base, prev)
+    assert torch.allclose(base, old) is (not reaches_oldest)
+    assert [conv.dilation for conv in module.convs] == [(1,)]
+    assert [conv.in_channels for conv in module.convs] == [1]
+
+
+_CNN = _ZOO_ENCODERS["cnn"]
+_LSTM = _ZOO_ENCODERS["lstm"]
+
+
+@pytest.mark.parametrize("encoder", [
+    {k: v for k, v in _LSTM.items() if k != "num_layers"},
+    {**_LSTM, "num_layers": 0}, {**_LSTM, "hidden_size": 2.},
+    {**_LSTM, "context_indices": [2]}, {**_LSTM, "sequence_indices": [[2], [1]]},
+    {**_CNN, "kernel_size": 0}, {**_CNN, "channels": 0}, {**_CNN, "dilations": []},
+    {**_CNN, "dilations": [1, 0]}, {**_CNN, "dilations": [1.]}, {**_CNN, "dilations": 2},
+    {**_CNN, "pooling": "max"}, {**_CNN, "stride": 1}, {**_CNN, "kernel_size": True},
+    {**_CNN, "sequence_indices": [[2], [1, 0]]}, {**_CNN, "context_indices": [4]},
+])
+def test_lstm_and_cnn_encoders_refuse_invalid_settings_and_partitions(encoder):
+    pytest.importorskip("torch")
+    with pytest.raises(ValueError):
+        predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES,
+                                device="cpu")._build_module(4)
+
+
+@pytest.mark.parametrize("kind", ["lstm", "cnn"])
+def test_sequence_encoders_fit_deterministically_on_cuda(kind, monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    rng = np.random.default_rng(8)
+    x, y = rng.normal(size=(24, 4)), rng.normal(size=24)
+    context = _zoo_context(24)
+
+    def fit():
+        model = _zoo_torch(kind, device="cuda")
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert fit()._equivalence_state() == fit()._equivalence_state()
+
+
+@pytest.mark.parametrize("name", ["gaussian", "student"])
+def test_tail_crps_term_is_the_studys_tail_crps_with_unit_weight_on_each_wing(name):
+    torch = pytest.importorskip("torch")
+    w, m, s, y = _draw_mixture(rows=4)
+    family = _family(name)
+    args = [torch.tensor(a, dtype=torch.float64) for a in (y[:, None], np.log(w), m, s)]
+    fixed = _torch_context(predictive_cdf.DecisionRegionScores(_zoo_context(4)))
+    tail, eligible = predictive_cdf._CDFTailCRPS(family).values(*args, fixed)
+    wing, _ = predictive_cdf._CDFWingTwCRPS(family).values(*args, fixed)
+    assert eligible.tolist() == [True]*4
+    # Two 2-wide wings: the normalized wing term spreads 1/4 per unit length.
+    np.testing.assert_allclose(tail.numpy(), 4*wing.numpy(), rtol=1e-12)
+    metric = ChronologicalCDFStudy.scores(_family_curve(name, w, m, s), y, 11, WINGS,
+                                          20000)[0]["tail_crps"]
+    np.testing.assert_allclose(tail.numpy(), metric, rtol=0, atol=1e-4)
+    # Merged and touching wings: unit weight on each union segment, by quadrature.
+    scorer = predictive_cdf.DecisionRegionScores(_wing_context())
+    values, eligible = predictive_cdf._CDFTailCRPS(family).values(*args, _torch_context(scorer))
+    want = [_reference_wing(name, w[i], m[i], s[i], y[i],
+                            [(lo, hi, 1.) for lo, hi, _ in _WING_SEGMENTS[i]]) for i in range(3)]
+    np.testing.assert_allclose(values.numpy()[:3], want, rtol=1e-7, atol=1e-9)
+    assert eligible.tolist() == [True, True, True, False]
+
+
+def _boosted(**settings):
+    return predictive_cdf.BoostedTorchCDF(**{
+        "losses": copy.deepcopy(_ZOO_LOSSES), "components": 2, "device": "cpu",
+        "n_estimators": 20, "num_leaves": 4, "min_data_in_leaf": 5, "learning_rate": .2,
+        **settings})
+
+
+def _hetero_rows(n, seed):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-1, 1, size=(n, 2))
+    return x, rng.normal(size=n)*np.exp(x[:, 0])
+
+
+def _composite_of(model, curve, x, y, context):
+    """The model's loss_report composite for an arbitrary curve on the same rows."""
+    proxy = copy.copy(model)
+    proxy.curve = lambda _: curve
+    return proxy.loss_report(x, y, context)["composite"]
+
+
+@pytest.mark.parametrize("family", [None, {"kind": "student", "degrees": 5}])
+def test_boosted_objective_is_the_composite_with_exact_gradient_and_hessian(family):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 7
+    model = _boosted(family=family, batch_size=3)  # three chunks: per-chunk scaling is exact
+    context = _zoo_context(n)
+    model.fit_decision_context(context, context)
+    rng = np.random.default_rng(4)
+    x, y, raw = np.zeros((n, 1)), rng.normal(size=n)*1.3, rng.normal(size=(n, 6))*.4
+    target, training = model._target_tensor(y), model._training_context(x)
+    total, grad, hess = model._raw_composite(raw, target, training, 2)
+    assert grad.shape == hess.shape == raw.shape
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(raw))
+    curve = model._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    # The objective IS TorchCDF's composite, in LightGBM's sum-over-rows form.
+    assert total == pytest.approx(n*_composite_of(model, curve, x, y, context), rel=1e-9)
+
+    def at(i, j, step):
+        moved = raw.copy()
+        moved[i, j] += step
+        return model._raw_composite(moved, target, training, 0)[0]
+    for i, j in [(0, 0), (1, 2), (4, 3), (6, 5), (2, 1), (5, 4)]:
+        assert grad[i, j] == pytest.approx((at(i, j, 1e-6)-at(i, j, -1e-6))/2e-6,
+                                           rel=1e-5, abs=1e-8)
+        assert hess[i, j] == pytest.approx((at(i, j, 1e-4)-2*total+at(i, j, -1e-4))/1e-8,
+                                           rel=1e-3, abs=1e-5)
+
+
+def test_boosted_step_floors_the_hessian_and_records_the_training_composite():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 5
+    model = _boosted(components=1, hessian_floor=.25)
+    context = _zoo_context(n)
+    model.fit_decision_context(context, context)
+    rng = np.random.default_rng(1)
+    y, raw = rng.normal(size=n), rng.normal(size=(n, 3))*.3
+    target, training = model._target_tensor(y), model._training_context(np.zeros((n, 1)))
+    total, grad, hess = model._raw_composite(raw, target, training, 2)
+    assert (hess[:, 0] == 0).all()  # one component: its logit never moves the loss
+    model.losses = []
+    step_grad, step_hess = model._boosting_step(raw, target, training)
+    np.testing.assert_array_equal(step_grad, grad)
+    np.testing.assert_array_equal(step_hess, np.maximum(hess, .25))
+    assert model.losses == [pytest.approx(total/n)]
+
+
+def test_constant_hessian_keeps_the_exact_gradient_with_unit_curvature():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    n = 6
+    context = _zoo_context(n)
+    rng = np.random.default_rng(3)
+    y, raw = rng.normal(size=n), rng.normal(size=(n, 6))*.3
+    exact, constant = _boosted(), _boosted(hessian="constant")
+    for model in (exact, constant):
+        model.fit_decision_context(context, context)
+        model.losses = []
+    target, training = exact._target_tensor(y), exact._training_context(np.zeros((n, 1)))
+    total, grad, hess = exact._raw_composite(raw, target, training, 1)
+    assert hess is None  # first order computes no Hessian
+    step_grad, step_hess = constant._boosting_step(raw, target, training)
+    np.testing.assert_allclose(step_grad, grad, rtol=1e-12)
+    np.testing.assert_array_equal(step_hess, np.ones_like(grad))
+    assert constant.losses == [pytest.approx(total/n)]
+    assert exact._boosting_step(raw, target, training)[1].min() >= exact.hessian_floor
+    assert constant._equivalence_settings()["hessian"] == "constant"
+    assert exact._equivalence_settings()["hessian"] == "exact"
+
+
+@pytest.mark.parametrize("hessian", ["exact", "constant"])
+def test_both_hessian_modes_learn_heteroscedastic_scale(hessian):
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(600, 1)
+    xv, yv = _hetero_rows(400, 2)
+    context, held = _zoo_context(600), _zoo_context(400, "v")
+    rate = .1 if hessian == "exact" else .5  # unit Hessians take gradient-sized steps
+    model = _boosted(n_estimators=20, learning_rate=rate, num_leaves=2, min_data_in_leaf=20,
+                     hessian=hessian)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert model.losses[-1] < .95*model.losses[0]
+    q = model.curve(np.array([[-.9, 0.], [.9, 0.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 1.3*(q[0, 1]-q[0, 0])
+    assert model.loss_report(xv, yv, held)["composite"] < .97*model.losses[0]
+
+
+def test_boosted_cdf_learns_heteroscedastic_scale_and_beats_the_best_constant_mixture():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(600, 1)
+    xv, yv = _hetero_rows(400, 2)
+    context, held = _zoo_context(600), _zoo_context(400, "v")
+    # 20 small rounds: measured held-out 1.074 against the truth's 1.061 and the
+    # best constant's 1.142; past ~20 rounds 600 rows overfit (patience's job).
+    model = _boosted(n_estimators=20, learning_rate=.1, num_leaves=2, min_data_in_leaf=20)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    assert len(model.losses) == 20 and model.losses[-1] < .9*model.losses[0]
+    # A fit drops its contexts (ADR-0236 amendment 2): attach them again to read them.
+    model.fit_decision_context(context, context)
+    target, training = model._target_tensor(y), model._training_context(x)
+    theta = torch.tensor(model.start[None, :], requires_grad=True)
+    optimizer = torch.optim.Adam([theta], lr=.05)
+    for _ in range(300):
+        optimizer.zero_grad()
+        logw, mu, sigma = model._parts(theta.expand(len(y), -1))
+        model._objective_loss(target, logw, mu, sigma, torch.arange(len(y)), training).backward()
+        optimizer.step()
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(theta.detach().expand(len(yv), -1))
+    constant = model._curve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    boosted = model.loss_report(xv, yv, held)["composite"]
+    assert boosted < .97*_composite_of(model, constant, xv, yv, held)
+    q = model.curve(np.array([[-.9, 0.], [.9, 0.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 1.5*(q[0, 1]-q[0, 0])
+
+
+def test_boosted_cdf_round_trips_through_its_text_model_and_refits_identically():
+    torch = pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(200, 3)
+    context = _zoo_context(200)
+
+    def fit(seed):
+        model = _boosted(seed=seed, feature_fraction=.5)
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    model, again, other = fit(5), fit(5), fit(6)
+    assert model._equivalence_state() == again._equivalence_state()
+    assert model._equivalence_state() != other._equivalence_state()
+    raw = lightgbm.Booster(model_str=model.booster_text).predict(x, raw_score=True) + model.start
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(raw))
+    restored = MixtureCurve(logw.exp().numpy(), mu.numpy(), sigma.numpy())
+    grid = [-2., -.3, 0., .4, 2.]
+    np.testing.assert_array_equal(restored.cdf(grid), model.curve(x).cdf(grid))
+    settings = model._equivalence_settings()
+    assert settings["seed"] == 5 and settings["losses"] == _ZOO_LOSSES
+    assert settings["head_features"] == () and "family" not in settings
+    state = json.loads(json.dumps(model._research_state()))
+    assert state["rounds_run"] == state["best_round"] == 20
+    assert state["stopped_by_patience"] is False and len(state["start"]) == 6
+
+
+@pytest.mark.parametrize("edit", [
+    {"components": 0}, {"n_estimators": 0}, {"num_leaves": 1}, {"num_leaves": True},
+    {"min_data_in_leaf": 0}, {"learning_rate": 0.}, {"learning_rate": float("nan")},
+    {"learning_rate": True}, {"feature_fraction": 0.}, {"feature_fraction": 1.5},
+    {"lambda_l2": -1.}, {"seed": -1}, {"seed": 1.5}, {"num_threads": 0},
+    {"hessian_floor": 0.}, {"hessian_floor": float("inf")}, {"min_scale": 0.},
+    {"batch_size": 0}, {"device": "tpu"}, {"device": 0}, {"deterministic": 1},
+    {"patience": 0}, {"head_features": [0, 0]}, {"feature_indices": []},
+    {"head_features": [1, 2]}, {"head_features": [1, 2], "feature_indices": [0, 1]},
+    {"losses": [{"kind": "crps", "weight": 1.}]}, {"family": {"kind": "cauchy"}},
+    {"max_bin": 1}, {"max_bin": 255.}, {"hessian": "diagonal"}, {"hessian": None},
+])
+def test_boosted_cdf_refuses_bad_knobs(edit):
+    with pytest.raises(ValueError):
+        _boosted(**edit)
+
+
+# The knobs every mixture estimator shares, one rule (review round 4): each family refuses
+# the same values, and a finite non-bool number (numpy floats included) is accepted.
+_SHARED_BAD = [{"components": 0}, {"components": 1.}, {"batch_size": 0}, {"learning_rate": 0.},
+               {"learning_rate": float("nan")}, {"learning_rate": True}, {"learning_rate": "1"},
+               {"min_scale": 0.}, {"min_scale": float("inf")}, {"deterministic": 1}]
+
+
+@pytest.mark.parametrize("edit", _SHARED_BAD)
+@pytest.mark.parametrize("family", ["mlp", "torch", "boosted"])
+def test_every_mixture_estimator_refuses_the_same_shared_knobs(family, edit):
+    make = {"mlp": lambda **k: MixtureMLPCDF(device="cpu", **k),
+            "torch": lambda **k: _zoo_torch("mlp", **k), "boosted": _boosted}[family]
+    with pytest.raises(ValueError):
+        make(**edit)
+    make(learning_rate=np.float64(.01), min_scale=np.float64(1e-3))
+
+
+def test_boosted_cdf_runs_its_loss_on_cuda_deterministically_and_like_cpu(monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    x, y = _hetero_rows(300, 7)
+    context = _zoo_context(300)
+
+    def fit(device):
+        model = _boosted(device=device, deterministic=True, n_estimators=5)
+        return model.fit_decision_context(context, context).fit(x, y, x, y)
+    first, second, cpu = fit("cuda"), fit("cuda"), fit("cpu")
+    assert first._equivalence_state() == second._equivalence_state()
+    np.testing.assert_allclose(first.curve(x).cdf([-1., 0., 1.]), cpu.curve(x).cdf([-1., 0., 1.]),
+                               atol=1e-6)
+
+
+def test_boosted_cdf_is_default_deny():
+    with pytest.raises(TypeError):
+        _boosted(max_depth=3)
+
+
+def test_boosted_cdf_collapses_task_heads_to_one_native_categorical_column():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(6)
+    tasks = np.arange(400) % 2
+    x = np.column_stack([rng.normal(size=400), np.eye(2)[tasks]])
+    y = rng.normal(size=400)*np.where(tasks == 0, .4, 2.)
+    context = _zoo_context(400)
+    model = _boosted(n_estimators=40, learning_rate=.1, head_features=[1, 2],
+                     feature_indices=[0], min_data_in_leaf=10)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    design = model._design(x, model._heads(x))
+    assert design.shape == (400, 2) and set(design[:, 1]) == {0., 1.}
+    splits = json.dumps(model.booster.dump_model()["tree_info"])
+    assert '"decision_type": "=="' in splits  # a native categorical split on the task
+    q = model.curve(np.array([[0., 1., 0.], [0., 0., 1.]])).quantile([.1, .9])
+    assert q[1, 1]-q[1, 0] > 2*(q[0, 1]-q[0, 0])
+    assert model._equivalence_settings()["head_features"] == (1, 2)
+    only = _boosted(n_estimators=2, head_features=[1, 2], feature_indices=[0])
+    first = tasks == 0
+    only.fit_decision_context(context[:200], context[:200]).fit(
+        x[first], y[first], x[first], y[first])
+    with pytest.raises(ValueError, match="unseen head"):
+        only.curve(x[~first][:1])
+
+
+def test_boosted_cdf_gives_every_task_its_own_bin_however_rare():
+    pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(10)
+    counts = [5]*30 + [60]*270  # 300 tasks; the 30 rare ones hold 0.9% of the rows
+    tasks = np.repeat(np.arange(300), counts)
+    x = np.column_stack([rng.normal(size=len(tasks)), np.eye(300)[tasks]])
+    y = rng.normal(size=len(tasks))
+    context = _zoo_context(len(tasks))
+    model = _boosted(n_estimators=2, head_features=list(range(1, 301)), feature_indices=[0],
+                     min_data_in_leaf=20)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    design = model._design(x, model._heads(x))
+    params = model._dataset_params(design)
+    assert params["bin_construct_sample_cnt"] == len(design)+1  # every row + the missing row
+    assert model._task_bins(design, params).feature_num_bin(1) == 301  # 300 tasks + missing
+    plain = lightgbm.Dataset(design, categorical_feature=[1], params=params).construct()
+    assert plain.feature_num_bin(1) < 301  # LightGBM alone folds a rare task away
+    few = np.repeat(np.arange(4), [2, 60, 60, 60])
+    xf = np.column_stack([rng.normal(size=len(few)), np.eye(4)[few]])
+    short = _zoo_context(len(few))
+    with pytest.raises(ValueError, match="min_data_in_bin"):
+        _boosted(head_features=[1, 2, 3, 4], feature_indices=[0]).fit_decision_context(
+            short, short).fit(xf, rng.normal(size=len(few)), xf, rng.normal(size=len(few)))
+
+
+def test_three_row_tasks_are_binned_whatever_the_lightgbm_seed():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(12)
+    tasks = np.repeat(np.arange(5), [3, 40, 40, 40, 40])
+    x = np.column_stack([rng.normal(size=len(tasks)), np.eye(5)[tasks]])
+    y = rng.normal(size=len(tasks))
+    context = _zoo_context(len(tasks))
+    for seed in range(40):  # sampling n of n + 1 rows used to drop a row ~1/n of the time
+        _boosted(n_estimators=1, seed=seed, head_features=[1, 2, 3, 4, 5],
+                 feature_indices=[0]).fit_decision_context(context, context).fit(x, y, x, y)
+
+
+@pytest.mark.parametrize("patience", [None, 50])
+def test_boosted_cdf_stops_when_lightgbm_reports_no_split_left(monkeypatch, patience):
+    pytest.importorskip("torch")
+    lightgbm = pytest.importorskip("lightgbm")
+    calls, original = [], lightgbm.Booster.update
+
+    def update(self, train_set=None, fobj=None):
+        original(self, train_set=train_set, fobj=fobj)
+        calls.append(1)
+        if len(calls) < 3:
+            return False
+        self.rollback_one_iter()  # as LightGBM does: the finished round keeps no tree
+        return True
+    monkeypatch.setattr(lightgbm.Booster, "update", update)
+    x, y = _hetero_rows(200, 9)
+    context = _zoo_context(200)
+    model = _boosted(n_estimators=100, patience=patience)
+    model.fit_decision_context(context, context).fit(x, y, x, y)
+    state = model._research_state()
+    assert len(calls) == 3 and model.booster.current_iteration() == 2
+    assert state["rounds_run"] == 2 and state["no_split_left"] is True
+    assert state["stopped_by_patience"] is False
+    assert state["best_round"] == (2 if patience is None else model.rounds) <= 2
+
+
+def test_boosted_cdf_refuses_a_design_lightgbm_cannot_split():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = np.ones((40, 2)), np.random.default_rng(2).normal(size=40)
+    context = _zoo_context(40)
+    with pytest.raises(ValueError, match="no usable feature"):
+        _boosted().fit_decision_context(context, context).fit(x, y, x, y)
+
+
+def test_boosted_cdf_stops_on_the_calibration_composite_and_keeps_the_best_round():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    x, y = _hetero_rows(300, 4)
+    xc, yc = _hetero_rows(100, 5)
+    context, cal_context = _zoo_context(300), _zoo_context(100, "c")
+    model = _boosted(n_estimators=300, learning_rate=.3, num_leaves=8, patience=3)
+    model.fit_decision_context(context, cal_context).fit(x, y, xc, yc)
+    state = model._research_state()
+    assert state["stopped_by_patience"] is True and state["patience"] == 3
+    assert state["best_round"] + 3 == state["rounds_run"] < 300
+    assert len(state["monitor_loss_by_round"]) == state["rounds_run"]
+    assert min(state["monitor_loss_by_round"]) == pytest.approx(
+        model.loss_report(xc, yc, cal_context)["composite"], rel=1e-7)
+    with pytest.raises(ValueError, match="patience"):
+        _boosted(n_estimators=2, patience=5).fit_decision_context(
+            context, cal_context).fit(x, y, xc, yc)
+
+
+def test_boosted_cdf_heads_with_patience_monitor_the_categorical_calibration_rows():
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(13)
+    tasks, cal_tasks = np.arange(300) % 3, np.arange(90) % 3
+    x = np.column_stack([rng.normal(size=300), np.eye(3)[tasks]])
+    xc = np.column_stack([rng.normal(size=90), np.eye(3)[cal_tasks]])
+    y = rng.normal(size=300)*(1+tasks)
+    yc = rng.normal(size=90)*(1+cal_tasks)
+    context, cal_context = _zoo_context(300), _zoo_context(90, "c")
+    model = _boosted(n_estimators=300, learning_rate=.3, patience=3, head_features=[1, 2, 3],
+                     feature_indices=[0])
+    model.fit_decision_context(context, cal_context).fit(x, y, xc, yc)
+    state = model._research_state()
+    assert state["stopped_by_patience"] is True and state["no_split_left"] is False
+    assert min(state["monitor_loss_by_round"]) == pytest.approx(
+        model.loss_report(xc, yc, cal_context)["composite"], rel=1e-7)
+    unseen = xc.copy()
+    unseen[:, 1:] = [0, 0, 1]
+    only = np.column_stack([x[:, 0], np.eye(3)[np.zeros(300, dtype=int)]])
+    with pytest.raises(ValueError, match="unseen head in the calibration rows"):
+        _boosted(patience=3, head_features=[1, 2, 3], feature_indices=[0]).fit_decision_context(
+            context, cal_context).fit(only, y, unseen, yc)
+
+
+@pytest.mark.parametrize("family", [None, {"kind": "student", "degrees": 3},
+                                    {"kind": "student", "degrees": 5}])
+def test_boosted_start_matches_the_sample_variance_and_refuses_a_narrow_one(family):
+    torch = pytest.importorskip("torch")
+    y = np.random.default_rng(14).standard_t(4, size=500)*1.7
+    model = _boosted(components=3, family=family)
+    start = model._moment_start(y)
+    with torch.no_grad():
+        logw, mu, sigma = model._parts(torch.tensor(start[None, :]))
+    w, m, s = logw.exp().numpy()[0], mu.numpy()[0], sigma.numpy()[0]
+    np.testing.assert_allclose(w, 1/3)
+    np.testing.assert_allclose(m, np.quantile(y, [1/6, .5, 5/6]))
+    variance = (w*(s**2*model.family.variance_factor + m**2)).sum() - (w*m).sum()**2
+    assert variance == pytest.approx(y.var(), rel=1e-9)
+    with pytest.raises(ValueError, match="min_scale"):
+        model._moment_start(np.linspace(-.01, .01, 50))
+
+
+def test_cnn_receptive_field_spans_one_plus_kernel_minus_one_times_the_dilations():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1)
+    encoder = {"kind": "cnn", "sequence_indices": [[7], [6], [5], [4], [3], [2], [1]],
+               "context_indices": [0], "channels": 3, "kernel_size": 2, "dilations": [1, 2],
+               "pooling": "last"}
+    module = predictive_cdf.TorchCDF(encoder=encoder, losses=_ZOO_LOSSES, components=2,
+                                     hidden=[4], device="cpu")._build_module(8)
+    x = torch.randn(4, 8)
+    with torch.no_grad():
+        base = module(x)
+        reach = []
+        for column in range(1, 8):  # newest step is column 1, oldest column 7
+            moved = x.clone()
+            moved[:, column] += 3.
+            reach.append(not torch.allclose(base, module(moved)))
+    assert reach == [True]*4 + [False]*3  # 1 + (2-1)*(1+2) = 4 newest steps
+
+
+def _weighted_hpo_fixture(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    e, c = config["experiment"], config["study"]
+    # A column that varies within each unit: LightGBM refuses a design of
+    # constants. Ten training rows a fit: the dataset must carry min_data_in_leaf.
+    frame["z"] = np.cos(np.arange(len(frame)))
+    c["features"] = [*c["features"], "z"]
+    for key in ("final_seeds", "screen_seed", "candidate_labels", "axes"):
+        e.pop(key)
+    e["candidate_groups"] = e["search_partitions"]
+    e["selection_metric"] = "weighted_crps"
+    c["tail_weight"] = 1.
+    e["candidates"]["candidate"] = {
+        "class": "dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF",
+        "params": {"losses": copy.deepcopy(_ZOO_LOSSES), "components": 1,
+                   "n_estimators": 3, "num_leaves": 2, "min_data_in_leaf": 2,
+                   "device": "cpu"},
+        "calibrate": False}
+    return config, frame
+
+
+def test_weighted_crps_selects_reports_and_accepts_on_crps_plus_weighted_tail(tmp_path):
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    config, frame = _weighted_hpo_fixture(tmp_path)
+    config["study"]["tail_weight"] = 2.5
+    config["experiment"]["candidates"]["candidate"]["params"]["losses"][1]["weight"] = 2.5
+    study = CDFHyperparameterStudy(config)
+    provenance = {"fixture": "weighted"}
+    scores = study.run(frame, stage="search", partition="separate", provenance=provenance)
+    np.testing.assert_allclose(scores.weighted_crps, scores.crps+2.5*scores.tail_crps)
+    complete = json.loads((tmp_path/"hpo/search/separate/complete.json").read_text())
+    assert "lightgbm" in complete["identity"]["dependencies"]
+    chosen = study.run(frame, stage="select", provenance=provenance)
+    assert chosen["selection_metric"] == "weighted_crps"
+    for partition in ("development", "later"):
+        study.run(frame, stage="evaluate", partition=partition, provenance=provenance)
+    report = study.run(frame, stage="report", provenance=provenance)
+    assert report["selection_metric"] == "weighted_crps"
+    assert {r["metric"] for r in report["paired_block_intervals"]} == {"crps", "weighted_crps"}
+    weighted = next(r for r in report["metrics"]
+                    if r["model"] == "candidate" and r["metric"] == "weighted_crps")
+    assert weighted["equal_cell_skill"] is not None
+    counts = json.loads((tmp_path/"hpo/evaluate/later/counts.json").read_text())
+    assert counts[0]["candidate_losses"]["validation"]["composite"] > 0
+    flat = pd.read_csv(tmp_path/"hpo/evaluate/later"/ChronologicalCDFStudy.FOLD_LOSSES_FILE)
+    assert {"rounds_run", "best_round"} <= set(flat.columns)
+
+
+def test_weighted_hpo_ranks_crps_plus_tail_not_plain_crps(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    study = CDFHyperparameterStudy(config)
+    rows = [dict(unit="A", h=1, model=name, variant=variant, crps=crps, tail_crps=tail,
+                 weighted_crps=crps+tail)
+            for name, crps, tail in [("reference", .2, .3), ("candidate", .25, .1)]
+            for variant in ("raw", "calibrated")]
+    assert study._rank(pd.DataFrame(rows))[("candidate", "raw")] == pytest.approx(.35/.5)
+
+
+def test_weighted_crps_needs_a_study_tail_weight_and_the_same_training_weight(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    for bad in (0., -1., True, "1", float("nan")):
+        broken = copy.deepcopy(config)
+        broken["study"]["tail_weight"] = bad
+        with pytest.raises(ValueError, match="tail_weight"):
+            CDFHyperparameterStudy(broken)
+    missing = copy.deepcopy(config)
+    del missing["study"]["tail_weight"]
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy(missing)
+    losses = config["experiment"]["candidates"]["candidate"]["params"]["losses"]
+    for drifted in ([{"kind": "crps", "weight": 1.}, {"kind": "tail_crps", "weight": 2.}],
+                    [{"kind": "nll", "weight": 1.}, {"kind": "tail_crps", "weight": 1.}]):
+        losses[:] = drifted
+        with pytest.raises(ValueError, match="tail_weight"):
+            CDFHyperparameterStudy(config)
+    losses[:] = [{"kind": "nll", "weight": .1}, {"kind": "crps", "weight": 1.},
+                 {"kind": "tail_crps", "weight": 1.}]
+    with pytest.raises(ValueError, match="exactly crps"):
+        CDFHyperparameterStudy(config)  # an extra term is no longer the same loss
+    losses[:] = [{"kind": "crps", "weight": 2.}, {"kind": "tail_crps", "weight": 2.}]
+    CDFHyperparameterStudy(config)  # the same objective at another overall scale
+    with pytest.raises(ValueError, match="selection metric"):
+        CDFHyperparameterStudy({**config, "experiment": {
+            **config["experiment"], "selection_metric": "crps"}})
+    direct = {**config["study"], "models": {"m": {**config["experiment"]["candidates"][
+        "candidate"], "params": {"losses": [{"kind": "crps", "weight": 1.},
+                                            {"kind": "tail_crps", "weight": 3.}]}}}}
+    with pytest.raises(ValueError, match="tail_weight"):
+        ChronologicalCDFStudy(direct)  # the study pins its own models, not only HPO
+    matched = {**direct, "decision_context": "context", "models": {"m": {
+        **direct["models"]["m"], "params": {"losses": copy.deepcopy(_ZOO_LOSSES)}}}}
+    with pytest.raises(ValueError, match="decision_context"):
+        ChronologicalCDFStudy(matched)  # decision wings would replace tail_intervals
+    losses[:] = [{"kind": "crps", "weight": 1.}, {"kind": "wing_twcrps", "weight": 4.}]
+    CDFHyperparameterStudy(config)  # no tail_crps term: nothing to pin
+
+
+def test_tail_crps_refuses_overlapping_tail_intervals_but_not_touching_ones(tmp_path):
+    config, _ = _weighted_hpo_fixture(tmp_path)
+    study = {**config["study"], "models": {"m": config["experiment"]["candidates"]["candidate"]}}
+    with pytest.raises(ValueError, match="overlapping"):
+        ChronologicalCDFStudy({**study, "tail_intervals": [[-2., -1.], [-1.5, -.5]]})
+    ChronologicalCDFStudy({**study, "tail_intervals": [[-2., -1.], [-1., -.5]]})
+
+
+def test_weighted_crps_picks_development_variants_and_yields_to_a_decision_metric(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    c = {**config["study"], "tail_weight": 1.}
+    c["models"] = {**c["models"], "candidate": {
+        **config["experiment"]["candidates"]["candidate"], "calibrate": True}}
+    scores = ChronologicalCDFStudy(c).run(frame)
+    candidate = scores.model == "candidate"
+    # Raw wins plain crps; calibrated wins crps + tail_crps.
+    scores.loc[candidate & (scores.variant == "raw"), ["crps", "tail_crps"]] = [1., 5.]
+    scores.loc[candidate & (scores.variant == "calibrated"), ["crps", "tail_crps"]] = [2., 1.]
+    scores["weighted_crps"] = scores.crps + scores.tail_crps
+    weighted = ChronologicalCDFStudy(c).summarize(scores)
+    assert weighted["selection_metric"] == "weighted_crps"
+    assert weighted["selected_variants_from_development"]["candidate"] == "calibrated"
+    plain = {k: v for k, v in c.items() if k != "tail_weight"}
+    assert ChronologicalCDFStudy(plain).summarize(scores)[
+        "selected_variants_from_development"]["candidate"] == "raw"
+    scores["decision_strike_brier"] = np.where(
+        candidate & (scores.variant == "calibrated"), .5, .1)
+    decided = ChronologicalCDFStudy(c).summarize(scores)
+    assert decided["selection_metric"] == "decision_strike_brier"
+    assert decided["selected_variants_from_development"]["candidate"] == "raw"
+
+
+def test_plain_crps_studies_score_no_weighted_column(tmp_path):
+    config, frame = _hpo_fixture(tmp_path)
+    scores = ChronologicalCDFStudy(config["study"]).run(frame)
+    assert "weighted_crps" not in scores
+    summary = ChronologicalCDFStudy({**config["study"], "output": str(tmp_path/"unused")}
+                                    ).summarize(scores)
+    assert summary["selection_metric"] == "crps"
+    assert {r["metric"] for r in summary["paired_block_intervals"]} == {"crps"}
+
+
+# ---- ADR-0236 amendment 3: groups fitted in spawned worker processes -------------------------
+
+WORKERS = ChronologicalCDFStudy.GROUP_WORKERS_ENV
+_TWIN = {'class': 'dskit.pipeline.libs.predictive_cdf:TorchCDF', 'calibrate': False,
+         'equivalence': 'twin',
+         'params': {'encoder': {'kind': 'mlp'}, 'losses': _ZOO_LOSSES,
+                    'components': 2, 'hidden': [4], 'epochs': 40, 'patience': 2,
+                    'batch_size': 8, 'seeds': [3], 'device': 'cpu', 'deterministic': True,
+                    'learning_rate': .01}}
+
+
+def _worker_study(tmp_path, name, groups=('A', 'B', 'C', 'D'), pooled=False):
+    """Four groups; a reference, two equivalent torch twins and a CPU booster (unpooled)."""
+    pytest.importorskip("torch")
+    pytest.importorskip("lightgbm")
+    rows = _fold_rows(groups=groups)
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    config = _fold_config(tmp_path, spec, name)
+    config['tail_weight'] = 1.
+    config['models'].update({'twin_a': copy.deepcopy(_TWIN), 'twin_b': copy.deepcopy(_TWIN),
+                             'boost': {
+        'class': 'dskit.pipeline.libs.predictive_cdf:BoostedTorchCDF', 'calibrate': False,
+        'pooled': pooled, 'params': {'losses': _ZOO_LOSSES,
+                                     'components': 2, 'n_estimators': 30, 'min_data_in_leaf': 2,
+                                     'num_leaves': 3, 'hessian': 'constant',
+                                     'num_threads': 1, 'device': 'cpu'}}})
+    return config, pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+
+
+def _written(path):
+    """Every file a run wrote: npz arrays (a zip stamps its write time), counts without
+    timings, the protocol without its output directory, every other file as bytes."""
+    out = {}
+    for file in sorted(p for p in path.rglob('*') if p.is_file()):
+        rel = file.relative_to(path).as_posix()
+        if file.suffix == '.npz':
+            with np.load(file) as archive:
+                out[rel] = {k: archive[k].tolist() for k in archive.files}
+        elif file.name == 'counts.json':
+            out[rel] = [{k: v for k, v in row.items() if not k.endswith('_seconds')}
+                        for row in json.loads(file.read_text())]
+        elif file.name == 'protocol.json':
+            out[rel] = {k: v for k, v in json.loads(file.read_text()).items()
+                        if k not in ('output', 'config_sha256')}
+        else:
+            out[rel] = file.read_bytes()
+    return out
+
+
+def test_group_workers_write_exactly_what_one_process_writes(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv(WORKERS, raising=False)
+    config, frame = _worker_study(tmp_path, 'one')
+    one = ChronologicalCDFStudy(config).run(frame)
+    serial = [line for line in capsys.readouterr().out.splitlines() if '[ticker-done]' in line]
+    monkeypatch.setenv(WORKERS, '3')
+    config['output'] = str(tmp_path/'three')
+    three = ChronologicalCDFStudy(config).run(frame, label='search smoke')
+    spawned = [line for line in capsys.readouterr().out.splitlines() if '[ticker-done]' in line]
+    pd.testing.assert_frame_equal(one, three)
+    assert _written(tmp_path/'one') == _written(tmp_path/'three')
+    evidence = json.loads((tmp_path/'three/equivalence.json').read_text())
+    assert evidence and {e['status'] for e in evidence} == {'verified'}
+    assert {e['population'] for e in evidence} == {'A', 'B', 'C', 'D'}
+    # One live line per group: group order in process, completion order (any) in workers.
+    assert [line.split()[2] for line in serial] == ['A', 'B', 'C', 'D']
+    assert [line.split()[-1] for line in serial] == ['[1/4]', '[2/4]', '[3/4]', '[4/4]']
+    assert serial[0].startswith('[ticker-done] one A n=')
+    assert sorted(line.split()[3] for line in spawned) == ['A', 'B', 'C', 'D']
+    assert {line.split()[-1] for line in spawned} == {'[1/4]', '[2/4]', '[3/4]', '[4/4]'}
+    for line in spawned:
+        assert line.startswith('[ticker-done] search smoke ')
+        assert [word.split('=')[0] for word in line.split()[5:-1]] == ['twin_a', 'twin_b', 'boost']
+    # Review round 2: the live values are each model's point skill on the group's own raw
+    # rows against the reference, on weighted_crps (tail_weight is declared here).
+    raw = one[(one.unit == 'C') & (one.variant == 'raw')]
+    means = raw.groupby('model').weighted_crps.mean()
+    line = next(line for line in spawned if line.split()[3] == 'C').split()
+    assert line[4] == f"n={int((raw.model == 'reference').sum())}"
+    assert line[5:-1] == [f"{m}={100*(1-means[m]/means['reference']):.2f}"
+                          for m in ('twin_a', 'twin_b', 'boost')]
+
+
+@pytest.mark.parametrize('width', ['0', '', 'two', '-1'])
+def test_a_malformed_group_width_refuses_before_writing(tmp_path, monkeypatch, width):
+    monkeypatch.setenv(WORKERS, width)
+    config, frame = _worker_study(tmp_path, 'bad')
+    with pytest.raises(ValueError, match=WORKERS):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not (tmp_path/'bad').exists()
+
+
+def test_group_workers_refuse_a_pooled_model_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv(WORKERS, '2')
+    config, frame = _worker_study(tmp_path, 'pooled', pooled=True)
+    with pytest.raises(ValueError, match=r"\['boost'\] fit once over every group"):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not (tmp_path/'pooled').exists()
+    monkeypatch.setenv(WORKERS, '1')   # one worker keeps the pooled path
+    ChronologicalCDFStudy(config).run(frame)
+
+
+@pytest.mark.parametrize('width', ['1', '2'])
+def test_a_failing_group_fails_the_run_naming_the_group(tmp_path, monkeypatch, width):
+    monkeypatch.setenv(WORKERS, width)
+    config, frame = _worker_study(tmp_path, 'fail', groups=('A', 'B'))
+    frame.loc[frame.unit == 'B', 't'] = np.inf   # the imputer refuses B's fit band
+    with pytest.raises(ValueError, match='infinity') as raised:
+        ChronologicalCDFStudy(config).run(frame)
+    assert any("group 'B'" in note for note in raised.value.__notes__)
+    assert not (tmp_path/'fail'/'scores.parquet').exists()
+
+
+def _calibration_hole(tmp_path):
+    """B misses 01-28..02-02: fold 3 holds no B calibration row (fold 2 no B evaluation row)."""
+    missing = {f'2020-01-{d}' for d in (28, 29, 30, 31)} | {'2020-02-01', '2020-02-02'}
+    rows = _late_rows(start='2020-01-01', missing=missing)
+    spec, _ = _fold_table(tmp_path, rows, 1)
+    config = _fold_config(tmp_path, spec)
+    config['features'] = ['h', 'scale', 't', 'is_B']
+    config['models']['reference']['calibrate'] = False
+    config['models']['scaled'] = {     # an unpooled fit that reads its group's calibration rows
+        'class': 'dskit.pipeline.libs.predictive_cdf:ScaledEmpiricalCDF',
+        'params': {'alpha': 1., 'floor': .01, 'knots': 11}, 'calibrate': False}
+    config['min_task_fit_rows'] = 4
+    return config, pd.DataFrame([r for r in rows if r['end'] < HOLDOUT])
+
+
+def test_an_unreadable_calibration_band_refuses_before_any_fit(tmp_path):
+    # Review round 1 (C1): the per-ticker zoo's candidates early-stop on their own ticker's
+    # calibration rows; an admitted ticker with none used to refuse only when the loop reached
+    # it, hours into a stage. Group A precedes B, so a loop-time refusal leaves A's curves.
+    config, frame = _calibration_hole(tmp_path)
+    with pytest.raises(ValueError, match=r"empty calibration band: B 3, which \['scaled'\] read "
+                                         r"\(1 group-split\(s\) in all"):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not list((tmp_path/'out').glob('*.npz'))
+    assert not (tmp_path/'out'/'counts.json').exists()
+
+
+def test_min_task_cal_rows_makes_a_group_wait_while_its_calibration_band_is_short(tmp_path):
+    config, frame = _calibration_hole(tmp_path)
+    config['min_task_cal_rows'] = 1
+    scores = ChronologicalCDFStudy(config).run(frame)
+    b = scores[scores.unit == 'B']
+    assert {2, 3}.isdisjoint(b.fold) and len(set(b.fold)) >= 2   # fold 3 waits, others score
+    ledger = json.loads((tmp_path/'out/admission.json').read_text())
+    assert ledger['min_task_cal_rows'] == 1
+    fold3 = next(r for r in ledger['not_evaluated'] if (r['group'], r['fold']) == ('B', 3))
+    assert (fold3['reason'], fold3['calibration_rows'], fold3['dropped_evaluation_rows']) == (
+        'waiting', 0, 5)
+    # Undeclared, the ledger is unchanged: no calibration floor recorded.
+    del config['min_task_cal_rows']
+    config['models'].pop('scaled')
+    config['output'] = str(tmp_path/'plain')
+    ChronologicalCDFStudy(config).run(frame)
+    assert 'min_task_cal_rows' not in json.loads((tmp_path/'plain/admission.json').read_text())
+
+
+@pytest.mark.parametrize('value, declared_fit', [(0, True), (True, True), (1.5, True), ('1', True),
+                                                 (1, False)])
+def test_min_task_cal_rows_is_an_integer_of_at_least_one_beside_the_fit_floor(
+        tmp_path, value, declared_fit):
+    _, spec, _ = _fold_setup(tmp_path)
+    config = _fold_config(tmp_path, spec)
+    config['min_task_cal_rows'] = value
+    if declared_fit:
+        config['min_task_fit_rows'] = 1
+    with pytest.raises(ValueError, match='min_task_cal_rows'):
+        ChronologicalCDFStudy(config)
+
+
+def test_group_workers_keep_at_most_twice_their_width_in_flight(tmp_path, monkeypatch):
+    # Review round 1 (M2): more groups than the window, so the refill path runs, and the
+    # window is the bound on copied group rows.
+    import concurrent.futures
+
+    monkeypatch.delenv(WORKERS, raising=False)
+    groups = ('A', 'B', 'C', 'D', 'E', 'F')
+    config, frame = _worker_study(tmp_path, 'one', groups=groups)
+    ChronologicalCDFStudy(config).run(frame)
+    submitted, peak = [], []
+    real = concurrent.futures.ProcessPoolExecutor.submit
+
+    def counting(pool, fn, *args):
+        future = real(pool, fn, *args)
+        submitted.append(future)
+        peak.append(sum(not f.done() for f in submitted))
+        return future
+
+    monkeypatch.setattr(concurrent.futures.ProcessPoolExecutor, 'submit', counting)
+    monkeypatch.setenv(WORKERS, '2')
+    config['output'] = str(tmp_path/'two')
+    ChronologicalCDFStudy(config).run(frame)
+    assert len(submitted) == len(groups) and max(peak) <= 3   # 2W - 1 unfinished at most
+    assert _written(tmp_path/'one') == _written(tmp_path/'two')
+
+
+def test_in_process_a_failing_group_stops_the_run_before_the_next_is_fitted(tmp_path, monkeypatch):
+    # Review round 2: one worker fits one group at a time, as the loop always did.
+    monkeypatch.setenv(WORKERS, '1')
+    config, frame = _worker_study(tmp_path, 'first', groups=('A', 'B'))
+    frame.loc[frame.unit == 'A', 't'] = np.inf
+    with pytest.raises(ValueError, match='infinity'):
+        ChronologicalCDFStudy(config).run(frame)
+    assert not list((tmp_path/'first').glob('B-*.npz'))
+
+
+class _DiesWhenUnpickled:
+    """A diagnostic whose unpickling ends the process: a group worker that dies (as if killed)."""
+
+    def __reduce__(self):
+        import os
+        return os._exit, (3,)
+
+    def __call__(self, frame, curve, draws):
+        return {}
+
+
+def test_a_dead_group_worker_fails_the_run_naming_the_unfinished_groups(tmp_path, monkeypatch):
+    from concurrent.futures.process import BrokenProcessPool
+
+    monkeypatch.setenv(WORKERS, '2')
+    config, frame = _worker_study(tmp_path, 'dead', groups=('A', 'B', 'C'))
+    with pytest.raises(BrokenProcessPool) as raised:
+        ChronologicalCDFStudy(config).run(frame, _DiesWhenUnpickled())
+    note = next(n for n in raised.value.__notes__ if 'a group worker died' in n)
+    assert "'A'" in note and "'B'" in note and "'C'" in note   # 2W - 1 = 3 were unfinished
+    assert not (tmp_path/'dead'/'scores.parquet').exists()

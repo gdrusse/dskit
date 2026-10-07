@@ -43,6 +43,7 @@ __all__ = [
     "CsvReader",
     "READERS",
     "register_reader",
+    "row_matches",
     "WorkflowReport",
     "main",
 ]
@@ -64,7 +65,7 @@ LANE_KEYS = {"field", "value"}
 FLATTEN_KEYS = {"separator", "max_items"}
 SECTION_KEYS = {
     "name", "title", "source", "format", "rows", "step", "output", "bound",
-    "required", "notes", "caption", "flatten",
+    "required", "notes", "caption", "flatten", "where",
 }
 STATEMENT_KEYS = {"title", "text"}
 STYLE = (
@@ -132,6 +133,23 @@ def _cell(value):
     if isinstance(value, (dict, list)):
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
     return str(value)
+
+
+def row_matches(row, where):
+    """Say whether every ``where`` column of ``row`` reads as its value (both as table text).
+
+    Parameters
+    ----------
+    row : dict
+        One table row.
+    where : dict or None
+        Column -> wanted value; None or empty matches every row.
+
+    Returns
+    -------
+    bool
+    """
+    return all(_cell(row.get(k)) == _cell(v) for k, v in (where or {}).items())
 
 
 class Reader(ABC):
@@ -251,9 +269,12 @@ class WorkflowReport:
         optional ``required_steps``, ``statements`` (``title``, ``text``),
         ``max_rows`` and ``notes``. A section may add ``caption`` (text shown under
         its title) and ``flatten`` (``separator``, ``max_items``: nested objects
-        become dotted columns, scalar lists of at most ``max_items`` are joined).
-        Top-level ``lane`` (``field``, ``value``) keeps only the ledger rows whose
-        ``field`` equals ``value`` in the provenance table.
+        become dotted columns, scalar lists of at most ``max_items`` are joined)
+        and ``where`` (top-level column -> text or number: only the rows whose
+        cells read the same, compared as table text, are kept; none left refuses
+        as an empty source does). Top-level ``lane`` (``field``, ``value``) keeps
+        only the ledger rows whose ``field`` equals ``value`` in the provenance
+        table.
 
     Examples
     --------
@@ -315,6 +336,7 @@ class WorkflowReport:
         if ("step" in section) != ("output" in section):
             problems.append(f"section {name}: step and output come together")
         problems += WorkflowReport._flatten_problems(name, section.get("flatten"))
+        problems += WorkflowReport._where_problems(name, section.get("where"))
         if "bound" in section and "output" not in section:
             problems.append(f"section {name}: bound needs step and output")
         return problems
@@ -328,6 +350,17 @@ class WorkflowReport:
                 or not isinstance(flatten["max_items"], int)
                 or isinstance(flatten["max_items"], bool) or flatten["max_items"] < 0):
             return [f"section {name}: flatten needs exactly separator (text) and max_items (int >= 0)"]
+        return []
+
+    @staticmethod
+    def _where_problems(name, where):
+        if where is None:
+            return []
+        if (not isinstance(where, dict) or not where
+                or not all(isinstance(k, str) and k for k in where)
+                or not all(isinstance(v, (str, int, float)) and not isinstance(v, bool)
+                           for v in where.values())):
+            return [f"section {name}: where needs column names mapped to text or numbers"]
         return []
 
     @staticmethod
@@ -384,6 +417,7 @@ class WorkflowReport:
             rows = READERS[section["format"]].read(path, section)
         except (ValueError, OSError) as err:
             return None, [f"section {section['name']}: {path} unreadable: {err!r}"]
+        rows = [r for r in rows if row_matches(r, section.get("where"))]
         if not rows:
             return None, [f"section {section['name']}: source {path} yields no rows"]
         flatten = section.get("flatten")
