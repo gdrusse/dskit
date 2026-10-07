@@ -180,13 +180,17 @@ def cluster_bootstrap_pvalue(cluster_scores, n_boot, seed, label="") -> float:
     _check_n_boot(n_boot)
     rng = _bootstrap_rng(seed, label)
     n = len(clusters)
+    # Each cluster's sum is the same float every draw, so take it once; the
+    # additions into ``total`` and the RNG stream are unchanged.
+    sums = [sum(cluster_scores[c]) for c in clusters]
+    lens = [len(cluster_scores[c]) for c in clusters]
     at_or_below = 0
     for _ in range(n_boot):
         total, count = 0.0, 0
         for _ in range(n):
-            picked = cluster_scores[clusters[rng.randrange(n)]]
-            total += sum(picked)
-            count += len(picked)
+            i = rng.randrange(n)
+            total += sums[i]
+            count += lens[i]
         if total / count <= 0.0:
             at_or_below += 1
     return (1 + at_or_below) / (n_boot + 1)

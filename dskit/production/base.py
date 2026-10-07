@@ -281,6 +281,36 @@ class Registry:
 # ---------------------------------------------------------------------------
 
 
+class _NotPlain(Exception):
+    """Raised by :func:`_plain_fast` at the first value it cannot render."""
+
+
+def _plain_fast(value):
+    """Render as :func:`_plain` does, building no path strings; raise ``_NotPlain`` instead."""
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise _NotPlain
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise _NotPlain
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_plain_fast(item) for item in value]
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise _NotPlain
+            out[key] = _plain_fast(item)
+        return out
+    raise _NotPlain
+
+
 def _plain(value, path):
     """Return ``value`` in JSON-ready form, or raise naming what is not."""
     if value is None or isinstance(value, (bool, str)):
@@ -335,13 +365,22 @@ def canonical_bytes(obj):
         Naming the path of the first value that is not canonically
         serializable.
     """
-    return json.dumps(
-        _plain(obj, "$"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode("ascii")
+    # The happy path skips building a "$.a[0]" string per node; any refusal
+    # re-walks with the pathed _plain so the message names the same value.
+    try:
+        plain = _plain_fast(obj)
+    except _NotPlain:
+        plain = _plain(obj, "$")
+    return _CANONICAL_ENCODER.encode(plain).encode("ascii")
+
+
+# Built once: ``json.dumps`` with keywords constructs an encoder per call.
+_CANONICAL_ENCODER = json.JSONEncoder(
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=True,
+    allow_nan=False,
+)
 
 
 def canonical_hash(obj, render=None):

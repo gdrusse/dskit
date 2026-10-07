@@ -104,11 +104,16 @@ def _value(row, field_name):
     return row["data"].get(field_name)
 
 
+# Built once: ``json.dumps`` with keywords constructs an encoder per call,
+# and rules call this once per row value. Output is identical.
+_IDENTITY_ENCODER = json.JSONEncoder(
+    sort_keys=True, separators=(",", ":"), allow_nan=False
+)
+
+
 def _json_identity(value):
     """Canonical JSON identity of a value, preserving every JSON type distinction."""
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
+    return _IDENTITY_ENCODER.encode(value)
 
 
 def _eval_not_null(rows, kw):

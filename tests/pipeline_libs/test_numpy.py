@@ -1910,3 +1910,45 @@ class TestVectorization:
         counting = _CountingWindows("w", knobs)
         counting.run(run_ctx, {"records": bars("A", range(500))})
         assert len(counting.calls) == 5, counting.calls
+
+
+# -- batched lifting and carried-column reuse pin the per-cell rules ----------
+
+
+def test_lifted_columns_equal_the_per_cell_number_rule():
+    from dskit.pipeline.libs.numpy import _MISSING, _lifted_column, _num
+
+    floats = [{"v": v} for v in (1.5, float("nan"), float("inf"), -float("inf"), -0.0, 2.0)]
+    mixed = floats + [{"v": True}, {"v": 7}, {}, {"v": "3"}, {"v": None},
+                      types.SimpleNamespace(v=4.25), types.SimpleNamespace()]
+    for records in (floats, mixed):
+        expected = np.asarray(
+            [_num(r.get("v")) if isinstance(r, dict) else _num(getattr(r, "v", _MISSING))
+             for r in records], dtype=np.float64)
+        got = _lifted_column(records, "v")
+        assert got.dtype == np.float64
+        assert np.array_equal(got, expected, equal_nan=True)
+        assert [math.copysign(1, v) for v in got] == [math.copysign(1, v) for v in expected]
+
+
+def test_required_fields_read_off_carried_columns_match_the_per_record_read(tmp_path):
+    class _PerRecord(TrailingReturns):
+        def _carried_columns(self, records, indices, carry):
+            return super()._carried_columns(records, indices, carry)
+
+    records = []
+    for i in range(60):
+        record = {"instrument": f"I{i % 3}", "contract": f"C{i % 3}", "asof_ms": BASE_MS + i,
+                  "group": "g", "mid": 100.0 + i}
+        if i % 7 == 0:
+            record["contract"] = ""
+        if i % 11 == 0:
+            del record["contract"]
+        if i % 13 == 0:
+            record["group"] = 5
+        records.append(record)
+    params = {"window": 2, "require_fields": ["contract", "group"]}
+    fast = TrailingReturns("r", params).run(ctx(tmp_path), {"records": records})
+    slow = _PerRecord("r", params).run(ctx(tmp_path), {"records": records})
+    assert fast["rows"] == slow["rows"] and fast["metrics"] == slow["metrics"]
+    assert fast["metrics"]["n_rows"] < len(records)

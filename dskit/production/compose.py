@@ -1195,10 +1195,13 @@ def bundles_for(
         SeriesState(document.series_id) if tape is None
         else SeriesState._for_replay(document.series_id, tape, cash_flow_composer)
     )
+    # release_hash re-renders and re-hashes the whole manifest on every
+    # read; take it once here, where it was first read, for both uses below.
+    release_hash = release.release_hash
     ledger = ledger_class(document)(
         serve_root,
         process_id,
-        release.release_hash,
+        release_hash,
         clock=clock,
         fsync=sections["durability"]["fsync"],
         rotate=sections["placement"].get("rotate"),
@@ -1347,7 +1350,7 @@ def bundles_for(
         inbox=inbox,
         reconciler=Reconciler(document, release, ledger=ledger, state=state, clock=clock),
         checkpoint=Checkpoint(
-            release_hash=release.release_hash,
+            release_hash=release_hash,
             last_tick_at=None,
             last_completed_tick_at=None,
             pending=(),

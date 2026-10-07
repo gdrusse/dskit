@@ -408,7 +408,10 @@ def _read_inventory():
     """Read every installed distribution from bytes: ``(entries, problems)``, both tuples."""
     entries, problems = [], []
     for dist in metadata.distributions():
-        name, version = dist.metadata["Name"], dist.metadata["Version"]
+        # ``metadata`` is an uncached property: each access re-reads and
+        # re-parses METADATA, so bind it once per distribution.
+        md = dist.metadata
+        name, version = md["Name"], md["Version"]
         if not name or not version:
             problems.append(f"distribution at {dist.locate_file('')} has no Name/Version metadata")
             continue

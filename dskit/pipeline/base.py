@@ -278,19 +278,26 @@ def _strip_notes(obj):
     return obj
 
 
+#: Dataclass field names per class — fixed at class creation, so read once.
+_FIELD_NAMES = {}
+
+
 def _dataclass_to_obj(cfg) -> dict:
     """Default ``to_obj``: field order preserved, nested configs recursed,
     tuples -> lists, open dicts deep-copied (never shared with the caller)."""
+    names = _FIELD_NAMES.get(type(cfg))
+    if names is None:
+        names = _FIELD_NAMES[type(cfg)] = tuple(f.name for f in fields(cfg))
     out = {}
-    for f in fields(cfg):
-        v = getattr(cfg, f.name)
+    for name in names:
+        v = getattr(cfg, name)
         if hasattr(v, "to_obj"):
             v = v.to_obj()
         elif isinstance(v, tuple):
             v = list(v)
         elif isinstance(v, dict):
             v = copy.deepcopy(v)
-        out[f.name] = v
+        out[name] = v
     return out
 
 
@@ -971,11 +978,12 @@ class OptimizationConfig:
 # ---------------------------------------------------------------------------
 
 _CLASS_REF_OK = r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$"
+_CLASS_REF_MATCH = re.compile(_CLASS_REF_OK).match  # compiled once; asked per node
 
 
 def is_class_ref(kind) -> bool:
     """True iff ``kind`` is an import reference (``pkg.module:Attr``)."""
-    return isinstance(kind, str) and bool(re.match(_CLASS_REF_OK, kind))
+    return isinstance(kind, str) and bool(_CLASS_REF_MATCH(kind))
 
 
 def import_ref(ref):

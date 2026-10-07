@@ -789,6 +789,33 @@ def _carried_column(name, values):
     return values
 
 
+def _field_column(records, name, missing):
+    """One field read off every record, attr-or-key, ``missing`` when absent."""
+    if all(type(record) is dict for record in records):
+        return [record.get(name, missing) for record in records]
+    return [
+        record.get(name, missing) if isinstance(record, dict)
+        else getattr(record, name, missing)
+        for record in records
+    ]
+
+
+def _lifted_column(records, name):
+    """One numeric field as a float64 array by :func:`_num`'s rule, vectorized when all-float."""
+    import numpy as np
+
+    raw = _field_column(records, name, None)
+    if all(type(value) is float for value in raw):
+        # An exact float is lifted as itself when finite and as NaN when
+        # not — which is what `_num` answers, cell by cell.
+        column = np.array(raw, dtype=np.float64)
+        absent = ~np.isfinite(column)
+        if absent.any():
+            column[absent] = np.nan
+        return column
+    return np.asarray([_num(value) for value in raw], dtype=np.float64)
+
+
 def _lift(records, group_field, order_field, fields):
     """Group, order and lift a record stream into per-group arrays.
 
@@ -845,17 +872,10 @@ def _lift(records, group_field, order_field, fields):
     for group, pairs in by_group.items():
         pairs.sort()
         indices = [idx for _order, idx in pairs]
+        group_records = [records[idx] for idx in indices]
         arrays = {}
         for name in fields:
-            # Spelled out for the same reason as the loop above: one
-            # field of one record is the innermost step of the whole
-            # pack, run once per (record, declared field).
-            arrays[name] = np.asarray(
-                [_num(records[idx].get(name)) if isinstance(records[idx], dict)
-                 else _num(getattr(records[idx], name, _MISSING))
-                 for idx in indices],
-                dtype=np.float64,
-            )
+            arrays[name] = _lifted_column(group_records, name)
         # The order array is written LAST and therefore always wins: the
         # framing reads it, so a `fields` entry naming it must not shadow
         # it with a float64 restatement.
@@ -1030,6 +1050,14 @@ def _prefix_equal(a, b) -> bool:
         return bool(np.array_equal(a, b, equal_nan=True))
     except (TypeError, ValueError):
         return bool(np.array_equal(a, b))
+
+
+def _identified(carried, carry, required, n):
+    """Per position, whether every required carried field passes :func:`cluster_ok`, else ``None``."""
+    if not required or any(name not in carry for name in required):
+        return None
+    columns = [carried[carry.index(name)] for name in required]
+    return [all(cluster_ok(column[pos]) for column in columns) for pos in range(n)]
 
 
 def _row_cells(columns, names, n):
@@ -1721,14 +1749,8 @@ class ArrayFeatures(_ArrayApply):
         resolved once per FIELD instead of once per (row, field), which
         is the same reason :func:`_row_cells` converts whole arrays.
         """
-        return [
-            _carried_column(name, [
-                record.get(name) if isinstance(record, dict)
-                else getattr(record, name, None)
-                for record in map(records.__getitem__, indices)
-            ])
-            for name in carry
-        ]
+        rows = [records[idx] for idx in indices]
+        return [_carried_column(name, _field_column(rows, name, None)) for name in carry]
 
     def _feature_rows(self, records, drop=(), complete_only=False):
         """Build every emittable row, keyed by its input index.
@@ -1751,14 +1773,20 @@ class ArrayFeatures(_ArrayApply):
             cells, complete = _row_cells(group.columns, names, len(indices))
             keys = carry + tuple(names)
             values = self._carried_columns(records, indices, carry)
+            identified = (
+                _identified(values, carry, required, len(indices))
+                if type(self)._carried_columns is ArrayFeatures._carried_columns
+                else None
+            )
             values += [cells[name] for name in names]
-            for idx, cell_row, whole in zip(indices, zip(*values), complete):
+            for pos, (idx, cell_row, whole) in enumerate(
+                    zip(indices, zip(*values), complete)):
                 if incomplete_is_no_row and not whole:
                     no_row += 1
                     continue
-                if required and any(
-                    not cluster_ok(_field(records[idx], name))
-                    for name in required
+                if required and not (
+                    identified[pos] if identified is not None
+                    else all(cluster_ok(_field(records[idx], name)) for name in required)
                 ):
                     no_row += 1
                     continue

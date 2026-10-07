@@ -202,7 +202,11 @@ class CondorGeometry:
             the outcome is unknown), in narrower-wing units.
         """
         strikes = self.strikes(forward, scale)
-        pnls = [self.pnl_per_width(forward * math.exp(scale * z), strikes) for z in draws_z]
+        # pnl_per_width inlined with its narrower wing computed once: the same expression per draw
+        narrower = min(strikes[1] - strikes[0], strikes[3] - strikes[2])
+        credit = self.credit_fraction
+        pnls = [credit + condor_payoff(forward * math.exp(scale * z), strikes) / narrower
+                for z in draws_z]
         inner, outer = self.strikes_z[1:3], (self.strikes_z[0], self.strikes_z[3])
         n = len(pnls)
         return {

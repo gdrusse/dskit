@@ -369,6 +369,32 @@ class ThresholdWeightedCrps(ScoringRule):
 
     def score(self, dist, y):
         """Score one forecast; see :meth:`ScoringRule.score`."""
+        # The counter walk restates SampleDistribution.cdf and _covered; any
+        # subclass of either (or a NaN outcome, which sorted cannot order)
+        # keeps the hook path.
+        if (y != y or type(self) is not ThresholdWeightedCrps
+                or type(dist) is not SampleDistribution):
+            return self._score_by_bisect(dist, y)
+        samples = dist.samples
+        n = len(samples)
+        points = sorted(set(samples) | {float(y)})
+        intervals = self.intervals
+        total = 0.0
+        # ``points`` ascend, so ``bisect_right(samples, left)`` only grows:
+        # advance one counter instead of bisecting at every step.
+        k = 0
+        for left, right in zip(points, points[1:]):
+            while k < n and samples[k] <= left:
+                k += 1
+            gap = (k / n - (1.0 if y <= left else 0.0)) ** 2
+            if gap:
+                total += gap * sum(
+                    [max(0.0, min(right, hi) - max(left, lo)) for lo, hi in intervals]
+                )
+        return total
+
+    def _score_by_bisect(self, dist, y):
+        """Score through ``dist.cdf`` and ``_covered`` at each step (the reference path)."""
         points = sorted(set(dist.samples) | {float(y)})
         total = 0.0
         for left, right in zip(points, points[1:]):
@@ -697,9 +723,10 @@ class ScoreDistributions(Node):
         """Pair each in-split row with its distribution; count what was skipped."""
         samples_field = self.params.get("samples_field", DEFAULT_SAMPLES_FIELD)
         outcome_field = self.params.get("outcome_field", DEFAULT_OUTCOME_FIELD)
+        split = self.params["split"]
         pairs, skipped = [], {"other_split": 0, "no_outcome": 0, "no_forecast": 0}
         for row in rows:
-            if not row_in_split(ctx, row, self.params["split"]):
+            if not row_in_split(ctx, row, split):
                 skipped["other_split"] += 1
                 continue
             reason, dist, y = forecast_pair(row, samples_field, outcome_field)
@@ -739,9 +766,18 @@ class ScoreDistributions(Node):
         metrics = {"n": len(pairs), **{f"n_skipped_{k}": v for k, v in skipped.items()}}
         report = {"split": self.params["split"], "skipped": skipped}
         for rule in self.rules():
-            metrics[rule.name] = sum(rule.score(d, y) for d, y in pairs) / len(pairs)
-            if isinstance(rule, ThresholdBrier):
+            if type(rule) is ThresholdBrier:
+                # ``score`` IS ``sum(per_threshold) / k``: compute the rows once
+                # and read the mean off them. Exact type, so a subclass that
+                # overrides ``score`` is still asked.
                 per = [rule.per_threshold(d, y) for d, y in pairs]
+                k = len(rule.thresholds)
+                metrics[rule.name] = sum(sum(row) / k for row in per) / len(pairs)
+            else:
+                metrics[rule.name] = sum(rule.score(d, y) for d, y in pairs) / len(pairs)
+                if isinstance(rule, ThresholdBrier):
+                    per = [rule.per_threshold(d, y) for d, y in pairs]
+            if isinstance(rule, ThresholdBrier):
                 report["brier_by_threshold"] = dict(zip(
                     map(str, rule.thresholds), (sum(col) / len(per) for col in zip(*per)),
                 ))

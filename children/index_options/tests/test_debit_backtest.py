@@ -1121,3 +1121,24 @@ def test_the_inputs_contract_is_the_condors(member):
     assert any("chain" in p for p in node.validate_inputs({"forecasts": [], "underlying": []}))
     with pytest.raises(ValueError, match="no forecast row lies in split"):
         node.run(CTX, {"forecasts": [], "chain": _chain(ENTRY, EXPIRY), "underlying": FLAT})
+
+
+def test_the_long_verticals_bisect_equals_their_full_scan():
+    import random
+    from test_quote_backtest import _random_listed
+    rng = random.Random(23)
+    for member in (nodes.LongCallSpreadQuoteBacktest, nodes.LongPutSpreadQuoteBacktest):
+        node = member("bt", {k: v for k, v in PARAMS.items() if k != "short_q"})
+        for _ in range(3000):
+            listed = _random_listed(rng)
+            node._reset_entry_caches()
+            right = node.LEGS[0][0]
+            direction = 1 if right == "call" else -1
+            sides = ["buy", "sell"]
+            first = rng.uniform(85, 115)
+            targets = [first, first + direction * rng.uniform(0, 10)]
+            fast = node._snap_outward(listed[right], targets, sides, direction)
+            node._quotable_cache = {key: (rows, None) for key, (rows, _ks)
+                                    in node._quotable_cache.items()}     # force the scan
+            assert repr(fast) == repr(node._snap_outward(listed[right], targets, sides,
+                                                         direction))

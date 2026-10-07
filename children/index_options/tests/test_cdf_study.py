@@ -526,6 +526,97 @@ def test_surface_dynamics_are_causal_by_expiry_and_emit_proxy_moments():
     assert out.rn_variance.gt(0).all() and out.rn_right_tail_integral.gt(0).all()
 
 
+def _term_slopes_by_sort_values(frame):
+    """The label-based term-slope reference the positional path must reproduce exactly."""
+    prev, nxt = pd.Series(np.nan, index=frame.index), pd.Series(np.nan, index=frame.index)
+    for _, index in frame.groupby(['symbol', 'quote_date'], sort=False).groups.items():
+        ordered = frame.loc[index].sort_values('actual_calendar_dte')
+        if len(ordered) > 1:
+            delta = np.diff(ordered.actual_calendar_dte.to_numpy(dtype=float))
+            slope = np.divide(np.diff(ordered.chain_log_atm_iv.to_numpy(dtype=float)), delta,
+                              out=np.full(len(delta), np.nan), where=delta != 0)
+            prev.loc[ordered.index[1:]] = slope
+            nxt.loc[ordered.index[:-1]] = slope
+    return prev, nxt
+
+
+@pytest.mark.parametrize('dte_kind', ['int', 'float_with_nan'])
+def test_term_slopes_equal_the_sort_values_reference_including_dte_ties(dte_kind):
+    rng = np.random.default_rng(3)
+    rows = [{'symbol': symbol, 'quote_date': f'2020-01-{day:02d}', 'expiry': f'E{k}',
+             'actual_calendar_dte': int(rng.integers(1, 6)),  # few values: many ties
+             'chain_log_atm_iv': float(rng.normal())}
+            for symbol in ('SPY', 'QQQ') for day in range(1, 21) for k in range(int(rng.integers(1, 8)))]
+    frame = pd.DataFrame(rows).sample(frac=1, random_state=4)  # shuffled, non-range index
+    frame.index = frame.index*3+7
+    if dte_kind == 'float_with_nan':  # the label-based fallback path
+        frame['actual_calendar_dte'] = frame.actual_calendar_dte.astype(float).where(
+            rng.random(len(frame)) > .1)
+    prev, nxt = _term_slopes_by_sort_values(frame)
+    out = frame.copy()
+    ExactExpiryCDFPanel._add_term_slopes(out)
+    pd.testing.assert_series_equal(out.term_slope_prev, prev, check_exact=True, check_names=False)
+    pd.testing.assert_series_equal(out.term_slope_next, nxt, check_exact=True, check_names=False)
+    assert out.term_slope_prev.notna().any() and out.term_slope_next.notna().any()
+
+
+def test_settled_and_policy_histories_equal_the_brute_force_filters():
+    study = cdf_study.RobustCorrectionStudy
+    rng = np.random.default_rng(5)
+    dates = pd.bdate_range('2020-01-01', periods=60).strftime('%Y-%m-%d').tolist()
+    events, log, policies, policy_log = [], study._event_log(), [], study._policy_log()
+    for i, date in enumerate(dates):
+        for band in ('short', 'long'):
+            expected = pd.DataFrame(study._settled_events(events, date, band))
+            got = study._settled_frame(log, date, band)
+            if expected.empty:
+                assert got.empty
+            else:
+                pd.testing.assert_frame_equal(got, expected, check_exact=True)
+            pd.testing.assert_frame_equal(
+                study._policy_history(policy_log, date, 'SPY', band, dates[5]),
+                study._radius_history(policies, date, 'SPY', band, dates[5]), check_exact=True)
+        # Keys in the order train/optimize build each event (study._EVENT_FIELDS).
+        pending = [{'quote_date': date,
+                    'settlement_date': dates[min(i+int(rng.integers(0, 9)), len(dates)-1)],
+                    'tenor_band': str(rng.choice(['short', 'long'])),
+                    'probability': float(rng.random()), 'event': float(rng.integers(0, 2)),
+                    'weight': .25} for _ in range(int(rng.integers(0, 4)))]
+        events.extend(pending)
+        log.extend(pending)
+        sized = [{**item, 'symbol': str(rng.choice(['SPY', 'QQQ'])), 'radius': 0.,
+                  'residual': float(rng.random())} for item in pending]
+        policies.extend(sized)
+        policy_log.extend(sized)
+    assert log.rows == events and len(events) > 40
+
+
+def test_macro_event_counts_equal_the_series_comparison():
+    rng = np.random.default_rng(6)
+    quotes = pd.bdate_range('2020-01-01', periods=80)
+    frame = pd.DataFrame({'quote_date': quotes.strftime('%Y-%m-%d'),
+                          'planned_settlement_date': (quotes+pd.to_timedelta(
+                              rng.integers(1, 40, len(quotes)), unit='D')).strftime('%Y-%m-%d')})
+    calendars = {'cpi': [{'event_date': str(day.date()), 'known_at': str((day-pd.Timedelta(days=int(lag))).date())}
+                         for day, lag in zip(pd.date_range('2020-01-10', periods=6, freq='MS'),
+                                             rng.integers(0, 60, 6))]}
+    out, _ = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), calendars)
+    quote, end = pd.to_datetime(frame.quote_date), pd.to_datetime(frame.planned_settlement_date)
+    expected = sum(((pd.Timestamp(r['known_at']) <= quote) & (pd.Timestamp(r['event_date']) > quote)
+                    & (pd.Timestamp(r['event_date']) <= end)).astype(int) for r in calendars['cpi'])
+    pd.testing.assert_series_equal(out.macro_cpi_count, expected.astype(int), check_names=False)
+    assert out.macro_cpi_count.dtype == int and out.macro_cpi_count.gt(0).any()
+
+
+def test_macro_event_sentinel_dates_keep_the_series_comparison():
+    frame = pd.DataFrame({'quote_date': ['2020-01-02', '2020-02-03', '2020-03-02'],
+                          'planned_settlement_date': ['2020-01-30', '2020-02-28', '2020-03-30']})
+    calendars = {'fomc': [{'event_date': '9999-12-31', 'known_at': '2019-01-01'},
+                          {'event_date': '2020-02-10', 'known_at': '0001-01-01'}]}
+    out, _ = ExactExpiryCDFPanel.add_macro_event_features(frame.copy(), calendars)
+    assert out.macro_fomc_count.tolist() == [0, 1, 0]
+
+
 def test_fred_daily_availability_waits_for_one_complete_exchange_session():
     dates = pd.to_datetime(['2020-07-01', '2020-07-02'])
     available = ExactExpiryCDFPanel._availability_dates(dates, 'XNYS', lag_sessions=1)

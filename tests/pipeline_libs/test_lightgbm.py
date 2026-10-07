@@ -98,6 +98,52 @@ def test_one_instance_predicts_each_state_with_its_own_booster(ctx):
     assert node.predict_scale(a, x) != node.predict_scale(b, x)
 
 
+def test_batched_predictions_equal_the_per_row_predictions(ctx):
+    node = LightGBMScaleLocationScale("gbm", dict(PARAMS))
+    model = node.run(ctx, {"rows": _rows()})["transform"].state["model"]
+    xs = [[math.log(r["vol"]), math.log(r["vol5"])] for r in _rows(seed=8)]
+    assert node.predict_scale_many(model, xs) == [node.predict_scale(model, x) for x in xs]
+    assert node.predict_scale_many(model, []) == []
+
+
+def test_batched_rung_rows_equal_the_per_row_path(ctx):
+    class PerRow(LightGBMScaleLocationScale):
+        def predicted_vol(self, row, model):
+            return super().predicted_vol(row, model)
+
+        def predict_scale_many(self, model, xs):
+            return [self.predict_scale(model, x) for x in xs]
+
+    rows = _rows()
+    rows[160]["vol5"] = 0.0
+    rows[170]["vol"] = None
+    batched = LightGBMScaleLocationScale("gbm", dict(PARAMS)).run(ctx, {"rows": rows})
+    per_row = PerRow("gbm", dict(PARAMS)).run(ctx, {"rows": rows})
+    assert batched["rows"] == per_row["rows"]
+    assert batched["transform"].state == per_row["transform"].state
+    assert batched["rows"][160]["samples"] is None and batched["rows"][170]["samples"] is None
+
+
+def test_a_subclass_reshaping_the_one_row_hook_still_sees_every_row(ctx):
+    seen = []
+
+    class Clipped(LightGBMScaleLocationScale):
+        def predict_scale(self, model, x):
+            seen.append(x)
+            return min(super().predict_scale(model, x), -4.0)
+
+    class ClippedPerRow(Clipped):
+        def predict_scale_many(self, model, xs):
+            return [self.predict_scale(model, x) for x in xs]
+
+    batched = Clipped("gbm", dict(PARAMS)).run(ctx, {"rows": _rows()})
+    calls = len(seen)
+    per_row = ClippedPerRow("gbm", dict(PARAMS)).run(ctx, {"rows": _rows()})
+    assert calls and calls == len(seen) - calls
+    assert batched["rows"] == per_row["rows"]
+    assert batched["transform"].state == per_row["transform"].state
+
+
 def test_load_restores_identical_forecasts(ctx, tmp_path):
     fitted = LightGBMScaleLocationScale("gbm", dict(PARAMS)).run(ctx, {"rows": _rows()})
     loaded = LightGBMScaleLocationScale("gbm", dict(PARAMS), mode="load",

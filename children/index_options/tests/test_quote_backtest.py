@@ -3140,3 +3140,68 @@ def test_the_selectors_metrics_and_ledger_are_what_adr_0196_shipped(key):
     metrics, report = _run_select(rows, chain, series, **over)
     assert _digest(metrics) == FROZEN_SELECT[key]["metrics"]
     assert _digest(report["ledger"]) == FROZEN_SELECT[key]["ledger"]
+
+
+# -- speedups pinned to the scans they replace -----------------------------------------------
+
+def _random_listed(rng):
+    """One expiry's ``{right: {strike: row}}`` with odd strikes and unquotable rows mixed in."""
+    listed = {"put": {}, "call": {}}
+    for right in listed:
+        for _ in range(rng.randint(0, 25)):
+            k = rng.choice([float(rng.randint(80, 120)), rng.uniform(80, 120), 0.0, -0.0,
+                            math.inf, -math.inf, math.nan])
+            listed[right][k] = {"bid": rng.choice([0.0, 1.0, 2.0, -1.0, math.nan, None, 3]),
+                                "ask": rng.choice([0.0, 1.5, 2.5, math.nan, 4]),
+                                "bid_size": rng.choice([0, 1, 5, -1, 1.5, True, None]),
+                                "ask_size": rng.choice([0, 1, 5, 0.5]), "iv": 0.2}
+    return listed
+
+
+def test_the_bisect_snaps_equal_the_full_scans_on_randomized_chains():
+    node, rng = CondorQuoteBacktest("bt", PARAMS), random.Random(17)
+    for _ in range(5000):
+        listed = _random_listed(rng)
+        node._reset_entry_caches()
+        forward, scale = rng.uniform(90, 110), rng.uniform(0.01, 0.2)
+        z_put, z_call, wing = rng.uniform(-3, 0), rng.uniform(0, 3), rng.uniform(0.1, 1)
+        long_t, short_t = (forward * math.exp(scale * z) for z in (z_put - wing, z_put))
+        assert repr(node._snap_put(listed, forward, scale, z_put, wing)) == repr(
+            node._scan_put(listed["put"], long_t, short_t))
+        short_t, long_t = (forward * math.exp(scale * z) for z in (z_call, z_call + wing))
+        assert repr(node._snap_call(listed, forward, scale, z_call, wing)) == repr(
+            node._scan_call(listed["call"], short_t, long_t))
+
+
+def test_a_row_only_the_full_scan_could_skip_falls_back_to_it():
+    # an int size beyond float range raises in quote_problems; the scan never reaches the
+    # strike above the put target, so the snap must not raise there either
+    node = CondorQuoteBacktest("bt", PARAMS)
+    listed = {"put": {90.0: {"bid": 1.0, "ask": 1.1, "bid_size": 5, "ask_size": 5},
+                      95.0: {"bid": 2.0, "ask": 2.1, "bid_size": 5, "ask_size": 5},
+                      120.0: {"bid": 1.0, "ask": 1.1, "bid_size": 10 ** 400, "ask_size": 5}},
+              "call": {}}
+    node._reset_entry_caches()
+    assert node._snap_put(listed, 100.0, 0.05, -1.0, 1.0) == (90.0, 95.0)
+
+
+def test_the_sliced_charges_equal_the_charges_on_the_whole_series():
+    node = CondorQuoteBacktest("bt", PARAMS)
+    days = _weekdays("2023-01-02", "2024-06-28")
+    rng = random.Random(3)
+    closes = [(d, 100.0 + rng.uniform(-8, 8)) for d in days]
+    series = _series(closes, [(d, 0.5) for d in days[::40]])
+    node._prepare({"chain": _chain(ENTRY, EXPIRY), "underlying": series})
+    whole = node._closes["SPY"]
+    for entry, settle in (("2023-03-01", "2023-04-14"), ("2024-01-02", "2024-02-16"),
+                          ("2022-12-30", "2023-01-06"), ("2024-06-24", "2024-06-28")):
+        window = node._charge_window("SPY", entry, settle)
+        assert len(window) < len(whole)
+        for short_put, short_call in ((97.0, 103.0), (110.0, 90.0)):
+            assert american_short_charge(window, short_put, short_call, entry, settle, 0.055,
+                                         100) == american_short_charge(
+                whole, short_put, short_call, entry, settle, 0.055, 100)
+        assert nodes.dividends_paid(window, entry, settle) == nodes.dividends_paid(
+            whole, entry, settle)
+    # a date contracts._day refuses is never sliced past: the owner still sees and refuses it
+    assert node._charge_window("SPY", "2024-1-2", "2024-02-16") is whole

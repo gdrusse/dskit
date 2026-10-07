@@ -1073,8 +1073,41 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
         if not hasattr(self, "_fit_decisions") or len(self._fit_decisions) != len(x):
             raise ValueError("identity-keyed decision context was not attached")
         inventory = self._fit_decisions
-        expanded, labels, weights = [], [], []
         global_mass = self.global_weight/len(self.thresholds)
+        # The vector path matches the loop bit for bit only on float64 rows:
+        # the loop keeps a narrower row or outcome dtype and compares in it.
+        if (not len(inventory) or len(y) != len(inventory)
+                or np.asarray(x).dtype != np.float64
+                or np.asarray(y).dtype != np.float64):
+            expanded, labels, weights = self._expanded_events_loop(x, y, inventory, global_mass)
+        else:
+            expanded, labels, weights = self._expanded_events(x, y, inventory, global_mass)
+        self.model = LGBMClassifier(
+            **self.settings, monotone_constraints=[0]*np.asarray(x).shape[1]+[1])
+        self.model.fit(expanded, np.asarray(labels, dtype=int),
+                       sample_weight=np.asarray(weights, dtype=float))
+        return self
+
+    def _expanded_events(self, x, y, inventory, global_mass):
+        """Each row's global then strike events as arrays, in the loop's order."""
+        import numpy as np
+
+        rows = np.asarray(x)
+        thresholds = np.asarray(self.thresholds, dtype=float)
+        counts = [len(self.thresholds)+len(cutoffs) for cutoffs, _ in inventory]
+        cutoffs = np.concatenate([np.r_[thresholds, own] for own, _ in inventory])
+        expanded = np.column_stack([np.repeat(rows, counts, axis=0), cutoffs]).astype(float)
+        labels = np.repeat(np.asarray(y), counts) <= cutoffs
+        weights = np.concatenate([
+            np.r_[np.full(len(self.thresholds), global_mass), self.decision_weight*own]
+            for _, own in inventory])
+        return expanded, labels, weights
+
+    def _expanded_events_loop(self, x, y, inventory, global_mass):
+        """Expand per event, the reference path kept for an empty or ragged inventory."""
+        import numpy as np
+
+        expanded, labels, weights = [], [], []
         for row, outcome, (cutoffs, strike_weights) in zip(np.asarray(x), y, inventory):
             for cutoff in self.thresholds:
                 expanded.append(np.r_[row, cutoff])
@@ -1084,12 +1117,7 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
                 expanded.append(np.r_[row, cutoff])
                 labels.append(outcome <= cutoff)
                 weights.append(self.decision_weight*weight)
-        expanded = np.asarray(expanded, dtype=float)
-        self.model = LGBMClassifier(
-            **self.settings, monotone_constraints=[0]*np.asarray(x).shape[1]+[1])
-        self.model.fit(expanded, np.asarray(labels, dtype=int),
-                       sample_weight=np.asarray(weights, dtype=float))
-        return self
+        return np.asarray(expanded, dtype=float), labels, weights
 
     def curve_decision_context(self, x, context):
         """Predict directly at every row's decision strikes, without interpolation."""
@@ -1103,10 +1131,16 @@ class DecisionWeightedMonotoneCDF(MonotoneCDF):
         width = max(len(values) for values in knots)+2
         values = np.empty((len(x), width), dtype=float)
         probabilities = np.empty_like(values)
-        for row, (features, cutoffs) in enumerate(zip(np.asarray(x), knots)):
-            expanded = np.column_stack([
-                np.repeat(features[None, :], len(cutoffs), axis=0), cutoffs])
-            p = self.model.predict_proba(expanded)[:, 1]
+        rows = np.asarray(x)
+        # One predict_proba over every row's knots: trees score each event
+        # row independently, so the slices equal the per-row calls exactly.
+        everything = self.model.predict_proba(np.column_stack([
+            np.repeat(rows, [len(cutoffs) for cutoffs in knots], axis=0),
+            np.concatenate(knots)]))[:, 1]
+        offset = 0
+        for row, cutoffs in enumerate(knots):
+            p = everything[offset:offset+len(cutoffs)]
+            offset += len(cutoffs)
             if (np.diff(p) < -1e-10).any():
                 raise ValueError("monotone classifier returned crossing CDFs")
             grid = np.r_[cutoffs[0]-self.tail_width, cutoffs,
