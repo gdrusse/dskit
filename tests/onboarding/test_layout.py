@@ -5,7 +5,66 @@ import os
 import pytest
 
 from dskit.assets.base import AssetError
-from dskit.onboarding import OnboardingRoot
+from dskit.onboarding import OnboardingRoot, files_token
+
+
+def _put(path, text="a\n"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_content_token_moves_with_every_committed_file_and_only_those(tmp_path):
+    # ADR-0236 amendment: the key of a memo built from a root's acquisitions.
+    ob, base = OnboardingRoot.create(str(tmp_path / "ob")), tmp_path / "ob"
+    first = ob.content_token()
+    assert ob.content_token() == first
+    for sub in ("state", "published", "store"):
+        _put(base / sub / "x" / "noise.json")
+    assert ob.content_token() == first  # cursors, outbox and catalog are not read data
+    seen = [first]
+    member = _put(base / "observations" / "src" / "20260101T000000Z-backfill-a" / "bars.jsonl")
+    seen.append(ob.content_token())  # a new acquisition
+    stat = member.stat()
+    os.utime(member, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000))
+    seen.append(ob.content_token())  # a touched member
+    _put(base / "raw" / "src" / "20260102T000000Z-backfill-b" / "manifest.json")
+    seen.append(ob.content_token())
+    _put(base / "forecasts" / "src" / "20260103T000000Z-backfill-c" / "f.jsonl")
+    seen.append(ob.content_token())
+    member.unlink()
+    seen.append(ob.content_token())  # a removed member
+    assert len(set(seen)) == len(seen)
+
+
+def test_files_token_walks_directories_and_names_a_missing_path(tmp_path):
+    table = _put(tmp_path / "a.parquet")
+    folder = tmp_path / "archive"
+    deep = _put(folder / "x" / "y.bin")
+    first = files_token([str(table), str(folder)])
+    assert files_token([str(folder), str(table)]) == first  # a set of paths, not a sequence
+    deep.write_text("longer\n")
+    assert files_token([str(table), str(folder)]) != first
+    assert files_token([str(tmp_path / "gone")]) != files_token([])  # absence is a state too
+
+
+def test_files_token_leaves_out_a_file_gone_mid_walk(tmp_path, monkeypatch):
+    from dskit.onboarding import layout
+
+    folder = tmp_path / "archive"
+    keep, gone = _put(folder / "a.bin"), _put(folder / "b.bin")
+    real = layout.file_signature
+
+    def racing(path):
+        if path == str(gone):
+            raise AssetError([f"cannot stat {path}: vanished"])
+        return real(path)
+
+    monkeypatch.setattr(layout, "file_signature", racing)
+    walked = files_token([str(folder)])
+    gone.unlink()
+    monkeypatch.setattr(layout, "file_signature", real)
+    assert walked == files_token([str(folder)]) and keep.exists()
 
 
 def test_create_builds_the_whole_estate(tmp_path):
@@ -94,3 +153,17 @@ def test_unsafe_segments_refused_everywhere(root):
         root.state_path("ok", "stream", "sideways")  # not a declared mode
     with pytest.raises(AssetError):
         root.published_dir("UPPER")
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="chmod-based denial is inert for root")
+def test_files_token_refuses_a_directory_it_cannot_list(tmp_path):
+    # A subtree os.walk silently skipped would drop out of the token (review round 4).
+    _put(tmp_path / "archive" / "locked" / "a.bin")
+    locked = tmp_path / "archive" / "locked"
+    os.chmod(locked, 0o000)
+    try:
+        with pytest.raises(AssetError, match="cannot list"):
+            files_token([str(tmp_path / "archive")])
+    finally:
+        os.chmod(locked, 0o755)

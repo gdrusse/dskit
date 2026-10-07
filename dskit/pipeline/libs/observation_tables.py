@@ -14,6 +14,12 @@ other-key values at or before (``strict_prior`` false) or strictly before
 (default) the stream row's date, at most ``max_age_days`` old. An as-of table
 also emits, per column, an age and a missing companion; nothing is imputed.
 
+A table whose rows live in several onboarded sources (one per entity universe,
+say) declares ``parts`` in place of ``source``/``stream``: each part is read
+through the same seam, the rows are concatenated, a key held by two parts is
+refused, and the provenance lists every part's row count and content digest
+(ADR-0236). Nothing is copied into a union source.
+
 Why tier 2: it names the onboarding read seam only inside ``run()``, as the
 ``observations`` pack does. An empty ``tables`` map is a lawful pass-through, so
 a document can keep this node whether or not any keyed family is declared.
@@ -24,6 +30,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from datetime import date
 
+from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, check_int_param, reject_unknown_params
 
@@ -33,7 +40,9 @@ __all__ = ["AGE_SUFFIX", "MISSING_SUFFIX", "NODE_KINDS", "ObservationTables", "i
 AGE_SUFFIX = "_age_days"
 MISSING_SUFFIX = "_missing"
 
-_TABLE_KEYS = ("root", "source", "stream", "key_fields", "columns", "max_age_days", "strict_prior")
+_TABLE_KEYS = ("root", "source", "stream", "parts", "key_fields", "columns", "max_age_days",
+               "strict_prior")
+_PART_KEYS = ("root", "source", "stream")
 _MATCH_NOTE = "exact key match"
 
 
@@ -65,8 +74,11 @@ class ObservationTables(Node):
         empty: ``{name: {"source", "stream", "root" (default the node's), "columns": {stream column ->
         output field}, "key_fields" (stream fields matching ``key`` in order,
         default ``key``), "max_age_days" (int >= 0, as-of match), "strict_prior"
-        (bool, default true)}}``), ``age_suffix`` and ``missing_suffix`` (str,
-        default ``AGE_SUFFIX`` / ``MISSING_SUFFIX``).
+        (bool, default true)}}``; in place of ``source``/``stream`` a table may
+        declare ``parts``, two or more distinct ``{"source", "stream", "root"
+        (default the table's, then the node's)}`` read and concatenated, no key
+        in two parts), ``age_suffix`` and ``missing_suffix`` (str, default
+        ``AGE_SUFFIX`` / ``MISSING_SUFFIX``).
 
     Examples
     --------
@@ -128,11 +140,14 @@ class ObservationTables(Node):
             return [f"{where} must be an object, got {spec!r}"]
         problems = []
         reject_unknown_params(problems, spec, _TABLE_KEYS)
-        for field in ("source", "stream"):
-            if not isinstance(spec.get(field), str) or not spec.get(field):
-                problems.append(f"{where}.{field} is required: a non-empty string")
-        if not spec.get("root") and not root:
-            problems.append(f"{where}.root is required when the node declares no root")
+        if "parts" in spec:
+            problems += cls._parts_problems(where, spec, root)
+        else:
+            for field in ("source", "stream"):
+                if not isinstance(spec.get(field), str) or not spec.get(field):
+                    problems.append(f"{where}.{field} is required: a non-empty string")
+            if not spec.get("root") and not root:
+                problems.append(f"{where}.root is required when the node declares no root")
         columns = spec.get("columns")
         if not isinstance(columns, dict) or not columns or not all(
                 isinstance(k, str) and isinstance(v, str) and v for k, v in columns.items()):
@@ -150,16 +165,67 @@ class ObservationTables(Node):
             problems.append(f"{where}.strict_prior must be a boolean")
         return problems
 
+    @staticmethod
+    def _parts_problems(where, spec, root):
+        """Problems with a ``parts`` declaration: two or more distinct, rooted sources."""
+        parts = spec["parts"]
+        problems = [f"{where}.{k} cannot sit beside parts; each part names its own"
+                    for k in ("source", "stream") if k in spec]
+        if not isinstance(parts, list) or len(parts) < 2:
+            return problems + [f"{where}.parts must list two or more sources, got {parts!r}"]
+        seen = set()
+        for i, part in enumerate(parts):
+            at = f"{where}.parts[{i}]"
+            if not isinstance(part, dict):
+                problems.append(f"{at} must be an object, got {part!r}")
+                continue
+            problems += [f"{at}: unknown key {k!r}" for k in part if k not in _PART_KEYS]
+            problems += [f"{at}.{k} is required: a non-empty string" for k in ("source", "stream")
+                         if not isinstance(part.get(k), str) or not part.get(k)]
+            if "root" in part and not (isinstance(part["root"], str) and part["root"]):
+                problems.append(f"{at}.root must be a non-empty string")
+            if not part.get("root") and not spec.get("root") and not root:
+                problems.append(f"{at}.root is required when neither the table nor the node "
+                                "declares one")
+            identity = tuple(str(part.get(k)) for k in _PART_KEYS)
+            if identity in seen:
+                problems.append(f"{at} repeats an earlier part")
+            seen.add(identity)
+        return problems
+
     # -- reading --------------------------------------------------------------
 
-    def _read(self, ctx, name, spec):
-        """Return (rows, fingerprint) of one table through the observations seam."""
+    def _read_part(self, ctx, spec, part):
+        """Return (rows, fingerprint) of one source through the observations seam."""
         from dskit.pipeline.libs.observations import ObservationRows
 
         reader = ObservationRows("reader", {
-            "root": spec.get("root", self.params.get("root")), "source": spec["source"], "stream": spec["stream"],
+            "root": part.get("root", spec.get("root", self.params.get("root"))),
+            "source": part["source"], "stream": part["stream"],
             "key_fields": list(spec.get("key_fields", self.params["key"]))})
         return reader.run(ctx, {})["records"], reader.fingerprint()
+
+    def _read(self, ctx, name, spec):
+        """Return (rows, fingerprint) of one table: its source, or its parts concatenated.
+
+        A parts fingerprint lists every part's source, stream, rows and digest
+        and digests that list; a key two parts both hold is refused.
+        """
+        if "parts" not in spec:
+            return self._read_part(ctx, spec, spec)
+        fields = spec.get("key_fields", self.params["key"])
+        rows, prints, owner = [], [], {}
+        for index, part in enumerate(spec["parts"]):
+            part_rows, finger = self._read_part(ctx, spec, part)
+            for row in part_rows:
+                key = tuple(row[f] for f in fields)
+                if owner.setdefault(key, index) != index:
+                    raise ValueError(f"{self.key}.{name}: parts {owner[key]} and {index} both "
+                                     f"hold key {key}")
+            rows.extend(part_rows)
+            prints.append({"source": part["source"], "stream": part["stream"],
+                           "rows": finger["rows"], "sha256": finger["sha256"]})
+        return rows, {"rows": len(rows), "sha256": value_hash(prints), "parts": prints}
 
     # -- matching -------------------------------------------------------------
 
@@ -231,9 +297,12 @@ class ObservationTables(Node):
                 if asof:
                     record[field + age_s] = age if value is not None else None
                     record[field + miss_s] = 0 if value is not None else 1
-        return {"rows": finger["rows"], "sha256": finger["sha256"], "matched": matched,
-                "unmatched": len(out) - matched,
-                "match": f"as-of within {spec['max_age_days']} days" if asof else _MATCH_NOTE}
+        report = {"rows": finger["rows"], "sha256": finger["sha256"], "matched": matched,
+                  "unmatched": len(out) - matched,
+                  "match": f"as-of within {spec['max_age_days']} days" if asof else _MATCH_NOTE}
+        if "parts" in finger:
+            report["parts"] = finger["parts"]
+        return report
 
     def _check_collisions(self, base):
         """Refuse an output field that is already on the stream or declared twice."""

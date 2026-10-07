@@ -19,14 +19,17 @@ from dskit.pipeline.libs.predictive_cdf import (
     DiscreteCDFGrid, GridCurve,
 )
 from dskit.pipeline.libs.observations import ObservationRows
-from .datafiles import DataFiles, DataTree, archive_relpath, entry_problems
+from .datafiles import (DataFiles, DataTree, archive_relpath, clear_snapshot_cache,
+                        entry_problems)
 from .observations import IndexCloseRows
 from .contracts import (CONDOR_LEGS, american_short_charge, condor_credit,
                         quote_problems)
 
 __all__ = ["CorporateActionRule", "ExactExpiryCDFPanel", "FROZEN_PANEL_CONVENTIONS",
-           "OPTION_SOURCE_KEYS", "PRICE_FIELDS", "PriceCalendarCDFPanel", "READERS",
-           "panel_class", "panel_convention_problems", "panel_reader_problems",
+           "OPTION_SOURCE_KEYS", "PANEL_CACHE_DIR", "PANEL_VINTAGE", "PRICE_FIELDS",
+           "PriceCalendarCDFPanel", "READERS",
+           "panel_class", "panel_convention_problems", "panel_int_problems",
+           "panel_reader_problems",
            "RawChainFeatureBuilder", "CondorCDFDiagnostic",
            "EligibleCondorChain", "DecisionRegionContextBuilder", "CondorDecisionAudit",
            "DecisionRegionStudy", "DecisionStrikeDiagnosisStudy",
@@ -2126,7 +2129,7 @@ class RawChainFeatureBuilder:
         target = Path(output); target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix+".tmp")
         result.to_parquet(temporary, index=False); temporary.replace(target)
-        manifest = Path(str(target)+".sources.json")
+        manifest = Path(str(target)+_SOURCES_SIDECAR)
         temporary_manifest = manifest.with_suffix(manifest.suffix+".tmp")
         sidecar = {"metadata_columns": metadata_columns,
                    "metadata_sha256": metadata_sha256,
@@ -2211,6 +2214,10 @@ PRICE_FIELDS = ("date", "close", "open", "high", "low", "volume", "dividend_amou
                 "split_coefficient")
 _PRICE_REQUIRED = ("date", "close")
 _CALENDAR_READER = "price_calendar"
+#: Where an HPO experiment keeps the panel its first stage built, under ``experiment.output``.
+PANEL_CACHE_DIR = "panel-cache"
+#: The source-hash sidecar written beside a raw-chain feature file and read with it.
+_SOURCES_SIDECAR = ".sources.json"
 _KEYED_KEYS = ("key", "tables", "age_suffix", "missing_suffix")
 _ACTION_KEYS = ("max_dividend_yield", "max_abs_jump", "windows")
 
@@ -2347,6 +2354,34 @@ class CorporateActionRule:
         return cumulative[np.asarray(end_index)+1]-cumulative[np.asarray(start_index)] > 0
 
 
+#: The panel key naming its observation reads' vintage (ADR-0236 amendment 3): it is
+#: ``ObservationRows``' own read-vintage param (ADR-0154), handed to every read as is.
+PANEL_VINTAGE = "as_of_acquisition_ms"
+#: The panel's optional integer knobs and their floors.
+_PANEL_INTS = (("exact_dte", 1), (PANEL_VINTAGE, 0))
+
+
+def panel_int_problems(config):
+    """List what is wrong with a panel config's optional integer knobs.
+
+    Parameters
+    ----------
+    config : dict
+        A panel config. ``exact_dte`` (ADR-0230) is an int >= 1 and ``as_of_acquisition_ms``
+        (:data:`PANEL_VINTAGE`) an int >= 0, each when present.
+
+    Returns
+    -------
+    list of str
+        Every problem; empty when the knobs are usable or absent.
+    """
+    problems = []
+    for name, low in _PANEL_INTS:
+        if name in config:
+            check_int_param(problems, name, config[name], ge=low)
+    return problems
+
+
 def panel_reader_problems(config):
     """List what is wrong with the reader-selection keys of a panel config (ADR-0230).
 
@@ -2393,7 +2428,10 @@ class ExactExpiryCDFPanel:
         file by store reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``,
         resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
-        absent keeps every horizon up to ``max_dte``.
+        absent keeps every horizon up to ``max_dte``. Optional ``as_of_acquisition_ms``
+        (int >= 0, ADR-0154's read vintage) bounds the acquisitions every observation read
+        sees (index closes, market symbols, FRED, the surface reader's prices); keyed tables
+        and price files are not bounded.
         Study conventions (see ``panel_convention_problems``): ``reference_window``,
         ``change_lags``, ``directional_windows``, ``periods_per_year``, ``calendar``,
         ``calendar_pad_days``, and ``dividend_field`` (absent: dividends known zero).
@@ -2411,12 +2449,7 @@ class ExactExpiryCDFPanel:
     def __init__(self, config, holdout_start=None):
         if holdout_start is not None and date_problem(holdout_start):
             raise ValueError("holdout_start must be an ISO date or None")
-        if "exact_dte" in config:
-            problems = []
-            check_int_param(problems, "exact_dte", config["exact_dte"], ge=1)
-            if problems:
-                raise ValueError(f"exact_dte must be an integer >= 1 or absent: {problems}")
-        problems = type(self).reader_problems(config)
+        problems = panel_int_problems(config) + type(self).reader_problems(config)
         if problems:
             raise ValueError("; ".join(problems))
         self.config, self.holdout_start = config, holdout_start
@@ -2794,6 +2827,15 @@ class ExactExpiryCDFPanel:
             following[ordered[:-1]] = slope
         frame["term_slope_prev"] = previous
         frame["term_slope_next"] = following
+    def _vintage(self):
+        """Return the read vintage every observation read of the panel takes, when declared.
+
+        ``as_of_acquisition_ms`` (ADR-0154) hides rows acquired after it from the observation
+        reads (index closes, market symbols, FRED, and the surface reader's prices), so a stage
+        that rebuilds the panel after a scheduled acquisition reads what the first stage read
+        (ADR-0236 amendment 3).
+        """
+        return {PANEL_VINTAGE: self.config[PANEL_VINTAGE]} if PANEL_VINTAGE in self.config else {}
 
     def _join_fred_features(self, frame, specifications):
         """Join pinned market observations at their conservative availability dates."""
@@ -2807,7 +2849,7 @@ class ExactExpiryCDFPanel:
             reader = ObservationRows(feature, {
                 "root": self.config["root"], "source": "fred-market-features",
                 "stream": spec["stream"], "key_fields": ["observation_date"],
-                "ts_field": "observation_date",
+                "ts_field": "observation_date", **self._vintage(),
             })
             records = reader.run(None, {})["records"]
             self.reader_fingerprints[f"fred:{spec['stream']}"] = reader.fingerprint()
@@ -2889,7 +2931,7 @@ class ExactExpiryCDFPanel:
         c = self.config
         price_reader = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"],
                                            "since_ms": int(pd.Timestamp(c["since"]).timestamp()*1000),
-                                           "symbol": symbol})
+                                           "symbol": symbol, **self._vintage()})
         prices = price_reader.run(None, {})["records"]
         self.reader_fingerprints[symbol] = price_reader.fingerprint()
         return prices
@@ -3010,9 +3052,9 @@ class ExactExpiryCDFPanel:
         c = self.config
         hashes = {name: files.sha256(c[name]) for name in self._source_names()}
         if c.get("chain_features"):
-            if not files.has(c["chain_features"], ".sources.json"):
+            if not files.has(c["chain_features"], _SOURCES_SIDECAR):
                 raise ValueError("raw-chain source hash manifest is missing")
-            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], ".sources.json")
+            hashes["chain_feature_sources"] = files.sha256(c["chain_features"], _SOURCES_SIDECAR)
         return hashes
 
     def read(self):
@@ -3119,7 +3161,7 @@ class ExactExpiryCDFPanel:
                 if "date_ohlc" in rows:
                     rows = rows.drop(columns=["date_ohlc"])
             iv_reader = IndexCloseRows("iv", {"root": c["root"], "source": c["iv_source"],
-                                              "symbol": iv_symbol})
+                                              "symbol": iv_symbol, **self._vintage()})
             iv = iv_reader.run(None, {})["records"]
             self.reader_fingerprints[iv_symbol] = iv_reader.fingerprint()
             iv_by_date = {r["date"]: r["close"] for r in iv}
@@ -3174,7 +3216,7 @@ class ExactExpiryCDFPanel:
             for feature, spec in c["market_symbols"].items():
                 symbol = spec["symbol"]
                 reader = IndexCloseRows(feature, {"root": c["root"], "source": c["iv_source"],
-                                                   "symbol": symbol})
+                                                   "symbol": symbol, **self._vintage()})
                 records = reader.run(None, {})["records"]
                 self.reader_fingerprints[symbol] = reader.fingerprint()
                 values = pd.DataFrame(records)[["date", "close"]].drop_duplicates("date")
@@ -3254,6 +3296,115 @@ class ExactExpiryCDFPanel:
             result["keyed_tables"] = self.keyed_provenance
         return result
 
+    def _locations(self):
+        """Return the store roots and the existing filesystem paths this config names.
+
+        Every ``root`` value, at any depth, is a store root (a run config's one
+        absolute-path convention); any other string naming an existing file or
+        directory is a data path (a legacy entry), with the source-hash sidecar a
+        raw-chain file is read with. The whole config is walked, so a key added
+        later is covered without editing this; the working directory and its
+        parents are never a data path.
+
+        Returns
+        -------
+        tuple of list
+            Sorted absolute roots, and sorted absolute paths that are not roots.
+        """
+        import os
+
+        roots, paths, here = set(), set(), os.path.abspath(os.curdir)
+
+        def walk(value, key):
+            if isinstance(value, dict):
+                for name, item in value.items():
+                    if name != "notes":
+                        walk(item, name)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, key)
+            elif isinstance(value, str) and value:
+                where = os.path.abspath(os.path.expanduser(value))
+                if key == "root":
+                    roots.add(where)
+                elif os.path.exists(where) and os.path.commonpath([where, here]) != where:
+                    paths.update((where, where+_SOURCES_SIDECAR))
+
+        walk(self.config, None)
+        return sorted(roots), sorted(paths-roots)
+
+    def cache_identity(self, environment):
+        """Return everything this panel's read is a function of (ADR-0236 amendment).
+
+        Parameters
+        ----------
+        environment : dict
+            The runtime fingerprint the caller captured once
+            (:class:`~dskit.production.release.RuntimeFingerprint`: interpreter,
+            platform, every installed distribution).
+
+        Returns
+        -------
+        dict
+            ``reader`` (the class), ``config`` (the config itself; the cache digests
+            it without its ``notes``), ``holdout_start``, ``code`` (every module of
+            dskit and of this package), ``environment``, ``stores`` (each named
+            root's content token) and ``paths`` (a stat token over every other
+            existing path the config names).
+        """
+        import sys
+
+        import dskit
+        from dskit.onboarding import OnboardingRoot, files_token
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+
+        roots, paths = self._locations()
+        return {"reader": f"{type(self).__module__}:{type(self).__qualname__}",
+                "config": self.config, "holdout_start": self.holdout_start,
+                "code": ParquetFrameCache.code_digest(dskit, sys.modules[__package__]),
+                "environment": environment,
+                "stores": {root: OnboardingRoot(root).content_token() for root in roots},
+                "paths": files_token(paths)}
+
+    def cached_read(self, directory):
+        """Return ``(read(), provenance())``, reusing the panel a same-identity read stored.
+
+        The store snapshots this process resolved before are forgotten first, so a
+        build reads the snapshots the identity's tokens name. A panel that cannot be
+        stored (container-valued columns, such as a decision context) is read afresh
+        by every stage, as without a cache; so is every panel when the runtime cannot
+        be fingerprinted (a distribution without a name or version), since no key
+        could then be trusted.
+
+        Parameters
+        ----------
+        directory : str or Path
+            The cache slot (a :class:`~dskit.pipeline.libs.parquet.ParquetFrameCache`).
+
+        Returns
+        -------
+        tuple
+            ``(frame, provenance, state)``: the panel and its provenance as stored,
+            so the building call and every reuse hand a study the same frame and
+            the same dict, and how it was had (``reused``, ``stored``, ``unstored``,
+            or ``off`` without a fingerprint).
+        """
+        from dskit.pipeline.libs.parquet import ParquetFrameCache
+        from dskit.production.base import ProductionError
+        from dskit.production.release import RuntimeFingerprint
+
+        clear_snapshot_cache()
+        try:
+            environment = RuntimeFingerprint.capture().to_obj()
+        except ProductionError as err:
+            print("panel cache off: the runtime has no fingerprint:", err, flush=True)
+            frame = self.read()
+            return frame, ParquetFrameCache.as_stored(self.provenance()), "off"
+        frame, provenance, state = ParquetFrameCache(directory).load_or_build(
+            lambda: self.cache_identity(environment), lambda: (self.read(), self.provenance()))
+        print("panel", state, frame.shape, flush=True)
+        return frame, provenance, state
+
 
 class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     """Build the panel from one daily price file per symbol, with no option surface (ADR-0230).
@@ -3270,7 +3421,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     config : dict
         The base keys, with ``reader`` ``"price_calendar"``, ``exact_dte`` (required),
         ``price_source`` ``{source, stream, relpath {symbol: file}, columns {file column:
-        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). ``price_source``
+        PRICE_FIELDS name}}`` and no option-surface keys (null ones are ignored). A ``relpath``
+        entry may instead be ``{source, stream, relpath}``: that symbol's file lives in another
+        onboarded source (disjoint universes in separate sources, ADR-0236), and its reader
+        fingerprint names the source and stream. ``price_source``
         may carry ``window`` (``ParquetRows``' block, ``field`` a mapped field): ENTRY dates
         are cut to it, price records before ``start`` stay for the features' lookback, and
         records after ``end`` are cut, so settlement follows step 1's rule. Optional
@@ -3305,6 +3459,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         source = config.get("price_source")
         ok = (isinstance(source, dict) and isinstance(source.get("source"), str)
               and isinstance(source.get("stream"), str) and isinstance(source.get("relpath"), dict)
+              and all(cls._location_ok(v) for v in source["relpath"].values())
               and isinstance(source.get("columns"), dict)
               and set(source["columns"].values()) <= set(PRICE_FIELDS)
               and set(_PRICE_REQUIRED) <= set(source["columns"].values()))
@@ -3317,12 +3472,34 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
             if isinstance(window, dict) and window.get("field") not in (None, "date"):
                 problems.append("price_source.window.field must be 'date', the panel's date field")
         if not ok:
-            problems.append("price_source must be {source, stream, relpath {symbol: file}, columns "
-                            "{file column: field}} writing fields from "
-                            f"{PRICE_FIELDS} (including {_PRICE_REQUIRED}), got {source!r}")
+            problems.append("price_source must be {source, stream, relpath {symbol: file or "
+                            "{source, stream, relpath}}, columns {file column: field}} writing "
+                            f"fields from {PRICE_FIELDS} (including {_PRICE_REQUIRED}), "
+                            f"got {source!r}")
         problems += [f"{name} is an option-surface key; reader {cls.READER!r} has none"
                      for name in OPTION_SOURCE_KEYS if config.get(name) not in (None, {}, False)]
         return problems
+
+    @staticmethod
+    def _location_ok(entry):
+        """Say whether a ``relpath`` entry is a file name or a store reference to one file.
+
+        The reference rule is :func:`~index_options.datafiles.entry_problems`'s; a
+        ``manifest_sha256`` pin is refused, since the price reader pins each file by its
+        own manifest digest instead.
+        """
+        return not entry_problems("price_source.relpath entry", entry) and not (
+            isinstance(entry, dict) and "manifest_sha256" in entry)
+
+    def _location(self, symbol):
+        """Return the symbol's price file as ``(source, stream, relpath)``, defaults filled in."""
+        source = self.config["price_source"]
+        entry = source["relpath"].get(symbol)
+        if entry is None:
+            raise ValueError(f"price_source.relpath has no file for symbol {symbol!r}")
+        if isinstance(entry, str):
+            return source["source"], source["stream"], entry
+        return entry["source"], entry["stream"], entry["relpath"]
 
     @classmethod
     def action_problems(cls, spec):
@@ -3369,20 +3546,28 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         return self._records[symbol]
 
     def _file_rows(self, symbol):
-        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint."""
+        """Return the symbol's rows (envelope field names, ``since`` onward) and file fingerprint.
+
+        A symbol whose ``relpath`` entry names its own source gets a fingerprint that also
+        names that source and stream; a plain file entry's fingerprint is unchanged.
+        """
         from dskit.pipeline.libs.parquet import ParquetRows
 
         c, source = self.config, self.config["price_source"]
+        name, stream, relpath = self._location(symbol)
         reader = ParquetRows("prices", {
-            "root": c["root"], "source": source["source"], "stream": source["stream"],
-            "relpath_by_key": source["relpath"], "key": symbol, "columns": source["columns"],
+            "root": c["root"], "source": name, "stream": stream,
+            "relpath_by_key": {symbol: relpath}, "key": symbol, "columns": source["columns"],
             "window": self._end_window(source.get("window"))})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []
         if repeated:
             raise ValueError(f"{symbol}: price file repeats date(s) {repeated[:3]}")
-        return rows, reader.fingerprint()
+        fingerprint = reader.fingerprint()
+        if not isinstance(source["relpath"][symbol], str):
+            fingerprint = {**fingerprint, "source": name, "stream": stream}
+        return rows, fingerprint
 
     @staticmethod
     def _end_window(window):
@@ -3401,7 +3586,7 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
     def _project(self, symbol, raw):
         """Project file rows to price envelopes by the index reader's own rules."""
         c = self.config
-        owner = IndexCloseRows("prices", {"root": c["root"], "source": c["price_source"]["source"],
+        owner = IndexCloseRows("prices", {"root": c["root"], "source": self._location(symbol)[0],
                                           "symbol": symbol})
         stamped = [{**{k: v for k, v in r.items() if k != "split_coefficient"},
                     "symbol": symbol, "asof_ms": self._stamp(r["date"])} for r in raw]
@@ -3850,7 +4035,8 @@ class DecisionStrikeDiagnosisStudy:
 def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--stage", choices=["prepare", "search", "select", "evaluate", "report"])
+    parser.add_argument("--stage", choices=["prepare", "panel", "search", "select", "evaluate",
+                                            "report"])
     parser.add_argument("--partition")
     parser.add_argument("--decision-stage", choices=["prepare", "evaluate", "report"])
     parser.add_argument("--robust-stage", choices=["train", "select", "optimize", "report"])
@@ -3904,20 +4090,32 @@ def _main():
     fold_table = config.get("study", {}).get("fold_table")
     adapter = panel_class(config["data"])(
         config["data"], holdout_start=fold_table.get("holdout_start") if fold_table else None)
-    frame = adapter.read()
-    provenance = adapter.provenance()
     diagnostic = CondorCDFDiagnostic(**config["diagnostic"])
     if "experiment" in config:
-        if not args.stage:
-            parser.error("HPO requires an explicit --stage")
-        CDFHyperparameterStudy(config).run(frame, diagnostic, stage=args.stage,
-                                            partition=args.partition, provenance=provenance)
+        if not args.stage or (args.stage == "panel" and args.partition):
+            parser.error("HPO requires an explicit --stage; panel takes no partition")
+        label = " ".join(filter(None, [args.stage, args.partition]))
+        print(f"[cdf_study] {label} start", flush=True)
+        study = CDFHyperparameterStudy(config)   # a bad document refuses before any read
+        # Every stage reads the panel the first one built (ADR-0236 amendment); the
+        # panel stage only builds it, in a process that then fits nothing.
+        frame, provenance, state = adapter.cached_read(
+            Path(config["experiment"]["output"])/PANEL_CACHE_DIR)
+        if args.stage == "panel" and state not in ("reused", "stored"):
+            raise ValueError(f"the panel stage could not cache the panel ({state}): every "
+                             "later stage would read it afresh")
+        if args.stage != "panel":
+            study.run(frame, diagnostic, stage=args.stage, partition=args.partition,
+                      provenance=provenance)
+        print(f"[cdf_study] {label} end", flush=True)
         if config.get("data", {}).get("decision_regions"):
             import signal
             signal.setitimer(signal.ITIMER_REAL, 0.)
         return
     if args.stage or args.partition:
         parser.error("stage/partition require an experiment document")
+    frame = adapter.read()
+    provenance = adapter.provenance()
     output = Path(config["study"]["output"])
     if output.exists():
         raise FileExistsError(output)

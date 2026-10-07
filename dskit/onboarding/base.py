@@ -61,6 +61,7 @@ __all__ = [
     "durable_write_json",
     "dir_digest",
     "file_digest",
+    "file_signature",
     "fsync_dir",
     "parse_utc",
     "utc_now",
@@ -408,3 +409,31 @@ def file_digest(path) -> str:
     except OSError as exc:
         raise AssetError([f"cannot read {path!r}: {exc}"]) from exc
     return h.hexdigest()
+
+
+def file_signature(path):
+    """Return a file's ``(size, mtime_ns)``, the cheap identity a re-check compares.
+
+    The one owner of that rule: a scan's member check, a pull's mid-copy check
+    and a memo key all stat files this way.
+
+    Parameters
+    ----------
+    path : str
+        The file.
+
+    Returns
+    -------
+    tuple of int
+        ``(st_size, st_mtime_ns)``.
+
+    Raises
+    ------
+    AssetError
+        When the file cannot be stat'ed.
+    """
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+    return info.st_size, info.st_mtime_ns

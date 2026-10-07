@@ -1748,23 +1748,65 @@ def test_provenance_is_the_one_owner_of_what_main_hands_the_study(tmp_path, monk
         def run(self, frame, diagnostic, **kwargs):
             seen.update(kwargs)
 
+    reads = []
+
     class Panel(ExactExpiryCDFPanel):
         def read(self):
+            reads.append(1)
             self.refused, self.source_hashes, self.reader_fingerprints = {"a": 1}, {"b": "c"}, {}
-            return pd.DataFrame()
+            return pd.DataFrame({"x": [1.]})
 
     monkeypatch.setattr(cdf_study, "ExactExpiryCDFPanel", Panel)
     monkeypatch.setattr(cdf_study, "CDFHyperparameterStudy", Study)
     config = tmp_path/"config.json"
     config.write_text(json.dumps({"data": {}, "diagnostic": {"strikes_z": [-1., 1.],
                                                             "integration_points": 5},
-                                  "experiment": {}}))
+                                  "experiment": {"output": str(tmp_path/"hpo")}}))
     monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "search"])
+    want = {"refused": {"a": 1}, "sha256": {"b": "c"}, "readers": {}, "market_coverage": {},
+            "macro_event_status": {},
+            "adapter_sha256": hashlib.sha256(Path(cdf_study.__file__).read_bytes()).hexdigest()}
     cdf_study._main()
-    assert seen["provenance"] == {
-        "refused": {"a": 1}, "sha256": {"b": "c"}, "readers": {}, "market_coverage": {},
-        "macro_event_status": {},
-        "adapter_sha256": hashlib.sha256(Path(cdf_study.__file__).read_bytes()).hexdigest()}
+    assert seen["provenance"] == want and reads == [1]
+    seen.clear()
+    cdf_study._main()   # a later stage reuses the panel the first one built (ADR-0236 amendment)
+    assert seen["provenance"] == want and reads == [1]
+    assert (tmp_path/"hpo"/cdf_study.PANEL_CACHE_DIR/"frame.parquet").exists()
+    # The panel stage builds the cache in its own process and runs no study.
+    seen.clear()
+    config.write_text(json.dumps({**json.loads(config.read_text()),
+                                  "experiment": {"output": str(tmp_path/"fresh")}}))
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel"])
+    cdf_study._main()
+    assert reads == [1, 1] and not seen
+    assert (tmp_path/"fresh"/cdf_study.PANEL_CACHE_DIR/"frame.parquet").exists()
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel",
+                                      "--partition", "x"])
+    with pytest.raises(SystemExit):
+        cdf_study._main()
+    assert reads == [1, 1]
+
+    class Contexts(Panel):
+        def read(self):
+            super().read()
+            return pd.DataFrame({"x": [1.], "context": [{"t": [1.]}]})   # never storable
+
+    monkeypatch.setattr(cdf_study, "ExactExpiryCDFPanel", Contexts)
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "panel"])
+    with pytest.raises(ValueError, match="could not cache the panel"):
+        cdf_study._main()
+    # A document the HPO study refuses is refused before any panel is read.
+    before = len(reads)
+
+    class Refused(Study):
+        def __init__(self, config):
+            raise ValueError("unknown or missing experiment keys")
+
+    monkeypatch.setattr(cdf_study, "CDFHyperparameterStudy", Refused)
+    monkeypatch.setattr(sys, "argv", ["cdf_study", str(config), "--stage", "search"])
+    with pytest.raises(ValueError, match="experiment keys"):
+        cdf_study._main()
+    assert len(reads) == before
 
 
 def test_expanded_context_joins_only_the_strictly_prior_close_and_ages_it(tmp_path, monkeypatch):

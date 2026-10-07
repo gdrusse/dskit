@@ -93,6 +93,23 @@ def test_flatten_is_off_without_the_key_and_default_deny(tmp_path):
         WorkflowReport(spec)
 
 
+def test_where_keeps_only_the_rows_whose_cells_match(tmp_path):
+    rows = [{"metric": "crps", "model": "a", "block": 30}, {"metric": "w", "model": "a", "block": 30},
+            {"metric": "w", "model": "b", "block": 60}]
+    spec = _fixture(tmp_path, rows)
+    spec["sections"][0]["where"] = {"metric": "w", "block": 30}
+    WorkflowReport(spec).write()
+    lines = (tmp_path / "report" / "sections" / "folds.csv").read_text().splitlines()
+    assert lines == ["metric,model,block", "w,a,30"]
+    spec["sections"][0]["where"] = {"metric": "nll"}
+    with pytest.raises(ReportError, match="no rows"):
+        WorkflowReport(spec).write()
+    for bad in ({}, {"metric": ["w"]}, {"": "w"}, {"block": True}, "metric"):
+        spec["sections"][0]["where"] = bad
+        with pytest.raises(ReportError, match="where"):
+            WorkflowReport(spec)
+
+
 def test_caption_is_shown_beside_the_section(tmp_path):
     spec = _fixture(tmp_path)
     spec["sections"][0]["caption"] = "Counts differ from the nominal window."

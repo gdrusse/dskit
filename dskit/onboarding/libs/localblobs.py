@@ -58,6 +58,7 @@ from ..base import (
     _check_segment,
     _raise_if,
     file_digest,
+    file_signature,
     parse_utc,
     utc_now,
 )
@@ -132,15 +133,6 @@ def _selected(knobs):
         )
     _raise_if([p for rel in relpaths for p in _relpath_problems(rel)])
     return relpaths
-
-
-def _signature(full):
-    """``(size, mtime_ns)`` of a file — what a mid-pull change would move."""
-    try:
-        info = os.stat(full)
-    except OSError as exc:
-        raise AssetError([f"cannot stat {full!r}: {exc}"]) from exc
-    return info.st_size, info.st_mtime_ns
 
 
 class LocalBlobsConnector(Connector):
@@ -327,7 +319,7 @@ class LocalBlobsConnector(Connector):
         fingerprint = hashlib.sha256()
         for rel in _selected(knobs):
             full = os.path.join(knobs["path"], *rel.split("/"))
-            signature = _signature(full)
+            signature = file_signature(full)
             sha = file_digest(full)
             inventory.append((rel, full, signature, sha))
             fingerprint.update(f"{rel}\t{signature[0]}\t{sha}\n".encode("utf-8"))
@@ -350,7 +342,7 @@ class LocalBlobsConnector(Connector):
             # The platform has copied the file by the time we resume. A writer
             # that touched it since the digest would leave a RECORD sha that
             # is not the bytes in the manifest — refuse rather than commit it.
-            if _signature(full) != signature:
+            if file_signature(full) != signature:
                 raise AssetError(
                     [f"{rel!r} changed while it was being acquired — re-run once "
                      "its writer is done"]

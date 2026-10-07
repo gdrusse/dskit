@@ -702,6 +702,10 @@ on it without breaking its rulings.
 - **`predictive_cdf._QUADRATURE_NODES` is shared by training and evaluation**:
   the Torch wing/CRPS terms and `_Curve._segment_integrals` read it, and a test
   pins that they agree. Change it in one place, never per side.
+- **`wing_twcrps` is NOT the study's `tail_crps`** (ADR-0236): it weighs each
+  wing side by a normalized density (1/4 per unit on `[[-2.5,-.5],[.5,2.5]]`).
+  Train on `tail_crps` to match `weighted_crps`; `TorchCDF` and
+  `BoostedTorchCDF` share ONE loss through `_CompositeLossCDF` — never copy it.
 
 ## Contents
 
@@ -727,7 +731,7 @@ dskit/pipeline/
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
 │                      config-declared checks + slice stability (ADR-0107)
-├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning;
+├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning; declared_width;
 │                      spawn is the hook, measure_one the one reading (ADR-0093)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
@@ -814,7 +818,7 @@ dskit/pipeline/
 │                      scale rung, ADR-0181),
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228),
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, ADR-0226 amendment)
 ├── README.md          user-facing docs

@@ -151,7 +151,8 @@ legacy stage-list grammar (below).
   runs single-fold documents as child processes under one caller-supplied
   `RLIMIT_AS` cap, at most `$DSKIT_FOLD_WORKERS` (or the caller's own
   variable) at once, results in input order; `measure_one` is its one
-  memory reading. `FOLD_FIELDS` / `FOLD_OPTIONAL_FIELDS`, `aggregate_folds`
+  memory reading. `declared_width` is the one width rule (an explicit int,
+  else the variable, else 1), which the CDF study's group workers share. `FOLD_FIELDS` / `FOLD_OPTIONAL_FIELDS`, `aggregate_folds`
   and `write_walkforward_summary` (`driver.py`) own the fold-row shape, and
   `single_fold_row` (`runs.py`) reads one back.
 - **Reading runs back** — `scan_runs` → `RunSummary` / `RunProblem`,
@@ -293,7 +294,9 @@ legacy stage-list grammar (below).
 estimators: empirical, monotone boosted CDF, LightGBM quantiles, a
 Gaussian-mixture MLP, quantile forest, Normal-CRP NGBoost and convex curves.
 `ChronologicalCDFStudy` compares common rows/features with purged training,
-held-out calibration and later annual evaluation. Its JSON configuration names
+held-out calibration and later annual evaluation. With `$DSKIT_GROUP_WORKERS`
+above 1 (ADR-0236 amendment 3) it fits its groups in that many spawned
+processes and writes exactly what one process writes; pooled models keep one. Its JSON configuration names
 all estimators and budgets; it is not a serving or trading artifact contract.
 ADR-0190 extends this same pack with fixed-degree Student mixtures, configurable
 MLP trunks, optional one-hot-routed heads, and pooled train-only preprocessing.
@@ -311,6 +314,14 @@ local `decision_brier`, `decision_log`, `wing_twcrps` (ADR-0218). One global
 and one local term are required. Optional `family` is `{"kind": "student",
 "degrees": k}` (integer `k >= 3`); absent means Gaussian components.
 No instrument or index is encoded in this estimator.
+ADR-0236 adds encoders `lstm` (GRU's keys) and `cnn` (`channels`,
+`kernel_size`, `dilations`, `pooling`), per-task heads (`head_features`,
+excluded from `feature_indices`), the local term `tail_crps` (unit-weight
+twCRPS = the study's `tail_crps`; `wing_twcrps` is density-normalized), and
+`BoostedTorchCDF`: LightGBM on the SAME composite loss (custom objective, exact
+Hessian diagonal, heads as one categorical column). Study key `tail_weight`
+scores `weighted_crps = crps + tail_weight * tail_crps`, a valid
+`selection_metric` that the report's paired intervals also carry.
 `DecisionRegionScores` consumes caller-bound threshold/weight inventories;
 the domain adapter owns the source clock and listed-wing eligibility.
 Local loss means divide by eligible rows, while global terms use all rows.
@@ -789,7 +800,8 @@ dskit/pipeline/
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
 │                      over config-declared checks + slice stability (ADR-0107)
 ├── folds.py           BoundedFoldRunner: a walk's folds as capped child processes at
-│                      the width the ENVIRONMENT declares; measure_one (ADR-0093)
+│                      the width the ENVIRONMENT declares; measure_one (ADR-0093);
+│                      declared_width, the one width rule
 ├── release_rotation.py pure ReleaseRotationCalendar values: explicit UTC
 │                      anchor/cadence/training/embargo -> bounded pinned windows
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
@@ -899,7 +911,7 @@ dskit/pipeline/
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
-│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228),
+│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment)
 ├── README.md          this file

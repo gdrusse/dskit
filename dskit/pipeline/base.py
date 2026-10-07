@@ -108,6 +108,7 @@ __all__ = [
     "register_transform_kind",
     "resolve_refs",
     "split_from_obj",
+    "value_hash",
 ]
 
 
@@ -268,6 +269,41 @@ def config_hash(cfg, exclude=NON_IDENTITY_SECTIONS) -> str:
             ]
         ) from exc
     return hashlib.sha256(canon.encode("ascii")).hexdigest()
+
+
+class _Value:
+    """A plain JSON value in the shape :func:`config_hash` reads."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def to_obj(self):
+        """Return the value itself."""
+        return self.value
+
+
+def value_hash(value):
+    """Return :func:`config_hash` of a plain JSON value, nothing excluded but ``notes``.
+
+    The one way to digest a dict, list or scalar by its canonical JSON (a
+    stage identity, a memo key) without wrapping it in a config object.
+
+    Parameters
+    ----------
+    value : object
+        JSON-serializable.
+
+    Returns
+    -------
+    str
+        A sha256 hex digest.
+
+    Raises
+    ------
+    ConfigError
+        When ``value`` holds NaN or infinity.
+    """
+    return config_hash(_Value(value), exclude=())
 
 
 def _strip_notes(obj):

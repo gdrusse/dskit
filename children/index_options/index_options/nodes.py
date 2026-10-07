@@ -2767,7 +2767,8 @@ class ExactExpiryPanelRead(Node):
         (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`)
         and, ADR-0230, ``exact_dte`` (keep one horizon), ``reader`` (``price_calendar``
         builds the panel from a price file alone), ``keyed_tables`` and
-        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`).
+        ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`), and
+        ``as_of_acquisition_ms`` (the observation reads' vintage, ADR-0236 amendment 3).
 
     Examples
     --------
@@ -2790,8 +2791,9 @@ class ExactExpiryPanelRead(Node):
                  "symbols", "windows")
     #: ``surface`` and ``lifecycle`` are required only while no ``reader`` is selected (ADR-0230).
     _SURFACE_REQUIRED = ("lifecycle", "surface")
-    _OPTIONAL = ("calendar", "calendar_pad_days", "chain_features", "change_lags",
-                 "cohort_columns", "corporate_actions", "directional_windows", "dividend_field", "exact_dte",
+    _OPTIONAL = ("as_of_acquisition_ms", "calendar", "calendar_pad_days", "chain_features",
+                 "change_lags", "cohort_columns", "corporate_actions", "directional_windows",
+                 "dividend_field", "exact_dte",
                  "fred_market_symbols", "keyed_tables", "market_symbols", "matched_dte_vrp",
                  "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
                  "surface_features")
@@ -2836,10 +2838,9 @@ class ExactExpiryPanelRead(Node):
         for name in ("surface", "lifecycle", "chain_features"):
             if params.get(name) is not None:
                 problems += entry_problems(name, params[name])
-        if "exact_dte" in params:
-            check_int_param(problems, "exact_dte", params["exact_dte"], ge=1)
-        # the one owners of the convention and reader-selection rules
-        from .cdf_study import panel_convention_problems, panel_reader_problems
+        # the one owners of the integer-knob, convention and reader-selection rules
+        from .cdf_study import panel_convention_problems, panel_int_problems, panel_reader_problems
+        problems += panel_int_problems(params)
         problems += panel_convention_problems(params)
         problems += panel_reader_problems(params)
         return problems

@@ -214,7 +214,9 @@ class TestTheShim:
         import dskit.pipeline
 
         assert not hasattr(dskit.pipeline, "BoundedFoldRunner")
-        assert folds.__all__ == ["BoundedFoldRunner"]
+        assert not hasattr(dskit.pipeline, "declared_width")
+        # The width rule is public: the CDF study's group workers read it too (ADR-0236 am. 3).
+        assert folds.__all__ == ["BoundedFoldRunner", "declared_width"]
 
 
 class TestTheRun:
