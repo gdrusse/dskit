@@ -45,6 +45,7 @@ Display only: `actions.csv` remains the complete, append-only journal.
 |---|---|---|---|---|---|---|---|
 | A0001 | research | landscape/2026-10-07-correlation-arbitrage-survey | 2026-10-07T20:05:26+00:00 | Map correlation-based arbitrage and rank what survives retail costs | docs/research/landscape/2026-10-07-correlation-arbitrage-survey.md | docs/research/landscape/2026-10-07-correlation-arbitrage-survey.md |  |
 | A0002 | research | landscape/2026-10-07-correlation-arbitrage-survey | 2026-10-07T20:05:45+00:00 | Correct cross-venue gap wording; flag unverified stat-arb Sharpe | docs/research/landscape/2026-10-07-correlation-arbitrage-survey.md | docs/research/landscape/2026-10-07-correlation-arbitrage-survey.md |  |
+| A0003 | research | data-and-modeling/2026-10-07-inventory-data-and-dependence | 2026-10-07T20:52:47+00:00 | Inventory dskit, probe the data, choose dependence models | docs/research/data-and-modeling/2026-10-07-inventory-data-and-dependence.md | docs/research/data-and-modeling/2026-10-07-inventory-data-and-dependence.md |  |
 
 ## Path to Production
 
