@@ -1,3 +1,23 @@
+# Active handoff — 2026-10-07: CDF production proposal, publication reviewed
+
+Owner requested synthesis after the four advanced reports were verified on main
+(`f98af937`). [The proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+recommends pooled PatchTST with 42 base inputs, CNN/VanillaTransformer challengers,
+and a bounded feature/HPO/confirmation plan (204 fit cells, 216-attempt first-pass cap).
+This is a proposal, not an approved run or production release.
+
+Two fresh independent design skeptics on `ca9b2102` returned zero Critical/Major;
+their sole shared Minor (TiDE rounding) is corrected editorially. Full reviewer
+outputs and unresolved execution prerequisites are retained in the proposal.
+One focused manifest/parity test passed; aggregate hashes, metrics and links checked.
+Source/config/report bytes remain unchanged. No training, 2026 holdout access,
+providers, live trading or full suite occurred.
+
+Next: owner decision on the proposed run, then Stage-0 source/universe/clock/fold
+and search-integration gates. Later-2026 ticker selection cannot validate an
+earlier-2026 independent test without a point-in-time universe reconstruction.
+A monthly refit policy needs separate validation from the proposed static test.
+
 # Active handoff — 2026-10-06: behavior-identical speedups (merged)
 
 **Merged to main as `2ef373d9` (PR #18, fast-forward from `f9f2f905`).** Pure speedups across

@@ -17,7 +17,7 @@ The completed study verified 48,073 successful fits and 21,467 explicit skipped 
 On the full pooled-base panel, all 12 executable architectures have the same 103,901 forecasts across 393 tickers and nine exploratory windows (2024-02-06 through 2025-12-29). Weighted CRPS skill relative to the empirical reference was:
 
 - PatchTST +0.458%; VanillaTransformer +0.424%; FEDformer +0.378%; TFT +0.330%.
-- TSMixer +0.297%; KAN +0.289%; DilatedRNN +0.278%; TiDE +0.251%.
+- TSMixer +0.297%; KAN +0.289%; DilatedRNN +0.278%; TiDE +0.250%.
 - TCN +0.219%; Autoformer +0.192%; NBEATS +0.160%; PatchTSMixer +0.105%.
 
 PatchTST also improved ordinary CRPS by 0.487% and tail CRPS by 0.406%. It improved weighted CRPS in eight of nine windows and for 204 of 393 tickers. Its leave-one-window-out aggregate skill stayed positive, ranging from +0.327% to +0.561%. These are descriptive robustness checks, not independent tests or confidence intervals.
@@ -137,3 +137,84 @@ Local evidence takes precedence for what actually ran:
 ### Review scope
 
 This document is a proposed design and synthesis. In scope: numerical accuracy/denominators, architecture and feature interpretation, selection leakage, chronological boundaries, search budget and existing capability claims, operational gates and authorization. Out of scope: executing these proposed stages, reading 2026 data, changing the frozen study, or approving a trading deployment. Independent review must challenge the design before it becomes an execution contract.
+
+
+## Publication review and disposition
+
+Two fresh, sequential independent GPT-6 skeptics reviewed immutable candidate `ca9b2102822b85ce4f0a312e0f51513229beb40f` against base `f98af937`: correctness/authority (`/root/proposal_correctness_r1`) and integration/feasibility/evidence (`/root/proposal_integration_r1`). Both returned zero Critical/Major and the same single Minor. **Publication gate closed; execution remains unapproved.**
+
+Disposition C-R1-01 / INT-01: corrected TiDE's headline from +0.251% to +0.250%; audited value is 0.25046783655113813%. This is a display-only correction, with no change to ordering, recommendation, budget, validation rules or authority. No unresolved Minor/Nit remains. All other reviewed proposal content and the manifest-test blob are unchanged; this section appends evidence only. The reviewed proposal hash and actual reviewer outputs are retained below rather than rewriting their original verdicts.
+
+The reviewers also confirmed a key prerequisite: leaving outcome files unopened does not make an earlier-2026 test independent if ticker membership was chosen from later-2026 information. Point-in-time reconstruction or an eligible later test interval after the appropriate freeze is required. No such reconstruction or new test was performed here.
+
+<details>
+<summary>Correctness/authority reviewer output (formatting normalized; wording retained)</summary>
+
+Design correctness/authority review of candidate ca9b2102822b85ce4f0a312e0f51513229beb40f against base f98af937. Reviewed document SHA256: ff0fbcd80b33a1b874340fd49bcdfa9ec95bd5da5972c98103f4ad3827f521fc.
+
+Verdict: zero unresolved Critical/Major; one Minor. This supports publishing the proposal, not executing it or accessing protected data.
+
+Finding C-R1-01 — Minor, numerical rounding:
+Location: children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md:20.
+Invariant: printed three-decimal skills must correctly round the stated ratio of paired loss sums.
+Reproduction: independently summing all pooled/base/TiDE aggregate rows gives 100 × (1 − Σmodel / Σbaseline) = 0.25046783655113813%. The document prints +0.251%; three-decimal rounding is +0.250%.
+Consequence: a 0.001-percentage-point display discrepancy. Neither ranking nor model recommendation changes.
+Family: numerical transcription/rounding.
+Disposition: unresolved Minor; change to +0.250% or retain explicitly in the minor backlog. Other full-panel headline values round correctly.
+
+Checks completed:
+- Read root and child AGENTS, canonical implementation workflow, skeptic procedure and RE-ENTRY. Confirmed reviewed workflow/skeptic bytes match available origin/main versions. Worktree remained unchanged.
+- Verified both audited aggregate hashes exactly match the proposal: final-data.json c75a30…75b27; prior-comparison.json f068a6…2969.
+- Independently recomputed all 12 full pooled-base skills and their 103,901-forecast/393-ticker coverage; recomputed all 24 common-panel pooled/unpooled results.
+- Confirmed full-panel PatchTST leadership and common-panel VanillaTransformer leadership are accurately distinguished.
+- Recomputed PatchTST ordinary CRPS, tail CRPS, eight positive windows, 204 positive ticker aggregates, leave-one-window-out range, and both architectures’ early/late sensitivities.
+- Checked prior CNN denominator, +0.252264538% baseline skill, PatchTST’s +0.205981080% relative improvement and 207 ticker wins. Checked all 12 advanced local comparisons against their paired prior LSTM results; every relative improvement is negative.
+- Recomputed pooled/unpooled options/control intersections. Confirmed only pooled PatchTSMixer and TCN improve, at +0.492050239% and +0.045153263%; PatchTST is −0.717598632%. Confirmed 3,560 unique local fit pairs, 1,366 changed head widths and 477 changed native configurations. The proposal acknowledges incomplete coverage and capacity confounding.
+- Verified PatchTST configuration, parameter range 65,171–66,305, nine-fit total 2,337.938 seconds and median 262.431 seconds against saved fit metadata. Checked feature inventory and sequence/context split against configuration.
+- Checked arithmetic: 15 + 108 + 27 + 54 = 204 fit cells; nine reapplications plus three pilots give 216 maximum attempts; 216 × 4–10 minutes is 14.4–36 hours.
+- Challenged chronological fit/monitor/score boundaries, failed/incomplete-trial handling, full paired objectives, feature selection, universe screening, best-seed selection, finalist selection, multiplicity, protected-data authority, static-test versus monthly-refit separation and fallback coverage. No additional proven defect found.
+
+Universe/holdout adjudication:
+An unopened 2026 outcomes file alone would not establish independence. Membership selected using later-2026 information cannot support an earlier-2026 independent evaluation without a genuinely point-in-time reconstruction. Lines 77 and 85 already require membership known at decision time and a verified point-in-time data/universe contract; using later membership would violate those prerequisites. Exact reconstruction, or choosing eligible later dates after an appropriate freeze, remains a Stage-0/5 prerequisite. Making that example explicit would improve clarity but is not a proven missing material protection.
+
+Other prerequisite limits remain appropriately unresolved for a proposal: exact session/settlement manifests, historical availability and capacity of proposed pre-2024 folds, supported search integration, realized resource estimates, calibration thresholds, independent-test dates and separate rolling-refit qualification. The 2023 stage selects finalists; it does not replace the independent Stage-5 test. The one-champion test and prohibition on retrying the reserve preserve that separation.
+
+No training, HPO, provider access, protected-2026 data access, code changes or full-suite execution occurred. Calculations used saved aggregate evidence; original row-level fitting/scaling, forecast identity and raw-data lineage were not independently reconstructed. Existing search interfaces were inspected, not executed. Future block-bootstrap coverage, native-wrapper grid feasibility and operational serving behavior remain untested.
+
+Unresolved counts: Critical 0; Major 0; Minor 1; Nit 0.
+
+</details>
+
+<details>
+<summary>Integration/feasibility/evidence reviewer output (formatting normalized; wording retained)</summary>
+
+Independent integration/feasibility/evidence DESIGN review completed on candidate ca9b2102822b85ce4f0a312e0f51513229beb40f, base f98af937.
+
+Verdict: zero unresolved Critical/Major. One Minor, independently confirmed and already reported by the correctness lens. No additional findings. This verdict covers publication of the proposal, not execution or production qualification.
+
+Finding INT-01 — Minor, numerical presentation. Proposal line 20 reports TiDE weighted skill as +0.251%. Recalculation from the hash-verified aggregate rows gives 0.25046783655113813%, which rounds to +0.250% at three decimal places. Consequence: a small inaccurate headline; neither model ordering nor recommendation changes. Defect family: displayed rounding. Disposition: correct editorially; unresolved on this immutable candidate.
+
+Assigned invariant coverage:
+- Budget: independently recomputed Stage 1–4 counts as 15 + 108 + 27 + 54 = 204; nine winner reapplications plus three pilots yield 216 maximum attempts. Failed attempts, retries and reuse cannot silently expand that allowance. Timing is explicitly a scenario, with pilot-based estimation outstanding.
+- Architecture/features/capacity: inspected historical configuration, HFSequenceEncoder, NFSequenceEncoder, TorchCDF, and experiment admission/selection paths. Confirmed 42 base inputs comprise 22 oldest-first, single-channel return steps and 20 current context fields. Native encoders initialize from configuration; NeuralForecast’s eight outputs are latent coordinates. Pooled PatchTST reference settings agree with the prose. Aggregate records confirm nine fits, 65,171–66,305 parameters, median 262.431 seconds and total 2,337.938 seconds. Actual capacity selection uses total and per-head budgets. Proposed fixed-width ablations and refusal to resize HPO candidates are appropriately distinguished from historical adaptive selection.
+- HPO integration: inspected HpoGrid and OptunaSearch, including accepted parameters and scalar rerun seam. The no-intermediate-pruning claim is accurate. The proposal expressly defers multi-fold objective wiring, checkpoint reuse and any missing mechanism to reviewed implementation. Existing driver availability is not presented as completed advanced-experiment integration.
+- Chronology: proposed windows require a new reviewed manifest, exact session/publication/feature/settlement clocks, matured labels and purges at both boundaries. Insufficient history must refuse. Stage 0’s point-in-time universe prerequisite prevents treating the later assembled universe as historically available. Exact historical reconstruction and final independent-test interval remain unresolved prerequisites, not claimed completed capabilities.
+- Completed versus proposed: historical metrics and protocols are separated from proposed pre-2024 folds, CNN harmonization, additional seeds, pilots and qualification. Seen 2024–2025 results remain exploratory. Confirmation reuse after failure requires a disclosed new cycle.
+- Identity and historical preservation: inspected the source-pin verification guard and diff inventory. No historical study configuration or executable source changed. The proposal forbids repinning historical evidence to current main and requires new versioned identities before execution.
+- Static test versus operation: Stage 5 requires one initial checkpoint, frozen choices and no refitting on holdout labels. Monthly refits explicitly require separate validation before release. Fallback qualification, abstention, head identity and coverage accounting are retained.
+- Evidence and authorization: all eight local evidence links resolve; both cited aggregate files match their recorded SHA256 values. Four external background links resolve and are relevant to their limited methodological claims: PatchTST (https://huggingface.co/docs/transformers/model_doc/patchtst), global/local forecasting (https://arxiv.org/abs/2008.00444), selection overfitting (https://www.jmlr.org/beta/papers/v11/cawley10a.html), and rolling-origin evaluation (https://otexts.com/fpp3/tscv.html). The journal appends A1088; the generated latest-ten display preserves ledger history. Proposal text expressly withholds training, provider, holdout and deployment authorization.
+
+Checks run entirely through WSL2:
+- /home/russell/dskit/.venv/bin/python -m pytest children/index_options/tests/test_configs.py::test_exact_manifest_and_agent_parity -q — 1 passed in 0.17s.
+- Read-only configuration, aggregate-hash, arithmetic, parameter/timing and local-link checks — passed apart from INT-01.
+- git diff --check f98af937 ca9b210 — passed.
+- Candidate HEAD verified; working tree remained clean.
+
+Reviewed proposal SHA256: ff0fbcd80b33a1b874340fd49bcdfa9ec95bd5da5972c98103f4ad3827f521fc.
+Reviewed manifest-test SHA256: da8dba9f2343716fddc538da1e851f2798ba0a7c94b4ddea057e5b4ce4928e80.
+
+Limits: no training, providers, raw forecast regeneration, 2026 data access, deployment, full suite or new HPO/refit execution. Proposed data sufficiency, exact folds/clocks, runtime integration, qualification thresholds and operational feasibility remain future gates.
+
+Unresolved counts: Critical 0; Major 0; Minor 1; Nit 0.
+
+</details>
