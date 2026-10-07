@@ -43,15 +43,22 @@ later), so a market that straddles it is asked of both. The archive leg runs
 only when ``settled`` is among the ``statuses``; ``orderbooks`` are live only
 and never read the cutoff.
 
-**Cursors, and why a closed market is listed.** ``candles`` and ``trades``
+**Cursors, and why the listing is complete first.** ``candles`` and ``trades``
 skip a market that closed at or before the cursor, and ``trades`` asks for
 ``min_ts`` = the cursor. Both are sound only if every market that existed when
 the cursor was set was listed then. A market between its close and its
 settlement is ``closed`` for the venue, so the default ``statuses`` list
-``closed`` too; leave it out and such a market can be skipped for good. A trade
-created after the capture instant is not emitted: the next pull asks for it
-again. So nothing a pull emits is dated after its capture, and a venue clock
-ahead of this host's cannot make acquisition refuse a future-dated row.
+``closed`` too; leave it out and such a market can be skipped for good. A
+market also moves on WHILE the pull scans, so the live scans run in the order
+a market moves through (``LIFECYCLE_STATUSES``: open, closed, settled) whatever
+order ``statuses`` gives, and the archive is read last: a market that moves on
+between two scans is in the later one, whichever moment it moves at. The whole
+listing of a series is read, and held in memory, before the first per-market
+request, so no request stretches the gap between two scans; a ticker two live
+scans listed is kept once, as the latest scan saw it. A trade created after
+the capture instant is not emitted: the next pull asks for it again. So
+nothing a pull emits is dated after its capture, and a venue clock ahead of
+this host's cannot make acquisition refuse a future-dated row.
 
 **Candle budgets.** The event endpoint cuts a response off at
 ``adjusted_end_ts``; the pack follows it and refuses a response that does not
@@ -119,6 +126,7 @@ __all__ = [
     "DEFAULT_STATUSES",
     "GROUPING_BATCH",
     "GROUPING_EVENT",
+    "LIFECYCLE_STATUSES",
     "MARKET_FIELDS",
     "MARKET_KEY_FIELDS",
     "MARKET_STREAM",
@@ -146,6 +154,10 @@ ORDERBOOK_FIELDS = KALSHI_ORDERBOOK_FIELDS + ("observed_at",)
 #: market is unlisted for a pull (module docs, "Cursors").
 CLOSED_STATUS = "closed"
 DEFAULT_STATUSES = (SETTLED_STATUS, CLOSED_STATUS, OPEN_STATUS)
+#: The statuses a market's ``status`` filter takes, in the order a market passes
+#: through them. The live scans run in this order whatever order ``statuses``
+#: lists them in (module docs, "Cursors").
+LIFECYCLE_STATUSES = ("unopened", OPEN_STATUS, "paused", CLOSED_STATUS, SETTLED_STATUS)
 GROUPING_EVENT = "event"
 GROUPING_BATCH = "batch"
 DEFAULT_CANDLE_GROUPING = GROUPING_EVENT
@@ -512,28 +524,51 @@ class _MarketWalk:
         self._knobs = knobs
 
     def listed(self, series, statuses=None):
-        """Yield ``_Listed(archived, row)``: the archive's markets, then each live status's."""
+        """Return ``_Listed(archived, row)`` for every market, once every scan has been read.
+
+        The archive's markets come first, then the live ones from the most
+        advanced status to the least. The scans run in the opposite order
+        (:meth:`_lifecycle`), and the listing is complete before the caller
+        makes a per-market request, so a market that changes status while the
+        pull runs is in at least one scan. A ticker several scans listed is
+        kept once, as the latest scan saw it.
+        """
         statuses = self._knobs["statuses"] if statuses is None else statuses
         archive = SETTLED_STATUS in statuses
         boundary = self._venue.cutoff("markets") if archive else None
-        held = set()
-        if archive:
-            walk = self._venue.pages(
-                _ARCHIVE_MARKETS_PATH, {"series_ticker": series}, "markets",
-                f"series {series!r} archive")
-            for label, raw in walk:
-                row = _market_row(raw, label)
-                held.add(row["ticker"])
-                yield _Listed(True, row)
-        for status in statuses:
-            walk = self._venue.pages(
-                _MARKETS_PATH, {"series_ticker": series, "status": status}, "markets",
-                f"series {series!r} status {status!r}")
-            for label, raw in walk:
-                row = _market_row(raw, label)
-                if archive and self._overlap(row, boundary, held):
-                    continue  # the archive leg already listed it
-                yield _Listed(False, row)
+        scans = [self._live(series, status) for status in self._lifecycle(statuses)]
+        archived = self._archived(series) if archive else []
+        held = {row["ticker"] for row in archived}
+        listed = [_Listed(True, row) for row in archived]
+        claimed = set()
+        for rows in reversed(scans):
+            for row in rows:
+                if row["ticker"] in claimed:
+                    continue  # a later (more advanced) scan listed it
+                claimed.add(row["ticker"])
+                if not (archive and self._overlap(row, boundary, held)):
+                    listed.append(_Listed(False, row))
+        return listed
+
+    @staticmethod
+    def _lifecycle(statuses):
+        """Return ``statuses`` in market-lifecycle order; one the pack does not rank goes first, as given."""
+        rank = {status: place for place, status in enumerate(LIFECYCLE_STATUSES)}
+        return sorted(statuses, key=lambda status: rank.get(status, -1))
+
+    def _live(self, series, status):
+        """Return the rows the live API lists for one status, one full scan."""
+        walk = self._venue.pages(
+            _MARKETS_PATH, {"series_ticker": series, "status": status}, "markets",
+            f"series {series!r} status {status!r}")
+        return [_market_row(raw, label) for label, raw in walk]
+
+    def _archived(self, series):
+        """Return the rows ``/historical/markets`` lists, one full scan."""
+        walk = self._venue.pages(
+            _ARCHIVE_MARKETS_PATH, {"series_ticker": series}, "markets",
+            f"series {series!r} archive")
+        return [_market_row(raw, label) for label, raw in walk]
 
     @staticmethod
     def _overlap(row, boundary, held):
@@ -679,7 +714,9 @@ class _EventCandles(_CandleSource):
                 "start_ts": start, "end_ts": end,
                 "period_interval": self._knobs["period_interval"]})
             adjusted = self._adjusted(body, event)
-            for ticker, candles in self._aligned(body, event):
+            answered = self._aligned(body, event)
+            self._require(answered, known, event)
+            for ticker, candles in answered:
                 if ticker not in known:
                     continue
                 for i, raw in enumerate(candles):
@@ -705,8 +742,17 @@ class _EventCandles(_CandleSource):
             )
         return int(adjusted)
 
+    @staticmethod
+    def _require(answered, known, event):
+        """Refuse a response that omits a market the pull listed and asked for; an extra one is ignored."""
+        missing = sorted(known - {ticker for ticker, _candles in answered})
+        if missing:
+            raise AssetError(
+                [f"event {event!r}: response lacks listed market(s) {missing}"]
+            )
+
     def _aligned(self, body, event):
-        """Yield ``(ticker, candles)`` pairing ``market_tickers`` with ``market_candlesticks``."""
+        """Return ``[(ticker, candles)]`` pairing ``market_tickers`` with ``market_candlesticks``."""
         tickers = body.get("market_tickers")
         lists = body.get("market_candlesticks")
         if not isinstance(tickers, list) or not isinstance(lists, list):
@@ -719,11 +765,13 @@ class _EventCandles(_CandleSource):
                 [f"event {event!r}: misaligned response, {len(tickers)} ticker(s) "
                  f"but {len(lists)} candle list(s)"]
             )
+        pairs = []
         for ticker, candles in zip(tickers, lists):
             if not isinstance(ticker, str):
                 raise AssetError([f"event {event!r}: market_tickers holds {ticker!r}, not a ticker"])
-            yield ticker, self._candle_list(
-                candles, f"event {event!r} candle list for {ticker!r}")
+            pairs.append((ticker, self._candle_list(
+                candles, f"event {event!r} candle list for {ticker!r}")))
+        return pairs
 
 
 class _BatchCandles(_CandleSource):
@@ -1040,7 +1088,10 @@ class KalshiHistoryConnector(Connector):
                          "(GET /historical/markets, trades before the cutoff). "
                          f"'{CLOSED_STATUS}' lists a market between its close and "
                          "its settlement: leave it out and the candle and trade "
-                         "cursors can skip such a market for good.",
+                         "cursors can skip such a market for good. The scans "
+                         f"run in lifecycle order {list(LIFECYCLE_STATUSES)} "
+                         "whatever order is given (a status not in that list goes first), "
+                         "the archive last.",
             },
             "limit": {
                 "notes": f"Items requested per page; default {DEFAULT_LIMIT}.",

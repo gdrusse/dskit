@@ -643,18 +643,198 @@ MARKET_ROUTES = {
 }
 
 
-def test_markets_walk_the_archive_then_every_live_status():
+def test_markets_walk_every_live_status_in_lifecycle_order_then_the_archive():
+    # open -> closed -> settled is the order a market moves through, so a scan
+    # in that order sees a market that changes status mid-pull in SOME scan; the
+    # archive is read last for the same reason (a market that settles live
+    # during the pull may be archived by the time its scan runs).
     conn, script, _ = connector(MARKET_ROUTES)
     read(conn, ["markets"])
     common = {"series_ticker": SERIES, "limit": 1000}
     assert script.calls == [
         ("/historical/cutoff", {}),
+        ("/markets", {**common, "status": "open"}),
+        ("/markets", {**common, "status": "closed"}),
+        ("/markets", {**common, "status": "settled"}),
         ("/historical/markets", common),                       # None cursor dropped
         ("/historical/markets", {**common, "cursor": "page-2"}),
-        ("/markets", {**common, "status": "settled"}),
-        ("/markets", {**common, "status": "closed"}),
-        ("/markets", {**common, "status": "open"}),
     ]
+
+
+@pytest.mark.parametrize("configured, scanned", [
+    (["settled", "closed", "open"], ["open", "closed", "settled"]),
+    (["closed", "settled", "open"], ["open", "closed", "settled"]),
+    (["open", "settled"], ["open", "settled"]),
+    (["settled", "paused", "open", "unopened", "closed"],
+     ["unopened", "open", "paused", "closed", "settled"]),
+    # A status the pack does not rank goes first, in the order configured.
+    (["settled", "zzz", "aaa"], ["zzz", "aaa", "settled"]),
+])
+def test_the_scan_order_is_the_lifecycle_whatever_the_config_order(configured, scanned):
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status()})
+    read(conn, ["markets"], config={**CONFIG, "statuses": configured})
+    assert [p["status"] for p in script.params("/markets")] == scanned
+
+
+FLIP_X = market("KXBTCD-26OCT0710-T1", event="KXBTCD-26OCT0710", status="closed",
+                result="", open_time="2026-10-07T10:00:00Z",
+                close_time="2026-10-07T11:00:00Z", expiration_value="",
+                settlement_ts="", volume_fp="4.00")
+FLIP_X_SETTLED = {**FLIP_X, "status": "finalized", "result": "yes",
+                  "expiration_value": "85000.00",
+                  "settlement_ts": "2026-10-07T11:02:00Z"}
+#: Closes an hour after FLIP_X and is settled throughout: its rows move a stored
+#: cursor past FLIP_X's close, the situation in which a lost market stays lost.
+FLIP_Y = market("KXBTCD-26OCT0711-T1", event="KXBTCD-26OCT0711",
+                open_time="2026-10-07T11:00:00Z", close_time="2026-10-07T12:00:00Z",
+                settlement_ts="2026-10-07T12:02:00Z")
+FLIP_NOW = datetime(2026, 10, 7, 13, 0, 30, tzinfo=timezone.utc)
+
+
+def flip_event_path(listed):
+    return f"/series/{SERIES}/events/{listed['event_ticker']}/candlesticks"
+
+
+def flipping_routes(flips_after, later=()):
+    """Routes for one market that is closed until ``flips_after`` live scans were read, then settled.
+
+    The venue answers a status scan from the market's status AT THE MOMENT
+    of the read, as it does: a scan sees the market only while it holds that
+    status. ``later`` markets are settled throughout.
+    """
+    scans = []
+
+    def markets(params):
+        status = "closed" if len(scans) < flips_after else "settled"
+        scans.append(params["status"])
+        listed = []
+        if params["status"] == status:
+            listed.append({"closed": FLIP_X, "settled": FLIP_X_SETTLED}[status])
+        if params["status"] == "settled":
+            listed.extend(later)
+        return {"markets": listed, "cursor": ""}
+
+    def trades(params):
+        ticker = params["ticker"]
+        last = {FLIP_X["ticker"]: FLIP_X["close_time"]}.get(ticker, FLIP_Y["close_time"])
+        created = (parse_iso(last) - timedelta(seconds=1)).isoformat()
+        return {"trades": [trade(f"t-{ticker}", created, ticker)], "cursor": ""}
+
+    routes = {
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": markets,
+        "/markets/trades": trades,
+        "/historical/trades": {"trades": [], "cursor": ""},
+    }
+    for listed in (FLIP_X, *later):
+        routes[flip_event_path(listed)] = (
+            lambda p, t=listed["ticker"]: event_body(
+                p["end_ts"], **{t: [live_candle(p["end_ts"])]}))
+    return routes
+
+
+@pytest.mark.parametrize("stream", ["markets", "candles", "trades"])
+@pytest.mark.parametrize("flips_after", [0, 1, 2, 3])
+def test_a_market_that_changes_status_while_the_pull_scans_is_never_lost(
+        stream, flips_after):
+    # F1: the scans take time. Whichever scan the change falls between, the
+    # market is listed in at least one, is listed once overall, and the copy
+    # kept is the one from the latest scan that saw it.
+    conn, script, _ = connector(flipping_routes(flips_after), now=FLIP_NOW)
+    rows = data(read(conn, [stream]))
+    assert [r["ticker"] for r in rows] == [FLIP_X["ticker"]]
+    if stream == "markets":
+        assert rows[0]["status"] == ("closed" if flips_after == 3 else "finalized")
+    if stream == "candles":
+        assert script.paths().count(flip_event_path(FLIP_X)) == 1
+    if stream == "trades":
+        assert script.paths().count("/markets/trades") == 1
+
+
+@pytest.mark.parametrize("stream", ["candles", "trades"])
+def test_a_market_lost_in_one_pull_cannot_stay_lost_behind_the_cursor(stream):
+    # The reproduction: X closes at 11:00, Y at 12:00, and X settles between
+    # the first scan and the second. A pull that missed X emits only Y's rows,
+    # stores a cursor past X's close, and the next pull never asks for X.
+    conn, _, _ = connector(flipping_routes(1, later=(FLIP_Y,)), now=FLIP_NOW)
+    first = read(conn, [stream])
+    assert sorted({d["ticker"] for d in data(first)}) == [
+        FLIP_X["ticker"], FLIP_Y["ticker"]]
+    state = first[-1]["state"]
+    assert parse_iso(state[stream]["cursor"]) > parse_iso(FLIP_X["close_time"])
+    again, script, _ = connector(flipping_routes(0, later=(FLIP_Y,)), now=FLIP_NOW)
+    read(again, [stream], state=state)
+    # The first pull had X, so the second skipping it loses nothing.
+    assert flip_event_path(FLIP_X) not in script.paths()
+    assert FLIP_X["ticker"] not in [p["ticker"] for p in script.params("/markets/trades")]
+
+
+ARCHIVING = market("KXBTCD-26AUG0610-T1", event="KXBTCD-26AUG0610",
+                   open_time="2026-08-06T09:00:00Z", close_time="2026-08-06T10:00:00Z",
+                   settlement_ts="2026-08-06T10:02:00Z")
+
+
+def archiving_routes(moves_after):
+    """Routes for one market that the live API stops listing, and the archive starts, after ``moves_after`` reads.
+
+    Settled before the cutoff, so the archive owns it once it is there. The
+    move is atomic, as the venue's is: no read sees it in both or neither.
+    """
+    reads = []
+
+    def moved():
+        reads.append(1)
+        return len(reads) > moves_after
+
+    live = ARCHIVING["event_ticker"]
+    return {
+        "/historical/markets": lambda p: {
+            "markets": [ARCHIVING] if moved() else [], "cursor": ""},
+        "/markets": lambda p: {
+            "markets": [] if moved() or p["status"] != "settled" else [ARCHIVING],
+            "cursor": ""},
+        f"/series/{SERIES}/events/{live}/candlesticks": lambda p: event_body(
+            p["end_ts"], **{ARCHIVING["ticker"]: [live_candle("2026-08-06T09:59:00Z")]}),
+        f"/historical/markets/{ARCHIVING['ticker']}/candlesticks": {
+            "candlesticks": [archive_candle("2026-08-06T09:59:00Z")]},
+    }
+
+
+@pytest.mark.parametrize("stream", ["markets", "candles"])
+@pytest.mark.parametrize("moves_after", [0, 1, 2, 3, 4])
+def test_a_market_archived_while_the_pull_scans_is_never_lost(stream, moves_after):
+    # Three live scans then the archive's: the archive is read LAST, so a market
+    # that leaves the live listing for the archive between two scans is still
+    # in the archive's. Listed live and archived too, it is kept once.
+    conn, script, _ = connector(archiving_routes(moves_after))
+    rows = data(read(conn, [stream]))
+    assert [r["ticker"] for r in rows] == [ARCHIVING["ticker"]]
+    if stream == "candles":
+        assert len([p for p in script.paths() if p.endswith("/candlesticks")]) == 1
+
+
+@pytest.mark.parametrize("stream", ["candles", "trades"])
+def test_every_listing_request_precedes_every_per_market_request(stream):
+    # Per-market requests used to sit BETWEEN the status scans, hours apart on
+    # a backfill: the listing is one pass, and the work follows it.
+    conn, script, _ = connector({
+        **trade_routes(**{
+            "/historical/trades": {"trades": [], "cursor": ""},
+            "/markets/trades": {"trades": [], "cursor": ""}}),
+        f"/historical/markets/{OLD['ticker']}/candlesticks": {"candlesticks": []},
+        f"/series/{SERIES}/events/{NEW['event_ticker']}/candlesticks": quiet_event(NEW),
+        f"/series/{SERIES}/events/{STRADDLE['event_ticker']}/candlesticks":
+            quiet_event(STRADDLE),
+    })
+    read(conn, [stream])
+    paths = script.paths()
+    listing = [i for i, path in enumerate(paths) if path in ("/markets", "/historical/markets")]
+    work = [i for i, path in enumerate(paths)
+            if i not in listing and path != "/historical/cutoff"]
+    assert listing and work
+    assert max(listing) < min(work)
 
 
 def test_markets_each_market_belongs_to_one_archive_and_the_boundary_day():
@@ -682,7 +862,7 @@ def test_markets_a_live_copy_the_archive_does_not_hold_is_kept_not_dropped():
         "/historical/markets": {"markets": [OLD], "cursor": ""},
         "/markets": by_status(settled=[OLD, lagging]),
         f"/historical/markets/{OLD['ticker']}/candlesticks": {"candlesticks": []},
-        event_path: event_body(unix(lagging["close_time"])),
+        event_path: event_body(unix(lagging["close_time"]), **{lagging["ticker"]: []}),
     })
     msgs = read(conn, ["markets", "candles"])
     tickers = [d["ticker"] for d in data(msgs) if "close" not in d]
@@ -781,17 +961,23 @@ def test_markets_an_empty_page_ends_the_walk_even_with_a_cursor():
 
 
 def test_markets_refuse_malformed_pages():
+    live = {"/markets": by_status()}  # the live scans run (and pass) before the archive's
     conn, _, _ = connector({
-        "/historical/markets": {"markets": [{"event_ticker": "X"}], "cursor": ""},
-    })
+        "/historical/markets": {"markets": [{"event_ticker": "X"}], "cursor": ""}, **live})
     with pytest.raises(AssetError, match="lacks a ticker"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
-    conn, _, _ = connector({"/historical/markets": {"markets": {"not": "a list"}}})
+    conn, _, _ = connector({"/historical/markets": {"markets": {"not": "a list"}}, **live})
     with pytest.raises(AssetError, match="'markets' is not a list"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
     conn, _, _ = connector({
-        "/historical/markets": {"markets": ["str"], "cursor": ""}})
+        "/historical/markets": {"markets": ["str"], "cursor": ""}, **live})
     with pytest.raises(AssetError, match="not a dict"):
+        list(conn.read(CONFIG, ["markets"], {}, "live"))
+    # A live page is refused the same way, whichever status it came from.
+    conn, _, _ = connector({
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(closed=[{"event_ticker": "X"}])})
+    with pytest.raises(AssetError, match="status 'closed'.*lacks a ticker"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
 
 
@@ -984,6 +1170,11 @@ def event_body(adjusted, **per_ticker):
             "market_candlesticks": [per_ticker[t] for t in tickers]}
 
 
+def quiet_event(*markets):
+    """An event answer that carries no candles: every strike of ``markets`` present, each empty."""
+    return lambda p: event_body(p["end_ts"], **{m["ticker"]: [] for m in markets})
+
+
 def live_routes(spans=(A, B), **extra):
     return {
         "/historical/markets": {"markets": [], "cursor": ""},
@@ -1046,7 +1237,8 @@ def test_event_window_spans_its_markets_and_is_clamped_to_the_capture():
     now = datetime(2026, 10, 7, 0, 30, 30, tzinfo=timezone.utc)
     routes = live_routes(spans=(A, early), **{
         EVENT_PATH: event_body(S0 + 1800, **{
-            A["ticker"]: [live_candle(S0 + 600), live_candle(S0 + 1860)]}),
+            A["ticker"]: [live_candle(S0 + 600), live_candle(S0 + 1860)],
+            early["ticker"]: []}),
     })
     conn, script, _ = connector(routes, now=now)
     rows = data(read(conn, ["candles"]))
@@ -1083,9 +1275,12 @@ def test_a_candle_ending_exactly_at_the_capture_is_complete_one_second_later_is_
 
 
 @pytest.mark.parametrize("body, message", [
-    (event_body(S0 + 1560), "no progress"),   # adjusted equals the next start
+    (event_body(S0 + 1560, **{A["ticker"]: [], B["ticker"]: []}),
+     "no progress"),                          # adjusted equals the next start
     ({"adjusted_end_ts": E0, "market_tickers": ["a"], "market_candlesticks": []},
      "misaligned"),
+    ({"adjusted_end_ts": E0, "market_tickers": [], "market_candlesticks": [[]]},
+     "misaligned"),                                  # more lists than tickers
     ({"adjusted_end_ts": E0, "market_tickers": "a", "market_candlesticks": [[]]},
      "market_tickers"),
     ({"market_tickers": [], "market_candlesticks": []}, "adjusted_end_ts"),
@@ -1097,10 +1292,33 @@ def test_a_candle_ending_exactly_at_the_capture_is_complete_one_second_later_is_
 def test_event_candles_refuse_what_they_cannot_follow(body, message):
     bodies = [body]
     if message == "no progress":
-        bodies = [event_body(S0 + 1560), event_body(S0 + 1560)]
+        bodies = [body, body]
     conn, _, _ = connector(live_routes(**{EVENT_PATH: bodies}))
     with pytest.raises(AssetError, match=message):
         list(conn.read(CONFIG, ["candles"], {}, "live"))
+
+
+def test_event_candles_refuse_a_response_that_omits_a_listed_market():
+    # Refuse, never truncate: B was listed and asked for, so a response without
+    # it is refused as the batch path refuses one (and not skipped for good by
+    # a cursor a later pull stores).
+    conn, _, _ = connector(live_routes(**{EVENT_PATH: event_body(E0, **{A["ticker"]: []})}))
+    with pytest.raises(AssetError, match="lacks.*T96000"):
+        list(conn.read(CONFIG, ["candles"], {}, "live"))
+    # Also a later response of the chain.
+    bodies = [event_body(S0 + 1560, **{A["ticker"]: [], B["ticker"]: []}),
+              event_body(E0, **{A["ticker"]: []})]
+    conn, _, _ = connector(live_routes(**{EVENT_PATH: bodies}))
+    with pytest.raises(AssetError, match="lacks.*T96000"):
+        list(conn.read(CONFIG, ["candles"], {}, "live"))
+
+
+def test_event_candles_still_ignore_a_market_the_pull_did_not_list():
+    extra = "KXBTCD-26OCT0621-TEXTRA"
+    conn, _, _ = connector(live_routes(**{EVENT_PATH: event_body(E0, **{
+        A["ticker"]: [live_candle(S0 + 60)], B["ticker"]: [],
+        extra: [live_candle(S0 + 60)]})}))
+    assert [r["ticker"] for r in data(read(conn, ["candles"]))] == [A["ticker"]]
 
 
 def test_event_candles_refuse_a_market_with_no_event_to_group_by():
@@ -1165,6 +1383,22 @@ def test_batch_candles_respect_the_batch_size_and_the_candle_budget():
     for call in script.params(BATCH_PATH):
         n = len(call["market_tickers"].split(","))
         assert n * ((call["end_ts"] - call["start_ts"]) // 60 + 1) <= 130
+
+
+@pytest.mark.parametrize("budget, requests", [(122, 1), (121, 2)])
+def test_batch_candles_a_chunk_one_period_over_the_budget_is_split(budget, requests):
+    # Two markets of 61 periods each ask for 122 candles: it fits a budget of
+    # 122 and is one over a budget of 121 (each alone fits, so they split).
+    markets = [market(f"KXBTCD-26OCT0621-T{i}") for i in range(2)]
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return batch_body(**{t: [] for t in params["market_tickers"].split(",")})
+
+    conn, _, _ = connector(live_routes(spans=markets, **{BATCH_PATH: answer}))
+    read(conn, ["candles"], config={**BATCH, "max_candles": budget})
+    assert len(calls) == requests
 
 
 def test_batch_candles_chain_back_to_back_markets_within_the_budget():
@@ -1341,7 +1575,8 @@ def test_hostile_payloads_refuse_instead_of_crashing():
     with pytest.raises(AssetError, match="numeric end_period_ts"):
         list(conn.read(BATCH, ["candles"], {}, "live"))
     conn, _, _ = connector({
-        "/historical/markets": {"markets": [OLD], "cursor": {"a": 1}}})
+        "/historical/markets": {"markets": [OLD], "cursor": {"a": 1}},
+        "/markets": by_status()})
     with pytest.raises(AssetError, match="cursor is not a string"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
 
@@ -1349,7 +1584,7 @@ def test_hostile_payloads_refuse_instead_of_crashing():
 def candle_requests(grouping, spans, now=NOW, **knobs):
     """Run one candles pull and return the ``(start_ts, end_ts)`` of every candle request."""
     if grouping == "event":
-        route = {EVENT_PATH: lambda p: event_body(p["end_ts"])}
+        route = {EVENT_PATH: quiet_event(*spans)}
         path = EVENT_PATH
     else:
         route = {BATCH_PATH: lambda p: batch_body(
@@ -1405,6 +1640,32 @@ def test_archive_candles_an_empty_window_is_never_requested():
         "/markets": by_status()})
     assert data(read(conn, ["candles"])) == []
     assert script.params(path) == []
+
+
+@pytest.mark.parametrize("grouping", ["event", "batch"])
+def test_candles_a_market_without_a_close_time_is_requested_whatever_the_cursor(grouping):
+    # Nothing says an undated market has closed, so a cursor never skips it.
+    unclosed = market("KXBTCD-26OCT0621-T1", close_time="")
+    cursor = "2026-10-07T12:00:00+00:00"
+    if grouping == "event":
+        route = {EVENT_PATH: quiet_event(unclosed)}
+        path = EVENT_PATH
+    else:
+        route = {BATCH_PATH: lambda p: batch_body(**{unclosed["ticker"]: []})}
+        path = BATCH_PATH
+    conn, script, _ = connector(live_routes(spans=(unclosed,), **route))
+    read(conn, ["candles"], config={**CONFIG, "candle_grouping": grouping},
+         state={"candles": {"cursor": cursor}})
+    assert len(script.params(path)) == 1
+
+
+def test_trades_a_market_without_a_close_time_is_requested_whatever_the_cursor():
+    unclosed = market("KXBTCD-26OCT0621-T1", close_time="")
+    conn, script, _ = connector(trade_routes(settled=(unclosed,), history=(), **{
+        "/historical/trades": {"trades": [], "cursor": ""},
+        "/markets/trades": {"trades": [], "cursor": ""}}))
+    read(conn, ["trades"], state={"trades": {"cursor": "2026-10-07T12:00:00+00:00"}})
+    assert [p["ticker"] for p in script.params("/markets/trades")] == [unclosed["ticker"]]
 
 
 def test_batch_mode_needs_no_event_ticker():
@@ -1484,6 +1745,17 @@ def test_trades_rows_page_by_cursor_and_are_dated_at_created_time():
     assert msgs[-1]["state"] == {"trades": {"cursor": "2026-10-07T00:30:00.123456Z"}}
     for row in data(msgs):
         json.dumps(row, allow_nan=False)
+
+
+def test_candle_and_trade_rows_keep_the_declared_field_order():
+    # A consumer may read a row positionally: the dict order IS the schema
+    # discover() declares (markets and orderbooks are pinned the same way).
+    conn, _, _ = connector(archive_routes([archive_candle("2026-08-06T20:00:00Z")]))
+    assert list(data(read(conn, ["candles"]))[0]) == list(kalshi_history.CANDLE_FIELDS)
+    conn, _, _ = connector(trade_routes(settled=(NEW,), history=(), **{
+        "/markets/trades": {"trades": [
+            trade("t1", "2026-10-07T00:10:00Z", NEW["ticker"])], "cursor": ""}}))
+    assert list(data(read(conn, ["trades"]))[0]) == list(kalshi_history.TRADE_FIELDS)
 
 
 def test_trades_resume_from_the_cursor_and_skip_closed_markets():
@@ -1758,7 +2030,7 @@ def test_every_ticker_in_a_path_is_url_quoted():
     conn, script, _ = connector({
         "/historical/markets": {"markets": [], "cursor": ""},
         "/markets": by_status(settled=[live], open=[live]),
-        event_path: event_body(E0),
+        event_path: event_body(E0, **{live["ticker"]: []}),
         f"/markets/{quote(live['ticker'], safe='')}/orderbook": book([], []),
     })
     read(conn, ["candles", "orderbooks"], config=config)
@@ -1821,6 +2093,21 @@ def test_retry_with_backoff_on_429_and_5xx_and_network_errors():
     conn.check({**CONFIG, "retries": 3, "pace_s": 0})
     assert len(script.calls) == 4
     assert sleeps == [3.0, 1.0, 2.0]  # Retry-After honoured, then backoff(2), backoff(3)
+
+
+@pytest.mark.parametrize("code", [429, 500, 502, 503, 504])
+def test_every_retried_status_is_retried_once_then_succeeds(code):
+    conn, script, sleeps = connector({"/historical/cutoff": [http_error(code), CUTOFF_BODY]})
+    conn.check({**CONFIG, "retries": 1, "pace_s": 0})
+    assert len(script.calls) == 2 and len(sleeps) == 1
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 501, 505])
+def test_any_other_status_is_refused_at_once(code):
+    conn, script, sleeps = connector({"/historical/cutoff": http_error(code)})
+    with pytest.raises(AssetError, match=f"HTTP {code}"):
+        conn.check({**CONFIG, "retries": 3, "pace_s": 0})
+    assert len(script.calls) == 1 and sleeps == []
 
 
 def test_retry_gives_up_and_refuses_a_non_json_or_non_object_answer():
@@ -2016,6 +2303,55 @@ def test_orderbook_parity_with_the_public_kalshi_pack():
     assert kalshi_history.MARKET_FIELDS[:len(kalshi.MARKET_FIELDS)] == kalshi.MARKET_FIELDS
     assert kalshi_history.ORDERBOOK_KEY_FIELDS == kalshi.ORDERBOOK_KEY_FIELDS
     assert kalshi_history.MARKET_KEY_FIELDS == kalshi.MARKET_KEY_FIELDS
+
+
+def kalshi_candle_request(market_obj, **knobs):
+    """The ``(start_ts, end_ts)`` the PUBLIC kalshi pack asks of one market's candles."""
+    old, script = kalshi_connector({
+        "/markets": by_status(settled=[market_obj]),
+        f"/series/{SERIES}/markets/{market_obj['ticker']}/candlesticks": {"candlesticks": []},
+    })
+    list(old.read({"series": [SERIES], "base_url": BASE, "statuses": ["settled"],
+                   **knobs}, ["candles"], {}, "live"))
+    (params,) = script.params(f"/series/{SERIES}/markets/{market_obj['ticker']}/candlesticks")
+    return params["start_ts"], params["end_ts"]
+
+
+@pytest.mark.parametrize("grouping", ["event", "batch"])
+@pytest.mark.parametrize("open_time", ["", "2026-10-07T00:00:00Z"])
+@pytest.mark.parametrize("close_time", ["", "2026-10-07T01:00:00Z"])
+def test_candle_window_parity_with_the_public_kalshi_pack(grouping, open_time, close_time):
+    # The fallback span for a market with no open_time (and the capture as the
+    # end of one with no close_time) lives privately in each pack: only the
+    # requests they make can pin that they agree.
+    undated = market("KXBTCD-26OCT0621-T1", open_time=open_time, close_time=close_time)
+    expected = kalshi_candle_request(undated, period_interval=60)
+    mine = candle_requests(grouping, (undated,), period_interval=60)
+    assert mine == [expected]
+
+
+def test_retried_statuses_parity_with_the_public_kalshi_pack():
+    # Drive both packs through every client/server error status: the attempts
+    # each makes (retries=1) agree, so the sets of retried statuses do.
+    def attempts(make, code):
+        script = Script({"/markets": http_error(code), "/historical/cutoff": CUTOFF_BODY,
+                         "/historical/markets": {"markets": [], "cursor": ""}})
+        conn = make(script)
+        with pytest.raises(AssetError):
+            list(conn.read({"series": [SERIES], "base_url": BASE, "statuses": ["open"],
+                            "retries": 1, "pace_s": 0}, ["markets"], {}, "live"))
+        return len(script.params("/markets"))
+
+    retried = set()
+    for code in range(400, 600):
+        old = attempts(lambda g: KalshiConnector(
+            getter=g, sleeper=lambda s: None, clock=lambda: NOW), code)
+        mine = attempts(lambda g: KalshiHistoryConnector(
+            getter=g, sleeper=lambda s: None, clock=lambda: NOW), code)
+        assert mine == old, code
+        if old > 1:
+            retried.add(code)
+    assert {429, 500, 502, 503, 504} <= retried  # the parity is not vacuous
 
 
 def test_the_default_clock_is_the_current_utc_time():
