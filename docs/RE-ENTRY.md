@@ -1,3 +1,22 @@
+# Active handoff — 2026-10-07: history/COVID/split requirements for next run
+
+The owner requests these changes now or as an actionable next-session handoff,
+and permits the bounded pre-holdout cycle after the implementation/review gates.
+[The amended proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+is the controlling contract; its original publication reviews are historical.
+
+Next session: audit all usable owned history and source/panel coverage; verify
+split-adjusted versus as-traded prices, volumes, features, targets and applicable
+option terms; implement demonstrated generic gaps and verify split/vintage
+invariance. Replace 2020 H2 with a February–June 2020 development stress fold,
+report crash/rebound quote-date cohorts, and keep the total cap at 216 attempts.
+Then run reviewed pilots and Stages 1–4, deliver reports and wrap/push.
+No run was started by this amendment. Protected holdout, new provider acquisition,
+cloud spending and deployment/live trading remain excluded. Stage 5 needs a
+separate decision; monthly refitting remains separately unqualified.
+Amendment review is pending; do not carry forward the original clean design
+reviews across these changed requirements.
+
 # Active handoff — 2026-10-07: CDF production proposal, pushed and wrapped
 
 Owner requested synthesis after the four advanced reports were verified on main
