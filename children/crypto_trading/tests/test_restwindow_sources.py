@@ -9,6 +9,7 @@ swapped, the span's ``start``, so a pull is a few windows, not thousands; a test
 """
 
 import copy
+import json
 import math
 import os
 from datetime import datetime, timezone
@@ -38,8 +39,8 @@ def minutes(first, last):
 class FakeCoinbase:
     """Bars for every minute from the fixture's first to NOW; a window is both-bounds-inclusive and newest first."""
 
-    def __init__(self, level=60000.0, volume_scale=1.0):
-        self.level, self.volume_scale, self.calls = level, volume_scale, []
+    def __init__(self, level=60000.0, volume_scale=1.0, product=None):
+        self.level, self.volume_scale, self.product, self.calls = level, volume_scale, product, []
 
     def row(self, t):
         price = self.level + (t // 60) % 97
@@ -47,6 +48,8 @@ class FakeCoinbase:
 
     def __call__(self, url, params):
         assert url.startswith("https://api.exchange.coinbase.com/products/") and url.endswith("-USD/candles"), url
+        if self.product is not None:
+            assert url == f"https://api.exchange.coinbase.com/products/{self.product}/candles", "the asset the source names"
         self.calls.append(dict(params))
         lo, hi = epoch(params["start"]), epoch(params["end"])
         assert (hi - lo) // 60 <= 300, "the venue refuses a span of more than 300 granules (probed: 18000 s answers 301 rows, 18060 s is a 400)"
@@ -133,12 +136,37 @@ def test_the_shipped_run_documents_still_read_binance_for_spot():
                     if not s["source"].startswith("binance-")]
 
 
+@pytest.mark.parametrize("btc, eth", [(COINBASE[0], COINBASE[1]), (DERIBIT[0], DERIBIT[1])])
+def test_the_btc_and_eth_twins_differ_only_by_the_asset(btc, eth):
+    """B1-03: a copy and paste slip (ETH DVOL pulled as BTC, 5-minute bars under a 1-minute name) must not pass."""
+    def swapped(config):
+        text = json.dumps({k: v for k, v in config.items() if k != "notes"}, sort_keys=True)
+        return text.replace("BTC", "ETH").replace("btc", "eth")
+    assert swapped(shipped(btc)) == json.dumps({k: v for k, v in shipped(eth).items() if k != "notes"}, sort_keys=True)
+    assert "ETH" in shipped(eth)["notes"] and "BTC" not in shipped(eth)["notes"].replace("the BTC index read", "")
+
+
+@pytest.mark.parametrize("name", DERIBIT)
+def test_deribit_start_lies_inside_the_one_minute_retention_the_vendor_was_probed_to_keep(name):
+    """A-R1-02: 1-minute DVOL exists only from 2026-04-04T19:21Z (probed 2026-10-07); an earlier start is windows of nothing that still gate pass."""
+    config = shipped(name)
+    start = datetime.fromisoformat(config["streams"]["dvol"]["pagination"]["start"].replace("Z", "+00:00"))
+    assert start >= datetime(2026, 4, 4, 19, 21, tzinfo=timezone.utc), "no 1-minute row is served before the first one probed"
+    assert config["streams"]["dvol"]["params"]["resolution"] == "60"
+    for phrase in ("RETENTION", "185 days", "2026-04-04T19:21Z", "resolution 3600", "empty result.data"):
+        assert phrase in config["notes"], f"{name}: the notes must say {phrase!r}"
+    assert "2,020" not in config["notes"], "the old window count described a span the vendor does not serve"
+
+
 # -- Coinbase ----------------------------------------------------------------------------------------------
 
 
-def test_coinbase_candles_are_pulled_in_windows_stored_once_and_converted_to_iso(tmp_path, monkeypatch):
-    api = FakeCoinbase()
-    root, registry, out = acquire(tmp_path, monkeypatch, "source-coinbase-btcusd-1m.json", "candles", api)
+@pytest.mark.parametrize("name, product, level", [("source-coinbase-btcusd-1m.json", "BTC-USD", 60000.0),
+                                                  ("source-coinbase-ethusd-1m.json", "ETH-USD", 3000.0)])
+def test_coinbase_candles_are_pulled_in_windows_stored_once_and_converted_to_iso(tmp_path, monkeypatch, name, product, level):
+    """B1-03: both twins are pinned alike (the product the URL names, a granule of 60 s), not only the BTC one."""
+    api = FakeCoinbase(level=level, product=product)
+    root, registry, out = acquire(tmp_path, monkeypatch, name, "candles", api)
     first, last = epoch(START), int(NOW.timestamp()) - 60  # lag 60: the minute still forming is never stored
     expected = [t for t in minutes(first, last) if t < last]
     assert out["records"] == len(expected), "a bound both windows return is stored once"
@@ -154,7 +182,7 @@ def test_coinbase_candles_are_pulled_in_windows_stored_once_and_converted_to_iso
 
 
 def test_the_candle_that_is_still_forming_is_not_stored(tmp_path, monkeypatch):
-    root, _, _ = acquire(tmp_path, monkeypatch, "source-coinbase-ethusd-1m.json", "candles", FakeCoinbase(level=3000.0))
+    root, _, _ = acquire(tmp_path, monkeypatch, "source-coinbase-ethusd-1m.json", "candles", FakeCoinbase(level=3000.0, product="ETH-USD"))
     newest = max(r["time"] for r in scan_stream(root.root, "src", "candles", key_fields=["time"]))
     assert newest + 60 <= int(NOW.timestamp()) - 60, "the newest stored bar had ended a full minute before now"
 
@@ -183,13 +211,15 @@ def test_the_connector_refuses_a_millisecond_time_before_the_suite_is_asked(tmp_
 # -- Deribit -----------------------------------------------------------------------------------------------
 
 
-def test_deribit_dvol_is_pulled_in_windows_with_rows_at_result_data_and_the_suite_passes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name, currency", [("source-deribit-btc-dvol.json", "BTC"), ("source-deribit-eth-dvol.json", "ETH")])
+def test_deribit_dvol_is_pulled_in_windows_with_rows_at_result_data_and_the_suite_passes(tmp_path, monkeypatch, name, currency):
+    """B1-03: both twins are pinned alike (the currency asked for, a resolution of 60 s), not only the BTC one."""
     api = FakeDeribit()
-    root, registry, out = acquire(tmp_path, monkeypatch, "source-deribit-btc-dvol.json", "dvol", api)
+    root, registry, out = acquire(tmp_path, monkeypatch, name, "dvol", api)
     first, last = epoch(START), int(NOW.timestamp()) - 60
     expected = [t * 1000 for t in minutes(first, last) if t < last]
     assert out["records"] == len(expected)
-    assert all(c["currency"] == "BTC" and c["resolution"] == "60" for c in api.calls)
+    assert all(c["currency"] == currency and c["resolution"] == "60" for c in api.calls)
     assert {"start_timestamp", "end_timestamp"} <= set(api.calls[0]), "epoch_ms bounds, the way the vendor reads them"
     rows = list(scan_stream(root.root, "src", "dvol", key_fields=["ts"]))
     assert sorted(r["ts"] for r in rows) == expected and rows[0]["close"] == pytest.approx(35.05)

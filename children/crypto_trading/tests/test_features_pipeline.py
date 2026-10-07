@@ -65,14 +65,16 @@ def decision_instants(fixtures=MARKETS):
 
 
 def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 1, 16, 0), hours=35, *,
-                missing_bars=(), one_sided=(), fee_types=None):
+                missing_bars=(), one_sided=(), fee_types=None, floor_scale=None):
     """Markets, candles, fees, klines and BVOL for the fixture markets (``fixtures``: the five of ``MARKETS`` unless given).
 
     ``first_bar`` and ``hours`` size the Binance history: at least 9 hours before the first decision (EWMA needs
     300 bars) and bars past the last close. The three keyword knobs build a world with rows the document cannot
     price or score: ``missing_bars`` are BTC bar open instants (epoch ms) left out of the klines (the strikes still
     come from the full walk), ``one_sided`` are tickers whose candles quote a bid and no ask, and ``fee_types`` maps a
-    series to the ``(fee_type, multiplier)`` its schedule reports in place of the quadratic one.
+    series to the ``(fee_type, multiplier)`` its schedule reports in place of the quadratic one. ``floor_scale``
+    maps a ticker to the factor its archived ``floor_strike`` is off by (the real archive holds five markets whose
+    strike is the index divided by 10,000).
     """
     store = Store(tmp_path / "world", monkeypatch)
     start = ms(first_bar)
@@ -88,7 +90,8 @@ def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 
 
     markets, candles = [], {}
     for index, (ticker, asset, close, result) in enumerate(fixtures):
-        floor = round(index_at_open(asset, close), 2)  # strikes are index dollars, set at the open
+        scale = (floor_scale or {}).get(ticker, 1.0)
+        floor = round(index_at_open(asset, close) * scale, 2 if scale == 1.0 else 6)  # index dollars, set at the open
         markets.append(market_payload(ticker, close, floor=floor, result=result))
         candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=bid_at(index, k),
                                           ask=None if ticker in one_sided else bid_at(index, k) + SPREAD,
@@ -201,6 +204,28 @@ def test_every_feature_family_is_present_and_leak_free_on_the_pipeline_path(ran)
             assert r["fee_buy_yes"] == pytest.approx(math.ceil(round(0.07 * 100 * ask * (1 - ask) * 100, 9)) / 100 / 100)
             assert r["fee_status"] == "ok"
             assert r["ln_floor_over_spot"] == pytest.approx(math.log(store.floors[ticker] / r["spot_brti"]))
+
+
+def test_a_market_whose_archived_strike_is_the_index_over_10000_is_unpriced_and_moves_no_other_row(tmp_path, monkeypatch):
+    """A-R1-01 end to end: the shipped document over a world holding one market of the real 2026-04-13 shape."""
+    junk = "KXBTC15M-26SEP020115-15"
+    clean_store = build_world(tmp_path / "clean", monkeypatch)
+    dirty_store = build_world(tmp_path / "dirty", monkeypatch, floor_scale={junk: 1e-4})
+    assert dirty_store.floors[junk] < 10 < clean_store.floors[junk], "premise: the archived strike is in other units"
+    clean, _ = run(clean_store, tmp_path / "clean")
+    dirty, _ = run(dirty_store, tmp_path / "dirty")
+    assert clean.state == dirty.state == "ran", (dirty.state, dirty.error)
+    by_key = lambda result: {(r["ticker"], r["lead_minutes"]): r for r in result.outputs["fees"]["records"]}  # noqa: E731
+    before, after = by_key(clean), by_key(dirty)
+    for key, row in after.items():
+        if key[0] == junk:
+            assert row["basis"] is None and row["basis_missing"] is True and row["spot_brti"] is None, key
+            assert row["fair_rms"] is None and row["fair_rms_status"] == "no_spot", "unpriced, never a unit-less price"
+        else:
+            changed = {k for k in row if row[k] != before[key][k]}
+            assert changed == set(), (key, changed)
+    assert dirty.outputs["spot"]["provenance"]["BTC"]["anchors_out_of_range"] == 1
+    assert clean.outputs["spot"]["provenance"]["BTC"]["anchors_out_of_range"] == 0
 
 
 def test_the_exclusion_lists_and_provenance_are_kept_in_the_run_directory(ran):

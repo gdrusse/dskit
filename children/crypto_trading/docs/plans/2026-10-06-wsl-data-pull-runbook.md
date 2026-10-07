@@ -1,19 +1,20 @@
 # WSL runbook: crypto_trading stage A (data pulls) and stage B (features, kill test)
 
 Pull the Kalshi, Binance, Coinbase and Deribit data through onboarding, then build the feature tables and the kill test.
-Nothing has been pulled yet. **Done when** every pull was acquired and gated `pass` (`warn` is expected, section 5), `verify` is
-clean and the runs exit 0. **Order:** 0 to 5; 7a to 7c (register, markets, COUNT the archive); 8; 7d (after the count); 7e (last, only if days of pulling are
-accepted); B1 to B6.
+Nothing has been pulled yet. **Done when** every pull was acquired and gated `pass` (`warn` is expected, section 5; 7e is HELD, and
+acquired without a gate if ever run), `verify` is clean and the runs exit 0. **Order:** 0 to 5; 7a to 7c (register, markets, COUNT the
+archive); 8; 7d (after the count); B1 to B6; 7e only after the ADR it names.
 
 Binance Vision is CC BY-NC-SA: research only. Needs about 10 GB free for everything except `trades-15m` (estimate; a pull stages
-in `/tmp` first) and `trades-15m` alone about 50 GB (7e); keep the store on the WSL disk, not `/mnt/c`.
+beside the store, under `$OB`) and `trades-15m` alone about 50 GB (7e); keep the store on the WSL disk, not `/mnt/c`. `validate` holds
+a snapshot's rows in memory (about 2 KB a row): see 7c before each pull.
 
 ## 0. Environment: paste at the top of EVERY new shell
 
 Acquires are journaled into `docs/decisioning/`, so run from this directory.
 
 ```bash
-cd <worktree on branch claude/crypto-trading-child>/children/crypto_trading
+cd /EDIT/ME/worktree/children/crypto_trading     # EDIT BEFORE PASTING: your worktree on branch claude/crypto-trading-child
 export CRYPTO_TRADING_ROOT=$PWD                  # configs name this variable, never a path
 export OB=/home/russell/data/crypto_trading/ob   # PLACEHOLDER: the owner picks the store root
 pull() {   # pull <source> <stream> <suite> [mode]: acquire, print, validate its snapshot (none to validate on a no-op)
@@ -23,14 +24,20 @@ pull() {   # pull <source> <stream> <suite> [mode]: acquire, print, validate its
   [ -n "$snap" ] || { echo "no new snapshot (declaration unchanged): nothing to validate"; return 0; }
   python -m dskit.onboarding validate --root "$OB" --suite "configs/$3" --snapshot "$snap"
 }
+publish() {   # publish <source>: acquire every run's table (a stream already taken is a no-op), then verify (B4, B6)
+  for f in ~/data/crypto_trading/$1/decision_features-*.jsonl; do
+    python -m dskit.onboarding acquire --root "$OB" --source "$1" --stream "$(basename "$f" .jsonl)" --mode backfill
+  done
+  python -m dskit.onboarding verify --root "$OB"
+}
 ```
 
 ## 1. Set up, once
 
 ```bash
 pip install -e "../..[dev]" -e ".[parquet,features]"     # dskit with pytest; the child with pyarrow and numpy
-python -m pytest tests -q                               # offline, must pass
-out=$(python -m pytest tests/test_binance_vision.py -q -rs) && ! grep -qi skip <<<"$out"   # gate: they RAN (a skip means no pyarrow)
+python -m pytest tests -q &&                            # offline, must pass: a failure stops the rest
+out=$(python -m pytest tests/test_binance_vision.py -q -rs) && ! grep -qi skip <<<"$out" &&   # gate: they RAN (a skip means no pyarrow)
 python -m dskit.onboarding init --root "$OB"
 ```
 
@@ -99,7 +106,11 @@ curl -s https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m
 
 Expected warnings (drop rows by name, never guess a value): 26 BVOL days the vendor does not publish (read `reason` in
 `scan_stream(root, source, "files", key_fields=["entity"])`) and strike-less markets (`Target price: TBD`; over the full
-KXBTC15M history 358 `markets-strike-type-set` and 2,816 `markets-expiration-value-present`).
+KXBTC15M history 358 `markets-strike-type-set` and 2,816 `markets-expiration-value-present`). Also five `markets-floor-strike-sane`
+failures on `kalshi-history-crypto`: finalized 2026-04-13 markets whose `floor_strike` is the index over 10,000 (KXBTC15M-26APR131115-15
+7.243729 for 72437.29 and -26APR131130-30 7.198773; KXETH15M-26APR131115-15 0.22348, -30 0.222165, -45 0.221499), probed 2026-10-07. The
+spot node refuses them as anchors and leaves them unpriced: the B6 provenance (`artifacts/spot/provenance.json`) should show
+`anchors_out_of_range` 2 for BTC and 3 for ETH, any other count is a new slip to read.
 
 **Never use a settled market's `yes_bid`, `yes_ask` or `last_price` as a feature** (after close they are about 0 or 1). Kalshi
 candle `ts` is epoch SECONDS at the END of its minute; a Binance kline (epoch MS, USDT-quoted) is labelled by its START: use only
@@ -166,7 +177,12 @@ PY
 - Hourly trades: `ceil(trades / 1000)` pages a market, never 1; about 0.9 s a market.
 - 15-minute trades: about 15 requests, 14,955 trades and 9.5 to 12.3 s a market, the heaviest family (7e).
 
-If the figure is days, do not start: a bounded pull needs a dskit knob (an ADR).
+- Memory: `validate` (so `pull`) holds EVERY row of a snapshot in RAM, about 2 KB a row (2.0 to 2.8 KB measured 2026-10-07, 226,000
+  real trades peaking at 469 MB): rows x 2.8 KB must fit `free -g` BEFORE each pull (section 3's `kalshi-crypto` markets, about 1.2 M
+  rows, is about 3.4 GB). Check this for the 7b markets pull and each 7d pull from their 7c counts; a pull that does not fit is
+  acquired alone and not gated, or not started.
+
+If the figure is days, or the memory does not fit, do not start: a bounded pull needs a dskit knob (an ADR).
 
 **7d. One pull at a time** (a failed pull commits nothing; rerun it), each only after its 7c figure is accepted:
 
@@ -180,12 +196,16 @@ python -m dskit.onboarding verify --root "$OB"
 The label exists only from `settlement_ts`, minutes after the close: gate a join on it, never on the row's date. `volume` is a
 whole-life total, never a feature; a trade is usable at decision time I only if `created_time` is before I.
 
-**7e. The 15-minute trades: days, all or nothing, last.** 28,037 settled KXBTC15M markets and about as many KXETH15M, at 14,955
-trades and 9.5 to 12.3 s a market (7c): about 6 to 8 days in ONE acquire, 0.84 billion rows, 52 GB plus staging in `/tmp`; a sleep,
-network drop or full disk commits nothing. Start it only after the 7c count is accepted (no stage B document reads trades).
+**7e. The 15-minute trades: HELD, days, all or nothing, and never through `pull`.** 28,037 settled KXBTC15M markets and about as
+many KXETH15M, at 14,955 trades and 9.5 to 12.3 s a market (7c): about 6 to 8 days in ONE acquire, 0.84 billion rows, 52 GB (28.6 B a
+row raw plus 28.6 B observations) staged BESIDE the store (`$OB/raw/<source>/.stage-*` and `$OB/.stage-norm-*`, not `/tmp`); a sleep,
+network drop or full disk commits nothing. **`validate` cannot gate it:** it holds every row in memory, about 2 KB a row (469 MB for
+226,000 real trades), so 0.84 billion rows is about 1.7 TB and the process is OOM-killed after the days are spent (it can take the WSL VM
+down). Offer 7e only after an ADR gives `validate` a streaming evaluator or the pack a date bound (no stage B document reads trades). If
+the owner accepts an ungated snapshot meanwhile, run acquire alone:
 
 ```bash
-pull kalshi-history-trades-15m trades suite-kalshi-history-trades.json    # about 6 to 8 days, about 52 GB, all or nothing
+python -m dskit.onboarding acquire --root "$OB" --source kalshi-history-trades-15m --stream trades --mode backfill   # about 6 to 8 days, about 52 GB, all or nothing, NO validate
 python -m dskit.onboarding verify --root "$OB"
 ```
 
@@ -201,13 +221,17 @@ for s in coinbase-btcusd-1m coinbase-ethusd-1m deribit-btc-dvol deribit-eth-dvol
     --config @configs/source-$s.json --activate; done
 pull coinbase-btcusd-1m candles suite-coinbase-candles.json    # about 4,860 requests: under an hour (estimate)
 pull coinbase-ethusd-1m candles suite-coinbase-candles.json
-pull deribit-btc-dvol dvol suite-deribit-dvol.json             # about 2,020 requests: about 15 minutes (estimate)
+pull deribit-btc-dvol dvol suite-deribit-dvol.json             # about 365 requests: a few minutes (estimate)
 pull deribit-eth-dvol dvol suite-deribit-dvol.json
 python -m dskit.onboarding verify --root "$OB"
 ```
 
-`start` is 2024-01-01 in each config. Coinbase `time` and Deribit `ts` are the START of the minute (use only bars that ended
-before a decision). The suites cannot check for gaps: count rows per day (1440; the end days are partial):
+Coinbase `start` is 2024-01-01; Deribit's is 2026-04-08, because the vendor keeps only about 185 days of 1-minute DVOL (probed
+2026-10-07: windows of 2024 and early 2026 return NOTHING and still gate `pass`; resolution 3600 serves every day, as a second source if
+a longer history is wanted). Coinbase `time` and Deribit `ts` are the START of the minute (use only bars that ended before a decision).
+The suites cannot check for gaps or for a first day later than `start`: count rows per day (1440; the end days are partial) and read
+`first day`, which must be the config's `start` day (the Deribit retention slides a day a day, so a later first day is a window that
+returned nothing):
 
 ```bash
 python - "$OB" coinbase-btcusd-1m candles time_iso <<'PY'
@@ -217,6 +241,7 @@ root, source, stream, field = sys.argv[1:5]
 days = collections.Counter(r[field][:10] for r in scan_stream(root, source, stream, key_fields=[field]))
 short = {d: n for d, n in sorted(days.items()) if n != 1440}
 print(len(days), "days;", len(short), "not 1440 rows:", dict(list(short.items())[:10]))
+print("first day", min(days), "last day", max(days))
 PY
 ```
 
@@ -266,13 +291,9 @@ since the manifest was fingerprinted": an acquire ran meanwhile, run again. "no 
 
 A table a later run reads is a source, not a path; each run writes its OWN file, hence its own stream:
 
+`publish <source>` is defined in section 0 (B6 uses it too):
+
 ```bash
-publish() {   # publish <source>: acquire every run's table (a stream already taken is a no-op), then verify
-  for f in ~/data/crypto_trading/$1/decision_features-*.jsonl; do
-    python -m dskit.onboarding acquire --root "$OB" --source "$1" --stream "$(basename "$f" .jsonl)" --mode backfill
-  done
-  python -m dskit.onboarding verify --root "$OB"
-}
 python -m dskit.onboarding register-source features-15m --root "$OB" --catalog-source features-15m \
     --connector localtables --config @configs/source-features-15m.json --activate   # once
 publish features-15m
@@ -316,7 +337,7 @@ print(f"{markets} settled hourly markets x {LEADS} leads = {markets * LEADS} row
 PY
 ```
 
-If it fits, run it and publish the table with B4's `publish`:
+If it fits, run it and publish the table with section 0's `publish`:
 
 ```bash
 python -m dskit.pipeline run configs/run-features-hourly.json --asof "$(date -u +%F)"

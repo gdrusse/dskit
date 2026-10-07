@@ -129,6 +129,19 @@ def test_the_census_names_every_reason_a_row_can_be_set_aside(tmp_path):
     assert pick(out)["n"] == 1
 
 
+@pytest.mark.parametrize("flag", [None, 1, 1.0, "True", "yes", 0, False, "", [True]])
+def test_only_a_true_flag_makes_a_row_eligible_a_missing_or_merely_truthy_one_does_not(tmp_path, flag):
+    """B1-05: ``is True`` is the guard; ``is not False`` would score a row whose flag is missing, null or 1."""
+    flagged = {**row("a", 1, 0.40, 0.70, 0.42, 0.38, "e1", settle=HELD), "ok": flag}
+    missing = {k: v for k, v in flagged.items() if k != "ok"}
+    control = row("e", 1, 0.40, 0.70, 0.42, 0.38, "e5", settle=HELD)
+    for rows, name in (([flagged, control], "a flag of that value"), ([missing, control], "no flag at all")):
+        out = score(tmp_path, rows=rows, segments={"heldout": {"start_ms": CUT}}, report_segments=["heldout"])
+        census = out["summary"]["census"]
+        assert (census["rows"], census["not_eligible"]) == (2, 1), name
+        assert pick(out)["n"] == 1, "only the control row is scored"
+
+
 def test_the_eligibility_field_is_optional_and_means_every_row_when_absent(tmp_path):
     params = {k: v for k, v in PARAMS.items() if k != "eligible_field"}
     out = BucketedBinaryScore("score", params).run(Ctx(tmp_path), {"records": ROWS})

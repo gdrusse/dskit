@@ -26,7 +26,7 @@ __all__ = [
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
     "RETRIEVED", "RETRIEVED_MS", "SERIES", "SETTLE_VALUE", "SETTLEMENT_MS", "SPOT", "SPOT_BRTI", "SPREAD",
-    "STRIKE_KNOWN_MS", "STRIKE_TYPE", "TAU_S", "TICKER",
+    "STRIKE_IMPLAUSIBLE", "STRIKE_KNOWN_MS", "STRIKE_TYPE", "TAU_S", "TICKER",
     "TWO_SIDED", "VOLUME", "YES_ASK", "YES_BID",
 ]
 
@@ -76,6 +76,9 @@ ANCHOR_VALUE = "anchor_value"
 BASIS = "basis"
 BASIS_AGE_MS = "basis_age_ms"
 BASIS_MISSING = "basis_missing"
+#: True when a strike the row's payoff reads is not a positive number or sits further from ``spot_brti`` than the
+#: document's bound allows (a unit slip in the vendor's strike); the row then carries no ``spot_brti`` and is unpriced.
+STRIKE_IMPLAUSIBLE = "strike_implausible"
 
 #: A candle row's own fields (what ``CandleRows`` writes and ``MarketState`` reads).
 PRICE = "price"

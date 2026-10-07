@@ -5,7 +5,8 @@ synthetic store of ``test_features_pipeline.py`` BEFORE the interim modules were
 test runs the document as it ships now over the same store and demands:
 
 - every row and every column that existed before is EQUAL, bit for bit (floats compared with ``==``);
-- the only new columns are the three horizons the fair-value nodes now write (``<fair>_tau``);
+- the only new columns are the three horizons the fair-value nodes now write (``<fair>_tau``) and the
+  ``strike_implausible`` flag (A-R1-01), False on every row;
 - every kill-test cell is equal under dskit's venue-neutral names (``brier_fair`` is now ``brier_model``);
 - the census is equal under its new names, and every data row of the markdown report is identical;
 - the published table file holds the same rows plus ``run_id``.
@@ -76,8 +77,9 @@ WORLDS = {
 #: dskit's venue-neutral score keys for the ones this child used to spell fair/mid.
 SCORE_KEYS = {"brier_fair": "brier_model", "brier_mid": "brier_market", "mean_fair": "mean_model",
               "mean_mid": "mean_market", "logloss_fair": "logloss_model", "logloss_mid": "logloss_market"}
-#: The only columns the migrated document adds to a row: each fair value's own horizon, from the fill.
-NEW_COLUMNS = {"fair_rms_tau", "fair_ewma_tau", "fair_bvol_tau"}
+#: The only columns the migrated document adds to a row: each fair value's own horizon, from the fill, and the
+#: strike-units flag of A-R1-01 (False on every row of every world: no strike here is in other units than the index).
+NEW_COLUMNS = {"fair_rms_tau", "fair_ewma_tau", "fair_bvol_tau", "strike_implausible"}
 
 
 def golden(world):
@@ -116,6 +118,7 @@ def test_every_row_and_column_that_existed_before_is_identical(migrated):
         after = new[key]
         assert set(before) <= set(after), (key, sorted(set(before) - set(after)))
         assert set(after) - set(before) == NEW_COLUMNS, key
+        assert after["strike_implausible"] is False, key
         for column, value in before.items():
             assert after[column] == value and type(after[column]) is type(value), (key, column, value, after[column])
 

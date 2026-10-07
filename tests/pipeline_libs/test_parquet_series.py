@@ -575,6 +575,15 @@ def test_the_kind_is_named_by_the_pack_and_claimed_only_by_register():
     assert registry.get("stream-manifests")[0] is StreamManifests
 
 
+def test_register_without_a_registry_claims_the_toolkit_default(monkeypatch):
+    """B1-05: ``register()`` means the toolkit's registry, which a test swaps for a fresh one so nothing leaks."""
+    fresh = NodeKindRegistry()
+    monkeypatch.setattr(pack, "DEFAULT_NODE_KINDS", fresh)
+    assert register() is None
+    register()  # idempotent
+    assert fresh.get("stream-manifests")[0] is StreamManifests
+
+
 def test_register_does_not_displace_a_kind_already_claimed():
     class Mine(StreamManifests):
         pass

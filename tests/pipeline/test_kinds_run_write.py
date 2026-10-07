@@ -202,6 +202,15 @@ def test_a_path_that_cannot_make_one_stream_per_run_is_refused_at_validation(pat
         RecordsWriteRun("write", {"path": path, "source": "x"})
 
 
+@pytest.mark.parametrize("path", ["out/table.{run}", "table.{run}", "out/t.x.{run}"])
+def test_a_run_placeholder_in_the_extension_is_refused_or_every_run_would_write_one_stem(path):
+    """B1-05 (ADR-0244 F2): the stream is named by the stem, so ``table`` + ``.{run}`` would be one stream for every run."""
+    problems = RecordsWriteRun.validate_params({"path": path, "source": "x"})
+    assert any("before the extension" in p for p in problems), problems
+    with pytest.raises(ConfigError, match="before the extension"):
+        RecordsWriteRun("write", {"path": path, "source": "x"})
+
+
 @pytest.mark.parametrize("path", [
     "out/table-{run}.jsonl", "{run}.jsonl", "out/{run}", "~/features/t_{run}-x.ndjson",
     "$tables.path", "out/dir.v2/Cap/table-{run}.jsonl",
@@ -248,6 +257,15 @@ def test_the_kind_is_named_by_the_module_and_claimed_only_by_register():
     register(registry)
     register(registry)  # idempotent
     assert registry.get("records-write-run")[0] is RecordsWriteRun
+
+
+def test_register_without_a_registry_claims_the_toolkit_default(monkeypatch):
+    """B1-05: ``register()`` means the toolkit's registry, which a test swaps for a fresh one so nothing leaks."""
+    fresh = NodeKindRegistry()
+    monkeypatch.setattr(sys.modules[RecordsWriteRun.__module__], "DEFAULT_NODE_KINDS", fresh)
+    assert register() is None
+    register()  # idempotent
+    assert fresh.get("records-write-run")[0] is RecordsWriteRun
 
 
 def test_register_leaves_an_already_claimed_name_alone():

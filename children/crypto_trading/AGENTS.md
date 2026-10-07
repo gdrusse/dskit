@@ -133,8 +133,9 @@ that bind any edit:
 - **Strikes are index dollars, Binance is not.** A 15-minute strike is the previous window's settlement
   value (the BRTI 60 s average), published after the open (`strike_known_lag_s`); Binance runs a few bp
   higher. `StrikeAnchors` + `SpotFeatures` measure the basis at each anchor (strictly before the decision,
-  age-capped) and price `spot_brti`; never feed `BinaryFairValue` the raw `spot`. Decisions are made only strictly
-  after the strike is known.
+  age-capped) and price `spot_brti`; never feed `BinaryFairValue` the raw `spot`. An anchor whose basis is outside
+  `basis_range`, or a strike beyond `max_abs_log_moneyness` of `spot_brti`, is a unit slip: skipped or unpriced, never priced.
+  Decisions are made only strictly after the strike is known.
 - **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
   refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
 - **One published table per run.** The `write` node is dskit's `RecordsWriteRun` (`records-write-run`): `{run}` in its path becomes the run

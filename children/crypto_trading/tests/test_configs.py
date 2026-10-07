@@ -645,6 +645,18 @@ def test_the_basis_window_is_the_bar_the_settlement_average_covers():
         "an anchor must stay usable until the next 15-minute market's strike replaces it")
 
 
+def test_the_unit_ranges_admit_what_real_days_showed_and_refuse_a_strike_in_other_units():
+    """A-R1-01: the basis ran 0.9989 to 1.0008 and |ln(K/spot_brti)| up to 0.555 on real days; 1e-4 times the index is a slip."""
+    for name, doc in (("15m", _doc()), ("hourly", _hourly())):
+        spot = doc["pipeline"]["spot"]["params"]
+        low, high = spot["basis_range"]
+        assert 0.5 < low < 0.9989 and 1.0008 < high < 1.5, name
+        assert not low <= 1e-4 <= high, "the five April 13 strikes (the index over 10,000) are refused"
+        assert 0.56 < spot["max_abs_log_moneyness"] <= 2.0, name
+        notes = doc["pipeline"]["spot"]["notes"]
+        assert "basis_range" in notes and "max_abs_log_moneyness" in notes and "7.243729" in notes, name
+
+
 def test_every_fair_value_prices_the_index_unit_spot_not_the_raw_binance_price():
     for key, spec in _nodes(":BinaryFairValue").items():
         assert spec["params"]["spot_field"] == "spot_brti", key

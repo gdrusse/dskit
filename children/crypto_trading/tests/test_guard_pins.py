@@ -6,7 +6,10 @@ demonstrated wrong result; each is a guard the child's own rules (no look-ahead,
 unusable reading) rely on, so a regression of it should fail a test. Helpers are the neighbouring test files' own.
 """
 
+import importlib
+import json
 import logging
+import os
 
 import pytest
 from dskit.pipeline.base import ConfigError
@@ -192,7 +195,7 @@ def test_an_anchor_without_a_positive_value_is_not_an_anchor(store, value):
 def test_a_positive_anchor_value_below_one_is_still_an_anchor(store):
     anchor_ms = DECISION - 600_000
     small = {**anchor(store, "BTC", anchor_ms), "anchor_value": 0.5}
-    out = spot(store, [decision_row()], anchors=[small])["records"][0]
+    out = spot(store, [decision_row()], anchors=[small], basis_range=[1e-9, 1.0])["records"][0]  # a range wide enough for the ratio
     assert out[f.BASIS] == pytest.approx(0.5 / reference(store, "BTC", anchor_ms)) and out[f.BASIS_MISSING] is False
 
 
@@ -391,3 +394,44 @@ def test_a_zero_strike_lag_is_valid_and_a_negative_or_unlisted_one_is_not():
     MarketRows("markets", {**MARKET_PARAMS, "strike_known_lag_s": {}})
     for bad in ({"KXBTC15M": -0.001}, {"KXBTC15M": True}, {"KXBTC15M": float("nan")}, {"KXOTHER": 0}, "30", None):
         refused_market_rows("strike_known_lag_s", strike_known_lag_s=bad)
+
+
+# -- every child node: a missing or mistyped knob is a named problem, never an exception (B1-04) ------------------------
+
+CONFIGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "configs")
+
+
+def child_nodes():
+    """``(document, node key)`` for every node of the shipped run documents that is this child's own."""
+    found = []
+    for name in ("run-features-15m.json", "run-features-hourly.json"):
+        with open(os.path.join(CONFIGS, name), encoding="utf-8") as handle:
+            found += [(name, key) for key, spec in json.load(handle)["pipeline"].items() if spec["uses"].startswith("crypto_trading.")]
+    return found
+
+
+def node_and_params(name, key):
+    with open(os.path.join(CONFIGS, name), encoding="utf-8") as handle:
+        spec = json.load(handle)["pipeline"][key]
+    module, _, cls = spec["uses"].partition(":")
+    return getattr(importlib.import_module(module), cls), spec["params"]
+
+
+@pytest.mark.parametrize("name, key", child_nodes())
+def test_a_missing_or_mistyped_knob_of_every_child_node_is_a_problem_naming_it_and_never_a_crash(name, key):
+    """A required-knob guard turned into a KeyError (``if False:`` for ``max_candle_age_ms``) passed the whole child suite."""
+    node, base = node_and_params(name, key)
+    assert node.validate_params(base) == [], "premise: the shipped params are valid"
+    for knob in sorted(set(node._PARAMS) | set(base)):
+        if knob in base:
+            problems = node.validate_params({k: v for k, v in base.items() if k != knob})
+            assert any(knob in problem for problem in problems), f"{key}: dropping {knob} names no problem: {problems}"
+        problems = node.validate_params({**base, knob: object()})
+        assert any(knob in problem for problem in problems), f"{key}: a mistyped {knob} names no problem: {problems}"
+        for value in (None, "x", [], {}, -1, True, 1.5):  # whatever the knob's type, a refusal is a list, never an exception
+            assert isinstance(node.validate_params({**base, knob: value}), list)
+
+
+def test_the_loop_reaches_every_node_class_of_the_child():
+    classes = {node_and_params(name, key)[0].__name__ for name, key in child_nodes()}
+    assert classes == {"MarketRows", "StrikeAnchors", "CandleRows", "FeeRows", "DecisionRows", "SpotFeatures", "MarketState", "FeeColumns"}

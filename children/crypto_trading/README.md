@@ -50,7 +50,7 @@ held-out cut are the 15-minute document's, pinned equal by tests. Its rows also 
 | `decisions:DecisionRows` | market x lead: information instant I = close - lead (strictly after the strike is known), fill at I + `exec_lag_s` |
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
 | `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0240) |
-| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0241, square-rooted here) and BVOL, all strictly before the decision |
+| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0241, square-rooted here) and BVOL, all strictly before the decision; an anchor outside `basis_range` and a strike beyond `max_abs_log_moneyness` of `spot_brti` (the archive holds strikes off by 10,000) are refused, counted in the provenance, and leave the row unpriced |
 | `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
 | `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0243) |
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0242), rounded per order |

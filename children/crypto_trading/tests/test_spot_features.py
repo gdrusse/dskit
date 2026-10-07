@@ -52,6 +52,8 @@ def params(root, **over):
         "max_spot_age_ms": 120_000,
         "max_bvol_age_ms": 120_000,
         "max_basis_age_ms": 1_200_000,
+        "basis_range": [0.95, 1.05],
+        "max_abs_log_moneyness": 1.0,
         "bvol_scale": 0.01,
         "seconds_per_year": 31_536_000,
     }
@@ -344,8 +346,8 @@ def test_the_latest_anchor_known_strictly_before_the_decision_is_used(tmp_path, 
     store = world(tmp_path, monkeypatch)
     early = anchor(store, "BTC", DECISION - 900_000, basis=0.9996)
     later = anchor(store, "BTC", DECISION - 300_000, basis=0.9990)
-    at_decision = {**anchor(store, "BTC", DECISION - 60_000, basis=0.5), "known_ms": DECISION}
-    published_after = {**anchor(store, "BTC", DECISION - 60_000, basis=2.0), "known_ms": DECISION + 7_000}
+    at_decision = {**anchor(store, "BTC", DECISION - 60_000, basis=0.97), "known_ms": DECISION}
+    published_after = {**anchor(store, "BTC", DECISION - 60_000, basis=1.03), "known_ms": DECISION + 7_000}
     out = one(store, anchors=[early, published_after, later, at_decision])
     assert out["basis"] == pytest.approx(0.9990), "the anchor known AT the decision, or after it, is invisible"
     assert out["basis_age_ms"] == 300_000 - LAG_MS
@@ -354,13 +356,13 @@ def test_the_latest_anchor_known_strictly_before_the_decision_is_used(tmp_path, 
 def test_an_anchor_published_after_the_decision_is_never_used(tmp_path, monkeypatch):
     store = world(tmp_path, monkeypatch)
     legal = anchor(store, "BTC", DECISION - 600_000, basis=0.9996)
-    future = [anchor(store, "BTC", DECISION + 60_000 * k, basis=3.0) for k in range(1, 6)]
+    future = [anchor(store, "BTC", DECISION + 60_000 * k, basis=1.04) for k in range(1, 6)]
     clean, dirty = one(store, anchors=[legal]), one(store, anchors=[legal, *future])
     assert {k: clean[k] for k in ("basis", "basis_age_ms", "spot_brti")} == {
         k: dirty[k] for k in ("basis", "basis_age_ms", "spot_brti")}
     # control: the same wild anchor, known before the decision, does move it
-    wild = anchor(store, "BTC", DECISION - 300_000, basis=3.0)
-    assert one(store, anchors=[legal, wild])["basis"] == pytest.approx(3.0)
+    wild = anchor(store, "BTC", DECISION - 300_000, basis=1.04)
+    assert one(store, anchors=[legal, wild])["basis"] == pytest.approx(1.04)
 
 
 def test_the_reference_bar_ends_before_the_anchor_is_known(tmp_path, monkeypatch):
@@ -448,6 +450,112 @@ def test_a_constant_unit_basis_does_not_bias_the_fair_value(tmp_path, monkeypatc
     assert out[0]["basis"] == pytest.approx(1.0 - DELTA)
     assert price("spot_brti") == pytest.approx(0.5, abs=0.005)
     assert price("spot") > 0.6, "what the raw Binance price would have said: a unit mismatch, not an edge"
+
+
+#: The five markets of 2026-04-13 whose archived ``floor_strike`` is the settlement value divided by 10,000 (A-R1-01):
+#: KXBTC15M-26APR131115-15 and -30 read 7.243729 and 7.198773 (the real values 72437.29 and 71987.73), KXETH15M-26APR131115-15,
+#: -30 and -45 read 0.22348, 0.222165 and 0.221499 (2234.80, 2221.65, 2214.99). All five are finalized greater_or_equal markets.
+APRIL_13_STRIKES = [("BTC", "KXBTC15M", 7.243729), ("BTC", "KXBTC15M", 7.198773),
+                    ("ETH", "KXETH15M", 0.22348), ("ETH", "KXETH15M", 0.222165), ("ETH", "KXETH15M", 0.221499)]
+
+
+@pytest.mark.parametrize("asset, series, value", APRIL_13_STRIKES)
+def test_an_anchor_in_the_wrong_units_is_not_an_anchor_and_the_row_is_unpriced(tmp_path, monkeypatch, asset, series, value):
+    """A-R1-01: a strike 10,000 times too small is not an observation of the index; it must never become a basis."""
+    store = world(tmp_path, monkeypatch)
+    junk = {**anchor(store, asset, DECISION - 600_000, series=series), "anchor_value": value}
+    row = decision_row(series=series, floor=60000.0 if asset == "BTC" else 3000.0)
+    result = spot(store, [row], anchors=[junk])
+    out = result["records"][0]
+    assert out["basis"] is None and out["basis_age_ms"] is None and out["basis_missing"] is True
+    assert out["spot_brti"] is None and out["log_moneyness"] is None, "no unit-less price"
+    assert out["spot"] is not None, "the raw Binance columns are untouched"
+    assert result["provenance"][asset]["anchors_out_of_range"] == 1 and result["provenance"][asset]["basis_missing"] == 1
+
+
+def test_a_row_falls_back_to_the_older_legal_anchor_when_the_newer_one_is_out_of_range(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    legal = anchor(store, "BTC", DECISION - 900_000, basis=0.9996)
+    junk = {**anchor(store, "BTC", DECISION - 300_000), "anchor_value": 7.243729}
+    result = spot(store, [decision_row()], anchors=[junk, legal])
+    out = result["records"][0]
+    assert out["basis"] == pytest.approx(0.9996) and out["basis_age_ms"] == 900_000 - LAG_MS
+    assert result["provenance"]["BTC"]["anchors_out_of_range"] == 1
+    old = {**junk, "anchor_ms": DECISION - 1_500_000, "known_ms": DECISION - 1_500_000 + LAG_MS}
+    assert spot(store, [decision_row()], anchors=[old, legal])["provenance"]["BTC"]["anchors_out_of_range"] == 0, (
+        "an anchor no decision can reach (older than the age cap) is not counted")
+
+
+@pytest.mark.parametrize("basis, usable", [(0.9499, False), (0.95, True), (1.0, True), (1.05, True), (1.0501, False)])
+def test_the_basis_range_is_inclusive_at_both_ends(tmp_path, monkeypatch, basis, usable):
+    store = world(tmp_path, monkeypatch)
+    out = one(store, anchors=[anchor(store, "BTC", DECISION - 600_000, basis=basis)])
+    assert out["basis_missing"] is (not usable)
+    assert (out["basis"] == pytest.approx(basis)) if usable else out["basis"] is None
+
+
+def test_the_basis_range_is_the_documents_knob_not_a_literal(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    wide = anchor(store, "BTC", DECISION - 600_000, basis=1.2)
+    assert one(store, anchors=[wide])["basis_missing"] is True
+    out = spot(store, [decision_row()], anchors=[wide], basis_range=[0.5, 1.5])["records"][0]
+    assert out["basis"] == pytest.approx(1.2) and out["basis_missing"] is False
+
+
+@pytest.mark.parametrize("floor", [7.243729, 0.22348, 600_000.0])
+def test_a_strike_in_other_units_than_the_index_is_flagged_and_the_row_unpriced(tmp_path, monkeypatch, floor):
+    """A-R1-01 (family): the strike of a decision row is an index level as well; |ln(K / spot_brti)| is bounded."""
+    store = world(tmp_path, monkeypatch)
+    anchors = [anchor(store, "BTC", DECISION - 600_000, basis=1.0)]
+    result = spot(store, [decision_row(floor=floor)], anchors=anchors)
+    out = result["records"][0]
+    assert out["strike_implausible"] is True
+    assert out["spot_brti"] is None and out["ln_floor_over_spot"] is None and out["log_moneyness"] is None
+    assert out["basis"] is not None and out["basis_missing"] is False, "the basis itself was fine"
+    assert result["provenance"]["BTC"]["strike_implausible"] == 1
+
+
+def test_a_strike_inside_the_moneyness_bound_is_untouched_and_either_edge_of_a_range_trips_it(tmp_path, monkeypatch):
+    store = world(tmp_path, monkeypatch)
+    anchors = [anchor(store, "BTC", DECISION - 600_000, basis=1.0)]
+    raw = store.bars["BTC"][last_closed(store.bars["BTC"], DECISION)]["close"]
+    far = raw * math.exp(0.99)
+    ok = one(store, anchors=anchors, floor=far)
+    assert ok["strike_implausible"] is False and ok["ln_floor_over_spot"] == pytest.approx(0.99)
+    below = one(store, anchors=anchors, payoff="below", floor=None, cap=far)
+    assert below["strike_implausible"] is False and below["ln_cap_over_spot"] == pytest.approx(0.99)
+    bad_cap = one(store, anchors=anchors, payoff="between", floor=raw, cap=raw * math.exp(1.01))
+    assert bad_cap["strike_implausible"] is True and bad_cap["spot_brti"] is None, "the cap of a range is checked too"
+    bad_floor = one(store, anchors=anchors, payoff="between", floor=raw * math.exp(-1.01), cap=raw)
+    assert bad_floor["strike_implausible"] is True
+    tight = spot(store, [decision_row(floor=raw * math.exp(0.2))], anchors=anchors, max_abs_log_moneyness=0.1)["records"][0]
+    assert tight["strike_implausible"] is True, "the bound is the documents knob"
+
+
+def test_a_row_with_no_index_price_is_not_called_implausible(tmp_path, monkeypatch):
+    out = one(world(tmp_path, monkeypatch), anchors=[], floor=7.0)
+    assert out["strike_implausible"] is False and out["basis_missing"] is True
+
+
+@pytest.mark.parametrize("floor", [0.0, -5.0, None, float("nan")])
+def test_a_strike_that_is_not_a_positive_number_is_implausible_not_a_crash(tmp_path, monkeypatch, floor):
+    store = world(tmp_path, monkeypatch)
+    out = one(store, anchors=[anchor(store, "BTC", DECISION - 600_000, basis=1.0)], floor=floor)
+    assert out["strike_implausible"] is True and out["spot_brti"] is None
+
+
+@pytest.mark.parametrize("name, good, bad", [
+    ("basis_range", [0.95, 1.05], [None, "x", [1.0], [1.0, 1.0], [1.05, 0.95], [0.0, 1.05], [-1.0, 1.0], [0.9, True], ["a", "b"],
+                                   [0.9, float("inf")], [0.9, 1.0, 1.1], {"lo": 0.9, "hi": 1.1}, ()]),
+    ("max_abs_log_moneyness", 1.0, [None, "x", 0, -1.0, True, float("nan"), float("inf")]),
+])
+def test_the_range_knobs_are_required_and_refuse_a_value_that_cannot_bound_anything(name, good, bad):
+    assert SpotFeatures.validate_params(params("/r", **{name: good})) == []
+    missing = {k: v for k, v in params("/r").items() if k != name}
+    assert SpotFeatures.validate_params(missing) == [next(p for p in SpotFeatures.validate_params(missing) if name in p)]
+    for value in bad:
+        problems = SpotFeatures.validate_params(params("/r", **{name: value}))
+        assert len(problems) == 1 and problems[0].startswith(f"{name} is required"), (name, value, problems)
 
 
 def test_the_basis_params_are_required_and_the_open_column_is_declared(tmp_path):

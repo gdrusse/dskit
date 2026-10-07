@@ -177,3 +177,27 @@ def test_a_primary_key_may_name_only_a_field_a_row_carries():
     still = positional(primary_key=["when"], row_fields=["t", "a", "b"])
     del still["streams"]["s"]["epoch"]
     refused_before_any_request(still, r"primary_key names \['when'\]")
+
+
+# -- declaration guards that must answer a problem, never a crash (B1-05) -----------------------------------------------
+
+
+@pytest.mark.parametrize("path", [5, None, ["rows"], {"a": 1}, True])
+def test_a_records_path_that_is_not_text_is_a_problem_not_an_attribute_error(path):
+    refused_before_any_request(positional(records_path=path), "records_path")
+
+
+@pytest.mark.parametrize("epoch", ["s", 5, ["t"], None, True])
+def test_an_epoch_that_is_not_an_object_is_a_problem_not_a_crash(epoch):
+    refused_before_any_request(positional(epoch=epoch), "epoch")
+
+
+@pytest.mark.parametrize("streams", [5, "s", ["s"], None, True])
+def test_a_streams_value_that_is_not_an_object_is_a_problem_not_a_crash(streams):
+    refused_before_any_request({"base_url": BASE, "streams": streams}, "config.streams")
+
+
+@pytest.mark.parametrize("time_format", ["bogus", "", 5, None, ["epoch_s"]])
+def test_a_cursor_time_format_outside_the_known_spellings_is_refused(time_format):
+    cursor = {"strategy": "cursor", "path": "n", "param": "after", "time_format": time_format}
+    refused_before_any_request(positional(records_path="r.*", pagination=cursor), "time_format")

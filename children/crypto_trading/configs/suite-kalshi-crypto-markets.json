@@ -107,10 +107,10 @@
       "rule": "in_range",
       "kwargs": {
         "field": "floor_strike",
-        "min": 0
+        "min": 100
       },
       "severity": "warn",
-      "notes": "Strikes are USD prices of BTC or ETH; a negative or non-numeric one is a unit slip."
+      "notes": "Strikes are USD prices of BTC or ETH, far above 100; a negative, non-numeric or sub-100 one is a unit slip (the history archive holds five such markets of 2026-04-13, see suite-kalshi-history-markets.json): read it before modelling."
     },
     {
       "id": "markets-cap-strike-sane",
@@ -118,10 +118,10 @@
       "rule": "in_range",
       "kwargs": {
         "field": "cap_strike",
-        "min": 0
+        "min": 100
       },
       "severity": "warn",
-      "notes": "As floor_strike, for the upper edge of a range or a 'less' market."
+      "notes": "As floor_strike, for the upper edge of a range or a 'less' market (the same unit-slip floor of 100 USD)."
     },
     {
       "id": "markets-bitemporal",

@@ -110,6 +110,21 @@ def test_the_suite_warns_on_a_missing_value_and_blocks_on_an_impossible_one(tmp_
     assert result["gating"] == "block" and "markets-expiration-value-nonnegative" in tripped(result)
 
 
+def test_the_five_real_markets_whose_strike_is_the_index_over_10000_warn_by_name_and_do_not_block(tmp_path, monkeypatch):
+    """A-R1-01: probed 2026-10-07, the archive holds these as finalized greater_or_equal markets; the old min-0 rule passed them."""
+    real = [("KXBTC15M", 7.243729, 72437.29, 15), ("KXBTC15M", 7.198773, 71987.73, 30),
+            ("KXETH15M", 0.22348, 2234.80, 15), ("KXETH15M", 0.222165, 2221.65, 30), ("KXETH15M", 0.221499, 2214.99, 45)]
+    slipped = [market(series, NEW + timedelta(minutes=minutes), strike=strike, value=value) for series, strike, value, minutes in real]
+    slipped[0]["cap_strike"] = 0.5  # the upper edge of a range read in the same wrong units
+    store, out = pull(tmp_path, monkeypatch, "kalshi-history-crypto", "source-kalshi-history-crypto.json", "markets",
+                      ScriptedHistory(live=[*(market(s, NEW) for s in SIX), *slipped]))
+    result = verdict(store, "suite-kalshi-history-markets.json", out)
+    assert result["gating"] == "warn", "an expected data error is a warning, not a block"
+    assert tripped(result) == {"markets-floor-strike-sane": "warn", "markets-cap-strike-sane": "warn"}
+    by_id = {r["id"]: r for r in result["statistics"]["results"]}
+    assert by_id["markets-floor-strike-sane"]["failing"] == 5, "all five, and none of the six ordinary markets"
+
+
 def test_a_negative_volume_blocks_and_an_unexpected_status_warns(tmp_path, monkeypatch):
     bad = market("KXBTCD", NEW, strike=61000.0, volume="-1.00")
     store, out = pull(tmp_path / "a", monkeypatch, "kalshi-history-crypto", "source-kalshi-history-crypto.json", "markets",

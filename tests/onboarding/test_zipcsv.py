@@ -540,6 +540,15 @@ def test_a_bad_knob_refuses(change, needle):
         ticks(**change)
 
 
+@pytest.mark.parametrize("junk", [["ts"], {"ts": 1}, [], {}, 5, 1.5, None, True])
+def test_a_kind_or_header_that_is_not_text_is_a_problem_even_when_it_cannot_be_hashed(junk):
+    """B1-05: a list or object looked up in the kind and header tables is a TypeError unless the text guard answers first."""
+    with pytest.raises(AssetError, match=r"columns\[0\]\.kind must be one of"):
+        ZipCsvToParquet({"columns": [{"vendor": "t", "output": "t", "kind": junk}]}, AS_OF)
+    with pytest.raises(AssetError, match="header must be one of"):
+        ticks(header=junk)
+
+
 @pytest.mark.parametrize("bad", [[], "ticks", 5, ["columns"], True])
 def test_params_that_are_not_an_object_refuse(bad):
     with pytest.raises(AssetError, match="params must be an object"):

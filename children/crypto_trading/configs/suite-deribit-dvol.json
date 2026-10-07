@@ -41,7 +41,7 @@
         "max": 4102444800000
       },
       "severity": "error",
-      "notes": "Epoch MILLISECONDS from 2024-01-01 (the shipped start) to 2100. A backstop: the connector drops a row outside its window, so this trips only on a row the pack let through."
+      "notes": "Epoch MILLISECONDS from 2024-01-01 (before any date the vendor serves 1-minute rows for) to 2100. A backstop: the connector drops a row outside its window, so this trips only on a row the pack let through."
     },
     {
       "id": "dvol-ts-iso-present",
