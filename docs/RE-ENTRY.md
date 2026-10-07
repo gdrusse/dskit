@@ -29,14 +29,17 @@ pull is about 6 to 8 days and 52 GB in one all-or-nothing acquire (runbook 7e), 
 after the count; the four "hourly" series also hold daily and weekly ladders, pooled (7c census).
 
 **Owner decisions pending.** Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s,
-strike lag 30 s, and the store path placeholder `$OB`. A date bound for `kalshi_history` pulls (an ADR), and
-a filter on open-to-close duration for the hourly document (an ADR). Edits to existing dskit code, each
-refused so far: `zipcsv._MAX_EPOCH_MS` is derived through a float and sits one second late (Z1-1);
-`CeilToTick(guard_decimals=0)` snaps to the nearest tick before the ceiling (F4); the `kalshi_history`
-module docstring lists three of its five lifecycle statuses; the `Above`/`Below`/`Between` examples call
-`PAYOFFS[...]`, not the class; the two parity test files skip with a false reason (delete them or fix the
-text; the golden files now hold the comparison). Attribution of the six ADR-stream merge commits
+strike lag 30 s, and the store path placeholder `$OB`. A date bound for `kalshi_history` pulls (an ADR), a
+filter on open-to-close duration for the hourly document (an ADR), and whether the hourly run should refuse a
+row count past a memory budget (runbook B6 measures about 9.7 KB a decision row: 60 GB for the live days alone;
+the runbook's sizing copy is the bound usable today). Attribution of the six ADR-stream merge commits
 (`Claude Opus 5.5`, the rest `Claude Sonnet 5.5`) is unconfirmed.
+
+**Open in candidate code (new files on this branch, so not blocked by the additive-only rule; they wait for the
+next code round).** `CeilToTick(guard_decimals=0)` snaps to the nearest tick before the ceiling (F4). Fixed in
+round 2: the `kalshi_history` routing (A2-01: the archive's own listing decides, not `market_settled_ts`),
+`zipcsv._MAX_EPOCH_MS` (Z1-1), the `kalshi_history` status list, the `Above`/`Below`/`Between` examples and the
+zipcsv parity skip text. An earlier note called these "edits to existing dskit code, refused"; they were not.
 
 **Next (on WSL).** Fetch the branch; follow
 `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md` (stage A acquisitions, then

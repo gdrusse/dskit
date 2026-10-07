@@ -66,11 +66,23 @@ def test_the_markets_pull_reads_both_archives_once_each_and_the_suite_passes(tmp
     api = world()
     store, out = pull(tmp_path, monkeypatch, "kalshi-history-crypto", "source-kalshi-history-crypto.json", "markets", api)
     assert out["records"] == 12, "the live copy of an archived market is dropped: 6 archived + 6 live"
-    assert len(api.paths("/historical/cutoff")) == 2, "served, never typed: read once by the platform's check, once by the pull"
+    assert len(api.paths("/historical/cutoff")) == 1, "served, never typed: read once by the platform's check; no markets pull routes by it"
     assert {p["status"] for path, p in api.calls if path == "/markets"} == {"settled"}
     assert len(api.paths("/historical/markets")) == 6, "one archive walk per series"
     assert tripped(verdict(store, "suite-kalshi-history-markets.json", out)) == {}
     assert verdict(store, "suite-kalshi-history-markets.json", out)["gating"] == "pass"
+
+
+def test_a_market_settled_after_the_cutoff_that_both_listings_hold_is_one_row_and_the_suite_passes(tmp_path, monkeypatch):
+    # The real archive runs about a day past the cutoff (probed 2026-10-07, A2-01): it lists a market settled after it
+    # and the live API lists it too. Dropping the live copy only for markets settled BEFORE the cutoff left two copies
+    # and tripped markets-ticker-unique (block) on the first real pull.
+    late = market("KXBTC15M", CUTOFF + timedelta(hours=1), strike=61000.0)
+    api = ScriptedHistory(live=[*(market(s, NEW) for s in SIX), late], archived=[*(market(s, OLD) for s in SIX), late])
+    store, out = pull(tmp_path, monkeypatch, "kalshi-history-crypto", "source-kalshi-history-crypto.json", "markets", api)
+    assert out["records"] == 13, "6 archived + 6 live + the late one, once"
+    result = verdict(store, "suite-kalshi-history-markets.json", out)
+    assert result["gating"] == "pass" and tripped(result) == {}
 
 
 def test_every_row_carries_the_value_the_settlement_instant_and_the_volume(tmp_path, monkeypatch):
@@ -206,6 +218,21 @@ def test_trades_are_routed_to_the_archive_that_owns_each_period_and_the_suite_pa
     assert sorted(p["ticker"] for p in (q for pth, q in api.calls if pth == "/markets/trades")) == sorted(m["ticker"] for m in new)
     assert all(q["max_ts"] == cutoff_s for pth, q in api.calls if pth == "/historical/trades")
     assert verdict(store, "suite-kalshi-history-trades.json", out)["gating"] == "pass"
+
+
+def test_a_market_both_listings_hold_is_pulled_once_so_trade_id_unique_passes(tmp_path, monkeypatch):
+    # The same overlap as the markets pull: listed twice, a market's trades were asked of the venue twice and
+    # trades-trade-id-unique (block) failed after the whole multi-day acquire (A2-01).
+    api, old, new = trade_world()
+    late = market("KXBTC15M", CUTOFF + timedelta(hours=1), strike=61000.0)
+    api.trades[late["ticker"]] = [trade(f"{late['ticker']}-{k}", late["ticker"], CUTOFF + timedelta(minutes=k)) for k in range(1, 4)]
+    api.live.append(late)
+    api.archived.append(late)
+    store, out = pull(tmp_path, monkeypatch, "kalshi-history-trades-15m", "source-kalshi-history-trades-15m.json", "trades", api)
+    assert out["records"] == 15, "12 + the late market's three trades, once each"
+    assert [q["ticker"] for pth, q in api.calls if pth == "/markets/trades"].count(late["ticker"]) == 1
+    result = verdict(store, "suite-kalshi-history-trades.json", out)
+    assert result["gating"] == "pass" and tripped(result) == {}
 
 
 def test_the_trade_suite_warns_on_an_unknown_taker_side_and_a_unit_slip_price(tmp_path, monkeypatch):

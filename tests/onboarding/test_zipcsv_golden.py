@@ -93,9 +93,13 @@ def test_an_epoch_one_millisecond_outside_1970_to_9999_is_refused(cell):
         one_cell("ts", cell, unit="ms")
 
 
-def test_the_ceiling_is_not_below_the_last_millisecond_of_year_9999():
-    """Z1-1 (open): the constant is derived through a float and sits one second late, so it is bounded below here, not pinned equal."""
-    assert zipcsv._MAX_EPOCH_MS >= LAST_MS_OF_9999
+def test_the_ceiling_is_exactly_the_last_millisecond_of_year_9999():
+    """Z1-1: the constant was derived through a float and sat one second late, so the 1000 ms after 9999-12-31T23:59:59.999Z
+    were accepted although the refusal text promises 1970-01-01 to 9999-12-31."""
+    assert zipcsv._MAX_EPOCH_MS == LAST_MS_OF_9999
+    for cell in (LAST_MS_OF_9999 + 1, LAST_MS_OF_9999 + 1000, 253402300800000, 253402300800999):
+        with pytest.raises(ValueError, match="out of range"):
+            one_cell("ts", cell, unit="ms")
 
 
 @pytest.mark.parametrize("cell", [-(1 << 63), (1 << 63) - 1, 0, -1])

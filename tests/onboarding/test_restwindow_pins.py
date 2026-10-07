@@ -16,6 +16,7 @@ from .test_restwindow import (
     SERIES,
     AssetError,
     connector,
+    empty_rows,
     http_error,
     one_window,
     plain,
@@ -103,3 +104,57 @@ def test_a_failed_first_probe_names_the_first_of_the_windows_it_would_pull():
     conn, _, _ = connector({SERIES: http_error(404)})
     with pytest.raises(AssetError, match=r"window 1/3 \[2026-01-01T00:00:00\+00:00, 2026-01-01T00:04:00\+00:00\)"):
         conn.check(plain())
+
+
+# -- config refusals (LB2-04: each went through no door of its own) -----------------------------------------------------
+
+
+def refused_before_any_request(config, match):
+    """Reading ``config`` refuses with ``match`` and has asked the venue for nothing."""
+    conn, script, _ = connector({})
+    with pytest.raises(AssetError, match=match):
+        list(conn.read(config, ["s"], {}, "backfill"))
+    assert script.calls == []
+
+
+@pytest.mark.parametrize("config", [[], None, "config", 5, [plain()]])
+def test_a_config_that_is_not_an_object_is_refused_before_any_request(config):
+    refused_before_any_request(config, "config must be a dict")
+
+
+@pytest.mark.parametrize("knob, value", [
+    ("timeout", float("inf")), ("timeout", float("-inf")), ("timeout", float("nan")), ("timeout", 0), ("timeout", 0.0),
+    ("timeout", -1), ("timeout", True), ("timeout", "30"), ("timeout", None),
+    ("pace_s", float("inf")), ("pace_s", float("nan")), ("pace_s", -0.001), ("pace_s", True), ("pace_s", "0.1")])
+def test_a_transport_number_must_be_a_finite_number_in_range(knob, value):
+    refused_before_any_request({**plain(), knob: value}, f"config.{knob}")
+
+
+@pytest.mark.parametrize("knob, value", [
+    ("timeout", 0.001), ("timeout", 1), ("timeout", 30.5), ("pace_s", 0), ("pace_s", 0.0), ("pace_s", 2.5)])
+def test_the_smallest_positive_timeout_and_a_zero_pace_are_accepted(knob, value):
+    conn, script, _ = connector({SERIES: empty_rows})
+    assert records(read(conn, {**plain(), knob: value}, ["s"])) == []
+    assert script.calls, "the pull ran"
+
+
+@pytest.mark.parametrize("key", ["id", "", [""], [1], [["id"]], {"id": 1}, 5, [None], ["id", ""]])
+def test_a_primary_key_is_a_list_of_non_empty_field_names(key):
+    refused_before_any_request(positional(primary_key=key), "primary_key must be a list of field names")
+
+
+def test_a_primary_key_may_name_only_a_field_a_row_carries():
+    refused_before_any_request(positional(primary_key=["nope"]), r"primary_key names \['nope'\]")
+    refused_before_any_request(positional(primary_key=["a", "nope"]), r"primary_key names \['nope'\]")
+    # a row field, and the instant column the epoch writes, are carried; the instant column of a stream
+    # with NO epoch is not (there the effective field is read from the row, not written to it)
+    for key in (["a"], ["t", "a"], ["when"], ["a", "when"]):
+        conn, _, _ = connector({SERIES: lambda p: {"rows": [[1767225600, 1.5, "y"]]}})
+        read(conn, positional(primary_key=key), ["s"])
+    no_epoch = positional(primary_key=["when"], row_fields=["when", "a", "b"])
+    del no_epoch["streams"]["s"]["epoch"]
+    conn, _, _ = connector({SERIES: lambda p: {"rows": [["2026-01-01T00:00:00Z", 1.5, "y"]]}})
+    read(conn, no_epoch, ["s"])  # carried as a row field
+    still = positional(primary_key=["when"], row_fields=["t", "a", "b"])
+    del still["streams"]["s"]["epoch"]
+    refused_before_any_request(still, r"primary_key names \['when'\]")

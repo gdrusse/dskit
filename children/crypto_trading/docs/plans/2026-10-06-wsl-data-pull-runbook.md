@@ -222,7 +222,8 @@ for key in sorted(count):
 PY
 ```
 
-Then how long each market was open, because the four 'hourly' series also list daily ladders (open 25 h, closing at 17:00 New York time)
+(The archive lists about a day past the cutoff, probed 2026-10-07; those markets count as live here, which mis-sizes the
+census by that day only.) Then how long each market was open, because the four 'hourly' series also list daily ladders (open 25 h, closing at 17:00 New York time)
 and weekly ones (open 7 d), and every pull and the hourly feature table pool all of them (measured 2026-10-07: 1 of 33 sampled
 archived events was 25 h):
 
@@ -469,7 +470,7 @@ run, hence a new file and stream, and the old table stays readable. A later run 
 `configs/run-features-hourly.json` is the same nodes over the hourly ladders (KXBTC, KXBTCD, KXETH, KXETHD): markets and the
 realised value from `kalshi-history-crypto` (both archives), event-level candles from the two
 `kalshi-history-candles-hourly-*` sources, fees from `kalshi-crypto`, spot and BVOL from the Binance tapes, and the 15-minute
-series' strikes as the anchors of the index units. Needs sections 7a, 7b and the two hourly candle pulls (7d), plus B1.
+series' strikes as the anchors of the index units. Needs sections 7a, 7b and the two hourly candle pulls (7d), the section 3 `fee_schedules` and Binance pulls, plus B1.
 One row per settled hourly market and lead (5, 15, 30 minutes before the close); every modelling knob and the held-out cut are
 the 15-minute document's, pinned equal by a test, so one cut serves both.
 
@@ -492,6 +493,43 @@ python -m dskit.onboarding verify --root "$OB"
 
 Read B3 to B5 first; they apply unchanged. What differs:
 
+- **Size it before you run it: the engine keeps every node's rows in memory.** Measured 2026-10-07 on a 2-hour slice (3,168
+  markets, 23 s), peak memory is linear in decision rows, about 9.7 KB a row (3,168 rows 190 MB; 28,512 rows 410 MB; 186,912 rows
+  1.8 GB); the table it writes is 1.5 KB a row and its `acquire` peaks near 7 KB a row. Rows are the settled hourly-series markets
+  of 7b times 3 leads, and 1,464 of them close every hour (282 KXBTC and 282 KXBTCD per event, 450 KXETH and 450 KXETHD), so the 61
+  live days alone are about 2.1 M markets, 6.4 M rows and 60 GB, before any archived market: more than a typical WSL host has.
+  Count first and compare with `free -g`:
+
+```bash
+python - "$OB" <<'PY'    # B6 size: decision rows = settled hourly-series markets x leads
+import sys
+from dskit.onboarding import scan_stream
+HOURLY, LEADS, RUN_KB, ACQUIRE_KB = {"KXBTC", "KXBTCD", "KXETH", "KXETHD"}, 3, 9.7, 7.0
+rows = scan_stream(sys.argv[1], "kalshi-history-crypto", "markets", key_fields=["ticker"])
+markets = sum(1 for r in rows if r["series_ticker"] in HOURLY and r["status"] in ("finalized", "settled") and r["settlement_ts"])
+print(f"{markets} settled hourly markets x {LEADS} leads = {markets * LEADS} rows: "
+      f"about {markets * LEADS * RUN_KB / 1e6:.1f} GB peak for the run, {markets * LEADS * ACQUIRE_KB / 1e6:.1f} GB for the acquire")
+PY
+```
+
+  If it does not fit, do not run the shipped document. Run a SIZING copy over one series and one lead (its own run hash, its
+  table in its own directory, so the `acquire` loop above never publishes it; read it for size and census, never as the result),
+  then scale the figure by the series and leads you dropped. A date bound for the pulls and an open-length filter need a dskit
+  knob (an ADR), and a row-count refusal before the run is the owner's call; none exists today.
+
+```bash
+python - /tmp/run-features-hourly-sizing.json <<'PY'    # one series, one lead; the roots are already rewritten above
+import json, sys
+doc = json.load(open("configs/run-features-hourly.json"))
+doc["name"] += "-sizing"
+doc["pipeline"]["markets"]["params"]["series"] = ["KXBTCD"]
+doc["pipeline"]["decisions"]["params"]["leads_minutes"] = [15]
+doc["pipeline"]["write"]["params"]["path"] = "~/data/crypto_trading/features-hourly-sizing/decision_features-{run}.jsonl"
+json.dump(doc, open(sys.argv[1], "w"), indent=1)
+PY
+python -m dskit.pipeline run /tmp/run-features-hourly-sizing.json --asof "$(date -u +%F)"
+```
+
 - **The label has a value.** Each row carries `label` (the yes/no result), `settle_value` (the realised BRTI average, the
   same on every strike of an event) and `settlement_ms` (when it became known, after the close). They are labels: no feature
   reads them (a test changes every value and result and asserts no feature moves), and a later decision may use one only
@@ -510,8 +548,10 @@ Read B3 to B5 first; they apply unchanged. What differs:
   large (strikes x events x leads).
 - Spot is still Binance (research only). Coinbase (section 8) is the live-safe alternative, not yet read by any node.
 
-## Known issues (not fixed; none blocks the first run)
+## Known issues (not fixed; B6 must be sized before the full pull)
 
+- B6 holds every row in memory, about 9.7 KB a decision row (60 GB for the live days alone): size it, or run the sizing
+  copy, before the document runs over the full pull.
 - The candle and trade pulls (7d, 7e) cost one request chain per ARCHIVED market, a chain pages, and the pack has no date
   bound: 7c counts them first (the 15-minute trades are days, 7e), and a bounded pull needs a new dskit knob.
 

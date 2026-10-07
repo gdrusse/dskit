@@ -13,15 +13,18 @@ from dskit.pipeline.base import ConfigError
 from dskit.pipeline.libs.parquet_series import StreamManifests
 from synthetic import Store, bvol_days, kline_days, ms, utc, walk
 from test_fees import FEE_TYPES, row as fee_row, run as run_fees, schedule
-from test_kalshi_rows import candle_raw
+from test_kalshi_rows import PARAMS as MARKET_PARAMS, candle_raw
 from test_market_state import MINUTE, PARAMS as STATE_PARAMS, candle, row as state_row, run as run_state
-from test_spot_features import BAR, BARS, DECISION, START, STREAMS, anchor, decision_row, one, params, reference, spot, world
+from test_spot_features import (
+    BAR, BARS, DECISION, START, STREAMS, anchor, decision_row, ewma_per_sqrt_s, last_closed, one, params, parkinson_per_sqrt_s,
+    reference, rms_per_sqrt_s, spot, world,
+)
 
 from crypto_trading import fields as f
 from crypto_trading.anchors import StrikeAnchors
 from crypto_trading.decisions import DecisionRows
 from crypto_trading.fees import FeeColumns
-from crypto_trading.kalshi_rows import SECONDS_CEILING, CandleRows, FeeRows
+from crypto_trading.kalshi_rows import SECONDS_CEILING, CandleRows, FeeRows, MarketRows
 from crypto_trading.market_state import MarketState
 from crypto_trading.spot_features import SpotFeatures
 
@@ -266,3 +269,118 @@ def test_the_loaded_span_covers_every_decision_on_either_side_of_a_day_boundary(
         last_close = max(b["close_time_ms"] for b in two_days.bars["BTC"] if b["close_time_ms"] < instant)
         closes = {b["close_time_ms"]: b["close"] for b in two_days.bars["BTC"]}
         assert out[f.SPOT] == pytest.approx(closes[last_close]) and out["spot_age_ms"] == instant - last_close
+
+
+# -- spot_features: the config refusals and the history reach (LB2-05) -------------------------------------------------
+
+
+def refused_spot(match, **over):
+    with pytest.raises(ConfigError, match=match):
+        SpotFeatures("spot", params("/store", **over))
+
+
+BTC_TAPES = {"klines": STREAMS["BTC_klines"], "bvol": STREAMS["BTC_bvol"]}
+
+
+@pytest.mark.parametrize("assets", [{}, [], None, "BTC", 5])
+def test_assets_must_be_a_non_empty_map(assets):
+    refused_spot("assets is required", assets=assets)
+
+
+@pytest.mark.parametrize("spec", [
+    "KXBTC15M", ["KXBTC15M"], None, {"series": ["KXBTC15M"], "klines": STREAMS["BTC_klines"]},
+    {**BTC_TAPES, "series": ["KXBTC15M"], "extra": 1}, {"klines": STREAMS["BTC_klines"], "bvol": STREAMS["BTC_bvol"]}])
+def test_an_asset_spec_has_exactly_its_three_keys(spec):
+    refused_spot("must have exactly the keys", assets={"BTC": spec})
+
+
+@pytest.mark.parametrize("series", ["KXBTC15M", [], [""], [1], ["KXBTC15M", ""], ["KXBTC15M", None], None, {"KXBTC15M": 1}])
+def test_an_assets_series_is_a_non_empty_list_of_non_empty_strings(series):
+    refused_spot("series must be a non-empty list of strings", assets={"BTC": {**BTC_TAPES, "series": series}})
+
+
+def test_a_series_listed_by_two_assets_is_refused_and_one_listed_twice_by_one_is_not():
+    both = {"BTC": {**BTC_TAPES, "series": ["KXBTC15M"]}, "ETH": {**BTC_TAPES, "series": ["KXBTC15M"]}}
+    refused_spot("claimed by both", assets=both)
+    SpotFeatures("spot", params("/store", assets={"BTC": {**BTC_TAPES, "series": ["KXBTC15M", "KXBTC15M"]}}))
+
+
+@pytest.mark.parametrize("columns", [
+    {}, [], None, "klines", {"klines": params("r")["columns"]["klines"]}, {**params("r")["columns"], "extra": {}},
+    {"klines": params("r")["columns"]["klines"], "bvol": []},
+    {"klines": {**params("r")["columns"]["klines"], "open": ""}, "bvol": params("r")["columns"]["bvol"]},
+    {"klines": {**params("r")["columns"]["klines"], "open": 5}, "bvol": params("r")["columns"]["bvol"]},
+    {"klines": {**params("r")["columns"]["klines"], "extra": "x"}, "bvol": params("r")["columns"]["bvol"]},
+    {"klines": params("r")["columns"]["klines"], "bvol": {"time": "calc_time_ms"}}])
+def test_columns_name_exactly_the_two_tapes_and_every_column_each_needs(columns):
+    refused_spot("columns", columns=columns)
+
+
+@pytest.mark.parametrize("root", ["", 5, None, ["/store"]])
+def test_the_root_is_a_non_empty_string(root):
+    with pytest.raises(ConfigError, match="root is required"):
+        SpotFeatures("spot", {**params("/store"), "root": root})
+
+
+@pytest.mark.parametrize("knob", ["bar_ms", "max_spot_age_ms", "max_bvol_age_ms", "max_basis_age_ms"])
+def test_an_age_or_bar_length_of_one_millisecond_is_valid_and_zero_is_not(knob):
+    SpotFeatures("spot", params("/store", **{knob: 1}))
+    for bad in (0, -1, 1.5, True, "1", None):
+        refused_spot(knob, **{knob: bad})
+
+
+@pytest.mark.parametrize("knob", ["bvol_scale", "seconds_per_year"])
+def test_a_scale_of_any_positive_number_is_valid_and_zero_is_not(knob):
+    SpotFeatures("spot", params("/store", **{knob: 1e-9}))
+    SpotFeatures("spot", params("/store", **{knob: 1}))
+    for bad in (0, 0.0, -1.0, float("nan"), float("inf"), True, "1", None):
+        refused_spot(knob, **{knob: bad})
+
+
+def test_the_history_loaded_is_the_estimators_reach_not_the_spot_age_cap(tmp_path, monkeypatch):
+    # With the spot age cap at its 1 ms minimum the span loaded is the estimators' reach alone. The longest window
+    # (the EWMA's 60 returns, 61 closes) crosses midnight from a decision an hour into the day, so a reach that
+    # stopped short of it would drop the previous day's file and starve the window. The default cap of two bars used
+    # to cover for a reach short by up to two. (Files load whole, so a reach short by a bar or two inside a day is
+    # not observable here: that mutant is equivalent.)
+    store = world(tmp_path, monkeypatch)
+    bars = store.bars["BTC"]
+    for offset in (0, 5 * BAR):
+        decision = DECISION + offset
+        out = one(store, decision=decision, anchors=[], max_spot_age_ms=1 + offset)
+        i = last_closed(bars, decision)
+        assert out["rv_rms_30"] == pytest.approx(rms_per_sqrt_s(bars, i, 30), rel=1e-9), offset
+        assert out["rv_ewma_10"] == pytest.approx(ewma_per_sqrt_s(bars, i, 10, 60), rel=1e-9), offset
+        assert out["rv_hl_30"] == pytest.approx(parkinson_per_sqrt_s(bars, i, 30), rel=1e-9), offset
+
+
+# -- kalshi_rows: the vocabulary knobs refuse an empty map and accept a zero lag ---------------------------------------
+
+
+def refused_market_rows(match, **over):
+    with pytest.raises(ConfigError, match=match):
+        MarketRows("markets", {**MARKET_PARAMS, **over})
+
+
+@pytest.mark.parametrize("name", ["series", "settled_statuses"])
+@pytest.mark.parametrize("value", [[], "x", [""], [1], ["ok", ""], None, {"a": 1}])
+def test_a_vocabulary_list_is_a_non_empty_list_of_non_empty_strings(name, value):
+    refused_market_rows(f"{name} is required", **{name: value})
+
+
+@pytest.mark.parametrize("name", ["payoff_by_strike_type", "result_labels"])
+@pytest.mark.parametrize("value", [{}, [], "x", None, 5])
+def test_a_vocabulary_map_is_a_non_empty_map(name, value):
+    refused_market_rows(f"{name} is required", **{name: value})
+
+
+@pytest.mark.parametrize("labels", [{"yes": 2}, {"yes": True}, {"yes": 1, "no": -1}, {"yes": "1"}, {"yes": 0.5}])
+def test_a_result_label_is_zero_or_one(labels):
+    refused_market_rows("result_labels", result_labels=labels)
+
+
+def test_a_zero_strike_lag_is_valid_and_a_negative_or_unlisted_one_is_not():
+    MarketRows("markets", {**MARKET_PARAMS, "strike_known_lag_s": {"KXBTC15M": 0, "KXETH15M": 0.0}})
+    MarketRows("markets", {**MARKET_PARAMS, "strike_known_lag_s": {}})
+    for bad in ({"KXBTC15M": -0.001}, {"KXBTC15M": True}, {"KXBTC15M": float("nan")}, {"KXOTHER": 0}, "30", None):
+        refused_market_rows("strike_known_lag_s", strike_known_lag_s=bad)

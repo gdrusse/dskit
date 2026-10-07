@@ -329,6 +329,21 @@ def test_note_reports_rows_and_span_and_flags_disorder():
         "row order is reported, never enforced or repaired")
 
 
+def test_a_repeated_instant_is_a_duplicate_and_not_disorder():
+    # equal instants in file order are in order: only a decrease is "OUT OF ORDER" (LB2-04)
+    rows = TICKS_CSV.splitlines(keepends=True)
+    note = ticks().note(DAY, make_zip("".join([rows[0], rows[0], rows[1]])))
+    assert note.endswith("DUPLICATE INSTANTS 1") and "OUT OF ORDER" not in note
+    assert "OUT OF ORDER" not in ticks().note(DAY, make_zip("".join([rows[0], rows[0], rows[0]])))
+
+
+def test_one_adjacent_inversion_is_disorder_even_when_every_other_pair_is_ordered():
+    # instants 0, 2, 1, 3 s: 0<=1 and 2<=3, only the neighbours 2 and 1 are inverted
+    text = "".join(f"{1790812800000 + 1000 * s},10.5,3,buy,0\n" for s in (0, 2, 1, 3))
+    assert ticks().note(DAY, make_zip(text)).endswith("OUT OF ORDER")
+    assert "OUT OF ORDER" not in ticks().note(DAY, make_zip(text.replace("1790812802000", "1790812800500")))
+
+
 def test_note_reports_disorder_and_duplicates_together():
     rows = TICKS_CSV.splitlines(keepends=True)
     note = ticks().note(DAY, make_zip("".join([rows[1], rows[0], rows[0]])))
@@ -528,6 +543,18 @@ def test_a_bad_knob_refuses(change, needle):
         ticks(**change)
 
 
+@pytest.mark.parametrize("bad", [[], "ticks", 5, ["columns"], True])
+def test_params_that_are_not_an_object_refuse(bad):
+    with pytest.raises(AssetError, match="params must be an object"):
+        ZipCsvToParquet(bad, AS_OF)
+
+
+def test_max_member_bytes_of_one_is_the_smallest_accepted_cap():
+    assert ticks(max_member_bytes=1) is not None
+    with pytest.raises(ValueError, match="max_member_bytes"):
+        ticks(max_member_bytes=1).transform(DAY, make_zip(TICKS_CSV))
+
+
 def test_sniff_needs_a_numeric_first_column():
     layout = {"columns": [{"vendor": "sym", "output": "sym", "kind": "text"},
                           {"vendor": "t", "output": "t_ms", "kind": "ts"}]}
@@ -669,7 +696,7 @@ PARITY_REFUSALS = {
 def child():
     """The child's interim module, loaded by file path (it imports stdlib only)."""
     if not CHILD_FILE.is_file():
-        pytest.skip("the crypto_trading child is not beside this repo (it has graduated)")
+        pytest.skip(f"the interim module {CHILD_FILE.name} is gone: the child moved to dskit's zipcsv; the golden files hold the comparison")
     spec = importlib.util.spec_from_file_location("_zipcsv_parity_binance_vision", CHILD_FILE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

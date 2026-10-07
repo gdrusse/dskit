@@ -10,6 +10,12 @@ test runs the document as it ships now over the same store and demands:
 - the census is equal under its new names, and every data row of the markdown report is identical;
 - the published table file holds the same rows plus ``run_id``.
 
+Two worlds are pinned. The five-market one (``stage-b-15m-before-migration.json``) has one UTC day on each side
+of the cut, so every cell has ONE cluster and every cluster-robust standard error is blank. The nine-market one
+(``stage-b-15m-two-days-before-migration.json``, captured the same way from the child at a2749a3) puts two
+UTC days on each side of its cut (2026-09-04), so the cluster-robust errors that head the report are numbers and
+are compared bit for bit too (A2-02: a regression in the time block moved no cell of the first world).
+
 What is NOT pinned, and why: the document's identity hash and the source declaration digests moved by
 design (the runbook states both), snapshot ids carry the acquisition clock, and the report's header
 line and the artifact file names are dskit's now (``binary_score.md``).
@@ -19,9 +25,35 @@ import json
 import os
 
 import pytest
+from synthetic import ms, utc
 from test_features_pipeline import build_world, run
 
-GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "stage-b-15m-before-migration.json")
+GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
+
+#: Nine 15-minute markets over two UTC days on each side of the cut (2026-09-04): the second world. The days are
+#: chosen so that a time block of TWICE the length would merge the two days of a side (epoch days 20698/20699 and
+#: 20700/20701 share a double block), which is what the first world could never show.
+CLUSTER_MARKETS = [
+    ("KXBTC15M-26SEP020115-15", "BTC", utc(2026, 9, 2, 1, 15), "yes"),
+    ("KXETH15M-26SEP020130-30", "ETH", utc(2026, 9, 2, 1, 30), "no"),
+    ("KXBTC15M-26SEP030115-15", "BTC", utc(2026, 9, 3, 1, 15), "yes"),
+    ("KXBTC15M-26SEP030130-30", "BTC", utc(2026, 9, 3, 1, 30), "no"),
+    ("KXETH15M-26SEP030115-15", "ETH", utc(2026, 9, 3, 1, 15), "no"),
+    ("KXBTC15M-26SEP040115-15", "BTC", utc(2026, 9, 4, 1, 15), "yes"),
+    ("KXETH15M-26SEP040130-30", "ETH", utc(2026, 9, 4, 1, 30), "yes"),
+    ("KXBTC15M-26SEP050115-15", "BTC", utc(2026, 9, 5, 1, 15), "no"),
+    ("KXETH15M-26SEP050130-30", "ETH", utc(2026, 9, 5, 1, 30), "yes"),
+]
+#: 83 hours of Binance history from 2026-09-01 16:00: nine hours before the first decision, bars past the last close.
+CLUSTER_WORLD = {"fixtures": CLUSTER_MARKETS, "first_bar": utc(2026, 9, 1, 16, 0), "hours": 83}
+CLUSTER_CUT_MS = ms(utc(2026, 9, 4))
+
+#: world name -> (golden file, build_world arguments, rows, score cells, held-out cut in epoch ms or None for the
+#: harness's own); the counts restate the golden's own.
+WORLDS = {
+    "one-day-blocks": ("stage-b-15m-before-migration.json", {}, 15, 63, None),
+    "two-day-blocks": ("stage-b-15m-two-days-before-migration.json", CLUSTER_WORLD, 27, 63, CLUSTER_CUT_MS),
+}
 
 #: dskit's venue-neutral score keys for the ones this child used to spell fair/mid.
 SCORE_KEYS = {"brier_fair": "brier_model", "brier_mid": "brier_market", "mean_fair": "mean_model",
@@ -30,8 +62,8 @@ SCORE_KEYS = {"brier_fair": "brier_model", "brier_mid": "brier_market", "mean_fa
 NEW_COLUMNS = {"fair_rms_tau", "fair_ewma_tau", "fair_bvol_tau"}
 
 
-def golden():
-    with open(GOLDEN, encoding="utf-8") as handle:
+def golden(world):
+    with open(os.path.join(GOLDEN_DIR, WORLDS[world][0]), encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -39,18 +71,29 @@ def by_key(rows):
     return {(r["ticker"], r["lead_minutes"]): r for r in rows}
 
 
-@pytest.fixture
-def migrated(tmp_path, monkeypatch):
-    store = build_world(tmp_path, monkeypatch)
-    result, out = run(store, tmp_path)
+def cut_at(cut_ms):
+    """A ``run`` tweak moving the held-out cut to ``cut_ms``; None leaves the harness's own."""
+    def tweak(doc):
+        if cut_ms is not None:
+            segments = doc["pipeline"]["kill_test"]["params"]["segments"]
+            segments["development"]["end_ms"] = segments["heldout"]["start_ms"] = cut_ms
+    return tweak
+
+
+@pytest.fixture(params=sorted(WORLDS))
+def migrated(request, tmp_path, monkeypatch):
+    """``(result, out, world, golden)``: the shipped document run over one world, and that world's golden."""
+    world = request.param
+    store = build_world(tmp_path, monkeypatch, **WORLDS[world][1])
+    result, out = run(store, tmp_path, tweak=cut_at(WORLDS[world][4]))
     assert result.state == "ran", (result.state, result.error)
-    return result, out
+    return result, out, world, golden(world)
 
 
 def test_every_row_and_column_that_existed_before_is_identical(migrated):
-    result, _ = migrated
-    old, new = by_key(golden()["rows"]), by_key(result.outputs["fees"]["records"])
-    assert set(old) == set(new) and len(old) == 15
+    result, _, world, gold = migrated
+    old, new = by_key(gold["rows"]), by_key(result.outputs["fees"]["records"])
+    assert set(old) == set(new) and len(old) == WORLDS[world][2]
     for key, before in old.items():
         after = new[key]
         assert set(before) <= set(after), (key, sorted(set(before) - set(after)))
@@ -60,28 +103,28 @@ def test_every_row_and_column_that_existed_before_is_identical(migrated):
 
 
 def test_the_published_table_file_holds_the_same_rows_stamped_with_the_run(migrated):
-    result, out = migrated
+    result, out, _, gold = migrated
     (table,) = list(out.iterdir())
     lines = [json.loads(line) for line in table.read_text(encoding="utf-8").splitlines()]
     assert {row.pop("run_id") for row in lines} == {os.path.basename(result.run_dir)}
-    old, new = by_key(golden()["rows"]), by_key(lines)
+    old, new = by_key(gold["rows"]), by_key(lines)
     assert set(old) == set(new)
     for key, before in old.items():
         assert all(new[key][column] == value for column, value in before.items()), key
 
 
 def test_every_kill_test_cell_is_identical_under_the_new_names(migrated):
-    result, _ = migrated
-    old, new = golden()["scores"], result.outputs["kill_test"]["scores"]
-    assert len(old) == len(new) == 63
+    result, _, world, gold = migrated
+    old, new = gold["scores"], result.outputs["kill_test"]["scores"]
+    assert len(old) == len(new) == WORLDS[world][3]
     for before, after in zip(old, new):
         assert {SCORE_KEYS.get(k, k): v for k, v in before.items()} == after, (before["model"], before["segment"],
                                                                                  before["group"], before["bucket"])
 
 
 def test_the_census_is_the_same_count_under_the_new_names(migrated):
-    result, _ = migrated
-    old, new = golden()["census"], result.outputs["kill_test"]["summary"]["census"]
+    result, _, _, gold = migrated
+    old, new = gold["census"], result.outputs["kill_test"]["summary"]["census"]
     renamed = {"not_two_sided": "not_eligible"}
     for key, value in old.items():
         if key != "models":
@@ -94,8 +137,24 @@ def test_the_census_is_the_same_count_under_the_new_names(migrated):
 
 
 def test_every_data_row_of_the_markdown_report_is_identical(migrated):
-    result, _ = migrated
+    result, _, _, gold = migrated
     path = os.path.join(result.run_dir, "artifacts", "kill_test", "binary_score.md")
     rows = [ln for ln in open(path, encoding="utf-8").read().splitlines()
             if ln.startswith("| ") and not ln.startswith("| model") and not ln.startswith("|---")]
-    assert rows == golden()["report_table_rows"]
+    assert rows == gold["report_table_rows"]
+
+
+SE_KEYS = ("brier_diff_se", "logloss_diff_se", "pnl_se")
+
+
+def test_the_one_day_golden_has_no_cluster_robust_error_and_the_two_day_one_has_many():
+    # Why a second world exists: with one UTC day a side every ``*_se`` is blank, so the first world cannot
+    # notice a change to the time block. The two-day one holds numbers in the all-lead cells.
+    blank = [c for c in golden("one-day-blocks")["scores"] if any(c[k] is not None for k in SE_KEYS)]
+    assert blank == [], "the five-market world never has two clusters"
+    scores = golden("two-day-blocks")["scores"]
+    shown = [c for c in scores if c["brier_diff_se"] is not None and c["n_clusters"] >= 2]
+    assert len(shown) >= 6, len(shown)
+    assert {c["n_clusters"] for c in shown} == {2}, "two UTC days on a side"
+    assert all(c["segment"] in ("development", "heldout") for c in shown)
+    assert {c["segment"] for c in shown} == {"development", "heldout"}

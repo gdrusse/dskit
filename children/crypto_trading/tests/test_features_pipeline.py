@@ -60,16 +60,20 @@ def doc_dict():
         return json.load(handle)
 
 
-def decision_instants():
-    return [ms(close - timedelta(minutes=lead)) for _, _, close, _ in MARKETS for lead in LEADS]
+def decision_instants(fixtures=MARKETS):
+    return [ms(close - timedelta(minutes=lead)) for _, _, close, _ in fixtures for lead in LEADS]
 
 
-def build_world(tmp_path, monkeypatch):
-    """Markets, candles, fees, klines and BVOL for the five fixture markets."""
+def build_world(tmp_path, monkeypatch, fixtures=MARKETS, first_bar=utc(2026, 9, 1, 16, 0), hours=35):
+    """Markets, candles, fees, klines and BVOL for the fixture markets (``fixtures``: the five of ``MARKETS`` unless given).
+
+    ``first_bar`` and ``hours`` size the Binance history: at least 9 hours before the first decision (EWMA needs
+    300 bars) and bars past the last close.
+    """
     store = Store(tmp_path / "world", monkeypatch)
-    start = ms(utc(2026, 9, 1, 16, 0))  # 9 hours of history before the first decision: EWMA needs 300 bars
-    bars = {"BTC": walk(start, 35 * 60, price=60000.0, seed=11),
-            "ETH": walk(start, 35 * 60, price=3000.0, seed=12)}
+    start = ms(first_bar)
+    bars = {"BTC": walk(start, hours * 60, price=60000.0, seed=11),
+            "ETH": walk(start, hours * 60, price=3000.0, seed=12)}
 
     def index_at_open(asset, close):
         """The strike of a 15-minute up/down market: the index (Binance mid of the minute before the open, less
@@ -79,7 +83,7 @@ def build_world(tmp_path, monkeypatch):
         return (bar["open"] + bar["close"]) / 2.0 * (1.0 - DELTA)
 
     markets, candles = [], {}
-    for index, (ticker, asset, close, result) in enumerate(MARKETS):
+    for index, (ticker, asset, close, result) in enumerate(fixtures):
         floor = round(index_at_open(asset, close), 2)  # strikes are index dollars, set at the open
         markets.append(market_payload(ticker, close, floor=floor, result=result))
         candles[ticker] = [candle_payload(close - timedelta(minutes=15 - k), bid=bid_at(index, k), ask=bid_at(index, k) + SPREAD,
@@ -88,7 +92,7 @@ def build_world(tmp_path, monkeypatch):
     store.kalshi("kalshi-crypto", "source-kalshi-crypto.json", api, ["markets", "fee_schedules"])
     store.kalshi("kalshi-crypto-candles-btc", "source-kalshi-crypto-candles-btc.json", api, ["candles"])
     store.kalshi("kalshi-crypto-candles-eth", "source-kalshi-crypto-candles-eth.json", api, ["candles"])
-    bvol = sorted({(d - 1000 * k, 50.0 + k) for d in decision_instants() for k in (0, 1, 2)})
+    bvol = sorted({(d - 1000 * k, 50.0 + k) for d in decision_instants(fixtures) for k in (0, 1, 2)})
     store.blobs("binance-btcusdt-1m", kline_days(bars["BTC"]))
     store.blobs("binance-ethusdt-1m", kline_days(bars["ETH"]))
     store.blobs("binance-btcbvol", bvol_days(bvol))

@@ -54,15 +54,16 @@ held-out cut are the 15-minute document's, pinned equal by tests. Its rows also 
 | `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
 | `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0243) |
 | `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0242), rounded per order |
-| `dskit.pipeline.binary_scoring:BucketedBinaryScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close, epoch-ms bounds), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
+| `dskit.pipeline.binary_scoring:BucketedBinaryScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close in the 15-minute document, on `settlement_ms` in the hourly one; epoch-ms bounds), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
 The table is written (dskit's `RecordsWriteRun`, ADR-0244) as JSON lines, one file and one stream per run
 (`decision_features-<run>`, rows carry `run_id`), and published back as source `features-15m` through
 `configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
 The generic parts are dskit's (ADR-0239 to 0244, named in the table); this child keeps the Kalshi mapping, the row
 vocabulary and the readers. The move from the child's interim copies changed no number:
-`tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit (the identity hash and
-the Binance declaration digests moved by design; the runbook states both).
+`tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit, in a world with one UTC day a side and one with two,
+where the cluster-robust errors are numbers (the identity hash and the Binance declaration digests moved by design;
+the runbook states both).
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 
@@ -271,7 +272,7 @@ crypto_trading/
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── synthetic.py       # offline stores: scripted Kalshi, day-file parquet via localblobs
-    ├── golden/            # the pre-migration stage B outputs (one JSON, never regenerated)
+    ├── golden/            # the pre-migration stage B outputs of two worlds (two JSONs, never regenerated)
     ├── test_binance_vision.py # the two Binance layouts through dskit's zip transform + httpblobs e2e
     ├── test_anchors.py    # strikes as index observations
     ├── test_decisions.py  # market x lead rows

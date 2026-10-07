@@ -187,8 +187,9 @@ pacing and 429/5xx retry; `libs/kalshi.py` is the knob reference.
 
 The `kalshi_history` kind (ADR-0236) is a standalone sibling of `kalshi` for HISTORY: `markets` (adds
 `expiration_value`, `settlement_ts`, `volume`), `candles` (per event, or in ticker batches; archived markets
-one by one), `trades` (key `trade_id`, with `taker_side`) and `orderbooks` (adds `observed_at`). The venue's
-`/historical/cutoff` is read once per pull and routes each market to `/historical/*` or the live endpoints.
+one by one), `trades` (key `trade_id`, with `taker_side`) and `orderbooks` (adds `observed_at`). A market the
+archive's own listing holds is the archive's (its live copy is dropped, whatever its settlement time); `trades`
+split at the venue's `trades_created_ts`, read once per pull from `/historical/cutoff`.
 `series` is required; `statuses` defaults to `settled, closed, open` (keep `closed`, or a cursor can skip a
 market for good). A label exists only from `settlement_ts`: join on it, never on `effective_date`.
 `libs/kalshi_history.py` is the knob reference.

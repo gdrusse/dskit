@@ -133,7 +133,7 @@ that bind any edit:
 - **Strikes are index dollars, Binance is not.** A 15-minute strike is the previous window's settlement
   value (the BRTI 60 s average), published after the open (`strike_known_lag_s`); Binance runs a few bp
   higher. `StrikeAnchors` + `SpotFeatures` measure the basis at each anchor (strictly before the decision,
-  age-capped) and price `spot_brti`; never feed `FairValue` the raw `spot`. Decisions are made only strictly
+  age-capped) and price `spot_brti`; never feed `BinaryFairValue` the raw `spot`. Decisions are made only strictly
   after the strike is known.
 - **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
   refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
@@ -154,7 +154,8 @@ that bind any edit:
   `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement. `tests/test_migration_golden.py` pins the
   migration: every pre-migration row, column and score reproduces bit for bit.
 - **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
-  cut on the market's close; the document reports `development` only, and reading `heldout` is a recorded
+  cut on the market's close in the 15-minute document and on its settlement instant (`settlement_ms`) in the hourly
+  one, whose labels are known later; the documents report `development` only, and reading `heldout` is a recorded
   edit of `report_segments`. Errors cluster on day blocks (`cluster_block_s`), per-event errors beside them.
 - Stage B nodes are referenced by import path, not registered, and are research-only (Binance CC BY-NC-SA).
   Nodes that read files themselves take dskit's `StreamManifests` as an input so the data is in the run identity.
@@ -197,7 +198,7 @@ tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   file per child module, test_features_pipeline,
                        #   test_hourly_pipeline (leak tests by a second world)
                        #   test_migration_golden (golden/: the
-                       #   pre-migration outputs) and test_guard_pins (each
+                       #   pre-migration outputs of two worlds) and test_guard_pins (each
                        #   edge-of-data and bad-input guard, one case)
 pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```

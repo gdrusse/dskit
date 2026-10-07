@@ -92,8 +92,9 @@ _UNIT_TO_MS = {"s": (1000, 1), "ms": (1, 1), "us": (1, 1000), "ns": (1, 10**6)}
 UNITS = (_AUTO, *_UNIT_TO_MS)
 
 _UTC = dt.timezone.utc
-#: The last millisecond the ISO note can print (9999-12-31T23:59:59.999Z).
-_MAX_EPOCH_MS = int(dt.datetime.max.replace(tzinfo=_UTC).timestamp()) * 1000 + 999
+#: The last millisecond the ISO note can print (9999-12-31T23:59:59.999Z). Built from whole seconds: ``datetime.max``
+#: carries 999999 microseconds, which a float timestamp rounds up to the NEXT second.
+_MAX_EPOCH_MS = int(dt.datetime(9999, 12, 31, 23, 59, 59, tzinfo=_UTC).timestamp()) * 1000 + 999
 _INT64_LIMIT = 1 << 63
 _CORRUPT = "not a zip archive of UTF-8 CSV, or corrupt: {}"
 _NOTES_REASON = ("; notes is not accepted here (these params feed the source's declaration "

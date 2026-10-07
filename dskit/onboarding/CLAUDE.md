@@ -58,7 +58,8 @@ on it without breaking its rulings (ADR-0012…0016).
   holds the retried statuses, client name and path reader equal to `restapi`'s and `kalshi`'s), never
   shared through an underscore name. `kalshi_history` scans live statuses in
   lifecycle order, the archive last, and holds a series' listing before any
-  per-market request; its label (`expiration_value`) exists only from
+  per-market request; a ticker the archive listed is the archive's, never also
+  live, whatever it settled (A2-01); its label (`expiration_value`) exists only from
   `settlement_ts`. `restwindow` clips each response to its own half-open window;
   a short `page_size` page ends a cursor walk. `libs/zipcsv.py` is an
   `httpblobs` transform (ADR-0239), wired by import path; its `transform_params`

@@ -7,14 +7,19 @@ synthetic stores. The shell around them (``curl``, paths, ``tmux``) is the one p
 """
 
 import glob
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+from dataclasses import replace
 
 from dskit.onboarding import check_config, load_suite, resolve_connector
+from dskit.pipeline import OutputsConfig, run_document
+from dskit.pipeline.document import load_document
 from synthetic import shipped
-from test_hourly_pipeline import CUTOFF, World
+from test_hourly_pipeline import CUT_MS, CUTOFF, DOC as HOURLY_DOC, World, runbook_root_command
 from test_restwindow_sources import START, FakeCoinbase, acquire
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -161,3 +166,55 @@ def test_the_gap_count_snippet_reports_the_days_that_are_not_complete(tmp_path, 
     out = run_snippet(snippet("python - \"$OB\" coinbase-btcusd-1m"), root.root, "src", "candles", "time_iso")
     assert out.startswith("2 days;") and "2 not 1440 rows" in out, "the fixture spans the end of one day and the start of the next"
     assert START[:10] in out
+
+
+def test_the_hourly_size_snippet_counts_settled_hourly_markets_times_leads_and_agrees_with_the_document(tmp_path, monkeypatch):
+    """LB2-01: B6 holds every row in memory, so the runbook gives the count to take first; its two constants restate the document's."""
+    world = World(tmp_path, monkeypatch)
+    code = snippet("python - \"$OB\" <<'PY'    # B6 size")
+    out = run_snippet(code, world.store.path)
+    assert out.startswith("16 settled hourly markets x 3 leads = 48 rows: about 0.0 GB peak"), out
+    doc = json.load(open(HOURLY_DOC, encoding="utf-8"))["pipeline"]
+    leads = int(re.search(r"LEADS, RUN_KB, ACQUIRE_KB = .*?, (\d+), ", code).group(1))
+    assert leads == len(doc["decisions"]["params"]["leads_minutes"]), "the snippet's lead count is the document's"
+    hourly = set(re.findall(r'"(KX[A-Z]+)"', code.split("HOURLY")[1].split("}")[0]))
+    assert hourly == set(doc["markets"]["params"]["series"]), "the snippet's series are the document's"
+    assert "9.7 KB a row" in TEXT and "9.7" in code, "the figure the prose gives is the one the snippet multiplies by"
+
+
+def test_the_sizing_copy_is_a_real_document_over_one_series_and_one_lead(tmp_path, monkeypatch):
+    """LB2-01: the bounded path the runbook gives today runs, is its own run, and writes its table apart from the real one."""
+    world = World(tmp_path, monkeypatch)
+    work = tmp_path / "work"
+    (work / "configs").mkdir(parents=True)
+    shutil.copy(HOURLY_DOC, work / "configs" / "run-features-hourly.json")
+    done = subprocess.run(["bash", "-c", runbook_root_command()], cwd=work, capture_output=True, text=True,
+                          env={**os.environ, "OB": world.store.path})
+    assert done.returncode == 0, done.stderr
+    sizing = tmp_path / "run-features-hourly-sizing.json"
+    run_snippet_in(snippet("python - /tmp/run-features-hourly-sizing.json"), work, str(sizing))
+    doc = json.loads(sizing.read_text(encoding="utf-8"))
+    shipped_doc = json.load(open(HOURLY_DOC, encoding="utf-8"))
+    assert doc["name"] == shipped_doc["name"] + "-sizing"
+    assert "features-hourly-sizing" in doc["pipeline"]["write"]["params"]["path"], "never in the directory the acquire loop reads"
+    assert "features-hourly/" in shipped_doc["pipeline"]["write"]["params"]["path"]
+    out = tmp_path / "features"
+    out.mkdir()
+    doc["pipeline"]["write"]["params"]["path"] = str(out / "decision_features-{run}.jsonl")
+    kill = doc["pipeline"]["kill_test"]["params"]
+    kill["segments"]["development"]["end_ms"] = kill["segments"]["heldout"]["start_ms"] = CUT_MS
+    kill["report_segments"] = ["development", "heldout"]
+    sizing.write_text(json.dumps(doc), encoding="utf-8")
+    result = run_document(replace(load_document(str(sizing)), outputs=OutputsConfig(run_root=str(tmp_path / "runs"))),
+                          asof="2026-10-06")
+    assert result.state == "ran", (result.state, result.error)
+    rows = result.outputs["fees"]["records"]
+    assert {r["series"] for r in rows} == {"KXBTCD"} and {r["lead_minutes"] for r in rows} == {15}
+    assert len(rows) == 4, "two BTC strikes of each of the two events, one lead"
+    assert [p.name for p in out.iterdir()] and not (tmp_path / "features-hourly").exists()
+
+
+def run_snippet_in(code, cwd, *argv):
+    done = subprocess.run([sys.executable, "-c", code, *argv], capture_output=True, text=True, timeout=120, cwd=cwd)
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout

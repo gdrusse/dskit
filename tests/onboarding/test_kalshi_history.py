@@ -552,37 +552,57 @@ def test_cutoff_is_read_once_per_pull_across_streams():
         "/markets": by_status(),
     })
     read(conn, ["markets", "candles", "trades"])
-    assert script.paths().count("/historical/cutoff") == 1
-    assert script.paths()[0] == "/historical/cutoff"
+    assert script.paths().count("/historical/cutoff") == 1  # the trades leg's boundary
 
 
 def test_the_cutoff_comes_from_the_venue_never_from_the_pack():
-    # The same payloads route differently when the VENUE moves its cutoff: the
-    # boundary lives in the response, not in the code. The archive and the live
-    # listing both carry ``old`` (the overlap week): at the real cutoff the
-    # live copy is a duplicate, so it is dropped; with the cutoff moved to the
-    # very instant ``old`` settled, the live API owns it ("at the cutoff or
-    # later is live") and its copy is kept.
+    # The trades boundary lives in the response, not in the code: the same
+    # market is asked of the live API or of the archive as the VENUE moves
+    # ``trades_created_ts`` (a market closing after it is live, before it archived).
+    edge = market("KXBTCD-26AUG0701-T1", event="KXBTCD-26AUG0701",
+                  open_time="2026-08-07T00:30:00Z", close_time="2026-08-07T01:00:00Z",
+                  settlement_ts="2026-08-07T01:02:00Z")
+    routes = {
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(settled=[edge]),
+        "/historical/trades": {"trades": [], "cursor": ""},
+        "/markets/trades": {"trades": [], "cursor": ""},
+    }
+    conn, script, _ = connector(routes)
+    read(conn, ["trades"])
+    assert [p["min_ts"] for p in script.params("/markets/trades")] == [CUT_S]
+    assert script.params("/historical/trades") == []
+
+    moved = {**CUTOFF_BODY, "trades_created_ts": "2026-08-07T02:00:00Z"}
+    conn, script, _ = connector({**routes, "/historical/cutoff": moved})
+    read(conn, ["trades"])
+    assert script.params("/markets/trades") == []
+    assert [p["max_ts"] for p in script.params("/historical/trades")] == [
+        unix("2026-08-07T02:00:00Z")]
+
+
+def test_the_markets_boundary_never_routes_a_market_the_archive_listing_does():
+    # What the archive LISTS is the evidence it holds a market, not a date: the
+    # same payloads give the same markets whatever ``market_settled_ts`` says
+    # (A2-01: the real archive runs about a day past it).
     old = market("KXBTCD-26AUG0617-T1", settlement_ts="2026-08-06T21:02:21.8Z")
     routes = {
         "/historical/markets": {"markets": [old], "cursor": ""},
         "/markets": by_status(settled=[old]),
     }
-    conn, _, _ = connector(routes)
-    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [old["ticker"]]
-
-    moved = {**CUTOFF_BODY, "market_settled_ts": old["settlement_ts"]}
-    conn, _, _ = connector({**routes, "/historical/cutoff": moved})
-    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [old["ticker"]] * 2
+    for moved in (CUTOFF, old["settlement_ts"], "2026-08-05T00:00:00Z", "2030-01-01T00:00:00Z"):
+        conn, script, _ = connector(
+            {**routes, "/historical/cutoff": {**CUTOFF_BODY, "market_settled_ts": moved}})
+        assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [old["ticker"]]
+        assert "/historical/cutoff" not in script.paths()  # nothing here routes by it
 
 
 @pytest.mark.parametrize("body, message", [
-    ({"trades_created_ts": CUTOFF}, "market_settled_ts"),
-    ({"market_settled_ts": "soon", "trades_created_ts": CUTOFF}, "market_settled_ts"),
     ({"market_settled_ts": CUTOFF}, "trades_created_ts"),
     ({"market_settled_ts": CUTOFF, "trades_created_ts": 5}, "trades_created_ts"),
+    ({"market_settled_ts": CUTOFF, "trades_created_ts": "soon"}, "trades_created_ts"),
 ])
-def test_a_malformed_cutoff_refuses_the_pull(body, message):
+def test_a_malformed_trades_cutoff_refuses_the_pull(body, message):
     conn, _, _ = connector({
         "/historical/cutoff": body,
         "/historical/markets": {"markets": [], "cursor": ""},
@@ -590,6 +610,24 @@ def test_a_malformed_cutoff_refuses_the_pull(body, message):
     })
     with pytest.raises(AssetError, match=message):
         list(conn.read(CONFIG, ["markets", "trades"], {}, "live"))
+
+
+@pytest.mark.parametrize("body", [
+    {"trades_created_ts": CUTOFF},
+    {"market_settled_ts": "soon", "trades_created_ts": CUTOFF},
+    {"market_settled_ts": 7, "trades_created_ts": CUTOFF},
+])
+def test_a_malformed_markets_boundary_refuses_check_and_no_pull_reads_it(body):
+    # The venue's archive contract has both boundaries; ``check`` insists on
+    # both, but no pull routes by the markets one, so none is refused for it.
+    conn, _, _ = connector({
+        "/historical/cutoff": body,
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(),
+    })
+    with pytest.raises(AssetError, match="market_settled_ts"):
+        conn.check(CONFIG)
+    read(conn, ["markets", "candles"])
 
 
 def test_streams_that_need_no_archive_never_read_the_cutoff():
@@ -651,8 +689,7 @@ def test_markets_walk_every_live_status_in_lifecycle_order_then_the_archive():
     conn, script, _ = connector(MARKET_ROUTES)
     read(conn, ["markets"])
     common = {"series_ticker": SERIES, "limit": 1000}
-    assert script.calls == [
-        ("/historical/cutoff", {}),
+    assert script.calls == [  # no cutoff: what the archive lists decides, not a date
         ("/markets", {**common, "status": "open"}),
         ("/markets", {**common, "status": "closed"}),
         ("/markets", {**common, "status": "settled"}),
@@ -871,16 +908,79 @@ def test_markets_a_live_copy_the_archive_does_not_hold_is_kept_not_dropped():
     assert script.paths().count(f"/historical/markets/{OLD['ticker']}/candlesticks") == 1
 
 
-@pytest.mark.parametrize("settlement_ts", ["2026-08-07T00:00:00Z", "", None])
-def test_markets_a_live_copy_is_dropped_only_with_evidence_it_settled_before_the_cutoff(
+@pytest.mark.parametrize("settlement_ts", [
+    "2026-08-07T00:00:00Z", "2026-08-07T23:45:05.490178Z", "", None])
+def test_markets_a_live_copy_is_dropped_whenever_the_archive_listed_the_ticker(
         settlement_ts):
-    # Listed by the archive too, but settled AT the cutoff or not (yet) dated:
-    # nothing says the archive owns it, so the live copy is not dropped.
+    # The archive's listing is the evidence it holds a market, whatever the
+    # market's settlement says (A2-01: the real archive lists markets settled
+    # up to a day AFTER ``market_settled_ts``, and the live API lists them too).
     odd = market("KXBTCD-26AUG0700-T9", settlement_ts=settlement_ts)
     conn, _, _ = connector({
         "/historical/markets": {"markets": [odd], "cursor": ""},
         "/markets": by_status(settled=[odd])})
-    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [odd["ticker"]] * 2
+    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [odd["ticker"]]
+
+
+# A market the archive lists although it settled AFTER market_settled_ts
+# (probed 2026-10-07: KXBTC15M-26AUG071945-45 settled 23:45:05Z, cutoff 08-07).
+LATE = market("KXBTCD-26AUG0719-T1", event="KXBTCD-26AUG0719",
+              open_time="2026-08-07T22:45:00Z", close_time="2026-08-07T23:45:00Z",
+              settlement_ts="2026-08-07T23:45:05.490178Z")
+# The same, opened before the trades boundary and closed after it: both trade legs apply.
+LATE_STRADDLE = market("KXBTCD-26AUG0702-T2", event="KXBTCD-26AUG0702",
+                       open_time="2026-08-06T22:00:00Z", close_time="2026-08-07T02:00:00Z",
+                       settlement_ts="2026-08-07T02:02:00Z")
+
+
+def late_routes(**extra):
+    """Routes where the archive and the live API both list OLD, LATE and LATE_STRADDLE (A2-01)."""
+    both = [OLD, LATE, LATE_STRADDLE]
+    return {
+        "/historical/markets": {"markets": both, "cursor": ""},
+        "/markets": by_status(settled=both),
+        **extra,
+    }
+
+
+def test_markets_a_market_settled_after_the_cutoff_that_the_archive_lists_is_one_row():
+    conn, _, _ = connector(late_routes())
+    tickers = [d["ticker"] for d in data(read(conn, ["markets"]))]
+    assert sorted(tickers) == sorted([OLD["ticker"], LATE["ticker"], LATE_STRADDLE["ticker"]])
+
+
+def test_candles_a_market_both_listings_hold_is_requested_once_from_the_archive():
+    candle = archive_candle("2026-08-07T23:00:00Z")
+    conn, script, _ = connector(late_routes(**{
+        f"/historical/markets/{market_['ticker']}/candlesticks": {"candlesticks": [candle]}
+        for market_ in (OLD, LATE, LATE_STRADDLE)}))
+    rows = data(read(conn, ["candles"]))
+    assert sorted(r["ticker"] for r in rows) == sorted(
+        [OLD["ticker"], LATE["ticker"], LATE_STRADDLE["ticker"]])
+    asked = [p for p in script.paths() if p.endswith("/candlesticks")]
+    assert len(asked) == len(set(asked)) == 3  # no market twice, none through the live API
+    assert not [p for p in asked if p.startswith("/series/")]
+
+
+def test_trades_a_market_both_listings_hold_has_each_trade_once():
+    def trades_of(created):
+        return lambda p: {"trades": [
+            trade(f"{p['ticker']}-1", created, p["ticker"]),
+            trade(f"{p['ticker']}-2", created, p["ticker"], taker="no")], "cursor": ""}
+
+    conn, script, _ = connector(late_routes(**{
+        "/historical/trades": trades_of("2026-08-06T23:00:00Z"),
+        "/markets/trades": trades_of("2026-08-07T00:30:00Z")}))
+    rows = data(read(conn, ["trades"]))
+    ids = [r["trade_id"] for r in rows]
+    assert len(ids) == len(set(ids)) and len(ids) > 0
+    # One request per market and leg: the archive leg for markets that opened
+    # before the boundary, the live leg for those still trading at it.
+    for path in ("/historical/trades", "/markets/trades"):
+        asked = [p["ticker"] for p in script.params(path)]
+        assert len(asked) == len(set(asked)), path
+    assert [p["ticker"] for p in script.params("/markets/trades")] == [
+        LATE["ticker"], LATE_STRADDLE["ticker"]]
 
 
 def test_markets_add_the_three_settlement_fields():
@@ -2080,7 +2180,7 @@ def test_nothing_a_pull_emits_is_dated_after_its_capture():
 def test_pacing_sleeps_between_requests_but_not_before_the_first():
     conn, _, sleeps = connector(MARKET_ROUTES)
     read(conn, ["markets"], config={**CONFIG, "pace_s": 0.5})
-    assert sleeps == [0.5] * 5  # six requests, the first unpaced
+    assert sleeps == [0.5] * 4  # five requests (no cutoff read), the first unpaced
 
 
 def test_retry_with_backoff_on_429_and_5xx_and_network_errors():
@@ -2403,8 +2503,8 @@ def test_acquisition_end_to_end_markets_then_a_resumed_trade_pull(
         "/historical/cutoff": CUTOFF_BODY, **MARKET_ROUTES})
     first = run_acquisition(root, registry, "kalshihist", "markets", "backfill")
     assert first["records"] == 5 and first["snapshot"] is not None
-    assert StubHistoryConnector.script.paths()[:2] == [
-        "/historical/cutoff", "/historical/cutoff"]  # check(), then the pull
+    assert StubHistoryConnector.script.paths()[0] == "/historical/cutoff"
+    assert StubHistoryConnector.script.paths().count("/historical/cutoff") == 1  # check() only
     rows = scan_stream(root.root, "kalshihist", "markets", key_fields=("ticker",))
     assert {r["ticker"]: r["expiration_value"] for r in rows}[OLD["ticker"]] == 64396.95
 

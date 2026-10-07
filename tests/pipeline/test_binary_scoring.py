@@ -440,3 +440,115 @@ def test_node_declares_its_contract():
 def test_the_module_declares_its_public_api_and_leaks_no_underscore_name():
     assert not [n for n in binary_scoring.__all__ if n.startswith("_")]
     assert "BucketedBinaryScore" in binary_scoring.__all__
+
+
+# -- boundary and refusal pins (LB2-02: rules the child's golden used to be the only test of) ---------------
+
+
+def refused(match, **over):
+    with pytest.raises(ConfigError, match=match):
+        BucketedBinaryScore("score", {**PARAMS, **over})
+
+
+@pytest.mark.parametrize("names", [[""], [5], ["model", ""], ["model", None], "model", ("model",), []])
+def test_model_fields_are_a_list_of_distinct_non_empty_strings(names):
+    refused("model_fields is required", model_fields=names)
+
+
+def test_a_model_field_may_not_be_the_eligibility_or_any_other_declared_column():
+    for knob in ("eligible_field", "bid_field", "ask_field", "fee_yes_field", "fee_no_field", "settle_field",
+                 "cluster_field"):
+        refused("model_fields", model_fields=[PARAMS[knob]])
+    refused("model_fields", model_fields=["model", "model_b", "ok"])
+    # the eligibility column is optional: without it, no column is held back for it
+    params = {k: v for k, v in PARAMS.items() if k != "eligible_field"}
+    BucketedBinaryScore("score", {**params, "model_fields": ["ok"]})
+    BucketedBinaryScore("score", {**PARAMS, "model_fields": ["model", "model_b"]})
+
+
+@pytest.mark.parametrize("segments", [{}, [], ["development"], "development", None, 3])
+def test_segments_are_a_non_empty_map(segments):
+    refused("segments is required", segments=segments)
+
+
+@pytest.mark.parametrize("edges", [
+    (0.0, 0.5, 1.0), "0.5", None, [0.0], [], [0.0, "x", 1.0], [0.0, None, 1.0], [0.0, True, 1.0],
+    [0.0, float("nan"), 1.0], [0.0, 0.5, 0.5, 1.0], [0.5, 0.5], [0.0, 0.7, 0.5, 1.0], [1.0, 0.0],
+    [0.0, 0.5, 1.0, 0.9]])
+def test_bucket_edges_are_an_ascending_list_of_at_least_two_numbers(edges):
+    refused("bucket_edges is required", bucket_edges=edges)
+
+
+def test_bucket_edges_of_two_numbers_and_integers_are_fine():
+    BucketedBinaryScore("score", {**PARAMS, "bucket_edges": [0, 1]})
+    BucketedBinaryScore("score", {**PARAMS, "bucket_edges": [0.0, 0.25, 0.5, 0.75, 1.0]})
+
+
+def test_the_time_block_may_be_one_second_and_may_not_be_less():
+    node = BucketedBinaryScore("score", {**PARAMS, "cluster_block_s": 1})
+    assert node.params["cluster_block_s"] == 1
+    for bad in (0, -1, 1.5, True, "1", None):
+        refused("cluster_block_s", cluster_block_s=bad)
+
+
+def test_a_one_second_block_separates_rows_one_second_apart(tmp_path):
+    # the block is the unit: at 1 s two events settling a second apart are two clusters, at 1 h they are one
+    rows = [row("a", 1, 0.40, 0.70, 0.42, 0.38, "e1", settle=HELD),
+            row("b", 0, 0.60, 0.30, 0.62, 0.58, "e2", settle=HELD + 1_000)]
+    assert pick(score(tmp_path / "s", rows=rows, cluster_block_s=1))["n_clusters"] == 2
+    assert pick(score(tmp_path / "h", rows=rows, cluster_block_s=3600))["n_clusters"] == 1
+
+
+@pytest.mark.parametrize("market, bucket", [
+    (0.0, "[0,0.5)"), (0.25, "[0,0.5)"), (0.4999, "[0,0.5)"),
+    (0.5, "[0.5,1]"), (0.5001, "[0.5,1]"), (1.0, "[0.5,1]")])
+def test_a_market_value_on_an_edge_belongs_to_the_bucket_that_starts_there(tmp_path, market, bucket):
+    # intervals are [lo, hi): an inner edge opens the upper bucket, the first edge is in, the last edge is closed
+    only = [row("E", 1, market, 0.70, 0.52, 0.48, "e1", settle=HELD)]
+    out = score(tmp_path, rows=only)
+    assert pick(out, bucket=bucket)["n"] == 1
+    assert [r["bucket"] for r in out["scores"] if r["bucket"] != "all" and r["group"] == "all"] == [bucket]
+    assert out["summary"]["census"]["outside_buckets"] == 0
+
+
+def markdown_tables(tmp_path):
+    """The rendered report as ``(pooled rows, calibration rows)``, each row a list of cells."""
+    text = open(os.path.join(str(tmp_path), "artifacts", "score", binary_scoring.MARKDOWN_ARTIFACT),
+                encoding="utf-8").read()
+    tables, current = [], None
+    for line in text.splitlines():
+        if line.startswith("| model | segment |"):  # a header (a data row names a model first)
+            current = []
+            tables.append(current)
+        elif line.startswith("| ") and current is not None:
+            current.append([c.strip() for c in line.strip("|").split("|")])
+    assert len(tables) == 2, "a pooled table and a calibration table"
+    return tables
+
+
+def test_the_pooled_table_holds_one_row_per_model_and_segment_and_nothing_else(tmp_path):
+    # two leads and both buckets on each side, so a by-group row or a by-bucket row differs from the pooled one in n
+    rows = [row("A", 1, 0.40, 0.70, 0.42, 0.38, "e1", settle=HELD, lead=5, model_b=0.6),
+            row("B", 0, 0.60, 0.30, 0.62, 0.58, "e2", settle=HELD, lead=2, model_b=0.4),
+            row("C", 1, 0.45, 0.20, 0.47, 0.43, "e3", settle=301_000, lead=5, model_b=0.3),
+            row("D", 0, 0.70, 0.40, 0.72, 0.68, "e4", settle=302_000, lead=2, model_b=0.5)]
+    out = score(tmp_path, model_fields=["model", "model_b"], rows=rows)
+    pooled, _ = markdown_tables(tmp_path)
+    assert sorted((r[0], r[1]) for r in pooled) == [
+        ("model", "development"), ("model", "heldout"), ("model_b", "development"), ("model_b", "heldout")]
+    for r in pooled:
+        assert len(r) == 9 and r[2] == "2", "each side holds two rows: the pooled n, not one lead's or one bucket's"
+        assert r[3] == f"{pick(out, model=r[0], segment=r[1])['brier_model']:.4f}"
+
+
+def test_the_calibration_table_holds_one_row_per_model_segment_and_group_and_never_a_bucket(tmp_path):
+    rows = [*ROWS[:4], row("H", 0, 0.70, 0.40, 0.72, 0.68, "e8", settle=HELD, lead=2)]
+    out = score(tmp_path, rows=rows)
+    _, calibration = markdown_tables(tmp_path)
+    assert sorted((r[1], r[2]) for r in calibration) == [
+        ("heldout", "all"), ("heldout", "lead=2"), ("heldout", "lead=5")]
+    for r in calibration:
+        cell = pick(out, segment=r[1], group=r[2])
+        assert r[3] == str(cell["n"]) and float(r[4]) == pytest.approx(cell["mean_model"], abs=5e-5)
+        assert r[7] == f"{cell['mean_model'] - cell['base_rate']:+.4f}"
+        assert r[8] == f"{cell['mean_market'] - cell['base_rate']:+.4f}"

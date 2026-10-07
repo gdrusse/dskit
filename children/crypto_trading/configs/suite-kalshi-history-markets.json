@@ -20,7 +20,7 @@
         "field": "ticker"
       },
       "severity": "error",
-      "notes": "One row per market per pull. The live copy of a market the archive also listed is dropped by the pack; a duplicate here means that routing failed."
+      "notes": "One row per market per pull. The live copy of a market the archive also listed is dropped by the pack WHATEVER its settlement time (the real archive lists markets settled about a day after market_settled_ts, probed 2026-10-07); a duplicate here means that routing failed."
     },
     {
       "id": "markets-every-series-present",

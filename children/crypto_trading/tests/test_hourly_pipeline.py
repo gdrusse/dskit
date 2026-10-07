@@ -145,6 +145,7 @@ class World:
         store.kalshi("kalshi-crypto", "source-kalshi-crypto.json", fees, ["fee_schedules"])
         instants = [self.decision_ms(c, lead) for c in CLOSES for lead in LEADS]
         bvol = sorted({(d - 1000 * k, 50.0 + k) for d in instants for k in (0, 1, 2)})
+        self.instants, self.bvol = instants, bvol
         store.blobs("binance-btcusdt-1m", kline_days(self.bars["BTC"]))
         store.blobs("binance-ethusdt-1m", kline_days(self.bars["ETH"]))
         store.blobs("binance-btcbvol", bvol_days(bvol))
@@ -263,6 +264,17 @@ def test_every_feature_family_is_present_and_point_in_time_on_the_pipeline_path(
             assert r["fair_rms_status"] == "ok" and 0.0 < r["fair_rms"] < 1.0 and 0.0 < r["fair_bvol"] < 1.0
             assert r["fair_rms_tau"] == r["tau_s"] == lead * 60.0 - 5
             assert r["fee_status"] == "ok" and r["fee_buy_yes"] > 0.0
+
+
+def test_a_bvol_row_stamped_at_the_decision_instant_is_not_yet_known(ran):
+    """The strictly-prior rule on the hourly document path: every decision has a BVOL row AT its instant (0.50), which
+    is not known yet, so the row a second earlier (0.51) is the one read (A2-03)."""
+    world, result, _ = ran
+    assert all((d, 50.0) in world.bvol and (d - 1000, 51.0) in world.bvol for d in world.instants), "the world has the probe rows"
+    rows = result.outputs["fees"]["records"]
+    assert {r["decision_ms"] for r in rows} == set(world.instants)
+    for r in rows:
+        assert r["bvol_age_ms"] == 1000 and r["bvol_iv"] == pytest.approx(0.51), (r["ticker"], r["lead_minutes"])
 
 
 def test_the_basis_comes_from_the_fifteen_minute_anchors_known_before_each_decision(ran):

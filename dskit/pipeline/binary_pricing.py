@@ -253,7 +253,7 @@ class Above(BinaryPayoff):
     --------
     Price it from a survival function::
 
-        PAYOFFS["above"].yes_probability(lambda k: 0.4, lower=100.0, upper=None)
+        Above().yes_probability(lambda k: 0.4, lower=100.0, upper=None)
         # -> 0.4
     """
 
@@ -271,7 +271,7 @@ class Below(BinaryPayoff):
     --------
     Price it from a survival function::
 
-        PAYOFFS["below"].yes_probability(lambda k: 0.4, lower=None, upper=100.0)
+        Below().yes_probability(lambda k: 0.4, lower=None, upper=100.0)
         # -> 0.6
     """
 
@@ -291,7 +291,7 @@ class Between(BinaryPayoff):
     --------
     Price it from a survival function::
 
-        PAYOFFS["between"].yes_probability(lambda k: 0.6 if k < 100 else 0.3, lower=99.0, upper=101.0)
+        Between().yes_probability(lambda k: 0.6 if k < 100 else 0.3, lower=99.0, upper=101.0)
         # -> 0.3
     """
 

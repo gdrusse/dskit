@@ -2,11 +2,11 @@
 
 The live Kalshi API keeps settled markets only back to a moving archive
 cutoff; older markets, trades and candlesticks sit under ``/historical/*``.
-The cutoff is served (``GET /historical/cutoff``), so the pack reads it once
-per pull and carries no date of its own. It is a STANDALONE sibling of
-ADR-0075's ``kalshi`` pack: it subclasses nothing there and imports only the
-public (``__all__``) names of ``kalshi``, ``connector`` and ``base``, so the
-transport and row rules are restated here and
+The cutoff is served (``GET /historical/cutoff``), so the pack reads it (once
+per pull that has trades) and carries no date of its own. It is a STANDALONE
+sibling of ADR-0075's ``kalshi`` pack: it subclasses nothing there and
+imports only the public (``__all__``) names of ``kalshi``, ``connector`` and
+``base``, so the transport and row rules are restated here and
 ``tests/onboarding/test_kalshi_history.py`` pins every shared field equal to
 ``kalshi``'s own output on the same payloads.
 
@@ -31,17 +31,20 @@ join on ``settlement_ts``, never on ``effective_date``. Only ``orderbooks``
 carry a per-row read instant; an open market's quotes may be read up to one
 pass after its capture minute.
 
-**Routing.** A market belongs to exactly one archive. One that settled BEFORE
-the venue's ``market_settled_ts`` is served by ``/historical/markets``; the
-live listing may still return it for a while, and that copy is dropped when
-the archive listed it too. A live copy the archive did NOT list is kept and
-read through the live endpoints, never lost. One settled AT the cutoff or
-later is live. Trades split on ``trades_created_ts``: the part of a market's
-life before it is asked of ``/historical/trades`` (``max_ts`` = the cutoff),
-the rest of ``/markets/trades`` (``min_ts`` = the cutoff, or the cursor if
-later), so a market that straddles it is asked of both. The archive leg runs
-only when ``settled`` is among the ``statuses``; ``orderbooks`` are live only
-and never read the cutoff.
+**Routing.** A market belongs to exactly one archive, and what the archive
+LISTS decides which: a ticker ``/historical/markets`` lists is the archive's,
+and the live copy of it is dropped whatever its settlement says. The venue's
+``market_settled_ts`` is not the test, because the archive does not stop at
+it: probed 2026-10-07 it listed markets settled about a day AFTER the
+cutoff, which the live API lists too, and routing by the date emitted both
+copies. A live copy the archive did NOT list is kept and read through the
+live endpoints, never lost. Trades split on ``trades_created_ts`` (read once
+per pull that has trades): the part of a market's life before it is asked of
+``/historical/trades`` (``max_ts`` = the cutoff), the rest of
+``/markets/trades`` (``min_ts`` = the cutoff, or the cursor if later), so a
+market that straddles it is asked of both. The archive leg runs only when
+``settled`` is among the ``statuses``; ``orderbooks`` are live only and never
+read the cutoff.
 
 **Cursors, and why the listing is complete first.** ``candles`` and ``trades``
 skip a market that closed at or before the cursor, and ``trades`` asks for
@@ -50,12 +53,12 @@ the cursor was set was listed then. A market between its close and its
 settlement is ``closed`` for the venue, so the default ``statuses`` list
 ``closed`` too; leave it out and such a market can be skipped for good. A
 market also moves on WHILE the pull scans, so the live scans run in the order
-a market moves through (``LIFECYCLE_STATUSES``: open, closed, settled) whatever
-order ``statuses`` gives, and the archive is read last: a market that moves on
-between two scans is in the later one, whichever moment it moves at. The whole
-listing of a series is read, and held in memory, before the first per-market
-request, so no request stretches the gap between two scans; a ticker two live
-scans listed is kept once, as the latest scan saw it. A trade created after
+a market moves through (``LIFECYCLE_STATUSES``: unopened, open, paused, closed,
+settled) whatever order ``statuses`` gives, and the archive is read last: a
+market that moves on between two scans is in the later one, whichever moment it
+moves at. The whole listing of a series is read, and held in memory, before the
+first per-market request, so no request stretches the gap between two scans; a
+ticker two live scans listed is kept once, as the latest scan saw it. A trade created after
 the capture instant is not emitted: the next pull asks for it again. So
 nothing a pull emits is dated after its capture, and a venue clock ahead of
 this host's cannot make acquisition refuse a future-dated row.
@@ -531,11 +534,11 @@ class _MarketWalk:
         (:meth:`_lifecycle`), and the listing is complete before the caller
         makes a per-market request, so a market that changes status while the
         pull runs is in at least one scan. A ticker several scans listed is
-        kept once, as the latest scan saw it.
+        kept once, as the latest scan saw it, and a ticker the archive listed
+        is kept only as the archive's, whatever its settlement time.
         """
         statuses = self._knobs["statuses"] if statuses is None else statuses
         archive = SETTLED_STATUS in statuses
-        boundary = self._venue.cutoff("markets") if archive else None
         scans = [self._live(series, status) for status in self._lifecycle(statuses)]
         archived = self._archived(series) if archive else []
         held = {row["ticker"] for row in archived}
@@ -546,7 +549,7 @@ class _MarketWalk:
                 if row["ticker"] in claimed:
                     continue  # a later (more advanced) scan listed it
                 claimed.add(row["ticker"])
-                if not (archive and self._overlap(row, boundary, held)):
+                if row["ticker"] not in held:
                     listed.append(_Listed(False, row))
         return listed
 
@@ -569,16 +572,6 @@ class _MarketWalk:
             _ARCHIVE_MARKETS_PATH, {"series_ticker": series}, "markets",
             f"series {series!r} archive")
         return [_market_row(raw, label) for label, raw in walk]
-
-    @staticmethod
-    def _overlap(row, boundary, held):
-        """Report whether a live row is the copy of a market the archive listed and settled before the boundary.
-
-        A live row the archive did not list is kept even when it settled
-        before the boundary: dropping it would lose the market silently.
-        """
-        settled = _instant(row["settlement_ts"])
-        return settled is not None and settled < boundary and row["ticker"] in held
 
 
 class _Span:
@@ -1253,7 +1246,8 @@ class KalshiHistoryConnector(Connector):
         -------
         None
             Silence means the venue answered ``GET /historical/cutoff`` with
-            both boundaries the pack routes by.
+            both boundaries of its archive contract; trades route by
+            ``trades_created_ts``, and no pull routes by ``market_settled_ts``.
 
         Raises
         ------
