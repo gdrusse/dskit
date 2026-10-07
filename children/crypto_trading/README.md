@@ -14,11 +14,11 @@ market mid after fees?); models come only if it survives. The focus areas in
 | `kalshi-crypto` | KXBTC, KXBTCD, KXBTC15M, KXETH, KXETHD, KXETH15M: settled `markets`, `fee_schedules` | `kalshi-crypto-{markets,fees}` |
 | `kalshi-crypto-candles-{btc,eth}` | 1-minute `candles`, one 15-minute series each | `kalshi-crypto-candles` |
 | `kalshi-crypto-books-{15m,hourly}` | live `orderbooks` recorders (`captured_at` is a lower bound) | `kalshi-crypto-books` |
-| `binance-{btcusdt,ethusdt}-1m` | Binance Vision spot 1-minute klines, daily zips to parquet | `binance-files` |
+| `binance-{btcusdt,ethusdt}-1m` | Binance Vision spot 1-minute klines, daily zips to parquet (dskit's `zipcsv` transform, layout in `transform_params`) | `binance-files` |
 | `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet (26 known missing days) | `binance-files` |
 
-Existing packs only (`kalshi`, `httpblobs`); the child adds the zip-to-parquet
-transform `crypto_trading/binance_vision.py` (interim until a NEW dskit module lands, ADR-0239). Binance Vision
+Existing packs (`kalshi`, `httpblobs`) and dskit's `zipcsv` transform (ADR-0239): the Binance column layouts are
+each source's `transform_params`, so the pull needs no child code. Binance Vision
 is CC BY-NC-SA: research use only, not for live trading features. Exact commands:
 `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
@@ -33,24 +33,25 @@ Digest verification stays a manual spot check in the runbook (child-side; ADR-02
 sources and writes one row per settled 15-minute market and declared lead (default 2, 5, 10
 minutes before the close). Hourly series plug in by config once ADR-0236 supplies their candles.
 
-| Node (`crypto_trading.<module>:<Class>`) | Job |
+| Node (`crypto_trading.<module>:<Class>`, or the dskit path) | Job |
 |---|---|
 | `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` pack's streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants; unsettled and TBD-strike markets dropped by name; candle end seconds to ms |
 | `decisions:DecisionRows` | market x lead: information instant I = close - lead (strictly after the strike is known), fill at I + `exec_lag_s` |
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
-| `day_series:StreamManifests` | puts the Binance streams into the run identity (interim, ADR-0240) |
-| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol and BVOL, all strictly before the decision |
+| `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0240) |
+| `spot_features:SpotFeatures` | spot, the index-over-Binance basis from the latest anchor, ln(K/spot_brti), rolling-RMS / EWMA / high-low vol (dskit's variance estimators, ADR-0241, square-rooted here) and BVOL, all strictly before the decision |
 | `market_state:MarketState` | yes bid / ask / mid / spread / volume / open interest from the candle that ended by I (the spot bar's minute) |
-| `fair_value:FairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance |
-| `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream, rounded per order |
-| `kill_test:KillTestScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
+| `dskit.pipeline.binary_pricing:BinaryFairValue` | driftless lognormal P(YES) on the index-unit spot, with the 60-second settlement-average variance, priced from the fill (ADR-0243) |
+| `fees:FeeColumns` | Kalshi taker fee per contract from the `fee_schedules` stream: the Kalshi fee-type mapping (`fee_types`: base rate and mechanic) over dskit's `fee_mechanics` (ADR-0242), rounded per order |
+| `dskit.pipeline.binary_scoring:BucketedBinaryScore` | Brier and log-loss of each fair value vs the mid by bucket, lead and segment (cut on the close, epoch-ms bounds), calibration in the large, day-block cluster-robust errors beside per-event ones, plus the after-fee profit of a naive take rule; reports development only until `report_segments` is edited |
 
-The table is written as JSON lines, one file and one stream per run (`decision_features-<run>`, rows carry
-`run_id`), and published back as source `features-15m` through `configs/source-features-15m.json`
-(`localtables`); commands are in the runbook, stage B.
-Interim child classes standing in for PROPOSED dskit ADRs, each a NEW dskit module: `day_series.py` (0240),
-`vol_estimators.py` (0241), `fees.py` (0242; `pmquant` stays untouched), `fair_value.py` + `payoffs.py` +
-`kill_test.py` (0243), `run_write.py` (0244). Moving to a new module is a later step of the child's own.
+The table is written (dskit's `RecordsWriteRun`, ADR-0244) as JSON lines, one file and one stream per run
+(`decision_features-<run>`, rows carry `run_id`), and published back as source `features-15m` through
+`configs/source-features-15m.json` (`localtables`); commands are in the runbook, stage B.
+The generic parts are dskit's (ADR-0239 to 0244, named in the table); this child keeps the Kalshi mapping, the row
+vocabulary and the readers. The move from the child's interim copies changed no number:
+`tests/test_migration_golden.py` pins every pre-migration row, column and score bit for bit (the identity hash and
+the Binance declaration digests moved by design; the runbook states both).
 Tests: `tests/synthetic.py` builds the offline stores; `test_zero_edge.py` runs a zero-edge world through the real nodes and must show no edge.
 Known issues and what is not modelled: the runbook's last section.
 
@@ -195,22 +196,15 @@ crypto_trading/
 ├── README.md / CLAUDE.md  # this file; agent orientation
 ├── crypto_trading/           # tier-3 code; import = registration
 │   ├── __init__.py        # curated re-exports
-│   ├── binance_vision.py  # httpblobs transform: Binance daily zip-CSV to parquet
 │   ├── fields.py          # stage B: the row field names every node shares, once
 │   ├── ports.py           # stage B: ListPortsNode, the one list-port check
 │   ├── clock.py           # stage B: ISO instant to epoch ms, the one conversion
-│   ├── payoffs.py         # stage B: above / below / between payoff geometries (interim, ADR-0243)
 │   ├── kalshi_rows.py     # stage B: MarketRows, CandleRows, FeeRows (ObservationRows subclasses)
 │   ├── decisions.py       # stage B: DecisionRows, one row per market and lead
 │   ├── anchors.py         # stage B: StrikeAnchors, strikes as index observations
-│   ├── day_series.py      # stage B: day-file parquet series, StreamManifests (interim, ADR-0240)
-│   ├── vol_estimators.py  # stage B: rms / EWMA / high-low estimators (interim, ADR-0241)
 │   ├── spot_features.py   # stage B: point-in-time spot, vol, BVOL, moneyness
 │   ├── market_state.py    # stage B: quote state from ended candles
-│   ├── fair_value.py      # stage B: averaged-lognormal P(YES) (interim, ADR-0243)
-│   ├── fees.py            # stage B: Kalshi taker fee, per order (interim, ADR-0242)
-│   ├── kill_test.py       # stage B: fair value vs mid, after fees, by segment (interim, ADR-0243)
-│   ├── run_write.py       # stage B: RunStampedWrite, one table file and stream per run (interim, ADR-0244)
+│   ├── fees.py            # stage B: FeeColumns, the Kalshi fee-type mapping over dskit's fee mechanics
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   ├── nodes.py           # pipeline seam: node kinds, default-deny params
 │   ├── execution.py       # production seam: the venue executor (fail-closed)
@@ -226,8 +220,8 @@ crypto_trading/
 │   ├── source-kalshi-crypto.json         # stage A: six crypto series, markets + fees
 │   ├── source-kalshi-crypto-candles-{btc,eth}.json # stage A: 1-minute candles, one 15m series each
 │   ├── source-kalshi-crypto-books-{15m,hourly}.json # stage A: live orderbook recorders
-│   ├── source-binance-{btcusdt,ethusdt}-1m.json # stage A: spot klines
-│   ├── source-binance-{btc,eth}bvol.json # stage A: BVOL implied-vol index
+│   ├── source-binance-{btcusdt,ethusdt}-1m.json # stage A: spot klines (zip layout in transform_params)
+│   ├── source-binance-{btc,eth}bvol.json # stage A: BVOL implied-vol index (zip layout in transform_params)
 │   ├── binance_vision_dates.json         # the pinned day list the Binance sources pull
 │   ├── suite-kalshi-crypto-{markets,candles,fees,books}.json # one suite per stream
 │   ├── suite-binance-files.json          # the httpblobs inventory gate
@@ -257,21 +251,18 @@ crypto_trading/
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── synthetic.py       # offline stores: scripted Kalshi, day-file parquet via localblobs
-    ├── test_binance_vision.py # the transform on tiny in-test zips + httpblobs e2e
+    ├── golden/            # the pre-migration stage B outputs (one JSON, never regenerated)
+    ├── test_binance_vision.py # the two Binance layouts through dskit's zip transform + httpblobs e2e
     ├── test_anchors.py    # strikes as index observations
-    ├── test_day_series.py # day files, strictly-prior lookups, manifests
     ├── test_decisions.py  # market x lead rows
-    ├── test_fair_value.py # closed forms, the averaging adjustment, payoffs
     ├── test_features_pipeline.py # run-features-15m.json end to end, publish and read back
-    ├── test_fees.py       # fee rounding, schedule reader, FeeColumns
+    ├── test_migration_golden.py # the dskit migration changed no row, column or score
+    ├── test_fees.py       # the Kalshi fee mapping, schedule reader, FeeColumns
     ├── test_kalshi_rows.py # readers: labels, exclusions, seconds to ms
-    ├── test_kill_test.py  # a hand-scored table, clusters, outputs
     ├── test_market_state.py # candle state and the no-peeking rule
     ├── test_spot_features.py # strict-prior leak tests with a control
-    ├── test_vol_estimators.py # estimators by hand; causality by prefix
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
-    ├── test_ports_and_markers.py # one list-port owner; INTERIM markers name real ADRs
-    ├── test_run_write.py  # {run} paths, run_id rows, refusals
+    ├── test_ports_and_markers.py # one list-port owner; no INTERIM marker outlives its dskit module
     ├── test_configs.py    # every config validates against its engine; pins
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
     ├── test_kalshi_crypto.py # kalshi sources + suites against a scripted venue

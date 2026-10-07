@@ -14,16 +14,18 @@ Units, stated once because a mix-up is the classic silent bug here:
 - Volatilities are the standard deviation of the log return per SQUARE ROOT OF A
   SECOND, whatever their source (bars, an EWMA, an annualised index).
 
-Import cost: stdlib only.
+Import cost: stdlib + dskit (one constants-only module).
 """
+
+from dskit.pipeline.binary_pricing import LOWER, UPPER
 
 __all__ = [
     "ANCHOR_KNOWN_MS", "ANCHOR_MS", "ANCHOR_VALUE", "BASIS", "BASIS_AGE_MS", "BASIS_MISSING",
-    "CAP", "CANDLE_AGE_MS", "CANDLE_OPEN_INTEREST", "CANDLE_PRICE", "CANDLE_VOLUME",
+    "BOUND_FIELDS", "CAP", "CANDLE_AGE_MS", "CANDLE_OPEN_INTEREST", "CANDLE_PRICE", "CANDLE_VOLUME",
     "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "EXEC_MS", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
-    "RETRIEVED", "RETRIEVED_MS", "RUN_ID", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
+    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
     "TAU_S", "TICKER",
     "TWO_SIDED", "VOLUME", "YES_ASK", "YES_BID",
 ]
@@ -35,6 +37,8 @@ STRIKE_TYPE = "strike_type"
 PAYOFF = "payoff"
 FLOOR = "floor_strike"
 CAP = "cap_strike"
+#: dskit's payoff geometries read a ``lower`` and an ``upper`` bound; this child's rows call them the floor and the cap strike.
+BOUND_FIELDS = {LOWER: FLOOR, UPPER: CAP}
 OPEN_MS = "open_ms"
 CLOSE_MS = "close_ms"
 #: When the strike is known: the open plus the declared publication lag (see ``MarketRows``). A decision
@@ -78,12 +82,9 @@ FEE_MULTIPLIER = "fee_multiplier"
 RETRIEVED = "retrieved"
 RETRIEVED_MS = "retrieved_ms"
 
-#: Per-contract taker fee columns (what ``FeeColumns`` writes and ``KillTestScore`` reads).
+#: Per-contract taker fee columns (what ``FeeColumns`` writes and the scorer reads).
 FEE_BUY_YES = "fee_buy_yes"
 FEE_BUY_NO = "fee_buy_no"
-
-#: Which run produced a published row: the run directory's name (document, as-of, identity hash).
-RUN_ID = "run_id"
 
 YES_BID = "yes_bid"
 YES_ASK = "yes_ask"

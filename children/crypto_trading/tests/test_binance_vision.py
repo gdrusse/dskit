@@ -1,8 +1,10 @@
-"""BinanceKlines / BinanceBvol: Binance Vision daily zip-CSV -> parquet (the httpblobs transform).
+"""The Binance Vision layouts: daily zip-CSV -> parquet through dskit's ``ZipCsvToParquet`` (ADR-0239).
 
-Fixtures are built in the test (a tiny zip), never fetched: no network.
-The last tests drive the SHIPPED source config and suite through a real
-acquisition with the one HTTP seam (``_fetch``) scripted.
+The mechanism (zip, header, epoch, refusals) is dskit's and tested there; what is the CHILD's is the
+two vendor layouts the shipped source configs declare in ``transform_params``. These tests build
+the transform from exactly those blocks, restate the columns the vendor publishes, and drive the
+SHIPPED source configs and suite through a real acquisition with the one HTTP seam (``_fetch``)
+scripted. Fixtures are built in the test (a tiny zip), never fetched: no network.
 """
 
 import hashlib
@@ -25,18 +27,20 @@ from dskit.onboarding import (  # noqa: E402
 )
 from dskit.onboarding.libs.httpblobs import HttpBlobsConnector  # noqa: E402
 
-from crypto_trading.binance_vision import (  # noqa: E402
-    BVOL_COLUMNS,
-    KLINE_COLUMNS,
-    BinanceBvol,
-    BinanceKlines,
-    ZipCsvParquet,
-)
+from dskit.onboarding.libs.zipcsv import ZipCsvToParquet  # noqa: E402
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
 AS_OF = "2026-10-06T00:00:00+00:00"
 DAY = "2026-10-01"
+ZIPCSV = "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"
+KLINES_CONFIG, BVOL_CONFIG = "source-binance-btcusdt-1m.json", "source-binance-btcbvol.json"
+
+# The columns the vendor publishes, restated here on purpose (a layout read from the config under test
+# would assert nothing): the klines drop the always-0 `ignore` column and write the two instants in ms.
+KLINE_COLUMNS = ("open_time_ms", "open", "high", "low", "close", "volume", "close_time_ms", "quote_volume",
+                 "trades", "taker_buy_volume", "taker_buy_quote_volume")
+BVOL_COLUMNS = ("calc_time_ms", "symbol", "base_asset", "quote_asset", "index_value")
 
 # Three real-shaped 1-minute rows for 2026-10-01 (microsecond epochs, as Binance
 # has published spot files since 2025-01-01; no header row).
@@ -65,6 +69,21 @@ BVOL = (
 )
 
 
+def shipped(name):
+    with open(os.path.join(CONFIGS, name), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def klines():
+    """The transform the shipped klines source declares, built exactly as ``httpblobs`` builds it."""
+    return ZipCsvToParquet(shipped(KLINES_CONFIG)["transform_params"], AS_OF)
+
+
+def bvol():
+    """The transform the shipped BVOL source declares."""
+    return ZipCsvToParquet(shipped(BVOL_CONFIG)["transform_params"], AS_OF)
+
+
 def make_zip(text, name="BTCUSDT-1m-2026-10-01.csv", extra=()):
     """Return the bytes of a zip holding ``name`` (plus any ``extra`` members)."""
     buffer = io.BytesIO()
@@ -79,8 +98,18 @@ def table(data):
     return pq.read_table(io.BytesIO(data))
 
 
+def test_the_four_sources_declare_dskits_zip_transform_and_the_two_layouts_agree_per_family():
+    for name in ("source-binance-btcusdt-1m.json", "source-binance-ethusdt-1m.json",
+                 "source-binance-btcbvol.json", "source-binance-ethbvol.json"):
+        assert shipped(name)["transform"] == ZIPCSV, name
+    assert shipped("source-binance-btcusdt-1m.json")["transform_params"] == \
+        shipped("source-binance-ethusdt-1m.json")["transform_params"], "one klines layout for both assets"
+    assert shipped("source-binance-btcbvol.json")["transform_params"] == \
+        shipped("source-binance-ethbvol.json")["transform_params"], "one BVOL layout for both assets"
+
+
 def test_klines_schema_values_and_microsecond_epochs_become_milliseconds():
-    out = table(BinanceKlines({}, AS_OF).transform(DAY, make_zip(KLINES_US)))
+    out = table(klines().transform(DAY, make_zip(KLINES_US)))
     assert out.column_names == list(KLINE_COLUMNS)
     frame = out.to_pydict()
     assert frame["open_time_ms"] == [1790812800000, 1790812860000, 1790812920000]
@@ -91,8 +120,8 @@ def test_klines_schema_values_and_microsecond_epochs_become_milliseconds():
 
 
 def test_klines_milliseconds_pass_through_unchanged():
-    ms = table(BinanceKlines({}, AS_OF).transform(DAY, make_zip(KLINES_MS)))
-    us = table(BinanceKlines({}, AS_OF).transform(DAY, make_zip(KLINES_US)))
+    ms = table(klines().transform(DAY, make_zip(KLINES_MS)))
+    us = table(klines().transform(DAY, make_zip(KLINES_US)))
     assert ms.equals(us), "an old ms file and a new us file must land on the same ms values"
 
 
@@ -100,14 +129,13 @@ def test_klines_a_header_row_is_skipped_and_a_headerless_file_is_accepted():
     header = ",".join(("open_time", "open", "high", "low", "close", "volume", "close_time",
                        "quote_volume", "count", "taker_buy_volume",
                        "taker_buy_quote_volume", "ignore")) + "\n"
-    with_header = BinanceKlines({}, AS_OF).transform(DAY, make_zip(header + KLINES_US))
+    with_header = klines().transform(DAY, make_zip(header + KLINES_US))
     assert table(with_header).num_rows == 3
-    assert table(with_header).equals(
-        table(BinanceKlines({}, AS_OF).transform(DAY, make_zip(KLINES_US))))
+    assert table(with_header).equals(table(klines().transform(DAY, make_zip(KLINES_US))))
 
 
 def test_bvol_schema_and_values():
-    out = table(BinanceBvol({}, AS_OF).transform(DAY, make_zip(BVOL_HEADER + BVOL)))
+    out = table(bvol().transform(DAY, make_zip(BVOL_HEADER + BVOL)))
     assert out.column_names == list(BVOL_COLUMNS)
     frame = out.to_pydict()
     assert frame["calc_time_ms"] == [1790812800001, 1790812801000, 1790812802000]
@@ -120,85 +148,45 @@ def test_the_two_layouts_never_share_a_column_set():
     assert not set(BVOL_COLUMNS) & {"open_time_ms", "close"}
 
 
-def test_same_bytes_give_same_output():
-    body = make_zip(KLINES_US)
-    assert BinanceKlines({}, AS_OF).transform(DAY, body) == \
-        BinanceKlines({}, AS_OF).transform(DAY, body)
-
-
 def test_a_byte_order_mark_does_not_turn_the_first_data_row_into_a_header():
-    for cls, text in ((BinanceKlines, "\ufeff" + KLINES_US),
-                      (BinanceBvol, "\ufeff" + BVOL_HEADER + BVOL)):
-        assert table(cls({}, AS_OF).transform(DAY, make_zip(text))).num_rows == 3, (
+    for build, text in ((klines, "\ufeff" + KLINES_US), (bvol, "\ufeff" + BVOL_HEADER + BVOL)):
+        assert table(build().transform(DAY, make_zip(text))).num_rows == 3, (
             "a BOM glued to a number must not hide that row as a header")
 
 
-def test_a_header_that_is_not_the_expected_layout_refuses():
+def test_a_bvol_header_that_is_not_the_expected_layout_refuses():
     with pytest.raises(ValueError, match="header"):
-        BinanceBvol({}, AS_OF).transform(DAY, make_zip("t,sym,b,q,v\n" + BVOL))
+        bvol().transform(DAY, make_zip("t,sym,b,q,v\n" + BVOL))
 
 
 def test_duplicate_instants_refuse_a_kline_file_and_are_flagged_in_a_bvol_note():
     twice = KLINES_US + KLINES_US.splitlines(keepends=True)[0]
     with pytest.raises(ValueError, match="duplicate"):
-        BinanceKlines({}, AS_OF).transform(DAY, make_zip(twice))
-    bvol = BinanceBvol({}, AS_OF)
+        klines().transform(DAY, make_zip(twice))
+    node = bvol()
     body = make_zip(BVOL_HEADER + BVOL + BVOL.splitlines(keepends=True)[0])
-    assert bvol.note(DAY, body).endswith("DUPLICATE INSTANTS 1")
-    assert table(bvol.transform(DAY, body)).num_rows == 4, "BVOL keeps what the vendor published"
+    assert node.note(DAY, body).endswith("DUPLICATE INSTANTS 1")
+    assert table(node.transform(DAY, body)).num_rows == 4, "BVOL keeps what the vendor published"
 
 
 def test_note_reports_rows_and_span_and_flags_disorder():
-    klines = BinanceKlines({}, AS_OF)
-    note = klines.note(DAY, make_zip(KLINES_US))
-    assert note == "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z"
+    node = klines()
+    assert node.note(DAY, make_zip(KLINES_US)) == "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z"
     swapped = "".join(reversed(KLINES_US.splitlines(keepends=True)))
-    assert klines.note(DAY, make_zip(swapped)).endswith("OUT OF ORDER")
+    assert node.note(DAY, make_zip(swapped)).endswith("OUT OF ORDER")
 
 
 @pytest.mark.parametrize("body, match", [
-    (b"not a zip at all", "not a zip"),
-    (make_zip("", name="notes.txt"), "no .csv member"),
-    (make_zip(KLINES_US, extra=[("again.csv", KLINES_US)]), "exactly one .csv"),
-    (make_zip(""), "no rows"),
     (make_zip(KLINES_US.replace(",0\n", "\n")), "12 columns"),
     (make_zip(KLINES_US.replace("83623.59000000", "abc", 1)), "line 1"),
     (make_zip(KLINES_US.replace("4552", "45.5", 1)), "line 1"),
 ])
-def test_a_file_that_cannot_be_reshaped_refuses_by_name(body, match):
+def test_a_kline_file_that_does_not_fit_the_vendor_layout_refuses_by_line(body, match):
     with pytest.raises(ValueError, match=match):
-        BinanceKlines({}, AS_OF).transform(DAY, body)
-
-
-def test_a_zip_with_a_corrupt_member_refuses():
-    body = bytearray(make_zip(KLINES_US))
-    body[len(body) // 3] ^= 0xFF  # flip a byte inside the deflated member
-    with pytest.raises(ValueError):
-        BinanceKlines({}, AS_OF).transform(DAY, bytes(body))
-
-
-def test_unknown_params_are_refused_default_deny():
-    with pytest.raises(ValueError, match="unknown params"):
-        BinanceKlines({"surprise": 1}, AS_OF)
-
-
-def test_the_base_class_is_abstract_so_a_half_built_layout_cannot_construct():
-    with pytest.raises(TypeError):
-        ZipCsvParquet({}, AS_OF)
-
-    class NoLayout(ZipCsvParquet):
-        pass
-
-    with pytest.raises(TypeError):
-        NoLayout({}, AS_OF)
+        klines().transform(DAY, body)
 
 
 # -- the shipped config and suite, through a real acquisition ----------------
-
-
-def shipped(name):
-    with open(os.path.join(CONFIGS, name), encoding="utf-8") as handle:
-        return json.load(handle)
 
 
 def acquire_inventory(tmp_path, monkeypatch, config_name, answers):

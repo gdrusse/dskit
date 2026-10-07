@@ -12,15 +12,15 @@ quotes one minute stale and must show the spurious edge, so the test is known to
 import math
 
 import numpy as np
-from synthetic import Store, bvol_days, kline_days, ms, utc
+from dskit.pipeline.binary_pricing import AveragedLognormal, BinaryFairValue
+from dskit.pipeline.binary_scoring import BucketedBinaryScore
+from dskit.pipeline.libs.parquet_series import StreamManifests
+from synthetic import Store, bvol_days, kline_days, ms, shipped, utc
 from test_spot_features import params as spot_params
 
 from crypto_trading.anchors import StrikeAnchors
-from crypto_trading.day_series import StreamManifests
 from crypto_trading.decisions import DecisionRows
-from crypto_trading.fair_value import AveragedLognormal, FairValue
 from crypto_trading.fees import FeeColumns
-from crypto_trading.kill_test import KillTestScore
 from crypto_trading.market_state import MarketState
 from crypto_trading.spot_features import SpotFeatures
 
@@ -103,16 +103,23 @@ def score(tmp_path, monkeypatch, n, seed, stale_s):
         None, {"records": rows, "manifests": manifests, "anchors": anchors})["records"]
     state = MarketState("q", {"max_candle_age_ms": 120_000, "quote_floor": 0.0, "quote_ceiling": 1.0}).run(
         None, {"records": spot, "candles": candles})["records"]
-    fair = FairValue("f", {"vol_field": "rv_rms_60", "spot_field": "spot_brti", "fair_field": "fair",
-                           "averaging_window_s": 60}).run(None, {"records": state})["records"]
+    fair = BinaryFairValue("f", {
+        "vol_field": "rv_rms_60", "spot_field": "spot_brti", "fair_field": "fair", "averaging_window_s": 60,
+        "payoff_field": "payoff", "lower_field": "floor_strike", "upper_field": "cap_strike",
+        "decision_field": "decision_ms", "settle_field": "close_ms", "exec_lag_s": EXEC_LAG_S,
+    }).run(None, {"records": state})["records"]
     schedule = [{"series": "KXBTC15M", "fee_type": "quadratic", "fee_multiplier": 1.0,
                  "retrieved": "2026-10-06T00:00:00+00:00", "retrieved_ms": 1}]
-    priced = FeeColumns("fees", {"base_rate_by_type": {"quadratic": 0.07}, "contracts": 100}).run(
+    fee_types = shipped("run-features-15m.json")["pipeline"]["fees"]["params"]["fee_types"]  # the SHIPPED Kalshi mapping
+    priced = FeeColumns("fees", {"fee_types": fee_types, "contracts": 100}).run(
         None, {"records": fair, "schedules": schedule})["records"]
-    out = KillTestScore("kill", {
-        "fair_fields": ["fair"], "mid_edges": [0.0, 1.0], "margin": 0.02, "by": ["lead_minutes"],
+    out = BucketedBinaryScore("kill", {
+        "model_fields": ["fair"], "market_field": "mid", "label_field": "label", "settle_field": "close_ms",
+        "bid_field": "yes_bid", "ask_field": "yes_ask", "fee_yes_field": "fee_buy_yes",
+        "fee_no_field": "fee_buy_no", "eligible_field": "two_sided",
+        "bucket_edges": [0.0, 1.0], "margin": 0.02, "by": ["lead_minutes"],
         "cluster_field": "event_ticker", "cluster_block_s": 86_400,
-        "segments": {"all": {"start": "1970-01-01T00:00:00Z"}}, "report_segments": ["all"],
+        "segments": {"all": {"start_ms": 0}}, "report_segments": ["all"],
     }).run(Ctx(tmp_path), {"records": priced})
     return priced, {(s["group"], s["bucket"]): s for s in out["scores"]}
 
@@ -135,7 +142,7 @@ def test_a_world_with_no_edge_shows_no_edge_over_the_market_and_no_profit_from_t
         if cell["n_trades"] > 30:
             assert cell["pnl_mean"] < 3.0 * cell["pnl_se"], f"{group}: a naive take rule must not profit from nothing"
     pooled = cells[("all", "all")]
-    assert abs(pooled["mean_fair"] - pooled["base_rate"]) < 0.05, "calibrated in the large: no unit or basis bias"
+    assert abs(pooled["mean_model"] - pooled["base_rate"]) < 0.05, "calibrated in the large: no unit or basis bias"
 
 
 def test_control_a_stale_quote_manufactures_exactly_the_edge_the_test_guards_against(tmp_path, monkeypatch):

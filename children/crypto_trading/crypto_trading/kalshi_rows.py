@@ -28,13 +28,13 @@ Import cost: stdlib + dskit.
 from abc import abstractmethod
 from collections import Counter
 
+from dskit.pipeline.binary_pricing import PAYOFFS
 from dskit.pipeline.libs.numpy import narrow_params
 from dskit.pipeline.libs.observations import DEFAULT_TS_OUT, DEFAULT_TS_UNIT, ObservationRows
 from dskit.pipeline.records import number_ok, price_ok
 
 from . import fields as f
 from .clock import instant_ms
-from .payoffs import PAYOFFS
 
 __all__ = ["CandleRows", "FeeRows", "MarketRows", "SECONDS_CEILING"]
 
@@ -147,7 +147,7 @@ class MarketRows(_StreamRows):
         ``root`` (str) the onboarding root; ``source`` (str) the registered source;
         ``series`` (non-empty list of str) the series kept, REQUIRED; ``payoff_by_strike_type``
         (dict, REQUIRED) the venue's ``strike_type`` -> a payoff name in
-        :data:`~crypto_trading.payoffs.PAYOFFS`; ``result_labels`` (dict, REQUIRED) the
+        :data:`dskit.pipeline.binary_pricing.PAYOFFS`; ``result_labels`` (dict, REQUIRED) the
         venue's ``result`` -> 0 or 1; ``settled_statuses`` (non-empty list of str, REQUIRED)
         the payload statuses that mean settled; ``as_of_acquisition_ms`` (int >= 0, optional)
         the read vintage.
@@ -254,7 +254,7 @@ class MarketRows(_StreamRows):
         name = self.params["payoff_by_strike_type"].get(strike_type)
         if name is None:
             return "unknown_strike_type"
-        needed = PAYOFFS[name].strike_fields
+        needed = [f.BOUND_FIELDS[bound] for bound in PAYOFFS[name].bounds]
         return "strike_missing" if not all(price_ok(record.get(field)) for field in needed) else None
 
     def _exclusion(self, record):

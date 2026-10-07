@@ -84,7 +84,7 @@
       "notes": "Each series' fee_type and fee_multiplier as the venue reported them at each retrieval. The venue serves only the CURRENT schedule, so a historical market is priced under the latest retrieval; the table says which (fee_schedule_retrieved)."
     },
     "streams": {
-      "uses": "crypto_trading.day_series:StreamManifests",
+      "uses": "dskit.pipeline.libs.parquet_series:StreamManifests",
       "params": {
         "root": "/home/russell/data/crypto_trading/ob",
         "streams": {
@@ -106,7 +106,7 @@
           }
         }
       },
-      "notes": "Puts the four Binance streams into the run identity. The feature node reads their daily parquet files itself, which a transform's fingerprint would not cover; this data node fingerprints each stream's snapshot hash and the feature node refuses a store that moved since. Keys are <ASSET>_<tape> and must match spot.assets (a test pins it)."
+      "notes": "Puts the four Binance streams into the run identity. The feature node reads their daily parquet files itself, which a transform's fingerprint would not cover; this data node (dskit's StreamManifests, ADR-0240) fingerprints each stream's snapshot hash and the feature node refuses a store that moved since. Keys are <ASSET>_<tape> and must match spot.assets (a test pins it)."
     },
     "decisions": {
       "uses": "crypto_trading.decisions:DecisionRows",
@@ -191,13 +191,14 @@
             "window": 60
           }
         ],
+        "vol_column_prefix": "rv_",
         "max_spot_age_ms": 120000,
         "max_bvol_age_ms": 60000,
         "bvol_scale": 0.01,
         "seconds_per_year": 31536000,
         "max_basis_age_ms": 1200000
       },
-      "notes": "Point-in-time spot, basis, log-moneyness ln(K/spot_brti), realised vol and BVOL, strictly before the decision. A 1-minute kline counts only once its close_time_ms is before the decision (bars are labelled by their START, so at 01:00:30 the 01:00 bar is not known); BVOL only if calc_time_ms is strictly before it. Vols are the log-return std per sqrt(second): rms = root-mean-square of the last 60 one-minute returns, ewma = half-life 30 bars over the last 300, high_low = Parkinson over 60 bars. A reading older than the age cap is missing (None, flagged), never carried forward; a missing minute blanks the windows it touches. bvol_scale 0.01: the index is published in percentage points (confirmed on a real day in the 2026-10-06 review). UNVERIFIED: seconds_per_year as a 365-day year, and about one BVOL row a second (max_bvol_age_ms assumes it); check one day's file. bar_ms is the interval of the 1m sources (pinned by a test). Klines are USDT-quoted, a proxy for the USD index Kalshi settles on; CC BY-NC-SA, research only. BASIS: strikes are index dollars and the Binance price is on average about 22 USD higher (an unmodelled gap biased every fair value up by about 11 points on live data). For the latest anchor known strictly before the decision (no older than max_basis_age_ms, 20 minutes: longer than the 15 minutes between 15-minute strikes plus the lag) the node divides the anchor by the mean of open and close of the one Binance 1-minute bar before the anchor's window end (it closes 1 ms before the anchor window ends, so it is strictly prior), and multiplies that basis onto the spot: spot_brti. It writes basis, basis_age_ms and basis_missing; no usable anchor means no spot_brti and an unpriced row, never a unit-less price. The bar mean is a proxy for the 60-second average (1-minute klines hold nothing finer), so each basis carries noise (sd about 14 USD on live data); that, not the level, is what remains. bar_ms and the 60-second averaging window are pinned equal by a test."
+      "notes": "Point-in-time spot, basis, log-moneyness ln(K/spot_brti), realised vol and BVOL, strictly before the decision. A 1-minute kline counts only once its close_time_ms is before the decision (bars are labelled by their START, so at 01:00:30 the 01:00 bar is not known); BVOL only if calc_time_ms is strictly before it. Vols are the log-return std per sqrt(second), the square root of dskit's per-bar variance estimators (vol_estimators, ADR-0241) over the bar's seconds, in columns named vol_column_prefix + the estimator's label (rv_rms_60, rv_ewma_30, rv_hl_60): rms = root-mean-square of the last 60 one-minute returns, ewma = half-life 30 bars over the last 300, high_low = Parkinson over 60 bars. A reading older than the age cap is missing (None, flagged), never carried forward; a missing minute blanks the windows it touches. bvol_scale 0.01: the index is published in percentage points (confirmed on a real day in the 2026-10-06 review). UNVERIFIED: seconds_per_year as a 365-day year, and about one BVOL row a second (max_bvol_age_ms assumes it); check one day's file. bar_ms is the interval of the 1m sources (pinned by a test). Klines are USDT-quoted, a proxy for the USD index Kalshi settles on; CC BY-NC-SA, research only. BASIS: strikes are index dollars and the Binance price is on average about 22 USD higher (an unmodelled gap biased every fair value up by about 11 points on live data). For the latest anchor known strictly before the decision (no older than max_basis_age_ms, 20 minutes: longer than the 15 minutes between 15-minute strikes plus the lag) the node divides the anchor by the mean of open and close of the one Binance 1-minute bar before the anchor's window end (it closes 1 ms before the anchor window ends, so it is strictly prior), and multiplies that basis onto the spot: spot_brti. It writes basis, basis_age_ms and basis_missing; no usable anchor means no spot_brti and an unpriced row, never a unit-less price. The bar mean is a proxy for the 60-second average (1-minute klines hold nothing finer), so each basis carries noise (sd about 14 USD on live data); that, not the level, is what remains. bar_ms and the 60-second averaging window are pinned equal by a test."
     },
     "state": {
       "uses": "crypto_trading.market_state:MarketState",
@@ -213,43 +214,61 @@
       "notes": "The market's own YES bid, ask, mid, spread, volume and open interest from the last 1-minute candle that ended at or before the information instant I (the venue's end_period_ts is the inclusive last second of its minute: the candle ending at I covers the same minute as the spot bar, and its close is the last quote in it, so spot and quote carry ONE information instant). A candle that ends after I, and above all after the close (settled prices are about 0 or 1), is never read, and an order fills only at I + the execution lag. A candle older than two minutes is missing, not carried. two_sided means a real, uncrossed bid and ask strictly inside (0, 1): the scorer's gate. Never imputed."
     },
     "fair_rms": {
-      "uses": "crypto_trading.fair_value:FairValue",
+      "uses": "dskit.pipeline.binary_pricing:BinaryFairValue",
       "inputs": {
         "records": "$state.records"
       },
       "params": {
         "vol_field": "rv_rms_60",
         "spot_field": "spot_brti",
+        "payoff_field": "payoff",
+        "lower_field": "floor_strike",
+        "upper_field": "cap_strike",
+        "decision_field": "decision_ms",
+        "settle_field": "close_ms",
         "fair_field": "fair_rms",
+        "exec_lag_s": 5,
         "averaging_window_s": 60
       },
-      "notes": "P(YES) under a driftless lognormal with the 60-minute-window realised vol, over the time left, with the settlement-average adjustment: the CF Benchmarks index averages its last 60 seconds, which cuts the variance by 2/3 of that window's point variance (derivation in fair_value.py). The baseline of the kill test: nothing is fitted. spot_field is spot_brti: the Binance spot in the strikes' units (index dollars), never the raw Binance price."
+      "notes": "P(YES) under a driftless lognormal with the 60-minute-window realised vol, over the time left, with the settlement-average adjustment: the CF Benchmarks index averages its last 60 seconds, which cuts the variance by 2/3 of that window's point variance (derivation in dskit.pipeline.binary_pricing, ADR-0243). The node prices the horizon from the fill, tau = close - (decision_ms + exec_lag_s), so exec_lag_s here is the SAME 5 seconds as decisions.exec_lag_s (a test pins it; the table's tau_s column and this node's fair_rms_tau must agree). The baseline of the kill test: nothing is fitted. spot_field is spot_brti: the Binance spot in the strikes' units (index dollars), never the raw Binance price."
     },
     "fair_ewma": {
-      "uses": "crypto_trading.fair_value:FairValue",
+      "uses": "dskit.pipeline.binary_pricing:BinaryFairValue",
       "inputs": {
         "records": "$fair_rms.records"
       },
       "params": {
         "vol_field": "rv_ewma_30",
         "spot_field": "spot_brti",
+        "payoff_field": "payoff",
+        "lower_field": "floor_strike",
+        "upper_field": "cap_strike",
+        "decision_field": "decision_ms",
+        "settle_field": "close_ms",
         "fair_field": "fair_ewma",
+        "exec_lag_s": 5,
         "averaging_window_s": 60
       },
-      "notes": "The same fair value on the EWMA vol (half-life 30 minutes): a faster-reacting realised vol."
+      "notes": "The same fair value on the EWMA vol (half-life 30 minutes): a faster-reacting realised vol. exec_lag_s repeats decisions.exec_lag_s (pinned)."
     },
     "fair_bvol": {
-      "uses": "crypto_trading.fair_value:FairValue",
+      "uses": "dskit.pipeline.binary_pricing:BinaryFairValue",
       "inputs": {
         "records": "$fair_ewma.records"
       },
       "params": {
         "vol_field": "bvol_per_sqrt_s",
         "spot_field": "spot_brti",
+        "payoff_field": "payoff",
+        "lower_field": "floor_strike",
+        "upper_field": "cap_strike",
+        "decision_field": "decision_ms",
+        "settle_field": "close_ms",
         "fair_field": "fair_bvol",
+        "exec_lag_s": 5,
         "averaging_window_s": 60
       },
-      "notes": "The same fair value on Binance's BVOL implied vol: the market-implied alternative to the two realised vols. Its 30-day tenor is far from a 15-minute horizon, so expect it to be biased, which is the question."
+      "notes": "The same fair value on Binance's BVOL implied vol: the market-implied alternative to the two realised vols. Its 30-day tenor is far from a 15-minute horizon, so expect it to be biased, which is the question. exec_lag_s repeats decisions.exec_lag_s (pinned)."
     },
     "fees": {
       "uses": "crypto_trading.fees:FeeColumns",
@@ -258,25 +277,42 @@
         "schedules": "$fee_schedules.records"
       },
       "params": {
-        "base_rate_by_type": {
-          "quadratic": 0.07
+        "fee_types": {
+          "quadratic": {
+            "base_rate": 0.07,
+            "model": {
+              "mechanic": "probability_quadratic",
+              "rounding": {
+                "policy": "ceil_to_tick",
+                "tick": 0.01
+              }
+            }
+          }
         },
         "contracts": 100
       },
-      "notes": "Kalshi's taker fee per contract for buying YES at the ask and NO at 1 - bid: the fee of a 100-contract order, rounded up to the cent, divided by 100. The type and multiplier come from the stream; 0.07 is the base coefficient of Kalshi's published quadratic schedule (rate = 0.07 x multiplier). `contracts` sets the order size the per-order rounding applies to: one contract rounds 1.75 cents up to 2, a hundred do not. Makers pay no fee under this type. The stage A fee suite WARNS on a multiplier other than 1 or a type other than quadratic, because the 0.07 base is Kalshi's standard coefficient (a test pins it here); the type and multiplier are read per series, but today's schedule is applied to history."
+      "notes": "Kalshi's taker fee per contract for buying YES at the ask and NO at 1 - bid: the fee of a 100-contract order, rounded up to the cent, divided by 100. The type and multiplier come from the stream. fee_types is the whole Kalshi mapping, in this document and not in any code: Kalshi's `quadratic` type has base rate 0.07 (its published coefficient; rate = 0.07 x multiplier) and is priced by dskit's venue-neutral probability_quadratic mechanic (rate x C x P x (1 - P) for an order of C contracts at price P), rounded UP to the next cent per order (ceil_to_tick, tick 0.01). `contracts` sets the order size the per-order rounding applies to: one contract rounds 1.75 cents up to 2, a hundred do not. Makers pay no fee under this type. The stage A fee suite WARNS on a multiplier other than 1 or a type other than quadratic, because the 0.07 base is Kalshi's standard coefficient (a test pins it here); the type and multiplier are read per series, but today's schedule is applied to history."
     },
     "kill_test": {
-      "uses": "crypto_trading.kill_test:KillTestScore",
+      "uses": "dskit.pipeline.binary_scoring:BucketedBinaryScore",
       "inputs": {
         "records": "$fees.records"
       },
       "params": {
-        "fair_fields": [
+        "model_fields": [
           "fair_rms",
           "fair_ewma",
           "fair_bvol"
         ],
-        "mid_edges": [
+        "market_field": "mid",
+        "label_field": "label",
+        "settle_field": "close_ms",
+        "bid_field": "yes_bid",
+        "ask_field": "yes_ask",
+        "fee_yes_field": "fee_buy_yes",
+        "fee_no_field": "fee_buy_no",
+        "eligible_field": "two_sided",
+        "bucket_edges": [
           0.0,
           0.1,
           0.25,
@@ -288,10 +324,10 @@
         "margin": 0.02,
         "segments": {
           "development": {
-            "end": "2026-09-15T00:00:00Z"
+            "end_ms": 1789430400000
           },
           "heldout": {
-            "start": "2026-09-15T00:00:00Z"
+            "start_ms": 1789430400000
           }
         },
         "by": [
@@ -303,10 +339,10 @@
         ],
         "cluster_block_s": 86400
       },
-      "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs kill_test.json and kill_test.md in the run directory. Segments are cut on the market's CLOSE (when its label is settled), so one market never has rows on both sides. The cut (2026-09-15) and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only. `report_segments` lists development only, so this run never prints the held-out numbers; to read them add \"heldout\" to it (a new document hash, so the read is recorded), commit that edit, run once, and never move the cut afterwards. Standard errors are dskit's cluster-robust ones, clustered on 1-day blocks of close (cluster_block_s 86400; blank below two clusters), with the per-event error beside them: volatility regimes persist, so neighbouring markets' errors are correlated and clustering on the market alone understates the error about twofold (review simulation: 68 to 77 percent coverage of a nominal 95 percent interval); kill_test.md also gives mean fair minus base rate per lead, which must be near zero before any edge is claimed. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
+      "notes": "Brier and log-loss of each fair value against the market mid, by mid bucket and lead, plus the after-fee profit of buying at the touch when |fair - mid| exceeds the fee plus margin (2 cents). Outputs binary_score.json and binary_score.md in the run directory (dskit's BucketedBinaryScore, ADR-0243; the node key stays kill_test). Segments are cut on the market's CLOSE (close_ms, when its label is settled), so one market never has rows on both sides, in integer epoch ms (1789430400000 = 2026-09-15T00:00:00Z). The cut and the margin are decided BEFORE reading the held-out rows; tune the vol window, the leads and the margin on `development` only. `report_segments` lists development only, so this run never prints the held-out numbers; to read them add \"heldout\" to it (a new document hash, so the read is recorded), commit that edit, run once, and never move the cut afterwards. Standard errors are dskit's cluster-robust ones, clustered on 1-day blocks of close (cluster_block_s 86400; blank below two clusters), with the per-event error beside them: volatility regimes persist, so neighbouring markets' errors are correlated and clustering on the market alone understates the error about twofold (review simulation: 68 to 77 percent coverage of a nominal 95 percent interval); the report also gives mean fair minus base rate per lead, which must be near zero before any edge is claimed. A fair value beats the mid only if the held-out Brier difference is negative AND the mean after-fee profit is positive, each by a few standard errors."
     },
     "write": {
-      "uses": "crypto_trading.run_write:RunStampedWrite",
+      "uses": "dskit.pipeline.kinds_run_write:RecordsWriteRun",
       "inputs": {
         "records": "$fees.records"
       },
@@ -315,7 +351,7 @@
         "source": "crypto_trading run-features-15m: one row per settled 15-minute market and decision lead",
         "overwrite": true
       },
-      "notes": "The feature table as canonical JSON lines (missing values are null), one file PER RUN: `{run}` becomes the run directory's name (document, as-of, identity hash) and every row carries it as run_id. Why: localtables is incremental on a decision_ms cursor, so a rewritten table under a fixed name is acquired as 'snapshot: null' and read back as the OLD rows; one stream per run means two configurations can never merge or shadow each other, and the older table stays readable under its own stream. configs/source-features-15m.json registers this directory (runbook, stage B). The directory must exist; `overwrite` only covers a re-run of the very same run name, which rewrites the same content."
+      "notes": "The feature table as canonical JSON lines (missing values are null), written by dskit's RecordsWriteRun (ADR-0244), one file PER RUN: `{run}` becomes the run directory's name (document, as-of, identity hash) and every row carries it as run_id. Why: localtables is incremental on a decision_ms cursor, so a rewritten table under a fixed name is acquired as 'snapshot: null' and read back as the OLD rows; one stream per run means two configurations can never merge or shadow each other, and the older table stays readable under its own stream. configs/source-features-15m.json registers this directory (runbook, stage B). The directory must exist; `overwrite` only covers a re-run of the very same run name, which rewrites the same content."
     }
   },
   "outputs": {

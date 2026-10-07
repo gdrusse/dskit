@@ -1,4 +1,4 @@
-"""Structural pins: one owner for the list-port check, and every INTERIM marker names a real ADR."""
+"""Structural pins: one owner for the list-port check, and no INTERIM marker outlives its dskit module."""
 
 import glob
 import os
@@ -8,17 +8,14 @@ import pytest
 
 from crypto_trading.anchors import StrikeAnchors
 from crypto_trading.decisions import DecisionRows
-from crypto_trading.fair_value import FairValue
 from crypto_trading.fees import FeeColumns
-from crypto_trading.kill_test import KillTestScore
 from crypto_trading.market_state import MarketState
 from crypto_trading.ports import ListPortsNode
 from crypto_trading.spot_features import SpotFeatures
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORTS = {FairValue: ("records",), DecisionRows: ("records",), StrikeAnchors: ("records",),
-         KillTestScore: ("records",), MarketState: ("records", "candles"), FeeColumns: ("records", "schedules"),
-         SpotFeatures: ("records", "anchors")}
+PORTS = {DecisionRows: ("records",), StrikeAnchors: ("records",), MarketState: ("records", "candles"),
+         FeeColumns: ("records", "schedules"), SpotFeatures: ("records", "anchors")}
 
 
 @pytest.mark.parametrize("cls, ports", sorted(PORTS.items(), key=lambda item: item[0].__name__))
@@ -52,20 +49,49 @@ def decision_log():
     return None
 
 
-def test_every_interim_marker_names_an_adr_the_decision_log_holds():
-    modules = {path: open(path, encoding="utf-8").read()
-               for path in glob.glob(os.path.join(CHILD_ROOT, "crypto_trading", "*.py"))}
+def markers_in(text):
+    """Return the ADR numbers named in the paragraph of each INTERIM marker of ``text``, one set per marker."""
+    return [set(re.findall(r"ADR-(\d{4})", text[m.start():].split("\n\n", 1)[0]))
+            for m in re.finditer(r"INTERIM", text)]
+
+
+def interim_markers():
+    """Map each module of the package that carries an INTERIM marker to the ADR numbers its markers name."""
     named = {}
-    for path, text in modules.items():
-        for marker in re.finditer(r"INTERIM", text):
-            paragraph = text[marker.start():].split("\n\n", 1)[0]
-            named.setdefault(os.path.basename(path), set()).update(re.findall(r"ADR-(\d{4})", paragraph))
-    assert named, "the child has interim classes"
+    for path in glob.glob(os.path.join(CHILD_ROOT, "crypto_trading", "*.py")):
+        for ids in markers_in(open(path, encoding="utf-8").read()):
+            named.setdefault(os.path.basename(path), set()).update(ids)
+    return named
+
+
+def test_the_marker_scan_finds_a_marker_and_the_adr_it_names():
+    sample = "INTERIM HOME (PROPOSED ADR-0999): a thing\nthat moves.\n\nNot part of it: ADR-0001.\n"
+    assert markers_in(sample) == [{"0999"}]
+    assert markers_in("an INTERIM class with no number") == [set()], "a marker with no ADR is caught by the next test"
+
+
+#: The ADRs whose NEW dskit modules the child now uses (the interim copies were deleted): a marker for
+#: one of them is a stale claim that capability still lives here.
+MIGRATED = {"0239", "0240", "0241", "0242", "0243", "0244"}
+
+
+def test_every_interim_marker_names_an_adr_the_decision_log_holds():
+    named = interim_markers()
     assert all(ids for ids in named.values()), f"an INTERIM marker names no ADR: {named}"
     log = decision_log()
-    if log is None:
+    if named and log is None:
         pytest.skip("the dskit decision log is not beside this child (graduated): the markers still name ADRs")
-    text = open(log, encoding="utf-8").read()
+    text = open(log, encoding="utf-8").read() if named else ""
     for module, ids in named.items():
         for number in ids:
             assert f"## ADR-{number} " in text, f"{module} names ADR-{number}, which the decision log does not hold"
+
+
+def test_no_interim_marker_remains_for_a_capability_that_now_lives_in_dskit():
+    stale = {module: sorted(ids & MIGRATED) for module, ids in interim_markers().items() if ids & MIGRATED}
+    assert not stale, f"these modules still claim an interim home for a migrated ADR: {stale}"
+
+
+def test_the_interim_modules_are_gone():
+    for name in ("binance_vision", "day_series", "fair_value", "kill_test", "payoffs", "run_write", "vol_estimators"):
+        assert not os.path.exists(os.path.join(CHILD_ROOT, "crypto_trading", f"{name}.py")), name

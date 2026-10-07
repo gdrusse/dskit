@@ -7,7 +7,7 @@ row's asset and writes what was KNOWN just before ``decision_ms``:
   ``close_time_ms``, so a bar is usable only when ``close_time_ms < decision_ms``, strictly
   (at 01:00:30 the bar that opened at 01:00:00 has not closed). A BVOL reading is usable only when
   ``calc_time_ms < decision_ms``: the row AT the decision instant is not yet known. Both use
-  :func:`~crypto_trading.day_series.prior_index`, the one home of that rule. Every estimator
+  :func:`dskit.pipeline.libs.parquet_series.prior_index`, the one home of that rule. Every estimator
   is causal (the value at a bar reads that bar and earlier ones), so the bars the loaded days
   hold after the decision are never reached; the tests plant spikes there and in BVOL and assert
   nothing moves, with a control that proves the spike would have mattered.
@@ -15,8 +15,10 @@ row's asset and writes what was KNOWN just before ``decision_ms``:
   (None, with a ``*_missing`` flag), not carried forward; a window that holds a missing minute
   yields None for that estimator only.
 - **Units.** Times are epoch ms (Binance's, the pipeline's); every volatility column is the
-  standard deviation of the log return per sqrt(second): a per-bar variance divided by the bar's
-  seconds, or the annualised BVOL (``index_value * bvol_scale``) over ``sqrt(seconds_per_year)``.
+  standard deviation of the log return per sqrt(second): the square root of dskit's per-bar
+  VARIANCE (the estimators emit variance) divided by the bar's seconds, named ``<vol_column_prefix>
+  <label>`` (``rv_rms_60``), or the annualised BVOL (``index_value * bvol_scale``) over
+  ``sqrt(seconds_per_year)``.
 - **Basis.** Strikes are in settlement-index dollars (CF Benchmarks' BRTI, USD) and Binance is a
   different instrument (USDT-quoted; on live data the index averaged about 22 USD BELOW Binance, which
   alone biased every fair value up by about 11 percentage points). The ``anchors`` input
@@ -36,36 +38,54 @@ row's asset and writes what was KNOWN just before ``decision_ms``:
 Klines are USDT-quoted, a proxy for the USD index Kalshi settles on, and CC BY-NC-SA: research
 use only, so the node is forbidden in a served graph.
 
-The streams are read through :class:`~crypto_trading.day_series.ParquetDaySeries` (INTERIM,
-PROPOSED ADR-0240) and the estimators come from :mod:`crypto_trading.vol_estimators` (INTERIM,
-PROPOSED ADR-0241). The ``manifests`` input, from a
-:class:`~crypto_trading.day_series.StreamManifests` node, puts the store into the run identity;
-a store that moved since is refused.
+The streams are read through :class:`dskit.pipeline.libs.parquet_series.ParquetSeries` (ADR-0240)
+and the estimators come from :mod:`dskit.pipeline.libs.vol_estimators` (ADR-0241), which emit a
+per-bar VARIANCE: the square root and the per-second unit are this node's thin step. The ``manifests``
+input, from a :class:`dskit.pipeline.libs.parquet_series.StreamManifests` node, puts the store into
+the run identity; a store that moved since is refused.
 
 Import cost: stdlib + dskit; numpy and pyarrow only when ``run`` computes.
 """
 
 import math
 
+from dskit.pipeline.binary_pricing import LOWER, UPPER, payoff
+from dskit.pipeline.libs.parquet_series import ParquetSeries, prior_index, stream_problems
+from dskit.pipeline.libs.vol_estimators import Bars, build_estimators
 from dskit.pipeline.node import check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 from . import fields as f
-from .day_series import ParquetDaySeries, prior_index, stream_problems, tape_name
-from .payoffs import payoff
-from .vol_estimators import Bars, build_estimators
 from .ports import ListPortsNode
 
-__all__ = ["SpotFeatures"]
+__all__ = ["SpotFeatures", "tape_name"]
 
 _MS_PER_S = 1000
 _KLINE_COLUMNS = ("open_time", "close_time", "open", "high", "low", "close")
 _BVOL_COLUMNS = ("time", "value")
 _ASSET_KEYS = ("series", "klines", "bvol")
-_MONEYNESS = {f.FLOOR: "ln_floor_over_spot", f.CAP: "ln_cap_over_spot"}
+_MONEYNESS = {LOWER: "ln_floor_over_spot", UPPER: "ln_cap_over_spot"}
 _SPOT_AGE, _SPOT_MISSING = "spot_age_ms", "spot_missing"
 _BVOL_IV, _BVOL_VOL, _BVOL_AGE, _BVOL_MISSING = "bvol_iv", "bvol_per_sqrt_s", "bvol_age_ms", "bvol_missing"
 _LOG_MONEYNESS = "log_moneyness"
+
+
+def tape_name(asset, tape):
+    """Name the manifest of an asset's ``tape`` (``klines`` or ``bvol``): the key the document's manifests node and this node share.
+
+    Parameters
+    ----------
+    asset : str
+        The asset key (``BTC``).
+    tape : str
+        The kind of series.
+
+    Returns
+    -------
+    str
+        ``"<asset>_<tape>"``.
+    """
+    return f"{asset}_{tape}"
 
 
 def _cell(value):
@@ -78,7 +98,7 @@ class SpotFeatures(ListPortsNode):
     """Add point-in-time spot, volatility and BVOL columns to decision rows (role ``transform``).
 
     Inputs: ``records`` (decision rows with ``series``, ``decision_ms``, ``payoff`` and the
-    strikes), ``manifests`` (a :class:`~crypto_trading.day_series.StreamManifests` output) and
+    strikes), ``manifests`` (a :class:`dskit.pipeline.libs.parquet_series.StreamManifests` output) and
     ``anchors`` (:class:`~crypto_trading.anchors.StrikeAnchors` rows; may be empty, then every basis is
     missing). Outputs: ``records`` (every row plus the columns above, one ``rv_*`` column per estimator)
     and ``provenance`` (per asset: the manifests read and the counts of missing readings).
@@ -92,7 +112,9 @@ class SpotFeatures(ListPortsNode):
         the files' column names: ``{"klines": {open_time, close_time, open, high, low, close},
         "bvol": {time, value}}``. ``day_relpath_template`` (str with one ``{day}``).
         ``bar_ms`` (int >= 1) the kline interval. ``estimators`` (list) specs for
-        :func:`~crypto_trading.vol_estimators.build_estimators`. ``max_spot_age_ms`` and
+        :func:`dskit.pipeline.libs.vol_estimators.build_estimators`. ``vol_column_prefix`` (non-empty
+        str) what each volatility column's name starts with (``rv_`` makes ``rv_rms_60``).
+        ``max_spot_age_ms`` and
         ``max_bvol_age_ms`` (int >= 1) how old a reading may be; ``max_basis_age_ms`` (int >= 1) how old the
         anchor behind the basis may be. ``bvol_scale`` (number > 0)
         turns the index value into an annualised fraction (0.01 when published in percent).
@@ -111,7 +133,7 @@ class SpotFeatures(ListPortsNode):
                                    "open": "open", "high": "high", "low": "low", "close": "close"},
                         "bvol": {"time": "calc_time_ms", "value": "index_value"}},
             "day_relpath_template": "{day}.parquet", "bar_ms": 60000,
-            "estimators": [{"kind": "rms", "window": 60}],
+            "estimators": [{"kind": "rms", "window": 60}], "vol_column_prefix": "rv_",
             "max_spot_age_ms": 120000, "max_bvol_age_ms": 60000, "max_basis_age_ms": 1200000,
             "bvol_scale": 0.01, "seconds_per_year": 31536000})
         out = node.run(ctx, {"records": rows, "manifests": manifests, "anchors": anchors})
@@ -121,7 +143,7 @@ class SpotFeatures(ListPortsNode):
     role = "transform"
     outputs = ("records", "provenance")
     LIST_PORTS = ("records", "anchors")
-    _PARAMS = ("root", "assets", "columns", "day_relpath_template", "bar_ms", "estimators",
+    _PARAMS = ("root", "assets", "columns", "day_relpath_template", "bar_ms", "estimators", "vol_column_prefix",
                "max_spot_age_ms", "max_bvol_age_ms", "max_basis_age_ms", "bvol_scale", "seconds_per_year")
 
     @classmethod
@@ -190,6 +212,9 @@ class SpotFeatures(ListPortsNode):
         for name in ("bvol_scale", "seconds_per_year"):
             if not (number_ok(params.get(name)) and params[name] > 0):
                 problems.append(f"{name} is required: a number > 0, got {params.get(name)!r}")
+        prefix = params.get("vol_column_prefix")
+        if not isinstance(prefix, str) or not prefix:
+            problems.append(f"vol_column_prefix is required: a non-empty string, got {prefix!r}")
         if not isinstance(params.get("estimators"), list):
             problems.append(f"estimators is required: a list of estimator specs, got {params.get('estimators')!r}")
         else:
@@ -224,19 +249,14 @@ class SpotFeatures(ListPortsNode):
     def _tape(self, asset, tape, wired, columns, time_column):
         """Open one asset's tape and refuse it when the store moved since the manifest was fingerprinted."""
         spec = self.params["assets"][asset][tape]
-        series = ParquetDaySeries(self.params["root"], spec["source"], spec["stream"],
-                                  self.params["day_relpath_template"], time_column, columns)
+        series = ParquetSeries(self.params["root"], spec["source"], spec["stream"],
+                               self.params["day_relpath_template"], time_column, columns)
         name = tape_name(asset, tape)
-        held, now = wired.get(name), series.manifest()
+        held = wired.get(name)
         if held is None:
             raise ValueError(f"{self.key}: the manifests input has no {name!r}; wire a StreamManifests that names it")
-        if (held["source"], held["stream"]) != (now["source"], now["stream"]):
-            raise ValueError(f"{self.key}: {name} was fingerprinted as {held['source']}/{held['stream']} "
-                             f"but this node reads {now['source']}/{now['stream']}")
-        if held["manifest_sha256"] != now["manifest_sha256"]:
-            raise ValueError(f"{self.key}: {name}: the store moved since the manifest was fingerprinted "
-                             f"({held['manifest_sha256'][:12]} then {now['manifest_sha256'][:12]}); rerun")
-        return series, now
+        series.require_manifest(held, label=f"{self.key}: {name}")
+        return series, series.manifest()
 
     def _bars(self, series, instants, estimators, anchors):
         """Load the klines that can matter for ``instants`` and their anchors; return ``(bars, columns)``."""
@@ -247,7 +267,8 @@ class SpotFeatures(ListPortsNode):
         recent = [a[f.ANCHOR_MS] for a in anchors
                   if int(instants.min()) - self.params["max_basis_age_ms"] <= a[f.ANCHOR_KNOWN_MS] < int(instants.max())]
         got = series.load_span(min([first] + [m - bar_ms for m in recent]), int(instants.max()))
-        bars = Bars(got[cols["open_time"]], got[cols["high"]], got[cols["low"]], got[cols["close"]], bar_ms)
+        bars = Bars(got[cols["open_time"]], bar_ms, high=got[cols["high"]], low=got[cols["low"]],
+                    close=got[cols["close"]])
         return bars, got
 
     def _kline_arrays(self, asset, instants, wired, estimators, anchors):
@@ -257,7 +278,7 @@ class SpotFeatures(ListPortsNode):
         cols = self.params["columns"]["klines"]
         series, manifest = self._tape(asset, "klines", wired, [cols[k] for k in _KLINE_COLUMNS],
                                       cols["close_time"])
-        names = [f.SPOT, _SPOT_AGE, f.BASIS, f.BASIS_AGE_MS] + [e.column() for e in estimators]
+        names = [f.SPOT, _SPOT_AGE, f.BASIS, f.BASIS_AGE_MS] + [self._vol_column(e) for e in estimators]
         out = {name: np.full(instants.size, np.nan) for name in names}
         bars, got = self._bars(series, instants, estimators, anchors)
         closes = got[cols["close_time"]]
@@ -272,10 +293,14 @@ class SpotFeatures(ListPortsNode):
         seconds = self.params["bar_ms"] / _MS_PER_S
         for estimator in estimators:
             with np.errstate(invalid="ignore"):
-                out[estimator.column()] = np.where(
+                out[self._vol_column(estimator)] = np.where(
                     usable, np.sqrt(estimator.variance(bars)[safe] / seconds), np.nan)
         out[f.BASIS], out[f.BASIS_AGE_MS] = self._basis_arrays(bars, got[cols["open"]], anchors, instants)
         return out, manifest
+
+    def _vol_column(self, estimator):
+        """Name an estimator's output column: the document's prefix and the estimator's own label."""
+        return self.params["vol_column_prefix"] + estimator.label()
 
     def _basis_arrays(self, bars, opens, anchors, instants):
         """Return per-instant basis and its age from the latest usable anchor known strictly before it."""
@@ -314,10 +339,10 @@ class SpotFeatures(ListPortsNode):
         shape = payoff(row[f.PAYOFF])
         out = {name: None for name in _MONEYNESS.values()}
         if spot is not None:
-            for strike_field in shape.strike_fields:
-                out[_MONEYNESS[strike_field]] = math.log(row[strike_field] / spot)
-        single = len(shape.strike_fields) == 1
-        out[_LOG_MONEYNESS] = out[_MONEYNESS[shape.strike_fields[0]]] if single else None
+            for bound in shape.bounds:
+                out[_MONEYNESS[bound]] = math.log(row[f.BOUND_FIELDS[bound]] / spot)
+        single = len(shape.bounds) == 1
+        out[_LOG_MONEYNESS] = out[_MONEYNESS[shape.bounds[0]]] if single else None
         return out
 
     def _row(self, record, k, kline, bvol, estimators):
@@ -329,7 +354,7 @@ class SpotFeatures(ListPortsNode):
         iv = None if value is None else value * self.params["bvol_scale"]
         row = dict(record)
         row.update({f.SPOT: spot, _SPOT_AGE: None if age is None else int(age), _SPOT_MISSING: spot is None})
-        row.update({e.column(): _cell(kline[e.column()][k]) for e in estimators})
+        row.update({self._vol_column(e): _cell(kline[self._vol_column(e)][k]) for e in estimators})
         row.update({f.BASIS: basis, f.BASIS_AGE_MS: None if basis_age is None else int(basis_age),
                     f.BASIS_MISSING: basis is None, f.SPOT_BRTI: spot_brti})
         row.update(self._moneyness(record, spot_brti))

@@ -101,14 +101,14 @@ template becomes convenient enough to send an order.
 
 ## Stage A data pulls
 
-Sources are existing packs (`kalshi`, `httpblobs`) plus configs; the only code is
-`binance_vision.py`, the `httpblobs` transform (one subclass per file layout, no
-knobs; interim until PROPOSED ADR-0239). A snapshot holds ONE stream, so each stream has
-its own suite. Series and date lists repeat across configs and suites by design (a
+Sources are existing packs (`kalshi`, `httpblobs`) plus configs, and no child code: the Binance
+daily zips become parquet through dskit's `ZipCsvToParquet` (ADR-0239), the column layout being each
+source's `transform_params` (a layout is config; it takes no `notes`, because the block feeds the
+declaration digest). A snapshot holds ONE stream, so each stream has its own suite. Series and date lists repeat across configs and suites by design (a
 suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
 both together. Candles are the two 15-minute series, one source each; hourly candles,
 the settlement value (`expiration_value`, the model's label) and pre-cutoff history wait on
-PROPOSED ADR-0236. Never solve ADR-0236, 0237 or 0239 child-side: each is a NEW dskit pack (no
+PROPOSED ADR-0236. Never solve ADR-0236 or 0237 child-side: each is a NEW dskit pack (no
 existing pack is edited). The digest check is child-side by ruling (ADR-0238 withdrawn). `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
@@ -135,38 +135,39 @@ features, fair values, fees, the kill test, then `records-write`. Rules that bin
   stream name returns `snapshot: null` and serves the OLD rows; never publish under a fixed stream name.
 - **No imputation.** Missing is `None` plus a `*_missing` / `*_status` column. A reading older than its age
   cap is missing. Excluded markets and decision rows are listed on ports and censuses, never dropped quietly.
-- **Vocabularies are params** (`payoff_by_strike_type`, `result_labels`, fee `base_rate_by_type`, leads, vol
-  specs, kill-test segments and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
+- **Vocabularies are params** (`payoff_by_strike_type`, `result_labels`, `fee_types`, leads, vol
+  specs, kill-test segments in epoch ms and margin): a new geometry or series is JSON; `tests/test_configs.py` pins each
   to the stage A suites and sources it must agree with.
-- **Interim classes** stand in for PROPOSED ADR-0240 (`day_series.py`), 0241 (`vol_estimators.py`), 0242
-  (`fees.py`, a Kalshi-only copy of `pmquant/fees.py`), 0243 (`fair_value.py`, `payoffs.py`, `kill_test.py`) and
-  0244 (`run_write.py`).
-  Do not grow them; retire each when its NEW dskit module lands and the child's config moves to it (a
-  separate step that changes the child's identity hashes; `pmquant` stays untouched). Parsing and the cluster error are dskit's
-  (`dskit.production.base.parse_utc_ms`, `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement.
+- **The generic parts are dskit's, named by import path in the document**: `libs.parquet_series` (day files,
+  `StreamManifests`, ADR-0240), `libs.vol_estimators` (variance; `spot` takes the root and sets the column prefix,
+  ADR-0241), `fee_mechanics` (ADR-0242), `binary_pricing` + `binary_scoring` (ADR-0243), `kinds_run_write` (ADR-0244).
+  The child keeps only what is Kalshi's or the row vocabulary: the `fees` node's `fee_types` (which fee type means which
+  mechanic and base rate), `spot_features`, the readers. No venue name belongs in dskit; no generic rule is copied
+  back here. Parsing and the cluster error are dskit's too (`dskit.production.base.parse_utc_ms`,
+  `dskit.pipeline.stats.cluster_bootstrap_t`): do not re-implement. `tests/test_migration_golden.py` pins the
+  migration: every pre-migration row, column and score reproduces bit for bit.
 - **The held-out cut is decided before reading results** and never moved afterward (runbook B5). Segments
   cut on the market's close; the document reports `development` only, and reading `heldout` is a recorded
   edit of `report_segments`. Errors cluster on day blocks (`cluster_block_s`), per-event errors beside them.
 - Stage B nodes are referenced by import path, not registered, and are research-only (Binance CC BY-NC-SA).
-  Nodes that read files themselves take `StreamManifests` as an input so the data is in the run identity.
+  Nodes that read files themselves take dskit's `StreamManifests` as an input so the data is in the run identity.
   Commands: runbook stage B.
 
 ## Layout
 
 ```
-crypto_trading/           # tier-3 code: binance_vision.py (httpblobs transform),
-                       #   connectors.py, nodes.py, and the four
+crypto_trading/           # tier-3 code: connectors.py, nodes.py, and the four
                        #   production seams — execution / accounting /
                        #   approvals / coordination, all fail-closed;
-                       #   stage B: fields, clock, payoffs, kalshi_rows,
-                       #   decisions, anchors, ports, day_series, vol_estimators,
-                       #   spot_features, market_state, fair_value, fees,
-                       #   kill_test, run_write (see the section above)
+                       #   stage B: fields, clock, kalshi_rows, decisions, anchors,
+                       #   ports, spot_features, market_state, fees (the Kalshi
+                       #   mapping over dskit's fee mechanics; see the section above)
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample, plus stage A:
                        #   source-kalshi-crypto[-candles-*|-books-*] /
-                       #   source-binance-* / binance_vision_dates /
-                       #   suite-kalshi-crypto-* / suite-binance-files;
+                       #   source-binance-* (zip layouts in transform_params) /
+                       #   binance_vision_dates / suite-kalshi-crypto-* /
+                       #   suite-binance-files;
                        #   stage B: run-features-15m / source-features-15m
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
@@ -177,9 +178,11 @@ docs/plans/            # the child's own plan builds (the WSL runbook: stage A p
 docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   execution/production tests, plus binance_vision
-                       #   and kalshi_crypto (offline, scripted transports);
-                       #   stage B: synthetic.py (offline stores) and one
-                       #   test file per module plus test_features_pipeline
+                       #   (the two layouts) and kalshi_crypto (offline,
+                       #   scripted transports); stage B: synthetic.py
+                       #   (offline stores), one test file per child module,
+                       #   test_features_pipeline and test_migration_golden
+                       #   (golden/: the pre-migration outputs)
 pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```
 

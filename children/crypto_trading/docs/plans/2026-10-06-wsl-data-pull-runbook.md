@@ -180,7 +180,7 @@ does a simple fair value beat the market mid on held-out rows after fees? Only t
 series have candles; hourly ladders wait on PROPOSED ADR-0236 and plug in by config (see the notes
 of `configs/run-features-15m.json`). Nothing here has run on real data yet.
 
-**Done when.** The run exits 0, `kill_test.md` exists, the table is acquired as `features-15m` and
+**Done when.** The run exits 0, `binary_score.md` exists, the table is acquired as `features-15m` and
 `verify` is clean. Paste the section 0 block into every new shell first (it sets `$OB`).
 
 ## B1. Set up, once
@@ -230,7 +230,8 @@ Exit 0 ran, 1 error (the reason names the node), 3 halted. Time is an estimate, 
 under an hour, since only the days around the decisions are read. The run directory prints at the
 end. Open:
 
-- `artifacts/kill_test/kill_test.md` (the numbers) and `kill_test.json` (every cell). The shipped
+- `artifacts/kill_test/binary_score.md` (the numbers) and `binary_score.json` (every cell); the node key is
+  still `kill_test`, the report files are dskit's `BucketedBinaryScore`'s. The shipped
   document reports the `development` segment ONLY (`kill_test.params.report_segments`): this run does
   not print the held-out numbers. Read the calibration table first: mean fair value minus the base rate
   per lead must be near zero before any edge means anything;
@@ -271,7 +272,8 @@ run, hence a new file and stream, and the old table stays readable. A later run 
 ## B5. Read the held-out set once, then read it correctly
 
 - **The cut is decided before you look.** `development` ends 2026-09-15 and `heldout` starts there
-  (`kill_test.params.segments`, cut on each market's CLOSE so a market's rows never straddle it).
+  (`kill_test.params.segments`, integer epoch ms: 1789430400000 is 2026-09-15T00:00:00Z; cut on each market's
+  CLOSE so a market's rows never straddle it).
   Choose the vol window, leads and margin on `development` only. When you are done, add `"heldout"` to
   `kill_test.params.report_segments`, commit that edit (it changes the document hash, so the read is
   recorded), run once and read it. Never move the cut or re-tune afterwards. Three fair values are scored
@@ -309,3 +311,33 @@ Not covered yet: the realised settlement value and every hourly series (ADR-0236
 - BVOL cadence (about one row a second) and the 365-day year are unverified; the fee schedule is today's.
 - The held-out cut and margin are chosen, not derived; the fair value is not fitted and ignores the
   Jensen gap of the settlement average.
+
+---
+
+# Migration to dskit's modules (no behaviour change)
+
+The child's interim copies were replaced by the dskit modules that now ship (ADR-0239 to 0244): the Binance zip
+transform (`libs.zipcsv`, layouts in each source's `transform_params`), day-file series and `StreamManifests`
+(`libs.parquet_series`), vol estimators (`libs.vol_estimators`), fair value, payoffs and scoring
+(`binary_pricing`, `binary_scoring`), the per-run writer (`kinds_run_write`) and fee mechanics (`fee_mechanics`;
+the Kalshi fee-type mapping stays in this child, the `fees` node's `fee_types`). Over the synthetic store every
+pre-migration row, column and score is reproduced bit for bit (`tests/test_migration_golden.py`).
+
+Two things moved by design, and only these:
+
+| What | Before | After |
+|---|---|---|
+| `configs/run-features-15m.json` identity hash (placeholder root) | `ffd37f874df0` | `8f4488329122` |
+| `source-binance-btcusdt-1m` declaration digest | `5355b1fcee22` | `23f78b4b6d23` |
+| `source-binance-ethusdt-1m` declaration digest | `fc6190d734a5` | `b01ce9b6964b` |
+| `source-binance-btcbvol` declaration digest | `bd6d11bb359a` | `7e9de1f14b82` |
+| `source-binance-ethbvol` declaration digest | `8aa384b20d96` | `4d17b2842088` |
+
+The run hash moved because the nodes, their params (`vol_column_prefix`, `fee_types`, the scorer's names and
+epoch-ms segments) and the fair-value lag are now declared; it names the run directory and keys the `$prev` series, so
+a run of the old document is a different series. The digests moved because each Binance source now names dskit's
+transform and carries its layout (digest = url, dates, as_of, headers, transform and its params): an unchanged
+declaration is a no-op and a changed one re-pulls. Nothing had been pulled when this landed, so the "re-pull" costs
+nothing; anyone who pulled earlier re-acquires all four sources (the files are the same; the snapshot ids are new).
+The report files are renamed `binary_score.{md,json}`, the three fair-value columns gain `<fair>_tau` (the horizon the
+node priced, equal to `tau_s`), and the scorer's score keys say `model` and `market` where they said `fair` and `mid`.

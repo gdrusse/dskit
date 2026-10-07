@@ -3,8 +3,8 @@
 Everything here is offline: a scripted Kalshi venue behind the real ``kalshi`` pack,
 real acquisitions into a tmp onboarding root, and Binance-shaped parquet day files
 laid into a real ``localblobs`` stream (the same ``payload_files`` read path an
-``httpblobs`` pull gives). Column names come from ``crypto_trading.binance_vision``
-so a layout change there breaks these fixtures instead of passing silently.
+``httpblobs`` pull gives). Column names come from the shipped source configs' ``transform_params``
+(the zip-to-parquet layouts), so a layout change there breaks these fixtures instead of passing silently.
 """
 
 import io
@@ -16,8 +16,6 @@ from datetime import datetime, timedelta, timezone
 
 from dskit.onboarding import OnboardingRoot, run_acquisition
 from dskit.onboarding.libs.kalshi import KalshiConnector
-
-from crypto_trading.binance_vision import BVOL_COLUMNS, KLINE_COLUMNS
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -46,6 +44,15 @@ def shipped(name):
     """Load a shipped config by file name."""
     with open(os.path.join(CONFIGS, name), encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def layout_columns(name):
+    """The parquet column names a shipped source config's zip layout writes, in order (dropped columns omitted)."""
+    return tuple(c["output"] for c in shipped(name)["transform_params"]["columns"] if c["output"])
+
+
+KLINE_COLUMNS = layout_columns("source-binance-btcusdt-1m.json")
+BVOL_COLUMNS = layout_columns("source-binance-btcbvol.json")
 
 
 # -- the scripted venue ---------------------------------------------------------

@@ -98,22 +98,22 @@ SUITE_FIELDS = {
     "suite-kalshi-crypto-books.json": kalshi.ORDERBOOK_FIELDS,
     "suite-binance-files.json": RECORD_FIELDS,
 }
-#: source file -> (vendor URL template, the transform class)
+#: source file -> (vendor URL template, the transform class: dskit's zip-to-parquet, the layout is in transform_params)
 BINANCE_SOURCES = {
     "source-binance-btcusdt-1m.json": (
         "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-{entity}.zip",
-        "crypto_trading.binance_vision:BinanceKlines"),
+        "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"),
     "source-binance-ethusdt-1m.json": (
         "https://data.binance.vision/data/spot/daily/klines/ETHUSDT/1m/ETHUSDT-1m-{entity}.zip",
-        "crypto_trading.binance_vision:BinanceKlines"),
+        "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"),
     "source-binance-btcbvol.json": (
         "https://data.binance.vision/data/option/daily/BVOLIndex/BTCBVOLUSDT/"
         "BTCBVOLUSDT-BVOLIndex-{entity}.zip",
-        "crypto_trading.binance_vision:BinanceBvol"),
+        "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"),
     "source-binance-ethbvol.json": (
         "https://data.binance.vision/data/option/daily/BVOLIndex/ETHBVOLUSDT/"
         "ETHBVOLUSDT-BVOLIndex-{entity}.zip",
-        "crypto_trading.binance_vision:BinanceBvol"),
+        "dskit.onboarding.libs.zipcsv:ZipCsvToParquet"),
 }
 DATES_FILE = "binance_vision_dates.json"
 #: registration configs for tables a run of this child derives and a later run reads (localtables)
@@ -204,7 +204,7 @@ def test_binance_sources_agree_where_they_must(child_root_env):
     configs = [_load(name) for name in BINANCE_SOURCES]
     for knob in ("entities_file", "entities_key", "entities_sha256", "as_of", "headers",
                  "throttle_s", "timeout", "max_retries", "max_bytes", "stream",
-                 "relpath_template", "raw_relpath_template"):
+                 "relpath_template", "raw_relpath_template", "transform"):
         assert len({json.dumps(c[knob], sort_keys=True) for c in configs}) == 1, knob
     with open(_path(DATES_FILE), "rb") as handle:
         assert configs[0]["entities_sha256"] == hashlib.sha256(handle.read()).hexdigest()
@@ -376,7 +376,7 @@ def test_the_document_reads_the_15_minute_series_the_candle_sources_pull():
 
 
 def test_the_market_vocabulary_is_the_one_the_stage_a_suite_gates():
-    from crypto_trading.payoffs import PAYOFFS
+    from dskit.pipeline.binary_pricing import PAYOFFS
 
     rules = {r.id: r for r in load_suite(_path("suite-kalshi-crypto-markets.json")).rules}
     params = _doc()["pipeline"]["markets"]["params"]
@@ -388,18 +388,26 @@ def test_the_market_vocabulary_is_the_one_the_stage_a_suite_gates():
     assert "finalized" in params["settled_statuses"], "the venue spells a settled payload 'finalized'"
 
 
-def test_the_fee_types_the_node_prices_cover_what_the_fee_suite_accepts():
-    from crypto_trading.fees import FEE_MODELS
+def test_the_fee_types_the_node_prices_cover_what_the_fee_suite_accepts_and_each_names_a_real_mechanic():
+    from dskit.pipeline.fee_mechanics import FEE_MECHANICS, ROUNDING_POLICIES, fee_spec_problems
 
     (rule,) = [r for r in load_suite(_path("suite-kalshi-crypto-fees.json")).rules
                if r.kwargs.get("field") == "fee_type"]
-    params = _doc()["pipeline"]["fees"]["params"]
-    assert set(rule.kwargs["values"]) <= set(params["base_rate_by_type"]) <= set(FEE_MODELS)
+    types = _doc()["pipeline"]["fees"]["params"]["fee_types"]
+    assert set(rule.kwargs["values"]) <= set(types), "every fee type the suite lets through has a mapping"
+    for fee_type, entry in types.items():
+        assert entry["model"]["mechanic"] in FEE_MECHANICS and entry["model"]["rounding"]["policy"] in ROUNDING_POLICIES
+        assert fee_spec_problems(entry["model"]) == [], fee_type
+
+
+def _written_columns(source_file):
+    """The parquet columns a source's zip layout writes (dropped columns omitted), read from its transform_params."""
+    return {c["output"] for c in _load(source_file)["transform_params"]["columns"] if c["output"]}
 
 
 def test_the_bar_and_column_vocabulary_matches_the_binance_files_stage_a_writes():
-    from crypto_trading.binance_vision import BVOL_COLUMNS, KLINE_COLUMNS
-
+    KLINE_COLUMNS = _written_columns("source-binance-btcusdt-1m.json")
+    BVOL_COLUMNS = _written_columns("source-binance-btcbvol.json")
     spot = _doc()["pipeline"]["spot"]["params"]
     assert spot["bar_ms"] == 60_000
     for name in BINANCE_SOURCES:
@@ -412,7 +420,7 @@ def test_the_bar_and_column_vocabulary_matches_the_binance_files_stage_a_writes(
 
 
 def test_the_tape_names_the_manifest_node_declares_are_the_ones_the_spot_node_looks_up():
-    from crypto_trading.day_series import tape_name
+    from crypto_trading.spot_features import tape_name
 
     pipeline = _doc()["pipeline"]
     streams = pipeline["streams"]["params"]["streams"]
@@ -424,17 +432,17 @@ def test_the_tape_names_the_manifest_node_declares_are_the_ones_the_spot_node_lo
 
 
 def test_every_fair_value_column_reads_a_volatility_column_that_exists():
-    from crypto_trading.vol_estimators import build_estimators
+    from dskit.pipeline.libs.vol_estimators import build_estimators
 
     spot = _doc()["pipeline"]["spot"]["params"]
-    columns = {e.column() for e in build_estimators(spot["estimators"])} | {"bvol_per_sqrt_s"}
-    fairs = _nodes(":FairValue")
+    columns = {spot["vol_column_prefix"] + e.label() for e in build_estimators(spot["estimators"])} | {"bvol_per_sqrt_s"}
+    fairs = _nodes(":BinaryFairValue")
     assert fairs, "the document prices at least one fair value"
     for key, spec in fairs.items():
         assert spec["params"]["vol_field"] in columns, f"{key} reads a column no node writes"
         assert spec["params"]["averaging_window_s"] == 60, "the BRTI averages the last 60 seconds"
     kill = _doc()["pipeline"]["kill_test"]["params"]
-    assert kill["fair_fields"] == [s["params"]["fair_field"] for s in fairs.values()]
+    assert kill["model_fields"] == [s["params"]["fair_field"] for s in fairs.values()]
 
 
 def test_the_leads_never_start_inside_the_averaging_window():
@@ -443,10 +451,15 @@ def test_the_leads_never_start_inside_the_averaging_window():
     assert min(pipeline["decisions"]["params"]["leads_minutes"]) >= window_min
 
 
+CUT_MS = int(datetime.datetime(2026, 9, 15, tzinfo=datetime.timezone.utc).timestamp()) * 1000
+
+
 def test_the_kill_test_holds_a_segment_out_and_the_two_never_overlap():
     segments = _doc()["pipeline"]["kill_test"]["params"]["segments"]
     assert set(segments) == {"development", "heldout"}
-    assert segments["development"]["end"] == segments["heldout"]["start"], "one cut: no row in both, none in neither"
+    assert segments["development"]["end_ms"] == segments["heldout"]["start_ms"], "one cut: no row in both, none in neither"
+    assert set(segments["development"]) == {"end_ms"} and set(segments["heldout"]) == {"start_ms"}
+    assert segments["heldout"]["start_ms"] == CUT_MS, "the cut is 2026-09-15T00:00:00Z, restated here in epoch ms"
 
 
 def test_the_published_table_registration_matches_what_the_document_writes():
@@ -454,7 +467,7 @@ def test_the_published_table_registration_matches_what_the_document_writes():
     check_config(LocalTablesConnector(), config)
     node = _doc()["pipeline"]["write"]
     write = node["params"]
-    assert node["uses"] == "crypto_trading.run_write:RunStampedWrite"
+    assert node["uses"] == "dskit.pipeline.kinds_run_write:RecordsWriteRun"
     assert os.path.dirname(write["path"]) == config["path"] == FEATURES_DIR
     assert os.path.basename(write["path"]) == "decision_features-{run}.jsonl", "one file, one stream, per run"
     assert write["path"].count("{run}") == 1
@@ -486,8 +499,15 @@ MARKET_MINUTES = 15  # a 15-minute up/down market is open for 15 minutes
 
 
 def test_the_fee_base_rate_is_pinned_at_the_config_level_not_only_in_a_unit_test():
-    assert _doc()["pipeline"]["fees"]["params"]["base_rate_by_type"] == KALSHI_FEE_BASE
+    types = _doc()["pipeline"]["fees"]["params"]["fee_types"]
+    assert {t: e["base_rate"] for t, e in types.items()} == KALSHI_FEE_BASE
     assert "0.07" in _doc()["pipeline"]["fees"]["notes"]
+
+
+def test_kalshis_quadratic_fee_is_priced_by_dskits_probability_quadratic_mechanic_rounded_up_to_the_cent():
+    """The Kalshi mapping lives in the document, restated here: which mechanic, which grid."""
+    model = _doc()["pipeline"]["fees"]["params"]["fee_types"]["quadratic"]["model"]
+    assert model == {"mechanic": "probability_quadratic", "rounding": {"policy": "ceil_to_tick", "tick": 0.01}}
 
 
 def test_the_fee_suite_warns_when_the_schedule_is_not_the_one_the_base_rate_assumes():
@@ -516,7 +536,7 @@ def test_the_leads_leave_the_strike_known_before_every_decision():
 def test_the_basis_window_is_the_bar_the_settlement_average_covers():
     pipeline = _doc()["pipeline"]
     spot = pipeline["spot"]["params"]
-    window_s = {n["params"]["averaging_window_s"] for n in _nodes(":FairValue").values()}
+    window_s = {n["params"]["averaging_window_s"] for n in _nodes(":BinaryFairValue").values()}
     assert window_s == {60} and spot["bar_ms"] == 60 * 1000, (
         "the anchor is a 60-second average and is compared with ONE 1-minute bar")
     assert spot["max_basis_age_ms"] >= (MARKET_MINUTES * 60 + max(
@@ -525,7 +545,7 @@ def test_the_basis_window_is_the_bar_the_settlement_average_covers():
 
 
 def test_every_fair_value_prices_the_index_unit_spot_not_the_raw_binance_price():
-    for key, spec in _nodes(":FairValue").items():
+    for key, spec in _nodes(":BinaryFairValue").items():
         assert spec["params"]["spot_field"] == "spot_brti", key
     assert _doc()["pipeline"]["spot"]["inputs"]["anchors"] == "$anchors.records"
 
@@ -536,12 +556,14 @@ def test_the_shipped_document_reports_development_only_and_cuts_on_the_close():
     assert set(kill["report_segments"]) <= set(kill["segments"])
 
 
-def test_the_stream_pair_check_has_one_home():
-    from crypto_trading import day_series, spot_features
+def test_the_stream_pair_check_has_one_home_and_it_is_dskits():
+    from dskit.pipeline.libs import parquet_series
 
-    assert spot_features.stream_problems is day_series.stream_problems
-    assert day_series.stream_problems("streams['x']", {"source": "s"}), "a pair needs both keys"
-    assert day_series.stream_problems("streams['x']", {"source": "s", "stream": "files"}) == []
+    from crypto_trading import spot_features
+
+    assert spot_features.stream_problems is parquet_series.stream_problems
+    assert parquet_series.stream_problems("streams['x']", {"source": "s"}), "a pair needs both keys"
+    assert parquet_series.stream_problems("streams['x']", {"source": "s", "stream": "files"}) == []
 
 
 def test_the_instant_parser_is_dskits_and_refuses_a_naive_stamp():
@@ -626,7 +648,7 @@ def test_bvol_is_annualised_on_a_365_day_year():
 
 
 def test_each_fair_value_reads_the_volatility_its_name_promises():
-    nodes = _nodes(":FairValue")
+    nodes = _nodes(":BinaryFairValue")
     assert {k: (v["params"]["fair_field"], v["params"]["vol_field"]) for k, v in nodes.items()} == {
         "fair_rms": ("fair_rms", "rv_rms_60"), "fair_ewma": ("fair_ewma", "rv_ewma_30"),
         "fair_bvol": ("fair_bvol", "bvol_per_sqrt_s")}
@@ -653,3 +675,31 @@ def test_the_age_caps_stop_stale_readings_from_being_carried_forward():
 
 def test_the_settled_statuses_are_the_venues_spelling():
     assert _doc()["pipeline"]["markets"]["params"]["settled_statuses"] == ["finalized", "settled"]
+
+
+# -- the dskit nodes the document names: every column name they take is a name this child writes ------
+
+
+def test_every_fair_value_node_reads_the_columns_the_child_writes_and_the_lag_the_decisions_use():
+    """BinaryFairValue takes every column as a param and prices the horizon from the fill itself: pin the agreement."""
+    from crypto_trading import fields as f
+
+    pipeline = _doc()["pipeline"]
+    lag = pipeline["decisions"]["params"]["exec_lag_s"]
+    for key, spec in _nodes(":BinaryFairValue").items():
+        p = spec["params"]
+        assert (p["payoff_field"], p["lower_field"], p["upper_field"]) == (f.PAYOFF, f.FLOOR, f.CAP), key
+        assert (p["decision_field"], p["settle_field"]) == (f.DECISION_MS, f.CLOSE_MS), key
+        assert p["exec_lag_s"] == lag, f"{key}: the horizon runs from the fill, so the lag is the decisions' lag"
+
+
+def test_the_scorer_reads_the_columns_the_child_writes():
+    from crypto_trading import fields as f
+
+    kill = _doc()["pipeline"]["kill_test"]["params"]
+    assert (kill["market_field"], kill["label_field"], kill["settle_field"]) == (f.MID, f.LABEL, f.CLOSE_MS)
+    assert (kill["bid_field"], kill["ask_field"]) == (f.YES_BID, f.YES_ASK)
+    assert (kill["fee_yes_field"], kill["fee_no_field"]) == (f.FEE_BUY_YES, f.FEE_BUY_NO)
+    assert kill["eligible_field"] == f.TWO_SIDED, "the scorer's gate is the quote's own two-sided flag"
+    assert kill["cluster_field"] == f.EVENT
+    assert kill["bucket_edges"][0] == 0.0 and kill["bucket_edges"][-1] == 1.0, "mids are probabilities"
