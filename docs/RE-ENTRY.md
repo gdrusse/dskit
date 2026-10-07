@@ -14,8 +14,11 @@ Then run reviewed pilots and Stages 1–4, deliver reports and wrap/push.
 No run was started by this amendment. Protected holdout, new provider acquisition,
 cloud spending and deployment/live trading remain excluded. Stage 5 needs a
 separate decision; monthly refitting remains separately unqualified.
-Amendment review is pending; do not carry forward the original clean design
-reviews across these changed requirements.
+Two fresh sequential design reviews closed on `e78ec1be` with zero
+Critical/Major/Minor/Nit. Their actual outputs are retained in the proposal.
+One focused manifest test passed; links, old review identity, unchanged source/
+config/report bytes and clean diff verified. Future implementation still needs
+its own tests and final review gates before training.
 
 # Active handoff — 2026-10-07: CDF production proposal, pushed and wrapped
 

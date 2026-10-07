@@ -260,3 +260,66 @@ Limits: no training, providers, raw forecast regeneration, 2026 data access, dep
 Unresolved counts: Critical 0; Major 0; Minor 1; Nit 0.
 
 </details>
+
+
+## History/COVID/split amendment review closure
+
+Two fresh sequential GPT-6 reviewers completed the amendment design review on immutable `e78ec1be45d9b7223ad77664e789f35821064e16`, base `8c379bcb`, proposal SHA256 `760fddcebb6158316887a31e4de87fe8c4e751d62507f70830a50cbcfd7de85c`. Both returned **zero Critical/Major/Minor/Nit**. This closes publication of the actionable handoff; it does not certify the future implementation, historical-data coverage or production qualification.
+
+Parent verification: exact manifest/parity test passed (1 in 0.27 seconds); local links resolve; original reviewer output bytes are preserved; executable sources, configs, tests and all reports are unchanged. The integration reviewer's last status command failed before execution; the parent subsequently completed the same WSL2 diff check, clean-status check and candidate SHA256 verification successfully. No behavioral changes followed either review; only this evidence and handoff/journal closure were appended.
+
+The next session should use the amended H1/C1/S1 contract and its conditional Stage-0–4 authority. It must still perform the required implementation reviews and data checks before real fits. No training or protected holdout inspection has started in this handoff session.
+
+<details>
+<summary>Amendment correctness reviewer output (formatting normalized)</summary>
+
+Design review: zero proven findings; zero unresolved Critical/Major/Minor/Nit. This approves the scoped handoff design only.
+
+Candidate: e78ec1be45d9b7223ad77664e789f35821064e16; base 8c379bcbb79b614a96de2f745f1d17ae4106a618.
+Reviewer/lens: /root/history_split_correctness_r1, GPT-6, independent correctness/statistical/economic/authority review.
+Scope: amendment, surrounding proposal requirements, RE-ENTRY precedence, and A1091 journal/generated README consistency.
+Reviewed proposal blob: 5fd914eacb4ebc2d03c3ac6456220b66e9ed1953.
+
+Attempted falsification covered:
+1. History and leakage: H1 requires source-to-panel reconciliation, immutable changed identities, eligible earlier observations at each cutoff, protected readers, mature labels, and no automatic universe expansion. The sampling exception does not demonstrably violate the owner’s exact request to expand warmup history: it requires disclosure and review before comparison and cannot justify arbitrary historical truncation. Actual sampling suitability remains a Stage-0 gate.
+2. COVID: February–June replaces H2, without another fit. Training, transformations and monitoring freeze before the first score origin; fit/monitor labels must already be available. The two score cohorts reuse forecasts, acknowledge overlapping outcome periods, and cannot become separate winner-selection opportunities.
+3. Economic split accounting: requirements cover forward/reverse/repeated splits, incompatible sources, missing factors, price-return versus dividend-return definitions, price/volume units, event-crossing labels and feature windows.
+4. Future actions: consistent-vintage testing explicitly rebases both stored observations and their ledger. Recovery of historical share units does not authorize future-event predictors. Existing AsTradedClose append-only-ledger test is not accepted as evidence of this stronger property.
+5. Authority: conditional next-session Stages 0–4 authorization retains the 216-attempt cap and excludes protected holdout access, acquisition, spending, upgrades and deployment. Historical reviews are explicitly archived rather than reused.
+
+Checked existing seams: StockDailyBars, PriceCalendarCDFPanel and its inherited label path, CorporateActionRule, DailyBarFeatures, AsTradedClose, and relevant stock-bar, feature and price-calendar test sources. Their limitations are compatible with the amendment’s requirement to audit and repair demonstrated gaps before fits.
+
+Checks: WSL2 read-only source/diff inspection; clean git diff --check; no candidate changes to code/tests; canonical workflow files match origin/main. No tests, training, provider calls, or raw protected-data inspection performed.
+
+Limits: this review does not establish actual history completeness, source adjustment semantics, point-in-time universe validity, configuration feasibility or end-to-end split correctness. Those are explicitly required future implementation evidence, not unresolved defects in this handoff.
+
+</details>
+
+<details>
+<summary>Amendment integration reviewer output (formatting normalized)</summary>
+
+Independent integration/feasibility/evidence DESIGN review of candidate e78ec1be45d9b7223ad77664e789f35821064e16 against 8c379bcb, reviewer /root/history_split_integration_r1.
+
+Reviewed proposal SHA256: 760fddcebb6158316887a31e4de87fe8c4e751d62507f70830a50cbcfd7de85c.
+
+Verdict: zero unresolved Critical/Major; no proven Minor/Nit. This closes this lens on the amendment’s design/handoff, not its future implementation or empirical qualification. No findings require disposition.
+
+Assigned invariant coverage:
+- H1 source coverage and identity: The amendment requires catalog/snapshot/config inventory, per-ticker source-to-panel reconciliation, exclusion counts and reasons, investigation of truncation/sampling, and earliest reliable expanding history. A cached-panel min/max alone explicitly cannot establish completeness. The disclosed and frozen sampling contract, paired forecast identities and fixed row weights prevent undisclosed candidate-specific sampling. New inputs require new source/panel/fold/checkpoint identities; original artifacts remain frozen.
+- Source integration: Inspected StockDailyBars, PriceCalendarCDFPanel, its source-reference/fingerprint path and since/window filtering, DailyBarFeatures, AsTradedClose, and CorporateActionRule. These are actual existing seams. Their presence does not establish the proposed end-to-end guarantees, which the amendment correctly makes Stage-0 obligations.
+- C1 chronology and budget: February–June 2020 replaces 2020 H2 in the amendment and Stage 1; it adds no fourth development fold. Independently checked 15 + 108 + 27 + 54 = 204, plus nine possible reapplications and three counted pilots yields 216 attempts. COVID scoring freezes fit/monitor information before its first origin; later outcomes cannot update parameters during that fold. Crash/rebound slices reuse forecasts, distinguish quote from settlement cohorts, and cannot select a favorable slice. Later folds explicitly retain COVID history.
+- S1 economic semantics and clocks: The design separately requires price/dividend/volume basis, adjustment vintage, action direction/effective date, stable identity and known-at metadata. Pure splits must preserve returns; raw/as-traded units remain distinct from split-neutral model accounting. Feature availability is restricted to origin-time information; subsequent actions may enter outcome accounting only. Invalid or unknown action evidence requires refusal/quarantine and coverage accounting.
+- Existing tests versus missing evidence: Inspected stock-bar tests, stock-feature synthetic construction, price-calendar corporate-action tests and AsTradedClose tests. The existing test_as_traded_close_is_point_in_time appends a later ledger event while retaining earlier adjusted prices; it does not establish consistent-vintage invariance. The amendment explicitly rejects that as an equivalence test and requires rebasing matching prices, volume and action ledger. It also requires forward/reverse/repeated/no-split, invalid/missing-factor, inconsistent-source and post-origin-action coverage across the actual processing path. Those are future gates, not falsely reported completed tests.
+- Options boundary: Applicable contract identity, strike, multiplier and deliverables are required; unsupported nonstandard actions must abstain or be excluded. The contract does not demand an options execution engine for base-only research. Its rejection of universal strike-division assumptions agrees with the linked OIC corporate-action reference (https://www.optionseducation.org/referencelibrary/faq/splits-mergers-spinoffs-bankruptcies), including reverse splits and changed deliverables.
+- Authority, provenance and handoff: Proposal, new top RE-ENTRY entry and appended A1091 consistently describe conditional next-session implementation and Stages 1–4. Original publication reviews are explicitly historical. Fresh design review, required ADR approval, focused implementation tests and two fresh final lenses precede training. Protected 2026 access, providers/new acquisition, cloud spending, environment upgrades, deployment and live trading remain excluded. Stage 5 remains a separate decision. The handoff specifies actionable ordering and deliverables without treating historical reviews as approval for changed implementation.
+
+Checks and limits:
+- All filesystem/code inspection ran through WSL2. Read root/child instructions and canonical implementation/skeptic procedures; the local workflow/skeptic/wrap files had no diff from available origin/main.
+- Verified HEAD, proposal hash, four-file diff inventory, journal append and generated display change. Earlier status checks were clean; no files were edited.
+- Read existing synthetic tests; did not execute tests or repeat the parent’s focused manifest check. No training, raw historical/holdout inspection, acquisition or full suite occurred.
+- A final read-only diff-check/status command failed before execution because the Windows sandbox could not reopen a writable descendant beneath a read-only carveout. That last check is unverified; preceding inspection completed.
+- Actual owned-history completeness, historical action/vintage availability, rebuilt panel correctness, future fold feasibility and runtime behavior remain implementation prerequisites, not results established by this review.
+
+Unresolved counts: Critical 0; Major 0; Minor 0; Nit 0.
+
+</details>
