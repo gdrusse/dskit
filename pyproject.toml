@@ -158,6 +158,7 @@ convention = "numpy"
 # ---------------------------------------------------------------------
 "children/_skeleton/yourproject/nodes.py" = ["D"]
 "children/crypto_trading/crypto_trading/nodes.py" = ["D"]
+"children/correlation_arb/correlation_arb/nodes.py" = ["D"]
 "dskit/assets/__main__.py" = ["D"]
 "dskit/assets/libs/parquet.py" = ["D"]
 "dskit/assets/libs/sqlite.py" = ["D"]

@@ -30551,3 +30551,34 @@ The final integration skeptic demonstrated that hashing absolute paths in the pr
 **Consequences.** The child's `run_write.py` and its tests could move to the new kind later, by its own step; its registration config would then drop its `streams` list. A consumer names `<prefix>-<run>` as its stream, so a later run records WHICH table it read. Migrated 2026-10-07: the child's `run_write.py` and its tests were deleted; its documents name `RecordsWriteRun`.
 
 **Tests.** A changed document publishes a second stream and the first still reads back unchanged; an unchanged table re-acquired makes no snapshot; a path without or with two `{run}` is refused; a run name outside the stream alphabet is refused by name; rows carry `run_id`; inputs are not mutated. The `records-write` suites and the toolkit conformance bar pass unchanged.
+
+## ADR-0248 — Venue-neutral binary-market rows, decision instants and quote state graduate from `crypto_trading`
+
+**Status:** **PROPOSED 2026-10-07 — awaiting owner approval. No code until approved.** Found planning `correlation_arb`, the second child that needs these readers: a child may not import a sibling, and a copy is the duplication CLAUDE.md forbids.
+**Compatibility.** Additive only: new dskit modules; no existing dskit file, kind, field, default or identity changes. `crypto_trading` migrates by its own later step, as under ADR-0245/0246/0247.
+**Sweep** (`MarketRows CandleRows FeeRows DecisionRows MarketState FeeColumns decision_ms strike_known_ms two_sided quote_state`, origin/main, all branches and worktrees): the only implementations are `children/crypto_trading/crypto_trading/{kalshi_rows,decisions,market_state,fees}.py` (about 1,030 lines with `fields.py`). dskit has the read seam (`libs/observations.ObservationRows`), the as-of rule (`libs/parquet_series.prior_index`, ADR-0243), the payoffs (`binary_pricing.PAYOFFS`, ADR-0246) and the fee mechanics (`fee_mechanics`, ADR-0245); nothing turns a binary market's stream into labelled decision rows.
+
+**Context.** The readers are already venue-blind in mechanism: strike-type → payoff, result labels, settled statuses and fee-type → mechanic arrive as params. What is venue-specific is only (i) the stream's field names, which today are literals in `kalshi_rows.py`, and (ii) the vocabularies, which ADR-0245's owner ruling keeps in children ("venue facts are child facts").
+
+**Decision.** Two NEW modules, every column name a param (as `BinaryFairValue` already does), no venue name or vocabulary in code, docstrings or tests:
+1. Tier 1 `dskit/pipeline/binary_decisions.py`: `DecisionRows` (one row per market × declared lead; `I = close − lead`, `E = I + exec_lag`, no row before the strike is known) and `QuoteState` (the quote as of `I` from bars that ENDED by `I`, age-capped, never carried forward; `two_sided` gate). Moved, with tests, from `decisions.py` and `market_state.py`.
+2. Tier 2 `dskit/pipeline/libs/binary_market_rows.py` (subclasses `ObservationRows`): `BinaryMarketRows`, `QuoteBarRows`, `FeeScheduleRows`, `FeeColumns`. The field map (`ticker_field`, `strike_type_field`, `floor_field`, `cap_field`, `result_field`, `settle_value_field`, `settled_at_field`, …) and the vocabularies are params; the Kalshi map lives in each child's run config.
+
+**Alternatives rejected.** Leaving them in `crypto_trading` (the second child copies 1,000 lines); graduating `kalshi_rows.py` as-is with the venue's field names (contradicts ADR-0245's ruling); one module for both tiers (the row readers lean on the observations pack).
+
+**Tests.** The child's existing tests move with the code, re-expressed with the field map passed in; a venue-neutral fixture with renamed fields proves no literal survives; `crypto_trading`'s suite passes unchanged until its migration step.
+
+## ADR-0249 — Executable digital bounds, pricing a binary from any CDF curve, and a coherence check across linked binaries
+
+**Status:** **PROPOSED 2026-10-07 — awaiting owner approval. No code until approved.** From `correlation_arb` Stage 1 and Stage 3 (`children/correlation_arb/docs/plans/2026-10-07-implementation-plan.md`).
+**Compatibility.** Additive only: new modules; `OptionPriceCDF`, `BinaryFairValue`, `PyomoSolve` and `index_options` are not edited.
+**Sweep** (`vertical spread digital bound super-replicat sub-replicat survival curve GridCurve coherence dutch book arbitrage-free projection isotonic ladder`, origin/main, all branches and worktrees): `OptionPriceCDF` (libs/predictive_cdf.py:6861) prices on mid only; `BinaryPayoff` takes a `survival` callable but only `AveragedLognormal` supplies one; pmquant's crossed-book check is per contract, never across rungs. None of the three exists.
+
+**Decision.**
+1. Tier 1 `dskit/pipeline/digital_bounds.py`: `DigitalBounds` node. From call and put bid/ask at listed strikes, the executable sub- and super-replicating vertical spreads bound `P(S ≥ K)`, `P(S < K)` and `P(L ≤ S < U)`; the tighter of the call and put band is kept; a strike with no bracketing quotes is marked, never interpolated. Quote filtering imports `index_options.contracts.quote_problems`' rule after it graduates here as `quote_problems` (same ADR; `index_options` migrates by its own step).
+2. Tier 1 `dskit/pipeline/binary_curve.py`: `CurveSurvival` (survival from CDF knots, monotone linear interpolation, refusing outside support) and `CurveBinaryFairValue`, a sibling of `BinaryFairValue` that hands `CurveSurvival` to the existing `BinaryPayoff` geometries. Any `GridCurve`/`OptionPriceCDF` output prices a binary; no new payoff vocabulary.
+3. Tier 2 `dskit/pipeline/libs/binary_coherence.py`: `BinaryCoherence`, a `PyomoSolve` subclass with a non-capital role. Declared relations (partition sums to one; thresholds monotone; `between(L, U) = above(L) − above(U)`) over fee-adjusted bid/ask intervals: LP feasibility (infeasible = a riskless set, reported with its executable size) and a weighted projection of mids (weights `1/spread²`) as a de-noised fair value.
+
+**Alternatives rejected.** Child-side implementations (breaks graduation); editing `OptionPriceCDF` to emit bands (additive-only ruling); a copula/dependence pack now (Stage 5, a later ADR only if Stages 1–3 pass).
+
+**Tests.** Hand-worked bounds on a toy chain (bound contains the true digital of a known lognormal; crossed and zero-bid quotes refused by name); `CurveBinaryFairValue` equals `BinaryFairValue` when the curve IS the averaged lognormal; coherence finds a planted bucket-vs-threshold violation, passes a coherent ladder, and its projection is the identity on coherent mids.

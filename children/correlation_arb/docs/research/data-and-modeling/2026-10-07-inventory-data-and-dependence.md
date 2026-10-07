@@ -9,24 +9,24 @@ options. Coherence scans and cross-market dependence come after it.
 
 # Finding
 
-## 1. What dskit already has (main `80a194d`, plus branch `claude/crypto-trading-child`)
+## 1. What dskit already has (main `aa44819c`; the crypto branch merged 2026-10-07)
 
-Most of the machinery exists. About half of what this study needs is on main.
-The Kalshi-binary half is on the crypto branch and has not been merged.
+Most of the machinery exists on main, including the Kalshi-binary modules merged
+from the crypto branch on 2026-10-07 (ADR-0239..0247).
 
 | Need | Where it lives | Status |
 |---|---|---|
 | Kalshi markets, 1-minute candles, fee schedules, live books | `dskit/onboarding/libs/kalshi.py` (`KalshiConnector`) | main |
-| Kalshi `/historical` archive, trades, `expiration_value`, `settlement_ts` | `onboarding/libs/kalshi_history.py` (ADR-0236) | **branch only** |
+| Kalshi `/historical` archive, trades, `expiration_value`, `settlement_ts` | `onboarding/libs/kalshi_history.py` (ADR-0239) | main (merged 2026-10-07) |
 | SPX/SPXW/NDX/NDXP/SPY/QQQ chain with bid/ask, 15-min delayed, current state | `onboarding/libs/cboe.py` (`CboeConnector`, `option_chain`) | main |
 | Recording a chain forward on a schedule | `python -m dskit.onboarding watch` | main |
 | SPY/QQQ end-of-day chains 2008–2025 | `onboarding/libs/optionshist.py` | main |
 | SPY/QQQ minute NBBO (underlying) | `onboarding/libs/alpaca_quotes.py` | main |
 | Breeden–Litzenberger CDF: parity forward, isotonic call slopes, quantiles, rejection reasons | `pipeline/libs/predictive_cdf.py:6861` `OptionPriceCDF`; `OptionCDFPanel` :7113 | main |
 | Black-76 | `pipeline/option_pricing.py:75` | main |
-| Above/Below/Between payoffs and the `BinaryFairValue` node | `pipeline/binary_pricing.py` | **branch only** |
-| Quadratic venue fee | `pipeline/fee_mechanics.py` `ProbabilityQuadraticFee` | **branch only** |
-| Kill test: model vs market Brier/log by bucket, cluster SEs, naive take rule | `pipeline/binary_scoring.py:140` `BucketedBinaryScore` | **branch only** |
+| Above/Below/Between payoffs and the `BinaryFairValue` node | `pipeline/binary_pricing.py` | main (merged 2026-10-07) |
+| Quadratic venue fee | `pipeline/fee_mechanics.py` `ProbabilityQuadraticFee` | main (merged 2026-10-07) |
+| Kill test: model vs market Brier/log by bucket, cluster SEs, naive take rule | `pipeline/binary_scoring.py:140` `BucketedBinaryScore` | main (merged 2026-10-07) |
 | Proper scores and calibration (CRPS, twCRPS, threshold Brier, PIT, Berkowitz) | `pipeline/distribution_scores.py`; `DecisionRegionScores` | main |
 | Q→P transport of option-implied quantiles | `predictive_cdf.py:1305` `OptionImpliedTransportCDF` | main |
 | GPD tails | `SemiparametricGPDTailCDF` :1705 | main |
@@ -52,8 +52,11 @@ and needs an ADR before code:
 3. An IV-smile fit for one expiry (arbitrage-free SVI or a constrained spline), as an alternative curve source.
 4. A **coherence/no-arbitrage LP** over fee-adjusted bid/ask intervals of a ladder or of nested series.
 5. **Dependence models.** dskit has no copula, DCC, or covariance estimator; only PCA and block resampling.
-6. A sub-day as-of join. `observation-tables` works at day granularity only.
-7. A maker quoting policy plus mark-out reporting.
+6. A maker quoting policy. Mark-outs already exist in production reporting, and the strictly-prior sub-day
+   as-of read already exists (`libs/parquet_series.prior_index`, ADR-0243).
+
+The proposed homes and tiers are ADR-0248 (graduating crypto_trading's readers) and ADR-0249
+(bounds, curve pricing, coherence); see `docs/plans/2026-10-07-implementation-plan.md`.
 
 **Data gap.** No connector gives historical intraday index-option quotes.
 What exists:
