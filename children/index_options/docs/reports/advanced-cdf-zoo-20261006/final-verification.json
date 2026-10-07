@@ -11295,8 +11295,9 @@
     }
   },
   "pending_gates": {
-    "review": "closed",
-    "remote_delivery": "Parent will verify remote main and all four report blobs after the authorized push; recorded release commits remain reachable in Git. The authoritative local delivery receipt is pipeline_runs/advanced-cdf-zoo-20261006/final-verification/remote-delivery.json."
+    "review": "closed_zero_critical_major",
+    "remote_delivery": "verified: four reports on remote main; task remote branch deleted with expected-head guard",
+    "followup": "Disable after final evidence-only closeout commit is verified on remote main."
   },
   "limitations": [
     "Training-only scaler/median values and band identity hashes cannot be independently recomputed without rereading source rows; frozen reviewed code, persisted metadata, manifests and cross-model paired forecast artifacts are verified. No raw source rows or holdout loaded.",
@@ -12288,5 +12289,80 @@
   "reviewed_behavior_identity": {
     "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
     "policy": "Only evidence/editorial appends follow this lock. Code, tests, config, report HTML and behavioral ADR blobs must remain unchanged."
+  },
+  "remote_delivery": {
+    "verified_utc": "2026-10-07T18:55:52.432055+00:00",
+    "origin": "https://github.com/gdrusse/dskit.git",
+    "release_commit": "d4d00d395a6fe44f35139ebb5f2180178054afb0",
+    "reviewed_candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+    "remote_main": "d4d00d395a6fe44f35139ebb5f2180178054afb0",
+    "reports": [
+      {
+        "path": "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base.html",
+        "sha256": "3d3047dc676be3ea83aa505c67b604e1af95d4e224224b540becb15a9057a7d7",
+        "bytes": 7526494,
+        "remote_main_verified": true,
+        "visualization_copy_identical": true
+      },
+      {
+        "path": "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base.html",
+        "sha256": "d0df498aa0391ef4f463b5ccb831ebefc11528e696e5be0941b2a1656818b276",
+        "bytes": 55622937,
+        "remote_main_verified": true,
+        "visualization_copy_identical": true
+      },
+      {
+        "path": "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base-options.html",
+        "sha256": "106cd1923d3ebc9e40fb0c5e96c6161177bf8b95db83a383edf021cc30bc370a",
+        "bytes": 2194968,
+        "remote_main_verified": true,
+        "visualization_copy_identical": true
+      },
+      {
+        "path": "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base-options.html",
+        "sha256": "d2d1c23f13d4111b924cb7e6bcbf7aae93f88e9c59c3bff6aa7a4284410fe8e2",
+        "bytes": 11900723,
+        "remote_main_verified": true,
+        "visualization_copy_identical": true
+      }
+    ],
+    "branch_deletion": "verified absent after expected-head guarded deletion",
+    "branch_expected_head": "d4d00d395a6fe44f35139ebb5f2180178054afb0",
+    "deleted_remote_branch": "codex/advanced-interim-report-20261006",
+    "deletion_verified_utc": "2026-10-07T18:56:51.729957+00:00",
+    "earlier_cleanup_evidence": {
+      "verified_unix": 1791394692.6980553,
+      "remote_main": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+      "deleted_contained_remote_branches": {
+        "perf/speedups-2026-10-05": "2ef373d9e19e6869bb94c5e799333c2c7cfa0c44",
+        "claude/zealous-goodall-kdllva": "be1cf4e4ea5b37ce711dc8ca24f82c397fcf6500",
+        "run-steps": "a58ff850629b954a837a31a732b43179ed47515c"
+      },
+      "local_worktrees_preserved": true,
+      "audit_completed_unix": 1791394783.6792085,
+      "preserved_unmerged": {
+        "claude/index-options-perf-pilots": {
+          "head": "c833bdbd38960abd06999778042573cf3a67f0d7",
+          "reason": "Final behavioral patience/grid changes lack retained two-lens final lock; main changes runtime dependencies. Fresh integration review required.",
+          "reviewer": "/root/branch_pilot_audit",
+          "evidence": "actions A1051-A1054; 2026-10-05-performance-pilots.md; Claude session_01D9D8UcpmjVDnKk12SFR724"
+        },
+        "codex/index-options-iterative-validation": {
+          "remote_head": "80f0e4eef1110657716e7302423d985c1f2c8a18",
+          "local_head": "bd697abb8c64afa3cf98685a04b5628c32735817",
+          "reason": "Seven unique remote commits and two local-only; CDFEstimatorModel absent main; Alpaca connector manually ported/superseded in b692f7ac. Conflicting merge and dirty owning worktree; final candidate review not verified.",
+          "reviewer": "/root/branch_validation_audit"
+        },
+        "claude/crypto-trading-child": {
+          "head": "b422df1ec39715b15b6b598f5c39fdcd2640be15",
+          "reason": "Latest correction follows Major B3-01; retained clean review identifies older 1e7557f, not final corrected candidate. RE-ENTRY lists pending code/owner decisions."
+        },
+        "claude/ct-*": "Four component branches contained in crypto branch but not main; preserve until accepted integration.",
+        "codex/advanced-interim-report-20261006": "Preserve delivered interim snapshot pending full study reporting and final reviewed integration.",
+        "claude/model-zoo-417": "Local branch is study ancestor; current study remains running, final integration review with advanced candidate and current main pending."
+      },
+      "local_cleanup": "Contained local branches are checked out, including dirty family-availability and intraday-robust-joint; preserve other sessions worktrees and refs.",
+      "main_changed": false
+    }
   }
 }
