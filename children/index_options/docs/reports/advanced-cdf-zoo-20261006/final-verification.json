@@ -1293,7 +1293,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -1374,7 +1374,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -1455,7 +1455,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -1536,7 +1536,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -1617,7 +1617,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -1698,7 +1698,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -1779,7 +1779,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -1860,7 +1860,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -1941,7 +1941,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -2022,7 +2022,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -2103,7 +2103,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -2184,7 +2184,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -2265,7 +2265,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -2346,7 +2346,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -2427,7 +2427,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -2508,7 +2508,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -2589,7 +2589,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -2670,7 +2670,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -2751,7 +2751,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -2832,7 +2832,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -2913,7 +2913,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -2994,7 +2994,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -3075,7 +3075,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -3156,7 +3156,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -3237,7 +3237,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -3318,7 +3318,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -3399,7 +3399,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -3480,7 +3480,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -3561,7 +3561,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -3642,7 +3642,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -3723,7 +3723,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -3804,7 +3804,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -3885,7 +3885,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -3966,7 +3966,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -4047,7 +4047,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -4128,7 +4128,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -4209,7 +4209,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -4290,7 +4290,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -4371,7 +4371,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -4452,7 +4452,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -4533,7 +4533,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -4614,7 +4614,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -4695,7 +4695,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -4776,7 +4776,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -4857,7 +4857,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -4938,7 +4938,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5019,7 +5019,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5100,7 +5100,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -5181,7 +5181,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -5262,7 +5262,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -5343,7 +5343,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5424,7 +5424,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5505,7 +5505,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -5586,7 +5586,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -5667,7 +5667,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -5748,7 +5748,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "mlp_base_h32x16_lr0.001",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5829,7 +5829,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 4096,
         "n": 103901,
@@ -5910,7 +5910,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "lstm_base_lr0.003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -5991,7 +5991,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 4096,
         "n": 103901,
@@ -6072,7 +6072,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "lgbm_base_l15_lr0.1",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.1,
         "prior_batch": 32768,
         "n": 103901,
@@ -6153,7 +6153,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 103451,
@@ -6234,7 +6234,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 103451,
@@ -6315,7 +6315,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 103451,
@@ -6396,7 +6396,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 103451,
@@ -6477,7 +6477,7 @@
         "arm": "base",
         "advanced_model": "PatchTST",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 103451,
@@ -6558,7 +6558,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102611,
@@ -6639,7 +6639,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 102611,
@@ -6720,7 +6720,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 102611,
@@ -6801,7 +6801,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102611,
@@ -6882,7 +6882,7 @@
         "arm": "base",
         "advanced_model": "PatchTSMixer",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 102611,
@@ -6963,7 +6963,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102221,
@@ -7044,7 +7044,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 102221,
@@ -7125,7 +7125,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 102221,
@@ -7206,7 +7206,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102221,
@@ -7287,7 +7287,7 @@
         "arm": "base",
         "advanced_model": "VanillaTransformer",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 102221,
@@ -7368,7 +7368,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102431,
@@ -7449,7 +7449,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 102431,
@@ -7530,7 +7530,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 102431,
@@ -7611,7 +7611,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102431,
@@ -7692,7 +7692,7 @@
         "arm": "base",
         "advanced_model": "Autoformer",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 102431,
@@ -7773,7 +7773,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 92861,
@@ -7854,7 +7854,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 92861,
@@ -7935,7 +7935,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 92861,
@@ -8016,7 +8016,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 92861,
@@ -8097,7 +8097,7 @@
         "arm": "base",
         "advanced_model": "FEDformer",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 92861,
@@ -8178,7 +8178,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 98291,
@@ -8259,7 +8259,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 98291,
@@ -8340,7 +8340,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 98291,
@@ -8421,7 +8421,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 98291,
@@ -8502,7 +8502,7 @@
         "arm": "base",
         "advanced_model": "TFT",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 98291,
@@ -8583,7 +8583,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 103001,
@@ -8664,7 +8664,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 103001,
@@ -8745,7 +8745,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 103001,
@@ -8826,7 +8826,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 103001,
@@ -8907,7 +8907,7 @@
         "arm": "base",
         "advanced_model": "TCN",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 103001,
@@ -8988,7 +8988,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102251,
@@ -9069,7 +9069,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 102251,
@@ -9150,7 +9150,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 102251,
@@ -9231,7 +9231,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102251,
@@ -9312,7 +9312,7 @@
         "arm": "base",
         "advanced_model": "DilatedRNN",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 102251,
@@ -9393,7 +9393,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 100781,
@@ -9474,7 +9474,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 100781,
@@ -9555,7 +9555,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 100781,
@@ -9636,7 +9636,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 100781,
@@ -9717,7 +9717,7 @@
         "arm": "base",
         "advanced_model": "TSMixer",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 100781,
@@ -9798,7 +9798,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 100841,
@@ -9879,7 +9879,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 100841,
@@ -9960,7 +9960,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 100841,
@@ -10041,7 +10041,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 100841,
@@ -10122,7 +10122,7 @@
         "arm": "base",
         "advanced_model": "TiDE",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 100841,
@@ -10203,7 +10203,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102101,
@@ -10284,7 +10284,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 102101,
@@ -10365,7 +10365,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 102101,
@@ -10446,7 +10446,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 102101,
@@ -10527,7 +10527,7 @@
         "arm": "base",
         "advanced_model": "NBEATS",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 102101,
@@ -10608,7 +10608,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "mlp_base_h16_lr0.003",
-        "prior_label": "MLP \u00b7 Base",
+        "prior_label": "MLP · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 101021,
@@ -10689,7 +10689,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "gru_base_lr0.001",
-        "prior_label": "GRU \u00b7 Base",
+        "prior_label": "GRU · Base",
         "prior_lr": 0.001,
         "prior_batch": 512,
         "n": 101021,
@@ -10770,7 +10770,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "lstm_base_lr0.0003",
-        "prior_label": "LSTM \u00b7 Base",
+        "prior_label": "LSTM · Base",
         "prior_lr": 0.0003,
         "prior_batch": 512,
         "n": 101021,
@@ -10851,7 +10851,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "cnn_base_lr0.003",
-        "prior_label": "CNN \u00b7 Base",
+        "prior_label": "CNN · Base",
         "prior_lr": 0.003,
         "prior_batch": 512,
         "n": 101021,
@@ -10932,7 +10932,7 @@
         "arm": "base",
         "advanced_model": "KAN",
         "prior_model": "lgbm_base_l31_lr0.05",
-        "prior_label": "LGBM \u00b7 Base",
+        "prior_label": "LGBM · Base",
         "prior_lr": 0.05,
         "prior_batch": 32768,
         "n": 101021,
@@ -11274,7 +11274,12 @@
       }
     ],
     "full_manifest_not_copied_reason": "The local manifest contains 69540 per-fit source records and is 16MB; this bounded bundle retains its identity and location, audit result, source/dependency pins and aggregate comparisons.",
-    "recipe_retention_note": "Local frozen-run and /tmp recipe files must be retained with the execution workspace to reproduce extraction. Hashes identify exact scripts; they are not embedded here."
+    "recipe_retention_note": "Local frozen-run and /tmp recipe files must be retained with the execution workspace to reproduce extraction. Hashes identify exact scripts; they are not embedded here.",
+    "stylesheet_input": {
+      "path": "/mnt/c/Users/russe/.codex/visualizations/2026/10/05/01a10d8c-129c-7b51-8f01-6ed78266070d/pooled-performance.html",
+      "sha256": "45a49ce70fe2a896abaac4f8947af3693949724eaff2491fc9ae82e5d78fd785",
+      "retention_requirement": "Retain this original pooled-performance.html alongside the frozen study workspace and listed recipes. build_reports.py extracts its CSS. The CSS is also embedded in every delivered final report; no network asset is required to view those reports."
+    }
   },
   "integration_provenance_guard": {
     "status": "implemented; final reviewer gate pending",
@@ -11290,16 +11295,8 @@
     }
   },
   "pending_gates": {
-    "supplemental_options_and_prior_browser_numerics": {
-      "status": "passed",
-      "evidence_key": "paired_ui_verification"
-    },
-    "final_independent_reviewers": {
-      "status": "pending parent append"
-    },
-    "integration_final_candidate_and_merge": {
-      "status": "pending parent append"
-    }
+    "review": "closed",
+    "remote_delivery": "Parent will verify remote main and all four report blobs after the authorized push; recorded release commits remain reachable in Git. The authoritative local delivery receipt is pipeline_runs/advanced-cdf-zoo-20261006/final-verification/remote-delivery.json."
   },
   "limitations": [
     "Training-only scaler/median values and band identity hashes cannot be independently recomputed without rereading source rows; frozen reviewed code, persisted metadata, manifests and cross-model paired forecast artifacts are verified. No raw source rows or holdout loaded.",
@@ -11411,5 +11408,885 @@
       "rerunning successful fits"
     ],
     "pending": "Final candidate commit and two fresh independent review outputs"
+  },
+  "final_delivery_review": {
+    "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+    "base": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+    "status": "closed_zero_critical_major",
+    "reviews": [
+      {
+        "path": "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/final-correctness-r2.json",
+        "sha256": "ed573651233621e44c707e481da77788345452b7eeed7e9ee8ffb7e07c8f45b1",
+        "report": {
+          "schema": "independent-final-correctness-review-v2",
+          "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+          "base": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+          "frozen_training_candidate": "29d3bec1eac19ade16800384bcd7f98f094855ed",
+          "lens": "correctness/authority; whole delivery matrix with independent numerical and import-origin falsification",
+          "reviewer": "/root/final_correctness_r2",
+          "model": "GPT-6 (exact serving variant not exposed in this task context)",
+          "created_utc": "2026-10-07T18:46:54.109706+00:00",
+          "contract": {
+            "base": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+            "integration_parent": "36e857436a97fb9d3a19290c8b0841adbe5dd427",
+            "frozen_training_candidate": "29d3bec1eac19ade16800384bcd7f98f094855ed",
+            "scope": "Frozen study implementation integrated with current main, final four reports and memo, and executing-source provenance correction. Original training R4 evidence remains distinct from delivery review.",
+            "actors_authority": "Owner authorized implementation, report publication, push, conditional merge and contained-branch cleanup. Scientific summaries may not claim confirmatory or isolated architecture effects. Source guard protects against accidental mixed checkouts; malicious control of Python interpreter is not a security boundary.",
+            "entry_points": [
+              "CDFExperiment(config)",
+              "CDFExperiment.run/regime resume via constructor",
+              "python -m dskit.pipeline.libs.cdf_experiment",
+              "four standalone report render/filter entry points"
+            ],
+            "matrix": [
+              [
+                "source_identity",
+                "declared old checkout/executing changed checkout/imported third checkout/lazy import owner",
+                "IntegrityError before panel/output; retain identical relocated compatibility",
+                "59 runner tests and historical CLI refusal"
+              ],
+              [
+                "source_resolution",
+                "missing/duplicate runner anchor/outside root/missing file/loaded package initializer",
+                "fail closed; no ordinary model skip",
+                "runner tests"
+              ],
+              [
+                "resume_integrity",
+                "missing/malformed manifests, payload mismatch, partial score, pairing mismatch",
+                "halt; never overwrite successful cells",
+                "existing runner regression and complete artifact audit"
+              ],
+              [
+                "training_contract",
+                "purged folds, target scales, train-only masks, per-head routing, capacity/library adapters, fixed optimizer, untouched holdout",
+                "frozen R4 contract retained; no refit or changed artifacts",
+                "frozen source hashes, histories, capacity reconstruction, integration tests"
+              ],
+              [
+                "coverage",
+                "393 tickers x15model slots x9windows x3arms x2regimes",
+                "each slot scored/skipped/ineligible exactly once; missing outcomes excluded",
+                "318330-slot artifact audit and per-report browser outcome check"
+              ],
+              [
+                "scoring",
+                "3metrics, allperiod, pooled/local, options/control, prior simple models",
+                "sum losses; exact shared forecasts and paired baselines; width and protocol caveats",
+                "raw shard audit,120prior comparisons, summary+paired browser arithmetic"
+              ],
+              [
+                "integration",
+                "main speedups vs frozen sequence adapter implementation and child vintage/term slopes",
+                "preserve both behavior; imports resolve intended environment",
+                "744 core/pack,1043 child then inventory correction,22 purity; affected runner59"
+              ],
+              [
+                "delivery",
+                "all4 HTML, hash manifests, memo/journal, remote main concurrency and contained refs",
+                "two final zeroCritical/Major lenses before merge; no raw datasets/weights/secrets",
+                "report/manifest byte hashes, Git ancestor checks, expected-head deletion"
+              ]
+            ],
+            "non_goals": [
+              "new model selection or HPO",
+              "2026 holdout",
+              "trading deployment",
+              "full repository test suite",
+              "new provider data",
+              "rerunning successful fits"
+            ],
+            "pending": "Final candidate commit and two fresh independent review outputs"
+          },
+          "contract_sha256": "4d99c221b84c1b6a514bffb6238413380a9c44423c53fba6f926bc3c8d23b939",
+          "reviewed_candidate_changed_file_sha256": {
+            "children/index_options/AGENTS.md": "b23e1cb1b3db09a5ff9bd5abbcca44c0e8d58c15ecc839d155549b5cd894cd8a",
+            "children/index_options/CLAUDE.md": "b23e1cb1b3db09a5ff9bd5abbcca44c0e8d58c15ecc839d155549b5cd894cd8a",
+            "children/index_options/configs/advanced-cdf-zoo.json": "1f7ba634b0168ea76d4affe7303df5e16337a17544929cdcb8fd0c496a601e0f",
+            "children/index_options/configs/run-perticker-zoo-417.json": "8c7b83ab243c739e3338ea930b67c0a55c9f868358f9537499ea9a166ad923a2",
+            "children/index_options/configs/run-pooled-zoo-417-folds.json": "c25cf9beaade7a6f998a61c557a3c88785feaabbaa25b8f9090de06748621bf8",
+            "children/index_options/configs/run-pooled-zoo-417.json": "dba920b73a16f437d14acdc9b046be8c79174b798e2f53680b7770572c30b012",
+            "children/index_options/configs/templates/report-spec-perticker-zoo-417.json": "74f184cca62a79a7ec6c0d805fd9337fe70c299c5c2d7d44fd0c404777172599",
+            "children/index_options/configs/templates/report-spec-pooled-zoo-417.json": "40341164e843eef2b84aa616229e3cd68da38b34cbb7b36b74943a4ae5010223",
+            "children/index_options/configs/workflow-perticker-zoo-417.json": "9ca363eb63b72a1a3c268198d79c8aa8ec7ea7ccab15dc1996b7c916c047223d",
+            "children/index_options/configs/workflow-pooled-zoo-417.json": "d7c80a76e3b02d6f8af83c3fc6ed48c333ba554a1f5ac7186f7a286a7c9348b9",
+            "children/index_options/docs/decisioning/README.md": "5e7782111cfc801f9648c1bff9da6ee6f3912592fa91b0ae9c51a1157354ed6d",
+            "children/index_options/docs/decisioning/actions.csv": "d60846a4003521c2833f609c0a3d189b357892ede1701bcb39fc041b3c67fa7f",
+            "children/index_options/docs/memos/2026-10-05-pooled-zoo-417.md": "e8f5980051dd9f6a19b02ad0e7ac45cb83c53e830f6110620a106e6c028ab08f",
+            "children/index_options/docs/memos/2026-10-07-advanced-architecture-results.md": "42e368ae4330cd9fc4c4291c8d2e6e9617445a1b6b41894503d73dfc633457e8",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.html": "9734d423c137582c2ed36f5292cda1a2f457207db2569b52e3d38752beb3ff1f",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.manifest.json": "f1bbbea74c7a53ace658f818d86bd8175b0a01789b5b1ba5b7bf364609d0562a",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/final-verification.json": "271c44b81847c743d51ae3645ee65c401dbfd386476c44b04a5466da4c9d55c9",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base-options.html": "106cd1923d3ebc9e40fb0c5e96c6161177bf8b95db83a383edf021cc30bc370a",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base.html": "3d3047dc676be3ea83aa505c67b604e1af95d4e224224b540becb15a9057a7d7",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base-options.html": "d2d1c23f13d4111b924cb7e6bcbf7aae93f88e9c59c3bff6aa7a4284410fe8e2",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base.html": "d0df498aa0391ef4f463b5ccb831ebefc11528e696e5be0941b2a1656818b276",
+            "children/index_options/docs/research/advanced-cdf-zoo/2026-10-06-capacity-and-architecture-plan.md": "b3b942ee52fa2b04aa9162daeb6c55ae06f89ce92c8cb184f6f974cbdc69415d",
+            "children/index_options/index_options/cdf_study.py": "48be427f90ae0bcfd860462a5bffca3c1d22042f20565ab2ef51c64e7efd8220",
+            "children/index_options/index_options/nodes.py": "033714e2d876714fc9ba4684297080a9a6341490b847c716adaf1df2d09355f5",
+            "children/index_options/index_options/pooled.py": "8786811ee3c76acb27f907b25247a04a81bf91dfb460f48b4c42576f555384c0",
+            "children/index_options/tests/test_cdf_study.py": "f37e2faaa5d33cd6718aac589cb744958b07bd0288445e6feec05164760ae932",
+            "children/index_options/tests/test_configs.py": "efca0e211a091396de6b00e2fb962ee0860ad60d795f88b6f9312cf0dec3a18c",
+            "children/index_options/tests/test_nodes.py": "443ecc2bf6473f24219e69dc76be2261f09ea79e4b13e725bc328d3f655322b4",
+            "children/index_options/tests/test_price_calendar_panel.py": "464097d4aface3d7d7fd4986cffd8726429e71cd3005d518a263941857006de5",
+            "docs/RE-ENTRY.md": "04f13e2e0db1011b2e80539e19458127373991198ed6d2c31088cfbcdc203bd5",
+            "docs/architecture/decision-log.md": "4a069c6a9486dbd78315199793a2f6b474c6fd5fae865df728a7b3b77c5c1419",
+            "dskit/onboarding/AGENTS.md": "136ae7f7af6ad8dbadd54ec77b2540d50339c36eb662a1bdb14f88d9efe93c2f",
+            "dskit/onboarding/CLAUDE.md": "fe2ea346bfb9a5de8dddcf73c3f6451971720d335ac25f8061075c9a220c5c79",
+            "dskit/onboarding/README.md": "f78fa7c768d8e739dee3f52892d74991f417ec1c43143b8e40305f97f98b3720",
+            "dskit/onboarding/__init__.py": "df5cb90a2b3908b2cde8cf9430d80b26be759f4f93fbedda946f807844ab36ff",
+            "dskit/onboarding/base.py": "064f502cf9629d510a49a656e638c6fb07fe44c428f8ae4e7cbc05b08ac68621",
+            "dskit/onboarding/layout.py": "7c1427cbc82fc98a8f298ea4c6f2769a3fde19987694e55fa5fb69cf95dc3fc8",
+            "dskit/onboarding/libs/localblobs.py": "975950cd842255cea8ef7b81ef07dfe47aa09b57aa2ad32477b10d6b0c3d0b94",
+            "dskit/onboarding/observations.py": "01f832099da853093592ceae2ae431f31062f2731b9c6854355ad8e598514e69",
+            "dskit/pipeline/AGENTS.md": "8e3270d6baf9f95b195589a8a0bf16330244622ba9b3b27794a9aa3f68290896",
+            "dskit/pipeline/CLAUDE.md": "5314c984e3c39ed52fab20080cf2724d80e318022d49e0142ad8bf52efe533aa",
+            "dskit/pipeline/README.md": "f966ef4e9a92e6eddd72890f68ab607c1f547c66cb1e8f82863dbae591c0edde",
+            "dskit/pipeline/base.py": "e27ed9bc9bb86cfceb787513c9bbf3728e5d686157fb8cbe1a9fd262b2b932cc",
+            "dskit/pipeline/folds.py": "14e701a1719301c9c13fdfbf44d1185849f9de37f5b2ef186a078bd61f5601cf",
+            "dskit/pipeline/libs/cdf_experiment.py": "183047aaf900bc12e742354b501ea5e6106ab89c506bc496dc48b2bf7606a877",
+            "dskit/pipeline/libs/neuralforecast.py": "23b1b077284bac4cf8ec50fd58ed43456a637eb7c5330a928f7394d133783ab0",
+            "dskit/pipeline/libs/observation_tables.py": "259cb9d7bc6d1bf67934e73f9a249709a9c7261de04838f7975e427631e2cb77",
+            "dskit/pipeline/libs/parquet.py": "477191dcb395ffc2ca4b28ba06774626976ecbfc865b377e902190ccc5e6e5fd",
+            "dskit/pipeline/libs/predictive_cdf.py": "74a4b7507b4693eaa60fa2414ff92511dc260471aec6773c4ed01d0cd6643347",
+            "dskit/pipeline/libs/torch_ts.py": "71aa4a4a991f7b44f95aa55159d0cdfd4f6f150304896ff9f7e1f34d9b4e3cc0",
+            "dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312",
+            "dskit/pipeline/workflow_report.py": "3ae2b8da92750dcee9f4cf5634a1944be95b0a496356d425a42bef03a18077f0",
+            "dskit/pipeline/workflow_rollup.py": "bfe4263a82f3f3f763a85fcf2be737a03f56d8237acf968f8efb2b884d114df1",
+            "pyproject.toml": "e0483c87a807c406218455da2c1461ea226d9a7f0c2f1ef083b3d19030b77ab5",
+            "tests/onboarding/test_layout.py": "f6264f782bd609382b04005d0d3e85d83e6420ea7a0c453d18afbd26fdbfba2d",
+            "tests/pipeline/test_base.py": "6c181a7c596bc29b11620bbb41525e8fefd1e88892b585114e2023f18948337e",
+            "tests/pipeline/test_folds.py": "fa17ee24fbf8d842d0c1d84875ed9e83f85ac9a0861a52f4df413276251741cd",
+            "tests/pipeline/test_workflow_report.py": "06247117012ba96b0c3fe91fe74c63acb9578b83732bf7ba5d1eae39922aad39",
+            "tests/pipeline/test_workflow_rollup.py": "7a35387cbc0e079ba42ecc96b99a2b59f5dd568d97a5850c802957c12ff3c517",
+            "tests/pipeline_libs/test_cdf_experiment.py": "1300538c040d20cabab15859654601a76056cb18ae21bc8c1808dc65855c945c",
+            "tests/pipeline_libs/test_observation_tables.py": "877317dd284fd622a9c85ae1cc615c091259fe5f52f5fcc4945da9828e8e526b",
+            "tests/pipeline_libs/test_parquet.py": "aec88b755e96ed9d3a987b2e9810f001ff0802a3f8ce69c221cadef9d25c25f7",
+            "tests/pipeline_libs/test_predictive_cdf.py": "736db3347d6be3f602d4e5d812d97b4d5b780e31c0524d31ea1a8655e34b9772"
+          },
+          "method": "Fresh review of this candidate, prior correctness-integration-r1 and frozen design-review read as context, not carried approval. Read root/child instructions and canonical workflow; reviewed guard, public constructor/CLI/run admission, resume code, integration deltas, retained audit/prior/report recipes, four final HTML payloads and memo. All execution in WSL2; no repository edits, training, provider reads, holdout loads, or full suite.",
+          "invariants": [
+            {
+              "id": "source_identity",
+              "status": "pass",
+              "proof": "59 focused tests plus actual subprocess imports from temporary copied packages. Identical relocated tree accepted. With runner symlinked to candidate, modified loaded predictive_cdf, lazy transformers, and package initializer in third tree were all refused by actual import origin, without sys.modules or find_spec mocking. Historical CLI independently refused executing driver hash before panel/output."
+            },
+            {
+              "id": "source_resolution",
+              "status": "pass",
+              "proof": "Source-anchor inventory, declared-root traversal, exact corresponding executing-tree hash and loaded/lazy-origin checks read. Focused regressions exercise absent/duplicate runner anchors, outside-root, absent file, changed declared/loaded/lazy owner and initializer. Empty-pin synthetic compatibility retained intentionally; no model-skip handler encloses constructor guard."
+            },
+            {
+              "id": "resume_integrity",
+              "status": "pass",
+              "proof": "Focused suite covers publication ancestry, corrupt/missing manifests/payloads, orphan/partial scores, conflicting outcomes, malformed admitted identities/values and pairing. Reviewed _resume_state before model-specific catch and immutable fit/checkpoint identity flow; sampled terminal and score manifests against saved payloads."
+            },
+            {
+              "id": "training_contract",
+              "status": "pass within frozen-artifact scope",
+              "proof": "65 frozen source pins and 190 runtime versions independently match. All scored row/fit associations, budgets, optimizer-step arithmetic and patience histories recalculated from aggregate data. Reviewed retained complete raw audit and independent capacity reconstruction; independently sampled 90 regime/arm/architecture families. Purge, train-only preprocessing, 31-day target scaling and head routing remain disclosed; changed executing code cannot resume historical experiment under its old pins."
+            },
+            {
+              "id": "coverage",
+              "status": "pass",
+              "proof": "Independent exhaustive enumeration: 318330 slots = 96553 scored + 42137 model skips + 179640 ineligible, exactly one state each; every scored row has matching admission n and fit linkage. HTML embedded datasets and remapped configuration/fit identities exactly equal the authoritative aggregate slices."
+            },
+            {
+              "id": "scoring",
+              "status": "pass",
+              "proof": "Independently recomputed all 24 common-base model/regime summaries on 92231 forecasts/373 tickers/3082 cells; all available options-control pairs and widths (12 pooled; 3560 local, 1366 head differences, 477 native differences); 120 prior comparisons x3 metrics from exact sums and advanced aggregate mapping. Sampled 78 saved raw score shards for hashes, n, identity uniqueness, 31-day horizon and all six summed losses. Four browser reports pass arithmetic and interaction checks."
+            },
+            {
+              "id": "integration",
+              "status": "pass for reviewed candidate",
+              "proof": "Read frozen-to-integrated source deltas at runner, shared identity/scoring/numeric seams, predictive-CDF speedups and child node vocabulary; 272 relevant shared/child tests passed with 26 skips, in addition to 59 runner tests. Historical invocation refuses rather than silently using frozen source pins. No clean training R4 verdict carried over changed integration code."
+            },
+            {
+              "id": "delivery",
+              "status": "pass for correctness review; subsequent delivery gates pending",
+              "proof": "Four report hashes, all ten retained artifact and ten recipe hashes match the bundle; candidate tree clean, git diff --check clean. Memo uses ratio-of-sums and explicit matched denominators, gives all exclusions, options component coverage/width caveats, 2024-25 exploratory limits and unopened holdout. It explicitly leaves final review and release gates pending, so this review is not a merge/push attestation."
+            }
+          ],
+          "findings": [],
+          "critical": 0,
+          "major": 0,
+          "minor": 0,
+          "nit": 0,
+          "prior_finding_disposition": {
+            "FINAL-CORRECTNESS-01": "Closed for immutable-checkout/import-origin contract on candidate5b150ca5: declared old bytes no longer authorize changed executing bytes; actual loaded and lazy mixed-tree probes refuse. Historical empirical run remains distinct and unchanged."
+          },
+          "tests": [
+            {
+              "command": "PYTHONPATH=.:children/index_options:<frozen runtime> OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 CUDA_VISIBLE_DEVICES= /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline_libs/test_cdf_experiment.py",
+              "result": "59 passed, 3920 warnings in 8.91s",
+              "log": "/tmp/final-correctness-r2-tests.log"
+            },
+            {
+              "command": "Same runtime, python -m pytest -q tests/pipeline/test_base.py tests/pipeline/test_records.py tests/pipeline/test_distribution_scores.py tests/pipeline/test_distribution_models.py children/index_options/tests/test_cdf_study.py",
+              "result": "272 passed, 26 skipped, 637 warnings in 8.85s",
+              "log": "/tmp/final-correctness-r2-integration.log"
+            },
+            {
+              "command": "python -m dskit.pipeline.libs.cdf_experiment children/index_options/configs/advanced-cdf-zoo.json --regime pooled --limit 1",
+              "result": "IntegrityError: executing source fingerprint changed: dskit/pipeline/driver.py; constructor stops before panel hash/read or output creation",
+              "log": "/tmp/final-correctness-r2-cli.log"
+            },
+            {
+              "command": "python /tmp/final-correctness-r2-probe.py",
+              "result": "Independent aggregate/source-origin probe passed",
+              "log": "/tmp/final-correctness-r2-probe.log"
+            },
+            {
+              "command": "Isolated Playwright runtime executed retained verify_report_ui.py in-memory with VIEW set to candidate reports, RUN redirected to /tmp/final-correctness-r2-ui, screenshot writes disabled",
+              "result": "Four reports pass summary recalculation, exact outcome coverage, metrics/arms/coverage/window controls, exclusions, empty search, paging and mobile overflow; no JavaScript errors. Existing evidence not overwritten."
+            },
+            {
+              "command": "Independent read-only raw-artifact and prior-arithmetic probes",
+              "result": "90 architecture/regime/arm cells, 78 raw score shards, 246 payload hashes; 120 prior comparisons and65source/190runtime pins independently checked."
+            }
+          ],
+          "independent_probe_results": {
+            "bundle_artifacts_and_recipes_verified": [
+              10,
+              10
+            ],
+            "expanded_exclusive_counts": {
+              "scored": 96553,
+              "ineligible": 179640,
+              "model_skipped": 42137
+            },
+            "common_base_summary": [
+              [
+                "PatchTST",
+                "pooled",
+                0.14296463749879917
+              ],
+              [
+                "PatchTST",
+                "unpooled",
+                -2.6144640128788588
+              ],
+              [
+                "PatchTSMixer",
+                "pooled",
+                -0.1812884838684914
+              ],
+              [
+                "PatchTSMixer",
+                "unpooled",
+                -3.1263633289118298
+              ],
+              [
+                "VanillaTransformer",
+                "pooled",
+                0.17065463280755422
+              ],
+              [
+                "VanillaTransformer",
+                "unpooled",
+                -2.17384421843021
+              ],
+              [
+                "Autoformer",
+                "pooled",
+                -0.05158862387319996
+              ],
+              [
+                "Autoformer",
+                "unpooled",
+                -1.7178094053285298
+              ],
+              [
+                "FEDformer",
+                "pooled",
+                0.1201391473357627
+              ],
+              [
+                "FEDformer",
+                "unpooled",
+                -1.7182246687590164
+              ],
+              [
+                "TFT",
+                "pooled",
+                0.014702195646820737
+              ],
+              [
+                "TFT",
+                "unpooled",
+                -1.8383205801830282
+              ],
+              [
+                "TCN",
+                "pooled",
+                -0.03065151271841593
+              ],
+              [
+                "TCN",
+                "unpooled",
+                -2.7819075445890684
+              ],
+              [
+                "DilatedRNN",
+                "pooled",
+                0.02029052539308518
+              ],
+              [
+                "DilatedRNN",
+                "unpooled",
+                -1.7083534120289512
+              ],
+              [
+                "TSMixer",
+                "pooled",
+                0.03441199939765438
+              ],
+              [
+                "TSMixer",
+                "unpooled",
+                -2.255049419210864
+              ],
+              [
+                "TiDE",
+                "pooled",
+                0.019084508979816395
+              ],
+              [
+                "TiDE",
+                "unpooled",
+                -2.332656957133894
+              ],
+              [
+                "NBEATS",
+                "pooled",
+                -0.10544287542186837
+              ],
+              [
+                "NBEATS",
+                "unpooled",
+                -2.4533739927321108
+              ],
+              [
+                "KAN",
+                "pooled",
+                -0.009129210215297334
+              ],
+              [
+                "KAN",
+                "unpooled",
+                -2.305434068486667
+              ]
+            ],
+            "option_comparisons": [
+              [
+                "pooled",
+                "PatchTST",
+                17037,
+                -0.7175986319180483
+              ],
+              [
+                "pooled",
+                "PatchTSMixer",
+                17037,
+                0.4920502389491044
+              ],
+              [
+                "pooled",
+                "TCN",
+                17037,
+                0.045153262871378
+              ],
+              [
+                "pooled",
+                "DilatedRNN",
+                8835,
+                -1.1074367924259532
+              ],
+              [
+                "pooled",
+                "TSMixer",
+                17037,
+                -0.6016285127996124
+              ],
+              [
+                "pooled",
+                "NBEATS",
+                17037,
+                -0.537626438948835
+              ],
+              [
+                "pooled",
+                "KAN",
+                8835,
+                -0.9904191585725197
+              ],
+              [
+                "unpooled",
+                "PatchTST",
+                16917,
+                -1.7601735112212413
+              ],
+              [
+                "unpooled",
+                "PatchTSMixer",
+                16917,
+                -0.9275914128888729
+              ],
+              [
+                "unpooled",
+                "VanillaTransformer",
+                15426,
+                1.0061509566901217
+              ],
+              [
+                "unpooled",
+                "Autoformer",
+                16114,
+                -1.9699044947813382
+              ],
+              [
+                "unpooled",
+                "TCN",
+                16838,
+                1.4002846463413543
+              ],
+              [
+                "unpooled",
+                "DilatedRNN",
+                15366,
+                0.8597371915421648
+              ],
+              [
+                "unpooled",
+                "NBEATS",
+                7942,
+                -1.337310227966304
+              ]
+            ],
+            "options_width_differences": {
+              "pooled_pairs": 12,
+              "unpooled_total_head_native": [
+                3560,
+                1366,
+                477
+              ]
+            },
+            "html_exact_aggregate_mapping": 4,
+            "source_probe": {
+              "identical_relocated": "VERIFIED",
+              "loaded_third_tree": "dskit.pipeline.libs.cdf_experiment.IntegrityError: executing source import owner changed: dskit.pipeline.libs.predictive_cdf",
+              "lazy_third_tree": "dskit.pipeline.libs.cdf_experiment.IntegrityError: executing source import owner changed: dskit.pipeline.libs.transformers",
+              "package_initializer": "dskit.pipeline.libs.cdf_experiment.IntegrityError: executing source import owner changed: dskit"
+            }
+          },
+          "raw_artifact_sample": {
+            "selected_regime_arm_architecture_cells": 90,
+            "completed_cells": 52,
+            "skipped_cells": 38,
+            "score_shards_independently_recomputed": 78,
+            "payload_hashes": 246
+          },
+          "prior_source_and_runtime": {
+            "frozen_source_hashes": 65,
+            "runtime_versions": 190,
+            "prior_comparisons_arithmetic": 120,
+            "prior_metrics_each": 3
+          },
+          "browser_results": [
+            {
+              "report": "pooled-base",
+              "browser": "isolated WSL Chromium headless",
+              "js_errors": [],
+              "summary_cells_independently_recalculated": true,
+              "all_expected_outcomes_exclusive": true,
+              "filters_metrics_windows_pagination_empty_search": true,
+              "desktop_mobile_screenshots": true
+            },
+            {
+              "report": "unpooled-base",
+              "browser": "isolated WSL Chromium headless",
+              "js_errors": [],
+              "summary_cells_independently_recalculated": true,
+              "all_expected_outcomes_exclusive": true,
+              "filters_metrics_windows_pagination_empty_search": true,
+              "desktop_mobile_screenshots": true
+            },
+            {
+              "report": "pooled-base-options",
+              "browser": "isolated WSL Chromium headless",
+              "js_errors": [],
+              "summary_cells_independently_recalculated": true,
+              "all_expected_outcomes_exclusive": true,
+              "filters_metrics_windows_pagination_empty_search": true,
+              "desktop_mobile_screenshots": true
+            },
+            {
+              "report": "unpooled-base-options",
+              "browser": "isolated WSL Chromium headless",
+              "js_errors": [],
+              "summary_cells_independently_recalculated": true,
+              "all_expected_outcomes_exclusive": true,
+              "filters_metrics_windows_pagination_empty_search": true,
+              "desktop_mobile_screenshots": true
+            }
+          ],
+          "scope_gaps": [
+            "No new real fit, HPO, provider pull, raw source-panel row read, 2026 holdout evaluation, full repository suite or GPU stress test. Synthetic focused tests only.",
+            "This review did not repeat the full 406865-payload/69540-terminal raw audit or all898parameter-shape instantiations. It verified retained audit identities, examined recipes, checked all aggregate outcomes/histories represented by scored rows, and independently sampled all90architecture/regime/armfamilies.",
+            "Training-only medians, scaler values and band identity hashes were not recomputed from raw source data; memo correctly states that limitation.",
+            "Browser rerun reused the retained verification recipe with independent paths; independent reviewer numerical checks separately verified every HTML data mapping, shared denominator and paired comparison. No new screenshots were saved.",
+            "Remote current-head races, conditional integration/merge, push and contained-ref deletion remain parent delivery actions after both final lenses; this review intentionally made no refs changes.",
+            "Source-origin review assumes the declared immutable source snapshots and excludes malicious interpreter control; it is not a security claim about arbitrary Python internals or concurrent code replacement after validation.",
+            "Per-fit artifacts and some recipe files remain in retained local run workspace or /tmp, explicitly documented; the bounded Git bundle alone does not reproduce raw extraction."
+          ],
+          "verdict": {
+            "status": "PASS correctness/authority final lens",
+            "unresolved_critical": 0,
+            "unresolved_major": 0,
+            "release_gate": "Requires the second fresh independent final lens on the same code/tests/contracts/dependencies and parent delivery verification. No deployment/training/trading authorization."
+          },
+          "minor_backlog": [],
+          "final_tree_state": "HEAD remained 5b150ca578b7eada44ff05aa5cbba03d138e18a7; git status --porcelain empty. Only authorized ignored reviewer output and /tmp probes/logs created.",
+          "evidence_hashes": {
+            "/tmp/final-correctness-r2-tests.log": "69e55ddd70183038fe223b81e0fa901ccc6dbe90706346ee30031c95dbf45e31",
+            "/tmp/final-correctness-r2-integration.log": "1707f637cb29630b2f60a45b8750671b60656b6b294f17016d0e06a18dbc716f",
+            "/tmp/final-correctness-r2-cli.log": "2d50556ae31d9eb09ca96c622738e069d21c56ace9587bd81e5594fb554bb29f",
+            "/tmp/final-correctness-r2-probe.py": "83e2f28dfb7933bdc519f063573317da891d6aa53d4dfa350cd5d7d2a869aafd",
+            "/tmp/final-correctness-r2-probe.log": "020af7833603dcbd1e12922463d06168d0fd998f5d94c6092b109b0b80d20d8d",
+            "/tmp/final-correctness-r2-ui/ui-verification.json": "2e59dd4f17c5a244164dcb803e935835d13b9b5d3b2ba3a3db2a4f6ea7b04842"
+          }
+        }
+      },
+      {
+        "path": "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/final-integration-r2.json",
+        "sha256": "69bd15273523727a68530b89c8d271975847c137f0677dac4a0af90a637a0a1e",
+        "report": {
+          "schema": "final-independent-delivery-review/v1",
+          "created_utc": "2026-10-07T18:53:55.879401+00:00",
+          "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+          "base": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+          "frozen_training_candidate": "29d3bec1eac19ade16800384bcd7f98f094855ed",
+          "lens": "tests/integration",
+          "reviewer": "/root/final_integration_r2",
+          "model": "Codex based on GPT-6 (specific runtime subversion not exposed)",
+          "scope": "Complete63-file integrated candidate vs current origin/main, final4reports/memo, source provenance correction; distinct final delivery lens, not frozen training R4 approval or deployment authorization.",
+          "contract": {
+            "base": "21821e2b35d8f0b3ac8ed3941c98d7db20b0dffa",
+            "integration_parent": "36e857436a97fb9d3a19290c8b0841adbe5dd427",
+            "frozen_training_candidate": "29d3bec1eac19ade16800384bcd7f98f094855ed",
+            "scope": "Frozen study implementation integrated with current main, final four reports and memo, and executing-source provenance correction. Original training R4 evidence remains distinct from delivery review.",
+            "actors_authority": "Owner authorized implementation, report publication, push, conditional merge and contained-branch cleanup. Scientific summaries may not claim confirmatory or isolated architecture effects. Source guard protects against accidental mixed checkouts; malicious control of Python interpreter is not a security boundary.",
+            "entry_points": [
+              "CDFExperiment(config)",
+              "CDFExperiment.run/regime resume via constructor",
+              "python -m dskit.pipeline.libs.cdf_experiment",
+              "four standalone report render/filter entry points"
+            ],
+            "matrix": [
+              [
+                "source_identity",
+                "declared old checkout/executing changed checkout/imported third checkout/lazy import owner",
+                "IntegrityError before panel/output; retain identical relocated compatibility",
+                "59 runner tests and historical CLI refusal"
+              ],
+              [
+                "source_resolution",
+                "missing/duplicate runner anchor/outside root/missing file/loaded package initializer",
+                "fail closed; no ordinary model skip",
+                "runner tests"
+              ],
+              [
+                "resume_integrity",
+                "missing/malformed manifests, payload mismatch, partial score, pairing mismatch",
+                "halt; never overwrite successful cells",
+                "existing runner regression and complete artifact audit"
+              ],
+              [
+                "training_contract",
+                "purged folds, target scales, train-only masks, per-head routing, capacity/library adapters, fixed optimizer, untouched holdout",
+                "frozen R4 contract retained; no refit or changed artifacts",
+                "frozen source hashes, histories, capacity reconstruction, integration tests"
+              ],
+              [
+                "coverage",
+                "393 tickers x15model slots x9windows x3arms x2regimes",
+                "each slot scored/skipped/ineligible exactly once; missing outcomes excluded",
+                "318330-slot artifact audit and per-report browser outcome check"
+              ],
+              [
+                "scoring",
+                "3metrics, allperiod, pooled/local, options/control, prior simple models",
+                "sum losses; exact shared forecasts and paired baselines; width and protocol caveats",
+                "raw shard audit,120prior comparisons, summary+paired browser arithmetic"
+              ],
+              [
+                "integration",
+                "main speedups vs frozen sequence adapter implementation and child vintage/term slopes",
+                "preserve both behavior; imports resolve intended environment",
+                "744 core/pack,1043 child then inventory correction,22 purity; affected runner59"
+              ],
+              [
+                "delivery",
+                "all4 HTML, hash manifests, memo/journal, remote main concurrency and contained refs",
+                "two final zeroCritical/Major lenses before merge; no raw datasets/weights/secrets",
+                "report/manifest byte hashes, Git ancestor checks, expected-head deletion"
+              ]
+            ],
+            "non_goals": [
+              "new model selection or HPO",
+              "2026 holdout",
+              "trading deployment",
+              "full repository test suite",
+              "new provider data",
+              "rerunning successful fits"
+            ],
+            "pending": "Final candidate commit and two fresh independent review outputs"
+          },
+          "contract_sha256": "9c7179b880671d8657798550e793f94a8fd6d1962b01a65ac2b5d52e5cccb414",
+          "candidate_blob_sha256": {
+            "children/index_options/AGENTS.md": "b23e1cb1b3db09a5ff9bd5abbcca44c0e8d58c15ecc839d155549b5cd894cd8a",
+            "children/index_options/CLAUDE.md": "b23e1cb1b3db09a5ff9bd5abbcca44c0e8d58c15ecc839d155549b5cd894cd8a",
+            "children/index_options/configs/advanced-cdf-zoo.json": "1f7ba634b0168ea76d4affe7303df5e16337a17544929cdcb8fd0c496a601e0f",
+            "children/index_options/configs/run-perticker-zoo-417.json": "8c7b83ab243c739e3338ea930b67c0a55c9f868358f9537499ea9a166ad923a2",
+            "children/index_options/configs/run-pooled-zoo-417-folds.json": "c25cf9beaade7a6f998a61c557a3c88785feaabbaa25b8f9090de06748621bf8",
+            "children/index_options/configs/run-pooled-zoo-417.json": "dba920b73a16f437d14acdc9b046be8c79174b798e2f53680b7770572c30b012",
+            "children/index_options/configs/templates/report-spec-perticker-zoo-417.json": "74f184cca62a79a7ec6c0d805fd9337fe70c299c5c2d7d44fd0c404777172599",
+            "children/index_options/configs/templates/report-spec-pooled-zoo-417.json": "40341164e843eef2b84aa616229e3cd68da38b34cbb7b36b74943a4ae5010223",
+            "children/index_options/configs/workflow-perticker-zoo-417.json": "9ca363eb63b72a1a3c268198d79c8aa8ec7ea7ccab15dc1996b7c916c047223d",
+            "children/index_options/configs/workflow-pooled-zoo-417.json": "d7c80a76e3b02d6f8af83c3fc6ed48c333ba554a1f5ac7186f7a286a7c9348b9",
+            "children/index_options/docs/decisioning/README.md": "5e7782111cfc801f9648c1bff9da6ee6f3912592fa91b0ae9c51a1157354ed6d",
+            "children/index_options/docs/decisioning/actions.csv": "d60846a4003521c2833f609c0a3d189b357892ede1701bcb39fc041b3c67fa7f",
+            "children/index_options/docs/memos/2026-10-05-pooled-zoo-417.md": "e8f5980051dd9f6a19b02ad0e7ac45cb83c53e830f6110620a106e6c028ab08f",
+            "children/index_options/docs/memos/2026-10-07-advanced-architecture-results.md": "42e368ae4330cd9fc4c4291c8d2e6e9617445a1b6b41894503d73dfc633457e8",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.html": "9734d423c137582c2ed36f5292cda1a2f457207db2569b52e3d38752beb3ff1f",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.manifest.json": "f1bbbea74c7a53ace658f818d86bd8175b0a01789b5b1ba5b7bf364609d0562a",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/final-verification.json": "271c44b81847c743d51ae3645ee65c401dbfd386476c44b04a5466da4c9d55c9",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base-options.html": "106cd1923d3ebc9e40fb0c5e96c6161177bf8b95db83a383edf021cc30bc370a",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/pooled-base.html": "3d3047dc676be3ea83aa505c67b604e1af95d4e224224b540becb15a9057a7d7",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base-options.html": "d2d1c23f13d4111b924cb7e6bcbf7aae93f88e9c59c3bff6aa7a4284410fe8e2",
+            "children/index_options/docs/reports/advanced-cdf-zoo-20261006/unpooled-base.html": "d0df498aa0391ef4f463b5ccb831ebefc11528e696e5be0941b2a1656818b276",
+            "children/index_options/docs/research/advanced-cdf-zoo/2026-10-06-capacity-and-architecture-plan.md": "b3b942ee52fa2b04aa9162daeb6c55ae06f89ce92c8cb184f6f974cbdc69415d",
+            "children/index_options/index_options/cdf_study.py": "48be427f90ae0bcfd860462a5bffca3c1d22042f20565ab2ef51c64e7efd8220",
+            "children/index_options/index_options/nodes.py": "033714e2d876714fc9ba4684297080a9a6341490b847c716adaf1df2d09355f5",
+            "children/index_options/index_options/pooled.py": "8786811ee3c76acb27f907b25247a04a81bf91dfb460f48b4c42576f555384c0",
+            "children/index_options/tests/test_cdf_study.py": "f37e2faaa5d33cd6718aac589cb744958b07bd0288445e6feec05164760ae932",
+            "children/index_options/tests/test_configs.py": "efca0e211a091396de6b00e2fb962ee0860ad60d795f88b6f9312cf0dec3a18c",
+            "children/index_options/tests/test_nodes.py": "443ecc2bf6473f24219e69dc76be2261f09ea79e4b13e725bc328d3f655322b4",
+            "children/index_options/tests/test_price_calendar_panel.py": "464097d4aface3d7d7fd4986cffd8726429e71cd3005d518a263941857006de5",
+            "docs/RE-ENTRY.md": "04f13e2e0db1011b2e80539e19458127373991198ed6d2c31088cfbcdc203bd5",
+            "docs/architecture/decision-log.md": "4a069c6a9486dbd78315199793a2f6b474c6fd5fae865df728a7b3b77c5c1419",
+            "dskit/onboarding/AGENTS.md": "136ae7f7af6ad8dbadd54ec77b2540d50339c36eb662a1bdb14f88d9efe93c2f",
+            "dskit/onboarding/CLAUDE.md": "fe2ea346bfb9a5de8dddcf73c3f6451971720d335ac25f8061075c9a220c5c79",
+            "dskit/onboarding/README.md": "f78fa7c768d8e739dee3f52892d74991f417ec1c43143b8e40305f97f98b3720",
+            "dskit/onboarding/__init__.py": "df5cb90a2b3908b2cde8cf9430d80b26be759f4f93fbedda946f807844ab36ff",
+            "dskit/onboarding/base.py": "064f502cf9629d510a49a656e638c6fb07fe44c428f8ae4e7cbc05b08ac68621",
+            "dskit/onboarding/layout.py": "7c1427cbc82fc98a8f298ea4c6f2769a3fde19987694e55fa5fb69cf95dc3fc8",
+            "dskit/onboarding/libs/localblobs.py": "975950cd842255cea8ef7b81ef07dfe47aa09b57aa2ad32477b10d6b0c3d0b94",
+            "dskit/onboarding/observations.py": "01f832099da853093592ceae2ae431f31062f2731b9c6854355ad8e598514e69",
+            "dskit/pipeline/AGENTS.md": "8e3270d6baf9f95b195589a8a0bf16330244622ba9b3b27794a9aa3f68290896",
+            "dskit/pipeline/CLAUDE.md": "5314c984e3c39ed52fab20080cf2724d80e318022d49e0142ad8bf52efe533aa",
+            "dskit/pipeline/README.md": "f966ef4e9a92e6eddd72890f68ab607c1f547c66cb1e8f82863dbae591c0edde",
+            "dskit/pipeline/base.py": "e27ed9bc9bb86cfceb787513c9bbf3728e5d686157fb8cbe1a9fd262b2b932cc",
+            "dskit/pipeline/folds.py": "14e701a1719301c9c13fdfbf44d1185849f9de37f5b2ef186a078bd61f5601cf",
+            "dskit/pipeline/libs/cdf_experiment.py": "183047aaf900bc12e742354b501ea5e6106ab89c506bc496dc48b2bf7606a877",
+            "dskit/pipeline/libs/neuralforecast.py": "23b1b077284bac4cf8ec50fd58ed43456a637eb7c5330a928f7394d133783ab0",
+            "dskit/pipeline/libs/observation_tables.py": "259cb9d7bc6d1bf67934e73f9a249709a9c7261de04838f7975e427631e2cb77",
+            "dskit/pipeline/libs/parquet.py": "477191dcb395ffc2ca4b28ba06774626976ecbfc865b377e902190ccc5e6e5fd",
+            "dskit/pipeline/libs/predictive_cdf.py": "74a4b7507b4693eaa60fa2414ff92511dc260471aec6773c4ed01d0cd6643347",
+            "dskit/pipeline/libs/torch_ts.py": "71aa4a4a991f7b44f95aa55159d0cdfd4f6f150304896ff9f7e1f34d9b4e3cc0",
+            "dskit/pipeline/libs/transformers.py": "ce922b2530ad2986dd9f24aea283e586ce0817776568212cb14968b859056312",
+            "dskit/pipeline/workflow_report.py": "3ae2b8da92750dcee9f4cf5634a1944be95b0a496356d425a42bef03a18077f0",
+            "dskit/pipeline/workflow_rollup.py": "bfe4263a82f3f3f763a85fcf2be737a03f56d8237acf968f8efb2b884d114df1",
+            "pyproject.toml": "e0483c87a807c406218455da2c1461ea226d9a7f0c2f1ef083b3d19030b77ab5",
+            "tests/onboarding/test_layout.py": "f6264f782bd609382b04005d0d3e85d83e6420ea7a0c453d18afbd26fdbfba2d",
+            "tests/pipeline/test_base.py": "6c181a7c596bc29b11620bbb41525e8fefd1e88892b585114e2023f18948337e",
+            "tests/pipeline/test_folds.py": "fa17ee24fbf8d842d0c1d84875ed9e83f85ac9a0861a52f4df413276251741cd",
+            "tests/pipeline/test_workflow_report.py": "06247117012ba96b0c3fe91fe74c63acb9578b83732bf7ba5d1eae39922aad39",
+            "tests/pipeline/test_workflow_rollup.py": "7a35387cbc0e079ba42ecc96b99a2b59f5dd568d97a5850c802957c12ff3c517",
+            "tests/pipeline_libs/test_cdf_experiment.py": "1300538c040d20cabab15859654601a76056cb18ae21bc8c1808dc65855c945c",
+            "tests/pipeline_libs/test_observation_tables.py": "877317dd284fd622a9c85ae1cc615c091259fe5f52f5fcc4945da9828e8e526b",
+            "tests/pipeline_libs/test_parquet.py": "aec88b755e96ed9d3a987b2e9810f001ff0802a3f8ce69c221cadef9d25c25f7",
+            "tests/pipeline_libs/test_predictive_cdf.py": "736db3347d6be3f602d4e5d812d97b4d5b780e31c0524d31ea1a8655e34b9772"
+          },
+          "checks": [
+            {
+              "id": "focused_integration_tests",
+              "command": "PYTHONPATH=.:children/index_options:<frozen runtime> OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 CUDA_VISIBLE_DEVICES= /home/russell/dskit/.venv/bin/python -m pytest -q tests/onboarding/test_layout.py tests/pipeline/test_folds.py tests/pipeline/test_workflow_report.py tests/pipeline/test_workflow_rollup.py tests/pipeline_libs/test_observation_tables.py tests/pipeline_libs/test_parquet.py tests/pipeline/test_purity.py tests/onboarding/test_purity.py children/index_options/tests/test_configs.py children/index_options/tests/test_nodes.py children/index_options/tests/test_price_calendar_panel.py",
+              "result": "1154 passed,1563 warnings in37.08s",
+              "log": "/tmp/final-integration-r2-focused.log"
+            },
+            {
+              "id": "targeted_model_runner_tests",
+              "command": "Same runtime: python -m pytest -q tests/pipeline_libs/test_cdf_experiment.py tests/pipeline_libs/test_predictive_cdf.py -k source_pin/relocated/checkpoint/resume/pooled/torch_cdf/group_worker/failing_group/calibration_band/shared_knobs/weighted_crps/weighted_hpo/tail_crps/boosted_objective/equivalence/late_task/waiting_task/admission (OR expression)",
+              "result": "134 passed,416 deselected,1456 warnings in102.69s",
+              "log": "/tmp/final-integration-r2-model.log"
+            },
+            {
+              "id": "stdlib_import_facades",
+              "command": "/home/russell/dskit/.venv/bin/python -S with16 changed public onboarding/pipeline/lib modules imported from the candidate; checked every declared __all__ name resolves and numpy/pandas/torch/sklearn/neuralforecast/transformers/pyarrow/lightgbm absent from sys.modules",
+              "result": "16 modules passed with site packages unavailable; no optional library import at discovery"
+            },
+            {
+              "id": "reproduction_and_main_preservation",
+              "command": "python /tmp/final-integration-r2-probe.py",
+              "result": {
+                "verified_artifacts_and_recipes": 20,
+                "reports_exactly_regenerated": 4,
+                "regenerated_in": "/tmp/final-integration-r2-render-pfv57oqs",
+                "main_methods_ast_identical": [
+                  "ExactExpiryCDFPanel._add_term_slopes",
+                  "DecisionWeightedMonotoneCDF.fit",
+                  "DecisionWeightedMonotoneCDF._expanded_events",
+                  "DecisionWeightedMonotoneCDF._expanded_events_loop",
+                  "DecisionWeightedMonotoneCDF.curve_decision_context"
+                ],
+                "css_dependency": "/mnt/c/Users/russe/.codex/visualizations/2026/10/05/01a10d8c-129c-7b51-8f01-6ed78266070d/pooled-performance.html",
+                "css_dependency_sha256": "45a49ce70fe2a896abaac4f8947af3693949724eaff2491fc9ae82e5d78fd785"
+              },
+              "log": "/tmp/final-integration-r2-probe.log",
+              "note": "Only recipe output destinations changed in an in-memory AST, all retained input paths and original recipe bytes left unchanged. All4 HTML reproduced byte-for-byte in/tmp. Corrected an initial probe method-name typo(_term_slopes to _add_term_slopes); this was a reviewer harness typo, not a candidate failure."
+            },
+            {
+              "id": "frozen_sources_and_dependencies",
+              "result": {
+                "source_pins_matched": 65,
+                "runtime_versions_matched": 190,
+                "config_source_pins_equal_bundle": true
+              }
+            },
+            {
+              "id": "git_integrity",
+              "result": {
+                "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+                "diff_paths": 63,
+                "git_diff_check": "clean",
+                "working_tree": "clean",
+                "merge_push_performed": false
+              }
+            }
+          ],
+          "matrix": [
+            {
+              "id": "source_identity",
+              "status": "pass",
+              "evidence": "Read constructor/CLI/source-owner flow; selected source regression tests passed, including wrong executing/loaded/lazy owners and identical relocation. Inspected fresh correctness lens actual-import subprocess probes, historical CLI refusal and hashes. Source guard runs before panel hashing/access and outside ordinary fit-skip handler. Prior Major is closed under the immutable-checkout/import-origin contract."
+            },
+            {
+              "id": "source_resolution",
+              "status": "pass",
+              "evidence": "Exactly one runner anchor, corresponding declared/executing relative paths, loaded initializer and lazy module ownership are tested. Positive relocation is tested. Empty source pins intentionally retain synthetic-test compatibility. No malicious-interpreter authority claim is made."
+            },
+            {
+              "id": "resume_integrity",
+              "status": "pass",
+              "evidence": "Meaningful crash-after-first-shard tests exercise real synthetic fit/score publication, replace fit with a no-refit sentinel, and verify resumed second shard. Malformed/missing/inconsistent manifests, orphan scores, conflicting outcomes, hash-valid malformed forecast identities and corrupt payloads refuse, never become model skips. Public AtomicFitStore and estimator checkpoint facades covered."
+            },
+            {
+              "id": "training_contract",
+              "status": "pass for integrated/frozen-artifact scope",
+              "evidence": "Reviewed shared estimator refactor, scaler/mask/checkpoint paths, sequence/native adapters, capacity gate and head routing, year/fold admission, group process executor and HPO caller path. Tests independently compare exact historical no-head tensor digests, raw head slices, finite-difference loss derivatives, serial vs spawn outputs, negative calibration/pooled-worker cases and dead-worker propagation. All65 frozen source and190 runtime pins matched. No production/scientific refit occurred."
+            },
+            {
+              "id": "coverage",
+              "status": "pass using verified artifact evidence",
+              "evidence": "Examined complete-run audit and browser recipe; hashed aggregate data, manifest and audit records, and regenerated all4 embedded report data mappings byte-for-byte. Fresh independent correctness lens exhausted318330slots and checked69540terminal accounting against retained audit. Its artifact/output hashes are retained below; no failed/skipped/ineligible fit is presented as completed."
+            },
+            {
+              "id": "scoring",
+              "status": "pass using independent numerical evidence",
+              "evidence": "Read report stats/options/prior mapping and memo denominators, shared coverage explanation, protocol and width caveats. Ratios use summed losses. Report regeneration exactly matches delivered bytes. Retained browser recipes independently sum rows; fresh correctness reviewer independently verified common-base/options/prior arithmetic and raw samples. I did not re-run the full raw audit or duplicate the browser pass."
+            },
+            {
+              "id": "integration",
+              "status": "pass",
+              "evidence": "Full63-file scope inventoried, including older zoo/boosting/admission/cache/source-union changes.1154fresh focused integration checks and134targeted model checks passed.16public modules imported under python-S, all exports resolved with no optional deps loaded. Config regeneration/inventory and node facade tests pass. AST independently proves current-main term-slope and4predictive speedup methods unchanged; vintage propagation tested across observation reader and node facades."
+            },
+            {
+              "id": "delivery",
+              "status": "pass with one disclosed Minor and parent release actions pending",
+              "evidence": "Four report hashes and20artifact/recipe hashes verified; recipe regenerated exact reports. Memo distinguishes exploratory forecasts, frozen training evidence, integrated guard and pending final delivery. CSS recipe dependency omission recorded as INT-R2-01. Current candidate/tree remain unchanged; parent owns final evidence append, remote-head concurrency checks, merge/push and contained branch cleanup after both lenses."
+            }
+          ],
+          "findings": [
+            {
+              "id": "INT-R2-01",
+              "severity": "Minor",
+              "invariant": "The retained report recipe input dependencies must be identified well enough to reproduce the delivered reports.",
+              "location": "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/build_reports.py:10",
+              "entry_point": "retained build_reports.py",
+              "proof": "The recipe reads CSS from VIEW/pooled-performance.html. That source is outside the documented frozen run workspace and is absent from reproducibility.artifacts and recipes in final-verification.json. Its current exact bytes regenerated all four reports successfully.",
+              "source_path": "/mnt/c/Users/russe/.codex/visualizations/2026/10/05/01a10d8c-129c-7b51-8f01-6ed78266070d/pooled-performance.html",
+              "source_sha256": "45a49ce70fe2a896abaac4f8947af3693949724eaff2491fc9ae82e5d78fd785",
+              "reproducer": "Preserve only the documented execution workspace and recipes, omit the visualization directory, then execute the retained builder: the CSS input read raises FileNotFoundError before report output.",
+              "consequence": "Limited reproduction handoff omission; existing reports and scientific numbers are unaffected, and the CSS remains embedded in all delivered HTML. This is not a material wrong-result or essential-protection defect.",
+              "family": "unlisted local report recipe dependency",
+              "disposition": "Disclosed Minor at reviewed candidate. Parent may close with an evidence-only append of this exact path/hash and an explicit retention requirement to the existing bundle/memo. That bounded documentary mitigation is sufficient; changing no code, report bytes, behavioral contract or dependencies does not reset either lens. Otherwise retain as a disclosed Minor."
+            }
+          ],
+          "critical": 0,
+          "major": 0,
+          "minor": 1,
+          "nit": 0,
+          "minor_backlog": [
+            {
+              "id": "INT-R2-01",
+              "severity": "Minor",
+              "invariant": "The retained report recipe input dependencies must be identified well enough to reproduce the delivered reports.",
+              "location": "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/build_reports.py:10",
+              "entry_point": "retained build_reports.py",
+              "proof": "The recipe reads CSS from VIEW/pooled-performance.html. That source is outside the documented frozen run workspace and is absent from reproducibility.artifacts and recipes in final-verification.json. Its current exact bytes regenerated all four reports successfully.",
+              "source_path": "/mnt/c/Users/russe/.codex/visualizations/2026/10/05/01a10d8c-129c-7b51-8f01-6ed78266070d/pooled-performance.html",
+              "source_sha256": "45a49ce70fe2a896abaac4f8947af3693949724eaff2491fc9ae82e5d78fd785",
+              "reproducer": "Preserve only the documented execution workspace and recipes, omit the visualization directory, then execute the retained builder: the CSS input read raises FileNotFoundError before report output.",
+              "consequence": "Limited reproduction handoff omission; existing reports and scientific numbers are unaffected, and the CSS remains embedded in all delivered HTML. This is not a material wrong-result or essential-protection defect.",
+              "family": "unlisted local report recipe dependency",
+              "disposition": "Disclosed Minor at reviewed candidate. Parent may close with an evidence-only append of this exact path/hash and an explicit retention requirement to the existing bundle/memo. That bounded documentary mitigation is sufficient; changing no code, report bytes, behavioral contract or dependencies does not reset either lens. Otherwise retain as a disclosed Minor."
+            }
+          ],
+          "coverage_gaps": [
+            "No new real training,HPO,provider data acquisition,raw panel read,2026holdout evaluation,GPU stress test or full repository suite. Focused synthetic tests only.",
+            "Did not repeat all406865payload hashes or69540terminal artifact reads or898capacity-shape instantiations. Verified retained source/data/report/audit/recipe identities and fresh correctness output; independent numerical/raw browser coverage is explicitly credited to that lens rather than claimed as my execution.",
+            "Training-only medians/scaler values/band identities were not recomputed from source rows; memo states this.",
+            "No browser screenshots newly captured. Byte-identical recipe regeneration plus inspected retained/fresh correctness browser evidence supports this integration pass.",
+            "Legacy optional-library versions beyond pinned runtime were not exercised. Imports were separately tested with all site packages disabled.",
+            "Source provenance assumes immutable source snapshots and ordinary import ownership, not hostile interpreter mutation or post-validation concurrent replacement.",
+            "Remote-head race/merge/push/ref cleanup remain parent delivery tasks and were not performed by this reviewer."
+          ],
+          "test_meaningfulness": "Tests are not merely implementation mirrors: unchanged-base tensor hashes, exact serial/spawn persisted outputs, explicit head-slice comparisons, finite-difference derivatives, negative pre-effect sentinels and interrupted publication/resume checks provide independent expectations. Inventory tests cover generated configs and node facades; static+runtime purity and python-S probe cover absent optional dependencies. Aggregate/UI arithmetic is backed by independent correctness raw/paired evidence.",
+          "verdict": {
+            "status": "PASS tests/integration final lens",
+            "unresolved_critical": 0,
+            "unresolved_major": 0,
+            "disclosed_minor": 1,
+            "release_gate": "This lens closes its assigned candidate scope; combine only with the other fresh clean lens on the same blobs/contracts/dependencies. Parent may append CSS dependency identity/retention and final evidence without changing reviewed behavior. No deployment,trading,holdout or retraining approval."
+          },
+          "evidence_hashes": {
+            "/tmp/final-integration-r2-focused.log": "5acf2b2b53375a071a131d1c9bafc0f9d02fe5f96cd987afe6073bdca5abe72c",
+            "/tmp/final-integration-r2-model.log": "c8e2cfd522b4fcb9d297d8c691278a0928c2113cf6bf468ef0346849e34b8723",
+            "/tmp/final-integration-r2-probe.py": "fd7188b930d68e2d0804270c9f6e3f19e5cf385e102d94df8148abb48e25c5ef",
+            "/tmp/final-integration-r2-probe.log": "b77d37c327c84eb8f0c2ee1b2b3e8182d5531a715a7db17c77652fe1f7164c46",
+            "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/final-integration-r2-probe.json": "8583a97e22805ae0bcd20076de020c7afc870d66955e3f73aa00a87008f687f6",
+            "/home/russell/wt/training-validation-audit/children/index_options/pipeline_runs/advanced-cdf-zoo-20261006/final-verification/final-correctness-r2.json": "ed573651233621e44c707e481da77788345452b7eeed7e9ee8ffb7e07c8f45b1",
+            "/tmp/final-correctness-r2-cli.log": "2d50556ae31d9eb09ca96c622738e069d21c56ace9587bd81e5594fb554bb29f",
+            "/tmp/final-correctness-r2-probe.log": "020af7833603dcbd1e12922463d06168d0fd998f5d94c6092b109b0b80d20d8d",
+            "/tmp/final-correctness-r2-ui/ui-verification.json": "2e59dd4f17c5a244164dcb803e935835d13b9b5d3b2ba3a3db2a4f6ea7b04842",
+            "/tmp/advanced-integration-focused.log": "b22b43f8edc208992246358156081b1f98cf735fed3ade7bd0f5643e094052f0",
+            "/tmp/advanced-integration-child.log": "33863d59ae94b1dfbd489cb954da2998a603f96ce1c997750f39d9e003bfe215",
+            "/tmp/advanced-integration-purity.log": "6ca2f306bf7c9d047f03e64e708d2f10f7d5f0231b748338f5c1a5df78afa53e",
+            "/tmp/advanced-final-inventory.log": "71cecd4a03d26fc192e472bf26020cdc2172e564ac64a719b16960d8dffd73a1",
+            "/tmp/advanced-provenance-green.log": "306bbe25b92975f1672473dd7ba7b99c963c9a8809a33bad8da2c51fca8b7a4f"
+          },
+          "final_tree_state": "HEAD remained5b150ca578b7eada44ff05aa5cbba03d138e18a7; tracked tree clean; only authorized ignored evidence and/tmp outputs created."
+        }
+      }
+    ],
+    "minor_disposition": {
+      "INT-R2-01": "Resolved by this evidence-only CSS dependency path/hash/retention record, as explicitly accepted by final integration reviewer. Builder and report bytes remain unchanged."
+    },
+    "closed_utc": "2026-10-07T18:54:37.903530+00:00"
+  },
+  "reviewed_behavior_identity": {
+    "candidate": "5b150ca578b7eada44ff05aa5cbba03d138e18a7",
+    "policy": "Only evidence/editorial appends follow this lock. Code, tests, config, report HTML and behavioral ADR blobs must remain unchanged."
   }
 }
