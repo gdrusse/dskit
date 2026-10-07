@@ -2,76 +2,73 @@
 
 The live Kalshi API keeps settled markets only back to a moving archive
 cutoff; older markets, trades and candlesticks sit under ``/historical/*``.
-The cutoff itself is served (``GET /historical/cutoff``), so this pack reads
-it once per pull and never carries a date of its own. It is a STANDALONE
-sibling of ADR-0075's ``kalshi`` pack: it subclasses nothing there and
-imports only that module's public (``__all__``) names plus the public
-``connector`` / ``base`` seams. A private name of another module may change
-without notice, so the transport and the row rules are restated here, and
+The cutoff is served (``GET /historical/cutoff``), so the pack reads it once
+per pull and carries no date of its own. It is a STANDALONE sibling of
+ADR-0075's ``kalshi`` pack: it subclasses nothing there and imports only the
+public (``__all__``) names of ``kalshi``, ``connector`` and ``base``, so the
+transport and row rules are restated here and
 ``tests/onboarding/test_kalshi_history.py`` pins every shared field equal to
-the ``kalshi`` pack's own output on the same payloads.
+``kalshi``'s own output on the same payloads.
 
-Four provider-shaped streams (the venue's field names and units; a child
-normalizes into its own vocabulary):
+Four provider-shaped streams (the venue's field names and units):
 
-- ``markets`` — ``kalshi``'s fourteen fields plus the settlement facts:
-  ``expiration_value`` (float, or None while unsettled or non-numeric),
-  ``settlement_ts`` (the venue's ISO text) and ``volume`` (``volume_fp``).
-  Key ``ticker``. A full re-pull by design, like ``kalshi``'s.
-- ``candles`` — ``kalshi``'s eleven-field candle row, key ``(ticker, ts)``.
-  Live markets are requested per EVENT (every strike in one call, following
-  ``adjusted_end_ts`` until the window is covered) or in ticker batches;
-  archived markets one by one from ``/historical/markets/{ticker}/candlesticks``,
-  whose payload spells prices and counts without ``_dollars`` / ``_fp``.
-- ``trades`` — one row per trade, key ``trade_id``, dated at ``created_time``:
-  ``yes_price`` (dollars), ``count`` and the ``taker_side``. Pulled per
-  market; the checkpoint is the newest ``created_time`` seen, held at the
-  capture instant (below).
+- ``markets`` — ``kalshi``'s fourteen fields plus ``expiration_value`` (float,
+  or None while unsettled or non-numeric), ``settlement_ts`` (the venue's ISO
+  text) and ``volume`` (``volume_fp``). Key ``ticker``; a full re-pull.
+- ``candles`` — ``kalshi``'s eleven-field row, key ``(ticker, ts)``. Live
+  markets per EVENT (every strike in one call, following ``adjusted_end_ts``)
+  or in ticker batches; archived ones one by one from
+  ``/historical/markets/{ticker}/candlesticks`` (no ``_dollars`` / ``_fp``).
+- ``trades`` — key ``trade_id``, dated ``created_time``: ``yes_price``
+  (dollars), ``count``, ``taker_side``. Pulled per market.
 - ``orderbooks`` — ``kalshi``'s row plus ``observed_at``, the instant that
-  book's own response returned. ``captured_at`` (the pull's minute) is
-  unchanged and still the key.
+  book's own response returned; ``captured_at`` (the pull's minute) is the key.
 
-**Routing.** A market belongs to exactly one archive. One that settled
-BEFORE the venue's ``market_settled_ts`` is served by ``/historical/markets``;
-the live listing may still return it for a while, and that copy is dropped, so
-nothing is emitted or requested twice. One settled AT the cutoff or later is
-live. (The rule leans on the venue's own contract that the archive holds
-every market settled before the cutoff; probed 2026-10-06 on 28,012 markets of
-one series, none emitted twice.) Trades split on ``trades_created_ts``: the part of a market's life
-before it is asked of ``/historical/trades`` (``max_ts`` = the cutoff), the
-rest of ``/markets/trades`` (``min_ts`` = the cutoff or the cursor if later),
-so a market that straddles the boundary is requested from both. The archive
-leg of ``markets``, ``candles`` and ``trades`` runs only when ``settled`` is
-among the ``statuses``; ``orderbooks`` is live only and never reads the cutoff.
+**The label is known only at settlement.** A ``markets`` row is dated at its
+``close_time`` (the capture minute while open), but ``expiration_value`` and
+``result`` exist only from ``settlement_ts``, minutes after the close: gate a
+join on ``settlement_ts``, never on ``effective_date``. Only ``orderbooks``
+carry a per-row read instant; an open market's quotes may be read up to one
+pass after its capture minute.
+
+**Routing.** A market belongs to exactly one archive. One that settled BEFORE
+the venue's ``market_settled_ts`` is served by ``/historical/markets``; the
+live listing may still return it for a while, and that copy is dropped when
+the archive listed it too. A live copy the archive did NOT list is kept and
+read through the live endpoints, never lost. One settled AT the cutoff or
+later is live. Trades split on ``trades_created_ts``: the part of a market's
+life before it is asked of ``/historical/trades`` (``max_ts`` = the cutoff),
+the rest of ``/markets/trades`` (``min_ts`` = the cutoff, or the cursor if
+later), so a market that straddles it is asked of both. The archive leg runs
+only when ``settled`` is among the ``statuses``; ``orderbooks`` are live only
+and never read the cutoff.
 
 **Cursors, and why a closed market is listed.** ``candles`` and ``trades``
 skip a market that closed at or before the cursor, and ``trades`` asks for
 ``min_ts`` = the cursor. Both are sound only if every market that existed when
 the cursor was set was listed then. A market between its close and its
-settlement is ``closed`` for the venue (about five minutes for a
-fifteen-minute market, longer elsewhere), so the default ``statuses`` list
-``closed`` too; leave it out and such a market can be skipped for good. The
-trade cursor is also never allowed past the capture instant: a trade created
-while a long pull ran is emitted, but the checkpoint stops at the pull's
-start, so a market first listed after it is read in full next time.
+settlement is ``closed`` for the venue, so the default ``statuses`` list
+``closed`` too; leave it out and such a market can be skipped for good. A trade
+created after the capture instant is not emitted: the next pull asks for it
+again. So nothing a pull emits is dated after its capture, and a venue clock
+ahead of this host's cannot make acquisition refuse a future-dated row.
 
 **Candle budgets.** The event endpoint cuts a response off at
-``adjusted_end_ts`` (an hour of a 188-strike ladder takes about three calls);
-the pack follows it and refuses a response that does not advance. The batch
-endpoint refuses a request whose tickers x periods exceed its ceiling,
-counting the window and not the candles that exist, so the pack packs
-consecutive markets into a request only while the product fits
-(``max_candles``), splits a single window that is longer than the budget into
-slices, and emits a candle shared by two slices once.
+``adjusted_end_ts``; the pack follows it and refuses a response that does not
+advance. The batch and archive endpoints refuse a request whose window is over
+a ceiling, counting the window and not the candles that exist: tickers x
+periods (``max_candles``) and periods per market (``archive_max_candles``).
+The pack packs consecutive live markets into a batch request while the product
+fits, slices a window over the budget, and emits a candle shared by two
+slices once.
 
-**The capture instant, transport, import cost.** As in ``kalshi``: rows the
-venue does not date (a market listed open, ``captured_at``) carry the pull's
-capture instant, the connector clock sampled once per ``read`` and floored to
-the minute; a candle that ends after it is still forming and is dropped. Every
-request goes through one injectable ``getter(url, params) -> dict``; pacing,
-retry with backoff on HTTP 429/5xx and network errors (each wait capped at
-``MAX_BACKOFF_S``) and the page walk sit above it. No credential: the
-endpoints are public. Stdlib only.
+**The capture instant and transport.** As in ``kalshi``: rows the venue does
+not date carry the pull's capture instant, the connector clock sampled once
+per ``read`` and floored to the minute; a candle that ends after it is still
+forming and is dropped. Every request goes through one injectable
+``getter(url, params) -> dict``; pacing, retry with backoff on HTTP 429/5xx
+and network errors (each wait capped at ``MAX_BACKOFF_S``) and the page walk
+sit above it. No credential; stdlib only.
 """
 
 from __future__ import annotations
@@ -115,10 +112,13 @@ __all__ = [
     "CANDLE_KEY_FIELDS",
     "CANDLE_STREAM",
     "CLOSED_STATUS",
+    "DEFAULT_ARCHIVE_MAX_CANDLES",
     "DEFAULT_BATCH_SIZE",
     "DEFAULT_CANDLE_GROUPING",
     "DEFAULT_MAX_CANDLES",
     "DEFAULT_STATUSES",
+    "GROUPING_BATCH",
+    "GROUPING_EVENT",
     "MARKET_FIELDS",
     "MARKET_KEY_FIELDS",
     "MARKET_STREAM",
@@ -155,6 +155,10 @@ DEFAULT_BATCH_SIZE = 100
 #: Candles one batch request may ask for, tickers x periods: the venue's own
 #: ceiling (HTTP 400 "max candlesticks: 10000" above it).
 DEFAULT_MAX_CANDLES = 10000
+#: Candles one archived market's request may ask for: the venue's own ceiling
+#: (``/historical/markets/{ticker}/candlesticks`` answers HTTP 400 "max
+#: candlesticks: 5000" above it, probed 2026-10-07).
+DEFAULT_ARCHIVE_MAX_CANDLES = 5000
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _USER_AGENT = "dskit-onboarding"
@@ -238,15 +242,25 @@ def _epoch(when):
     return int(when.timestamp())
 
 
+def _from_epoch(ts, where):
+    """Return the aware UTC instant of epoch seconds ``ts``; AssetError when it is not one."""
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise AssetError(
+            [f"{where}: end_period_ts {ts!r} is not a representable instant"]
+        ) from exc
+
+
 def _dict(value):
     """``value`` when it is a dict, else an empty one."""
     return value if isinstance(value, dict) else {}
 
 
 def _quoted(obj, name):
-    """Return a candle's ``name`` figure: the live ``<name>_dollars``, else the archive's bare ``<name>``."""
+    """Return a candle's ``name`` price: the live ``<name>_dollars`` as ``kalshi`` reads it, else the archive's bare ``<name>`` as a [0, 1] price."""
     value = obj.get(f"{name}_dollars")
-    return _finite(value if value is not None else obj.get(name))
+    return _finite(value) if value is not None else _price(obj.get(name))
 
 
 def _fp(raw, name):
@@ -502,27 +516,34 @@ class _MarketWalk:
         statuses = self._knobs["statuses"] if statuses is None else statuses
         archive = SETTLED_STATUS in statuses
         boundary = self._venue.cutoff("markets") if archive else None
+        held = set()
         if archive:
             walk = self._venue.pages(
                 _ARCHIVE_MARKETS_PATH, {"series_ticker": series}, "markets",
                 f"series {series!r} archive")
             for label, raw in walk:
-                yield _Listed(True, _market_row(raw, label))
+                row = _market_row(raw, label)
+                held.add(row["ticker"])
+                yield _Listed(True, row)
         for status in statuses:
             walk = self._venue.pages(
                 _MARKETS_PATH, {"series_ticker": series, "status": status}, "markets",
                 f"series {series!r} status {status!r}")
             for label, raw in walk:
                 row = _market_row(raw, label)
-                if archive and self._archived(row, boundary):
+                if archive and self._overlap(row, boundary, held):
                     continue  # the archive leg already listed it
                 yield _Listed(False, row)
 
     @staticmethod
-    def _archived(row, boundary):
-        """Report whether the market settled strictly before the archive boundary."""
+    def _overlap(row, boundary, held):
+        """Report whether a live row is the copy of a market the archive listed and settled before the boundary.
+
+        A live row the archive did not list is kept even when it settled
+        before the boundary: dropping it would lose the market silently.
+        """
         settled = _instant(row["settlement_ts"])
-        return settled is not None and settled < boundary
+        return settled is not None and settled < boundary and row["ticker"] in held
 
 
 class _Span:
@@ -553,10 +574,29 @@ class _CandleSource(abc.ABC):
     def __init__(self, venue, knobs):
         self._venue = venue
         self._knobs = knobs
+        self._step = knobs["period_interval"] * 60
 
     @abc.abstractmethod
     def candles(self, series, spans, capture):
         """Yield ``(ticker, raw_candle, where)`` for every market in ``spans``."""
+
+    @staticmethod
+    def _periods(low, high, step):
+        """Periods a window counts for a venue's budget (both ends inclusive)."""
+        return (high - low) // step + 1
+
+    def _slices(self, low, high, step, budget):
+        """Return the windows covering ``[low, high]``: one, or slices when it exceeds ``budget`` periods."""
+        if self._periods(low, high, step) <= budget:
+            return [(low, high)]
+        longest = (budget - 1) * step
+        slices, start = [], low
+        while True:
+            end = min(start + longest, high)
+            slices.append((start, end))
+            if end >= high:
+                return slices
+            start = end
 
     @staticmethod
     def _fresh(seen, ticker, raw):
@@ -583,20 +623,28 @@ class _ArchiveCandles(_CandleSource):
     """Archived markets, one request each, from ``/historical/markets/{ticker}/candlesticks``."""
 
     def candles(self, series, spans, capture):
-        """Yield the archive's candles for each market in ``spans``."""
+        """Yield the archive's candles for each market in ``spans``, sliced to the venue's ceiling."""
+        budget = self._knobs["archive_max_candles"]
         for span in spans:
             window = span.window(capture)
             if window is None:
                 continue
-            body = self._venue.get(
-                f"{_ARCHIVE_MARKETS_PATH}/{_quote(span.ticker)}/candlesticks",
-                {"start_ts": window[0], "end_ts": window[1],
-                 "period_interval": self._knobs["period_interval"]},
-            )
-            candles = self._candle_list(
-                body.get("candlesticks"), f"market {span.ticker!r}: 'candlesticks'")
-            for i, raw in enumerate(candles):
-                yield span.ticker, raw, f"market {span.ticker!r} candle {i}"
+            seen = set()
+            for start, end in self._slices(window[0], window[1], self._step, budget):
+                yield from self._request(span.ticker, start, end, seen)
+
+    def _request(self, ticker, start, end, seen):
+        """Make one archive request and yield its candles not already in ``seen``."""
+        body = self._venue.get(
+            f"{_ARCHIVE_MARKETS_PATH}/{_quote(ticker)}/candlesticks",
+            {"start_ts": start, "end_ts": end,
+             "period_interval": self._knobs["period_interval"]},
+        )
+        candles = self._candle_list(
+            body.get("candlesticks"), f"market {ticker!r}: 'candlesticks'")
+        for i, raw in enumerate(candles):
+            if self._fresh(seen, ticker, raw):
+                yield ticker, raw, f"market {ticker!r} window {start}-{end} candle {i}"
 
 
 class _EventCandles(_CandleSource):
@@ -690,7 +738,7 @@ class _BatchCandles(_CandleSource):
 
     def _plan(self, spans, capture):
         """Yield ``(tickers, slices)``: consecutive markets packed while tickers x periods fit."""
-        step = self._knobs["period_interval"] * 60
+        step = self._step
         budget, size = self._knobs["max_candles"], self._knobs["batch_size"]
         windows = []
         for span in spans:
@@ -712,24 +760,6 @@ class _BatchCandles(_CandleSource):
             low, high = new_low, new_high
         if chunk:
             yield chunk, self._slices(low, high, step, budget)
-
-    @staticmethod
-    def _periods(low, high, step):
-        """Periods a window counts for the venue's budget (both ends inclusive)."""
-        return (high - low) // step + 1
-
-    def _slices(self, low, high, step, budget):
-        """Return the windows covering ``[low, high]``: one, or slices when a lone market exceeds the budget."""
-        if self._periods(low, high, step) <= budget:
-            return [(low, high)]
-        longest = (budget - 1) * step
-        slices, start = [], low
-        while True:
-            end = min(start + longest, high)
-            slices.append((start, end))
-            if end >= high:
-                return slices
-            start = end
 
     def _request(self, tickers, start, end, seen):
         """Make one batch request and yield its candles, keyed by ``market_ticker``."""
@@ -799,10 +829,6 @@ class _Stream(abc.ABC):
     def rows(self, cursor_dt):
         """Yield ``(effective_date, row)`` for the pull; ``cursor_dt`` is the prior checkpoint or None."""
 
-    def checkpoint(self, emitted, emitted_dt):
-        """Return the cursor to store: the newest effective date emitted, as the venue spelt it."""
-        return emitted
-
 
 class _MarketsStream(_Stream):
     """Every market of every series; a full re-pull, never cursor-filtered."""
@@ -848,7 +874,7 @@ class _CandlesStream(_Stream):
         """Turn raw candles into dated rows, dropping one that ends after the capture (still forming)."""
         for ticker, raw, where in found:
             row = _candle_row(ticker, raw, where)
-            when = datetime.fromtimestamp(row["ts"], tz=timezone.utc)
+            when = _from_epoch(row["ts"], where)
             if when > capture:
                 continue
             yield when.isoformat(), row
@@ -887,22 +913,18 @@ class _TradesStream(_Stream):
         return legs
 
     def _trades(self, ticker, path, extra, seen):
-        """Yield ``(created_time, row)`` for each trade of one market on one endpoint not yet in ``seen``."""
+        """Yield ``(created_time, row)`` for each trade of one market on one endpoint, not after the capture and not yet in ``seen``."""
+        capture = self._pull.capture
         walk = self._venue.pages(
             path, {"ticker": ticker, **extra}, "trades", f"trades of {ticker!r} via {path}")
         for label, raw in walk:
             row = _trade_row(raw, ticker, label)
+            if _instant(row["created_time"]) > capture:
+                continue  # the next pull asks for it again (module docs, "Cursors")
             if row["trade_id"] in seen:
                 continue  # the boundary second came back from both archives
             seen.add(row["trade_id"])
             yield row["created_time"], row
-
-    def checkpoint(self, emitted, emitted_dt):
-        """Hold the cursor at the capture instant (module docs, "Cursors")."""
-        capture = self._pull.capture
-        if emitted_dt is not None and emitted_dt > capture:
-            return capture.isoformat()
-        return emitted
 
 
 class _OrderbooksStream(_Stream):
@@ -1049,6 +1071,13 @@ class KalshiHistoryConnector(Connector):
                          "not the candles that exist, and refuses a request over it); "
                          f"default {DEFAULT_MAX_CANDLES}. At least 2.",
             },
+            "archive_max_candles": {
+                "notes": "Candle budget of one ARCHIVED market's request: the "
+                         "periods of its window (both ends counted) may not exceed "
+                         "it, and a longer life is requested in slices (the venue "
+                         "answers HTTP 400 above its own ceiling); "
+                         f"default {DEFAULT_ARCHIVE_MAX_CANDLES}. At least 2.",
+            },
             "pace_s": {
                 "notes": "Seconds slept between requests; default "
                          f"{DEFAULT_PACE_S}. The public API is throttled per IP "
@@ -1122,6 +1151,8 @@ class KalshiHistoryConnector(Connector):
             "period_interval": (config.get("period_interval", DEFAULT_PERIOD_INTERVAL), 1),
             "batch_size": (config.get("batch_size", DEFAULT_BATCH_SIZE), 1),
             "max_candles": (config.get("max_candles", DEFAULT_MAX_CANDLES), 2),
+            "archive_max_candles": (
+                config.get("archive_max_candles", DEFAULT_ARCHIVE_MAX_CANDLES), 2),
         }
         for name, (value, floor) in counts.items():
             if not _int_at_least(value, floor):
@@ -1276,5 +1307,5 @@ class KalshiHistoryConnector(Connector):
                 }
                 if emitted_dt is None or effective_dt > emitted_dt:
                     emitted, emitted_dt = effective, effective_dt
-            new_state.setdefault(name, {})["cursor"] = stream.checkpoint(emitted, emitted_dt)
+            new_state.setdefault(name, {})["cursor"] = emitted
         yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}

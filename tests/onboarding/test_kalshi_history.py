@@ -10,9 +10,13 @@ shared rows equal; they never import an underscore name of either pack.
 """
 
 import ast
+import importlib
+import importlib.util
 import json
 import pathlib
 import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -49,8 +53,12 @@ EVENT = "KXBTCD-26OCT0621"
 CONFIG = {"series": [SERIES], "base_url": BASE, "period_interval": 1}
 
 
+def parse_iso(iso):
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
 def unix(iso):
-    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+    return int(parse_iso(iso).timestamp())
 
 
 def market(ticker, event=EVENT, **over):
@@ -151,7 +159,7 @@ def test_spec_passes_its_own_gate():
     check_config(conn, CONFIG)
     check_config(conn, {**CONFIG, "notes": "documentation is always allowed",
                         "candle_grouping": "batch", "batch_size": 50,
-                        "max_candles": 5000})
+                        "max_candles": 5000, "archive_max_candles": 2500})
     with pytest.raises(AssetError, match="unknown key"):
         check_config(conn, {**CONFIG, "surprise": 1})
     with pytest.raises(AssetError, match="required knob"):
@@ -173,6 +181,7 @@ def test_bad_knob_shapes_refused():
         "candle_grouping": ("ladder", 3, ""),
         "batch_size": (0, 1.5, True),
         "max_candles": (0, 1, 2.5, True),
+        "archive_max_candles": (0, 1, 2.5, True),
     }
     for knob, values in bad.items():
         for value in values:
@@ -199,6 +208,7 @@ def test_every_default_has_one_name(monkeypatch):
         "candle_grouping": ("DEFAULT_CANDLE_GROUPING", "event", "batch"),
         "batch_size": ("DEFAULT_BATCH_SIZE", 100, 7),
         "max_candles": ("DEFAULT_MAX_CANDLES", 10000, 333),
+        "archive_max_candles": ("DEFAULT_ARCHIVE_MAX_CANDLES", 5000, 444),
     }
     conn = KalshiHistoryConnector()
     for knob, (name, current, _sentinel) in pins.items():
@@ -225,6 +235,26 @@ def test_shared_defaults_agree_with_the_kalshi_pack():
     # too, so no market is ever unlisted between its close and its settlement.
     assert both["statuses"] == ["settled", "open"]
     assert mine["statuses"] == ["settled", "closed", "open"]
+
+
+def test_all_lists_every_public_name_the_module_defines():
+    tree = ast.parse(pathlib.Path(kalshi_history.__file__).read_text(encoding="utf-8"))
+    imported = {
+        (alias.asname or alias.name).split(".")[0]
+        for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names}
+    defined = {
+        name for name in vars(kalshi_history)
+        if not name.startswith("_") and name not in imported}
+    assert defined <= set(kalshi_history.__all__), sorted(defined - set(kalshi_history.__all__))
+    assert all(hasattr(kalshi_history, name) for name in kalshi_history.__all__)
+    assert {kalshi_history.GROUPING_EVENT, kalshi_history.GROUPING_BATCH} == set(
+        kalshi_history.CANDLE_GROUPINGS)
+
+
+def test_base_url_loses_its_trailing_slash():
+    conn = KalshiHistoryConnector()
+    assert conn.resolve_knobs({"series": [SERIES], "base_url": BASE + "///"})["base_url"] == BASE
 
 
 def test_constructor_refuses_non_callables():
@@ -302,28 +332,169 @@ def test_wired_by_import_path_and_no_registry_entry_added():
     assert not issubclass(KalshiHistoryConnector, KalshiConnector)
 
 
+PACK_PACKAGE = "dskit.onboarding.libs"
+
+
+def _is_module(dotted):
+    """Report whether ``dotted`` names an importable dskit module (a name inside a module is not)."""
+    try:
+        return importlib.util.find_spec(dotted) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+class ForeignNames:
+    """Every way a source reaches another dskit module's names, relative or absolute.
+
+    ``modules`` is the set of dskit modules it imports from; ``unlisted`` the
+    ``(module, name)`` pairs it uses that the module's ``__all__`` does not
+    list (an import, or an attribute read off an imported module alias);
+    ``pack_bases`` the base classes that come from a sibling pack.
+    """
+
+    def __init__(self, source, package=PACK_PACKAGE):
+        self._package = package.split(".")
+        self.modules, self.unlisted, self.pack_bases = set(), set(), []
+        self._alias = {}   # local name -> the dotted dskit module it binds
+        self._origin = {}  # local name -> the dotted dskit module it was imported from
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                self._from(node)
+            elif isinstance(node, ast.Import):
+                self._import(node)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                self._attribute(node)
+            elif isinstance(node, ast.ClassDef):
+                self._bases(node)
+
+    def _listed(self, module, name):
+        """Record ``name`` as unlisted unless ``module`` declares it in ``__all__``."""
+        public = getattr(importlib.import_module(module), "__all__", ())
+        if name not in public:
+            self.unlisted.add((module, name))
+
+    def _from(self, node):
+        """Resolve a ``from`` import (relative or absolute) and check each name."""
+        if node.level:
+            parts = self._package[:len(self._package) - node.level + 1]
+            target = ".".join(parts + ([node.module] if node.module else []))
+        else:
+            target = node.module or ""
+        if target.split(".")[0] != "dskit":
+            return
+        self.modules.add(target)
+        for item in node.names:
+            local = item.asname or item.name
+            if _is_module(f"{target}.{item.name}"):
+                self._alias[local] = f"{target}.{item.name}"
+                if item.name.startswith("_"):
+                    self.unlisted.add((target, item.name))
+            else:
+                self._origin[local] = target
+                self._listed(target, item.name)
+
+    def _import(self, node):
+        """Bind ``import a.b.c [as k]``; the attribute walk checks what is read off it."""
+        for item in node.names:
+            if item.name.split(".")[0] != "dskit":
+                continue
+            self.modules.add(item.name)
+            if item.asname:
+                self._alias[item.asname] = item.name
+            else:
+                self._alias[item.name.split(".")[0]] = item.name.split(".")[0]
+
+    def _resolve(self, node):
+        """``(module, name)`` an attribute chain reads, walking through submodules; None when unbound."""
+        chain = []
+        while isinstance(node, ast.Attribute):
+            chain.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name) or node.id not in self._alias:
+            return None
+        module = self._alias[node.id]
+        for attr in reversed(chain):
+            if _is_module(f"{module}.{attr}"):
+                module = f"{module}.{attr}"
+                continue
+            return module, attr
+        return module, None
+
+    def _attribute(self, node):
+        """Check one attribute read off an imported dskit module."""
+        found = self._resolve(node)
+        if found and found[1] is not None:
+            self._listed(*found)
+
+    def _bases(self, node):
+        """Record a base class that comes from a sibling pack of ``libs``."""
+        for base in node.bases:
+            module = None
+            if isinstance(base, ast.Name):
+                module = self._origin.get(base.id)
+            elif isinstance(base, ast.Attribute):
+                found = self._resolve(base)
+                module = found[0] if found else None
+            if module and module.startswith(PACK_PACKAGE + "."):
+                self.pack_bases.append(ast.unparse(base))
+
+
 def test_the_new_module_uses_only_public_names_of_other_modules():
     # The ADR's standalone ruling, pinned: a private name of another module
-    # may change without notice, so none may be imported.
-    path = pathlib.Path(kalshi_history.__file__)
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    public = {
-        "kalshi": set(kalshi.__all__),
-        "connector": set(connector_module.__all__),
-        "base": set(base_module.__all__),
-    }
-    seen = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level >= 1:
-            seen.setdefault(node.module, set()).update(a.name for a in node.names)
-    assert set(seen) <= set(public), sorted(seen)
-    assert "kalshi" in seen  # the shared field tuples and defaults come from it
-    for module, names in seen.items():
-        assert names <= public[module], sorted(names - public[module])
-    classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
-    assert all(
-        getattr(base, "id", "") != "KalshiConnector"
-        for cls in classes for base in cls.bases)
+    # may change without notice, so none may be imported, called or subclassed
+    # (relative or absolute import, or an attribute read off an imported module).
+    source = pathlib.Path(kalshi_history.__file__).read_text(encoding="utf-8")
+    seen = ForeignNames(source)
+    assert seen.modules == {
+        "dskit.onboarding.libs.kalshi", "dskit.onboarding.connector",
+        "dskit.onboarding.base"}
+    assert seen.unlisted == set()
+    assert seen.pack_bases == []
+    # The names it leans on really are in the other modules' public lists.
+    for module in (kalshi, connector_module, base_module):
+        assert module.__all__
+
+
+@pytest.mark.parametrize("snippet, unlisted", [
+    ("from .kalshi import _finite", {("dskit.onboarding.libs.kalshi", "_finite")}),
+    ("from dskit.onboarding.libs.kalshi import _finite as _borrowed",
+     {("dskit.onboarding.libs.kalshi", "_finite")}),
+    ("from . import kalshi\nx = kalshi._price",
+     {("dskit.onboarding.libs.kalshi", "_price")}),
+    ("import dskit.onboarding.libs.kalshi as k\nx = k._price",
+     {("dskit.onboarding.libs.kalshi", "_price")}),
+    ("import dskit.onboarding.libs.kalshi\nx = dskit.onboarding.libs.kalshi._price",
+     {("dskit.onboarding.libs.kalshi", "_price")}),
+    ("from ..connector import _private_thing",
+     {("dskit.onboarding.connector", "_private_thing")}),
+    ("from .kalshi import *", {("dskit.onboarding.libs.kalshi", "*")}),
+    ("from . import _helper", {("dskit.onboarding.libs", "_helper")}),
+])
+def test_the_public_names_checker_catches_every_import_form(snippet, unlisted):
+    assert ForeignNames(snippet).unlisted == unlisted
+
+
+@pytest.mark.parametrize("snippet", [
+    "from .kalshi import CANDLE_FIELDS\nx = CANDLE_FIELDS",
+    "from ..connector import Connector, PROTOCOL",
+    "import json\nfrom collections import namedtuple",
+    "from . import kalshi\nx = kalshi.CANDLE_FIELDS",
+])
+def test_the_public_names_checker_passes_public_use(snippet):
+    assert ForeignNames(snippet).unlisted == set()
+
+
+@pytest.mark.parametrize("snippet", [
+    "from .kalshi import KalshiConnector\nclass X(KalshiConnector):\n    pass",
+    "from . import kalshi\nclass X(kalshi.KalshiConnector):\n    pass",
+    "import dskit.onboarding.libs.kalshi as k\nclass X(k.KalshiConnector):\n    pass",
+])
+def test_the_public_names_checker_catches_subclassing_a_sibling_pack(snippet):
+    assert len(ForeignNames(snippet).pack_bases) == 1
+    allowed = "from ..connector import Connector\nclass X(Connector):\n    pass"
+    assert ForeignNames(allowed).pack_bases == []
 
 
 # -- read: contract basics ------------------------------------------------------
@@ -353,6 +524,25 @@ def test_read_emits_schema_records_state_in_either_mode(mode):
     assert msgs[0]["schema"] == {"fields": list(kalshi_history.MARKET_FIELDS)}
 
 
+def test_read_never_mutates_the_state_it_was_given():
+    state = {"markets": {"cursor": "2026-10-07T13:00:00+00:00"}, "other": {"cursor": "x"}}
+    before = json.loads(json.dumps(state))
+    conn, _, _ = connector({"/markets": by_status(), "/historical/markets": {"markets": []}})
+    msgs = read(conn, ["markets"], state=state)
+    assert state == before
+    assert msgs[-1]["state"] == before  # carried over, in a copy of its own
+    assert msgs[-1]["state"]["other"] is not state["other"]
+    assert msgs[-1]["state"]["markets"] is not state["markets"]
+
+
+@pytest.mark.parametrize("stream", ["markets", "candles", "trades", "orderbooks"])
+def test_a_naive_clock_is_refused_whatever_the_stream(stream):
+    conn = KalshiHistoryConnector(
+        getter=Script({}), sleeper=lambda s: None, clock=lambda: datetime(2026, 10, 7, 12))
+    with pytest.raises(AssetError, match="clock must return an aware datetime"):
+        list(conn.read(CONFIG, [stream], {}, "live"))
+
+
 # -- the archive cutoff ----------------------------------------------------------
 
 
@@ -367,19 +557,23 @@ def test_cutoff_is_read_once_per_pull_across_streams():
 
 
 def test_the_cutoff_comes_from_the_venue_never_from_the_pack():
-    # The same two payloads route differently when the VENUE moves its cutoff:
-    # the boundary lives in the response, not in the code.
+    # The same payloads route differently when the VENUE moves its cutoff: the
+    # boundary lives in the response, not in the code. The archive and the live
+    # listing both carry ``old`` (the overlap week): at the real cutoff the
+    # live copy is a duplicate, so it is dropped; with the cutoff moved to the
+    # very instant ``old`` settled, the live API owns it ("at the cutoff or
+    # later is live") and its copy is kept.
     old = market("KXBTCD-26AUG0617-T1", settlement_ts="2026-08-06T21:02:21.8Z")
     routes = {
-        "/historical/markets": {"markets": [], "cursor": ""},
+        "/historical/markets": {"markets": [old], "cursor": ""},
         "/markets": by_status(settled=[old]),
     }
     conn, _, _ = connector(routes)
-    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == []  # history owns it
-
-    moved = {**CUTOFF_BODY, "market_settled_ts": "2026-08-01T00:00:00Z"}
-    conn, _, _ = connector({**routes, "/historical/cutoff": moved})
     assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [old["ticker"]]
+
+    moved = {**CUTOFF_BODY, "market_settled_ts": old["settlement_ts"]}
+    conn, _, _ = connector({**routes, "/historical/cutoff": moved})
+    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [old["ticker"]] * 2
 
 
 @pytest.mark.parametrize("body, message", [
@@ -474,6 +668,41 @@ def test_markets_each_market_belongs_to_one_archive_and_the_boundary_day():
         NEW["ticker"], OPEN["ticker"]]
 
 
+def test_markets_a_live_copy_the_archive_does_not_hold_is_kept_not_dropped():
+    # The date rule says the archive owns every market settled before the
+    # cutoff, so the live overlap copy is a duplicate. If the archive lags and
+    # does not list one, dropping the live copy would lose the market from
+    # every stream with no error: it is kept, and requested through the live
+    # endpoints (the archive has nothing to serve).
+    lagging = market("KXBTCD-26AUG0623-T9", event="KXBTCD-26AUG0623",
+                     open_time="2026-08-06T22:00:00Z", close_time="2026-08-06T23:00:00Z",
+                     settlement_ts="2026-08-06T23:02:00Z")
+    event_path = f"/series/{SERIES}/events/{lagging['event_ticker']}/candlesticks"
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [OLD], "cursor": ""},
+        "/markets": by_status(settled=[OLD, lagging]),
+        f"/historical/markets/{OLD['ticker']}/candlesticks": {"candlesticks": []},
+        event_path: event_body(unix(lagging["close_time"])),
+    })
+    msgs = read(conn, ["markets", "candles"])
+    tickers = [d["ticker"] for d in data(msgs) if "close" not in d]
+    assert tickers == [OLD["ticker"], lagging["ticker"]]  # each once, none lost
+    assert event_path in script.paths()  # served live: the archive does not hold it
+    assert script.paths().count(f"/historical/markets/{OLD['ticker']}/candlesticks") == 1
+
+
+@pytest.mark.parametrize("settlement_ts", ["2026-08-07T00:00:00Z", "", None])
+def test_markets_a_live_copy_is_dropped_only_with_evidence_it_settled_before_the_cutoff(
+        settlement_ts):
+    # Listed by the archive too, but settled AT the cutoff or not (yet) dated:
+    # nothing says the archive owns it, so the live copy is not dropped.
+    odd = market("KXBTCD-26AUG0700-T9", settlement_ts=settlement_ts)
+    conn, _, _ = connector({
+        "/historical/markets": {"markets": [odd], "cursor": ""},
+        "/markets": by_status(settled=[odd])})
+    assert [d["ticker"] for d in data(read(conn, ["markets"]))] == [odd["ticker"]] * 2
+
+
 def test_markets_add_the_three_settlement_fields():
     conn, _, _ = connector(MARKET_ROUTES)
     rows = {r["ticker"]: r for r in data(read(conn, ["markets"]))}
@@ -540,6 +769,15 @@ def test_markets_refuse_a_stuck_or_truncated_walk_in_either_archive():
         conn, _, _ = connector(routes)
         with pytest.raises(AssetError, match="still paging after 3 page"):
             list(conn.read({**CONFIG, "max_pages": 3}, ["markets"], {}, "live"))
+
+
+def test_markets_an_empty_page_ends_the_walk_even_with_a_cursor():
+    # The same rule as the kalshi pack's: no rows on a page means the end.
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [], "cursor": "more"},
+        "/markets": by_status()})
+    assert data(read(conn, ["markets"])) == []
+    assert script.paths().count("/historical/markets") == 1
 
 
 def test_markets_refuse_malformed_pages():
@@ -637,6 +875,91 @@ def test_archive_candles_unusable_shapes_refuse_or_none():
     assert row["close"] is None and row["open"] is None and row["volume"] == 12.5
 
 
+def test_candle_dollar_spelling_wins_and_the_bare_spelling_is_a_guarded_fallback():
+    candle = {
+        "end_period_ts": unix("2026-08-06T20:00:00Z"),
+        "price": {
+            "close_dollars": "0.55", "close": "0.99",     # both spellings: dollars win
+            "open_dollars": None, "open": "0.40",         # dollars absent: the bare one
+            "high_dollars": None, "high": 62,             # bare but cents-sized: not a price
+            "low_dollars": "nan", "low": "0.10",          # dollars present, unusable: None
+            "mean": "1.0",                                # the bare boundary is kept
+        },
+        "yes_bid": {"close_dollars": "62", "close": "0.5"},  # live spelling: unguarded, as kalshi
+        "yes_ask": {"close": -0.01},
+        "volume_fp": "7", "volume": "99",
+        "open_interest_fp": None, "open_interest": "100",
+    }
+    conn, _, _ = connector(archive_routes([candle]))
+    row = data(read(conn, ["candles"]))[0]
+    assert {k: row[k] for k in (
+        "open", "high", "low", "close", "mean", "yes_bid_close", "yes_ask_close",
+        "volume", "open_interest")} == {
+        "open": 0.4, "high": None, "low": None, "close": 0.55, "mean": 1.0,
+        "yes_bid_close": 62.0, "yes_ask_close": None, "volume": 7.0,
+        "open_interest": 100.0}
+
+
+def test_candle_timestamps_are_whole_seconds():
+    floaty = {**archive_candle(unix("2026-08-06T20:00:00Z")),
+              "end_period_ts": unix("2026-08-06T20:00:00Z") + 0.0}
+    conn, _, _ = connector(archive_routes([floaty]))
+    ts = data(read(conn, ["candles"]))[0]["ts"]
+    assert type(ts) is int and ts == unix("2026-08-06T20:00:00Z")
+
+
+@pytest.mark.parametrize("ts", [1e30, -1e30, 1e18, 253402300800])
+def test_candles_an_unrepresentable_end_period_ts_refuses_by_name(ts):
+    conn, _, _ = connector(archive_routes([{"end_period_ts": ts, "price": {}}]))
+    with pytest.raises(AssetError, match="end_period_ts"):
+        list(conn.read(CONFIG, ["candles"], {}, "live"))
+
+
+def test_archive_candles_slice_a_life_longer_than_the_venues_ceiling():
+    # The archive endpoint answers HTTP 400 to a window of more than 5000
+    # periods (probed 2026-10-07), so a longer life is requested in slices that
+    # share their boundary instant, and the boundary candle is emitted once.
+    long_lived = {**OLD, "open_time": "2026-08-01T00:00:00Z"}
+    path = f"/historical/markets/{OLD['ticker']}/candlesticks"
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return {"candlesticks": [archive_candle(params["start_ts"]),
+                                 archive_candle(params["end_ts"])]}
+
+    conn, _, _ = connector({
+        "/historical/markets": {"markets": [long_lived], "cursor": ""},
+        "/markets": by_status(), path: answer})
+    rows = data(read(conn, ["candles"]))
+    start, close = unix(long_lived["open_time"]), unix(OLD["close_time"])
+    boundary = start + (kalshi_history.DEFAULT_ARCHIVE_MAX_CANDLES - 1) * 60
+    assert [(c["start_ts"], c["end_ts"]) for c in calls] == [
+        (start, boundary), (boundary, close)]
+    for call in calls:  # the venue counts (end - start) / period against its ceiling
+        assert (call["end_ts"] - call["start_ts"]) / 60 <= 5000
+    assert [r["ts"] for r in rows] == [start, boundary, close]
+
+
+def test_archive_candle_budget_is_a_knob():
+    path = f"/historical/markets/{OLD['ticker']}/candlesticks"
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return {"candlesticks": []}
+
+    conn, _, _ = connector({
+        "/historical/markets": {"markets": [OLD], "cursor": ""},
+        "/markets": by_status(), path: answer})
+    read(conn, ["candles"], config={**CONFIG, "archive_max_candles": 301})
+    # OLD lives 09:00 the day before to 21:00: 36 h = 2160 one-minute periods.
+    windows = [(c["start_ts"], c["end_ts"]) for c in calls]
+    assert len(windows) == 8 and windows[0][1] - windows[0][0] == 300 * 60
+    assert windows[0][0] == unix(OLD["open_time"]) and windows[-1][1] == unix(OLD["close_time"])
+    assert all(a[1] == b[0] for a, b in zip(windows, windows[1:]))
+
+
 def test_candles_skip_a_market_closed_at_or_before_the_cursor():
     conn, script, _ = connector(archive_routes([archive_candle("2026-08-06T20:00:00Z")]))
     state = {"candles": {"cursor": OLD["close_time"]}}
@@ -731,6 +1054,32 @@ def test_event_window_spans_its_markets_and_is_clamped_to_the_capture():
         {"start_ts": S0, "end_ts": S0 + 1800, "period_interval": 1}]
     # The candle after the capture instant (00:30:00) is still forming: dropped.
     assert [r["ts"] for r in rows] == [S0 + 600]
+
+
+def test_event_window_runs_to_the_last_member_to_close():
+    # Strikes of one event may close at different times: the request must reach
+    # the latest close, not the first, or the later candles are never asked for.
+    late = market("KXBTCD-26OCT0621-T97000", close_time="2026-10-07T02:00:00Z")
+    last = unix("2026-10-07T02:00:00Z")
+    routes = live_routes(spans=(A, late), **{
+        EVENT_PATH: event_body(last, **{
+            A["ticker"]: [live_candle(S0 + 60)],
+            late["ticker"]: [live_candle(last)]})})
+    conn, script, _ = connector(routes)
+    rows = data(read(conn, ["candles"]))
+    assert script.params(EVENT_PATH) == [
+        {"start_ts": S0, "end_ts": last, "period_interval": 1}]
+    assert [(r["ticker"], r["ts"]) for r in rows] == [
+        (A["ticker"], S0 + 60), (late["ticker"], last)]
+
+
+def test_a_candle_ending_exactly_at_the_capture_is_complete_one_second_later_is_not():
+    now = datetime(2026, 10, 7, 0, 30, 30, tzinfo=timezone.utc)  # capture 00:30:00
+    routes = live_routes(spans=(A,), **{
+        EVENT_PATH: event_body(S0 + 1800, **{A["ticker"]: [
+            live_candle(S0 + 1799), live_candle(S0 + 1800), live_candle(S0 + 1801)]})})
+    conn, _, _ = connector(routes, now=now)
+    assert [r["ts"] for r in data(read(conn, ["candles"]))] == [S0 + 1799, S0 + 1800]
 
 
 @pytest.mark.parametrize("body, message", [
@@ -888,6 +1237,56 @@ def test_batch_candles_one_request_when_a_lone_window_exactly_fits_the_budget():
     assert [(c["start_ts"], c["end_ts"]) for c in calls] == [(S0, E0 + 30)]
 
 
+def test_batch_candles_a_window_nested_inside_another_widens_nothing():
+    # A short market inside a long one: the union window stays the long one's,
+    # so the long market's later candles are still asked for.
+    long_lived = market("KXBTCD-26OCT0621-TLONG", close_time="2026-10-07T03:00:00Z")
+    nested = market("KXBTCD-26OCT0621-TNEST", open_time="2026-10-07T00:30:00Z",
+                    close_time="2026-10-07T01:00:00Z")
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return batch_body(**{t: [] for t in params["market_tickers"].split(",")})
+
+    conn, _, _ = connector(live_routes(spans=(nested, long_lived), **{BATCH_PATH: answer}))
+    read(conn, ["candles"], config=BATCH)
+    assert [(c["market_tickers"], c["start_ts"], c["end_ts"]) for c in calls] == [
+        (f"{long_lived['ticker']},{nested['ticker']}", S0, S0 + 10800)]
+
+
+def test_batch_candles_the_last_slice_of_a_lone_window_stops_at_its_end():
+    # 100 minutes under a 61-period budget: 60 minutes, then the remaining 40,
+    # never a second 60 that reaches past the market's close.
+    odd = market("KXBTCD-26OCT0621-TODD", close_time="2026-10-07T01:40:00Z")
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return batch_body(**{params["market_tickers"]: []})
+
+    conn, _, _ = connector(live_routes(spans=(odd,), **{BATCH_PATH: answer}))
+    read(conn, ["candles"], config={**BATCH, "max_candles": 61})
+    assert [(c["start_ts"], c["end_ts"]) for c in calls] == [
+        (S0, S0 + 3600), (S0 + 3600, S0 + 6000)]
+
+
+def test_batch_candles_a_window_one_period_over_the_budget_is_sliced():
+    # 00:00..01:00 counts 61 periods; a budget of 60 may not be asked for it whole.
+    calls = []
+
+    def answer(params):
+        calls.append(params)
+        return batch_body(**{params["market_tickers"]: []})
+
+    conn, _, _ = connector(live_routes(spans=(A,), **{BATCH_PATH: answer}))
+    read(conn, ["candles"], config={**BATCH, "max_candles": 60})
+    windows = [(c["start_ts"], c["end_ts"]) for c in calls]
+    assert windows == [(S0, S0 + 3540), (S0 + 3540, E0)]
+    for start, end in windows:
+        assert (end - start) // 60 + 1 <= 60
+
+
 def test_batch_candles_pack_in_time_order_whatever_order_the_venue_lists():
     day = datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc)
     markets = []
@@ -945,6 +1344,67 @@ def test_hostile_payloads_refuse_instead_of_crashing():
         "/historical/markets": {"markets": [OLD], "cursor": {"a": 1}}})
     with pytest.raises(AssetError, match="cursor is not a string"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
+
+
+def candle_requests(grouping, spans, now=NOW, **knobs):
+    """Run one candles pull and return the ``(start_ts, end_ts)`` of every candle request."""
+    if grouping == "event":
+        route = {EVENT_PATH: lambda p: event_body(p["end_ts"])}
+        path = EVENT_PATH
+    else:
+        route = {BATCH_PATH: lambda p: batch_body(
+            **{t: [] for t in p["market_tickers"].split(",")})}
+        path = BATCH_PATH
+    conn, script, _ = connector(live_routes(spans=spans, **route), now=now)
+    read(conn, ["candles"], config={**CONFIG, "candle_grouping": grouping, **knobs})
+    return [(p["start_ts"], p["end_ts"]) for p in script.params(path)]
+
+
+@pytest.mark.parametrize("grouping", ["event", "batch"])
+def test_candles_a_market_without_an_open_time_looks_back_a_fixed_span(grouping):
+    unopened = market("KXBTCD-26OCT0621-T1", open_time="")
+    span = int(kalshi_history._FALLBACK_WINDOW.total_seconds())
+    # Hourly candles keep the fortnight inside one batch request's budget.
+    assert candle_requests(grouping, (unopened,), period_interval=60) == [(E0 - span, E0)]
+
+
+@pytest.mark.parametrize("grouping", ["event", "batch"])
+def test_candles_a_market_without_a_close_time_runs_to_the_capture(grouping):
+    unclosed = market("KXBTCD-26OCT0621-T1", close_time="")
+    assert candle_requests(grouping, (unclosed,)) == [(S0, unix(CAPTURE))]
+
+
+def test_archive_candles_a_market_without_an_open_time_looks_back_a_fixed_span():
+    unopened = {**OLD, "open_time": ""}
+    path = f"/historical/markets/{OLD['ticker']}/candlesticks"
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [unopened], "cursor": ""},
+        "/markets": by_status(), path: {"candlesticks": []}})
+    read(conn, ["candles"], config={**CONFIG, "period_interval": 60})
+    close = unix(OLD["close_time"])
+    assert script.params(path) == [{
+        "start_ts": close - int(kalshi_history._FALLBACK_WINDOW.total_seconds()),
+        "end_ts": close, "period_interval": 60}]
+
+
+@pytest.mark.parametrize("grouping", ["event", "batch"])
+@pytest.mark.parametrize("opened, closed", [
+    ("2026-10-07T01:00:00Z", "2026-10-07T01:00:00Z"),   # opens as it closes
+    ("2026-10-07T12:00:00Z", "2026-10-07T13:00:00Z"),   # opens at the capture instant
+])
+def test_candles_an_empty_window_is_never_requested(grouping, opened, closed):
+    brief = market("KXBTCD-26OCT0621-T1", open_time=opened, close_time=closed)
+    assert candle_requests(grouping, (brief,)) == []
+
+
+def test_archive_candles_an_empty_window_is_never_requested():
+    brief = {**OLD, "open_time": OLD["close_time"]}
+    path = f"/historical/markets/{OLD['ticker']}/candlesticks"
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [brief], "cursor": ""},
+        "/markets": by_status()})
+    assert data(read(conn, ["candles"])) == []
+    assert script.params(path) == []
 
 
 def test_batch_mode_needs_no_event_ticker():
@@ -1056,6 +1516,20 @@ def test_trades_resume_inside_the_archive_period_bounds_the_archive_request():
     assert live[STRADDLE["ticker"]]["min_ts"] == CUT_S  # never below the cutoff
 
 
+def test_trades_a_cursor_at_the_cutoff_instant_leaves_nothing_for_the_archive():
+    # The archive leg ends AT the cutoff: a cursor already there has pulled it all.
+    long_lived = market("KXBTCD-LONG", event="KXBTCD-LONG",
+                        open_time="2026-08-06T22:00:00Z", close_time="2026-10-07T03:00:00Z",
+                        settlement_ts="2026-10-07T03:02:00Z")
+    conn, script, _ = connector(trade_routes(
+        settled=(long_lived,), history=(), **{
+            "/historical/trades": {"trades": [], "cursor": ""},
+            "/markets/trades": {"trades": [], "cursor": ""}}))
+    read(conn, ["trades"], state={"trades": {"cursor": CUTOFF}})
+    assert script.params("/historical/trades") == []
+    assert [p["min_ts"] for p in script.params("/markets/trades")] == [CUT_S]
+
+
 def test_trades_the_archive_is_not_asked_for_a_period_the_cursor_already_passed():
     # Opened before the cutoff, still open at the cursor, cursor after the
     # cutoff: everything before the cursor was pulled, so only the live leg runs.
@@ -1089,6 +1563,22 @@ def test_trades_a_market_touching_the_cutoff_instant_is_asked_where_it_traded(
     assert [p for p in script.paths() if "trades" in p] == legs
 
 
+@pytest.mark.parametrize("opened, closed, legs", [
+    ("", "2026-08-06T23:00:00Z", ["/historical/trades"]),      # unknown start: could be old
+    ("2026-08-07T01:00:00Z", "", ["/markets/trades"]),         # unknown end: could be live
+    ("", "", ["/historical/trades", "/markets/trades"]),
+])
+def test_trades_a_market_missing_an_open_or_close_time_is_asked_where_it_could_trade(
+        opened, closed, legs):
+    odd = market("KXBTCD-ODD", event="KXBTCD-ODD", open_time=opened, close_time=closed,
+                 settlement_ts="2026-08-07T01:02:00Z")
+    conn, script, _ = connector(trade_routes(settled=(odd,), history=(), **{
+        "/historical/trades": {"trades": [], "cursor": ""},
+        "/markets/trades": {"trades": [], "cursor": ""}}))
+    read(conn, ["trades"])
+    assert [p for p in script.paths() if "trades" in p] == legs
+
+
 def test_trades_one_seen_on_both_legs_of_a_market_is_emitted_once():
     dup = trade("same", "2026-08-07T00:00:00Z", STRADDLE["ticker"])
     other = trade("other", "2026-08-07T00:00:01Z", STRADDLE["ticker"])
@@ -1106,15 +1596,50 @@ def test_trades_a_payload_without_a_ticker_takes_the_requested_one():
     assert data(read(conn, ["trades"]))[0]["ticker"] == NEW["ticker"]
 
 
-def test_trades_cursor_never_passes_the_capture_instant():
-    # A trade created while the pull ran is emitted, but the checkpoint stops at
-    # the capture instant, so a market first listed after it is never skipped.
-    late = trade("late", "2026-10-07T12:00:20Z", NEW["ticker"])
-    conn, _, _ = connector(trade_routes(settled=(NEW,), history=(), **{
-        "/markets/trades": {"trades": [late], "cursor": ""}}))
+def test_trades_dated_after_the_capture_are_left_for_the_next_pull():
+    # A trade created after the capture instant (the pull started at 12:00; a
+    # long pull, or a venue clock ahead of this host's) is not emitted: the
+    # cursor stays at the last trade emitted, so the next pull asks for it
+    # again. Nothing a pull emits is dated after the instant it was captured.
+    still_open = market("KXBTCD-26OCT0713-T1", event="KXBTCD-26OCT0713",
+                        close_time="2026-10-07T13:00:00Z")
+    early = trade("early", "2026-10-07T00:30:00Z", still_open["ticker"])
+    late = trade("late", "2026-10-07T12:00:20Z", still_open["ticker"])
+    edge = trade("edge", CAPTURE.replace("+00:00", "Z"), still_open["ticker"])
+    conn, script, _ = connector(trade_routes(settled=(still_open,), history=(), **{
+        "/markets/trades": {"trades": [early, late, edge], "cursor": ""}}))
     msgs = read(conn, ["trades"])
-    assert [d["trade_id"] for d in data(msgs)] == ["late"]
-    assert msgs[-1]["state"] == {"trades": {"cursor": CAPTURE}}
+    assert [d["trade_id"] for d in data(msgs)] == ["early", "edge"]
+    assert msgs[-1]["state"] == {"trades": {"cursor": "2026-10-07T12:00:00Z"}}
+    for record in records(msgs):
+        assert parse_iso(record["effective_date"]) <= parse_iso(CAPTURE)
+
+    # Next pull, later: it resumes at the cursor and the late trade is emitted.
+    conn, script, _ = connector(trade_routes(settled=(still_open,), history=(), **{
+        "/markets/trades": {"trades": [late], "cursor": ""}}), now=NOW + timedelta(minutes=5))
+    again = read(conn, ["trades"], state=msgs[-1]["state"])
+    assert [d["trade_id"] for d in data(again)] == ["late"]
+    assert script.params("/markets/trades")[0]["min_ts"] == unix("2026-10-07T12:00:00Z")
+
+
+def test_a_trade_dated_after_the_commit_instant_does_not_abort_acquisition(
+        root, registry, history_source, monkeypatch):
+    # The venue's clock a few seconds ahead of this host's: its newest trade is
+    # "after" the commit instant, which acquisition refuses as a forecast. The
+    # pack never emits such a trade, so the pull completes with the rest.
+    monkeypatch.setattr(acquire_module, "utc_now", lambda: "2026-10-07T12:00:45+00:00")
+    StubHistoryConnector.script = Script({
+        "/historical/cutoff": CUTOFF_BODY,
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(settled=[NEW]),
+        "/markets/trades": {"trades": [
+            trade("ok", "2026-10-07T00:30:00Z", NEW["ticker"]),
+            trade("skewed", "2026-10-07T12:00:50Z", NEW["ticker"])], "cursor": ""},
+    })
+    result = run_acquisition(root, registry, "kalshihist", "trades", "backfill")
+    assert result["records"] == 1
+    trades = scan_stream(root.root, "kalshihist", "trades", key_fields=("trade_id",))
+    assert [t["trade_id"] for t in trades] == ["ok"]
 
 
 @pytest.mark.parametrize("bad, message", [
@@ -1171,6 +1696,42 @@ def test_orderbooks_carry_the_instant_each_response_returned():
         {"series_ticker": SERIES, "status": "open", "limit": 1000}]
 
 
+def test_orderbook_observed_at_is_when_that_books_response_returned():
+    # The clock moves while a request is in flight: the pacing gap and a 429's
+    # wait (sleeper) and the response time itself (getter) all advance it. A
+    # book is stamped with the instant ITS response came back, never the
+    # instant its request began, so an as-of join cannot see it early.
+    now = [NOW]
+    returned = []
+    waits = []
+
+    def sleeper(seconds):
+        waits.append(seconds)
+        now[0] += timedelta(seconds=seconds)
+
+    def answer(params):
+        now[0] += timedelta(seconds=90)
+        returned.append(now[0])
+        return book([["0.40", "10"]], [["0.55", "5"]])
+
+    second = market("KXBTCD-26OCT0713-T97000", event="KXBTCD-26OCT0713", status="active")
+    script = Script({
+        "/markets": by_status(open=[OPEN, second]),
+        f"/markets/{OPEN['ticker']}/orderbook": [http_error(429, {"Retry-After": "7"}), answer],
+        f"/markets/{second['ticker']}/orderbook": answer,
+    })
+    conn = KalshiHistoryConnector(getter=script, sleeper=sleeper, clock=lambda: now[0])
+    rows = data(read(conn, ["orderbooks"]))
+    assert 7.0 in waits  # the 429's wait happened before the first book's answer
+    assert [r["observed_at"] for r in rows] == [t.isoformat() for t in returned]
+    first, later = (datetime.fromisoformat(r["observed_at"]) for r in rows)
+    captured = datetime.fromisoformat(CAPTURE)
+    # Later than the capture by at least the wait plus the response time.
+    assert first - captured >= timedelta(seconds=30 + 7 + 90)
+    assert later - first >= timedelta(seconds=90)
+    assert [r["captured_at"] for r in rows] == [CAPTURE, CAPTURE]
+
+
 def test_orderbooks_legacy_cents_book_and_an_empty_book():
     conn, _, _ = connector({
         "/markets": by_status(open=[OPEN]),
@@ -1186,6 +1747,59 @@ def test_clock_must_return_an_aware_instant():
                            clock=lambda: datetime(2026, 10, 7, 12, 0))
     with pytest.raises(AssetError, match="clock must return an aware datetime"):
         list(conn.read(CONFIG, ["orderbooks"], {}, "live"))
+
+
+def test_every_ticker_in_a_path_is_url_quoted():
+    odd_series, odd_event = "KX/S", "KX/S-26 OCT"
+    quote = urllib.parse.quote
+    config = {**CONFIG, "series": [odd_series]}
+    live = market("KX/S-26 OCT-T1", event=odd_event)
+    event_path = f"/series/{quote(odd_series, safe='')}/events/{quote(odd_event, safe='')}/candlesticks"
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(settled=[live], open=[live]),
+        event_path: event_body(E0),
+        f"/markets/{quote(live['ticker'], safe='')}/orderbook": book([], []),
+    })
+    read(conn, ["candles", "orderbooks"], config=config)
+    assert event_path in script.paths()
+    assert f"/markets/{quote(live['ticker'], safe='')}/orderbook" in script.paths()
+
+    archived = {**live, "settlement_ts": "2026-08-06T21:00:00Z"}
+    archive_path = f"/historical/markets/{quote(live['ticker'], safe='')}/candlesticks"
+    conn, script, _ = connector({
+        "/historical/markets": {"markets": [archived], "cursor": ""},
+        "/markets": by_status(), archive_path: {"candlesticks": []}})
+    read(conn, ["candles"], config=config)
+    assert archive_path in script.paths()
+
+
+def test_nothing_a_pull_emits_is_dated_after_its_capture():
+    # The module's one temporal promise, across all four streams at once, on
+    # payloads that each tempt the pull to run past the capture instant.
+    live = market("KXBTCD-26OCT0713-T1", event="KXBTCD-26OCT0713", status="active",
+                  open_time="2026-10-07T11:00:00Z", close_time="2026-10-07T13:00:00Z")
+    capture = unix(CAPTURE)
+    event_path = f"/series/{SERIES}/events/{live['event_ticker']}/candlesticks"
+    conn, _, _ = connector({
+        "/historical/markets": {"markets": [], "cursor": ""},
+        "/markets": by_status(open=[live]),
+        event_path: event_body(capture, **{live["ticker"]: [
+            live_candle(capture - 1800), live_candle(capture), live_candle(capture + 60)]}),
+        "/markets/trades": {"trades": [
+            trade("a", "2026-10-07T11:45:00Z", live["ticker"]),
+            trade("b", "2026-10-07T12:00:30Z", live["ticker"])], "cursor": ""},
+        f"/markets/{live['ticker']}/orderbook": book([["0.40", "1"]], []),
+    })
+    msgs = read(conn, ["markets", "candles", "trades", "orderbooks"])
+    emitted = {}
+    for record in records(msgs):
+        emitted.setdefault(record["stream"], []).append(record)
+        assert parse_iso(record["effective_date"]) <= parse_iso(CAPTURE)
+    assert {k: len(v) for k, v in emitted.items()} == {
+        "markets": 1, "candles": 2, "trades": 1, "orderbooks": 1}
+    for stream, state in msgs[-1]["state"].items():
+        assert parse_iso(state["cursor"]) <= parse_iso(CAPTURE), stream
 
 
 # -- transport: pacing, retry, refusals -----------------------------------------------------------
@@ -1226,6 +1840,84 @@ def test_an_error_names_the_failing_request():
                             "/historical/markets": {"markets": [], "cursor": ""}})
     with pytest.raises(AssetError, match=r"/markets\?.*HTTP 404"):
         list(conn.read(CONFIG, ["markets"], {}, "live"))
+
+
+class Response:
+    """The context-manager a patched ``urlopen`` returns."""
+
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def patch_urlopen(monkeypatch, answers):
+    """Replace ``urllib.request.urlopen``; ``answers`` maps a path to a body, an Exception or a list of them."""
+    seen = []
+
+    def urlopen(request, timeout):
+        seen.append({"url": request.full_url, "timeout": timeout,
+                     "headers": dict(request.header_items())})
+        path = request.full_url.split("?")[0][len(BASE):]
+        answer = answers[path]
+        if isinstance(answer, list):
+            answer = answer.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return Response(answer if isinstance(answer, bytes) else json.dumps(answer).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return seen
+
+
+def test_default_transport_is_stdlib_urllib(monkeypatch):
+    seen = patch_urlopen(monkeypatch, {
+        "/historical/cutoff": CUTOFF_BODY,
+        "/markets": {"markets": [OPEN], "cursor": ""},
+    })
+    conn = KalshiHistoryConnector(sleeper=lambda s: None, clock=lambda: NOW)
+    knobs = {**CONFIG, "timeout_s": 7}
+    conn.check(knobs)
+    rows = data(read(conn, ["markets"], config={**knobs, "statuses": ["open"]}))
+    assert [r["ticker"] for r in rows] == [OPEN["ticker"]]
+    assert [c["url"] for c in seen] == [
+        f"{BASE}/historical/cutoff",
+        f"{BASE}/markets?series_ticker={SERIES}&status=open&limit=1000"]
+    for call in seen:
+        assert call["timeout"] == 7
+        assert call["headers"] == {"User-agent": "dskit-onboarding",
+                                   "Accept": "application/json"}
+
+
+def test_default_transport_failures_are_retried_or_refused_by_kind(monkeypatch):
+    sleeps = []
+    fails = {"/historical/cutoff": [
+        urllib.error.HTTPError(BASE, 503, "busy", {}, None),
+        urllib.error.URLError("reset"),
+        CUTOFF_BODY]}
+    seen = patch_urlopen(monkeypatch, fails)
+    conn = KalshiHistoryConnector(sleeper=sleeps.append, clock=lambda: NOW)
+    conn.check({**CONFIG, "retries": 2, "pace_s": 0})
+    assert len(seen) == 3
+    assert sleeps == [connector_module.backoff(1), connector_module.backoff(2)]
+
+    for answer, message in (
+        (urllib.error.HTTPError(BASE, 404, "gone", {}, None), "HTTP 404"),
+        (b"<html>not json</html>", "not JSON"),
+        (b"\xff\xfe", "not JSON"),
+        (b"[1, 2]", "not a JSON object"),
+    ):
+        seen = patch_urlopen(monkeypatch, {"/historical/cutoff": [answer]})
+        with pytest.raises(AssetError, match=message):
+            KalshiHistoryConnector(sleeper=lambda s: None).check(CONFIG)
+        assert len(seen) == 1  # none of these is retried
 
 
 # -- parity with the public kalshi pack ----------------------------------------------------------------
@@ -1275,6 +1967,7 @@ def test_markets_parity_with_the_public_kalshi_pack():
 def test_candles_parity_with_the_public_kalshi_pack():
     candles = [live_candle("2026-10-07T00:30:00Z"),
                live_candle("2026-10-07T00:45:00Z", close="nan"),
+               live_candle("2026-10-07T00:40:00Z", close="1.5"),  # kept, as kalshi keeps it
                {"end_period_ts": unix("2026-10-07T00:50:00Z"), "price": None}]
     old, _ = kalshi_connector({
         "/markets": by_status(settled=[A]),
@@ -1283,7 +1976,7 @@ def test_candles_parity_with_the_public_kalshi_pack():
     expected = records(list(old.read(
         {"series": [SERIES], "base_url": BASE, "statuses": ["settled"],
          "period_interval": 1}, ["candles"], {}, "live")))
-    assert len(expected) == 3
+    assert len(expected) == 4
 
     for grouping, routes in (
         ("event", {EVENT_PATH: event_body(E0, **{A["ticker"]: candles})}),
@@ -1299,23 +1992,41 @@ def test_candles_parity_with_the_public_kalshi_pack():
 
 
 def test_orderbook_parity_with_the_public_kalshi_pack():
-    body = book([["0.40", "10"], ["0.42", "3"], ["bad", "1"], ["0.10", "0"]],
-                [["0.55", "5"], [2, 1]])
-    old, _ = kalshi_connector({
-        "/markets": by_status(open=[OPEN]),
-        f"/markets/{OPEN['ticker']}/orderbook": body})
-    mine, _, _ = connector({
-        "/markets": by_status(open=[OPEN]),
-        f"/markets/{OPEN['ticker']}/orderbook": body})
-    left = records(list(old.read({"series": [SERIES], "base_url": BASE},
-                                 ["orderbooks"], {}, "live")))[0]
-    right = records(read(mine, ["orderbooks"]))[0]
-    assert {k: right["data"][k] for k in kalshi.ORDERBOOK_FIELDS} == left["data"]
-    assert right["effective_date"] == left["effective_date"]
+    bodies = [
+        book([["0.40", "10"], ["0.42", "3"], ["bad", "1"], ["0.10", "0"]],
+             [["0.55", "5"], [2, 1]]),
+        book([["0.40", "10", "extra"], "junk", None, ["0.30", "2"]], "not a list"),
+        {"orderbook": {"yes": [[40, 10], [101, 1]], "no": [[55, 5]]}},   # legacy cents
+        {"orderbook": "junk"},
+        {},
+    ]
+    for body in bodies:
+        old, _ = kalshi_connector({
+            "/markets": by_status(open=[OPEN]),
+            f"/markets/{OPEN['ticker']}/orderbook": body})
+        mine, _, _ = connector({
+            "/markets": by_status(open=[OPEN]),
+            f"/markets/{OPEN['ticker']}/orderbook": body})
+        left = records(list(old.read({"series": [SERIES], "base_url": BASE},
+                                     ["orderbooks"], {}, "live")))[0]
+        right = records(read(mine, ["orderbooks"]))[0]
+        assert {k: right["data"][k] for k in kalshi.ORDERBOOK_FIELDS} == left["data"], body
+        assert right["effective_date"] == left["effective_date"]
     assert kalshi_history.ORDERBOOK_FIELDS == kalshi.ORDERBOOK_FIELDS + ("observed_at",)
     assert kalshi_history.MARKET_FIELDS[:len(kalshi.MARKET_FIELDS)] == kalshi.MARKET_FIELDS
     assert kalshi_history.ORDERBOOK_KEY_FIELDS == kalshi.ORDERBOOK_KEY_FIELDS
     assert kalshi_history.MARKET_KEY_FIELDS == kalshi.MARKET_KEY_FIELDS
+
+
+def test_the_default_clock_is_the_current_utc_time():
+    undated = market("KXBTCD-26OCT0713-T1", close_time="")  # dated at the capture
+    before = datetime.now(timezone.utc) - timedelta(minutes=1)
+    conn = KalshiHistoryConnector(
+        getter=Script({"/markets": by_status(open=[undated])}), sleeper=lambda s: None)
+    msgs = read(conn, ["markets"], config={**CONFIG, "statuses": ["open"]})
+    capture = parse_iso(records(msgs)[0]["effective_date"])
+    assert before <= capture <= datetime.now(timezone.utc)
+    assert capture.second == 0 and capture.utcoffset() == timedelta(0)
 
 
 # -- acquisition e2e -------------------------------------------------------------------------------------
