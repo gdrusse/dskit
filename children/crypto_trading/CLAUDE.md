@@ -101,21 +101,28 @@ template becomes convenient enough to send an order.
 
 ## Stage A data pulls
 
-Sources are existing packs (`kalshi`, `httpblobs`) plus configs, and no child code: the Binance
+Sources are dskit packs (`kalshi`, `httpblobs`, and by import path `kalshi_history`, `restwindow`) plus configs, and no child code: the Binance
 daily zips become parquet through dskit's `ZipCsvToParquet` (ADR-0239), the column layout being each
 source's `transform_params` (a layout is config; it takes no `notes`, because the block feeds the
 declaration digest). A snapshot holds ONE stream, so each stream has its own suite. Series and date lists repeat across configs and suites by design (a
 suite restates its vocabulary); `tests/test_configs.py` pins every repeat, so change
-both together. Candles are the two 15-minute series, one source each; hourly candles,
-the settlement value (`expiration_value`, the model's label) and pre-cutoff history wait on
-PROPOSED ADR-0236. Never solve ADR-0236 or 0237 child-side: each is a NEW dskit pack (no
-existing pack is edited). The digest check is child-side by ruling (ADR-0238 withdrawn). `AGENTS.md` mirrors this file
+both together. The 15-minute candles are one source per series. `kalshi_history` (ADR-0236) adds the
+settlement value (`expiration_value`, a LABEL known only from `settlement_ts`: gate on it, never a feature), history
+before the live cutoff, event-level hourly candles and trades; `restwindow` (ADR-0237) adds Coinbase (the live-safe spot
+alternative to Binance, which is research-only; no node reads it yet) and Deribit DVOL. Their hourly candle and trade
+pulls cost a request chain per ARCHIVED market and the pack has no date bound: count first (runbook 7c); a bound is a
+new dskit knob, never child code. The digest check is child-side by ruling (ADR-0238 withdrawn). `AGENTS.md` mirrors this file
 (a test pins it): edit both. Commands: `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
 ## Stage B features and the kill test
 
-`configs/run-features-15m.json` is the one document: readers (`kalshi_rows`), decision rows, point-in-time
-features, fair values, fees, the kill test, then `records-write`. Rules that bind any edit:
+`configs/run-features-15m.json` is the document: readers (`kalshi_rows`), decision rows, point-in-time
+features, fair values, fees, the kill test, then `records-write`. `configs/run-features-hourly.json` is the SAME
+nodes over the hourly ladders (a second `MarketRows` reads the 15-minute series only to anchor the index units); every
+modelling knob and the held-out cut are shared and pinned equal in `tests/test_configs.py`, so edit both or neither.
+Its rows carry `settle_value` and `settlement_ms` (labels): `tests/test_hourly_pipeline.py` proves by a second world
+that changing the value, a later bar, a later candle or a later strike moves no earlier decision's feature. Rules
+that bind any edit:
 
 - **One information instant, then a trade after it.** `decision_ms` is I: spot = the Binance bar that closed
   before I, quote = the candle that ended by I (the same minute), BVOL strictly before I, a strike anchor
@@ -167,8 +174,12 @@ configs/               # asset-model / source-sample / suite-sample /
                        #   source-kalshi-crypto[-candles-*|-books-*] /
                        #   source-binance-* (zip layouts in transform_params) /
                        #   binance_vision_dates / suite-kalshi-crypto-* /
-                       #   suite-binance-files;
-                       #   stage B: run-features-15m / source-features-15m
+                       #   suite-binance-files; history and restwindow:
+                       #   source-kalshi-history-* / source-coinbase-* /
+                       #   source-deribit-* with a suite each (suite-kalshi-history-*,
+                       #   suite-coinbase-candles, suite-deribit-dvol);
+                       #   stage B: run-features-{15m,hourly} /
+                       #   source-features-{15m,hourly}
 models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
@@ -179,10 +190,14 @@ docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   execution/production tests, plus binance_vision
                        #   (the two layouts) and kalshi_crypto (offline,
-                       #   scripted transports); stage B: synthetic.py
-                       #   (offline stores), one test file per child module,
-                       #   test_features_pipeline and test_migration_golden
-                       #   (golden/: the pre-migration outputs)
+                       #   scripted transports), test_history_sources and
+                       #   test_restwindow_sources (the new packs, scripted),
+                       #   test_runbook (every runbook command is real);
+                       #   stage B: synthetic.py (offline stores), one test
+                       #   file per child module, test_features_pipeline,
+                       #   test_hourly_pipeline (leak tests by a second world)
+                       #   and test_migration_golden (golden/: the
+                       #   pre-migration outputs)
 pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```
 

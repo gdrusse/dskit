@@ -216,3 +216,35 @@ def test_the_dropped_markets_and_census_are_written_beside_the_run_when_there_is
     assert json.load(open(os.path.join(directory, "census.json"), encoding="utf-8")) == node.census
     assert out is None
     node.write_dropped(None)  # a unit test with no run directory is still fine
+
+
+# -- the kalshi_history stream: the realised settlement value and the instant it became known ------
+
+
+def history(**over):
+    """A ``markets`` row as the kalshi_history pack emits it: the kalshi row plus the settlement fields."""
+    return raw(**{"expiration_value": 60123.45, "settlement_ts": "2026-09-02T00:17:20.5Z", "volume": 12.0, **over})
+
+
+def test_a_history_row_carries_the_settlement_value_and_the_instant_it_became_known():
+    _, rows = project([history()])
+    (row,) = rows
+    assert row["settle_value"] == 60123.45
+    assert row["settlement_ms"] == ms(utc(2026, 9, 2, 0, 17, 20)) + 500
+    assert row["settlement_ms"] > row["close_ms"], "the label exists only after the close: gate a join on it"
+    assert row["label"] == 1, "the yes/no label is unchanged"
+    assert "volume" not in row, "a whole-life total is known only after the end: never carried into a feature table"
+
+
+def test_a_stream_without_the_settlement_fields_leaves_the_row_exactly_as_it_was():
+    _, rows = project([raw()])
+    assert "settle_value" not in rows[0] and "settlement_ms" not in rows[0]
+
+
+def test_an_unsettled_value_is_none_not_a_guess_and_a_missing_settlement_instant_is_excluded_by_name():
+    _, rows = project([history(expiration_value=None)])
+    assert rows[0]["settle_value"] is None and rows[0]["label"] == 1
+    node, rows = project([history(settlement_ts="")])
+    assert rows == [] and node.excluded == [{"ticker": "KXBTC15M-26SEP020015-15", "reason": "no_settlement_ts"}]
+    node, rows = project([history(settlement_ts="2026-09-02T00:17:20")])  # no zone: a guess
+    assert rows == [] and node.excluded[0]["reason"] == "no_settlement_ts"

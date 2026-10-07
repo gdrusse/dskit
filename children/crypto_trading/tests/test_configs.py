@@ -16,10 +16,12 @@ import pytest
 
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
-from dskit.onboarding.libs import kalshi
+from dskit.onboarding.libs import kalshi, kalshi_history
 from dskit.onboarding.libs.httpblobs import RECORD_FIELDS, HttpBlobsConnector
 from dskit.onboarding.libs.kalshi import KalshiConnector
+from dskit.onboarding.libs.kalshi_history import KalshiHistoryConnector
 from dskit.onboarding.libs.localtables import LocalTablesConnector
+from dskit.onboarding.libs.restwindow import RestWindowConnector
 from dskit.pipeline.document import load_document
 
 from crypto_trading.connectors import SampleConnector
@@ -97,6 +99,12 @@ SUITE_FIELDS = {
     "suite-kalshi-crypto-fees.json": kalshi.FEE_FIELDS,
     "suite-kalshi-crypto-books.json": kalshi.ORDERBOOK_FIELDS,
     "suite-binance-files.json": RECORD_FIELDS,
+    "suite-kalshi-history-markets.json": kalshi_history.MARKET_FIELDS,
+    "suite-kalshi-history-candles.json": kalshi_history.CANDLE_FIELDS,
+    "suite-kalshi-history-trades.json": kalshi_history.TRADE_FIELDS,
+    # restwindow writes the declared row_fields plus the ISO effective instant it derives from the epoch field
+    "suite-coinbase-candles.json": ("time", "low", "high", "open", "close", "volume", "time_iso"),
+    "suite-deribit-dvol.json": ("ts", "open", "high", "low", "close", "ts_iso"),
 }
 #: source file -> (vendor URL template, the transform class: dskit's zip-to-parquet, the layout is in transform_params)
 BINANCE_SOURCES = {
@@ -117,7 +125,22 @@ BINANCE_SOURCES = {
 }
 DATES_FILE = "binance_vision_dates.json"
 #: registration configs for tables a run of this child derives and a later run reads (localtables)
-DERIVED_SOURCES = ("source-features-15m.json",)
+DERIVED_SOURCES = ("source-features-15m.json", "source-features-hourly.json")
+#: kalshi_history sources (ADR-0236): markets with the realised settlement value, hourly event-level candles, trades
+HISTORY_SOURCES = (
+    "source-kalshi-history-crypto.json",
+    "source-kalshi-history-candles-hourly-btc.json",
+    "source-kalshi-history-candles-hourly-eth.json",
+    "source-kalshi-history-trades-15m.json",
+    "source-kalshi-history-trades-hourly.json",
+)
+#: restwindow sources (ADR-0237): the live-safe spot candles and the Deribit implied-vol index
+RESTWINDOW_SOURCES = (
+    "source-coinbase-btcusd-1m.json",
+    "source-coinbase-ethusd-1m.json",
+    "source-deribit-btc-dvol.json",
+    "source-deribit-eth-dvol.json",
+)
 #: suite file -> the one stream it targets (a snapshot holds one stream, so a
 #: suite naming two would fail the absent one's row_count).
 SUITES = {
@@ -127,6 +150,11 @@ SUITES = {
     "suite-kalshi-crypto-fees.json": "fee_schedules",
     "suite-kalshi-crypto-books.json": "orderbooks",
     "suite-binance-files.json": "files",
+    "suite-kalshi-history-markets.json": "markets",
+    "suite-kalshi-history-candles.json": "candles",
+    "suite-kalshi-history-trades.json": "trades",
+    "suite-coinbase-candles.json": "candles",
+    "suite-deribit-dvol.json": "dvol",
 }
 
 
@@ -147,7 +175,8 @@ def child_root_env(monkeypatch):
 
 def test_every_source_and_suite_file_is_covered_here():
     found = {os.path.basename(p) for p in glob.glob(_path("source-*.json"))}
-    assert found == {"source-sample.json", *KALSHI_SOURCES, *BINANCE_SOURCES, *DERIVED_SOURCES}, (
+    assert found == {"source-sample.json", *KALSHI_SOURCES, *BINANCE_SOURCES, *DERIVED_SOURCES, *HISTORY_SOURCES,
+                     *RESTWINDOW_SOURCES}, (
         "a new source config must be added to this file's tables, not just to configs/")
     suites = {os.path.basename(p) for p in glob.glob(_path("suite-*.json"))}
     assert suites == set(SUITES)
@@ -181,6 +210,77 @@ def test_kalshi_series_universe_and_how_each_source_slices_it():
     assert series["source-kalshi-crypto-books-hourly.json"] == sorted(KALSHI_HOURLY)
     assert sorted(KALSHI_15M + KALSHI_HOURLY) == sorted(KALSHI_SERIES), (
         "the two books sources partition the six series: none missed, none read twice")
+
+
+HISTORY_SERIES = {
+    "source-kalshi-history-crypto.json": KALSHI_SERIES,
+    "source-kalshi-history-candles-hourly-btc.json": ("KXBTC", "KXBTCD"),
+    "source-kalshi-history-candles-hourly-eth.json": ("KXETH", "KXETHD"),
+    "source-kalshi-history-trades-15m.json": KALSHI_15M,
+    "source-kalshi-history-trades-hourly.json": KALSHI_HOURLY,
+}
+
+
+@pytest.mark.parametrize("name", HISTORY_SOURCES)
+def test_history_sources_pass_default_deny_and_resolve_their_knobs(name):
+    config = _load(name)
+    connector = KalshiHistoryConnector()
+    check_config(connector, config)
+    knobs = connector.resolve_knobs(_strip_platform(config))
+    assert knobs["series"] == list(HISTORY_SERIES[name])
+    if name == "source-kalshi-history-crypto.json":
+        assert knobs["statuses"] == ["settled"], "the markets stream is the final rows of both archives"
+    else:
+        assert knobs["statuses"] == ["settled", "closed", "open"], (
+            "the pack default, restated: 'closed' keeps the candle and trade cursors from skipping a market for good")
+    if "candles" in name:
+        assert knobs["period_interval"] == 1 and knobs["candle_grouping"] == "event"
+
+
+def test_the_history_sources_split_the_universe_the_way_their_notes_say():
+    series = {name: sorted(_load(name)["series"]) for name in HISTORY_SOURCES}
+    assert series["source-kalshi-history-crypto.json"] == sorted(_load("source-kalshi-crypto.json")["series"]), (
+        "the history markets are the six series the kalshi source pulls")
+    candles = series["source-kalshi-history-candles-hourly-btc.json"] + series["source-kalshi-history-candles-hourly-eth.json"]
+    assert sorted(candles) == sorted(KALSHI_HOURLY), "the two candle sources partition the four hourly series"
+    trades = series["source-kalshi-history-trades-15m.json"] + series["source-kalshi-history-trades-hourly.json"]
+    assert sorted(trades) == sorted(KALSHI_SERIES), "the two trade sources partition the six series"
+    hourly_doc = _load("run-features-hourly.json")["pipeline"]["spot"]["params"]["assets"]
+    assert series["source-kalshi-history-candles-hourly-btc.json"] == [s for s in hourly_doc["BTC"]["series"] if not s.endswith("15M")]
+    assert series["source-kalshi-history-candles-hourly-eth.json"] == [s for s in hourly_doc["ETH"]["series"] if not s.endswith("15M")]
+
+
+@pytest.mark.parametrize("name", HISTORY_SOURCES)
+def test_history_sources_say_how_to_register_and_what_the_label_gate_is(name):
+    notes = _load(name)["notes"]
+    assert "--connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector" in notes
+    assert f"--config @configs/{name}" in notes and name[len("source-"):-len(".json")] in notes
+    if name == "source-kalshi-history-crypto.json":
+        for phrase in ("expiration_value", "settlement_ts", "KNOWN ONLY AT SETTLEMENT", "never on the row's effective date"):
+            assert phrase in notes, f"{name}: the notes must say {phrase!r}"
+    if "candles-hourly" in name or name.endswith("trades-hourly.json"):
+        assert "COUNT the archived hourly markets" in notes, "the per-market archive cost is stated, not hidden"
+
+
+@pytest.mark.parametrize("name", RESTWINDOW_SOURCES)
+def test_restwindow_sources_pass_default_deny_and_are_registered_by_import_path(name):
+    config = _load(name)
+    check_config(RestWindowConnector(), config)
+    assert "--connector dskit.onboarding.libs.restwindow:RestWindowConnector" in config["notes"]
+    assert f"--config @configs/{name}" in config["notes"]
+    (declaration,) = config["streams"].values()
+    assert declaration["effective_field"] in ("time_iso", "ts_iso")
+    assert declaration["pagination"]["lag"] == 60, "the minute still forming is never stored"
+
+
+def test_the_restwindow_source_and_suite_fields_agree():
+    for source, suite in (("source-coinbase-btcusd-1m.json", "suite-coinbase-candles.json"),
+                          ("source-coinbase-ethusd-1m.json", "suite-coinbase-candles.json"),
+                          ("source-deribit-btc-dvol.json", "suite-deribit-dvol.json"),
+                          ("source-deribit-eth-dvol.json", "suite-deribit-dvol.json")):
+        (declaration,) = _load(source)["streams"].values()
+        assert (*declaration["row_fields"], declaration["effective_field"]) == tuple(SUITE_FIELDS[suite]), source
+        assert declaration["primary_key"] == [declaration["row_fields"][0]]
 
 
 @pytest.mark.parametrize("name", sorted(BINANCE_SOURCES))
@@ -265,7 +365,8 @@ def test_every_field_a_suite_rule_names_is_one_the_pack_emits(name, fields):
             assert field in fields, f"{name}: rule {rule.id!r} names {field!r}, not in {tuple(fields)}"
 
 
-@pytest.mark.parametrize("name", ["suite-kalshi-crypto-markets.json", "suite-kalshi-crypto-fees.json"])
+@pytest.mark.parametrize("name", ["suite-kalshi-crypto-markets.json", "suite-kalshi-crypto-fees.json",
+                                  "suite-kalshi-history-markets.json"])
 def test_the_distinct_series_count_equals_the_source_series_list(name):
     expected = len(_load("source-kalshi-crypto.json")["series"])
     (rule,) = [r for r in load_suite(_path(name)).rules if r.rule == "distinct_count"]
@@ -289,7 +390,7 @@ def test_every_suite_validates_and_targets_one_stream(name, stream):
 
 
 @pytest.mark.parametrize("name", ["suite-kalshi-crypto-markets.json", "suite-kalshi-crypto-fees.json",
-                                  "suite-kalshi-crypto-books.json"])
+                                  "suite-kalshi-crypto-books.json", "suite-kalshi-history-markets.json"])
 def test_kalshi_suites_restate_the_series_universe_and_agree_with_the_source(name):
     suite = load_suite(_path(name))
     (rule,) = [r for r in suite.rules if r.kwargs.get("field") == "series_ticker"
@@ -703,3 +804,120 @@ def test_the_scorer_reads_the_columns_the_child_writes():
     assert kill["eligible_field"] == f.TWO_SIDED, "the scorer's gate is the quote's own two-sided flag"
     assert kill["cluster_field"] == f.EVENT
     assert kill["bucket_edges"][0] == 0.0 and kill["bucket_edges"][-1] == 1.0, "mids are probabilities"
+
+
+# -- stage B, the hourly document: built from the same nodes, so every shared knob is pinned equal ------------------
+
+HOURLY_DOC = "run-features-hourly.json"
+HOURLY_DIR = "~/data/crypto_trading/features-hourly"
+
+
+def _hourly():
+    return _load(HOURLY_DOC)
+
+
+def test_the_hourly_document_loads_and_every_node_says_why():
+    document = load_document(_path(HOURLY_DOC))
+    assert document.hash and document.hash != load_document(_path(FEATURES_DOC)).hash
+    raw = _hourly()
+    assert raw["notes"].strip()
+    for key, spec in raw["pipeline"].items():
+        assert spec.get("notes", "").strip(), f"node {key!r} has no notes: say why it is wired this way"
+
+
+def test_every_store_root_of_the_hourly_document_is_the_runbooks_placeholder_and_one_sed_moves_them_all(tmp_path):
+    import shutil
+    import subprocess
+
+    roots = [spec["params"]["root"] for spec in _hourly()["pipeline"].values() if "root" in spec.get("params", {})]
+    assert set(roots) == {STORE_ROOT} and len(roots) == 7, "one store, named once per reading node"
+    text = open(_path(HOURLY_DOC), encoding="utf-8").read()
+    assert text.count(STORE_ROOT) == len(roots), "the placeholder appears only as a root, so one sed catches all"
+    (line,) = re.findall(r'^(sed -i "s#[^#\n]+#\$OB#g" configs/run-features-hourly\.json)$', RUNBOOK_TEXT, re.M)
+    assert f's#{STORE_ROOT}#' in line
+    (tmp_path / "configs").mkdir()
+    shutil.copy(_path(HOURLY_DOC), tmp_path / "configs" / HOURLY_DOC)
+    done = subprocess.run(["bash", "-c", line], cwd=tmp_path, env={**os.environ, "OB": "/data/elsewhere/ob"},
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    rewritten = json.loads((tmp_path / "configs" / HOURLY_DOC).read_text(encoding="utf-8"))
+    assert {s["params"]["root"] for s in rewritten["pipeline"].values() if "root" in s.get("params", {})} == {"/data/elsewhere/ob"}
+
+
+def test_the_hourly_readers_name_sources_that_exist_and_the_series_each_pulls():
+    sources = {os.path.basename(p)[len("source-"):-len(".json")] for p in glob.glob(_path("source-*.json"))}
+    pipeline = _hourly()["pipeline"]
+    assert pipeline["markets"]["params"]["source"] == pipeline["anchor_markets"]["params"]["source"] == "kalshi-history-crypto"
+    assert pipeline["fee_schedules"]["params"]["source"] == "kalshi-crypto", "fee schedules are series-level: the kalshi source's stream"
+    assert pipeline["candles_btc"]["params"]["source"] == "kalshi-history-candles-hourly-btc"
+    assert pipeline["candles_eth"]["params"]["source"] == "kalshi-history-candles-hourly-eth"
+    for key in ("markets", "anchor_markets", "fee_schedules", "candles_btc", "candles_eth"):
+        assert pipeline[key]["params"]["source"] in sources, key
+    for tape in pipeline["streams"]["params"]["streams"].values():
+        assert tape["source"] in sources and tape["stream"] == "files"
+    assert sorted(pipeline["markets"]["params"]["series"]) == sorted(KALSHI_HOURLY)
+    assert sorted(pipeline["anchor_markets"]["params"]["series"]) == sorted(KALSHI_15M)
+    assert sorted(pipeline["anchors"]["params"]["anchor_series"]) == sorted(KALSHI_15M)
+    assert pipeline["anchors"]["inputs"] == {"records": "$anchor_markets.records"}
+    assert pipeline["decisions"]["inputs"] == {"records": "$markets.records"}, "only the hourly markets are decisions"
+
+
+def test_the_hourly_assets_claim_their_hourly_and_their_anchor_series_and_nothing_else():
+    assets = _hourly()["pipeline"]["spot"]["params"]["assets"]
+    assert {a: sorted(v["series"]) for a, v in assets.items()} == {
+        "BTC": ["KXBTC", "KXBTC15M", "KXBTCD"], "ETH": ["KXETH", "KXETH15M", "KXETHD"]}
+    assert sorted(s for a in assets.values() for s in a["series"]) == sorted(KALSHI_SERIES)
+    for asset, spec in assets.items():
+        shipped15 = _doc()["pipeline"]["spot"]["params"]["assets"][asset]
+        assert (spec["klines"], spec["bvol"]) == (shipped15["klines"], shipped15["bvol"]), "the same Binance tapes"
+
+
+def test_the_hourly_document_shares_every_modelling_knob_with_the_15_minute_one():
+    fifteen, hourly = _doc()["pipeline"], _hourly()["pipeline"]
+    for key in ("streams", "state", "fair_rms", "fair_ewma", "fair_bvol", "fees", "kill_test", "fee_schedules"):
+        a, b = fifteen[key], hourly[key]
+        assert a["uses"] == b["uses"] and a["params"] == b["params"] and a.get("inputs") == b.get("inputs"), key
+    spot15, spot_h = fifteen["spot"]["params"], hourly["spot"]["params"]
+    assert {k: v for k, v in spot15.items() if k != "assets"} == {k: v for k, v in spot_h.items() if k != "assets"}
+    assert fifteen["decisions"]["params"]["exec_lag_s"] == hourly["decisions"]["params"]["exec_lag_s"]
+    for key in ("payoff_by_strike_type", "result_labels", "settled_statuses"):
+        assert fifteen["markets"]["params"][key] == hourly["markets"][ "params"][key] == hourly["anchor_markets"]["params"][key], key
+    assert hourly["anchor_markets"]["params"]["strike_known_lag_s"] == fifteen["markets"]["params"]["strike_known_lag_s"]
+    assert hourly["markets"]["params"]["strike_known_lag_s"] == {}, "an hourly strike is fixed at creation: known at the open"
+
+
+def test_the_hourly_leads_fit_the_hour_and_leave_the_averaging_window_after_the_fill():
+    pipeline = _hourly()["pipeline"]
+    leads, lag = pipeline["decisions"]["params"]["leads_minutes"], pipeline["decisions"]["params"]["exec_lag_s"]
+    assert max(leads) < 60, "an hourly market is open for the hour before its close: a longer lead is before the open"
+    assert min(leads) * 60 - lag >= pipeline["fair_rms"]["params"]["averaging_window_s"]
+    assert leads != _doc()["pipeline"]["decisions"]["params"]["leads_minutes"], "the hourly leads are their own research choice"
+
+
+def test_one_held_out_cut_serves_both_documents_and_the_hourly_one_reports_development_only():
+    kills = [d["pipeline"]["kill_test"]["params"] for d in (_doc(), _hourly())]
+    assert kills[0]["segments"] == kills[1]["segments"], "one cut across both: neither read can inform the other's"
+    assert kills[1]["report_segments"] == ["development"]
+
+
+def test_the_hourly_table_registration_matches_what_the_document_writes():
+    config = _load("source-features-hourly.json")
+    check_config(LocalTablesConnector(), config)
+    node = _hourly()["pipeline"]["write"]
+    write = node["params"]
+    assert node["uses"] == "dskit.pipeline.kinds_run_write:RecordsWriteRun"
+    assert os.path.dirname(write["path"]) == config["path"] == HOURLY_DIR != FEATURES_DIR
+    assert os.path.basename(write["path"]) == "decision_features-{run}.jsonl" and write["path"].count("{run}") == 1
+    assert "streams" not in config and config["formats"] == ["jsonl"]
+    assert config["effective_field"] == "decision_ms" and config["effective_unit"] == "ms" and config["layout"] == "file"
+    assert "features-hourly" in config["notes"] and "run-features-hourly.json" in config["notes"]
+
+
+def test_no_note_still_says_the_label_is_yes_no_only_or_waits_on_a_proposed_adr():
+    """The history pack landed: the realised value is pulled, and the hourly candles and the Coinbase/Deribit sources exist."""
+    stale = ("waits on ADR-0236", "wait on PROPOSED ADR-0236", "PROPOSED kalshi /historical", "LABEL GAP",
+             "the realised settlement value waits", "need ADR-0237", "PROPOSED ADR-0236", "PROPOSED in ADR-0236")
+    texts = {name: open(_path(name), encoding="utf-8").read() for name in os.listdir(CONFIGS) if name.endswith(".json")}
+    for name, text in texts.items():
+        for phrase in stale:
+            assert phrase not in text, f"{name} still says {phrase!r}"

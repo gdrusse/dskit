@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from dskit.onboarding import OnboardingRoot, run_acquisition
 from dskit.onboarding.libs.kalshi import KalshiConnector
+from dskit.onboarding.libs.kalshi_history import KalshiHistoryConnector
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -116,6 +117,96 @@ class ScriptedKalshi:
         raise AssertionError(f"unscripted endpoint: {path}")
 
 
+def archive_candle_payload(end, bid=None, ask=None, price=None, volume=10.0, interest=99.0):
+    """One archived candlestick: the same fields as the live shape, bare numbers (no ``_dollars`` / ``_fp``)."""
+    def quote(value):
+        return {} if value is None else {"close": value}
+
+    return {"end_period_ts": int(end.timestamp()), "volume": volume, "open_interest": interest,
+            "yes_bid": quote(bid), "yes_ask": quote(ask),
+            "price": {} if price is None else {"open": price, "high": price, "low": price, "close": price, "mean": price}}
+
+
+def history_market_payload(ticker, close, *, expiration_value, settled_after_s=140, volume="25.00", **kwargs):
+    """A market payload as the history pack reads it: ``market_payload`` plus the settlement fields."""
+    payload = market_payload(ticker, close, **kwargs)
+    payload.update({"expiration_value": f"{expiration_value:.2f}",
+                    "settlement_ts": iso(close + timedelta(seconds=settled_after_s)), "volume_fp": volume})
+    return payload
+
+
+class ScriptedHistory:
+    """A ``getter(url, params) -> dict`` serving the history pack's endpoints from scripted markets.
+
+    ``live`` and ``archived`` are market payloads (see :func:`history_market_payload`); ``candles`` maps
+    a ticker to its live-shaped candlesticks and ``archived_candles`` to archive-shaped ones; ``trades``
+    maps a ticker to its trade payloads. ``also_live`` lists archived tickers the live listing still
+    returns (the pack drops that copy). Listings are paged ``page`` rows at a time, so cursors run.
+    """
+
+    def __init__(self, live=(), archived=(), candles=None, archived_candles=None, trades=None,
+                 cutoff="2026-09-02T12:00:00Z", also_live=(), page=3):
+        self.live = list(live)
+        self.archived = list(archived)
+        self.also_live = list(also_live)
+        self.candles = dict(candles or {})
+        self.archived_candles = dict(archived_candles or {})
+        self.trades = dict(trades or {})
+        self.cutoff = cutoff
+        self.page = page
+        self.calls = []
+
+    @staticmethod
+    def _series(ticker):
+        return ticker.split("-", 1)[0]
+
+    def _paged(self, rows, key, params):
+        start = int(params.get("cursor") or 0)
+        following = start + self.page
+        return {key: rows[start:following], "cursor": str(following) if following < len(rows) else ""}
+
+    def _listing(self, params):
+        wanted = params["series_ticker"]
+        rows = [m for m in self.live + self.also_live if self._series(m["ticker"]) == wanted]
+        status = params.get("status")
+        if status == "settled":
+            return [m for m in rows if m["status"] in ("finalized", "settled")]
+        return [m for m in rows if m["status"] == {"open": "active"}.get(status, status)]
+
+    def __call__(self, url, params):
+        path = url.split("/trade-api/v2", 1)[1]
+        self.calls.append((path, dict(params)))
+        if path == "/historical/cutoff":
+            return {"market_settled_ts": self.cutoff, "trades_created_ts": self.cutoff}
+        if path == "/markets":
+            return self._paged(self._listing(params), "markets", params)
+        if path == "/historical/markets":
+            rows = [m for m in self.archived if self._series(m["ticker"]) == params["series_ticker"]]
+            return self._paged(rows, "markets", params)
+        if path.startswith("/series/") and path.endswith("/candlesticks"):
+            return self._event_candles(path, params)
+        if path.startswith("/historical/markets/") and path.endswith("/candlesticks"):
+            ticker = path.split("/")[-2]
+            return {"candlesticks": self._window(self.archived_candles.get(ticker, []), params)}
+        if path in ("/markets/trades", "/historical/trades"):
+            return self._paged(self.trades.get(params["ticker"], []), "trades", params)
+        raise AssertionError(f"unscripted endpoint: {path}")
+
+    @staticmethod
+    def _window(candles, params):
+        low, high = int(params["start_ts"]), int(params["end_ts"])
+        return [c for c in candles if low <= c["end_period_ts"] <= high]
+
+    def _event_candles(self, path, params):
+        event = path.split("/")[4]
+        tickers = [m["ticker"] for m in self.live if m["event_ticker"] == event]
+        return {"adjusted_end_ts": int(params["end_ts"]), "market_tickers": tickers,
+                "market_candlesticks": [self._window(self.candles.get(t, []), params) for t in tickers]}
+
+    def paths(self, suffix):
+        return [p for p, _ in self.calls if p.endswith(suffix)]
+
+
 class Store:
     """A tmp onboarding root that scripted pulls and day-file blobs are acquired into."""
 
@@ -143,6 +234,16 @@ class Store:
                           lambda ref: (lambda: connector))
             for stream in streams:
                 run_acquisition(self.onboarding, self.registry, source, stream, "backfill")
+
+    def kalshi_history(self, source, config_name, api, streams):
+        """Register ``source`` from a shipped kalshi_history config and acquire each stream through ``api``."""
+        connector = KalshiHistoryConnector(getter=api, sleeper=lambda seconds: None, clock=lambda: NOW)
+        self._register(source, "dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector", shipped(config_name))
+        with self.monkeypatch.context() as patch:
+            patch.setattr("dskit.onboarding.acquire.resolve_connector",
+                          lambda ref: (lambda: connector))
+            return {stream: run_acquisition(self.onboarding, self.registry, source, stream, "backfill")
+                    for stream in streams}
 
     def blobs(self, source, files):
         """Lay ``{relpath: bytes}`` on disk and acquire it as stream ``files`` of ``source``."""

@@ -1,0 +1,115 @@
+{
+  "name": "coinbase-candles",
+  "notes": "Structural gates over one `candles` pull of source coinbase-btcusd-1m or coinbase-ethusd-1m (Coinbase Exchange 1-minute candles through restwindow). One suite for both products: no rule bounds a price LEVEL, because BTC and ETH differ by an order of magnitude. in_range cannot say strictly positive, so a price of exactly 0 passes; the gap check (a window the vendor answered short) is not in the rule vocabulary either: count rows per day with scan_stream (runbook section 8). Run: python -m dskit.onboarding validate --suite configs/suite-coinbase-candles.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "candles-rows-arrived",
+      "target": "candles",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken pull (wrong product, a start in the future, an API change)."
+    },
+    {
+      "id": "candles-time-present",
+      "target": "candles",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "time"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-time-unique",
+      "target": "candles",
+      "rule": "unique",
+      "kwargs": {
+        "field": "time"
+      },
+      "severity": "error",
+      "notes": "One row per minute: the connector clips each window to [lo, hi) so a bound both windows return is stored once; a duplicate means that failed."
+    },
+    {
+      "id": "candles-time-in-seconds",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "time",
+        "min": 1704067200,
+        "max": 4102444800
+      },
+      "severity": "error",
+      "notes": "Epoch SECONDS from 2024-01-01 (the shipped start) to 2100. A backstop: the connector already refuses a millisecond value and drops a row outside its window, so this trips only on a row the pack let through."
+    },
+    {
+      "id": "candles-time-iso-present",
+      "target": "candles",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "time_iso"
+      },
+      "severity": "error",
+      "notes": "The effective instant the connector writes beside the raw time."
+    },
+    {
+      "id": "candles-low-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "low",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-high-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "high",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-open-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "open",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-close-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "close",
+        "min": 0
+      },
+      "severity": "error"
+    },
+    {
+      "id": "candles-volume-nonnegative",
+      "target": "candles",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "volume",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "Base-asset volume of the minute."
+    },
+    {
+      "id": "candles-bitemporal",
+      "target": "candles",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "The span stops a minute before now (lag 60), so a candle dated after acquisition is a defect."
+    }
+  ]
+}

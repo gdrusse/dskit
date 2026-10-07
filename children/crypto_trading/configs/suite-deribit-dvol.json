@@ -1,0 +1,121 @@
+{
+  "name": "deribit-dvol",
+  "notes": "Structural gates over one `dvol` pull of source deribit-btc-dvol or deribit-eth-dvol (Deribit's DVOL implied-volatility index, 1-minute, through restwindow). DVOL is in annualised percentage points, so a decimal fraction (0.35) or a basis-point count would be a unit change: the level rules warn outside [5, 500]. High above low is not in the rule vocabulary. Run: python -m dskit.onboarding validate --suite configs/suite-deribit-dvol.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "dvol-rows-arrived",
+      "target": "dvol",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken pull (wrong currency, a start in the future, an API change)."
+    },
+    {
+      "id": "dvol-ts-present",
+      "target": "dvol",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "ts"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "dvol-ts-unique",
+      "target": "dvol",
+      "rule": "unique",
+      "kwargs": {
+        "field": "ts"
+      },
+      "severity": "error",
+      "notes": "One row per minute; a duplicate means the window clipping failed."
+    },
+    {
+      "id": "dvol-ts-in-milliseconds",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "ts",
+        "min": 1704067200000,
+        "max": 4102444800000
+      },
+      "severity": "error",
+      "notes": "Epoch MILLISECONDS from 2024-01-01 (the shipped start) to 2100. A backstop: the connector drops a row outside its window, so this trips only on a row the pack let through."
+    },
+    {
+      "id": "dvol-ts-iso-present",
+      "target": "dvol",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "ts_iso"
+      },
+      "severity": "error",
+      "notes": "The effective instant the connector writes beside the raw ts."
+    },
+    {
+      "id": "dvol-close-nonnegative",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "close",
+        "min": 0,
+        "max": 1000
+      },
+      "severity": "error",
+      "notes": "Implied vol in percentage points cannot be negative; 1000 is far past any reading."
+    },
+    {
+      "id": "dvol-open-nonnegative",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "open",
+        "min": 0,
+        "max": 1000
+      },
+      "severity": "error"
+    },
+    {
+      "id": "dvol-high-nonnegative",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "high",
+        "min": 0,
+        "max": 1000
+      },
+      "severity": "error"
+    },
+    {
+      "id": "dvol-low-nonnegative",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "low",
+        "min": 0,
+        "max": 1000
+      },
+      "severity": "error"
+    },
+    {
+      "id": "dvol-close-in-percentage-points",
+      "target": "dvol",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "close",
+        "min": 5,
+        "max": 500
+      },
+      "severity": "warn",
+      "notes": "Outside [5, 500] annualised percentage points is not a level DVOL has read: a unit change or a bad row. Read it before modelling."
+    },
+    {
+      "id": "dvol-bitemporal",
+      "target": "dvol",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "The span stops a minute before now (lag 60), so a row dated after acquisition is a defect."
+    }
+  ]
+}

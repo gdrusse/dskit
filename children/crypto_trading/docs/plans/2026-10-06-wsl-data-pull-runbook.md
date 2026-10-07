@@ -3,14 +3,22 @@
 **Problem.** Pull the inputs for a calibrated BTC/ETH distribution at each Kalshi
 crypto contract's settlement (CF Benchmarks RTI, 60-second average): Kalshi
 markets, fees, 15-minute candles and books, plus Binance Vision spot klines and
-BVOL implied vol. Everything enters through onboarding. Nothing has been pulled yet.
+BVOL implied vol; sections 7 and 8 add the realised settlement value, hourly-ladder
+candles and trades (`kalshi_history`), and Coinbase and Deribit (`restwindow`).
+Everything enters through onboarding. Nothing has been pulled yet.
 
 **Done when.** Every pull below was acquired and its suite gated `pass`
 (`warn` is expected for the Binance BVOL missing days and for unset-strike
 15-minute markets, see section 5), and `verify` is clean.
 
-**Not a finished data set.** Stage A stores no realised settlement value (the label)
-and no hourly-ladder candles: both wait on PROPOSED ADR-0236 (section 6).
+**Two data sets.** Sections 2 to 4 are the 15-minute set: each strike's yes/no result, no
+settlement value. Section 7 adds the realised value, history before the live cutoff, the hourly
+ladders' candles and trades; section 8 adds Coinbase and Deribit.
+
+**Order (WSL).** 1 set up; 2 register the nine sources; 3 the cheap history, cheapest first; 4 books
+(optional, any time); 5 verify and read it correctly; 7a to 7c register `kalshi_history`, pull
+its markets, COUNT the archive; 8 Coinbase and Deribit (independent of 7); 7d trades-15m, then the
+hourly candles and trades only after the count; stage B: B1 to B4 (15-minute), B6 (hourly).
 
 Binance Vision is CC BY-NC-SA: research use only, not for live trading features.
 Needs about 10 GB free (a pull stages in `/tmp` before the store copy); keep the
@@ -117,7 +125,7 @@ Re-run `pull ... live` after an outage to confirm the source still validates.
 **`captured_at` is a lower bound.** It is the pass start floored to the minute; the
 snapshot's commit time (`acquired_at`) is the upper bound. A hourly book read at
 minute 9 of a pass is stamped nine minutes early. The 15-minute source is accurate to
-about a minute; per-row `observed_at` is proposed in ADR-0236.
+about a minute; per-row `observed_at` is what the `kalshi_history` `orderbooks` stream adds (these recorders keep `captured_at`).
 
 **Disk growth.** Each pass commits a snapshot of about 5 small files (about 7 KB,
 about 20 KB on disk, measured). At 60 s that is about 1,440 passes, 7k files and
@@ -159,15 +167,125 @@ Reading the data:
   known only after `close_time_ms`. Use only bars already closed at decision time.
 - Klines are USDT-quoted: a proxy for, not a copy of, the USD BRTI Kalshi settles on.
 
-## 6. Not covered yet
+## 6. Not covered
 
-- **The label.** The realised settlement value (`expiration_value`) and `settlement_ts` are
-  not stored; only each strike's yes/no result is, which brackets the value. ADR-0236 adds
-  them and gates the model.
-- Hourly-ladder candles (the event-level endpoint, about 25k requests) and Kalshi history
-  before the 2026-08-07 cutoff: ADR-0236.
-- Coinbase, Deribit and Kraken history: ADR-0237.
+- Sections 2 to 4 store only each strike's yes/no result, which brackets the realised value;
+  the value and history before the cutoff are section 7.
+- Kraken: the `restwindow` pack can read it, but no source is configured here.
+- A spot node that reads Coinbase: the shipped documents read Binance day-file parquet, and
+  section 8 only acquires and validates the Coinbase candles.
 - A one-second book recorder needs a WebSocket client; dskit has none.
+
+## 7. History: the settlement value, hourly candles, trades (`kalshi_history`)
+
+Five sources over dskit's `kalshi_history` pack (ADR-0236, named by import path, no credential). They add
+what the `kalshi` pack lacks: `expiration_value` (the realised settlement value, a LABEL: the BRTI 60-second
+average, the same on every strike of an event), `settlement_ts`, `volume`, markets from BEFORE the live cutoff
+(served by the venue: 2026-08-07 when probed on 2026-10-07), event-level candles for the hourly ladders and every
+trade. Paste the section 0 block first.
+
+**7a. Register.**
+
+```bash
+for s in kalshi-history-crypto kalshi-history-candles-hourly-btc kalshi-history-candles-hourly-eth \
+         kalshi-history-trades-15m kalshi-history-trades-hourly; do
+  python -m dskit.onboarding register-source $s --root "$OB" --catalog-source $s \
+    --connector dskit.onboarding.libs.kalshi_history:KalshiHistoryConnector \
+    --config @configs/source-$s.json --activate; done
+```
+
+**7b. Markets first: it is also the measurement.** A full re-pull of the six series from both archives, 1000
+rows a page; the row count tells you what 7d would cost.
+
+```bash
+pull kalshi-history-crypto markets suite-kalshi-history-markets.json
+```
+
+**7c. Count before you choose.** The candle and trade pulls cost one request chain per MARKET (the archive is
+requested market by market and the pack has no date bound), so count the archive per series first:
+
+```bash
+CUT=$(curl -s https://external-api.kalshi.com/trade-api/v2/historical/cutoff | python -c 'import json,sys; print(json.load(sys.stdin)["market_settled_ts"])')
+python - "$OB" "$CUT" <<'PY'    # census: archived (settled before the cutoff) and live markets per series
+import collections, sys
+from dskit.onboarding import scan_stream
+root, cut = sys.argv[1], sys.argv[2]
+rows = scan_stream(root, "kalshi-history-crypto", "markets", key_fields=["ticker"])
+count = collections.Counter((r["series_ticker"], "archived" if r["settlement_ts"] and r["settlement_ts"] < cut else "live") for r in rows)
+for key in sorted(count):
+    print(*key, count[key])
+PY
+```
+
+Hourly candles cost about the archived hourly markets in that table, plus 3 requests per live event (live
+hourly markets / about 190 strikes); hourly trades about one chain per hourly market in both. Multiply by
+about 0.65 s a request (0.4 s probed plus `pace_s` 0.25: an estimate, not measured). If that is days, do not
+start: the pack has no date bound, so a bounded pull needs a new dskit knob (an ADR), not child code.
+
+**7d. Then, one pull at a time (a failed pull commits nothing; rerun it).**
+
+```bash
+pull kalshi-history-trades-15m trades suite-kalshi-history-trades.json
+pull kalshi-history-candles-hourly-btc candles suite-kalshi-history-candles.json
+pull kalshi-history-candles-hourly-eth candles suite-kalshi-history-candles.json
+pull kalshi-history-trades-hourly trades suite-kalshi-history-trades.json
+python -m dskit.onboarding verify --root "$OB"
+```
+
+Reading it correctly:
+
+- **The label is known only at settlement.** A market row is dated at its close, but `result` and
+  `expiration_value` exist only from `settlement_ts`, minutes later (probe: closed 23:00:00Z, settled
+  23:02:52Z). Gate a join on `settlement_ts`, never on the row's date. The reader carries them as
+  `settle_value` and `settlement_ms` (labels, never features) and excludes a market with no settlement
+  instant by name (`no_settlement_ts`).
+- `volume` is the whole-life total, known after the end: never a feature at a decision. A trade is usable at
+  decision time I only if `created_time` is before I. A settled market's `yes_bid`, `yes_ask` and
+  `last_price` are post-settlement values (B5).
+- `warn` on the markets suite for a null `expiration_value` is read, not ignored: the yes/no result still labels
+  the row, but the value is missing. An empty `settlement_ts` cannot be caught by a suite rule (see its notes).
+
+## 8. Spot and implied vol from other venues (`restwindow`): Coinbase, Deribit
+
+Four sources over dskit's `restwindow` pack (ADR-0237, by import path, public endpoints, no credential):
+Coinbase Exchange BTC-USD and ETH-USD 1-minute candles, and Deribit's BTC and ETH DVOL implied-vol index at 1
+minute. **Coinbase is the live-safe alternative to Binance** for a spot input: a US venue, a constituent of the
+BRTI Kalshi settles on, in USD; Binance's klines are USDT-quoted and CC BY-NC-SA (research only). Confirm
+Coinbase's current market-data terms at go-live; this repo stores neither a licence text nor a credential. The
+shipped documents still read Binance: the spot node reads day-file parquet and no Coinbase reader is built, so
+these sources are acquired and validated, not yet read. Independent of section 7; paste the section 0 block first.
+
+```bash
+for s in coinbase-btcusd-1m coinbase-ethusd-1m deribit-btc-dvol deribit-eth-dvol; do
+  python -m dskit.onboarding register-source $s --root "$OB" --catalog-source $s \
+    --connector dskit.onboarding.libs.restwindow:RestWindowConnector \
+    --config @configs/source-$s.json --activate; done
+pull coinbase-btcusd-1m candles suite-coinbase-candles.json    # about 4,860 requests: under an hour (estimate)
+pull coinbase-ethusd-1m candles suite-coinbase-candles.json
+pull deribit-btc-dvol dvol suite-deribit-dvol.json             # about 2,020 requests: about 15 minutes (estimate)
+pull deribit-eth-dvol dvol suite-deribit-dvol.json
+python -m dskit.onboarding verify --root "$OB"
+```
+
+- `start` is 2024-01-01 in each config (a choice: edit it, with its notes, to widen); `max_windows` refuses before any
+  request a span that outgrew it (about 235 days of headroom for Coinbase). A pull stops one minute before now (`lag`
+  60), so the candle still forming is never stored, and a later pull continues from its checkpoint.
+- **Time.** Coinbase `time` (epoch seconds) and Deribit `ts` (epoch ms) are the START of the minute: the bar is complete
+  at start + 60 s, so use only bars that ended before a decision instant. `time_iso` and `ts_iso` are the ISO form.
+- Deribit refuses, rather than stores, a window the vendor cut short (`result.continuation`). Coinbase answers HTTP 400
+  above 300 granules, which the window `step` stays under.
+- The suites cannot check for gaps: count rows per day yourself (1440 expected; the first and last days are partial):
+
+```bash
+python - "$OB" coinbase-btcusd-1m candles time_iso <<'PY'
+import collections, sys
+from dskit.onboarding import scan_stream
+root, source, stream, field = sys.argv[1:5]
+days = collections.Counter(r[field][:10] for r in scan_stream(root, source, stream, key_fields=[field]))
+short = {d: n for d, n in sorted(days.items()) if n != 1440}
+print(len(days), "days;", len(short), "not 1440 rows:", dict(list(short.items())[:10]))
+PY
+```
 
 ---
 
@@ -177,8 +295,7 @@ Reading the data:
 decision lead (2, 5 and 10 minutes before the close): the label, point-in-time spot and volatility,
 the market's own quote, three fair values and Kalshi's taker fee, then ask the kill-test question:
 does a simple fair value beat the market mid on held-out rows after fees? Only the 15-minute
-series have candles; hourly ladders wait on PROPOSED ADR-0236 and plug in by config (see the notes
-of `configs/run-features-15m.json`). Nothing here has run on real data yet.
+series are read here; the hourly ladders have their own document, B6. Nothing here has run on real data yet.
 
 **Done when.** The run exits 0, `binary_score.md` exists, the table is acquired as `features-15m` and
 `verify` is clean. Paste the section 0 block into every new shell first (it sets `$OB`).
@@ -291,16 +408,56 @@ run, hence a new file and stream, and the old table stays readable. A later run 
   rows were dropped for lack of an anchor, not priced against the wrong unit.
 - **Other proxies and caveats.** The basis comes from a 1-minute bar's mean, a proxy for a 60-second
   average, so it is noisy; BVOL is a 30-day implied vol used at a 15-minute horizon; the fee schedule is
-  today's applied to history (`fee_schedule_retrieved` says which); the label is each strike's yes/no
-  result, not the realised value. The standard errors cluster on 1-day blocks of close (per-event errors,
+  today's applied to history (`fee_schedule_retrieved` says which); this document's label is each
+  strike's yes/no result (its source has no value; B6 carries the realised value). The standard errors cluster on 1-day blocks of close (per-event errors,
   also reported, are about half as large because volatility regimes persist). A negative held-out Brier
   difference with a positive after-fee profit, each by a few block-clustered standard errors, is the only
   reading that survives; anything else means stop.
 
-Not covered yet: the realised settlement value and every hourly series (ADR-0236), history before
-2026-08-07 (ADR-0236), Coinbase, Deribit and Kraken (ADR-0237).
+## B6. The hourly document
+
+`configs/run-features-hourly.json` is the same nodes over the hourly ladders (KXBTC, KXBTCD, KXETH, KXETHD): markets and the
+realised value from `kalshi-history-crypto` (both archives), event-level candles from the two
+`kalshi-history-candles-hourly-*` sources, fees from `kalshi-crypto`, spot and BVOL from the Binance tapes, and the 15-minute
+series' strikes as the anchors of the index units. Needs sections 7a, 7b and the two hourly candle pulls (7d), plus B1.
+One row per settled hourly market and lead (5, 15, 30 minutes before the close); every modelling knob and the held-out cut are
+the 15-minute document's, pinned equal by a test, so one cut serves both.
+
+The sed is B1's one command for this document (a test runs exactly this line).
+
+```bash
+mkdir -p ~/data/crypto_trading/features-hourly         # where the run writes the table
+sed -i "s#/home/russell/data/crypto_trading/ob#$OB#g" configs/run-features-hourly.json
+python -m dskit.pipeline validate configs/run-features-hourly.json
+python -m dskit.pipeline plan     configs/run-features-hourly.json | head -30
+python -m dskit.pipeline run      configs/run-features-hourly.json --asof "$(date -u +%F)"
+python -m dskit.onboarding register-source features-hourly --root "$OB" --catalog-source features-hourly \
+    --connector localtables --config @configs/source-features-hourly.json --activate   # once
+for f in ~/data/crypto_trading/features-hourly/decision_features-*.jsonl; do
+    s=$(basename "$f" .jsonl)
+    python -m dskit.onboarding acquire --root "$OB" --source features-hourly --stream "$s" --mode backfill
+done
+python -m dskit.onboarding verify --root "$OB"
+```
+
+Read B3 to B5 first; they apply unchanged. What differs:
+
+- **The label has a value.** Each row carries `label` (the yes/no result), `settle_value` (the realised BRTI average, the
+  same on every strike of an event) and `settlement_ms` (when it became known, after the close). They are labels: no feature
+  reads them (a test changes every value and result and asserts no feature moves), and a later decision may use one only
+  after its `settlement_ms`.
+- **An hourly strike is fixed at the open** (`strike_known_ms` is the open), and a market is open for the hour before its
+  close, so a lead of up to 59 minutes is a decision after it. The spot basis comes from the latest 15-minute anchor known
+  before the decision, at most 15.5 minutes old.
+- **Most strikes have no quote.** An event has about 190 strikes, most far from the money; a row without a two-sided quote
+  is counted out by `two_sided` on the census, not dropped quietly. Read the census before the pooled numbers; the table is
+  large (strikes x events x leads).
+- Spot is still Binance (research only). Coinbase (section 8) is the live-safe alternative, not yet read by any node.
 
 ## Known issues (not fixed; none blocks the first run)
+
+- The hourly candle and trade pulls (7d) cost one request chain per ARCHIVED market, and the pack has no date bound: 7c
+  counts them first, and a bounded pull needs a new dskit knob.
 
 - Fills are priced at the quote of the information instant, so adverse selection during the execution lag
   is not modelled (see B5).

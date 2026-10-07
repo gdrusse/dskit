@@ -1,8 +1,9 @@
 # crypto_trading — a dskit child
 
 Research child for **crypto trading opportunities**. Status: **stage A (data
-pulls) and stage B (feature table and kill test) are configured and tested offline
-on synthetic stores; nothing has been pulled or run on real data.** The target is a
+pulls) and stage B (feature table and kill test, for the 15-minute and the hourly
+series) are configured and tested offline on synthetic stores; nothing has been pulled or
+run on real data.** The target is a
 calibrated short-horizon BTC/ETH distribution at each Kalshi crypto contract's
 settlement (CF Benchmarks RTI, 60-second average), used to quote as maker. Stage B
 asks the first falsification question (does a simple realised-vol fair value beat the
@@ -16,26 +17,36 @@ market mid after fees?); models come only if it survives. The focus areas in
 | `kalshi-crypto-books-{15m,hourly}` | live `orderbooks` recorders (`captured_at` is a lower bound) | `kalshi-crypto-books` |
 | `binance-{btcusdt,ethusdt}-1m` | Binance Vision spot 1-minute klines, daily zips to parquet (dskit's `zipcsv` transform, layout in `transform_params`) | `binance-files` |
 | `binance-{btc,eth}bvol` | Binance BVOL implied-vol index, daily zips to parquet (26 known missing days) | `binance-files` |
+| `kalshi-history-crypto` | the six series' settled `markets` from the live API AND the archive (`kalshi_history`, ADR-0236), with `expiration_value` (the realised settlement value, a label), `settlement_ts`, `volume` | `kalshi-history-markets` |
+| `kalshi-history-candles-hourly-{btc,eth}` | event-level 1-minute `candles` of the four hourly series | `kalshi-history-candles` |
+| `kalshi-history-trades-{15m,hourly}` | every `trades` row of the 15-minute / the hourly series | `kalshi-history-trades` |
+| `coinbase-{btcusd,ethusd}-1m` | Coinbase Exchange 1-minute candles (`restwindow`, ADR-0237): the live-safe alternative to Binance | `coinbase-candles` |
+| `deribit-{btc,eth}-dvol` | Deribit DVOL implied-vol index, 1 minute | `deribit-dvol` |
 
 Existing packs (`kalshi`, `httpblobs`) and dskit's `zipcsv` transform (ADR-0239): the Binance column layouts are
 each source's `transform_params`, so the pull needs no child code. Binance Vision
 is CC BY-NC-SA: research use only, not for live trading features. Exact commands:
 `docs/plans/2026-10-06-wsl-data-pull-runbook.md`.
 
-**Not in stage A.** The realised settlement value (the model's label), hourly-ladder
-candles and Kalshi history before 2026-08-07 need PROPOSED ADR-0236; Coinbase, Deribit and
-Kraken need ADR-0237. Each is a NEW dskit pack (existing packs stay untouched), not child code.
-Digest verification stays a manual spot check in the runbook (child-side; ADR-0238 withdrawn).
+**Beyond the 15-minute set.** The last five rows are dskit's `kalshi_history` and `restwindow` packs
+(named by import path, configs only). The realised settlement value exists only from `settlement_ts`: it is a label,
+gated on that instant, never a feature. Coinbase is the live-safe spot alternative (Binance is research-only);
+no node reads it yet, so the shipped documents still read Binance. The hourly candle and trade pulls cost a request
+chain per ARCHIVED market and the pack has no date bound: the runbook (7c) counts the archive first. Kraken has no
+source here. Digest verification stays a manual spot check in the runbook (child-side; ADR-0238 withdrawn).
 
 ## Stage B: features and the kill test
 
 `configs/run-features-15m.json` (one pipeline document, `notes` on every node) reads the stage A
 sources and writes one row per settled 15-minute market and declared lead (default 2, 5, 10
-minutes before the close). Hourly series plug in by config once ADR-0236 supplies their candles.
+minutes before the close). `configs/run-features-hourly.json` is the same nodes over the four hourly series (leads 5, 15, 30),
+reading the history sources and anchoring the index units on the 15-minute strikes; every modelling knob and the
+held-out cut are the 15-minute document's, pinned equal by tests. Its rows also carry `settle_value` and `settlement_ms`
+(labels).
 
 | Node (`crypto_trading.<module>:<Class>`, or the dskit path) | Job |
 |---|---|
-| `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` pack's streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants; unsettled and TBD-strike markets dropped by name; candle end seconds to ms |
+| `kalshi_rows:MarketRows`, `CandleRows`, `FeeRows` | the `kalshi` and `kalshi_history` packs' streams in the child's vocabulary: label 1/0, payoff geometry, strikes, epoch-ms instants (and, from the history stream, `settle_value` and `settlement_ms`); unsettled, TBD-strike and no-settlement-instant markets dropped by name; candle end seconds to ms |
 | `decisions:DecisionRows` | market x lead: information instant I = close - lead (strictly after the strike is known), fill at I + `exec_lag_s` |
 | `anchors:StrikeAnchors` | the up/down strikes as observations of the settlement index (the strike IS the index's 60-second average at the open) |
 | `dskit.pipeline.libs.parquet_series:StreamManifests` | puts the Binance streams into the run identity (ADR-0240) |
@@ -222,11 +233,20 @@ crypto_trading/
 │   ├── source-kalshi-crypto-books-{15m,hourly}.json # stage A: live orderbook recorders
 │   ├── source-binance-{btcusdt,ethusdt}-1m.json # stage A: spot klines (zip layout in transform_params)
 │   ├── source-binance-{btc,eth}bvol.json # stage A: BVOL implied-vol index (zip layout in transform_params)
+│   ├── source-kalshi-history-crypto.json # history: settled markets of both archives, with the realised value
+│   ├── source-kalshi-history-candles-hourly-{btc,eth}.json # history: event-level 1-minute candles, hourly ladders
+│   ├── source-kalshi-history-trades-{15m,hourly}.json # history: every trade
+│   ├── source-coinbase-{btcusd,ethusd}-1m.json # restwindow: Coinbase Exchange 1-minute candles
+│   ├── source-deribit-{btc,eth}-dvol.json # restwindow: Deribit DVOL index, 1 minute
 │   ├── binance_vision_dates.json         # the pinned day list the Binance sources pull
 │   ├── suite-kalshi-crypto-{markets,candles,fees,books}.json # one suite per stream
 │   ├── suite-binance-files.json          # the httpblobs inventory gate
+│   ├── suite-kalshi-history-{markets,candles,trades}.json # gates for the history streams (new fields included)
+│   ├── suite-coinbase-candles.json / suite-deribit-dvol.json # gates for the restwindow streams
 │   ├── run-features-15m.json             # stage B: the feature table and kill-test document
-│   └── source-features-15m.json          # stage B: localtables registration of the written table
+│   ├── source-features-15m.json          # stage B: localtables registration of the written table
+│   ├── run-features-hourly.json          # stage B: the hourly ladders, same nodes (own anchors and sources)
+│   └── source-features-hourly.json       # stage B: localtables registration of the hourly table
 ├── models/                # fitted ML/optimization artifacts (gitignored)
 │   ├── README.md          # what belongs here vs the run directory
 │   ├── .gitignore         # artifacts are rebuilt, never committed
@@ -258,7 +278,11 @@ crypto_trading/
     ├── test_features_pipeline.py # run-features-15m.json end to end, publish and read back
     ├── test_migration_golden.py # the dskit migration changed no row, column or score
     ├── test_fees.py       # the Kalshi fee mapping, schedule reader, FeeColumns
-    ├── test_kalshi_rows.py # readers: labels, exclusions, seconds to ms
+    ├── test_kalshi_rows.py # readers: labels, exclusions, seconds to ms, the settlement value
+    ├── test_history_sources.py # kalshi_history sources and suites against a scripted venue
+    ├── test_restwindow_sources.py # Coinbase and Deribit sources and suites against scripted vendors
+    ├── test_hourly_pipeline.py # run-features-hourly.json end to end, with differential leak tests
+    ├── test_runbook.py    # every runbook register / pull line is real; its snippets run
     ├── test_market_state.py # candle state and the no-peeking rule
     ├── test_spot_features.py # strict-prior leak tests with a control
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not

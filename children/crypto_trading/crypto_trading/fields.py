@@ -25,8 +25,8 @@ __all__ = [
     "CLOSE_MS", "DECISION_MS", "END_MS", "EVENT", "EXEC_MS", "FEE_BUY_NO", "FEE_BUY_YES", "FEE_MULTIPLIER",
     "FEE_TYPE", "FLOOR",
     "LABEL", "LEAD", "MID", "OPEN_INTEREST", "OPEN_MS", "PAYOFF", "PRICE", "QUOTE_MISSING",
-    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SPOT", "SPOT_BRTI", "SPREAD", "STRIKE_KNOWN_MS", "STRIKE_TYPE",
-    "TAU_S", "TICKER",
+    "RETRIEVED", "RETRIEVED_MS", "SERIES", "SETTLE_VALUE", "SETTLEMENT_MS", "SPOT", "SPOT_BRTI", "SPREAD",
+    "STRIKE_KNOWN_MS", "STRIKE_TYPE", "TAU_S", "TICKER",
     "TWO_SIDED", "VOLUME", "YES_ASK", "YES_BID",
 ]
 
@@ -45,6 +45,12 @@ CLOSE_MS = "close_ms"
 #: may price a market only strictly after it.
 STRIKE_KNOWN_MS = "strike_known_ms"
 LABEL = "label"
+#: The realised settlement value (the index level the market settled on) and the instant it became known. Both are
+#: LABEL columns, carried only when the markets stream has them (``kalshi_history``): they exist from
+#: ``settlement_ms`` on, minutes after the close, so they are never a feature of the market they settle, and
+#: a join that wants one as an input to a LATER decision must gate on ``settlement_ms`` before that decision.
+SETTLE_VALUE = "settle_value"
+SETTLEMENT_MS = "settlement_ms"
 
 LEAD = "lead_minutes"
 #: The INFORMATION instant I of a decision row (spot and quote are read as of it); the trade can only fill at

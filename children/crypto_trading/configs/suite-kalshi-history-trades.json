@@ -1,0 +1,108 @@
+{
+  "name": "kalshi-history-trades",
+  "notes": "Structural gates over one `trades` pull of a source kalshi-history-trades-*: one row per trade, dated at created_time. A trade is an event of a market's life, not a quote. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-history-trades.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "trades-rows-arrived",
+      "target": "trades",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull means no market had a trade in range, or a wrong series list."
+    },
+    {
+      "id": "trades-trade-id-present",
+      "target": "trades",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "trade_id"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "trades-trade-id-unique",
+      "target": "trades",
+      "rule": "unique",
+      "kwargs": {
+        "field": "trade_id"
+      },
+      "severity": "error",
+      "notes": "A trade seen by both archives around the cutoff is stored once by the pack; a duplicate means that dedup failed."
+    },
+    {
+      "id": "trades-ticker-present",
+      "target": "trades",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "trades-yes-price-present",
+      "target": "trades",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "yes_price"
+      },
+      "severity": "warn",
+      "notes": "The pack writes null for a price outside [0, 1] or absent: a unit slip upstream, not a trade to model."
+    },
+    {
+      "id": "trades-yes-price-in-dollars",
+      "target": "trades",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "yes_price",
+        "min": 0,
+        "max": 1
+      },
+      "severity": "error",
+      "notes": "A contract pays 1 dollar; the YES price is in [0, 1]."
+    },
+    {
+      "id": "trades-count-present",
+      "target": "trades",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "count"
+      },
+      "severity": "warn",
+      "notes": "The contracts traded (count_fp)."
+    },
+    {
+      "id": "trades-count-nonnegative",
+      "target": "trades",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "count",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "A contract count cannot be negative."
+    },
+    {
+      "id": "trades-taker-side",
+      "target": "trades",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "taker_side",
+        "values": [
+          "yes",
+          "no"
+        ]
+      },
+      "severity": "warn",
+      "notes": "Which side took: the venue's own words, yes or no. Another word is a vocabulary change to read before any order-flow feature."
+    },
+    {
+      "id": "trades-bitemporal",
+      "target": "trades",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "A trade created after the pull's capture instant is not emitted by the pack; one dated after acquisition is a defect."
+    }
+  ]
+}
