@@ -12,8 +12,10 @@ The current radius is not estimated and no conditional-coverage guarantee is cla
 Next session must satisfy these Stage-0 gates before the authorized bounded run.
 Keep the 216-fit-attempt cap and all protected-data/provider/cloud/deployment limits.
 No training, backup migration, new solver or adaptive policy is implemented here.
-Independent review for this documentation candidate is pending; historical reviews
-below apply only to their frozen candidates.
+Two fresh sequential design reviews closed candidate 44b06166 with zero
+Critical/Major/Minor/Nit; their actual outputs and dependency identities are in the
+proposal. One focused manifest test passed; links and unchanged source/config/report
+bytes verified. This closure is documentation readiness, not implementation readiness.
 
 # Active handoff — 2026-10-07: history/COVID/split requirements for next run
 

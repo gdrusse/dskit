@@ -372,3 +372,93 @@ Checks and limits:
 Unresolved counts: Critical 0; Major 0; Minor 0; Nit 0.
 
 </details>
+
+## Retention/uncertainty amendment review closure
+
+Candidate `44b06166d00627ffacdb99f474b9a003dd0334f8` closed both fresh sequential lenses with zero Critical/Major/Minor/Nit. The complete actual reviewer outputs follow. Reviewed proposal SHA256: `2dd1614eeffa9c590dda474d02edac116ab48348658df46b88f7ba180c3ad6e2`; original candidate bytes and all seven dependency identities were verified unchanged before this evidence-only appendix. Source, configs and the four delivered HTML reports remain byte-identical to base `31e8e39c4f2a9990fd20c6eb2d139f0ea3e34fa0`.
+
+Author checks: focused `test_exact_manifest_and_agent_parity` passed (one test, 0.23 seconds) using the WSL project interpreter; local proposal/handoff links resolve; `git diff --check` clean. Journal A1093 records the amendment, with a subsequent closure entry. No new training, backup migration, radius computation or protected-data access occurred. R1/U1 implementation and empirical qualification remain prerequisites for the next session. The owner-authorized wrap publishes this bounded documentation change and preserves all historical run assets.
+
+### Correctness/statistical/authority lens — actual output
+
+Correctness/statistical/authority review — R1/U1 amendment
+
+Reviewer: `/root/retention_uncertainty_correctness_r1`, GPT-6, independent correctness lens.
+
+Candidate: `44b06166d00627ffacdb99f474b9a003dd0334f8`
+Base: `31e8e39c4f2a9990fd20c6eb2d139f0ea3e34fa0`
+
+Verdict: **zero unresolved Critical/Major; no proven Minor/Nit findings.** This approves the scoped documentation contract, not implementation, backup readiness, calibrated uncertainty, protected-data access or production deployment.
+
+Reviewed identities:
+
+- Proposal SHA256: `2dd1614eeffa9c590dda474d02edac116ab48348658df46b88f7ba180c3ad6e2`
+- RE-ENTRY SHA256: `8d9d5f291696ca8c495fd4f110a346b5e63622d16f7ef7c8241dc1afaa6d388f`
+- Checkpoint implementation Git blob: `b1d885b155fb4e30eb8c5d6c5038a038e65e8e39`
+- Experiment implementation Git blob: `9b3000963b79382418a7b4e2a236d5f45be16362`
+- Existing uncertainty-set module Git blob: `efc58c3007b228c387d62ef5eb39ae771fbe20e1`
+- Existing robustification research Git blob: `4feff330ff33cf9aa20e536722661dbd2ccdd095`
+
+Checks and attempted falsification:
+
+- Read the complete amendment and adjacent execution schedule, root/child instructions, skeptic procedure, existing robustification research, checkpoint serialization/load path, experiment checkpoint publication/reuse and uncertainty-set module.
+- Confirmed that the normalized discrete Wasserstein expression uses cumulative masses from one coherent distribution and has dimensionless radius. Exact rational arithmetic verified a worked transport example, zero-distance identity and invariance under joint price/spot rescaling.
+- Checked the payoff-support boundary. A worked capped-condor example preserved loss after clipping outside all strikes. The amendment explicitly excludes applying that justification to unrestricted return tails, uncapped losses or general portfolio risk.
+- Challenged calibration against early-stop reuse, HPO/architecture selection, immature outcomes, overlapping horizons, cross-sectional dependence, sparse cohorts and adaptive test contamination. The contract separates these roles, requires settled labels before application, preserves exploratory labeling and requires stronger evidence before stronger claims.
+- Confirmed that the proposed mean-loss criterion evaluates a replayed action-selection rule and is expressly a development criterion, not individual-payoff coverage or proof that the latent conditional distribution belongs to the set.
+- Verified checkpoint capability claims against source: fitted tensor weights, settings, scaler, head inventory, losses and diagnostics are serialized; optimizer/RNG/cursor continuation state is not. The amendment does not describe completed-fit reuse as interrupted-fit continuation.
+- Checked retention across inputs, fitted and failed trials, forecasts, later outcomes, calibration, promotion, rollback and checkout cleanup. It distinguishes referenced identities from retained payloads, requires recovery evidence and keeps sensitive payloads out of GitHub.
+- Checked authority boundaries: no new acquisition, protected 2026 access, deployment, automatic refit expansion, new strategy backtest or claimed completed backup/solver implementation. The 216-attempt arithmetic remains `15 + 108 + 27 + 54 + 9 + 3 = 216`.
+- A recursive search found no “Wasserstein” implementation in pipeline Python sources, consistent with the deliberately scoped inventory claim and requirement to inspect existing solver seams before implementation.
+- Read the linked primary [Wasserstein DRO abstract](https://arxiv.org/abs/1505.05116) and [adaptive online prediction-set abstract](https://jmlr.org/beta/papers/v25/22-1218.html). Their stated scope supports the amendment’s cautious distinction; this was not a proof-level audit of either paper.
+- `git diff --check` passed. Source, child configuration, implementation and tests were unchanged from the base. Worktree remained clean.
+
+Tests independently run: lightweight exact-arithmetic checks for Wasserstein units, nominal identity, price/spot rescaling, capped-payoff clipping and attempt-budget arithmetic—all passed. No model fit, solver execution, backup migration or full test suite was run. The author separately reported the focused manifest/parity test passing; this reviewer did not rerun it.
+
+Untested limits: no actual backup capacity/destination, restored production package, crash/retry implementation, calibrated radius, statistical coverage, operational monitoring policy or production solver exists as verified evidence from this amendment. Those remain explicit Stage-0/qualification gates. The acceptance matrix was reviewed as a future contract; its negative cases were not executed against an implementation.
+
+Unresolved counts: **Critical 0; Major 0; Minor 0; Nit 0.**
+
+### Integration/feasibility/recovery lens — actual output
+
+Independent integration/feasibility/recovery review of candidate `44b06166d00627ffacdb99f474b9a003dd0334f8` against base `31e8e39c4f2a9990fd20c6eb2d139f0ea3e34fa0`.
+
+Reviewer: `/root/retention_uncertainty_integration_r1`, GPT-6, second sequential independent design lens.
+
+**Verdict:** zero unresolved Critical, Major, Minor or Nit findings. The R1/U1 amendment is suitable for publication as a design and next-session contract. This is not evidence that archival recovery, an uncertainty solver, empirical calibration or production qualification has been implemented.
+
+Reviewed identities:
+
+- Production proposal SHA256: `2dd1614eeffa9c590dda474d02edac116ab48348658df46b88f7ba180c3ad6e2`
+- Re-entry handoff SHA256: `8d9d5f291696ca8c495fd4f110a346b5e63622d16f7ef7c8241dc1afaa6d388f`
+- `predictive_cdf.py`: `74a4b7507b4693eaa60fa2414ff92511dc260471aec6773c4ed01d0cd6643347`
+- `cdf_experiment.py`: `183047aaf900bc12e742354b501ea5e6106ab89c506bc496dc48b2bf7606a877`
+- `uncertainty_set.py`: `b30a92c073351d2a89872682cd181b2841f2ffaa205e6148e65d486f6fe9d02b`
+- `pyomo.py`: `659ad8f16a6f6cde6f2d056336213350c6fcc5100b5d3c140dacc0cec28fc285`
+- Existing robustification research: `a6137be6d7aae66ed51c693b76fa582bff99a92a586bb2a4dc8dec187a58d6b9`
+- Skeptic procedure: `5886c105a043eeeca2b51c883d7fef2b2d319f13169e78cb48d01a42e239d57a`
+- `pyproject.toml`: `e0483c87a807c406218455da2c1461ea226d9a7f0c2f1ef083b3d19030b77ab5`
+
+All seven dependency identities independently matched the supplied manifest.
+
+Falsification attempts and conclusions:
+
+1. **Checkpoint versus interrupted-fit continuation.** Inspected inherited checkpoint serialization, TorchCDF’s checkpoint settings, loader and inference path. Existing checkpoints retain fitted weights, settings, scaler, heads, histories and diagnostics; they do not retain the optimizer, training cursor and complete RNG/early-stop continuation state. R1 states this limitation accurately, distinguishes completed-fit reuse, and requires a separately reviewed extension or explicit non-resumable failure handling. It does not promise recovery the implementation lacks.
+
+2. **Publication, retry and artifact integrity.** Inspected `AtomicFitStore.publish/verify`, experiment `_fit`, `_score`, `_resume_state`, `_cell` and worker locking. Existing seams supply immutable publication, inventory/content verification, fit-to-shard links and completed-fit reuse. R1 additionally requires complete forecast/baseline representations, provenance, private durable materialization and restoration. These are stated as requirements to implement or verify, rather than incorrectly presented as current guarantees. Missing/tampered assets, interrupted publication, changed identities and retry are explicitly covered by the acceptance matrix.
+
+3. **Storage lifecycle and cleanup.** Tried the cases of a retained report pointing into a deleted worktree, an unmaterialized source reference, corrupt partial output being mistaken for success, and a second directory being described as disaster recovery. The contract rejects each: payload bytes must survive outside disposable worktrees, corrupt/incomplete artifacts remain quarantined, a verified second copy and restore receipt precede cleanup, and same-disk limitations are disclosed. Backup destination and capacity remain explicit Stage-0 prerequisites. No new acquisition or upload authority is implied.
+
+4. **Reconstruction and serving identities.** The retention inventory includes source vintages and availability, action ledger and units, universe/exclusions, transforms, feature order, fold/label clocks, head routing, exact forecast distributions, paired baseline evidence, selection provenance, dependencies and rollback. Fresh-process restoration with the original worktree unavailable, full hashes and reference outputs is required. Unknown heads and changed payloads must be rejected. This covers the demonstrated checkpoint/experiment entry points without mistaking a Git commit for the referenced data.
+
+5. **Uncertainty integration.** Independently inspected the existing robustification formulation and budgeted-set/Pyomo seams. The current budgeted mean/probability/outcome contracts are not the coherent full-CDF Wasserstein ball; the amendment explicitly preserves that distinction. A recursive search found no “Wasserstein” implementation in pipeline Python files, consistent with the narrowly stated inventory claim. Re-inventory before implementation remains required. The grid formula, dimensionless radius, shared action-independent set, radius-zero behavior and payoff-specific clipping caveat agree with the existing research.
+
+6. **Calibration and acceptance quality.** Challenged immature labels, early-stop monitor reuse, HPO-contaminated out-of-fold evidence, thin groups, independently adverse strike probabilities, and using expected-loss bounds as individual-outcome guarantees. The amendment expressly excludes those interpretations and requires mature chronological evidence, provenance, frozen rules, adequate support or abstention, coherent distributions and later validation. It does not claim a numerical radius or conditional-CDF coverage guarantee. Solver witnesses, invalid masses/bands, zero radius and payoff-support misuse are identified as future acceptance cases.
+
+7. **Scope and handoff consistency.** The proposal, Stage 0, handoff and journal consistently add retention and uncertainty prerequisites while leaving training, backup migration, new solvers and adaptive qualification unimplemented. The 216-attempt cap remains intact; nested refits are explicitly outside that allowance. Protected data, provider acquisition, cloud spending and deployment restrictions remain in force. Historical reviews are not reused as approval of this amendment.
+
+Checks performed: read-only WSL inspection of the complete candidate diff and named integration seams; independently recomputed document/dependency hashes; verified candidate HEAD and clean working tree; `git diff --check` passed. The parent-reported focused manifest/parity result—one test passed in 0.23 seconds—was acknowledged, not independently rerun.
+
+Untested limits: no archival copy or restore was performed; no storage capacity or destination was validated; no crash/concurrency injection, checkpoint replay, calibration computation or solver execution was performed. No model training, protected-data access, provider requests, upgrades or full suite ran. Those implementation and operational checks remain Stage-0 or later qualification obligations, as the document states.
+
+Unresolved findings: **Critical 0; Major 0; Minor 0; Nit 0.**
