@@ -9,10 +9,10 @@ here in plain Python from the fixture bars.
 import math
 
 import pytest
+from dskit.pipeline.binary_pricing import BinaryFairValue
+from dskit.pipeline.libs.parquet_series import StreamManifests
 from synthetic import Store, bvol_days, kline_days, ms, utc, walk
 
-from crypto_trading.day_series import StreamManifests
-from crypto_trading.fair_value import FairValue
 from crypto_trading.spot_features import SpotFeatures
 
 START = ms(utc(2026, 9, 1, 22, 0))
@@ -48,6 +48,7 @@ def params(root, **over):
         "bar_ms": 60_000,
         "estimators": [{"kind": "rms", "window": 30}, {"kind": "ewma", "half_life": 10, "lookback": 60},
                        {"kind": "high_low", "window": 30}],
+        "vol_column_prefix": "rv_",
         "max_spot_age_ms": 120_000,
         "max_bvol_age_ms": 120_000,
         "max_basis_age_ms": 1_200_000,
@@ -439,9 +440,11 @@ def test_a_constant_unit_basis_does_not_bias_the_fair_value(tmp_path, monkeypatc
     assert strike == pytest.approx(level * (1.0 - DELTA)), "premise: the strike is in index units"
     row = decision_row(floor=strike, tau_s=300.0)
     out = spot(store, [row], anchors=anchors)["records"]
-    price = lambda field: FairValue("fair", {"vol_field": "rv_rms_30", "fair_field": "fair",  # noqa: E731
-                                            "spot_field": field, "averaging_window_s": 60}
-                                    ).run(None, {"records": out})["records"][0]["fair"]
+    price = lambda field: BinaryFairValue("fair", {  # noqa: E731
+        "vol_field": "rv_rms_30", "fair_field": "fair", "spot_field": field, "averaging_window_s": 60,
+        "payoff_field": "payoff", "lower_field": "floor_strike", "upper_field": "cap_strike",
+        "decision_field": "decision_ms", "settle_field": "close_ms", "exec_lag_s": 5,
+    }).run(None, {"records": out})["records"][0]["fair"]
     assert out[0]["basis"] == pytest.approx(1.0 - DELTA)
     assert price("spot_brti") == pytest.approx(0.5, abs=0.005)
     assert price("spot") > 0.6, "what the raw Binance price would have said: a unit mismatch, not an edge"
@@ -470,3 +473,21 @@ def test_the_spot_and_basis_age_caps_are_inclusive_to_the_millisecond(tmp_path, 
     older = {**edge, "known_ms": decision - basis_cap - 1}
     assert one(store, anchors=[edge])["basis"] == pytest.approx(0.9996)
     assert one(store, anchors=[older])["basis_missing"] is True
+
+
+def test_the_volatility_columns_carry_the_documents_prefix_and_the_estimators_own_label(tmp_path, monkeypatch):
+    """dskit's estimators emit variance by label; the prefix that makes the child's column names is a param."""
+    store = world(tmp_path, monkeypatch)
+    out = spot(store, [decision_row()], vol_column_prefix="vol_")["records"][0]
+    assert {"vol_rms_30", "vol_ewma_10", "vol_hl_30"} <= set(out)
+    assert not [k for k in out if k.startswith("rv_")], "the default is not a literal in the node"
+    assert out["vol_rms_30"] == one(store)["rv_rms_30"], "only the name changed"
+
+
+def test_the_volatility_prefix_is_required_and_a_non_empty_string():
+    good = params("/r")
+    with pytest.raises(Exception, match="vol_column_prefix"):
+        SpotFeatures("spot", {k: v for k, v in good.items() if k != "vol_column_prefix"})
+    for bad in ("", 3, None):
+        with pytest.raises(Exception, match="vol_column_prefix"):
+            SpotFeatures("spot", {**good, "vol_column_prefix": bad})

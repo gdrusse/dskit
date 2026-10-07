@@ -1,0 +1,49 @@
+{
+  "notes": "Registration input, not a run input: Deribit's BTC DVOL implied-volatility index at 1-minute resolution, from the public JSON-RPC endpoint public/get_volatility_index_data (no credential), through the restwindow pack (ADR-0237, named by import path). DVOL is Deribit's 30-day implied volatility index in annualised percentage points (about 35 on 2026-10-01 for BTC, probed), a second implied-vol input beside Binance's BVOL (which is research-only; confirm Deribit's terms before any live use). Rows sit at result.data as [timestamp_ms, open, high, low, close]; the timestamp is the START of the minute (a bar is complete at ts + 60 s: use its close only after that), and `epoch` writes the ISO effective instant into ts_iso. Windows: the vendor returns at most 1000 rows and, when it cuts a range short, keeps the NEWEST rows and sets result.continuation, a silent truncation, so truncated_path makes the connector refuse that window instead of storing it partial; step 43200 s is 720 rows, under the cap. lag 60 skips the minute still forming. start 2024-01-01 is a choice; to 2026-10-07 is about 2,020 windows and max_windows 3000 refuses a span that has outgrown it. Register: python -m dskit.onboarding register-source deribit-btc-dvol --catalog-source deribit-btc-dvol --connector dskit.onboarding.libs.restwindow:RestWindowConnector --config @configs/source-deribit-btc-dvol.json --activate --root <store root>; then acquire --source deribit-btc-dvol --stream dvol --mode backfill; validate with configs/suite-deribit-dvol.json.",
+  "base_url": "https://www.deribit.com",
+  "streams": {
+    "dvol": {
+      "notes": "row_fields names the five positions; epoch reads `ts` as epoch milliseconds and writes the ISO effective instant into ts_iso.",
+      "path": "/api/v2/public/get_volatility_index_data",
+      "params": {
+        "currency": "BTC",
+        "resolution": "60"
+      },
+      "records_path": "result.data",
+      "row_fields": [
+        "ts",
+        "open",
+        "high",
+        "low",
+        "close"
+      ],
+      "epoch": {
+        "field": "ts",
+        "unit": "ms"
+      },
+      "effective_field": "ts_iso",
+      "primary_key": [
+        "ts"
+      ],
+      "pagination": {
+        "notes": "A 43200 s window is 720 one-minute rows. time_format epoch_ms renders the bounds the way the vendor reads them; truncated_path names the marker of a silent cut.",
+        "strategy": "window",
+        "start": "2024-01-01T00:00:00Z",
+        "step": 43200,
+        "start_param": "start_timestamp",
+        "end_param": "end_timestamp",
+        "time_format": "epoch_ms",
+        "truncated_path": "result.continuation",
+        "lag": 60,
+        "max_windows": 3000
+      }
+    }
+  },
+  "timeout": 30,
+  "max_retries": 4,
+  "pace_s": 0.2,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

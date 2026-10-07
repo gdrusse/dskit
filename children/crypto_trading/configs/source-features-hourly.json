@@ -1,0 +1,10 @@
+{
+  "notes": "Registration input, not a run input: publishes the stage B feature tables back through onboarding (localtables, ADR-0076) so a later modelling run reads one by source and stream, with a snapshot and a content hash, and never by path. `path` is the directory run-features-hourly.json's `write` node writes into (a test pins the two equal; `~` expands). Each run writes ITS OWN file decision_features-<run>.jsonl, and layout 'file' names a stream by the file's stem, so each run is its own stream `decision_features-<run>` (run = document-asof-hash8, which the run prints and `python -m dskit.pipeline runs` lists). Do not reuse one stream name for a changed table: localtables advances on a decision_ms cursor, so re-acquiring returns 'snapshot: null' and read-back serves the OLD rows. `streams` is left out so every run's file is discoverable. effective_field decision_ms is the row's decision instant in epoch ms, which the platform dates the observation by; a modelling run reads it with ObservationRows(key_fields [ticker, lead_minutes], ts_field decision_ms, ts_unit ms). Register once: python -m dskit.onboarding register-source features-hourly --catalog-source features-hourly --connector localtables --config @configs/source-features-hourly.json --activate --root <store root>; then, after each run, acquire --source features-hourly --stream decision_features-<run> --mode backfill (the runbook's B4 loop does this for every file).",
+  "path": "~/data/crypto_trading/features-hourly",
+  "layout": "file",
+  "effective_field": "decision_ms",
+  "effective_unit": "ms",
+  "formats": [
+    "jsonl"
+  ]
+}

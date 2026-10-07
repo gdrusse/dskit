@@ -1,43 +1,53 @@
-"""Kalshi's taker fee: read from the fee_schedules stream, rounded per order.
+"""Kalshi's taker fee: the SHIPPED Kalshi mapping (the document's ``fee_types``) over dskit's venue-neutral mechanics.
 
-Expected cents are worked by hand. The rounding rule (round the ORDER's fee up to the
-next cent, after snapping binary-float dust) is the one pmquant documents in
+The mechanic itself (a per-order ``rate * C * P * (1 - P)`` rounded up to a grid) is dskit's and tested there.
+What is the child's, and pinned here, is that the mapping the document ships makes Kalshi's published
+schedule: the base rate, the mechanic, the cent. Expected cents are worked by hand. The rounding rule (round
+the ORDER's fee up to the next cent, after snapping binary-float dust) is the one pmquant documents in
 ``children/pmquant/pmquant/fees.py``; the research notes state no rounding rule.
 """
 
 import math
 
 import pytest
-from synthetic import ScriptedKalshi, Store
+from dskit.pipeline.fee_mechanics import fee_model_from_spec
+from synthetic import ScriptedKalshi, Store, shipped
 
-from crypto_trading.fees import FEE_MODELS, FeeColumns, QuadraticFee
+from crypto_trading.fees import FeeColumns
 from crypto_trading.kalshi_rows import FeeRows
 
-BASE = {"quadratic": 0.07}
+#: The Kalshi mapping exactly as the shipped document declares it.
+FEE_TYPES = shipped("run-features-15m.json")["pipeline"]["fees"]["params"]["fee_types"]
+KALSHI_MODEL = fee_model_from_spec(FEE_TYPES["quadratic"]["model"])
+RATE = FEE_TYPES["quadratic"]["base_rate"]
+
+
+def test_the_shipped_mapping_is_kalshis_published_rate_on_a_cent_grid():
+    assert RATE == 0.07 and set(FEE_TYPES) == {"quadratic"}
 
 
 def test_one_contract_pays_a_whole_cent_floor():
     # 0.07 * 1 * 0.5 * 0.5 = 0.0175 dollars = 1.75 cents -> rounds UP to 2 cents
-    assert QuadraticFee().order_fee(1, 0.5, 0.07) == pytest.approx(0.02)
+    assert KALSHI_MODEL.order_fee(1, 0.5, 0.07) == pytest.approx(0.02)
 
 
 def test_float_dust_does_not_buy_an_extra_cent():
     # 0.07 * 100 * 0.25 * 100 is 175.00000000000003 in binary floating point: a naive
     # ceil bills 1.76. The exact amount is 1.75 dollars.
     assert math.ceil(0.07 * 100 * 0.5 * (1 - 0.5) * 100) == 176, "premise: a naive ceil overshoots"
-    assert QuadraticFee().order_fee(100, 0.5, 0.07) == pytest.approx(1.75)
+    assert KALSHI_MODEL.order_fee(100, 0.5, 0.07) == pytest.approx(1.75)
 
 
 def test_a_larger_order_rounds_the_total_not_each_contract():
     # 0.07 * 100 * 0.3 * 0.7 = 1.47 exactly; one order of 100 is 1.47, while 100 orders of one
     # contract would each be 0.07*0.21 = 0.0147 -> 0.02 and cost 2.00.
-    fee = QuadraticFee()
+    fee = KALSHI_MODEL
     assert fee.order_fee(100, 0.3, 0.07) == pytest.approx(1.47)
     assert 100 * fee.order_fee(1, 0.3, 0.07) == pytest.approx(2.00)
 
 
 def test_a_multiplier_scales_the_rate_and_the_ends_are_free():
-    fee = QuadraticFee()
+    fee = KALSHI_MODEL
     assert fee.order_fee(100, 0.5, 0.035) == pytest.approx(0.88)  # 0.875 -> 0.88
     assert fee.order_fee(100, 0.0, 0.07) == 0.0
     assert fee.order_fee(100, 1.0, 0.07) == 0.0
@@ -49,12 +59,7 @@ def test_a_multiplier_scales_the_rate_and_the_ends_are_free():
     (1, 0.5, -0.07), (1, 0.5, float("nan")), (1, None, 0.07), (1, 0.5, None)])
 def test_a_fill_no_formula_may_price_is_refused(contracts, price, rate):
     with pytest.raises(ValueError):
-        QuadraticFee().order_fee(contracts, price, rate)
-
-
-def test_the_registry_is_keyed_by_the_schedule_s_own_type_name():
-    assert set(FEE_MODELS) == {"quadratic"}
-    assert isinstance(FEE_MODELS["quadratic"], QuadraticFee)
+        KALSHI_MODEL.order_fee(contracts, price, rate)
 
 
 # -- the node ---------------------------------------------------------------------
@@ -69,8 +74,8 @@ def row(series="KXBTC15M", bid=0.40, ask=0.44):
     return {"ticker": "T", "series": series, "yes_bid": bid, "yes_ask": ask}
 
 
-def run(rows, schedules, contracts=100):
-    node = FeeColumns("fees", {"base_rate_by_type": BASE, "contracts": contracts})
+def run(rows, schedules, contracts=100, fee_types=None):
+    node = FeeColumns("fees", {"fee_types": FEE_TYPES if fee_types is None else fee_types, "contracts": contracts})
     return node.run(None, {"records": rows, "schedules": schedules})["records"]
 
 
@@ -119,17 +124,33 @@ def test_what_cannot_be_priced_is_marked_never_defaulted(rows, schedules, status
     assert out["fee_buy_yes"] is None and out["fee_buy_no"] is None
 
 
+def test_a_second_fee_type_is_one_more_config_entry_not_code():
+    """A venue type with its own rate and a different grid prices through the SAME node, by config alone."""
+    types = {**FEE_TYPES, "flat_grid": {"base_rate": 0.02, "model": {
+        "mechanic": "probability_quadratic", "rounding": {"policy": "ceil_to_tick", "tick": 0.05}}}}
+    out = run([row()], [schedule(fee_type="flat_grid")], fee_types=types)[0]
+    # 0.02 * 100 * 0.44 * 0.56 = 0.4928 dollars -> next 5 cents = 0.50 -> 0.005 per contract
+    assert out["fee_status"] == "ok" and out["fee_buy_yes"] == pytest.approx(0.005)
+
+
 def test_node_default_deny_and_required_knobs():
     with pytest.raises(Exception, match="surprise"):
-        FeeColumns("fees", {"base_rate_by_type": BASE, "contracts": 1, "surprise": 1})
+        FeeColumns("fees", {"fee_types": FEE_TYPES, "contracts": 1, "surprise": 1})
     with pytest.raises(Exception, match="contracts"):
-        FeeColumns("fees", {"base_rate_by_type": BASE})
-    with pytest.raises(Exception, match="base_rate_by_type"):
+        FeeColumns("fees", {"fee_types": FEE_TYPES})
+    with pytest.raises(Exception, match="fee_types"):
         FeeColumns("fees", {"contracts": 1})
     with pytest.raises(Exception, match="contracts"):
-        FeeColumns("fees", {"base_rate_by_type": BASE, "contracts": 0})
-    with pytest.raises(Exception, match="quadratic"):
-        FeeColumns("fees", {"base_rate_by_type": {"mystery": 0.07}, "contracts": 1})
+        FeeColumns("fees", {"fee_types": FEE_TYPES, "contracts": 0})
+    entry = FEE_TYPES["quadratic"]
+    with pytest.raises(Exception, match="mechanic"):
+        FeeColumns("fees", {"fee_types": {"quadratic": {**entry, "model": {**entry["model"], "mechanic": "mystery"}}},
+                            "contracts": 1})
+    with pytest.raises(Exception, match="base_rate"):
+        FeeColumns("fees", {"fee_types": {"quadratic": {**entry, "base_rate": -0.07}}, "contracts": 1})
+    with pytest.raises(Exception, match="exactly the keys"):
+        FeeColumns("fees", {"fee_types": {"quadratic": {**entry, "notes": "a comment would move the hash"}},
+                            "contracts": 1})
 
 
 def test_the_fee_schedule_reader_projects_the_stream_the_pack_emits(tmp_path, monkeypatch):

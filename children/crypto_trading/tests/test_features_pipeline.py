@@ -33,7 +33,7 @@ import crypto_trading  # noqa: F401  (import = registration, as --adapter crypto
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(CHILD_ROOT, "configs", "run-features-15m.json")
 SERIES = ("KXBTC", "KXBTCD", "KXBTC15M", "KXETH", "KXETHD", "KXETH15M")
-CUT = "2026-09-03T00:00:00Z"
+CUT_MS = ms(utc(2026, 9, 3))  # the synthetic week's held-out cut, epoch ms (the shipped one is 2026-09-15)
 LEADS = (2, 5, 10)
 DELTA = 4e-4  # the settlement index sits this far below Binance in the fixtures (about 24 USD at 60000)
 
@@ -125,8 +125,8 @@ def patched_doc(store, tmp_path, tweak=None, name="run.json"):
     shipped_path = doc["pipeline"]["write"]["params"]["path"]
     doc["pipeline"]["write"]["params"]["path"] = str(out / os.path.basename(shipped_path))  # keeps the {run} template
     kill = doc["pipeline"]["kill_test"]["params"]
-    kill["segments"]["development"]["end"] = CUT
-    kill["segments"]["heldout"]["start"] = CUT
+    kill["segments"]["development"]["end_ms"] = CUT_MS
+    kill["segments"]["heldout"]["start_ms"] = CUT_MS
     kill["report_segments"] = ["development", "heldout"]  # the shipped document reports development only
     if tweak is not None:
         tweak(doc)
@@ -228,7 +228,7 @@ def test_the_kill_test_scores_both_segments_and_writes_its_report(ran):
             ("heldout", "all", "all", "fair_rms")][0]
     assert held["n"] == 2 * len(LEADS), "two held-out 15-minute markets"
     artifacts = os.path.join(result.run_dir, "artifacts", "kill_test")
-    assert sorted(os.listdir(artifacts)) == ["kill_test.json", "kill_test.md"]
+    assert sorted(os.listdir(artifacts)) == ["binary_score.json", "binary_score.md"]
 
 
 def test_nothing_but_placement_and_the_cut_was_changed_for_this_run(tmp_path, monkeypatch):
@@ -304,6 +304,14 @@ def test_a_changed_document_publishes_its_own_table_and_never_shadows_the_old_on
     assert again["snapshot"] is None, "re-publishing an UNCHANGED table makes no new snapshot"
 
 
+def test_the_horizon_the_fair_values_priced_is_the_one_the_decision_rows_carry(ran):
+    """BinaryFairValue prices from decision_ms + exec_lag_s itself: its horizon equals the table's tau_s column."""
+    _, result, _ = ran
+    for r in result.outputs["fees"]["records"]:
+        for key in ("fair_rms", "fair_ewma", "fair_bvol"):
+            assert r[f"{key}_tau"] == r["tau_s"], key
+
+
 def test_the_shipped_document_does_not_report_the_held_out_segment():
     assert doc_dict()["pipeline"]["kill_test"]["params"]["report_segments"] == ["development"]
 
@@ -349,7 +357,7 @@ def test_a_fair_value_and_a_kill_test_cell_match_independent_hand_computations(r
     cell = [s for s in result.outputs["kill_test"]["scores"]
             if (s["model"], s["segment"], s["group"], s["bucket"]) == ("fair_rms", "heldout", "lead_minutes=2", "all")][0]
     assert cell["n"] == 2
-    assert cell["brier_fair"] == pytest.approx(sum((r["fair_rms"] - r["label"]) ** 2 for r in held) / 2)
-    assert cell["brier_mid"] == pytest.approx(sum((r["mid"] - r["label"]) ** 2 for r in held) / 2)
-    assert cell["mean_mid"] == pytest.approx(sum(r["mid"] for r in held) / 2)
+    assert cell["brier_model"] == pytest.approx(sum((r["fair_rms"] - r["label"]) ** 2 for r in held) / 2)
+    assert cell["brier_market"] == pytest.approx(sum((r["mid"] - r["label"]) ** 2 for r in held) / 2)
+    assert cell["mean_market"] == pytest.approx(sum(r["mid"] for r in held) / 2)
     assert cell["base_rate"] == pytest.approx(sum(r["label"] for r in held) / 2)

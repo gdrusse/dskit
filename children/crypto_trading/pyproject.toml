@@ -22,7 +22,7 @@ requires-python = ">=3.11"
 dependencies = ["dskit"]
 
 [project.optional-dependencies]
-# pyarrow is imported only inside BinanceKlines/BinanceBvol.transform(); the
+# pyarrow is imported only inside dskit's ZipCsvToParquet.transform() and the day-file reader; the
 # configs and the rest of the package plan without it.
 parquet = ["pyarrow>=15"]
 # numpy and pyarrow are imported only inside SpotFeatures.run and the day-file reader (stage B).

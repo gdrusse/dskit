@@ -14,7 +14,11 @@ them (narrowing the knob away) rather than leaving them to the document.
   that cannot be labelled or placed is NOT emitted: it is listed by ticker with a reason on
   the ``excluded`` port and counted on ``census``, never guessed (an unsettled market, a
   result that is not yes/no, a market never given a strike, a strike its geometry needs but
-  lacks, an unparseable instant).
+  lacks, an unparseable instant). The ``kalshi_history`` pack's ``markets`` stream adds the realised
+  settlement value and its instant: when the stream has them the row carries ``settle_value`` (the index
+  level the market settled on, a LABEL) and ``settlement_ms`` (when it became known, minutes after the close),
+  and a market with no settlement instant is excluded by name (``no_settlement_ts``), because a label that
+  cannot be gated is not used. A stream without the fields leaves the row exactly as it was.
 - :class:`CandleRows` converts the candle's END instant from seconds to ms and keeps the YES
   quotes, last price, volume and open interest, missing as None.
 - :class:`FeeRows` keeps each series' ``fee_type`` and ``fee_multiplier`` per retrieval.
@@ -28,13 +32,13 @@ Import cost: stdlib + dskit.
 from abc import abstractmethod
 from collections import Counter
 
+from dskit.pipeline.binary_pricing import PAYOFFS
 from dskit.pipeline.libs.numpy import narrow_params
 from dskit.pipeline.libs.observations import DEFAULT_TS_OUT, DEFAULT_TS_UNIT, ObservationRows
 from dskit.pipeline.records import number_ok, price_ok
 
 from . import fields as f
 from .clock import instant_ms
-from .payoffs import PAYOFFS
 
 __all__ = ["CandleRows", "FeeRows", "MarketRows", "SECONDS_CEILING"]
 
@@ -147,7 +151,7 @@ class MarketRows(_StreamRows):
         ``root`` (str) the onboarding root; ``source`` (str) the registered source;
         ``series`` (non-empty list of str) the series kept, REQUIRED; ``payoff_by_strike_type``
         (dict, REQUIRED) the venue's ``strike_type`` -> a payoff name in
-        :data:`~crypto_trading.payoffs.PAYOFFS`; ``result_labels`` (dict, REQUIRED) the
+        :data:`dskit.pipeline.binary_pricing.PAYOFFS`; ``result_labels`` (dict, REQUIRED) the
         venue's ``result`` -> 0 or 1; ``settled_statuses`` (non-empty list of str, REQUIRED)
         the payload statuses that mean settled; ``as_of_acquisition_ms`` (int >= 0, optional)
         the read vintage.
@@ -254,7 +258,7 @@ class MarketRows(_StreamRows):
         name = self.params["payoff_by_strike_type"].get(strike_type)
         if name is None:
             return "unknown_strike_type"
-        needed = PAYOFFS[name].strike_fields
+        needed = [f.BOUND_FIELDS[bound] for bound in PAYOFFS[name].bounds]
         return "strike_missing" if not all(price_ok(record.get(field)) for field in needed) else None
 
     def _exclusion(self, record):
@@ -271,10 +275,25 @@ class MarketRows(_StreamRows):
             return problem
         if instant_ms(record.get("open_time")) is None or instant_ms(record.get("close_time")) is None:
             return "bad_time"
+        if "settlement_ts" in record and instant_ms(record["settlement_ts"]) is None:
+            return "no_settlement_ts"
         return None
 
     def _row(self, record):
-        """Build the child-vocabulary row for one usable market."""
+        """Build the child-vocabulary row for one usable market.
+
+        The settlement columns are written only when the stream carries the fields (``kalshi_history``'s
+        ``markets``): a source without them keeps the table exactly as it was.
+        """
+        row = self._base_row(record)
+        if "expiration_value" in record:
+            row[f.SETTLE_VALUE] = _number(record["expiration_value"])
+        if "settlement_ts" in record:
+            row[f.SETTLEMENT_MS] = instant_ms(record["settlement_ts"])
+        return row
+
+    def _base_row(self, record):
+        """Build the row's columns every markets stream carries."""
         return {
             f.TICKER: record["ticker"], f.EVENT: record["event_ticker"], f.SERIES: record["series_ticker"],
             f.STRIKE_TYPE: record["strike_type"],

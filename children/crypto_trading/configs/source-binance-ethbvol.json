@@ -6,8 +6,36 @@
   "entities_sha256": "9a16650edfe8f7ea2ed5d16f5a225367d492b43e431dd134b9ca11d0cef178f6",
   "relpath_template": "{entity}.parquet",
   "raw_relpath_template": "_raw/{entity}.zip",
-  "transform": "crypto_trading.binance_vision:BinanceBvol",
-  "transform_params": {},
+  "transform": "dskit.onboarding.libs.zipcsv:ZipCsvToParquet",
+  "transform_params": {
+    "columns": [
+      {
+        "vendor": "calc_time",
+        "output": "calc_time_ms",
+        "kind": "ts"
+      },
+      {
+        "vendor": "symbol",
+        "output": "symbol",
+        "kind": "text"
+      },
+      {
+        "vendor": "base_asset",
+        "output": "base_asset",
+        "kind": "text"
+      },
+      {
+        "vendor": "quote_asset",
+        "output": "quote_asset",
+        "kind": "text"
+      },
+      {
+        "vendor": "index_value",
+        "output": "index_value",
+        "kind": "float"
+      }
+    ]
+  },
   "headers": {
     "User-Agent": "dskit-research-bot/1.0 (crypto_trading data pull)"
   },

@@ -1,0 +1,190 @@
+{
+  "name": "kalshi-history-markets",
+  "notes": "Structural gates over one `markets` pull of source kalshi-history-crypto (settled history from both archives, 17 fields). It restates suite-kalshi-crypto-markets.json's vocabulary on purpose (a suite must not read its expectations from the source it validates) and adds rules for the three fields the history pack carries beyond the kalshi pack: expiration_value, settlement_ts and volume. What the rule vocabulary cannot say: not_null sees only a null, and the pack writes an ABSENT settlement_ts as '' (empty text), so no rule here catches it; crypto_trading.kalshi_rows:MarketRows excludes such a market by name (no_settlement_ts), because a label without its settlement instant cannot be gated. Run: python -m dskit.onboarding validate --suite configs/suite-kalshi-history-markets.json --snapshot <snapshot-vid> --root <store root>.",
+  "rules": [
+    {
+      "id": "markets-rows-arrived",
+      "target": "markets",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken pull (wrong series, API change, a cutoff that moved the archive), never a quiet day."
+    },
+    {
+      "id": "markets-ticker-unique",
+      "target": "markets",
+      "rule": "unique",
+      "kwargs": {
+        "field": "ticker"
+      },
+      "severity": "error",
+      "notes": "One row per market per pull. The live copy of a market the archive also listed is dropped by the pack; a duplicate here means that routing failed."
+    },
+    {
+      "id": "markets-every-series-present",
+      "target": "markets",
+      "rule": "distinct_count",
+      "kwargs": {
+        "field": "series_ticker",
+        "min": 6,
+        "max": 6
+      },
+      "severity": "error",
+      "notes": "Each of the six series returned at least one settled market. Six restates the series list; the pin test keeps them equal."
+    },
+    {
+      "id": "markets-series-universe",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "series_ticker",
+        "values": [
+          "KXBTC",
+          "KXBTCD",
+          "KXBTC15M",
+          "KXETH",
+          "KXETHD",
+          "KXETH15M"
+        ]
+      },
+      "severity": "error",
+      "notes": "The six series the source pulls, RESTATED here on purpose. tests/test_configs.py pins the two lists together."
+    },
+    {
+      "id": "markets-status-settled",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "status",
+        "values": [
+          "finalized",
+          "settled"
+        ]
+      },
+      "severity": "warn",
+      "notes": "The source asks for settled markets, so every row should be final: the live API spells it 'finalized' and the archive may spell it 'settled'. Another status is a market whose result and value are not yet known: read it before modelling."
+    },
+    {
+      "id": "markets-result-vocabulary",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "result",
+        "values": [
+          "yes",
+          "no"
+        ]
+      },
+      "severity": "error",
+      "notes": "A settled market reads yes or no. '' means unsettled and anything else (void, scalar) is a settlement the calibration must handle by name: fail here so it is decided, then amend the suite (a new, auditable hash)."
+    },
+    {
+      "id": "markets-strike-type",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal",
+          ""
+        ]
+      },
+      "severity": "error",
+      "notes": "A value that is neither a known geometry nor empty is a new market type: block until a payoff rule exists. Empty is allowed here and WARNED by markets-strike-type-set."
+    },
+    {
+      "id": "markets-strike-type-set",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "strike_type",
+        "values": [
+          "less",
+          "less_or_equal",
+          "between",
+          "greater",
+          "greater_or_equal"
+        ]
+      },
+      "severity": "warn",
+      "notes": "An EMPTY strike_type is a market never given a strike (settled 15-minute rows of 2026-08 read 'Target price: TBD'): drop it by name, never guess a strike."
+    },
+    {
+      "id": "markets-floor-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "floor_strike",
+        "min": 0
+      },
+      "severity": "warn",
+      "notes": "Strikes are USD prices of BTC or ETH; a negative or non-numeric one is a unit slip."
+    },
+    {
+      "id": "markets-cap-strike-sane",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "cap_strike",
+        "min": 0
+      },
+      "severity": "warn",
+      "notes": "As floor_strike, for the upper edge of a range or a 'less' market."
+    },
+    {
+      "id": "markets-expiration-value-present",
+      "target": "markets",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "expiration_value"
+      },
+      "severity": "warn",
+      "notes": "The realised settlement value: the CF Benchmarks 60-second average, the continuous label. Null means the venue sent none (or a non-number) for a market that should be final. Warn: the yes/no result still labels the row, and MarketRows carries the value only when it is there."
+    },
+    {
+      "id": "markets-expiration-value-nonnegative",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "expiration_value",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "A BTC or ETH index level in dollars cannot be negative; a negative or non-numeric value is a unit slip or a parse fault. Null is skipped (see the rule above)."
+    },
+    {
+      "id": "markets-volume-present",
+      "target": "markets",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "volume"
+      },
+      "severity": "warn",
+      "notes": "The market's whole-life contracts (volume_fp). Null means the venue omitted it. It is known only after the end of the market: never a feature at a decision."
+    },
+    {
+      "id": "markets-volume-nonnegative",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "volume",
+        "min": 0
+      },
+      "severity": "error",
+      "notes": "A contract count cannot be negative."
+    },
+    {
+      "id": "markets-bitemporal",
+      "target": "markets",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "A market dated at its close cannot be dated after it was acquired; the pack dates an unfinished one at the capture minute."
+    }
+  ]
+}
