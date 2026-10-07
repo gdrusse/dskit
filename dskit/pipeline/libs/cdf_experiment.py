@@ -6,10 +6,12 @@ remain the predictive_cdf owners'. No provider acquisition or holdout evaluation
 import copy
 import hashlib
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import time
 
@@ -159,9 +161,7 @@ class CDFExperiment:
 
     def _verify_provenance(self):
         c = self.config
-        for path, sha in c["source_hashes"].items():
-            if AtomicFitStore.file_hash(path) != sha:
-                raise IntegrityError("code/source fingerprint changed: "+path)
+        self._verify_source_pins(c["source_hashes"])
         for package, version in c["dependencies"].items():
             if importlib.metadata.version(package) != version:
                 raise IntegrityError("dependency fingerprint changed: "+package)
@@ -170,6 +170,55 @@ class CDFExperiment:
         holdout = c["study"]["fold_table"]["holdout_start"]
         if c["date_upper_exclusive"] > holdout or c["end_upper_exclusive"] > holdout:
             raise IntegrityError("panel predicate crosses locked holdout")
+
+    @staticmethod
+    def _verify_source_pins(pins):
+        """Bind declared source identity to this checkout and Python import owners.
+
+        An intact archived checkout alone cannot authorize execution from a
+        changed checkout. Identical relocated trees remain compatible.
+        """
+        if not pins:
+            return
+        suffix = Path(*__package__.split(".")) / Path(__file__).name
+        anchors = [Path(p) for p in pins if Path(p).parts[-len(suffix.parts):] == suffix.parts]
+        if len(anchors) != 1:
+            raise IntegrityError("runner source must have exactly one pinned anchor")
+        declared_root = anchors[0].absolute().parents[len(suffix.parts) - 1]
+        executing_root = Path(__file__).resolve().parents[len(suffix.parts) - 1]
+        seen = set()
+        try:
+            for path, sha in pins.items():
+                declared = Path(path).absolute()
+                relative = declared.relative_to(declared_root)
+                if ".." in relative.parts or relative in seen:
+                    raise IntegrityError("executing source has ambiguous relative identity")
+                seen.add(relative)
+                if AtomicFitStore.file_hash(declared) != sha:
+                    raise IntegrityError("code/source fingerprint changed: " + path)
+                executing = executing_root / relative
+                if AtomicFitStore.file_hash(executing) != sha:
+                    raise IntegrityError("executing source fingerprint changed: " + str(relative))
+                if relative.suffix != ".py":
+                    continue
+                parts = list(relative.with_suffix("").parts)
+                if parts[-1] == "__init__":
+                    parts.pop()
+                # Only importable package sources have an import owner. Standalone
+                # scripts are still checked against their executing-tree bytes.
+                if not parts or not (executing_root / parts[0] / "__init__.py").is_file():
+                    continue
+                name = ".".join(parts)
+                module = sys.modules.get(name)
+                if module is not None:
+                    origin = getattr(module, "__file__", None)
+                else:
+                    spec = importlib.util.find_spec(name)
+                    origin = None if spec is None else spec.origin
+                if not origin or AtomicFitStore.file_hash(origin) != sha:
+                    raise IntegrityError("executing source import owner changed: " + name)
+        except (OSError, ValueError, ImportError, AttributeError) as error:
+            raise IntegrityError("executing source cannot be verified") from error
 
     def load_panel(self):
         """Read only configured pre-holdout rows and validate their identities."""

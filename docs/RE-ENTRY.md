@@ -116840,3 +116840,8 @@ P10 used pooled 25-asset fits and a study-wide 200-cell max-statistic
 correction. Gate 2 retained QQQ at three minutes and NFLX at ten; both later
 failed Gate 3's frozen null-spread calibration. P11 changes the estimand and
 must not overwrite or reinterpret those artifacts.
+
+
+## 2026-10-07 advanced CDF final delivery checkpoint
+
+Frozen training candidate 29d3bec1 finished all queues; 48,073 completed fits and 21,467 explicit skips account for all 318,330 expanded outcomes. Four final reports and the results memo are prepared under children/index_options/docs. Independent payload/capacity audit passed; browser summary and paired-table arithmetic passed. Integration branch codex/advanced-interim-report-20261006 includes main 21821e2b and frozen study source. A proven provenance guard defect is corrected: nonempty source pins now bind both the declared checkout and executing/imported package sources; the historical configuration refuses under changed integrated code. Its original frozen empirical artifacts remain unchanged. Final candidate reviews and remote delivery remain pending; do not infer closure from the original training R4 gate. Other branch cleanup removed three already-merged remote refs; unresolved or active branches and all concurrent checkouts were preserved.

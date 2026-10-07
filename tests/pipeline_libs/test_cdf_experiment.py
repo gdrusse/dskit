@@ -357,3 +357,96 @@ def test_missing_predicate_statistics_refuses_without_row_read(experiment_config
     monkeypatch.setattr(pd, "read_parquet", no_read)
     with pytest.raises(IntegrityError, match="temporal predicate"):
         CDFExperiment(experiment_config).load_panel()
+
+
+@pytest.mark.parametrize("kind", ["declared_other_code", "loaded_other_code", "missing_anchor"])
+def test_source_pins_bind_executing_tree_before_panel_access(experiment_config, tmp_path, monkeypatch, kind):
+    import sys
+    from pathlib import Path
+    from dskit.pipeline.libs import cdf_experiment as runner
+    from dskit.pipeline.libs import predictive_cdf as owner
+    declared = tmp_path / "declared"
+    runner_copy = declared / "dskit/pipeline/libs/cdf_experiment.py"
+    owner_copy = declared / "dskit/pipeline/libs/predictive_cdf.py"
+    runner_copy.parent.mkdir(parents=True)
+    runner_copy.write_bytes(Path(runner.__file__).read_bytes())
+    owner_copy.write_bytes(Path(owner.__file__).read_bytes())
+    if kind == "declared_other_code":
+        owner_copy.write_text("# An intact older checkout, not the executing implementation.\n")
+    experiment_config["source_hashes"] = {
+        str(p): runner.AtomicFitStore.file_hash(p) for p in [runner_copy, owner_copy]
+    }
+    if kind == "loaded_other_code":
+        loaded = tmp_path / "third/dskit/pipeline/libs/predictive_cdf.py"
+        loaded.parent.mkdir(parents=True)
+        loaded.write_text("# A different imported checkout.\n")
+        monkeypatch.setattr(sys.modules[owner.__name__], "__file__", str(loaded))
+    if kind == "missing_anchor":
+        del experiment_config["source_hashes"][str(runner_copy)]
+    with pytest.raises(runner.IntegrityError, match="executing source|runner source"):
+        runner.CDFExperiment(experiment_config)
+    assert not Path(experiment_config["output"]).exists()
+
+
+def test_identical_relocated_source_pins_are_compatible(experiment_config, tmp_path):
+    from pathlib import Path
+    from dskit.pipeline.libs import cdf_experiment as runner
+    from dskit.pipeline.libs import predictive_cdf as owner
+    declared = tmp_path / "old_checkout"
+    paths = []
+    for module in [runner, owner]:
+        path = declared / Path(*module.__name__.split(".")).with_suffix(".py")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(Path(module.__file__).read_bytes())
+        paths.append(path)
+    experiment_config["source_hashes"] = {
+        str(p): runner.AtomicFitStore.file_hash(p) for p in paths
+    }
+    runner.CDFExperiment(experiment_config)
+
+@pytest.mark.parametrize("kind", ["duplicate_anchor", "outside_root", "missing_file", "lazy_owner"])
+def test_source_pin_resolution_refuses_ambiguous_or_unavailable_owners(tmp_path, monkeypatch, kind):
+    from types import SimpleNamespace
+    from dskit.pipeline.libs import cdf_experiment as runner
+    from pathlib import Path
+    root = Path(runner.__file__).resolve().parents[3]
+    anchor = tmp_path / "declared/dskit/pipeline/libs/cdf_experiment.py"
+    anchor.parent.mkdir(parents=True)
+    anchor.write_bytes(Path(runner.__file__).read_bytes())
+    pins = {str(anchor): runner.AtomicFitStore.file_hash(anchor)}
+    if kind == "duplicate_anchor":
+        other = tmp_path / "second/dskit/pipeline/libs/cdf_experiment.py"
+        pins[str(other)] = pins[str(anchor)]
+    elif kind == "outside_root":
+        other = tmp_path / "outside.py"
+        other.write_text("# outside declared project\n")
+        pins[str(other)] = runner.AtomicFitStore.file_hash(other)
+    elif kind == "missing_file":
+        pins[str(anchor.parent / "missing.py")] = "0" * 64
+    else:
+        import sys
+        name = "dskit.pipeline.libs.torch_ts"
+        other = anchor.parent / "torch_ts.py"
+        other.write_bytes((root / "dskit/pipeline/libs/torch_ts.py").read_bytes())
+        pins[str(other)] = runner.AtomicFitStore.file_hash(other)
+        different = tmp_path / "different.py"
+        different.write_text("# another import owner\n")
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        find_spec = runner.importlib.util.find_spec
+        monkeypatch.setattr(runner.importlib.util, "find_spec",
+            lambda requested: SimpleNamespace(origin=str(different)) if requested == name else find_spec(requested))
+    with pytest.raises(runner.IntegrityError, match="runner source|executing source"):
+        runner.CDFExperiment._verify_source_pins(pins)
+
+def test_source_pins_check_loaded_package_initializer(tmp_path, monkeypatch):
+    import dskit
+    from pathlib import Path
+    from dskit.pipeline.libs import cdf_experiment as runner
+    anchor = Path(runner.__file__)
+    initializer = Path(dskit.__file__)
+    pins = {str(p): runner.AtomicFitStore.file_hash(p) for p in (anchor, initializer)}
+    other = tmp_path / "__init__.py"
+    other.write_text("# different loaded package\n")
+    monkeypatch.setattr(dskit, "__file__", str(other))
+    with pytest.raises(runner.IntegrityError, match="executing source import owner"):
+        runner.CDFExperiment._verify_source_pins(pins)
