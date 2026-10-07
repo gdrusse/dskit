@@ -1,0 +1,29 @@
+{
+  "notes": "A worked `restwindow` config for a TRADES endpoint shaped like Kraken's /0/public/Trades (probed 2026-10-06): the rows sit under result.<pair>, a key NAMED AFTER THE PAIR and so not known from the config, beside a `last` token; `since` takes an epoch in seconds (or a previous `last`) and returns the trades after it, up to `count` (default and maximum 1000). Rows are positional arrays [price, volume, time, side, type, misc, trade_id] and `time` is a float epoch in SECONDS. At the head of the data the vendor answers the final `last` with the final trade again (the token is inclusive), and a `since` past the data with an empty list that echoes `since`. Register it as in source-restwindow-candles.json. No credential: the endpoint is public.",
+  "base_url": "https://api.example.test",
+  "streams": {
+    "trades-xbtusd": {
+      "notes": "`result.*` selects the ONE list under result (a response with none, or with several, is refused). `epoch` reads `time` as epoch seconds with a fractional part and writes the ISO effective instant, to the microsecond, into `time_iso`.",
+      "path": "/0/public/Trades",
+      "params": {"pair": "XBTUSD"},
+      "records_path": "result.*",
+      "row_fields": ["price", "volume", "time", "side", "type", "misc", "trade_id"],
+      "epoch": {"field": "time", "unit": "s"},
+      "effective_field": "time_iso",
+      "primary_key": ["trade_id"],
+      "pagination": {
+        "notes": "The token at result.last is sent back as `since` until a page comes back empty or SHORT. `page_size` is the vendor's full page (1000) and `size_param` sends it as `count`, so the number is written once; a page of fewer rows is the last. That rule is what ends the walk at the head of the data: the token is inclusive, so the next request would return the final trade again under the SAME token, which on a full page the connector refuses as a loop (or as a misspelled `param` the server ignores). The boundary trade a later page repeats is dropped (a row identical to one on the page just before). The first request sends the later of `start` and the stream's checkpoint as epoch seconds (`time_format`), rounded DOWN so no trade is skipped; rows the checkpoint already covers are dropped client-side. `max_pages` refuses, rather than truncates, a walk that still has more to fetch: 5000 pages is up to 5 million trades.",
+        "strategy": "cursor",
+        "path": "result.last",
+        "param": "since",
+        "start": "2024-01-01T00:00:00Z",
+        "time_format": "epoch_s",
+        "page_size": 1000,
+        "size_param": "count",
+        "max_pages": 5000
+      }
+    }
+  },
+  "timeout": 30,
+  "max_retries": 3
+}
