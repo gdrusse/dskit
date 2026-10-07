@@ -294,127 +294,219 @@
     {
       "file": "audit-identity.json",
       "sha256": "ab58478367056b1f802021af64bfef25d79b4f81cf95c14aed0f980304eff28b",
-      "bytes": 769
+      "bytes": 769,
+      "root": "audit"
     },
     {
       "file": "cached-panel-fold-rehearsal.jsonl",
       "sha256": "f117ce44d0066bbf89ecf161d88f9cde5ddb619d00689180954c740ee21cf8eb",
-      "bytes": 414
+      "bytes": 414,
+      "root": "audit"
     },
     {
       "file": "cached-panel-purge-rehearsal.json",
       "sha256": "ef7347a5dc165250e3820040aa73c3782266c09defa0c763e8c515a20440af9e",
-      "bytes": 2894
+      "bytes": 2894,
+      "root": "audit"
     },
     {
       "file": "check-uncertainty-format.py",
       "sha256": "2ac96cdeb3dfc129881e6edcc41ae7ff65c2cabc6db2ed86b5a8c4581250375a",
-      "bytes": 2703
+      "bytes": 2703,
+      "root": "audit"
     },
     {
       "file": "configured-source-date-census.json",
       "sha256": "d7c8800d93452b257ba5797a515191365411c195b654984fad03fa0ff1557888",
-      "bytes": 232840
+      "bytes": 232840,
+      "root": "audit"
     },
     {
       "file": "configured-source-date-census.py",
       "sha256": "c50d894067ad963167a52e8b5d18ca03367cdd4ac9a9df206b9fb8d734a918fa",
-      "bytes": 2880
+      "bytes": 2880,
+      "root": "audit"
     },
     {
       "file": "date-and-purge-rehearsal.py",
       "sha256": "ec6eecd6a127253b400e30446c7389fbd741313ec1dadce0bee2cd4c0ccb893e",
-      "bytes": 5341
+      "bytes": 5341,
+      "root": "audit"
     },
     {
       "file": "date-omission-diagnostic.json",
       "sha256": "b15a9070a18fcc8e4375fd78c5ed00a50036da0239d3aaa22ba5d471335b07e0",
-      "bytes": 99562
+      "bytes": 99562,
+      "root": "audit"
     },
     {
       "file": "historical-isolated-environment-recovery-receipt.json",
       "sha256": "134e97b5fb2bb985b2679c1afe8fb8a980fabe87871b4efa318dedf39ba4311f",
-      "bytes": 1558
+      "bytes": 1558,
+      "root": "audit"
     },
     {
       "file": "historical-recovery-receipt.json",
       "sha256": "d58d544b7dedc28e8bc7c3b7f3487d0db6ab8c4d844af7aa9a09d607716ee285",
-      "bytes": 1472
+      "bytes": 1472,
+      "root": "audit"
     },
     {
       "file": "materialize-dependencies.py",
       "sha256": "8c8bccf9b58bcfad35c9d7811b240764908e0c7e672e4775ed921a58a2a1a233",
-      "bytes": 1984
+      "bytes": 1984,
+      "root": "audit"
     },
     {
       "file": "materialize-owned-artifacts.py",
       "sha256": "36be35e413f835eec29a42de3fa2acbe2242f6a99377d4cf6a4fab6f18f8eef8",
-      "bytes": 2780
+      "bytes": 2780,
+      "root": "audit"
     },
     {
       "file": "owned-path-inventory.json",
       "sha256": "bfbb7a9853d201ed28ff18747b52a2b14d0f8ec1c22461038f27d4046ce560b8",
-      "bytes": 228456
+      "bytes": 228456,
+      "root": "audit"
     },
     {
       "file": "restore-historical-inference.py",
       "sha256": "1a9ee2100dc782d0aaf858e27b2c2f6d5f02c8848a1bc6798df7986a968eac22",
-      "bytes": 5835
+      "bytes": 5835,
+      "root": "audit"
     },
     {
       "file": "restore-isolated-environment.py",
       "sha256": "a196dedc677aca029f7792b945da5759187f23ad60046fe49d04f814ed380cee",
-      "bytes": 5934
+      "bytes": 5934,
+      "root": "audit"
     },
     {
       "file": "source-cached-panel-reconciliation.json",
       "sha256": "0dca1c5cf01400ed09abcf3b926f99fe98320badb231ef5a01b4ba6b079e2506",
-      "bytes": 437816
+      "bytes": 437816,
+      "root": "audit"
     },
     {
       "file": "source-cached-panel-reconciliation.py",
       "sha256": "454157e4eb388c3e7cd4b131a8b63fff8fd10a39f3779d8a0e82813192d67fd6",
-      "bytes": 6215
+      "bytes": 6215,
+      "root": "audit"
     },
     {
       "file": "source-vintage-metadata.json",
       "sha256": "f9446483d2384b837316b4ceaa90901dafa10987cadfe6aa545caa1043379096",
-      "bytes": 35488
+      "bytes": 35488,
+      "root": "audit"
     },
     {
       "file": "uncertainty-format-checks.json",
       "sha256": "add21a4e7d0186c4c1e69b25b5d6bafa91c10ce6aaf27d45cae946a412c4b4d6",
-      "bytes": 867
+      "bytes": 867,
+      "root": "audit"
     },
     {
       "file": "retention-receipt.json",
       "sha256": "bccfdaade2bbee206788076287c8454011cd401a5de25e0a89b167161f37a284",
-      "bytes": 137477306
+      "bytes": 137477306,
+      "root": "retained"
     },
     {
       "file": "environment-inventory.json",
       "sha256": "f3854f7ad8aac78299dcaed281155f1f665a6d505d396d668813780445f43553",
-      "bytes": 12823949
+      "bytes": 12823949,
+      "root": "retained"
     },
     {
       "file": "source-80a194d5.tar",
       "sha256": "232515b57fbb6a9ccdf7dd7bb57728102b5c6bf85bfa913f0d38d30600061c73",
-      "bytes": 204369920
+      "bytes": 204369920,
+      "root": "retained"
     },
     {
       "file": "phase0-source-review-summary.txt",
       "sha256": "81de0a28d4ab2704e1951c2eafb57b3409d4b3c6a5df07e74eb1f5135ca78208",
-      "bytes": 2674
+      "bytes": 2674,
+      "root": "audit"
     },
     {
       "file": "all-underlying-parquet-metadata.json",
       "sha256": "f64cba124e93852777d811f078e5288c1a44c2c30c753c635f425a27d3ac359b",
-      "bytes": 220274
+      "bytes": 220274,
+      "root": "audit"
+    },
+    {
+      "file": "candidate-fd8dffb8-lock.json",
+      "sha256": "4202e98c4142c950ebfe5e39bdc1b215bca9e03c248f981e94788ff4cfa8588a",
+      "bytes": 8053,
+      "root": "audit"
+    },
+    {
+      "file": "stage0-correctness-r1.txt",
+      "sha256": "dfae8de8144b776a67a6306ed620ec1012b943f3711c01264f1214e94dcfe4bd",
+      "bytes": 7234,
+      "root": "audit"
+    },
+    {
+      "file": "stage0-integration-r1.txt",
+      "sha256": "d77812a0ac19c3cf0438f228cf65ed723b656261cc7b4aaf4c1704500bce03d7",
+      "bytes": 5947,
+      "root": "audit"
+    },
+    {
+      "file": "registered-source-metadata.json",
+      "sha256": "c8ab6171bfcdeaa4f9f0f386477415fd1d4245ce98bcd81fc531f461f6840d21",
+      "bytes": 84353,
+      "root": "audit"
+    },
+    {
+      "file": "registered-source-metadata.py",
+      "sha256": "91d78cdf281e2f73d0c2c97568be65216721f90afd36b118b120da182a4986c1",
+      "bytes": 1919,
+      "root": "audit"
+    },
+    {
+      "file": "all-underlying-parquet-metadata.py",
+      "sha256": "beccb0476ffb35fe9023e0ce243b0ede1c8a3e52c42345b9d19c9331f55fa64f",
+      "bytes": 1922,
+      "root": "audit"
     }
   ],
   "review": {
-    "status": "pending",
-    "scope": "ADR-0248/0249 software repairs plus accurate bounded evidence; not whole-project training readiness"
+    "candidate": "fd8dffb892e41d574a03a35400ed90ac98352ede",
+    "base": "aa44819c686fc2734f1478b62e1184960f44b28e",
+    "status": "closed_for_bounded_repairs_only",
+    "whole_project_status": "incomplete; training gates remain open",
+    "lenses": [
+      {
+        "reviewer": "/root/stage0_correctness_r1",
+        "model": "GPT-6",
+        "critical": 0,
+        "major": 0,
+        "minor": 1,
+        "nit": 0
+      },
+      {
+        "reviewer": "/root/stage0_integration_r1",
+        "model": "GPT-6",
+        "critical": 0,
+        "major": 0,
+        "minor": 1,
+        "nit": 0
+      }
+    ],
+    "minor_disposition": {
+      "C-R1-01": "closed by editorial attribution correction; original nine checks nonmonotone only; independent crossed-band refusal appended"
+    },
+    "unresolved_in_scope": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "independent_tests": 151,
+    "report_format": "actual report content retained privately as plain text with Markdown styling normalized; original agent transcripts retained",
+    "unchanged_code_tests_contracts": true
   },
   "source_path_review": {
     "reviewer": "/root/stage0_semantics",
@@ -434,7 +526,7 @@
       "/root/stage0_execution_checkpoint",
       "/root/action_inventory_design"
     ],
-    "final_review": "pending"
+    "final_review": "two independent sequential lenses; zero unresolved bounded Critical/Major"
   },
   "all_underlying_parquet_metadata": {
     "files": 771,
@@ -460,5 +552,39 @@
     "onboarding_purity": 4,
     "full_suite": false,
     "fit_tests_run": false
+  },
+  "registered_source_metadata": {
+    "source_config_records": 121,
+    "store_roots": 88,
+    "errors": 0,
+    "connectors": {
+      "localtables": 85,
+      "httpblobs": 9,
+      "cboe": 5,
+      "localblobs": 8,
+      "localfiles": 1,
+      "optionshist": 1,
+      "dskit.onboarding.libs.alpaca:AlpacaOptionFetchConnector": 2,
+      "dskit.onboarding.libs.alpaca:AlpacaOptionActivityConnector": 1,
+      "intraday_poc.connectors:AlpacaBarsConnector": 1,
+      "dskit.onboarding.libs.alpaca:AlpacaOptionArchiveConnector": 4,
+      "dskit.onboarding.libs.yahoo:YahooChartArchiveConnector": 4
+    },
+    "scope": "Registered source metadata in the 88 filename-discovered stores; states may include old/inactive/duplicate/fixture registrations; no raw records or credentials copied"
+  },
+  "supplemental_uncertainty_check": {
+    "reviewer": "/root/stage0_correctness_r1",
+    "lower": [
+      "1/2",
+      "4/5",
+      "1"
+    ],
+    "upper": [
+      "2/5",
+      "9/10",
+      "1"
+    ],
+    "crossed_bands_refused": true,
+    "empirical_calibration": false
   }
 }

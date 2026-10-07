@@ -182,7 +182,7 @@ Independent Phase-0 transcripts: /root/stage0_execution_checkpoint approved
 the protected-reader direction with explicit conditions; /root/action_inventory_design
 approved the shared split-inventory direction conditionally. The original partial
 source inventory above remains historical and is not silently relabeled clean.
-Final implementation lenses are still required.
+Final implementation lenses later closed as recorded below.
 
 RED evidence: the old reader returned two excluded synthetic payloads; the
 price facade ignored its bounds; experiment source pins accepted an omitted
@@ -300,7 +300,7 @@ The handoff record must carry:
   fallback/abstention rule and qualification status.
 
 Nine synthetic exact-arithmetic/format assertions checked normalization,
-negative mass, grid order, negative radius, crossed/nonmonotone band data,
+negative mass, grid order, negative radius, nonmonotone band data,
 nominal zero distance and joint price/spot scaling. The illustrative transport
 distance 1/25 is **not a calibrated radius**. These checks establish that the
 format can express U1; no reusable runtime validator, optimization model,
@@ -368,15 +368,16 @@ Pilots and Stages 1–4 are deliberately unrun, with all 216 attempts remaining.
 Next: resolve the owned-history/action-vintage/availability gates, finish the
 7,172-date reconciliation and historical universe declaration, choose the
 second-copy destination, and freeze protected input conversion and actual
-fold/calibration roles. Complete final reviews of the bounded repairs; resolve the remaining basis and
+fold/calibration roles. Use the reviewed bounded repairs; resolve the remaining basis and
 input-boundary gaps through the existing seams before any real panel or fit. Do not ask again for
 the already authorized development scope. Re-run no historical model job to
 manufacture missing provenance.
 
 ## Reproducibility and handoff
 
-Private receipts and scripts are in `production-development-audit-20261007`;
-the public manifest records their hashes without raw records, forecasts,
+Diagnostic receipts and scripts are in `production-development-audit-20261007`;
+retention-receipt.json, environment-inventory.json and source-80a194d5.tar
+are in the retained directory. The public manifest records hashes without raw records, forecasts,
 weights, secrets or machine-specific paths. The original census artifacts
 remain unchanged. Diagnostics are not onboarded downstream production inputs.
 
@@ -395,3 +396,52 @@ its old source guard pins intentionally differ from current main.
 
 Independent review and remote-delivery evidence are appended after candidate
 lock. This is a Stage-0 handoff, not closure of the full requested project.
+
+
+## Independent review lock and closing memo
+
+Candidate fd8dffb892e41d574a03a35400ed90ac98352ede was reviewed against
+aa44819c686fc2734f1478b62e1184960f44b28e by two fresh, sequential independent
+GPT-6 reviewers: /root/stage0_correctness_r1 and /root/stage0_integration_r1.
+Each completed its bounded lens with Critical 0, Major 0, Minor 1, Nit 0.
+The one shared Minor, C-R1-01, is closed editorially: the original nine U1
+assertions checked nonmonotone bands, not a separate crossed-band case.
+The correctness reviewer separately executed a crossed-band case with lower
+[1/2,4/5,1] and upper [2/5,9/10,1]; the diagnostic correctly refused it.
+No code, tests or behavioral contract changed for this correction.
+
+The second reviewer independently ran 151 focused integration tests
+(132 plus 19); all passed, with no model-fit cases. Both reviewers verified all
+24 original private evidence hashes. The first also executed additional
+date-parser probes and checked aggregate/fold/recovery identities.
+Their full actual report content is retained as plain text, with Markdown
+styling normalized, in stage0-correctness-r1.txt and stage0-integration-r1.txt.
+Their original transcripts remain under the reviewer IDs. The parent's durable
+report copies were written after reviewer-side sandbox write failures; no failed
+command is counted as executed verification.
+
+The lock file records all 23 candidate blobs and ten dependencies. Before this
+editorial/evidence appendix the author verified every recorded SHA256 unchanged.
+Implementation/test blobs and ADR contract/matrix semantics remain unchanged
+after this appendix. The aggregate manifest carries the lock/report hashes and
+the Minor disposition. Historical source-family Major findings remain open at
+whole-project level; scoped software closure does not approve a real panel or fit.
+
+Additional metadata-only evidence: 121 source registrations across the 88
+discovered stores, with no parse errors. Four Yahoo registrations include two
+with a completeness declaration and two without it; they do not establish an
+independent matching vintage. These counts include duplicate/inactive/fixture
+registrations and are not a complete eligible-source census. Reproducing scripts
+and registered-source-metadata.json are retained privately and hashed.
+
+**Delivery conclusion:** the bounded repairs and audit/recovery/format packet
+are complete for reviewed integration. The requested forecasting development
+cycle is not complete. There is no new champion, reserve, calibration radius
+or production qualification. All 216 fit attempts remain. Required next work
+is the older-history protected conversion, exact exclusion ledger (including
+the VALE discrepancy), matching action/price/volume and availability evidence,
+historical universe declaration, explicit bounds for every active input,
+actual immutable folds and evidence roles, and the owner's backup destination.
+No historical checkout, trial, checkpoint or source payload may be cleaned up.
+Only this task's safely contained Git branch may be deleted after remote merge
+verification; its isolated checkout and all private evidence remain preserved.

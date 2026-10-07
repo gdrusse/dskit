@@ -11,7 +11,8 @@ process with original checkout/shared-venv opens denied. The second-copy destina
 is still pending. Preserve all originals; no cleanup is authorized by this evidence.
 No new champion/reserve, calibrated radius, MIO, holdout access or production qualification.
 ADR-0248/0249 add explicit bounded Parquet projection and split-inventory validation,
-with focused synthetic tests; final review pending. Legacy configs remain unprotected
+with focused synthetic tests. Candidate fd8dffb8 closed two independent lenses with
+zero in-scope Critical/Major; the shared editorial Minor is corrected. Legacy configs remain unprotected
 unless explicitly opted in. The existing development authorization persists; close
 Stage-0 gates before fits.
 
