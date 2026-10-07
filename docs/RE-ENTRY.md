@@ -7,8 +7,13 @@ action/vintage/availability evidence and historical universe limits remain open.
 A cached-panel rehearsal includes the COVID development window with purged 40-date
 monitors; it is not the frozen production manifest. Historical assets and dependencies
 were copied to durable local storage; one old PatchTST package restores in a fresh
-process with original checkout/shared-venv opens denied. The second-copy destination
-is still pending. Preserve all originals; no cleanup is authorized by this evidence.
+process with original checkout/shared-venv opens denied. The owner delegated the
+backup location: the retained/audit bundle now has a checksum-verified second copy
+under the owned data root's backups/index_options/production-development-20261007.
+Its seven-row recovery also denied primary retained/audit opens. This is same-disk,
+limited-scope recovery; other studies and full linked sources remain outside it.
+Read the memo's second-copy follow-up for hashes and recovery instructions.
+Preserve all originals; no cleanup is authorized by this evidence.
 No new champion/reserve, calibrated radius, MIO, holdout access or production qualification.
 ADR-0248/0249 add explicit bounded Parquet projection and split-inventory validation,
 with focused synthetic tests. Candidate fd8dffb8 closed two independent lenses with

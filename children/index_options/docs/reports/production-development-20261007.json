@@ -190,9 +190,58 @@
     "dependency_entries": 60130,
     "dependency_regular_file_bytes": 8455025471,
     "source_archive_commit": "80a194d526956b24745afe61024d4041b019d4b6",
-    "second_copy": "awaiting_owner_destination_preference",
+    "second_copy": "checksum_verified_same_physical_disk",
     "cleanup_allowed": false,
-    "full_recovery_verified": false
+    "full_recovery_verified": false,
+    "backup": {
+      "locator": "owned data root / backups/index_options/production-development-20261007",
+      "archive": "bundle.tar",
+      "archive_sha256": "4e732c80253aebc393e9f79d9074f5a1b3eb1521a8aa4b55449b54d4fc9110be",
+      "archive_bytes": 16049244160,
+      "regular_files": 690763,
+      "regular_file_bytes": 14196381172,
+      "symlinks": 4,
+      "prior_inventory_entries_matched": 688570,
+      "scope": "Retained advanced study, panel cache, source, dependencies and existing audit evidence; excludes other studies and owned onboarding source stores",
+      "disaster_recovery": false,
+      "sample_recovery_rows": 7,
+      "primary_artifact_opens_denied": true,
+      "dependencies_match": true,
+      "full_package_recovery": false,
+      "owner_destination_preference": "delegated location near existing data",
+      "evidence": [
+        {
+          "file": "backup-and-verify.py",
+          "sha256": "77f756df449353c01269f661cc97f792a40b846c5b51994cfc6c5c091f5ce4ae",
+          "bytes": 5632
+        },
+        {
+          "file": "backup-verification.json",
+          "sha256": "e52fc403d283c0c60a68727427edf07ab256a3aa8ddd31dcf8ec4081989dd4ce",
+          "bytes": 1133
+        },
+        {
+          "file": "members.sha256.jsonl",
+          "sha256": "223f350c7b6e0edeb5f43c32cf66f446e6542c246a949cc41fd6d0330e86ea8a",
+          "bytes": 154399966
+        },
+        {
+          "file": "restore-second-copy.py",
+          "sha256": "f8703af62c99e7f7b280352d0379f8703e9aac42c232e0fb5df795869506040d",
+          "bytes": 6077
+        },
+        {
+          "file": "second-copy-recovery-receipt.json",
+          "sha256": "2946eb421f605c8bf2e77b1a56f7e47a59e6bcf6a5cfc9271753b569c5e2b85e",
+          "bytes": 1727
+        },
+        {
+          "file": "review-identity-check.json",
+          "sha256": "99e1f8ea485bde596a71627e4fc078473ad93f40d3cbd584bb552e639c25b3d3",
+          "bytes": 3627
+        }
+      ]
+    }
   },
   "recovery_sample": {
     "status": "historical seven-row inference-and-score recovery passed",
@@ -278,7 +327,7 @@
     "H1": "open: older owned history, complete census and 7172 date exclusions unresolved",
     "C1": "date-only rehearsal passed; production availability/admission/folds not frozen",
     "S1": "open: action completeness, consistent vintages, feature units and publication clocks",
-    "R1": "sample recovery passed; second copy/full package restoration open",
+    "R1": "second copy and seven-row historical recovery verified; full linked source/all-study package restoration remains open",
     "U1": "synthetic representation checks passed; empirical calibration/validation unavailable"
   },
   "restrictions_observed": [

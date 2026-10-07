@@ -257,12 +257,11 @@ champion package or disaster recovery. OS Python/shared libraries/GPU driver
 remain system dependencies. Existing fitted checkpoints contain no full
 interrupted-optimizer state; no such capability was built.
 
-The second-copy destination is still awaiting the owner's preference.
-Only WSL and C: were mounted; initial free space was about 702 GiB and
-77 GiB, respectively. After materialization it was about 685 GiB and 59 GiB.
-WSL's virtual free space is not a reservation of physical host capacity.
-A C: copy would not establish independent-host/disaster recovery. No second
-copy, storage cleanup or historical branch deletion is approved by this receipt.
+At the initial Stage-0 close the backup location was unresolved. The owner
+then delegated its choice near the existing data; the verified second copy
+below supersedes that pending preference. Original receipts retain their
+historical status. WSL's virtual free space is not reserved physical capacity;
+this same-disk backup does not establish disaster recovery or permit cleanup.
 
 ## Future MIO handoff: specified and format-checked only
 
@@ -366,8 +365,8 @@ champion or reserve; no unrun result is substituted for that decision.
 Pilots and Stages 1–4 are deliberately unrun, with all 216 attempts remaining.
 
 Next: resolve the owned-history/action-vintage/availability gates, finish the
-7,172-date reconciliation and historical universe declaration, choose the
-second-copy destination, and freeze protected input conversion and actual
+7,172-date reconciliation and historical universe declaration, complete linked-payload
+recovery, and freeze protected input conversion and actual
 fold/calibration roles. Use the reviewed bounded repairs; resolve the remaining basis and
 input-boundary gaps through the existing seams before any real panel or fit. Do not ask again for
 the already authorized development scope. Re-run no historical model job to
@@ -441,7 +440,68 @@ or production qualification. All 216 fit attempts remain. Required next work
 is the older-history protected conversion, exact exclusion ledger (including
 the VALE discrepancy), matching action/price/volume and availability evidence,
 historical universe declaration, explicit bounds for every active input,
-actual immutable folds and evidence roles, and the owner's backup destination.
+actual immutable folds and evidence roles, and full linked-payload recovery.
 No historical checkout, trial, checkpoint or source payload may be cleaned up.
 Only this task's safely contained Git branch may be deleted after remote merge
 verification; its isolated checkout and all private evidence remain preserved.
+
+## Second-copy follow-up: verified local backup
+
+The owner delegated the destination choice. Stored the retained bundle and
+existing audit evidence under
+`/home/russell/data/backups/index_options/production-development-20261007/`,
+beside the existing data stores. The WSL virtual disk and C: share the physical
+disk; this protects a separate copy from accidental directory loss, not disk
+failure. Physical host free space was checked before writing (about 58 GiB),
+rather than relying on WSL's approximately 685 GiB virtual availability.
+
+`bundle.tar` is 16,049,244,160 bytes, SHA256
+`4e732c80253aebc393e9f79d9074f5a1b3eb1521a8aa4b55449b54d4fc9110be`.
+Every archived regular file was independently hashed against its primary copy:
+690,763 files, 14,196,381,172 logical bytes.
+All 4 symbolic-link targets matched.
+The existing historical/dependency/source inventories additionally matched
+688,570 entries. The complete per-member inventory,
+archive verification receipt and operation script are private; their identities
+are in the aggregate report. The copy was opaque: it did not inspect protected
+observations or run a model fit.
+
+Restored source, runtime, dependencies, panel and the selected checkpoint/score
+files from this archive into its new `recovery/` directory. A fresh
+`/usr/bin/python3 -B -S` process reproduced the same seven AAPL forecasts
+and ordinary/tail CRPS at `rtol=1e-6, atol=1e-7`. All configured dependency
+versions matched. Unknown head, missing weights and modified weights refused.
+The recovery audit hook additionally denied opens into both primary retained
+and primary audit roots, alongside the original worktrees/shared environment.
+This is a functional Python file-open check, not an OS security boundary.
+
+This backup covers the retained advanced study, cached panel, frozen source,
+installed packages and existing audit evidence. Other historical studies and
+owned onboarding source stores are outside this archive. System Python,
+OS libraries and drivers remain external dependencies. One historical checkpoint
+was restored; complete cross-study recovery, full linked source restoration,
+optimizer continuation and production qualification are not claimed. All
+originals, the archive and the recovery extraction remain; no cleanup occurred.
+
+For pickup, set `DSKIT_BACKUP_ROOT` to the private directory above. First
+compare `sha256sum "$DSKIT_BACKUP_ROOT/bundle.tar"` with the recorded hash and
+verify the member/operation/receipt identities in the aggregate report.
+`backup-and-verify.py` records the exact tar, per-member comparison and
+selective extraction procedure; it deliberately refuses an existing archive
+and must not be rerun against this completed destination.
+`restore-second-copy.py` records the exact inference/negative checks and
+restored paths. To repeat them, preserve that script and its receipt, create a
+copy with a distinct receipt filename, then run it using
+`/usr/bin/python3 -B -S <copied-script>`. For restoration to a different
+directory, change only the restore/output locations in the copied scripts,
+extract into an empty directory and retain the primary-path denial checks.
+Never run the frozen training configuration to test recovery.
+
+Verified 28 reviewed file/dependency identities; ADR text differs from the
+original review only in the two status lines already published at c6f31962,
+and is unchanged by this follow-up. All 30 pre-existing private evidence
+hashes still match. This is an evidence-only appendix, preserving the two
+clean software reviews; no code, tests, configurations or behavioral contracts
+changed. Full-suite and fit counts remain zero for this follow-up. The broader
+H1/C1/S1 prerequisites and complete R1 package recovery remain open; all 216
+fit attempts remain. No new champion/reserve or uncertainty radius exists.
