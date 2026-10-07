@@ -171,7 +171,7 @@ dskit/onboarding/
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
 │   ├── restwindow.py  declarative time-window REST (ADR-0240): window/cursor pagination, positional rows, epoch instants; standalone, no `restapi` underscore names
-│   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
+│   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: vendor zip of one CSV -> typed parquet under a JSON layout (ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops

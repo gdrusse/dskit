@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import math
 import zoneinfo
 
 __all__ = ["StockDailyBars", "COLUMNS"]
@@ -38,7 +39,7 @@ COLUMNS = ("id", "symbol", "date", "open", "high", "low", "close", "adjusted_clo
 #: Defaults for ``params`` — named once, used by validation and by transform.
 DEFAULT_PRICE_DECIMALS = 4
 DEFAULT_DIVIDEND_DECIMALS = 6
-_PARAMS = ("price_decimals", "dividend_decimals")
+_PARAMS = ("price_decimals", "dividend_decimals", "strict_split_inventory")
 
 
 class StockDailyBars:
@@ -49,6 +50,8 @@ class StockDailyBars:
     params : dict
         ``price_decimals`` (int >= 0, default 4) and ``dividend_decimals``
         (int >= 0, default 6): rounding of the rebuilt raw values.
+        strict_split_inventory (bool, default False) requires a valid present
+        split inventory and one emitted bar per split date (ADR-0249).
     as_of : str
         The pull's declared ISO instant; every row's ``created_at`` (declared,
         never the wall clock, so equal input bytes give equal output bytes).
@@ -71,6 +74,10 @@ class StockDailyBars:
         unknown = sorted(set(params) - set(_PARAMS))
         if unknown:
             raise ValueError(f"unknown params {unknown}; allowed {list(_PARAMS)}")
+        strict = params.get("strict_split_inventory", False)
+        if type(strict) is not bool:
+            raise ValueError("strict_split_inventory must be boolean")
+        self.strict_split_inventory = strict
         self.price_decimals = self._count(params, "price_decimals", DEFAULT_PRICE_DECIMALS)
         self.dividend_decimals = self._count(params, "dividend_decimals", DEFAULT_DIVIDEND_DECIMALS)
         self.created_at = dt.datetime.fromisoformat(as_of).strftime("%Y-%m-%d %H:%M:%S")
@@ -133,7 +140,10 @@ class StockDailyBars:
         if any(len(v) != len(stamps) for v in [*quote.values(), adjusted]):
             raise ValueError("chart arrays are not aligned")
         dates = [self._day_of(s, zone) for s in stamps]
-        splits = self._events(result, zone, "splits")
+        inventory = self._split_inventory(result, zone) if self.strict_split_inventory else None
+        splits = self._events(result, zone, "splits") if inventory is None else {
+            day: {"numerator": ratio, "denominator": 1.0}
+            for day, ratio in inventory.ratios.items()}
         dividends = self._events(result, zone, "dividends")
         symbol = meta.get("symbol") or entity
         out = {c: [] for c in COLUMNS}
@@ -152,7 +162,22 @@ class StockDailyBars:
             ratio = splits[day]["numerator"] / splits[day]["denominator"] if day in splits else 1.0
             out["split_coefficient"].append(ratio)
             out["created_at"].append(self.created_at)
+        if inventory is not None:
+            from dskit.onboarding.base import AssetError
+            try:
+                inventory.require_bar_dates(out["date"])
+            except AssetError as error:
+                raise ValueError(str(error)) from error
         return out
+
+    @staticmethod
+    def _split_inventory(result, zone):
+        from dskit.onboarding.base import AssetError
+        from dskit.onboarding.libs.yahoo import YahooSplitInventory
+        try:
+            return YahooSplitInventory(result, zone)
+        except AssetError as error:
+            raise ValueError(str(error)) from error
 
     def note(self, entity, body):
         """Describe the splits in a response, flagging irregular ratios.
@@ -173,11 +198,17 @@ class StockDailyBars:
         """
         result = self._result(body)
         zone = zoneinfo.ZoneInfo(result["meta"]["exchangeTimezoneName"])
-        found = self._events(result, zone, "splits")
+        if self.strict_split_inventory:
+            self.rows(entity, body)  # the same no-lost-action admission as transform
+            found = {day: {"numerator": ratio, "denominator": 1.0}
+                     for day, ratio in self._split_inventory(result, zone).ratios.items()}
+        else:
+            found = self._events(result, zone, "splits")
         parts = []
         for day in sorted(found):
             ratio = found[day]["numerator"] / found[day]["denominator"]
-            regular = any(abs(r - round(r)) < 1e-9 for r in (ratio, 1 / ratio))
+            regular = any(math.isfinite(r) and abs(r - round(r)) < 1e-9
+                          for r in (ratio, 1 / ratio))
             parts.append(f"{day}:{ratio:g}" + ("" if regular else " IRREGULAR"))
         return "splits " + "; ".join(parts) if parts else None
 

@@ -394,7 +394,8 @@ def test_identical_relocated_source_pins_are_compatible(experiment_config, tmp_p
     from dskit.pipeline.libs import predictive_cdf as owner
     declared = tmp_path / "old_checkout"
     paths = []
-    for module in [runner, owner]:
+    from dskit.pipeline.libs import parquet as reader
+    for module in [runner, owner, reader]:
         path = declared / Path(*module.__name__.split(".")).with_suffix(".py")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(Path(module.__file__).read_bytes())
@@ -450,3 +451,42 @@ def test_source_pins_check_loaded_package_initializer(tmp_path, monkeypatch):
     monkeypatch.setattr(dskit, "__file__", str(other))
     with pytest.raises(runner.IntegrityError, match="executing source import owner"):
         runner.CDFExperiment._verify_source_pins(pins)
+
+
+def test_source_pins_require_bounded_reader_owner():
+    from pathlib import Path
+    from dskit.pipeline.libs import cdf_experiment as runner
+    pins = {str(Path(runner.__file__)): runner.AtomicFitStore.file_hash(runner.__file__)}
+    with pytest.raises(runner.IntegrityError, match="bounded reader"):
+        runner.CDFExperiment._verify_source_pins(pins)
+
+
+def test_experiment_bounded_read_preserves_only_mature_rows(experiment_config, monkeypatch):
+    import pandas as pd
+    import pyarrow.dataset as ds
+    from dskit.pipeline.libs import cdf_experiment as runner
+    frame = pd.read_parquet(experiment_config["panel"])
+    original_count = len(frame)
+    excluded = frame.iloc[:2].copy()
+    excluded.iloc[0, excluded.columns.get_loc("quote_date")] = "2002-01-01"
+    excluded.iloc[1, excluded.columns.get_loc("settlement_date")] = "2002-01-01"
+    pd.concat([frame, excluded]).to_parquet(experiment_config["panel"])
+    experiment_config["panel_sha256"] = runner.AtomicFitStore.file_hash(experiment_config["panel"])
+    assert len(runner.CDFExperiment(experiment_config).load_panel()) == original_count
+
+
+def test_bounded_reader_source_drift_invalidates_experiment_pin(experiment_config, tmp_path):
+    from pathlib import Path
+    from dskit.pipeline.libs import cdf_experiment as runner, parquet as reader
+    root = tmp_path / "declared"
+    pins = {}
+    for module in (runner, reader):
+        target = root / Path(*module.__name__.split(".")).with_suffix(".py")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(Path(module.__file__).read_bytes())
+        if module is reader:
+            target.write_bytes(target.read_bytes() + b"\n# other reader\n")
+        pins[str(target)] = runner.AtomicFitStore.file_hash(target)
+    experiment_config["source_hashes"] = pins
+    with pytest.raises(runner.IntegrityError, match="executing source"):
+        runner.CDFExperiment(experiment_config)

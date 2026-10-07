@@ -48,6 +48,9 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/memos/2026-10-07-advanced-architecture-results.md",
         "docs/research/advanced-cdf-zoo/2026-10-06-capacity-and-architecture-plan.md",
         "docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md",
+        # Owner-authorized Stage-0 audit and recovery evidence; no new model fits.
+        "docs/memos/2026-10-07-production-development-stage0.md",
+        "docs/reports/production-development-20261007.json",
         "docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.html",
         "docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.manifest.json",
         "index_options/__init__.py", "index_options/contracts.py",
@@ -276,8 +279,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # (427 as shipped), plus ADR-0236/0237's pooled.py and its two generated documents = 430,
     # plus the pooled workflow manifest and report spec = 432, plus its results memo = 433,
     # plus the per-ticker study, its workflow manifest and report spec = 436,
-    # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447
-    assert len(actual) == 447
+    # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
+    assert len(actual) == 449
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

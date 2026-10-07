@@ -25,7 +25,7 @@ from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, reject_unknown_params
 
-__all__ = ["NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
+__all__ = ["DateBoundedParquet", "NODE_KINDS", "ParquetFrameCache", "ParquetRows", "register"]
 
 
 def _sha256(path):
@@ -37,6 +37,93 @@ def _sha256(path):
         raise FileNotFoundError(f"no file to hash at {path}")
     return path_hash(str(path))
 
+
+
+
+class DateBoundedParquet:
+    """Project a flat Parquet table behind ANDed calendar-date predicates.
+
+    bounds maps source names to ISO start (inclusive) and/or end_before
+    (exclusive). Date32/date64 and canonical date strings are supported.
+    Missing/null temporal metadata refuses before scanning. Arrow evaluates
+    predicates internally; excluded payload rows never become Python records.
+    This is not byte-level file isolation or a concurrent-mutation defense.
+    """
+
+    @staticmethod
+    def problems(bounds):
+        """Accumulate malformed declarations, independently of the file schema."""
+        if not isinstance(bounds, dict) or not bounds:
+            return ["read_bounds must be a non-empty mapping"]
+        problems = []
+        for field, limits in bounds.items():
+            if not isinstance(field, str) or not field:
+                problems.append("read_bounds columns must be non-empty strings")
+            if not isinstance(limits, dict) or not limits:
+                problems.append(f"read_bounds[{field!r}] needs a bound")
+                continue
+            parsed = {}
+            for key, value in limits.items():
+                if key not in ("start", "end_before"):
+                    problems.append(f"read_bounds[{field!r}]: unknown key {key!r}")
+                    continue
+                try:
+                    day = datetime.date.fromisoformat(value)
+                    if day.isoformat() != value:
+                        raise ValueError(value)
+                    parsed[key] = day
+                except (TypeError, ValueError):
+                    problems.append(f"read_bounds[{field!r}].{key} needs YYYY-MM-DD")
+            if len(parsed) == 2 and parsed["start"] >= parsed["end_before"]:
+                problems.append(f"read_bounds[{field!r}] is empty or reversed")
+        return problems
+
+    def __init__(self, path, columns, bounds):
+        import copy
+
+        problems = self.problems(bounds)
+        if (not isinstance(columns, (list, tuple)) or not columns
+                or not all(isinstance(c, str) and c for c in columns)
+                or len(set(columns)) != len(columns)):
+            problems.append("columns must be non-empty unique names")
+        if problems:
+            raise ValueError("; ".join(problems))
+        self.path, self.columns, self.bounds = path, list(columns), copy.deepcopy(bounds)
+
+    def read(self):
+        """Return the bounded Arrow table, refusing unverified temporal data."""
+        import pyarrow as pa
+        import pyarrow.dataset as ds
+        import pyarrow.parquet as pq
+
+        checked = type(self)(self.path, self.columns, self.bounds)
+        columns, bounds = checked.columns, checked.bounds
+        parquet = pq.ParquetFile(self.path)
+        schema = parquet.schema_arrow
+        if (len(set(schema.names)) != len(schema.names)
+                or any(pa.types.is_nested(f.type) for f in schema)):
+            raise ValueError("temporal predicate requires flat unique schema")
+        missing = sorted((set(columns) | set(bounds)) - set(schema.names))
+        if missing:
+            raise ValueError(f"temporal predicate or projection missing columns: {missing}")
+        predicate = None
+        for name, limits in bounds.items():
+            dtype = schema.field(name).type
+            if not (pa.types.is_date(dtype) or pa.types.is_string(dtype)
+                    or pa.types.is_large_string(dtype)):
+                raise ValueError(f"temporal predicate unsupported type: {name}")
+            index = schema.get_field_index(name)
+            for group in range(parquet.metadata.num_row_groups):
+                stats = parquet.metadata.row_group(group).column(index).statistics
+                if stats is None or stats.null_count != 0:
+                    raise ValueError(f"null or unverified temporal predicate column: {name}")
+            field = ds.field(name).cast(pa.date32())
+            for key, value in limits.items():
+                day = datetime.date.fromisoformat(value)
+                part = field >= day if key == "start" else field < day
+                predicate = part if predicate is None else predicate & part
+        return ds.dataset(self.path, format="parquet").to_table(
+            columns=columns, filter=predicate)
 
 
 class ParquetRows(Node):
@@ -54,7 +141,10 @@ class ParquetRows(Node):
         output field). All required. Optional ``window`` (dict or None):
         ``field`` (an output field of ``columns``, the date), ``start`` and
         ``end`` (ISO ``YYYY-MM-DD``, inclusive, at least one) keep only the
-        rows whose date lies inside; absent or None keeps every row. Bounds must
+        rows whose date lies inside; absent or None keeps every row. This legacy
+        window is NOT a protected-read boundary. Optional read_bounds maps SOURCE
+        columns to start inclusive / end_before exclusive ISO dates, applying the
+        shared DateBoundedParquet gate before materialization. Bounds must
         be exactly ``YYYY-MM-DD``; the field's values (date, datetime or ISO
         text) are parsed, never sliced, and a value that is none refuses the run.
         The window cuts the stream and nothing more: an ``end`` that must leave
@@ -78,7 +168,7 @@ class ParquetRows(Node):
     outputs = ("records",)
 
     _REQUIRED = ("root", "source", "stream", "relpath_by_key", "key", "columns")
-    _PARAMS = _REQUIRED + ("window",)
+    _PARAMS = _REQUIRED + ("window", "read_bounds")
     _WINDOW_KEYS = ("field", "start", "end")
 
     @classmethod
@@ -111,6 +201,9 @@ class ParquetRows(Node):
                     problems.append("columns maps two file columns to one output field")
             elif not isinstance(value, str) or not value:
                 problems.append(f"{name} is required: a non-empty string, got {value!r}")
+        bounds = params.get("read_bounds")
+        if "read_bounds" in params and not is_node_ref(bounds):
+            problems += DateBoundedParquet.problems(bounds)
         problems += cls.window_problems(params.get("window"), params.get("columns"))
         return problems
 
@@ -264,12 +357,16 @@ class ParquetRows(Node):
                 f"{digest} - the acquired file drifted; re-acquire or verify the source"
             )
         columns = self.params["columns"]
-        table = pq.read_table(path)
-        missing = sorted(set(columns) - set(table.column_names))
+        schema = pq.read_schema(path)
+        missing = sorted(set(columns) - set(schema.names))
         if missing:
             raise ValueError(
-                f"{self.key}: {rel!r} has no column(s) {missing}; it has {table.column_names}"
+                f"{self.key}: {rel!r} has no column(s) {missing}; it has {schema.names}"
             )
+        if "read_bounds" in self.params:
+            table = DateBoundedParquet(path, list(columns), self.params["read_bounds"]).read()
+        else:
+            table = pq.read_table(path, columns=list(columns))
         data = {out: table.column(src).to_pylist() for src, out in columns.items()}
         names = list(data)
         records = [dict(zip(names, row)) for row in zip(*data.values())]

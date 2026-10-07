@@ -1,3 +1,20 @@
+# Active handoff — 2026-10-07: production Stage-0 evidence, training still gated
+
+The owner-authorized 216-attempt development cycle remains incomplete: **0 fits started**.
+Read the [Stage-0 memo](../children/index_options/docs/memos/2026-10-07-production-development-stage0.md)
+and its aggregate manifest. Broader owned-history leads, 7,172 unresolved date omissions,
+action/vintage/availability evidence and historical universe limits remain open.
+A cached-panel rehearsal includes the COVID development window with purged 40-date
+monitors; it is not the frozen production manifest. Historical assets and dependencies
+were copied to durable local storage; one old PatchTST package restores in a fresh
+process with original checkout/shared-venv opens denied. The second-copy destination
+is still pending. Preserve all originals; no cleanup is authorized by this evidence.
+No new champion/reserve, calibrated radius, MIO, holdout access or production qualification.
+ADR-0248/0249 add explicit bounded Parquet projection and split-inventory validation,
+with focused synthetic tests; final review pending. Legacy configs remain unprotected
+unless explicitly opted in. The existing development authorization persists; close
+Stage-0 gates before fits.
+
 # Active handoff — 2026-10-07: crypto_trading child + additive dskit packs, merged to main
 
 **Landed on main.** New child `children/crypto_trading` and nine additive dskit modules (ADR-0239..0247; ADR-0241

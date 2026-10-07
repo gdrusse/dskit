@@ -3466,6 +3466,10 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         if ok:
             from dskit.pipeline.libs.parquet import ParquetRows
 
+            if "read_bounds" in source:
+                from dskit.pipeline.libs.parquet import DateBoundedParquet
+                problems += [f"price_source.{p}" for p in
+                             DateBoundedParquet.problems(source["read_bounds"])]
             window = source.get("window")
             problems += [f"price_source.{p}" for p in ParquetRows.window_problems(
                 window, source["columns"])]
@@ -3558,7 +3562,8 @@ class PriceCalendarCDFPanel(ExactExpiryCDFPanel):
         reader = ParquetRows("prices", {
             "root": c["root"], "source": name, "stream": stream,
             "relpath_by_key": {symbol: relpath}, "key": symbol, "columns": source["columns"],
-            "window": self._end_window(source.get("window"))})
+            "window": self._end_window(source.get("window")),
+            **({"read_bounds": source["read_bounds"]} if "read_bounds" in source else {})})
         rows = [r for r in reader.run(None, {})["records"] if r["date"] >= c["since"]]
         dates = [r["date"] for r in rows]
         repeated = sorted({d for d in dates if dates.count(d) > 1}) if len(set(dates)) < len(dates) else []

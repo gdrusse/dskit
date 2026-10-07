@@ -728,3 +728,11 @@ def test_a_malformed_vintage_refuses_the_panel_and_its_node(make, value):
     params["as_of_acquisition_ms"] = 0
     assert not any("as_of_acquisition_ms" in p
                    for p in ExactExpiryPanelRead.validate_params(params))
+
+
+def test_price_source_read_bounds_reaches_core_before_rows(make):
+    panel = make()
+    panel.config["price_source"]["read_bounds"] = {"date": {"end_before": "2023-02-01"}}
+    rows, _ = panel._file_rows("AAA")
+    assert rows
+    assert all(r["date"] < "2023-02-01" for r in rows)

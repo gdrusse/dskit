@@ -1,0 +1,464 @@
+{
+  "format_version": 1,
+  "status": "stage0_blocked_not_production_qualified",
+  "base_commit": "80a194d526956b24745afe61024d4041b019d4b6",
+  "integrated_main_before_evidence": "aa44819c686fc2734f1478b62e1184960f44b28e",
+  "fit_budget": {
+    "ceiling": 216,
+    "attempted": 0,
+    "completed": 0,
+    "failed": 0,
+    "remaining": 216,
+    "pilots_and_stages_1_to_4": "not_run"
+  },
+  "source_summary": {
+    "tickers": 393,
+    "source_rows": 833637,
+    "cached_mature_rows": 455149,
+    "source_dates_absent_cached": 378488,
+    "cached_dates_without_source": 0,
+    "covid_source_dates": 31717,
+    "covid_cached_dates": 17742,
+    "split_events": 103,
+    "invalid_split_factors": 0,
+    "panel_sha256": "719284f168b25f1dccefe300123451e1e5a9c38145e2934f8412afaa767b9d40",
+    "cutoff_exclusive": "2026-01-01",
+    "scope": "Current configured sources versus historical cached panel, date/action projection only; no eligibility or action-completeness certification",
+    "broader_history_status": "AMZN/MSFT long-history JSON located; not parsed without protected projection",
+    "source_code_commit": "80a194d526956b24745afe61024d4041b019d4b6"
+  },
+  "path_inventory": {
+    "matching_paths": 1261,
+    "underlying_price_parquet_paths": 771,
+    "catalog_paths": 88,
+    "input_panel_paths": 320,
+    "complete_owned_history_inventory": false
+  },
+  "omission_diagnostic": {
+    "requires_feature_action_or_reference_reconciliation": 7172,
+    "nominal_expiry_not_session_exact_dte_rule": 362657,
+    "nominal_31_day_target_reaches_2026": 8646,
+    "missing_price_session_on_outcome_path": 13
+  },
+  "split_metadata": {
+    "declared_nonunit_events": 103,
+    "irregular_ratio_events": 31,
+    "invalid_observed_factors": 0,
+    "completeness_verified": false,
+    "stock_source_snapshots": 3,
+    "raw_files_each": 116,
+    "identical_raw_inventory": true
+  },
+  "fold_rehearsal": {
+    "status": "cached-panel date-only rehearsal; NOT frozen production folds",
+    "limitation": "older history, source semantics, feature availability and per-head capacity unresolved; settlement dates are not verified label publication timestamps",
+    "panel_sha256": "719284f168b25f1dccefe300123451e1e5a9c38145e2934f8412afaa767b9d40",
+    "fold_sha256": "f117ce44d0066bbf89ecf161d88f9cde5ddb619d00689180954c740ee21cf8eb",
+    "fits_started": 0,
+    "folds": [
+      {
+        "fold": 1,
+        "counts": [
+          138577,
+          11956,
+          17742
+        ],
+        "monitor_unique_quote_dates": 40,
+        "ranges": [
+          {
+            "quote_date": [
+              "2016-02-05",
+              "2019-08-26"
+            ],
+            "settlement_date": [
+              "2016-03-07",
+              "2019-09-26"
+            ]
+          },
+          {
+            "quote_date": [
+              "2019-09-27",
+              "2019-12-31"
+            ],
+            "settlement_date": [
+              "2019-10-28",
+              "2020-01-31"
+            ]
+          },
+          {
+            "quote_date": [
+              "2020-02-03",
+              "2020-06-30"
+            ],
+            "settlement_date": [
+              "2020-03-05",
+              "2020-07-31"
+            ]
+          }
+        ],
+        "covid_fit_rows": 0
+      },
+      {
+        "fold": 2,
+        "counts": [
+          198529,
+          13553,
+          25621
+        ],
+        "monitor_unique_quote_dates": 40,
+        "ranges": [
+          {
+            "quote_date": [
+              "2016-02-05",
+              "2021-01-12"
+            ],
+            "settlement_date": [
+              "2016-03-07",
+              "2021-02-12"
+            ]
+          },
+          {
+            "quote_date": [
+              "2021-02-19",
+              "2021-05-28"
+            ],
+            "settlement_date": [
+              "2021-03-22",
+              "2021-06-28"
+            ]
+          },
+          {
+            "quote_date": [
+              "2021-07-02",
+              "2021-12-31"
+            ],
+            "settlement_date": [
+              "2021-08-02",
+              "2022-01-31"
+            ]
+          }
+        ],
+        "covid_fit_rows": 17742
+      },
+      {
+        "fold": 3,
+        "counts": [
+          247694,
+          14783,
+          26487
+        ],
+        "monitor_unique_quote_dates": 40,
+        "ranges": [
+          {
+            "quote_date": [
+              "2016-02-05",
+              "2022-01-11"
+            ],
+            "settlement_date": [
+              "2016-03-07",
+              "2022-02-11"
+            ]
+          },
+          {
+            "quote_date": [
+              "2022-02-14",
+              "2022-05-27"
+            ],
+            "settlement_date": [
+              "2022-03-17",
+              "2022-06-27"
+            ]
+          },
+          {
+            "quote_date": [
+              "2022-07-01",
+              "2022-12-30"
+            ],
+            "settlement_date": [
+              "2022-08-01",
+              "2023-01-30"
+            ]
+          }
+        ],
+        "covid_fit_rows": 17742
+      }
+    ]
+  },
+  "retention": {
+    "primary_files_verified": 628439,
+    "primary_logical_bytes": 5054771657,
+    "dependency_entries": 60130,
+    "dependency_regular_file_bytes": 8455025471,
+    "source_archive_commit": "80a194d526956b24745afe61024d4041b019d4b6",
+    "second_copy": "awaiting_owner_destination_preference",
+    "cleanup_allowed": false,
+    "full_recovery_verified": false
+  },
+  "recovery_sample": {
+    "status": "historical seven-row inference-and-score recovery passed",
+    "cell": "pooled/base/PatchTST/33/pooled",
+    "symbol": "AAPL",
+    "rows": 7,
+    "dates": [
+      "2024-02-06",
+      "2024-02-23"
+    ],
+    "fit_identity": "ff1f29a978457364f776aced3bdc6e0f0d16a3b8d15e772e00e9f643e4e95b95",
+    "model_state_sha256": "cc786174b78adc977626d8e5cfdf6ea775f272ccdce05b4339c3191d8f64e498",
+    "source_owner_sha256": "74a4b7507b4693eaa60fa2414ff92511dc260471aec6773c4ed01d0cd6643347",
+    "rtol": 1e-06,
+    "atol": 1e-07,
+    "max_absolute_parameter_errors": {
+      "weights": 4.9426517545470006e-08,
+      "means": 1.1920928955078125e-07,
+      "scales": 1.1920928955078125e-07
+    },
+    "negative_cases": {
+      "unknown_head_refused": true,
+      "missing_weights_refused": true,
+      "modified_weights_refused": true
+    },
+    "dependency_version_differences": {},
+    "limits": [
+      "WSL system Python, OS shared libraries and GPU driver still required; dependency packages loaded from archive",
+      "not a full environment disaster-recovery test",
+      "one historical checkpoint only",
+      "not interrupted optimizer continuation",
+      "not newly selected champion or validated calibration"
+    ],
+    "fits_started": 0
+  },
+  "uncertainty": {
+    "status": "nine synthetic arithmetic/format assertions passed",
+    "kind": "spot_normalized_discrete_wasserstein_1",
+    "example": {
+      "grid": [
+        80,
+        100,
+        120
+      ],
+      "spot": 100,
+      "p": [
+        "1/5",
+        "3/5",
+        "1/5"
+      ],
+      "q": [
+        "1/10",
+        "3/5",
+        "3/10"
+      ],
+      "distance": "1/25"
+    },
+    "units": "dimensionless price-distance divided by entry spot",
+    "empirical_radius": null,
+    "cdf_confidence_bands": null,
+    "calibration_id": null,
+    "execution_eligible": false,
+    "fallback": "abstain; empirical fallback requires separate qualification",
+    "limits": [
+      "synthetic finite-support example only",
+      "no generic runtime validator installed",
+      "no grid discretization/payoff support validation",
+      "no optimization or strategy study",
+      "no conditional-distribution confidence guarantee"
+    ]
+  },
+  "recommendation": {
+    "starting_candidate": "pooled PatchTST, base features",
+    "challengers": [
+      "pooled CNN",
+      "pooled VanillaTransformer"
+    ],
+    "champion": null,
+    "reserve": null,
+    "empirical_reference_is_qualified_fallback": false
+  },
+  "gates": {
+    "H1": "open: older owned history, complete census and 7172 date exclusions unresolved",
+    "C1": "date-only rehearsal passed; production availability/admission/folds not frozen",
+    "S1": "open: action completeness, consistent vintages, feature units and publication clocks",
+    "R1": "sample recovery passed; second copy/full package restoration open",
+    "U1": "synthetic representation checks passed; empirical calibration/validation unavailable"
+  },
+  "restrictions_observed": [
+    "no protected 2026 row inspection",
+    "no new providers",
+    "no environment upgrades",
+    "no full suite",
+    "no MIO implementation or execution",
+    "no strategy backtest",
+    "no cloud spending or deployment"
+  ],
+  "private_evidence_hashes": [
+    {
+      "file": "audit-identity.json",
+      "sha256": "ab58478367056b1f802021af64bfef25d79b4f81cf95c14aed0f980304eff28b",
+      "bytes": 769
+    },
+    {
+      "file": "cached-panel-fold-rehearsal.jsonl",
+      "sha256": "f117ce44d0066bbf89ecf161d88f9cde5ddb619d00689180954c740ee21cf8eb",
+      "bytes": 414
+    },
+    {
+      "file": "cached-panel-purge-rehearsal.json",
+      "sha256": "ef7347a5dc165250e3820040aa73c3782266c09defa0c763e8c515a20440af9e",
+      "bytes": 2894
+    },
+    {
+      "file": "check-uncertainty-format.py",
+      "sha256": "2ac96cdeb3dfc129881e6edcc41ae7ff65c2cabc6db2ed86b5a8c4581250375a",
+      "bytes": 2703
+    },
+    {
+      "file": "configured-source-date-census.json",
+      "sha256": "d7c8800d93452b257ba5797a515191365411c195b654984fad03fa0ff1557888",
+      "bytes": 232840
+    },
+    {
+      "file": "configured-source-date-census.py",
+      "sha256": "c50d894067ad963167a52e8b5d18ca03367cdd4ac9a9df206b9fb8d734a918fa",
+      "bytes": 2880
+    },
+    {
+      "file": "date-and-purge-rehearsal.py",
+      "sha256": "ec6eecd6a127253b400e30446c7389fbd741313ec1dadce0bee2cd4c0ccb893e",
+      "bytes": 5341
+    },
+    {
+      "file": "date-omission-diagnostic.json",
+      "sha256": "b15a9070a18fcc8e4375fd78c5ed00a50036da0239d3aaa22ba5d471335b07e0",
+      "bytes": 99562
+    },
+    {
+      "file": "historical-isolated-environment-recovery-receipt.json",
+      "sha256": "134e97b5fb2bb985b2679c1afe8fb8a980fabe87871b4efa318dedf39ba4311f",
+      "bytes": 1558
+    },
+    {
+      "file": "historical-recovery-receipt.json",
+      "sha256": "d58d544b7dedc28e8bc7c3b7f3487d0db6ab8c4d844af7aa9a09d607716ee285",
+      "bytes": 1472
+    },
+    {
+      "file": "materialize-dependencies.py",
+      "sha256": "8c8bccf9b58bcfad35c9d7811b240764908e0c7e672e4775ed921a58a2a1a233",
+      "bytes": 1984
+    },
+    {
+      "file": "materialize-owned-artifacts.py",
+      "sha256": "36be35e413f835eec29a42de3fa2acbe2242f6a99377d4cf6a4fab6f18f8eef8",
+      "bytes": 2780
+    },
+    {
+      "file": "owned-path-inventory.json",
+      "sha256": "bfbb7a9853d201ed28ff18747b52a2b14d0f8ec1c22461038f27d4046ce560b8",
+      "bytes": 228456
+    },
+    {
+      "file": "restore-historical-inference.py",
+      "sha256": "1a9ee2100dc782d0aaf858e27b2c2f6d5f02c8848a1bc6798df7986a968eac22",
+      "bytes": 5835
+    },
+    {
+      "file": "restore-isolated-environment.py",
+      "sha256": "a196dedc677aca029f7792b945da5759187f23ad60046fe49d04f814ed380cee",
+      "bytes": 5934
+    },
+    {
+      "file": "source-cached-panel-reconciliation.json",
+      "sha256": "0dca1c5cf01400ed09abcf3b926f99fe98320badb231ef5a01b4ba6b079e2506",
+      "bytes": 437816
+    },
+    {
+      "file": "source-cached-panel-reconciliation.py",
+      "sha256": "454157e4eb388c3e7cd4b131a8b63fff8fd10a39f3779d8a0e82813192d67fd6",
+      "bytes": 6215
+    },
+    {
+      "file": "source-vintage-metadata.json",
+      "sha256": "f9446483d2384b837316b4ceaa90901dafa10987cadfe6aa545caa1043379096",
+      "bytes": 35488
+    },
+    {
+      "file": "uncertainty-format-checks.json",
+      "sha256": "add21a4e7d0186c4c1e69b25b5d6bafa91c10ce6aaf27d45cae946a412c4b4d6",
+      "bytes": 867
+    },
+    {
+      "file": "retention-receipt.json",
+      "sha256": "bccfdaade2bbee206788076287c8454011cd401a5de25e0a89b167161f37a284",
+      "bytes": 137477306
+    },
+    {
+      "file": "environment-inventory.json",
+      "sha256": "f3854f7ad8aac78299dcaed281155f1f665a6d505d396d668813780445f43553",
+      "bytes": 12823949
+    },
+    {
+      "file": "source-80a194d5.tar",
+      "sha256": "232515b57fbb6a9ccdf7dd7bb57728102b5c6bf85bfa913f0d38d30600061c73",
+      "bytes": 204369920
+    },
+    {
+      "file": "phase0-source-review-summary.txt",
+      "sha256": "81de0a28d4ab2704e1951c2eafb57b3409d4b3c6a5df07e74eb1f5135ca78208",
+      "bytes": 2674
+    },
+    {
+      "file": "all-underlying-parquet-metadata.json",
+      "sha256": "f64cba124e93852777d811f078e5288c1a44c2c30c753c635f425a27d3ac359b",
+      "bytes": 220274
+    }
+  ],
+  "review": {
+    "status": "pending",
+    "scope": "ADR-0248/0249 software repairs plus accurate bounded evidence; not whole-project training readiness"
+  },
+  "source_path_review": {
+    "reviewer": "/root/stage0_semantics",
+    "model": "GPT-6",
+    "scope": "partial Phase-0 source inventory",
+    "critical": 0,
+    "major": 3,
+    "minor": 0,
+    "nit": 0,
+    "tests_run": 0,
+    "status": "not a clean pass; implementation gates remain open"
+  },
+  "implemented_repairs": {
+    "date_bounded_parquet": "ADR-0248; explicit opt-in, shared experiment owner; no global guard",
+    "split_inventory": "ADR-0249; shared parsed inventory validation, strict child opt-in; no source completeness proof",
+    "phase0_transcripts": [
+      "/root/stage0_execution_checkpoint",
+      "/root/action_inventory_design"
+    ],
+    "final_review": "pending"
+  },
+  "all_underlying_parquet_metadata": {
+    "files": 771,
+    "metadata_errors": 0,
+    "pre2016_min_files": 6,
+    "unknown_metadata_files": 0,
+    "scope": "metadata only; matches across WSL home include copies, fixtures and unrelated archives; not owned-history completeness"
+  },
+  "historical_rejection_ledger": {
+    "configured_tickers": 393,
+    "corporate_action_path": 2436,
+    "missing_reference": 4747,
+    "difference_from_unresolved_date_diagnostic": 11,
+    "difference_ticker": "VALE",
+    "causal_reconciliation_complete": false
+  },
+  "focused_checks": {
+    "parquet": 66,
+    "experiment_predicate_pairing_identity": 37,
+    "price_window": 10,
+    "yahoo_stock_bars": 75,
+    "manifest_pipeline_purity": 3,
+    "onboarding_purity": 4,
+    "full_suite": false,
+    "fit_tests_run": false
+  }
+}

@@ -425,7 +425,7 @@ dskit/onboarding/
 │   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
 │   ├── restwindow.py  declarative time-window REST: window / cursor pagination, positional rows, epoch instants, a dynamic record key; standalone (stdlib urllib, ADR-0240)
-│   ├── yahoo.py       Pinned saved chart arrays; split/completion provenance
+│   ├── yahoo.py       Pinned chart arrays; YahooSplitInventory validates present/unknown split evidence
 │   ├── zipcsv.py      httpblobs transform: a vendor zip of one CSV -> typed parquet under a JSON layout (pyarrow inside transform, ADR-0242)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops
@@ -444,3 +444,10 @@ ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
 SHA-256-pinned local files through PinnedArchiveConnector. No provider access.
 Contracts, daily trade bars and indicative snapshots remain separate streams.
 See children/stock_options/docs/plans/README.md for the tested JSON workflow.
+
+
+ADR-0249: YahooSplitInventory preserves unknown versus present-empty inventory,
+validates positive finite factors and unique local effective dates, and can
+require one emitted bar per action. YahooChartArchiveConnector uses it before
+yielding observations. A completeness declaration remains a caller assertion;
+neither this validator nor the archive connector protects mixed-year JSON reads.

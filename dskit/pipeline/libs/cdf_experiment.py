@@ -219,6 +219,9 @@ class CDFExperiment:
                     raise IntegrityError("executing source import owner changed: " + name)
         except (OSError, ValueError, ImportError, AttributeError) as error:
             raise IntegrityError("executing source cannot be verified") from error
+        reader = Path("dskit/pipeline/libs/parquet.py")
+        if reader not in seen:
+            raise IntegrityError("source pins omit bounded reader owner")
 
     def load_panel(self):
         """Read only configured pre-holdout rows and validate their identities."""
@@ -229,22 +232,16 @@ class CDFExperiment:
             s["target"], s["reference"], s["horizon"],
             *(f for arm in c["arms"].values() for f in arm["features"]),
             *(f for arm in c["arms"].values() for f in arm["observed_columns"])]))
-        # Null predicate values would disappear before row validation. Inspect
-        # metadata only: never load locked-holdout rows to establish this gate.
-        import pyarrow.parquet as pq
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+        bounds = {s["date"]: {"end_before": c["date_upper_exclusive"]},
+                  s["end"]: {"end_before": c["end_upper_exclusive"]}}
+        if s["date"] == s["end"]:
+            bounds[s["date"]]["end_before"] = min(
+                c["date_upper_exclusive"], c["end_upper_exclusive"])
         try:
-            parquet = pq.ParquetFile(c["panel"])
-            for name in (s["date"], s["end"]):
-                index = parquet.schema.names.index(name)
-                for group in range(parquet.metadata.num_row_groups):
-                    stats = parquet.metadata.row_group(group).column(index).statistics
-                    if stats is None or stats.null_count != 0:
-                        raise IntegrityError("null or unverified temporal predicate column")
+            frame = DateBoundedParquet(c["panel"], columns, bounds).read().to_pandas()
         except (OSError, ValueError, TypeError, KeyError) as error:
-            raise IntegrityError("invalid temporal predicate metadata") from error
-        frame = pd.read_parquet(c["panel"], columns=columns, filters=[
-            (s["date"], "<", c["date_upper_exclusive"]),
-            (s["end"], "<", c["end_upper_exclusive"])])
+            raise IntegrityError("invalid temporal predicate metadata or data") from error
         # Validate admitted data before model-specific exception handling.
         required = list(dict.fromkeys([*s["identity"], s["group"], s["date"],
                                        s["end"], s["horizon"]]))

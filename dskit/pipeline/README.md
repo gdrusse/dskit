@@ -290,6 +290,15 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+ADR-0248 adds explicit protected projections: ParquetRows accepts read_bounds,
+mapping source date columns to inclusive start and/or exclusive end_before.
+Bounds combine with AND; date/string schema and zero-null metadata are required.
+The legacy window remains a post-read selection. PriceCalendarCDFPanel forwards
+price_source.read_bounds; auxiliary sources require their own explicit bounds.
+CDFExperiment uses the same DateBoundedParquet owner and requires its source pin
+when provenance pins are declared. No historical config is silently upgraded.
+
+
 `libs/predictive_cdf.py` (ADR-0189/0191) supplies offline conditional CDF
 estimators: empirical, monotone boosted CDF, LightGBM quantiles, a
 Gaussian-mixture MLP, quantile forest, Normal-CRP NGBoost and convex curves.
@@ -937,7 +946,7 @@ dskit/pipeline/
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077;
 │                      keep_values/admit intake hooks + opt-in per-class snapshot reuse, ADR-0187),
 │                      + ObservationStreamRows (lazy projected read, by import path, for multi-million-row streams),
-│                      parquet (ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
+│                      parquet (DateBoundedParquet: projected date predicates, ADR-0248; ParquetRows: an onboarded parquet file as records, manifest-verified, ADR-0228; ParquetFrameCache: one built frame per identity, ADR-0236 amendment),
 │                      bar_features (daily-bar-features, trade-bar-features: volume/liquidity, market-relative and option-trade bar features per entity and date)
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
