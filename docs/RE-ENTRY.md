@@ -1,3 +1,20 @@
+# Active handoff — 2026-10-07: retain artifacts and define uncertainty
+
+The [production proposal](../children/index_options/docs/research/advanced-cdf-zoo/2026-10-07-production-proposal.md)
+now adds R1/U1 to H1/C1/S1: retain owned inputs, all trial checkpoints and forecasts,
+selection/calibration evidence, champion/reserve packages and verified backup/restore
+receipts. Existing fitted checkpoints do not resume interrupted optimizer state.
+Reuse the existing coherent Wasserstein-ball research; empirically calibrate its
+radius from settled chronological forecasts under explicit assumptions, then freeze
+and validate later. Early-stop monitoring is not independent calibration.
+The current radius is not estimated and no conditional-coverage guarantee is claimed.
+
+Next session must satisfy these Stage-0 gates before the authorized bounded run.
+Keep the 216-fit-attempt cap and all protected-data/provider/cloud/deployment limits.
+No training, backup migration, new solver or adaptive policy is implemented here.
+Independent review for this documentation candidate is pending; historical reviews
+below apply only to their frozen candidates.
+
 # Active handoff — 2026-10-07: history/COVID/split requirements for next run
 
 The owner requests these changes now or as an actionable next-session handoff,
