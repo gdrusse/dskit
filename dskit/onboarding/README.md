@@ -436,7 +436,8 @@ dskit/onboarding/
 Tests: `python -m pytest tests/onboarding -q` (purity gate, model-hash
 parity with the architecture doc, connector conformance, CLI e2e through
 `sync-published`). The ADR-0236/0237/0239 packs have their own suites:
-`tests/onboarding/test_kalshi_history.py`, `test_restwindow.py`, `test_zipcsv.py`.
+`tests/onboarding/test_kalshi_history.py`, `test_restwindow.py`, `test_zipcsv.py`, with boundary pins in
+`test_{kalshi_history,restwindow}_pins.py` and `test_zipcsv_golden.py` (the former child's output, frozen in `golden/`).
 
 ADR-0213: AlpacaOptionArchiveConnector and YahooChartArchiveConnector read
 SHA-256-pinned local files through PinnedArchiveConnector. No provider access.

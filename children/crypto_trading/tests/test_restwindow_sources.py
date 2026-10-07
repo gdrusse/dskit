@@ -49,7 +49,7 @@ class FakeCoinbase:
         assert url.startswith("https://api.exchange.coinbase.com/products/") and url.endswith("-USD/candles"), url
         self.calls.append(dict(params))
         lo, hi = epoch(params["start"]), epoch(params["end"])
-        assert (hi - lo) // 60 + 1 <= 300, "the venue refuses a range of more than 300 granules, both bounds counted"
+        assert (hi - lo) // 60 <= 300, "the venue refuses a span of more than 300 granules (probed: 18000 s answers 301 rows, 18060 s is a 400)"
         return [self.row(t) for t in reversed(minutes(lo, hi)) if t <= int(NOW.timestamp())]
 
 
@@ -110,7 +110,7 @@ def test_the_shipped_span_fits_its_window_budget_with_the_headroom_the_notes_sta
     windows = math.ceil(seconds / page["step"])
     assert windows < page["max_windows"], "a span that has outgrown max_windows refuses before any request"
     if "coinbase" in name:
-        assert page["step"] == 299 * 60, "299 granules, both inclusive bounds counted: 300 rows, the venue's cap"
+        assert page["step"] == 299 * 60, "299 granules: 300 rows with both bounds, one granule under the venue's 300-granule ceiling"
         assert (page["max_windows"] - windows) * page["step"] / 86_400 >= 200, "the notes promise about 235 days of headroom"
         assert "4,860 windows" in config["notes"] and 4860 <= windows <= 4870
 

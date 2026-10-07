@@ -76,8 +76,36 @@ def test_the_runbook_pulls_every_new_source_in_the_order_it_says():
         assert pulled.count(name) == 1, name
     assert pulled.index("kalshi-history-crypto") < pulled.index("kalshi-history-candles-hourly-btc"), (
         "the markets pull is the measurement the costly candle pull waits on")
-    assert pulled.index("kalshi-history-trades-15m") < pulled.index("kalshi-history-trades-hourly"), "the cheaper family first"
+    assert pulled.index("kalshi-history-trades-hourly") < pulled.index("kalshi-history-trades-15m"), (
+        "measured: the hourly trades cost about 0.9 s a market and the 15-minute ones about 10 s, so the 15-minute pull is last")
     assert "COUNT" in TEXT and "7c" in TEXT
+
+
+def section(start, stop):
+    """The runbook text from the heading line starting ``start`` up to the heading line starting ``stop``."""
+    begin = TEXT.index("\n" + start) + 1
+    return TEXT[begin:TEXT.index("\n" + stop, begin)]
+
+
+def test_the_15_minute_trades_pull_is_gated_on_its_measured_cost_not_called_cheap():
+    """B-1: a 15-minute market's trade chain is about 15 requests, so the pull is days: behind the count gate, in its own step."""
+    gate = section("**7e.", "## 8.")
+    assert "kalshi-history-trades-15m" in gate and len(PULL.findall(gate)) == 1, "its own step, the only pull in it"
+    for needed in ("days", "all or nothing", "52 GB", "14,955", "9.5 to 12.3 s", "28,037", "7c"):
+        assert needed in gate, f"7e must say {needed!r}"
+    counted = section("**7c.", "**7d.")
+    assert "pages" in counted and "0.9 s" in counted, "7c prices a chain in pages, with the measured hourly figure beside the 15-minute one"
+    assert "kalshi-history-trades-15m" not in section("**7d.", "**7e."), "7d holds the pulls that fit the count gate"
+    assert "cheaper family" not in TEXT and "cheaper family" not in shipped("source-kalshi-history-trades-15m.json")["notes"]
+    assert "days" in shipped("source-kalshi-history-trades-15m.json")["notes"] and "runbook section 7" in shipped(
+        "source-kalshi-history-trades-15m.json")["notes"]
+
+
+def test_the_free_space_line_names_the_15_minute_trades_pull_apart_from_the_rest():
+    head = TEXT[:TEXT.index("## 0.")]
+    assert re.search(r"about 10 GB free[^.]*except[^.]*trades-15m", head), "the 10 GB figure excludes trades-15m"
+    assert re.search(r"trades-15m[^.]*about 50 GB", head)
+    assert "trades-15m, then" not in head, "the order line no longer starts the heavy pull first"
 
 
 def snippet(marker):
@@ -102,6 +130,30 @@ def test_the_archive_census_snippet_counts_archived_and_live_markets_per_series(
     assert counts[("KXBTC", "archived")] == counts[("KXETH", "live")] == 2
     assert counts[("KXBTC15M", "archived")] == counts[("KXETH15M", "live")] == 6
     assert sum(counts.values()) == 40, "every market of the six series is counted once"
+
+
+def test_the_open_length_census_separates_hourly_events_from_daily_and_weekly_ones(tmp_path, monkeypatch):
+    """A1-01: the four 'hourly' series list 25 h and weekly ladders too; the census shows the mixture before a pull is paid for."""
+    world = World(tmp_path, monkeypatch)
+    out = run_snippet(snippet("python - \"$OB\" <<'PY'    # census: how long"), world.store.path)
+    counts = {tuple(line.split()[:2]): int(line.split()[2]) for line in out.splitlines()}
+    assert counts[("KXBTCD", "<=70min")] == counts[("KXETHD", "<=70min")] == 4, "every synthetic hourly market was open 60 minutes"
+    assert counts[("KXBTC15M", "<=20min")] == counts[("KXETH15M", "<=20min")] == 12
+    assert sum(counts.values()) == 40 and {key[1] for key in counts} == {"<=20min", "<=70min"}
+
+
+def test_the_open_length_classes_split_daily_and_weekly_ladders_and_name_a_missing_open():
+    code = snippet("python - \"$OB\" <<'PY'    # census: how long")
+    classes = {}
+    exec(code.split("rows = ")[0].replace("from dskit.onboarding import scan_stream", ""), classes)  # the two helper functions only
+    row = lambda a, b: {"open_time": a, "close_time": b}  # noqa: E731
+    got = {name: classes["label"](classes["minutes"](r)) for name, r in {
+        "hour": row("2026-10-07T20:00:00Z", "2026-10-07T21:00:00Z"),
+        "day": row("2026-10-06T20:00:00Z", "2026-10-07T21:00:00Z"),
+        "week": row("2026-10-02T20:00:00Z", "2026-10-09T21:00:00Z"),
+        "quarter": row("2026-10-07T20:45:00Z", "2026-10-07T21:00:00Z"),
+        "unopened": row("", "2026-10-07T21:00:00Z")}.items()}
+    assert got == {"hour": "<=70min", "day": "<=2days", "week": ">2days", "quarter": "<=20min", "unopened": "no_open_time"}
 
 
 def test_the_gap_count_snippet_reports_the_days_that_are_not_complete(tmp_path, monkeypatch):

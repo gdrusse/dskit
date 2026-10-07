@@ -6,7 +6,7 @@ New child `children/crypto_trading`. Stage A sources/suites: Kalshi BTC/ETH hour
 + BVOL (research-only licence). Stage B document `configs/run-features-15m.json`: point-in-time features,
 a BRTI basis from strike anchors, a 60 s-average lognormal fair value, the Kalshi fee, and a kill test with
 day-block SEs and held-out only on an explicit edit; per-run published feature tables. The child suite is
-413 passed, 9 skipped.
+490 passed, 9 skipped (2026-10-07).
 
 **Why.** Research notes A0001 (ranked focus) and A0002 (data sources + live arbitrage snapshot) in the
 child's journal. Chosen problem: a calibrated short-horizon BTC/ETH settlement distribution, used to quote
@@ -20,10 +20,23 @@ E, not I (at most +0.8 pp); an uppercase run name is refused only after compute;
 ruff D ignore; README and runbook are long. Unverified: BVOL cadence, the 365-day year, today's fee
 schedule applied to history.
 
-**Owner decisions pending.** Approve or reject PROPOSED ADR-0236 through ADR-0244; ADR-0236 (Kalshi
-historical endpoints, trades, event-level candles, `expiration_value`) gates the hourly series and the
-continuous label. Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s, strike
-lag 30 s, and the store path placeholder `$OB`.
+**Update 2026-10-07.** ADR-0236 to ADR-0244 are ACCEPTED and IMPLEMENTED, with new dskit files only
+(`git diff --name-status a2749a3..HEAD -- dskit tests` is A for every `.py`; its four M rows are the pipeline
+and onboarding README and CLAUDE trees). `crypto_trading` moved onto them (interim modules deleted;
+`tests/test_migration_golden.py` pins the old rows) and gained `run-features-hourly.json`, the
+`kalshi-history-*`, Coinbase and Deribit sources and runbook sections 7 and 8. Measured: the 15-minute trades
+pull is about 6 to 8 days and 52 GB in one all-or-nothing acquire (runbook 7e), so it runs last and only
+after the count; the four "hourly" series also hold daily and weekly ladders, pooled (7c census).
+
+**Owner decisions pending.** Ratify leads [2,5,10], the held-out cut 2026-09-15, margin 0.02, exec lag 5 s,
+strike lag 30 s, and the store path placeholder `$OB`. A date bound for `kalshi_history` pulls (an ADR), and
+a filter on open-to-close duration for the hourly document (an ADR). Edits to existing dskit code, each
+refused so far: `zipcsv._MAX_EPOCH_MS` is derived through a float and sits one second late (Z1-1);
+`CeilToTick(guard_decimals=0)` snaps to the nearest tick before the ceiling (F4); the `kalshi_history`
+module docstring lists three of its five lifecycle statuses; the `Above`/`Below`/`Between` examples call
+`PAYOFFS[...]`, not the class; the two parity test files skip with a false reason (delete them or fix the
+text; the golden files now hold the comparison). Attribution of the six ADR-stream merge commits
+(`Claude Opus 5.5`, the rest `Claude Sonnet 5.5`) is unconfirmed.
 
 **Next (on WSL).** Fetch the branch; follow
 `children/crypto_trading/docs/plans/2026-10-06-wsl-data-pull-runbook.md` (stage A acquisitions, then

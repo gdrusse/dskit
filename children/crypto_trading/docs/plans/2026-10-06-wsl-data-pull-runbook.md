@@ -9,7 +9,8 @@ Everything enters through onboarding. Nothing has been pulled yet.
 
 **Done when.** Every pull below was acquired and its suite gated `pass`
 (`warn` is expected for the Binance BVOL missing days and for unset-strike
-15-minute markets, see section 5), and `verify` is clean.
+15-minute markets, see section 5), and `verify` is clean. The one exception is `trades-15m` (7e): days
+and about 50 GB, so it is acquired only once its count gate (7c) is accepted.
 
 **Two data sets.** Sections 2 to 4 are the 15-minute set: each strike's yes/no result, no
 settlement value. Section 7 adds the realised value, history before the live cutoff, the hourly
@@ -17,12 +18,13 @@ ladders' candles and trades; section 8 adds Coinbase and Deribit.
 
 **Order (WSL).** 1 set up; 2 register the nine sources; 3 the cheap history, cheapest first; 4 books
 (optional, any time); 5 verify and read it correctly; 7a to 7c register `kalshi_history`, pull
-its markets, COUNT the archive; 8 Coinbase and Deribit (independent of 7); 7d trades-15m, then the
-hourly candles and trades only after the count; stage B: B1 to B4 (15-minute), B6 (hourly).
+its markets, COUNT the archive; 8 Coinbase and Deribit (independent of 7); 7d the hourly candles and trades,
+only after the count; 7e the 15-minute trades, last and only if days of pulling are accepted;
+stage B: B1 to B4 (15-minute), B6 (hourly).
 
 Binance Vision is CC BY-NC-SA: research use only, not for live trading features.
-Needs about 10 GB free (a pull stages in `/tmp` before the store copy); keep the
-store on the WSL disk, not `/mnt/c`.
+Needs about 10 GB free for everything except `trades-15m` (an estimate; a pull stages in `/tmp` before the
+store copy), and `trades-15m` alone about 50 GB (measured, 7e); keep the store on the WSL disk, not `/mnt/c`.
 
 ## 0. Environment: paste at the top of EVERY new shell
 
@@ -154,8 +156,10 @@ Expected warnings, not failures:
   2024-06-30, 2025-12-15 to 2026-01-04), the same for BTC and ETH, found by a HEAD sweep
   on 2026-10-06. Klines had none missing. Read `reason` in the inventory
   (`scan_stream(root, source, "files", key_fields=["entity"])`) before modelling across a gap.
-- Markets: three settled KXBTC15M rows from 2026-08 have no strike (`Target price: TBD`).
-  Drop them by name; never guess a strike.
+- Markets: three settled KXBTC15M rows from 2026-08 have no strike (`Target price: TBD`) in the live `kalshi` pack. The
+  `kalshi_history` pull (section 7) reads the archive too: over a full KXBTC15M history pull (28,037 markets)
+  `markets-strike-type-set` warns on 358 rows (262 from 2025-12, no `floor_strike`) and `markets-expiration-value-present`
+  on 2,816 (all `finalized`, no value). Drop them by name; never guess a strike.
 
 Reading the data:
 
@@ -195,14 +199,15 @@ for s in kalshi-history-crypto kalshi-history-candles-hourly-btc kalshi-history-
 ```
 
 **7b. Markets first: it is also the measurement.** A full re-pull of the six series from both archives, 1000
-rows a page; the row count tells you what 7d would cost.
+rows a page; the row count tells you what 7d and 7e would cost.
 
 ```bash
 pull kalshi-history-crypto markets suite-kalshi-history-markets.json
 ```
 
 **7c. Count before you choose.** The candle and trade pulls cost one request chain per MARKET (the archive is
-requested market by market and the pack has no date bound), so count the archive per series first:
+requested market by market and the pack has no date bound), and a chain pages: a liquid market's trades are many
+requests, not one. Count the archive per series first:
 
 ```bash
 CUT=$(curl -s https://external-api.kalshi.com/trade-api/v2/historical/cutoff | python -c 'import json,sys; print(json.load(sys.stdin)["market_settled_ts"])')
@@ -217,15 +222,47 @@ for key in sorted(count):
 PY
 ```
 
-Hourly candles cost about the archived hourly markets in that table, plus 3 requests per live event (live
-hourly markets / about 190 strikes); hourly trades about one chain per hourly market in both. Multiply by
-about 0.65 s a request (0.4 s probed plus `pace_s` 0.25: an estimate, not measured). If that is days, do not
-start: the pack has no date bound, so a bounded pull needs a new dskit knob (an ADR), not child code.
-
-**7d. Then, one pull at a time (a failed pull commits nothing; rerun it).**
+Then how long each market was open, because the four 'hourly' series also list daily ladders (open 25 h, closing at 17:00 New York time)
+and weekly ones (open 7 d), and every pull and the hourly feature table pool all of them (measured 2026-10-07: 1 of 33 sampled
+archived events was 25 h):
 
 ```bash
-pull kalshi-history-trades-15m trades suite-kalshi-history-trades.json
+python - "$OB" <<'PY'    # census: how long each market was open, per series
+import collections, datetime, sys
+from dskit.onboarding import scan_stream
+def minutes(row):
+    try:
+        a, b = (datetime.datetime.fromisoformat(row[k].replace("Z", "+00:00")) for k in ("open_time", "close_time"))
+    except ValueError:
+        return None
+    return (b - a).total_seconds() / 60
+def label(m):
+    return "no_open_time" if m is None else "<=20min" if m <= 20 else "<=70min" if m <= 70 else "<=2days" if m <= 2880 else ">2days"
+rows = scan_stream(sys.argv[1], "kalshi-history-crypto", "markets", key_fields=["ticker"])
+count = collections.Counter((r["series_ticker"], label(minutes(r))) for r in rows)
+for key in sorted(count):
+    print(*key, count[key])
+PY
+```
+
+Cost, in requests, then multiplied by about 0.65 s each (0.4 s probed plus `pace_s` 0.25):
+
+- Hourly candles: one request per ARCHIVED hourly market, plus per live event a number of calls that grows with how long
+  it was open, not with its strikes: about 3 for a 1-hour event, about 55 for a live 25 h ladder of 80 strikes (a call
+  covers about 26 minutes of the window; measured 2026-10-07).
+- Hourly trades: one chain per market, measured about 0.9 s a market. A chain is `ceil(trades / 1000)` pages, one request
+  each, so a market's trades divided by the limit is the figure to use, never 1.
+- 15-minute trades: a chain is about 15 requests. Measured 2026-10-07 over 40 markets (20 per asset, 24 archived and 16
+  live): 598,198 trades, 492 s, so 14,955 trades and 12.3 s a market (a 12-market re-measure: 9.5 s). That is
+  the heaviest family, not the lightest; 7e prices the whole pull.
+
+If the figure is days, do not start: the pack has no date bound, so a bounded pull needs a new dskit knob (an ADR),
+not child code. A failed or interrupted pull commits nothing.
+
+**7d. Then, one pull at a time (a failed pull commits nothing; rerun it).** The hourly pulls, each only after its 7c
+figure is accepted:
+
+```bash
 pull kalshi-history-candles-hourly-btc candles suite-kalshi-history-candles.json
 pull kalshi-history-candles-hourly-eth candles suite-kalshi-history-candles.json
 pull kalshi-history-trades-hourly trades suite-kalshi-history-trades.json
@@ -244,6 +281,19 @@ Reading it correctly:
   `last_price` are post-settlement values (B5).
 - `warn` on the markets suite for a null `expiration_value` is read, not ignored: the yes/no result still labels
   the row, but the value is missing. An empty `settlement_ts` cannot be caught by a suite rule (see its notes).
+
+**7e. The 15-minute trades: days, all or nothing, last.** `kalshi-history-trades-15m` is the heaviest pull here, not the
+cheapest. The venue holds 28,037 settled KXBTC15M markets (measured by a full markets pull, live and archive, deduplicated)
+and about as many KXETH15M. At the measured 14,955 trades and 9.5 to 12.3 s a market (7c), about 56,000 markets take about
+6 to 8 days in ONE acquire, return about 0.84 billion rows and store about 52 GB (the 40-market slice stored 18.5 MB of
+payload and 18.5 MB of observations per 598,198 rows), plus the staging copy in `/tmp`. Any sleep, network drop or full
+disk commits nothing, so the days are lost. Start it only after 7c's count and these figures are accepted and the disk is
+there; otherwise leave it out (no stage B document reads trades) until a dskit date bound exists (an ADR).
+
+```bash
+pull kalshi-history-trades-15m trades suite-kalshi-history-trades.json    # about 6 to 8 days, about 52 GB, all or nothing
+python -m dskit.onboarding verify --root "$OB"
+```
 
 ## 8. Spot and implied vol from other venues (`restwindow`): Coinbase, Deribit
 
@@ -273,7 +323,7 @@ python -m dskit.onboarding verify --root "$OB"
 - **Time.** Coinbase `time` (epoch seconds) and Deribit `ts` (epoch ms) are the START of the minute: the bar is complete
   at start + 60 s, so use only bars that ended before a decision instant. `time_iso` and `ts_iso` are the ISO form.
 - Deribit refuses, rather than stores, a window the vendor cut short (`result.continuation`). Coinbase answers HTTP 400
-  above 300 granules, which the window `step` stays under.
+  above 300 granules a span (probed: 18000 s is 301 rows, 18060 s a 400); the window `step` is 299 granules, one under.
 - The suites cannot check for gaps: count rows per day yourself (1440 expected; the first and last days are partial):
 
 ```bash
@@ -390,7 +440,7 @@ run, hence a new file and stream, and the old table stays readable. A later run 
 
 - **The cut is decided before you look.** `development` ends 2026-09-15 and `heldout` starts there
   (`kill_test.params.segments`, integer epoch ms: 1789430400000 is 2026-09-15T00:00:00Z; cut on each market's
-  CLOSE so a market's rows never straddle it).
+  CLOSE so a market's rows never straddle it; the hourly document cuts on `settlement_ms`, B6).
   Choose the vol window, leads and margin on `development` only. When you are done, add `"heldout"` to
   `kill_test.params.report_segments`, commit that edit (it changes the document hash, so the read is
   recorded), run once and read it. Never move the cut or re-tune afterwards. Three fair values are scored
@@ -446,9 +496,15 @@ Read B3 to B5 first; they apply unchanged. What differs:
   same on every strike of an event) and `settlement_ms` (when it became known, after the close). They are labels: no feature
   reads them (a test changes every value and result and asserts no feature moves), and a later decision may use one only
   after its `settlement_ms`.
-- **An hourly strike is fixed at the open** (`strike_known_ms` is the open), and a market is open for the hour before its
-  close, so a lead of up to 59 minutes is a decision after it. The spot basis comes from the latest 15-minute anchor known
-  before the decision, at most 15.5 minutes old.
+- **The cut is on the settlement instant.** `kill_test.settle_field` is `settlement_ms`, the instant the label became known
+  (minutes after the close), so a market whose label was unknown at the cut is never in development. The cut is on the
+  15-minute and hourly grids, so today no market straddles it (a test pins that); the 15-minute document has no
+  settlement instant and cuts on the close.
+- **An hourly strike is fixed at the open** (`strike_known_ms` is the open), and a 1-hour market is open for the hour before
+  its close, so a lead of up to 59 minutes is a decision after it. The four series also hold daily (25 h) and weekly (7 d)
+  ladders, pooled with the 1-hour events by the table and the kill test (7c's open-length census counts them; filtering on
+  open duration needs an ADR). The spot basis comes from the latest 15-minute anchor known before the decision, at most
+  15.5 minutes old.
 - **Most strikes have no quote.** An event has about 190 strikes, most far from the money; a row without a two-sided quote
   is counted out by `two_sided` on the census, not dropped quietly. Read the census before the pooled numbers; the table is
   large (strikes x events x leads).
@@ -456,8 +512,8 @@ Read B3 to B5 first; they apply unchanged. What differs:
 
 ## Known issues (not fixed; none blocks the first run)
 
-- The hourly candle and trade pulls (7d) cost one request chain per ARCHIVED market, and the pack has no date bound: 7c
-  counts them first, and a bounded pull needs a new dskit knob.
+- The candle and trade pulls (7d, 7e) cost one request chain per ARCHIVED market, a chain pages, and the pack has no date
+  bound: 7c counts them first (the 15-minute trades are days, 7e), and a bounded pull needs a new dskit knob.
 
 - Fills are priced at the quote of the information instant, so adverse selection during the execution lag
   is not modelled (see B5).

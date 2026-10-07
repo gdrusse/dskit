@@ -54,7 +54,8 @@ on it without breaking its rulings (ADR-0012…0016).
   commit instant, ADR-0079, so a capture instant never post-dates it).
   `libs/kalshi_history.py` and `libs/restwindow.py` are STANDALONE siblings of
   `kalshi` and `restapi` (ADR-0236/0237): they import only public (`__all__`)
-  names of those packs, so the transport is restated and parity-pinned, never
+  names of those packs, so the transport is restated and parity-pinned (`tests/onboarding/test_restwindow_pins.py`
+  holds the retried statuses, client name and path reader equal to `restapi`'s and `kalshi`'s), never
   shared through an underscore name. `kalshi_history` scans live statuses in
   lifecycle order, the archive last, and holds a series' listing before any
   per-market request; its label (`expiration_value`) exists only from

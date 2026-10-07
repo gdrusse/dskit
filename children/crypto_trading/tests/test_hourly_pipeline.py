@@ -158,7 +158,7 @@ def runbook_root_command():
     return line
 
 
-def patched_doc(world, tmp_path, name="run-hourly.json"):
+def patched_doc(world, tmp_path, name="run-hourly.json", cut_ms=CUT_MS):
     """The shipped document with its roots rewritten EXACTLY as the runbook says, then placement and the cut moved."""
     work = tmp_path / ("shipped-" + name)
     (work / "configs").mkdir(parents=True)
@@ -171,16 +171,16 @@ def patched_doc(world, tmp_path, name="run-hourly.json"):
     out.mkdir(exist_ok=True)
     doc["pipeline"]["write"]["params"]["path"] = str(out / os.path.basename(doc["pipeline"]["write"]["params"]["path"]))
     kill = doc["pipeline"]["kill_test"]["params"]
-    kill["segments"]["development"]["end_ms"] = CUT_MS
-    kill["segments"]["heldout"]["start_ms"] = CUT_MS
+    kill["segments"]["development"]["end_ms"] = cut_ms
+    kill["segments"]["heldout"]["start_ms"] = cut_ms
     kill["report_segments"] = ["development", "heldout"]
     path = tmp_path / name
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path, out
 
 
-def run(world, tmp_path, name="run-hourly.json"):
-    path, out = patched_doc(world, tmp_path, name)
+def run(world, tmp_path, name="run-hourly.json", cut_ms=CUT_MS):
+    path, out = patched_doc(world, tmp_path, name, cut_ms)
     document = replace(load_document(str(path)), outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
     return run_document(document, asof="2026-10-06"), out
 
@@ -285,6 +285,18 @@ def test_the_kill_test_scores_both_segments_and_writes_its_report(ran):
     held = [s for s in scores if (s["segment"], s["group"], s["bucket"], s["model"]) == ("heldout", "all", "all", "fair_rms")][0]
     assert held["n"] == 8 * len(LEADS), "eight held-out hourly markets, every one two-sided at every lead"
     assert sorted(os.listdir(os.path.join(result.run_dir, "artifacts", "kill_test"))) == ["binary_score.json", "binary_score.md"]
+
+
+def test_segments_are_cut_on_the_instant_the_label_is_settled_not_on_the_close(tmp_path, monkeypatch):
+    """A cut between a market's close and its settlement puts the market with the HELD-OUT side: its label was unknown at the cut."""
+    world = World(tmp_path, monkeypatch)
+    cut = ms(CLOSES[1]) + 90_000  # event two closed 90 s before the cut and settles SETTLED_AFTER_S (140 s) after its close
+    result, _ = run(world, tmp_path, cut_ms=cut)
+    assert result.state == "ran", (result.state, result.error)
+    cell = {(s["segment"], s["model"]): s["n"] for s in result.outputs["kill_test"]["scores"]
+            if (s["group"], s["bucket"]) == ("all", "all")}
+    assert cell[("heldout", "fair_rms")] == 8 * len(LEADS), "event two settled after the cut: held out although it closed before it"
+    assert cell[("development", "fair_rms")] == 8 * len(LEADS), "event one is the whole development segment"
 
 
 def test_a_fair_value_matches_an_independent_hand_computation(ran):

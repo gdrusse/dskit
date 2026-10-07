@@ -876,7 +876,10 @@ def test_the_hourly_document_shares_every_modelling_knob_with_the_15_minute_one(
     fifteen, hourly = _doc()["pipeline"], _hourly()["pipeline"]
     for key in ("streams", "state", "fair_rms", "fair_ewma", "fair_bvol", "fees", "kill_test", "fee_schedules"):
         a, b = fifteen[key], hourly[key]
-        assert a["uses"] == b["uses"] and a["params"] == b["params"] and a.get("inputs") == b.get("inputs"), key
+        pa, pb = dict(a["params"]), dict(b["params"])
+        if key == "kill_test":  # the one difference by design: the hourly rows carry the settlement instant (see the next test)
+            assert (pa.pop("settle_field"), pb.pop("settle_field")) == ("close_ms", "settlement_ms")
+        assert a["uses"] == b["uses"] and pa == pb and a.get("inputs") == b.get("inputs"), key
     spot15, spot_h = fifteen["spot"]["params"], hourly["spot"]["params"]
     assert {k: v for k, v in spot15.items() if k != "assets"} == {k: v for k, v in spot_h.items() if k != "assets"}
     assert fifteen["decisions"]["params"]["exec_lag_s"] == hourly["decisions"]["params"]["exec_lag_s"]
@@ -884,6 +887,18 @@ def test_the_hourly_document_shares_every_modelling_knob_with_the_15_minute_one(
         assert fifteen["markets"]["params"][key] == hourly["markets"][ "params"][key] == hourly["anchor_markets"]["params"][key], key
     assert hourly["anchor_markets"]["params"]["strike_known_lag_s"] == fifteen["markets"]["params"]["strike_known_lag_s"]
     assert hourly["markets"]["params"]["strike_known_lag_s"] == {}, "an hourly strike is fixed at creation: known at the open"
+
+
+def test_each_document_cuts_on_the_settlement_instant_its_rows_carry_and_the_cut_is_on_the_contract_grids():
+    """The hourly rows carry the settlement instant and the scorer cuts on it; the 15-minute rows cannot, so they cut on the close."""
+    from crypto_trading import fields as f
+
+    assert _hourly()["pipeline"]["kill_test"]["params"]["settle_field"] == f.SETTLEMENT_MS
+    assert _doc()["pipeline"]["kill_test"]["params"]["settle_field"] == f.CLOSE_MS
+    for params in (_doc()["pipeline"]["kill_test"]["params"], _hourly()["pipeline"]["kill_test"]["params"]):
+        (cut,) = {params["segments"]["development"]["end_ms"], params["segments"]["heldout"]["start_ms"]}
+        for grid_s in (900, 3600):  # 15-minute closes, and the hourly series' (the 25 h and weekly ladders close on the hour too)
+            assert cut % (grid_s * 1000) == 0, f"the cut {cut} is not on the {grid_s} s grid: a market could straddle it"
 
 
 def test_the_hourly_leads_fit_the_hour_and_leave_the_averaging_window_after_the_fill():

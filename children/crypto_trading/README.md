@@ -286,6 +286,7 @@ crypto_trading/
     ├── test_market_state.py # candle state and the no-peeking rule
     ├── test_spot_features.py # strict-prior leak tests with a control
     ├── test_zero_edge.py  # a zero-edge world scores zero edge; a stale quote does not
+    ├── test_guard_pins.py # edge-of-data and degenerate-input guards, each pinned by one case
     ├── test_ports_and_markers.py # one list-port owner; no INTERIM marker outlives its dskit module
     ├── test_configs.py    # every config validates against its engine; pins
     ├── test_connectors.py # four-verb contract + acquire→validate e2e

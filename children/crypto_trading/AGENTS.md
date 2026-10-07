@@ -117,7 +117,7 @@ new dskit knob, never child code. The digest check is child-side by ruling (ADR-
 ## Stage B features and the kill test
 
 `configs/run-features-15m.json` is the document: readers (`kalshi_rows`), decision rows, point-in-time
-features, fair values, fees, the kill test, then `records-write`. `configs/run-features-hourly.json` is the SAME
+features, fair values, fees, the kill test, then `records-write-run`. `configs/run-features-hourly.json` is the SAME
 nodes over the hourly ladders (a second `MarketRows` reads the 15-minute series only to anchor the index units); every
 modelling knob and the held-out cut are shared and pinned equal in `tests/test_configs.py`, so edit both or neither.
 Its rows carry `settle_value` and `settlement_ms` (labels): `tests/test_hourly_pipeline.py` proves by a second world
@@ -137,7 +137,7 @@ that bind any edit:
   after the strike is known.
 - **Units.** Row times are epoch ms; only the candle `ts` from the pack is seconds (`CandleRows` converts and
   refuses an ms value); every vol column is log-return std per sqrt(second). `fields.py` owns shared names.
-- **One published table per run.** The `write` node is `RunStampedWrite`: `{run}` in its path becomes the run
+- **One published table per run.** The `write` node is dskit's `RecordsWriteRun` (`records-write-run`): `{run}` in its path becomes the run
   directory's name and rows carry `run_id`. `localtables` is incremental, so a changed table under an old
   stream name returns `snapshot: null` and serves the OLD rows; never publish under a fixed stream name.
 - **No imputation.** Missing is `None` plus a `*_missing` / `*_status` column. A reading older than its age
@@ -196,8 +196,9 @@ tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   stage B: synthetic.py (offline stores), one test
                        #   file per child module, test_features_pipeline,
                        #   test_hourly_pipeline (leak tests by a second world)
-                       #   and test_migration_golden (golden/: the
-                       #   pre-migration outputs)
+                       #   test_migration_golden (golden/: the
+                       #   pre-migration outputs) and test_guard_pins (each
+                       #   edge-of-data and bad-input guard, one case)
 pyproject.toml         # dependencies = ["dskit"]; extras `parquet` (pyarrow), `features` (numpy + pyarrow)
 ```
 

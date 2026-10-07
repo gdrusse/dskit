@@ -1,0 +1,1493 @@
+{
+ "accepted": [
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "name": "microseconds",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "1790812800000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "name": "milliseconds",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "name": "header",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "\ufeff1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "name": "bom",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "\ufeffopen_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "name": "bom header",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83534.02,
+     83557.25,
+     83578.01
+    ],
+    "close_time_ms": [
+     1790812979999,
+     1790812919999,
+     1790812859999
+    ],
+    "high": [
+     83557.26,
+     83578.01,
+     83660.01
+    ],
+    "low": [
+     83534.01,
+     83550.0,
+     83578.0
+    ],
+    "open": [
+     83557.25,
+     83578.01,
+     83623.59
+    ],
+    "open_time_ms": [
+     1790812920000,
+     1790812860000,
+     1790812800000
+    ],
+    "quote_volume": [
+     584685.5653229,
+     1065006.090079,
+     2419857.1162231
+    ],
+    "taker_buy_quote_volume": [
+     270950.2900606,
+     729518.2934466,
+     1220287.6698931
+    ],
+    "taker_buy_volume": [
+     3.24305,
+     8.73067,
+     14.59132
+    ],
+    "trades": [
+     969,
+     1162,
+     4552
+    ],
+    "volume": [
+     6.99822,
+     12.74545,
+     28.93519
+    ]
+   },
+   "csv": "1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n",
+   "layout": "klines",
+   "name": "out of order",
+   "note": "rows 3, 2026-10-01T00:02:00Z .. 2026-10-01T00:00:00Z OUT OF ORDER",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n\n",
+   "layout": "klines",
+   "name": "blank lines",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01,
+     83557.25,
+     83534.02
+    ],
+    "close_time_ms": [
+     1790812859999,
+     1790812919999,
+     1790812979999
+    ],
+    "high": [
+     83660.01,
+     83578.01,
+     83557.26
+    ],
+    "low": [
+     83578.0,
+     83550.0,
+     83534.01
+    ],
+    "open": [
+     83623.59,
+     83578.01,
+     83557.25
+    ],
+    "open_time_ms": [
+     1790812800000,
+     1790812860000,
+     1790812920000
+    ],
+    "quote_volume": [
+     2419857.1162231,
+     1065006.090079,
+     584685.5653229
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931,
+     729518.2934466,
+     270950.2900606
+    ],
+    "taker_buy_volume": [
+     14.59132,
+     8.73067,
+     3.24305
+    ],
+    "trades": [
+     4552,
+     1162,
+     969
+    ],
+    "volume": [
+     28.93519,
+     12.74545,
+     6.99822
+    ]
+   },
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\r\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\r\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\r\n",
+   "layout": "klines",
+   "name": "crlf",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:02:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "close": [
+     83578.01
+    ],
+    "close_time_ms": [
+     1790812859999
+    ],
+    "high": [
+     83660.01
+    ],
+    "low": [
+     83578.0
+    ],
+    "open": [
+     83623.59
+    ],
+    "open_time_ms": [
+     1790812800000
+    ],
+    "quote_volume": [
+     2419857.1162231
+    ],
+    "taker_buy_quote_volume": [
+     1220287.6698931
+    ],
+    "taker_buy_volume": [
+     14.59132
+    ],
+    "trades": [
+     4552
+    ],
+    "volume": [
+     28.93519
+    ]
+   },
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n",
+   "layout": "klines",
+   "name": "one row",
+   "note": "rows 1, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:00Z",
+   "schema": [
+    [
+     "open_time_ms",
+     "int64"
+    ],
+    [
+     "open",
+     "double"
+    ],
+    [
+     "high",
+     "double"
+    ],
+    [
+     "low",
+     "double"
+    ],
+    [
+     "close",
+     "double"
+    ],
+    [
+     "volume",
+     "double"
+    ],
+    [
+     "close_time_ms",
+     "int64"
+    ],
+    [
+     "quote_volume",
+     "double"
+    ],
+    [
+     "trades",
+     "int64"
+    ],
+    [
+     "taker_buy_volume",
+     "double"
+    ],
+    [
+     "taker_buy_quote_volume",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812800001,
+     1790812801000,
+     1790812802000
+    ],
+    "index_value": [
+     37.2172,
+     37.2172,
+     37.2171
+    ],
+    "quote_asset": [
+     "USDT",
+     "USDT",
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "name": "header",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:02Z",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812800001,
+     1790812801000,
+     1790812802000
+    ],
+    "index_value": [
+     37.2172,
+     37.2172,
+     37.2171
+    ],
+    "quote_asset": [
+     "USDT",
+     "USDT",
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "name": "headerless",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:02Z",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812800001,
+     1790812801000,
+     1790812802000
+    ],
+    "index_value": [
+     37.2172,
+     37.2172,
+     37.2171
+    ],
+    "quote_asset": [
+     "USDT",
+     "USDT",
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "\ufeffcalc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "name": "bom header",
+   "note": "rows 3, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:02Z",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812800001,
+     1790812801000,
+     1790812802000,
+     1790812800001
+    ],
+    "index_value": [
+     37.2172,
+     37.2172,
+     37.2171,
+     37.2172
+    ],
+    "quote_asset": [
+     "USDT",
+     "USDT",
+     "USDT",
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n",
+   "layout": "bvol",
+   "name": "duplicate instant",
+   "note": "rows 4, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:00Z OUT OF ORDER DUPLICATE INSTANTS 1",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL",
+     "BTCBVOL",
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812802000,
+     1790812801000,
+     1790812800001
+    ],
+    "index_value": [
+     37.2171,
+     37.2172,
+     37.2172
+    ],
+    "quote_asset": [
+     "USDT",
+     "USDT",
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT",
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n",
+   "layout": "bvol",
+   "name": "out of order",
+   "note": "rows 3, 2026-10-01T00:00:02Z .. 2026-10-01T00:00:00Z OUT OF ORDER",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  },
+  {
+   "columns": {
+    "base_asset": [
+     "BTCBVOL"
+    ],
+    "calc_time_ms": [
+     1790812800001
+    ],
+    "index_value": [
+     37.2172
+    ],
+    "quote_asset": [
+     "USDT"
+    ],
+    "symbol": [
+     "BTCBVOLUSDT"
+    ]
+   },
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n",
+   "layout": "bvol",
+   "name": "one row",
+   "note": "rows 1, 2026-10-01T00:00:00Z .. 2026-10-01T00:00:00Z",
+   "schema": [
+    [
+     "calc_time_ms",
+     "int64"
+    ],
+    [
+     "symbol",
+     "string"
+    ],
+    [
+     "base_asset",
+     "string"
+    ],
+    [
+     "quote_asset",
+     "string"
+    ],
+    [
+     "index_value",
+     "double"
+    ]
+   ]
+  }
+ ],
+ "as_of": "2026-10-06T00:00:00+00:00",
+ "containers": [
+  {
+   "body_b64": "bm90IGEgemlwIGF0IGFsbA==",
+   "layout": "klines",
+   "message": "not a zip archive of UTF-8 CSV, or corrupt: File is not a zip file",
+   "name": "not a zip"
+  },
+  {
+   "body_b64": "UEsDBBQAAAAIAOcxR10AAAAAAgAAAAAAAAAJAAAAbm90ZXMudHh0AwBQSwECFAMUAAAACADnMUddAAAAAAIAAAAAAAAACQAAAAAAAAAAAAAAgAEAAAAAbm90ZXMudHh0UEsFBgAAAAABAAEANwAAACkAAAAAAA==",
+   "layout": "klines",
+   "message": "no .csv member in the archive",
+   "name": "no csv member"
+  },
+  {
+   "body_b64": "UEsDBBQAAAAIAOcxR10k/N8osgAAANYBAAAUAAAAdGlja3MtMjAyNi0xMC0wMS5jc3Z1kEuOwzAMQ/dzFkOQqP/9LzZK6jQpimpHUDSfLNlcguI9qzSg5H3LYGJ5S8+ix/IpLxdFrS5Hdsl+2Ps1CyZdniQSgAovc8cSmy5RnBGAUUkRXX1s8N/1Svxo/JbOH3hTCN9SQGlu/sBrufCEY4wgHvrxZmM4V1EqRx6JRLsUodVs/uSGa/zo2zJuqfbBesgdXkHdBTzZ8mLzsignD1egeXX0UoIpn7cguefscTj4JPsHUEsDBBQAAAAIAOcxR10k/N8osgAAANYBAAAJAAAAYWdhaW4uY3N2dZBLjsMwDEP3cxZDkKj//S82Suo0KYpqR1A0nyzZXILiPas0oOR9y2BieUvPosfyKS8XRa0uR3bJftj7NQsmXZ4kEoAKL3PHEpsuUZwRgFFJEV19bPDf9Ur8aPyWzh94UwjfUkBpbv7Aa7nwhGOMIB768WZjOFdRKkceiUS7FKHVbP7khmv86Nsybqn2wXrIHV5B3QU82fJi87IoJw9XoHl19FKCKZ+3ILnn7HE4+CT7B1BLAQIUAxQAAAAIAOcxR10k/N8osgAAANYBAAAUAAAAAAAAAAAAAACAAQAAAAB0aWNrcy0yMDI2LTEwLTAxLmNzdlBLAQIUAxQAAAAIAOcxR10k/N8osgAAANYBAAAJAAAAAAAAAAAAAACAAeQAAABhZ2Fpbi5jc3ZQSwUGAAAAAAIAAgB5AAAAvQEAAAAA",
+   "layout": "klines",
+   "message": "exactly one .csv member expected, got 2",
+   "name": "two csv members"
+  },
+  {
+   "body_b64": "UEsDBBQAAAAAAOcxR10k/N8o1gEAANYBAAAUAAAAdGlja3MtMjAyNi0xMC0wMS5jc3YxNzkwODEyODAwMDAwMDAwLDgzNjIzLjU5MDAwMDAwLDgzNjYwLjAxMDAwMDAwLDgzNTc4LjAwMDAwMDAwLDgzNTc4LjAxMDAwMDAwLDI4LjkzNTE5MDAwLDE3OTA4MTI4NTk5OTk5OTksMjQxOTg1Ny4xMTYyMjMxMCw0NTUyLDE0LjU5MTMyMDAwLDEyMjAyODcuNjY5ODkzMTAsMAoxNzkwODEyODYwMDAwMDAwLDgzNTc4LjAxMDAwMDAwLDgzNTc4LjAxMDAwMDAwLDgzNTUwLjAwMDAwMDAwLDgzNTU3LjI1MDAwMDAwLDEyLjc0NTQ1MDAwLDE3OTA4MTI5MTk5OTk5OTksMTA2NTAwNi4wOTAwNzkwMCwxMTYyLDguNzMwNjcwMDAsNzI5NTE4LjI5MzQ0NjYwLDAKMTc5MDgxMjkyMDAwMDAwMCw4MzU1Ny4yNTAwMDAwMCw4MzU1Ny4yNjAwMDAwMCw4MzUzNC4wMTAwMDAwMCw4MzUzNC4wMjAwMDAwMCw2Ljk5ODIyMDAwLDE3OTA4MTI5Nzk5OTk5OTksNTg0Njg1LjU2NTMyMjkwLDk2OSwzLjI0MzA1MDAwLDI3MDk1MC4yOTAwNjA2MCwwClBLAQIUAxQAAAAAAOcxR10k/N8o1gEAANYBAAAUAAAAAAAAAAAAAACAAQAAAAB0aWNrcy0yMDI2LTE=",
+   "layout": "klines",
+   "message": "not a zip archive of UTF-8 CSV, or corrupt: File is not a zip file",
+   "name": "truncated zip"
+  },
+  {
+   "body_b64": "UEsDBBQAAAAIAOcxR12FihSfOAEAAMxbAAAUAAAAdGlja3MtMjAyNi0xMC0wMS5jc3bt0UFuxDAIheF9z2JZgA2G+1+sTpp0Mqpm1e3vHcKE53y6SlIt5TotR9joXq8ypIv+lr6yPy6f5d217DVcj9mm14e9fk6zqZW+umqYDZU23a3p3Lt02DliJparR1TWcUO+7q/EeI1/S5e3eHuh+VWq9TV9+iNe6R1PJXYjuuz0u7dv7Jwt+xoS65hYVq7Zrcac+5+8wpV92HeV8SrHfMt6lNdwi16VZs9s687mOSO9e/gwK2kV1Ua3OeR8iy2p/ezdkZBnMlRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVFFFFVVUUUUVVVRRRRVVVP+l+g1QSwECFAMUAAAACADnMUddhYoUnzgBAADMWwAAFAAAAAAAAAAAAAAAgAEAAAAAdGlja3MtMjAyNi0xMC0wMS5jc3ZQSwUGAAAAAAEAAQBCAAAAagEAAAAA",
+   "layout": "klines",
+   "message": "not a zip archive of UTF-8 CSV, or corrupt: Bad CRC-32 for file 'ticks-2026-10-01.csv'",
+   "name": "corrupt member"
+  }
+ ],
+ "entity": "2026-10-01",
+ "layouts": {
+  "bvol": {
+   "columns": [
+    {
+     "kind": "ts",
+     "output": "calc_time_ms",
+     "vendor": "calc_time"
+    },
+    {
+     "kind": "text",
+     "output": "symbol",
+     "vendor": "symbol"
+    },
+    {
+     "kind": "text",
+     "output": "base_asset",
+     "vendor": "base_asset"
+    },
+    {
+     "kind": "text",
+     "output": "quote_asset",
+     "vendor": "quote_asset"
+    },
+    {
+     "kind": "float",
+     "output": "index_value",
+     "vendor": "index_value"
+    }
+   ]
+  },
+  "klines": {
+   "columns": [
+    {
+     "kind": "ts",
+     "output": "open_time_ms",
+     "vendor": "open_time"
+    },
+    {
+     "kind": "float",
+     "output": "open",
+     "vendor": "open"
+    },
+    {
+     "kind": "float",
+     "output": "high",
+     "vendor": "high"
+    },
+    {
+     "kind": "float",
+     "output": "low",
+     "vendor": "low"
+    },
+    {
+     "kind": "float",
+     "output": "close",
+     "vendor": "close"
+    },
+    {
+     "kind": "float",
+     "output": "volume",
+     "vendor": "volume"
+    },
+    {
+     "kind": "ts",
+     "output": "close_time_ms",
+     "vendor": "close_time"
+    },
+    {
+     "kind": "float",
+     "output": "quote_volume",
+     "vendor": "quote_volume"
+    },
+    {
+     "kind": "int",
+     "output": "trades",
+     "vendor": "count"
+    },
+    {
+     "kind": "float",
+     "output": "taker_buy_volume",
+     "vendor": "taker_buy_volume"
+    },
+    {
+     "kind": "float",
+     "output": "taker_buy_quote_volume",
+     "vendor": "taker_buy_quote_volume"
+    },
+    {
+     "kind": "int",
+     "output": null,
+     "vendor": "ignore"
+    }
+   ],
+   "unique_instants": true
+  }
+ },
+ "notes": "Frozen output of the pre-migration crypto_trading child's Binance zip transform (children/crypto_trading/crypto_trading/binance_vision.py at a2749a3, deleted when the child moved onto dskit's zipcsv, ADR-0239): what the new pack must still reproduce. Each accepted case is a CSV, the inventory note, the arrow schema and every column; each refusal is the exact message; each container is a zip body (base64) and its message. Regenerate nothing: the reference is gone, so this file IS the reference.",
+ "refused": [
+  {
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n",
+   "layout": "klines",
+   "message": "1 duplicate row instant(s); this layout's instant is a unique key",
+   "name": "duplicate instant"
+  },
+  {
+   "csv": "o,h,l,c\n1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "message": "line 1: unexpected header ['o', 'h', 'l', 'c']; expected ['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'count', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore']",
+   "name": "not a header"
+  },
+  {
+   "csv": "",
+   "layout": "klines",
+   "message": "no rows in the CSV",
+   "name": "empty"
+  },
+  {
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060\n",
+   "layout": "klines",
+   "message": "line 1: expected 12 columns, got 11",
+   "name": "short row"
+  },
+  {
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0,1\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0,1\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0,1\n",
+   "layout": "klines",
+   "message": "line 1: expected 12 columns, got 13",
+   "name": "long row"
+  },
+  {
+   "csv": "1790812800000000,abc,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "message": "line 1: column 'open': could not convert string to float: 'abc'",
+   "name": "bad float"
+  },
+  {
+   "csv": "1790812800000000,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,45.5,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "message": "line 1: column 'count': invalid literal for int() with base 10: '45.5'",
+   "name": "bad int"
+  },
+  {
+   "csv": "1790812800000000,nan,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "message": "line 1: column 'open': not a finite number: 'nan'",
+   "name": "non-finite"
+  },
+  {
+   "csv": "17908128.5,83623.59000000,83660.01000000,83578.00000000,83578.01000000,28.93519000,1790812859999999,2419857.11622310,4552,14.59132000,1220287.66989310,0\n1790812860000000,83578.01000000,83578.01000000,83550.00000000,83557.25000000,12.74545000,1790812919999999,1065006.09007900,1162,8.73067000,729518.29344660,0\n1790812920000000,83557.25000000,83557.26000000,83534.01000000,83534.02000000,6.99822000,1790812979999999,584685.56532290,969,3.24305000,270950.29006060,0\n",
+   "layout": "klines",
+   "message": "line 1: column 'open_time': invalid literal for int() with base 10: '17908128.5'",
+   "name": "bad epoch"
+  },
+  {
+   "csv": "t,sym,b,q,v\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "message": "line 1: unexpected header ['t', 'sym', 'b', 'q', 'v']; expected ['calc_time', 'symbol', 'base_asset', 'quote_asset', 'index_value']",
+   "name": "wrong header"
+  },
+  {
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "message": "line 2: expected 5 columns, got 4",
+   "name": "short row"
+  },
+  {
+   "csv": "calc_time,symbol,base_asset,quote_asset,index_value\n1790812800001,BTCBVOLUSDT,BTCBVOL,USDT,x\n1790812801000,BTCBVOLUSDT,BTCBVOL,USDT,37.2172\n1790812802000,BTCBVOLUSDT,BTCBVOL,USDT,37.2171\n",
+   "layout": "bvol",
+   "message": "line 2: column 'index_value': could not convert string to float: 'x'",
+   "name": "bad float"
+  }
+ ]
+}
