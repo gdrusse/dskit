@@ -117245,3 +117245,18 @@ Candidate f7f63fdc: math_r2 0C/1Major/1Minor; integration_r2 0C/2Major/1Minor; c
 Integration reviewer independently checkpointed the repeated accounting family: R1 missed upstream Fill positivity and downstream mandatory leg/portfolio statistics. Bounded changed approach uses public WindowBook directly and RunReport stages; removes incompatible evaluator adapters, no new accounting/reporting framework. Reviewer authorizes this design correction only, not implementation/execution. Sampling now refuses omitted/degenerate support; no fabricated calibration when sparse dates cannot support the declared blocks. Fresh three-lens review pending; owner questions/ADR approval still next, no data/model/code action.
 
 Revised shape check:32 expanded nodes; JSON identity b17566fe688df3ae66490c966994530be18dc7c49b7b9fe8cdaa65b65821be14. Only existing ADR/JSON/pickup changed; runtime and inherited manifest-test blobs unchanged.
+
+### ADR-0255 G4 design review closed; G3 owner choices next
+
+Candidate 3f8ea439c96afa14f5776346738fa12746d82c54 passed three independent GPT-6 lenses, each0 Critical/0 Major/0 Minor/0 Nit: /root/condor_design_math_r3, /root/condor_design_integration_r3 and /root/condor_design_consistency_r3. Full actual reports are retained in those agent transcripts. Earlier findings remain historical and are closed by this corrected candidate, not erased. The integration convergence checkpoint changed the accounting approach; no evaluator schema/report framework was added.
+
+Validation:32-node shape identity b17566fe688df3ae66490c966994530be18dc7c49b7b9fe8cdaa65b65821be14; plan reports21 unresolved references to seven proposed kinds. Static liquidity/arm bindings and diff checks passed. Integration's memory-only WindowBook zero-expiry probe reconciled four legs to -2.60 USD with flat positions; RunReport preserved120 rows across four stages with capped Markdown/full JSON. These are seam checks, not an implemented replay.
+
+Implementation obligation: keep raw fills out of RunReport's reserved replay.fills fallback schema so generic leg-trade rollups are not generated; pin absence of those statistics. No market data/copy, fits, real optimization or replay occurred.
+
+G4 closes design review only. Next ask G3 owner decisions one at a time, beginning expected-loss-bound versus pooled-CDF-distance criterion, with recommendations. ADR remains PROPOSED. Data-copy/ADR approval, G1 protected census/basis, G2 verified schedule/profile and tests-first implementation remain mandatory; no main-merge approval. Further owner-selected contract changes receive scoped review before code.
+
+Reviewed file SHA256 identities (unchanged by this evidence-only append):
+- docs/architecture/decision-log.md: d7b56b7dfdfb85e6ece1793f8b3d1a59a650cb78dcb75c9cf44c63178f7d2b45
+- children/index_options/configs/run-equity-condor-robust-backtest.json: 434a5590bd5d718eda024b4fd0444d558224ab0fbeed7973cb1041a99aeb3bc2
+- children/index_options/tests/test_configs.py: 4b2175c9cf9e920ac2c5216128c770cb930912a427a3b93c20cd564bf57af497
