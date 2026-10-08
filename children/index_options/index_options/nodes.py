@@ -2958,6 +2958,36 @@ class CondorExpirySettle(Node):
     Bars carry symbol/date and the configured settlement field. No I/O or
     broker action occurs. Evidence uses raw_fills rather than RunReport's
     reserved fills fallback; one condor, never one leg, is the statistical unit.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node identity.
+    params : dict
+        Required settlement_field (str), max_settlement_gap_days (int >= 0),
+        end_before (ISO date, exclusive) and labels (dict with nonempty fill
+        and exercise text). The date boundary also applies to confirming bars.
+
+    Raises
+    ------
+    ConfigError
+        If required parameters are missing, unknown or malformed.
+
+    Examples
+    --------
+    Construct a research-only adapter with an explicit protected boundary::
+
+        node = CondorExpirySettle("settle", {
+            "settlement_field": "as_traded_close",
+            "max_settlement_gap_days": 4,
+            "end_before": "2026-01-01",
+            "labels": {
+                "fill": "assumed same-day average fill",
+                "exercise": "early exercise and assignment ignored",
+            },
+        })
+        out = node.run(None, {"selections": [], "bars": [], "skips": []})
+        # -> out["evidence"]["totals"]["n_condors"] is 0
     """
 
     role = "transform"
@@ -2967,7 +2997,18 @@ class CondorExpirySettle(Node):
 
     @classmethod
     def validate_params(cls, params):
-        """Require explicit settlement, availability boundary and research labels."""
+        """Require explicit settlement, availability boundary and research labels.
+
+        Parameters
+        ----------
+        params : dict
+            Candidate parameter declaration.
+
+        Returns
+        -------
+        list of str
+            All declaration problems; empty when the parameters are usable.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         if not isinstance(params.get("settlement_field"), str) or not params["settlement_field"]:
@@ -2985,7 +3026,20 @@ class CondorExpirySettle(Node):
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
-        """Research-only accounting never enters a served graph."""
+        """Keep research-only accounting out of served graphs.
+
+        Parameters
+        ----------
+        params : dict
+            Node parameter declaration; unused.
+        verified_run_evidence : dict
+            Recorded run evidence; unused.
+
+        Returns
+        -------
+        str
+            Always "forbidden".
+        """
         return "forbidden"
 
     def _bars(self, rows):
@@ -3089,7 +3143,31 @@ class CondorExpirySettle(Node):
         return outcome, orders, fills
 
     def run(self, ctx, inputs):
-        """Return one outcome or explicit refusal for every validated selection."""
+        """Return one outcome or explicit refusal for every validated selection.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            Pipeline context; unused because this adapter performs no I/O.
+        inputs : dict
+            selections, bars and skips lists. Selections follow the class
+            contract; bars contain symbol, date and the settlement price field.
+            All input rows are validated before accounting begins.
+
+        Returns
+        -------
+        dict
+            outcomes and skips lists, plus evidence containing exact-fold
+            reconciliation results, one-condor totals and raw_orders/raw_fills.
+            Missing bounded settlement evidence produces a skip, not a trade.
+
+        Raises
+        ------
+        ValueError
+            If identities, dates, prices, fees, leg structure or units are
+            malformed, dates reach end_before, identities repeat, or the
+            accounting result does not reconcile.
+        """
         if not isinstance(inputs, dict) or set(inputs) != {"selections", "bars", "skips"}:
             raise ValueError("inputs must contain selections, bars and skips")
         if any(not isinstance(inputs[key], list) for key in inputs):
