@@ -1,20 +1,20 @@
 {
   "format_version": 1,
-  "status": "stage1_complete_hpo_running_not_production_qualified",
+  "status": "bounded_cycle_complete_not_production_qualified",
   "base_commit": "80a194d526956b24745afe61024d4041b019d4b6",
   "integrated_main_before_evidence": "aa44819c686fc2734f1478b62e1184960f44b28e",
   "fit_budget": {
     "ceiling": 216,
-    "attempted": 15,
-    "completed": 15,
+    "attempted": 66,
+    "completed": 66,
     "failed": 0,
-    "remaining": 201,
-    "pilots_and_stages_1_to_4": "15Stage1 complete;15newHPO fits reserved;3defaulttrial cells verified reuse; activeattempt count reconciled on batch completion",
-    "charged_upper_bound": 31,
-    "reserved_running": 15,
+    "remaining": 150,
+    "pilots_and_stages_1_to_4": "15 feature +15 new HPO +9 confirmation +27 evaluation;3 verified original HPO reuse;one pre-fit refusal conservatively charged",
+    "charged_upper_bound": 67,
+    "reserved_running": 0,
     "pre_fit_refusals": 1,
-    "remaining_conservative": 185,
-    "counts_as_of": "beforeHPO start; see private append-only ledger for currentprogress"
+    "remaining_conservative": 149,
+    "counts_as_of": "completed Stages1-4"
   },
   "source_summary": {
     "tickers": 393,
@@ -1204,5 +1204,1194 @@
       "scope": "confirmation continuation gate; unchanged feature/HPO/runtime reviews preserved",
       "stage4_requires": "retained actual complete-paired all3seed positive-skill gate receipt"
     }
+  },
+  "hpo_completion": {
+    "results_sha256": "e76dd9e1413c33f7898a41acb448aada383fac78a8d4169c0fde479155ede15e",
+    "trials": [
+      {
+        "label": "trial0",
+        "learning_rate": 0.0001,
+        "fusion_dropout": 0.0,
+        "rows": 21297,
+        "complete": true,
+        "reused": false,
+        "skill_pct": -0.3363606724849255
+      },
+      {
+        "label": "trial1",
+        "learning_rate": 0.0001,
+        "fusion_dropout": 0.1,
+        "rows": 21297,
+        "complete": true,
+        "reused": false,
+        "skill_pct": -0.24191969719631334
+      },
+      {
+        "label": "trial2",
+        "learning_rate": 0.0003,
+        "fusion_dropout": 0.0,
+        "rows": 21297,
+        "complete": true,
+        "reused": false,
+        "skill_pct": -0.3916933844517523
+      },
+      {
+        "label": "trial3",
+        "learning_rate": 0.0003,
+        "fusion_dropout": 0.1,
+        "rows": 21297,
+        "complete": true,
+        "reused": true,
+        "skill_pct": -0.3863571211367267
+      },
+      {
+        "label": "trial4",
+        "learning_rate": 0.001,
+        "fusion_dropout": 0.0,
+        "rows": 21297,
+        "complete": true,
+        "reused": false,
+        "skill_pct": -0.3341487766039153
+      },
+      {
+        "label": "trial5",
+        "learning_rate": 0.001,
+        "fusion_dropout": 0.1,
+        "rows": 21297,
+        "complete": true,
+        "reused": false,
+        "skill_pct": -0.1495181871254525
+      }
+    ],
+    "winner": "trial5",
+    "independent_verification_sha256": "f0bea5fd26f8fb2175c68e0e37d09f8da57b328682690fa38391adf35f7d916d",
+    "backup_receipt": "/home/russell/data/index_options/production-development-audit-20261007/hpo-v1-backup-recovery-receipt.json",
+    "backup_receipt_sha256": "5717a92467ef32e922632f6e8a225dd93958be139b25f4c42393c419a1a5777d"
+  },
+  "confirmation_dispatch": {
+    "plan_sha256": "445211f0d6b82bd77cf024c5b66116fe06323fa6270b6aca41f4a1bdfecf0507",
+    "launch_receipt": "/home/russell/data/index_options/production-development-audit-20261007/confirmation-batch-v1-launch.json",
+    "maximum_new_fit_attempts": 9,
+    "nominal_seed": 11,
+    "seeds": [
+      11,
+      29,
+      47
+    ]
+  },
+  "confirmation_completion": {
+    "artifact_source": {
+      "source": "production-confirmation-runs-20261007-v1",
+      "stream": "files",
+      "snapshot": "20261008T033715Z-backfill-7e5d7755",
+      "manifest_sha256": "7e5d7755771a656c6f84d53ee67f2989ec5df8df9f57bbae703bd347af247366"
+    },
+    "seeds": [
+      {
+        "seed": 11,
+        "complete": true,
+        "rows": 11171,
+        "sums": {
+          "model_crps": 7038.634800695379,
+          "baseline_crps": 7045.424712421154,
+          "model_tail_crps": 4035.5811933916366,
+          "baseline_tail_crps": 4043.736865973283,
+          "model_weighted_crps": 11074.215994087015,
+          "baseline_weighted_crps": 11089.161578394436
+        },
+        "objective_ratio": 0.9986522349591749,
+        "skill_pct": 0.13477650408251218,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 3526,
+            "sums": {
+              "model_crps": 2112.7704233865343,
+              "baseline_crps": 2130.490824001893,
+              "model_tail_crps": 1190.8279758680064,
+              "baseline_tail_crps": 1203.97078118852,
+              "model_weighted_crps": 3303.5983992545407,
+              "baseline_weighted_crps": 3334.461605190413
+            },
+            "skill_pct": 0.9255828853398929,
+            "forecast_identity": "d25d010826c5b09cc92e67e3206385a44f07d829df7252c6cf734861460db826"
+          },
+          {
+            "fold": 2,
+            "rows": 3902,
+            "sums": {
+              "model_crps": 2418.697908742521,
+              "baseline_crps": 2425.8500168758296,
+              "model_tail_crps": 1391.1032094930392,
+              "baseline_tail_crps": 1395.7181082615489,
+              "model_weighted_crps": 3809.8011182355604,
+              "baseline_weighted_crps": 3821.5681251373785
+            },
+            "skill_pct": 0.3079104314382741,
+            "forecast_identity": "02ef7217ad947bb978578b274bd9971d210129798eb1c637f6d240af312026db"
+          },
+          {
+            "fold": 3,
+            "rows": 3743,
+            "sums": {
+              "model_crps": 2507.1664685663236,
+              "baseline_crps": 2489.0838715434315,
+              "model_tail_crps": 1453.650008030591,
+              "baseline_tail_crps": 1444.0479765232137,
+              "model_weighted_crps": 3960.8164765969145,
+              "baseline_weighted_crps": 3933.131848066645
+            },
+            "skill_pct": -0.7038825444887653,
+            "forecast_identity": "d839bc434faee3d48c6c86fbe6d62ab8df0b3d6dc95faf88f4c6a4407fd5bdef"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 3.0199214536065426e-10,
+            "raw_max": 1.0,
+            "clipped_count": 0,
+            "max_adjustment": 0.0
+          },
+          "rows": 11171,
+          "pit_mean": 0.5126771081921072,
+          "pit_decile_counts": [
+            1052,
+            1079,
+            1079,
+            1097,
+            1126,
+            1028,
+            1133,
+            1212,
+            1080,
+            1285
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 5550,
+              "rows": 11171,
+              "coverage": 0.496822128726166
+            },
+            {
+              "nominal": 0.8,
+              "covered": 8834,
+              "rows": 11171,
+              "coverage": 0.7907976009309821
+            },
+            {
+              "nominal": 0.95,
+              "covered": 10427,
+              "rows": 11171,
+              "coverage": 0.9333989795004923
+            },
+            {
+              "nominal": 0.99,
+              "covered": 10919,
+              "rows": 11171,
+              "coverage": 0.977441589830812
+            }
+          ],
+          "role": "descriptive confirmation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      },
+      {
+        "seed": 29,
+        "complete": true,
+        "rows": 11171,
+        "sums": {
+          "model_crps": 7046.135622341857,
+          "baseline_crps": 7045.424712421154,
+          "model_tail_crps": 4033.460929508038,
+          "baseline_tail_crps": 4043.736865973283,
+          "model_weighted_crps": 11079.596551849896,
+          "baseline_weighted_crps": 11089.161578394436
+        },
+        "objective_ratio": 0.9991374436672312,
+        "skill_pct": 0.08625563327687713,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 3526,
+            "sums": {
+              "model_crps": 2113.2058960888016,
+              "baseline_crps": 2130.490824001893,
+              "model_tail_crps": 1189.985282254363,
+              "baseline_tail_crps": 1203.97078118852,
+              "model_weighted_crps": 3303.191178343165,
+              "baseline_weighted_crps": 3334.461605190413
+            },
+            "skill_pct": 0.9377953789773019,
+            "forecast_identity": "d25d010826c5b09cc92e67e3206385a44f07d829df7252c6cf734861460db826"
+          },
+          {
+            "fold": 2,
+            "rows": 3902,
+            "sums": {
+              "model_crps": 2425.1306725409586,
+              "baseline_crps": 2425.8500168758296,
+              "model_tail_crps": 1396.7037402921387,
+              "baseline_tail_crps": 1395.7181082615489,
+              "model_weighted_crps": 3821.8344128330973,
+              "baseline_weighted_crps": 3821.5681251373785
+            },
+            "skill_pct": -0.006968021686359904,
+            "forecast_identity": "02ef7217ad947bb978578b274bd9971d210129798eb1c637f6d240af312026db"
+          },
+          {
+            "fold": 3,
+            "rows": 3743,
+            "sums": {
+              "model_crps": 2507.7990537120963,
+              "baseline_crps": 2489.0838715434315,
+              "model_tail_crps": 1446.7719069615366,
+              "baseline_tail_crps": 1444.0479765232137,
+              "model_weighted_crps": 3954.5709606736327,
+              "baseline_weighted_crps": 3933.131848066645
+            },
+            "skill_pct": -0.5450901072011183,
+            "forecast_identity": "d839bc434faee3d48c6c86fbe6d62ab8df0b3d6dc95faf88f4c6a4407fd5bdef"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 2.5480729361333795e-09,
+            "raw_max": 1.0000000000000002,
+            "clipped_count": 1,
+            "max_adjustment": 2.220446049250313e-16
+          },
+          "rows": 11171,
+          "pit_mean": 0.510374731111905,
+          "pit_decile_counts": [
+            1109,
+            1056,
+            1070,
+            1066,
+            1117,
+            1098,
+            1084,
+            1209,
+            1140,
+            1222
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 5532,
+              "rows": 11171,
+              "coverage": 0.4952108137140811
+            },
+            {
+              "nominal": 0.8,
+              "covered": 8840,
+              "rows": 11171,
+              "coverage": 0.7913347059350103
+            },
+            {
+              "nominal": 0.95,
+              "covered": 10447,
+              "rows": 11171,
+              "coverage": 0.93518932951392
+            },
+            {
+              "nominal": 0.99,
+              "covered": 10897,
+              "rows": 11171,
+              "coverage": 0.9754722048160416
+            }
+          ],
+          "role": "descriptive confirmation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      },
+      {
+        "seed": 47,
+        "complete": true,
+        "rows": 11171,
+        "sums": {
+          "model_crps": 7051.007606189934,
+          "baseline_crps": 7045.424712421154,
+          "model_tail_crps": 4035.6038113962977,
+          "baseline_tail_crps": 4043.736865973283,
+          "model_weighted_crps": 11086.611417586231,
+          "baseline_weighted_crps": 11089.161578394436
+        },
+        "objective_ratio": 0.9997700312336351,
+        "skill_pct": 0.02299687663649408,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 3526,
+            "sums": {
+              "model_crps": 2113.716403432439,
+              "baseline_crps": 2130.490824001893,
+              "model_tail_crps": 1187.479941342467,
+              "baseline_tail_crps": 1203.97078118852,
+              "model_weighted_crps": 3301.1963447749063,
+              "baseline_weighted_crps": 3334.461605190413
+            },
+            "skill_pct": 0.9976201364480075,
+            "forecast_identity": "d25d010826c5b09cc92e67e3206385a44f07d829df7252c6cf734861460db826"
+          },
+          {
+            "fold": 2,
+            "rows": 3902,
+            "sums": {
+              "model_crps": 2431.056257843143,
+              "baseline_crps": 2425.8500168758296,
+              "model_tail_crps": 1396.2942435181785,
+              "baseline_tail_crps": 1395.7181082615489,
+              "model_weighted_crps": 3827.3505013613217,
+              "baseline_weighted_crps": 3821.5681251373785
+            },
+            "skill_pct": -0.15130899239785833,
+            "forecast_identity": "02ef7217ad947bb978578b274bd9971d210129798eb1c637f6d240af312026db"
+          },
+          {
+            "fold": 3,
+            "rows": 3743,
+            "sums": {
+              "model_crps": 2506.2349449143526,
+              "baseline_crps": 2489.0838715434315,
+              "model_tail_crps": 1451.8296265356519,
+              "baseline_tail_crps": 1444.0479765232137,
+              "model_weighted_crps": 3958.064571450004,
+              "baseline_weighted_crps": 3933.131848066645
+            },
+            "skill_pct": -0.6339152702347084,
+            "forecast_identity": "d839bc434faee3d48c6c86fbe6d62ab8df0b3d6dc95faf88f4c6a4407fd5bdef"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 3.0116225650184266e-13,
+            "raw_max": 1.0,
+            "clipped_count": 0,
+            "max_adjustment": 0.0
+          },
+          "rows": 11171,
+          "pit_mean": 0.5116944251943273,
+          "pit_decile_counts": [
+            1014,
+            1084,
+            1090,
+            1124,
+            1129,
+            1083,
+            1135,
+            1179,
+            1081,
+            1252
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 5634,
+              "rows": 11171,
+              "coverage": 0.504341598782562
+            },
+            {
+              "nominal": 0.8,
+              "covered": 8905,
+              "rows": 11171,
+              "coverage": 0.7971533434786501
+            },
+            {
+              "nominal": 0.95,
+              "covered": 10523,
+              "rows": 11171,
+              "coverage": 0.9419926595649449
+            },
+            {
+              "nominal": 0.99,
+              "covered": 10936,
+              "rows": 11171,
+              "coverage": 0.9789633873422254
+            }
+          ],
+          "role": "descriptive confirmation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      }
+    ],
+    "failed_cells": [],
+    "completed_fits": 9,
+    "nominal_seed": 11,
+    "gate_passed": true,
+    "stage4_disposition": "eligible for frozen-setting evaluation",
+    "scientific_role": "development continuation gate; no production qualification",
+    "results_sha256": "356583ad66c66e93c64b234fa378fd3f264741db98401f291cb683ed6a8d139e",
+    "independent_review_sha256": "8a5193725cecd3d5920b1aaf6638061ca747e68e96217babcf031289b74aa73d",
+    "recovery_receipt": "/home/russell/data/index_options/production-development-audit-20261007/confirmation-v1-backup-recovery-receipt.json"
+  },
+  "evaluation_dispatch": {
+    "plan_sha256": "1f18e4ff001e95b6ea7aa154782aec954c1b0ca82d613c25d15f921702035522",
+    "launch_receipt": "/home/russell/data/index_options/production-development-audit-20261007/evaluation-batch-v1-launch.json",
+    "reserved_fits": 27,
+    "champion_freeze_sha256": "5c25b11aac604b21eb54889d2782e2910b56bc54a7103f802af4f198375dbf27",
+    "actual_gate_receipt_sha256": "3cee8166c2010b0a18afa0f0e65111f8dc3b670070b3f92b827a967f8a9ca166",
+    "selection": "Frozen settings; nominal seed11,29/47 stability only; no retrospective champion switch"
+  },
+  "historical_section_notice": "Old source_summary, fold_rehearsal and earlier prerequisite/review sections retain their original scope. closing_summary and evaluation_completion control final status.",
+  "evaluation_completion": {
+    "artifact_source": {
+      "source": "production-evaluation-runs-20261007-v1",
+      "stream": "files",
+      "snapshot": "20261008T041023Z-backfill-21be2cbc",
+      "manifest_sha256": "21be2cbcc6acc7093d7b5efa65f3b298b9b52de3a2667420ca61f9cb74cad47c"
+    },
+    "seeds": [
+      {
+        "robustness": {
+          "positive_windows": 3,
+          "windows": 9,
+          "positive_tickers": 35,
+          "tickers": 85,
+          "leave_one_window_out_skill_pct": [
+            -0.03481441013597486,
+            -0.1276205974727107,
+            -0.04248688126946565,
+            0.04403762042809456,
+            -0.13534642889445614,
+            -0.3030886257392673,
+            -0.07236453811589882,
+            -0.06696794047551524,
+            0.041717381455264047
+          ],
+          "role": "descriptive sensitivity only; no model/seed reselection or independent significance claim"
+        },
+        "seed": 11,
+        "complete": true,
+        "rows": 21587,
+        "sums": {
+          "model_crps": 14327.119355224826,
+          "baseline_crps": 14316.591241596647,
+          "model_tail_crps": 7991.000385666468,
+          "baseline_tail_crps": 7984.334348548797,
+          "model_weighted_crps": 22318.119740891296,
+          "baseline_weighted_crps": 22300.92559014544
+        },
+        "objective_ratio": 1.0007710061484376,
+        "skill_pct": -0.0771006148437614,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 2486,
+            "sums": {
+              "model_crps": 1629.8843056061803,
+              "baseline_crps": 1624.9213679538755,
+              "model_tail_crps": 927.9616256681809,
+              "baseline_tail_crps": 922.6074411457707,
+              "model_weighted_crps": 2557.8459312743616,
+              "baseline_weighted_crps": 2547.5288090996464
+            },
+            "skill_pct": -0.4049854956639898,
+            "forecast_identity": "99519eca6181955127b38dc9eac5557e9a5e67502d8ddcca9f990c30f88be8e8"
+          },
+          {
+            "fold": 2,
+            "rows": 2464,
+            "sums": {
+              "model_crps": 1699.596390502828,
+              "baseline_crps": 1703.7144243318453,
+              "model_tail_crps": 998.605433638314,
+              "baseline_tail_crps": 1002.3003912681619,
+              "model_weighted_crps": 2698.2018241411415,
+              "baseline_weighted_crps": 2706.014815600007
+            },
+            "skill_pct": 0.28872685448075863,
+            "forecast_identity": "cf22e3b249c2715e11ff6d979e2d39107005c5dfc3685a9095711a830f631e5d"
+          },
+          {
+            "fold": 3,
+            "rows": 2516,
+            "sums": {
+              "model_crps": 1453.5422869159065,
+              "baseline_crps": 1448.503815606054,
+              "model_tail_crps": 784.2702230353693,
+              "baseline_tail_crps": 780.6424166638171,
+              "model_weighted_crps": 2237.812509951276,
+              "baseline_weighted_crps": 2229.1462322698712
+            },
+            "skill_pct": -0.3887711607228228,
+            "forecast_identity": "09c8e3d55307ca0c419af706dca4e4f4ffc0bc3663775e4e4ebc964b6c6b1fe6"
+          },
+          {
+            "fold": 4,
+            "rows": 2520,
+            "sums": {
+              "model_crps": 1815.645058201363,
+              "baseline_crps": 1803.9850717366141,
+              "model_tail_crps": 1043.7714345018205,
+              "baseline_tail_crps": 1029.6643450317968,
+              "model_weighted_crps": 2859.416492703184,
+              "baseline_weighted_crps": 2833.6494167684114
+            },
+            "skill_pct": -0.9093247662287807,
+            "forecast_identity": "d2c91b328a164bf20f0cef7f64f5c310b65b252fa68c3dbdd24f42dee70f2a42"
+          },
+          {
+            "fold": 5,
+            "rows": 2514,
+            "sums": {
+              "model_crps": 1707.1952020159451,
+              "baseline_crps": 1714.2648813301646,
+              "model_tail_crps": 946.5022430090851,
+              "baseline_tail_crps": 948.8175324001861,
+              "model_weighted_crps": 2653.69744502503,
+              "baseline_weighted_crps": 2663.0824137303507
+            },
+            "skill_pct": 0.35240999891454905,
+            "forecast_identity": "92e3f7bc694b92bed8653beda42590512927d8af60a31bfd01d82faf38213408"
+          },
+          {
+            "fold": 6,
+            "rows": 2477,
+            "sums": {
+              "model_crps": 1542.2418313500891,
+              "baseline_crps": 1568.2884809148868,
+              "model_tail_crps": 806.6371115543964,
+              "baseline_tail_crps": 823.7379201956057,
+              "model_weighted_crps": 2348.8789429044855,
+              "baseline_weighted_crps": 2392.0264011104928
+            },
+            "skill_pct": 1.8038035945579955,
+            "forecast_identity": "5a64a09bff58e816fdc982df1e0734b00eca1c07c918df6d5d19e80b8e2b026c"
+          },
+          {
+            "fold": 7,
+            "rows": 2484,
+            "sums": {
+              "model_crps": 1566.7365285508827,
+              "baseline_crps": 1565.4579208206485,
+              "model_tail_crps": 862.7513022931871,
+              "baseline_tail_crps": 861.2176684946692,
+              "model_weighted_crps": 2429.4878308440702,
+              "baseline_weighted_crps": 2426.6755893153177
+            },
+            "skill_pct": -0.11588864787426267,
+            "forecast_identity": "aadf857561e07b359859aa29749196e13e33017323ac97c4d254ce98b41d99fb"
+          },
+          {
+            "fold": 8,
+            "rows": 2543,
+            "sums": {
+              "model_crps": 1836.5096399338931,
+              "baseline_crps": 1830.0594342187517,
+              "model_tail_crps": 1018.1908464237706,
+              "baseline_tail_crps": 1020.4724294860357,
+              "model_weighted_crps": 2854.7004863576635,
+              "baseline_weighted_crps": 2850.5318637047876
+            },
+            "skill_pct": -0.14624017033291192,
+            "forecast_identity": "d0628bc2c8ca2d7fb91b12045df0521e9e5bc406d6e695439e43bf790e410f93"
+          },
+          {
+            "fold": 9,
+            "rows": 1583,
+            "sums": {
+              "model_crps": 1075.768112147738,
+              "baseline_crps": 1057.3958446838037,
+              "model_tail_crps": 602.3101655423457,
+              "baseline_tail_crps": 594.8742038627536,
+              "model_weighted_crps": 1678.0782776900837,
+              "baseline_weighted_crps": 1652.2700485465575
+            },
+            "skill_pct": -1.5619861393861623,
+            "forecast_identity": "0822db2bafabc63e137dd8a4babe6fd2485626a0cbdd1d9d84f46049d1635b38"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 5.849937568910452e-32,
+            "raw_max": 1.0000000000000002,
+            "clipped_count": 1,
+            "max_adjustment": 2.220446049250313e-16
+          },
+          "rows": 21587,
+          "pit_mean": 0.5040363681432541,
+          "pit_decile_counts": [
+            2340,
+            2070,
+            2050,
+            2073,
+            2124,
+            2225,
+            2077,
+            2068,
+            2048,
+            2512
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 10569,
+              "rows": 21587,
+              "coverage": 0.4896002223560476
+            },
+            {
+              "nominal": 0.8,
+              "covered": 16735,
+              "rows": 21587,
+              "coverage": 0.7752350951961828
+            },
+            {
+              "nominal": 0.95,
+              "covered": 19920,
+              "rows": 21587,
+              "coverage": 0.9227775976282021
+            },
+            {
+              "nominal": 0.99,
+              "covered": 20909,
+              "rows": 21587,
+              "coverage": 0.9685922082734979
+            }
+          ],
+          "role": "descriptive already-seen-period evaluation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      },
+      {
+        "robustness": {
+          "positive_windows": 5,
+          "windows": 9,
+          "positive_tickers": 36,
+          "tickers": 85,
+          "leave_one_window_out_skill_pct": [
+            -0.031050565040380285,
+            -0.24133984561554023,
+            -0.30221752895109866,
+            0.049561606638559574,
+            -0.2361445372503601,
+            -0.3977081105857039,
+            -0.16831612937977525,
+            -0.21970927573835564,
+            -0.15628297707190875
+          ],
+          "role": "descriptive sensitivity only; no model/seed reselection or independent significance claim"
+        },
+        "seed": 29,
+        "complete": true,
+        "rows": 21587,
+        "sums": {
+          "model_crps": 14340.233141731247,
+          "baseline_crps": 14316.591241596647,
+          "model_tail_crps": 8002.998102328144,
+          "baseline_tail_crps": 7984.334348548797,
+          "model_weighted_crps": 22343.231244059392,
+          "baseline_weighted_crps": 22300.92559014544
+        },
+        "objective_ratio": 1.0018970357863821,
+        "skill_pct": -0.18970357863821175,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 2486,
+            "sums": {
+              "model_crps": 1646.212206492094,
+              "baseline_crps": 1624.9213679538755,
+              "model_tail_crps": 937.4887152063216,
+              "baseline_tail_crps": 922.6074411457707,
+              "model_weighted_crps": 2583.7009216984156,
+              "baseline_weighted_crps": 2547.5288090996464
+            },
+            "skill_pct": -1.4198902273279135,
+            "forecast_identity": "99519eca6181955127b38dc9eac5557e9a5e67502d8ddcca9f990c30f88be8e8"
+          },
+          {
+            "fold": 2,
+            "rows": 2464,
+            "sums": {
+              "model_crps": 1701.1544418581038,
+              "baseline_crps": 1703.7144243318453,
+              "model_tail_crps": 999.8757002440614,
+              "baseline_tail_crps": 1002.3003912681619,
+              "model_weighted_crps": 2701.030142102165,
+              "baseline_weighted_crps": 2706.014815600007
+            },
+            "skill_pct": 0.18420717688261146,
+            "forecast_identity": "cf22e3b249c2715e11ff6d979e2d39107005c5dfc3685a9095711a830f631e5d"
+          },
+          {
+            "fold": 3,
+            "rows": 2516,
+            "sums": {
+              "model_crps": 1436.4395708665052,
+              "baseline_crps": 1448.503815606054,
+              "model_tail_crps": 774.3518797254294,
+              "baseline_tail_crps": 780.6424166638171,
+              "model_weighted_crps": 2210.7914505919343,
+              "baseline_weighted_crps": 2229.1462322698712
+            },
+            "skill_pct": 0.8233996232381191,
+            "forecast_identity": "09c8e3d55307ca0c419af706dca4e4f4ffc0bc3663775e4e4ebc964b6c6b1fe6"
+          },
+          {
+            "fold": 4,
+            "rows": 2520,
+            "sums": {
+              "model_crps": 1831.9873381052494,
+              "baseline_crps": 1803.9850717366141,
+              "model_tail_crps": 1053.6160274174035,
+              "baseline_tail_crps": 1029.6643450317968,
+              "model_weighted_crps": 2885.603365522653,
+              "baseline_weighted_crps": 2833.6494167684114
+            },
+            "skill_pct": -1.8334642403819768,
+            "forecast_identity": "d2c91b328a164bf20f0cef7f64f5c310b65b252fa68c3dbdd24f42dee70f2a42"
+          },
+          {
+            "fold": 5,
+            "rows": 2514,
+            "sums": {
+              "model_crps": 1710.3023823155686,
+              "baseline_crps": 1714.2648813301646,
+              "model_tail_crps": 948.7119914338357,
+              "baseline_tail_crps": 948.8175324001861,
+              "model_weighted_crps": 2659.0143737494045,
+              "baseline_weighted_crps": 2663.0824137303507
+            },
+            "skill_pct": 0.1527568189392925,
+            "forecast_identity": "92e3f7bc694b92bed8653beda42590512927d8af60a31bfd01d82faf38213408"
+          },
+          {
+            "fold": 6,
+            "rows": 2477,
+            "sums": {
+              "model_crps": 1547.312634981351,
+              "baseline_crps": 1568.2884809148868,
+              "model_tail_crps": 807.8401132399696,
+              "baseline_tail_crps": 823.7379201956057,
+              "model_weighted_crps": 2355.1527482213205,
+              "baseline_weighted_crps": 2392.0264011104928
+            },
+            "skill_pct": 1.541523658436783,
+            "forecast_identity": "5a64a09bff58e816fdc982df1e0734b00eca1c07c918df6d5d19e80b8e2b026c"
+          },
+          {
+            "fold": 7,
+            "rows": 2484,
+            "sums": {
+              "model_crps": 1571.4444496966016,
+              "baseline_crps": 1565.4579208206485,
+              "model_tail_crps": 864.0852251880092,
+              "baseline_tail_crps": 861.2176684946692,
+              "model_weighted_crps": 2435.5296748846104,
+              "baseline_weighted_crps": 2426.6755893153177
+            },
+            "skill_pct": -0.3648648219925832,
+            "forecast_identity": "aadf857561e07b359859aa29749196e13e33017323ac97c4d254ce98b41d99fb"
+          },
+          {
+            "fold": 8,
+            "rows": 2543,
+            "sums": {
+              "model_crps": 1830.472036769565,
+              "baseline_crps": 1830.0594342187517,
+              "model_tail_crps": 1019.6311616645474,
+              "baseline_tail_crps": 1020.4724294860357,
+              "model_weighted_crps": 2850.1031984341125,
+              "baseline_weighted_crps": 2850.5318637047876
+            },
+            "skill_pct": 0.015038080301199575,
+            "forecast_identity": "d0628bc2c8ca2d7fb91b12045df0521e9e5bc406d6e695439e43bf790e410f93"
+          },
+          {
+            "fold": 9,
+            "rows": 1583,
+            "sums": {
+              "model_crps": 1064.9080806462075,
+              "baseline_crps": 1057.3958446838037,
+              "model_tail_crps": 597.3972882085661,
+              "baseline_tail_crps": 594.8742038627536,
+              "model_weighted_crps": 1662.3053688547734,
+              "baseline_weighted_crps": 1652.2700485465575
+            },
+            "skill_pct": -0.6073656250710213,
+            "forecast_identity": "0822db2bafabc63e137dd8a4babe6fd2485626a0cbdd1d9d84f46049d1635b38"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 1.102487007018136e-43,
+            "raw_max": 1.0,
+            "clipped_count": 0,
+            "max_adjustment": 0.0
+          },
+          "rows": 21587,
+          "pit_mean": 0.50397759924846,
+          "pit_decile_counts": [
+            2441,
+            1973,
+            2016,
+            2080,
+            2097,
+            2188,
+            2150,
+            2160,
+            2010,
+            2472
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 10612,
+              "rows": 21587,
+              "coverage": 0.49159216194932137
+            },
+            {
+              "nominal": 0.8,
+              "covered": 16674,
+              "rows": 21587,
+              "coverage": 0.7724093204243294
+            },
+            {
+              "nominal": 0.95,
+              "covered": 19897,
+              "rows": 21587,
+              "coverage": 0.9217121415666837
+            },
+            {
+              "nominal": 0.99,
+              "covered": 20963,
+              "rows": 21587,
+              "coverage": 0.971093713809237
+            }
+          ],
+          "role": "descriptive already-seen-period evaluation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      },
+      {
+        "robustness": {
+          "positive_windows": 4,
+          "windows": 9,
+          "positive_tickers": 38,
+          "tickers": 85,
+          "leave_one_window_out_skill_pct": [
+            -0.05534396874384839,
+            -0.21267295355482663,
+            -0.2662893018715806,
+            0.1270070019493419,
+            -0.22144184831371927,
+            -0.4518352602284281,
+            -0.20674471480759404,
+            -0.25877962851097447,
+            -0.24314801185529866
+          ],
+          "role": "descriptive sensitivity only; no model/seed reselection or independent significance claim"
+        },
+        "seed": 47,
+        "complete": true,
+        "rows": 21587,
+        "sums": {
+          "model_crps": 14335.045601323165,
+          "baseline_crps": 14316.591241596647,
+          "model_tail_crps": 8010.43009250019,
+          "baseline_tail_crps": 7984.334348548797,
+          "model_weighted_crps": 22345.475693823355,
+          "baseline_weighted_crps": 22300.92559014544
+        },
+        "objective_ratio": 1.0019976795805103,
+        "skill_pct": -0.19976795805103365,
+        "folds": [
+          {
+            "fold": 1,
+            "rows": 2486,
+            "sums": {
+              "model_crps": 1643.8578876704591,
+              "baseline_crps": 1624.9213679538755,
+              "model_tail_crps": 937.2887113667484,
+              "baseline_tail_crps": 922.6074411457707,
+              "model_weighted_crps": 2581.146599037207,
+              "baseline_weighted_crps": 2547.5288090996464
+            },
+            "skill_pct": -1.3196235433130088,
+            "forecast_identity": "99519eca6181955127b38dc9eac5557e9a5e67502d8ddcca9f990c30f88be8e8"
+          },
+          {
+            "fold": 2,
+            "rows": 2464,
+            "sums": {
+              "model_crps": 1706.6978388406646,
+              "baseline_crps": 1703.7144243318453,
+              "model_tail_crps": 1002.1940049465986,
+              "baseline_tail_crps": 1002.3003912681619,
+              "model_weighted_crps": 2708.8918437872635,
+              "baseline_weighted_crps": 2706.014815600007
+            },
+            "skill_pct": -0.10631975001285099,
+            "forecast_identity": "cf22e3b249c2715e11ff6d979e2d39107005c5dfc3685a9095711a830f631e5d"
+          },
+          {
+            "fold": 3,
+            "rows": 2516,
+            "sums": {
+              "model_crps": 1442.949112930528,
+              "baseline_crps": 1448.503815606054,
+              "model_tail_crps": 777.2982218919653,
+              "baseline_tail_crps": 780.6424166638171,
+              "model_weighted_crps": 2220.247334822493,
+              "baseline_weighted_crps": 2229.1462322698712
+            },
+            "skill_pct": 0.39920653560339137,
+            "forecast_identity": "09c8e3d55307ca0c419af706dca4e4f4ffc0bc3663775e4e4ebc964b6c6b1fe6"
+          },
+          {
+            "fold": 4,
+            "rows": 2520,
+            "sums": {
+              "model_crps": 1839.9051320520139,
+              "baseline_crps": 1803.9850717366141,
+              "model_tail_crps": 1063.0191922233162,
+              "baseline_tail_crps": 1029.6643450317968,
+              "model_weighted_crps": 2902.92432427533,
+              "baseline_weighted_crps": 2833.6494167684114
+            },
+            "skill_pct": -2.444724004916665,
+            "forecast_identity": "d2c91b328a164bf20f0cef7f64f5c310b65b252fa68c3dbdd24f42dee70f2a42"
+          },
+          {
+            "fold": 5,
+            "rows": 2514,
+            "sums": {
+              "model_crps": 1711.67194196287,
+              "baseline_crps": 1714.2648813301646,
+              "model_tail_crps": 952.4741725465931,
+              "baseline_tail_crps": 948.8175324001861,
+              "model_weighted_crps": 2664.146114509463,
+              "baseline_weighted_crps": 2663.0824137303507
+            },
+            "skill_pct": -0.03994246567917692,
+            "forecast_identity": "92e3f7bc694b92bed8653beda42590512927d8af60a31bfd01d82faf38213408"
+          },
+          {
+            "fold": 6,
+            "rows": 2477,
+            "sums": {
+              "model_crps": 1539.760086829791,
+              "baseline_crps": 1568.2884809148868,
+              "model_tail_crps": 806.8609914992214,
+              "baseline_tail_crps": 823.7379201956057,
+              "model_weighted_crps": 2346.6210783290126,
+              "baseline_weighted_crps": 2392.0264011104928
+            },
+            "skill_pct": 1.898194884487936,
+            "forecast_identity": "5a64a09bff58e816fdc982df1e0734b00eca1c07c918df6d5d19e80b8e2b026c"
+          },
+          {
+            "fold": 7,
+            "rows": 2484,
+            "sums": {
+              "model_crps": 1568.2073935107253,
+              "baseline_crps": 1565.4579208206485,
+              "model_tail_crps": 861.9293379981408,
+              "baseline_tail_crps": 861.2176684946692,
+              "model_weighted_crps": 2430.1367315088664,
+              "baseline_weighted_crps": 2426.6755893153177
+            },
+            "skill_pct": -0.14262896156322924,
+            "forecast_identity": "aadf857561e07b359859aa29749196e13e33017323ac97c4d254ce98b41d99fb"
+          },
+          {
+            "fold": 8,
+            "rows": 2543,
+            "sums": {
+              "model_crps": 1828.1512605294015,
+              "baseline_crps": 1830.0594342187517,
+              "model_tail_crps": 1016.5970502240923,
+              "baseline_tail_crps": 1020.4724294860357,
+              "model_weighted_crps": 2844.7483107534936,
+              "baseline_weighted_crps": 2850.5318637047876
+            },
+            "skill_pct": 0.2028938186916851,
+            "forecast_identity": "d0628bc2c8ca2d7fb91b12045df0521e9e5bc406d6e695439e43bf790e410f93"
+          },
+          {
+            "fold": 9,
+            "rows": 1583,
+            "sums": {
+              "model_crps": 1053.8449469967131,
+              "baseline_crps": 1057.3958446838037,
+              "model_tail_crps": 592.7684098035136,
+              "baseline_tail_crps": 594.8742038627536,
+              "model_weighted_crps": 1646.6133568002267,
+              "baseline_weighted_crps": 1652.2700485465575
+            },
+            "skill_pct": 0.34235879003597924,
+            "forecast_identity": "0822db2bafabc63e137dd8a4babe6fd2485626a0cbdd1d9d84f46049d1635b38"
+          }
+        ],
+        "diagnostics": {
+          "probability_roundoff": {
+            "tolerance": 1.7763568394002505e-15,
+            "raw_min": 2.5733018084623455e-24,
+            "raw_max": 1.0,
+            "clipped_count": 0,
+            "max_adjustment": 0.0
+          },
+          "rows": 21587,
+          "pit_mean": 0.5028012860883146,
+          "pit_decile_counts": [
+            2456,
+            2013,
+            1984,
+            2147,
+            2109,
+            2133,
+            2070,
+            2135,
+            2013,
+            2527
+          ],
+          "central_predictive_intervals": [
+            {
+              "nominal": 0.5,
+              "covered": 10544,
+              "rows": 21587,
+              "coverage": 0.4884421179413536
+            },
+            {
+              "nominal": 0.8,
+              "covered": 16604,
+              "rows": 21587,
+              "coverage": 0.7691666280631861
+            },
+            {
+              "nominal": 0.95,
+              "covered": 19794,
+              "rows": 21587,
+              "coverage": 0.9169407513781442
+            },
+            {
+              "nominal": 0.99,
+              "covered": 20865,
+              "rows": 21587,
+              "coverage": 0.9665539445036364
+            }
+          ],
+          "role": "descriptive already-seen-period evaluation diagnostics; overlapping targets/tickers, no IID confidence or CDF bands, not independent calibration"
+        }
+      }
+    ],
+    "failed_cells": [],
+    "completed_fits": 27,
+    "nominal_seed": 11,
+    "all_seed_skills_positive": false,
+    "complete_verified": true,
+    "champion_reselected": false,
+    "production_qualified": false,
+    "scientific_role": "already-seen-period stress evaluation with frozen settings and fresh expanding-history refits; not independent qualification or calibration",
+    "results_sha256": "78ae03bde7386087f5e11b7552b02cbabe2232949447b87231bcca836fd5c195",
+    "independent_review": {
+      "path": "/home/russell/data/index_options/production-development-audit-20261007/evaluation-results-independent-v1.txt",
+      "sha256": "045e9e5ffa13068b60088c2cee0ef68ccf2d41b0022a825518f98ea4901c3d4e",
+      "unresolved_critical": 0,
+      "unresolved_major": 0
+    }
+  },
+  "evidence_levels": {
+    "proposed_only": [
+      "post-selection independent qualification protocol",
+      "future grid/support and radius-calibration specification"
+    ],
+    "implemented": [
+      "ADR0250 protected JSON projection repair",
+      "relative-volume JSON configuration",
+      "corporate-action price endpoint correction",
+      "bounded chronological model configs and immutable retention"
+    ],
+    "tested": [
+      "104 focused prerequisite checks",
+      "independent temporal/capacity/manifest/imputation checks",
+      "original checkpoint and forecast identity verification",
+      "isolated representative inference recovery",
+      "uncertainty format and price/quantile consistency checks"
+    ],
+    "empirically_observed": [
+      "owned-source reconciliation and85-symbol111011-row research panel",
+      "completed66fits andpaired forecast-distribution scores",
+      "descriptive PIT/predictive interval coverage andseed/window sensitivity"
+    ],
+    "not_established": [
+      "point-in-time historical membership/availability",
+      "full393-symbol qualification",
+      "independent calibration or conditional-CDF confidence guarantee",
+      "MIO/strategy/production qualification"
+    ]
+  },
+  "closing_summary": {
+    "scope": "bounded model development and already-seen-period evaluation completed; no production qualification",
+    "recommendation": "Do not promote this candidate. All three evaluation seeds trail the empirical reference; nominal seed 11 has weighted skill -0.077101%. Retain the evidence and empirical research control. A new development cycle requires a separately disclosed plan.",
+    "unique_fitted_checkpoint_identities": 66,
+    "qualified_champion": null,
+    "learned_reserve": null,
+    "latest_nominal_research_fit": {
+      "seed": 11,
+      "fold": 9,
+      "fit_identity": "fc61f556db357ac234320c872548fe8c290916bdc28f9c226fccc72aa7ef8a3a",
+      "checkpoint": "4c28fb47cceaa031a5945e39fc2f544230ef0241705f8d41db5e1709281b3cc6",
+      "fit_root": "/home/russell/data/index_options/ob/raw/production-evaluation-runs-20261007-v1/20261008T041023Z-backfill-21be2cbc/payload/files/seed11/pooled/minus_momentum/PatchTST32/9/pooled/fit",
+      "parameters": 11074,
+      "best_epochs": [
+        3
+      ],
+      "total_epochs": [
+        23
+      ],
+      "fit_seconds": 40.69599864596967
+    },
+    "data_rows": 111011,
+    "data_symbols": 85,
+    "quarantined_configured_symbols": 308,
+    "protected_2026_opened_or_scored": false,
+    "mio_or_strategy_executed": false,
+    "reviewed_runtime_candidate": "4f9e1084f17e53547108ec8f4785e5e84435674e",
+    "gate_candidate": "87e341050372ba6cafe539aff82237ce84df901b",
+    "calibration_evidence": "settled forecasts preserved; descriptive diagnostics only; selection-independent criterion/support/tail policy and validation missing",
+    "production_qualified": false,
+    "completed_at_utc": "2026-10-08T04:13:11.067213+00:00"
+  },
+  "future_optimizer_handoff": {
+    "format_role": "specification and consistency checks only; no MIO implemented",
+    "nominal_source": "original per-forecast weights0..2/means0..2/scales0..2 in verified score shards",
+    "target": "z=log(terminal_price/spot)/reference_scale",
+    "price_mapping": "spot*exp(reference_scale*z)",
+    "price_grid": null,
+    "grid_probabilities": null,
+    "grid_status": "requires frozen finite-support/tail policy and validated discretization",
+    "price_units": "same currency/share/action basis as spot; verify per security and option deliverable before use",
+    "distance": "sum(delta_price*abs(cumulative_q-cumulative_p))/spot",
+    "radius": null,
+    "cdf_bands": null,
+    "calibration_id": null,
+    "execution_eligible": false,
+    "fallback": "abstain until a separately qualified fallback exists",
+    "required_identities": [
+      "forecast",
+      "model/checkpoint",
+      "input/action/universe",
+      "feature/transform",
+      "grid/support",
+      "calibration/evidence/role",
+      "baseline",
+      "availability and settlement clocks"
+    ]
+  },
+  "final_recovery": {
+    "receipt": "/home/russell/data/index_options/production-development-audit-20261007/evaluation-v1-backup-recovery-receipt.json",
+    "receipt_sha256": "8539fae4f025e770d3f110119b4154606b24c67aefa2fa856d6c23a9fb5e1ea0",
+    "archive_sha256": "5842015e5316b4f301d0a3fa92c8ca500cd0cd3041dd7e60f8076c52561f9f75",
+    "archive_bytes": 112332800,
+    "files": 14502,
+    "verified_evaluation_fits": 27,
+    "verified_evaluation_forecast_shards": 2271,
+    "representative_seed": 11,
+    "representative_fold": 9,
+    "original_paths_denied": true,
+    "off_device_disaster_recovery": false,
+    "originals_deleted": false
   }
 }

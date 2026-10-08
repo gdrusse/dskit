@@ -1,3 +1,84 @@
+# Active handoff — 2026-10-08: bounded production development complete; no promotion
+
+All66actual fits completed:15feature +15newHPO +9confirmation +27evaluation.
+One pre-fit CUDA refusal is retained, so the conservative charge is67/216.
+Three HPO cells reused verified original Stage1 identities, not new fits.
+No active fit job and no further search/retry is authorized by this closed cycle.
+
+The frozen PatchTST32 configuration (without momentum, lr0.001, fusiondropout0.1)
+passed the2023 continuation gate but lost to the empirical reference on all
+three2024-2025 evaluation seeds: -0.077101%, -0.189704%, -0.199768%.
+Eachseed has21,587paired forecasts. Seed11 remainsnominal; no bestseed switch.
+No production champion, learnedreserve, calibratedradius or livefallback.
+The empiricalmodel remains a researchcontrol. No2026access/scoring orMIO ran.
+
+Read the closing section of
+children/index_options/docs/memos/2026-10-07-production-development-stage0.md
+and its linked aggregateJSON. Historical running/blocked notes below are stale.
+Private audit: /home/russell/data/index_options/production-development-audit-20261007/.
+Runs: /home/russell/data/index_options/production-development-20261007/runs/.
+Backups: /home/russell/data/backups/index_options/production-development-20261007/.
+Allretraining checkpoints retained;27evaluationfits and2,271forecastshards
+passed second-copy integrity/recovery, including finalnominal inference.
+Preserve originals and this isolatedcheckout because runtime sourcepaths arepinned.
+
+Use WSL2 /home/russell/dskit-production-development-20261007 and the unchanged
+sharedvenv plus retainedruntime. No fullsuite, upgrades,providers,cloudspending,
+2026reads/scoring, MIO,backtests,deployment orlive. Packages supportinference,
+not fullinterruptedoptimizer continuation. Secondcopies share thephysicaldisk.
+
+Next work requires a separately disclosed/authorized development or qualification
+stage. The memo contains a concrete prospective protocol; it is not permission
+to open2026, refit on testlabels, choose a newseed or calibrate an inventedradius.
+Final scoped closing reviews and remote-delivery receipt are recorded with the
+final memo/report and privateaudit. Earlier handoffs follow unchanged.
+
+# Active handoff — 2026-10-07 night: evaluation running
+
+Confirmation passed the frozen all-three-seeds-positive gate: weighted skills
++0.134777%, +0.086256%, +0.022997% for seeds11/29/47. All9fits and744shards
+independently verified; recovery reproduced seed11/fold3 forecasts and scores.
+Read confirmation-actual-gate-v1.json and production-champion-freeze-v1.json.
+
+Twenty-seven evaluation fits are now running serially in evaluation-batch-v1;
+PID3023925/start30478418. Verify current launch receipt/process and queue/logs
+before acting. No duplicate jobs. Conservative reserved charge67/216;39 actual
+fits completed before evaluation. Frozen trial5 (lr0.001,fusion dropout0.1),
+PatchTST32 withoutmomentum, nominalseed11. No second feasible learned family.
+Nine existing2024-2025 windows perseed, freshweights/expanding settledhistory.
+These already-seen periods give stress evidence, not independent qualification.
+
+Use WSL2 isolated /home/russell/dskit-production-development-20261007.
+Private audit /home/russell/data/index_options/production-development-audit-20261007/.
+On completion onboard immutable outputs, independently verify analysis and
+recover final checkpoints, write closing memo/uncertainty handoff and wrap/push.
+No2026access/scoring, MIO, backtests, providers, upgrades, fullsuite or cleanup
+of original artifacts. Older status sections below are historical.
+
+# Active handoff — 2026-10-07 night: confirmation running
+
+HPO completed: trial5, learning rate 0.001 and fusion dropout 0.1; weighted
+development skill -0.149518% against the paired empirical reference.
+The selected PatchTST32 uses minus_momentum (40 inputs). All 18 HPO cell
+references were independently verified; 15 new fits and 3 original reused fits.
+HPO backup recovery passed. No candidate is production qualified.
+
+Nine confirmation fits are running serially through confirmation-batch-v1.
+Read /home/russell/data/index_options/production-development-audit-20261007/
+confirmation-batch-v1-launch.json, the append-only attempt ledger, batch log
+and queue state before any dispatch. Never duplicate a fit. Conservative
+reserved charge is 40/216; 30 actual fits completed before confirmation.
+Use WSL2 isolated /home/russell/dskit-production-development-20261007.
+
+The frozen all-three-seeds-positive gate in confirmation-gate-lock.json
+controls Stage4. Analyze onboarded complete outputs with the reviewed recipe,
+independently verify the actual gate and recover saved checkpoints.
+A failed gate ends this cycle before evaluation; do not force Stage4.
+A pass allows the frozen nine 2024–2025 expanding-history refits per seed.
+No 2026 reads or scoring, MIO, backtest, new data, upgrades or full suite.
+Complete the evaluation memo, uncertainty limitations, recovery and reviewed
+merge/push after the actual result. Older handoffs below are historical.
+
 # Active handoff — 2026-10-07 night: Stage1 complete, HPO running
 
 Use WSL2 and /home/russell/dskit-production-development-20261007 only.

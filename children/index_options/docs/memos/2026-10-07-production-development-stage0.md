@@ -1,3 +1,127 @@
+## TL;DR
+
+The authorized bounded development cycle finished: **66 model fits completed**, with every fitted checkpoint retained for inference. The ledger conservatively charges **67 of 216** attempts, including one launch that refused before training. Do not promote this candidate. All three evaluation seeds trail the empirical reference; nominal seed 11 has weighted skill -0.077101%. Retain the evidence and empirical research control. A new development cycle requires a separately disclosed plan. No 2026 data was opened or scored, and no MIO, trading backtest or deployment ran.
+
+This closing section supersedes the running/blocked status in the historical sections below. Those sections and original artifacts remain preserved.
+
+## Execution contract and what changed
+
+We tuned only on three equal eight-month windows in 2021–2022, confirmed frozen settings on three four-month windows in 2023, then evaluated them on the nine already-seen 2024–2025 windows. The latter are stress evidence, **not an untouched test**. Seeds 11, 29 and 47 remain separate; seed 11 was designated nominal before evaluation, with no best-seed selection or ensemble.
+
+At each retraining cutoff, the model starts with fresh weights and all eligible earlier settled history. Newly settled rows are appended; older eligible rows remain. The last 40 mature monitoring origins support early stopping, with purges separating proper training, monitoring and scoring. Monitoring data is not independent calibration. Both origin and settlement dates must precede 2026; outcomes crossing a selection-stage boundary are also purged.
+
+The revised three-window development scheme avoids selecting settings from only the old late-2023 warm-up window. COVID is retained as eligible earlier training history, with no special COVID tuning or extra diagnostic fit. This follows the later owner-approved protocol, not the superseded dates in the original proposal.
+
+Most work used existing DS Kit, library wrappers and JSON. The focused changes were ADR0250's reusable JsonSQLProjection repair for protected JSON reads (already merged), a relative-volume feature configuration and a corrected price endpoint in the corporate-action exclusion span. Existing model/checkpoint, onboarding, bounded Parquet, curve and scoring owners were reused; no new search service, optimizer-resume infrastructure or MIO was built.
+
+## Data prerequisites and remaining assumptions
+
+The configured census contained 833,637 pre-2026 dates across 393 tickers. The broader owned-source audit recovered 4,689 additional eligible-source dates for AMZN before 2016, giving 838,326 reconciled source dates. AMZN history starts in 1997. Older MSFT history was retained diagnostically but could not be admitted without its missing split inventory. No unavailable options records were fabricated.
+
+The research panel has **111,011 rows and 85 symbols**, not 393. The other 308 configured symbols lack the owned action inventory needed for this verification and remain explicitly quarantined. This is an evidence/adjustment-consistency restriction, not a newly lost price source or a failed download. Reconciliation leaves zero unexplained dates: 111,011 admitted; 632,255 missing-action-inventory quarantine; 89,729 non-session expiries; 2,442 action-span exclusions; 1,870 targets reaching 2026; 1,006 missing references; and 13 incomplete paths.
+
+The 85-symbol normalized source vintages agree across all eight checked bar fields. Older AMZN overlap agrees too. Split and ambiguous-action exclusions, volume-feature rebasing and price-to-target units were checked. The panel spans quote dates 1997-06-17–2025-11-28 and settlements through 2025-12-29. Panel SHA256: d770fa8a3c34b08ebb738b84411f7e7f7bfc33d62effbc9aa7f66faa60d41bc8.
+
+Historical close-feature availability at 22:00 UTC and forecast issue at 22:05 UTC are research assumptions, not proven historical known-at timestamps. Universe membership is retrospective, not point-in-time certified. Known owned catalogs and historical source families were inventoried; inaccessible/unmounted storage is not claimed inventoried. These limits prevent production qualification and make older 393-symbol results non-comparable to this corrected cohort.
+
+## Development, search and confirmation
+
+Stage 1 completed five feature arms × three windows: 15 fits, with 21,297 identical paired forecast identities per arm. Removing momentum selected 40 inputs; weighted skill was -0.386357%, versus -0.736555% for base features. All five arms trailed the empirical reference during development.
+
+HPO evaluated six complete PatchTST32 settings over the same three windows. It ran 15 new fits and reused three **verified original** Stage-1 fits without changing their identities. Learning rate 0.001 and fusion dropout 0.1 won with weighted skill -0.149518%. Backbone dropout remained fixed. A negative development objective does not become a performance pass merely because it won the search.
+
+The full selected-arm grid contains 108 cells. Thirty incomplete trials were ineligible: 84 individually exceeded the frozen capacity rules and six otherwise feasible CNN cells were withheld because their full trials were incomplete. Only compact PatchTST32 fit the complete-window contract. For the selected arm in the first development window, its 10,939 parameters fit the 12,192-parameter ceiling; CNN8 requires 14,111, VanillaTransformer32 requires 23,916 and PatchTST64 requires 36,091. These are preset capacity restrictions for admitted training support, not a GPU-memory limitation. CNN/VanillaTransformer were not silently resized, and this is not empirical proof that PatchTST beats those architectures.
+
+Confirmation completed nine fresh fits and 11,171 paired forecasts per seed. Weighted skills were +0.134777%, +0.086256% and +0.022997% for seeds 11, 29 and 47. All were strictly positive, so the previously frozen all-three-seeds rule allowed evaluation. Independent actual-result verification and checkpoint recovery passed before dispatch. This modest stability gate is not a significance or production test.
+
+## Evaluation result and recommendation
+
+- Seed 11: weighted skill -0.077101%; ordinary CRPS skill -0.073538%; tail CRPS skill -0.083489%. Each has 21,587 paired forecasts across nine windows.
+- Seed 29: weighted skill -0.189704%; ordinary CRPS skill -0.165136%; tail CRPS skill -0.233755%. Each has 21,587 paired forecasts across nine windows.
+- Seed 47: weighted skill -0.199768%; ordinary CRPS skill -0.128902%; tail CRPS skill -0.326837%. Each has 21,587 paired forecasts across nine windows.
+
+Weighted skill is 100 × (1 − model loss / paired reference loss); positive means less forecast-distribution error, not trading return. For nominal seed 11, the actual sums are model 22318.119740891 and reference 22300.925590145, giving -0.077101%. Losses use the configured standardized log-return scale. No profit, strategy or decision-layer result is implied.
+
+Nominal seed 11 improves weighted loss in 3/9 windows and 35/85 evaluated symbols. Leave-one-window-out aggregate skills range from -0.303089% to +0.044038%. These are descriptive checks; overlapping targets and shared dates do not supply independent observations, and the three seeds are not three independent copies of outcomes. No confidence interval was manufactured from nine window totals.
+
+Do not promote this candidate. All three evaluation seeds trail the empirical reference; nominal seed 11 has weighted skill -0.077101%. Retain the evidence and empirical research control. A new development cycle requires a separately disclosed plan. The frozen configuration remains PatchTST32, without momentum, learning rate 0.001, fusion dropout 0.1 and nominal seed 11. There is **no qualified production champion or learned reserve**. The empirical model remains a research control, not a qualified live fallback. Every nominal-seed retraining checkpoint is retained; the latest chronological checkpoint is identified below rather than chosen by its evaluation score.
+
+## Uncertainty and calibration findings
+
+Nominal evaluation prediction-interval coverage is:
+
+- Nominal 50% interval: 10,569/21,587 outcomes covered (48.960%).
+- Nominal 80% interval: 16,735/21,587 outcomes covered (77.524%).
+- Nominal 95% interval: 19,920/21,587 outcomes covered (92.278%).
+- Nominal 99% interval: 20,909/21,587 outcomes covered (96.859%).
+
+Its mean probability-integral-transform value is 0.504036; decile counts and all seed diagnostics are in the aggregate report. These are descriptive calibration findings, not conditional-CDF confidence bands. Confirmation already showed nominal 95% and 99% coverage of 93.340% and 97.744%. Coverage shortfalls are reported directly, without fitting a post-result correction or inventing a blocking threshold.
+
+Settled chronological forecasts and outcomes are now preserved, so the earlier lack-of-forecasts prerequisite is resolved for this research cohort. What remains missing is **selection-independent calibration evidence with a frozen criterion, support/tail policy, cohort rules and minimum-support requirement**, followed by later untouched validation. Early-stop monitors, HPO scores, seed dispersion and these already-seen evaluation windows do not establish that guarantee.
+
+The future handoff uses a coherent discrete distribution: nonnegative masses summing to one on an increasing price grid, with a dimensionless spot-normalized Wasserstein-1 radius. The exact formula and required record fields are retained in the U1 section below. Each record must carry nominal probabilities, grid/spot units and share basis, support policy, radius, separately validated bands if any, full model/calibration identities, chronology and fallback rules. Saved Gaussian mixtures model z = log(terminal price / spot) / reference scale; the verified price mapping is spot × exp(reference scale × z).
+
+Nine synthetic format/arithmetic checks, a crossed-band refusal and actual return/price/quantile consistency checks support representability only. A finite grid does not exactly represent unbounded mixture tails. No production grid or currency/option-deliverable mapping is certified. Radius, calibrated CDF bands and calibration identity remain **null**; execution eligibility is false, with abstention until a separately qualified fallback exists. The proposal's mean robust-loss radius criterion requires a decision-policy study, excluded here; no substitute radius or confidence guarantee was invented.
+
+## Failures, checks and deliberately unrun work
+
+All 66 actual model fits completed. The first pilot launch refused missing deterministic CUDA configuration before fitting; its original output/config/log remain immutable and it is conservatively charged once. CUBLAS_WORKSPACE_CONFIG=:4096:8 corrected the environment for the replacement run. One source registration refused a subsecond clock mismatch before acquisition and was retained/retired through the existing registry.
+
+Independent reporting review corrected a missing price-column projection through the existing bounded reader. Actual confirmation diagnostics then exposed exactly one PIT value equal to 1 plus one floating-point epsilon. The report now records raw extrema and uses an eight-epsilon bound before clipping only diagnostic probabilities; larger errors refuse. Scores, model settings and checkpoints never changed.
+
+Behavioral prerequisites passed 104 focused checks and two independent skeptic lenses. The corrected execution configuration passed independent no-fit temporal/capacity checks and focused manifest/imputation checks. The separate seed gate closed two independent reviews. Subsequent changes were constrained JSON instances and evidence appends; runtime, tests and tracked execution configurations remain identical to reviewed candidate 4f9e1084. No full test suite or shared-environment upgrade ran.
+
+No second-family fits, automatic retries, budget expansion, 2026 reads/scoring, provider acquisition, cloud spending, MIO, strategy backtest, deployment or live trading occurred. Production promotion and uncertainty-radius qualification were deliberately not claimed. Existing fitted packages support inference, **not full interrupted-optimizer continuation**.
+
+## Proposed independent qualification, not executed
+
+Before any separately authorized next stage, freeze one nominal checkpoint, its transforms, the reference, verified as-of universe and action/currency metadata, fallbacks, all calibration choices and the exact calendar/availability rules. Do not retry a reserve on the same test or refit using test labels.
+
+A concrete prospective design is 126 eligible exchange sessions for calibration, wait for the last target plus publication delay to settle, then 252 later sessions for validation and wait again. All input lookbacks, origins and targets must remain outside protected 2026; choose post-2026 warm-up sufficient for every frozen feature before the first calibration origin. Resolve exact dates before opening observations. These durations are design choices, not proof of adequate effective sample size.
+
+Prespecify synchronized cross-sectional quote-date blocks: 60 trading dates primary and 30 sensitivity, each calendar span at least the maximum target horizon. The proposed forecast gates are a lower 95% bound for paired weighted skill above zero and an upper 95% bound for relative tail-loss deterioration below the frozen 0.5% margin. Freeze cohort coverage criteria before opening validation. Too few effective blocks, wide intervals or unfrozen criteria mean inconclusive. Radius/decision-layer qualification remains separate; no present authority to execute it is inferred.
+
+## Reproducibility and handoff
+
+The [aggregate JSON](../reports/production-development-20261007.json) carries compact metrics, configuration/review identities and package references. Private evidence root:
+ /home/russell/data/index_options/production-development-audit-20261007/
+Run artifacts:
+ /home/russell/data/index_options/production-development-20261007/runs/
+Source store:
+ /home/russell/data/index_options/ob
+Verified second copies:
+ /home/russell/data/backups/index_options/production-development-20261007/
+
+Use production-champion-freeze-v1.json, production-*-resolved-plan-v1.json, the attempt ledger and final result receipts. The latest nominal research inference fit is seed 11/fold 9, identity fc61f556db357ac234320c872548fe8c290916bdc28f9c226fccc72aa7ef8a3a, checkpoint 4c28fb47cceaa031a5945e39fc2f544230ef0241705f8d41db5e1709281b3cc6. All earlier refit identities and chronological forecasts remain retained. Forecast packages apply only to their supported heads and exact feature/transform schema; unknown heads must refuse.
+
+Recover into a fresh directory using each bundle's RECOVERY.txt, member hashes and archived restore recipe, together with the retained environment and source-code/input bundle. Restoration has verified complete artifact chains and representative forecasts/scores in fresh processes with original paths denied. Do not rerun acquisition or training recipes merely to inspect a package. This is a second copy on the same physical disk, **not off-device disaster recovery**. No original artifacts were deleted. Final evaluation recovery and actual-result verification are complete. Remote-delivery evidence is retained separately after publication.
+
+## Verified closing evidence
+
+Independent evaluation verification checked all 27 original fit identities,
+2,271 forecast shards, paired losses, interval coverage and sensitivity results.
+Report SHA256: 045e9e5ffa13068b60088c2cee0ef68ccf2d41b0022a825518f98ea4901c3d4e;
+zero unresolved Critical/Major/Minor/Nit.
+
+The final evaluation bundle contains 14,502 files and 112,332,800 bytes, SHA256
+5842015e5316b4f301d0a3fa92c8ca500cd0cd3041dd7e60f8076c52561f9f75.
+Its recovered onboarding snapshot also verifies. The fixed seed-11/fold-9
+checkpoint reproduced seven forecasts and both CRPS scores with original paths
+denied. Recovery receipt SHA256:
+e592a6e20cc8a87a5a47b8b90dfac59299e14d30dd14119e57560e3cf74cec72.
+Use audit/evaluation-v1-backup-recovery-receipt.json and
+evaluation-complete-v1/RECOVERY.txt together with earlier bundle instructions.
+
+Final scoped closing-document reviews and Git delivery are recorded in the
+aggregate report and the final private metadata supplement. The already-closed
+runtime/configuration reviews remain valid: exact source/test/config blobs are
+unchanged; the gate ADR differs only by its recorded final-review evidence.
+
+---
+
+<details>
+<summary>Historical evidence and superseded status snapshots</summary>
+
 ## Stage1 result and HPO dispatch — 2026-10-07 night
 
 All15feature fits succeeded. Each arm has21,297 identical forecast identities
@@ -668,3 +792,5 @@ Stopped candidate 59d35c6 remains historical failure evidence: /root/stage0_corr
 The integration reviewer separately demonstrated one Major in private Yahoo audit recipe v1: original JSON booleans lost type identity and duplicate action timestamps could collapse before validation. This diagnostic recipe defect is not evidence of corrupt owned records or a helper defect. No real audit used v1. It remains preserved; v2 has 17 synthetic negative checks and awaits independent source-policy approval. Full source admission, volume semantics and folds remain open.
 
 Next authorized work: bounded older-history and auxiliary projections, actual split/vintage checks, revised invariant volume configuration, frozen conservative research clocks and purged folds, candidate dependency recovery, then counted pilots/Stages 1-4. All 216 fit attempts remain. No production qualification, calibrated radius, MIO or strategy result is claimed.
+
+</details>
