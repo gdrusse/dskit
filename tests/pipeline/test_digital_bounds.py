@@ -237,6 +237,120 @@ def test_a_list_valued_chain_key_is_one_chain_not_a_crash():
     assert row["dig_lower"] == pytest.approx(0.29)
 
 
+def test_a_list_keyed_chain_refuses_a_strike_listed_as_100_and_as_100_point_0():
+    # the same strike spelled int and float under a list chain key is one quote listed twice
+    calls = [quote("C", 90, 11.0, 11.4, chain=["X"]), quote("C", 100, 4.0, 4.2, chain=["X"]),
+             quote("C", 110, 1.0, 1.2, chain=["X"]), quote("C", 100.0, 4.1, 4.3, chain=["X"])]
+    out = run([contract("above", lo=100.0, chain=["X"])], calls)
+    duplicates = [r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]
+    assert len(duplicates) == 2
+    # neither C100 is used: 110 has no strike above it to buy, 90 none below it, so no pair either side
+    assert out["records"][0]["dig_status"] == "no_bracket"
+
+
+def test_a_chain_spelled_as_a_list_and_as_a_tuple_is_one_chain_for_duplicates_too():
+    quotes = [{**q, "chain": ["X"]} for q in HAND] + [quote("C", 100, 4.1, 4.3, chain=("X",))]
+    out = run([contract("above", lo=100.0, chain=("X",))], quotes)
+    assert len([r for r in out["refusals"] if any("duplicate quote" in m for m in r["problems"])]) == 2
+
+
+def test_a_chain_keyed_by_a_list_is_not_the_chain_keyed_by_that_lists_repr():
+    quotes = [{**q, "chain": ["X"]} for q in HAND]
+    out = run([contract("above", lo=100.0, chain="['X']"), contract("above", lo=100.0, chain=("X",))], quotes)
+    assert [r["dig_status"] for r in out["records"]] == ["no_chain", STATUS_OK]
+
+
+def test_a_locked_cent_priced_chain_far_from_the_money_is_not_a_crossed_band():
+    # exactly linear calls 0.05 apart per unit strike: both edges are 0.05, but at prices near
+    # 8800 the subtraction's rounding (~1e-12 per unit of spacing) exceeds any fixed 1e-12 dust
+    calls = [quote("C", 6695, 8799.0, 8799.0), quote("C", 6696, 8798.95, 8798.95),
+             quote("C", 6697, 8798.9, 8798.9)]
+    row = run([contract("above", lo=6696.0)], calls)["records"][0]
+    assert row["dig_status"] == STATUS_OK
+    assert row["dig_lower"] == pytest.approx(0.05) and row["dig_upper"] == pytest.approx(0.05)
+
+
+def test_a_genuine_crossing_of_one_millionth_at_cent_prices_is_still_crossed():
+    # lower (8798.95 - (8798.9 - 1e-6)) / 1 = 0.05 + 1e-6 > upper (8799.0 - 8798.95) / 1 = 0.05
+    calls = [quote("C", 6695, 8799.0, 8799.0), quote("C", 6696, 8798.95, 8798.95),
+             quote("C", 6697, 8798.9 - 1e-6, 8798.9 - 1e-6)]
+    row = run([contract("above", lo=6696.0)], calls)["records"][0]
+    assert row["dig_status"] == "crossed_band"
+    assert row["dig_lower"] - row["dig_upper"] == pytest.approx(1e-6, rel=1e-3)
+
+
+@pytest.mark.parametrize("multiple, status", [(0.5, STATUS_OK), (2.0, "crossed_band")])
+def test_the_allowance_is_the_relative_tolerance_times_top_price_over_the_narrowest_spacing(multiple, status):
+    # linear calls 0.05 per unit strike at uneven strikes 6695, 6696, 6700 (spacings 1 and 4):
+    # both edges of P(S >= 6696) are 0.05. The allowance is 1e-12 * 8799 / 1 (the NARROWEST
+    # spacing), so a crossing of half of it is dust and twice it is reported.
+    allowance = digital_bounds.BAND_RELATIVE_TOLERANCE * 8799.0 / 1.0
+    far = 8798.75 - 4 * multiple * allowance  # lowers the far ask: lower edge rises by multiple * allowance
+    calls = [quote("C", 6695, 8799.0, 8799.0), quote("C", 6696, 8798.95, 8798.95), quote("C", 6700, far, far)]
+    assert run([contract("above", lo=6696.0)], calls)["records"][0]["dig_status"] == status
+
+
+@pytest.mark.parametrize("multiple, status", [(0.5, STATUS_OK), (2.0, "crossed_band")])
+def test_a_chain_priced_below_one_unit_per_spacing_keeps_the_absolute_floor(multiple, status):
+    # calls 0.30 / 0.20 / 0.10 at 90 / 100 / 110: scale 0.03, so the allowance is 1e-12 itself
+    far = 0.10 - 10 * multiple * digital_bounds.BAND_RELATIVE_TOLERANCE
+    calls = [quote("C", 90, 0.30, 0.30), quote("C", 100, 0.20, 0.20), quote("C", 110, far, far)]
+    assert run([contract("above", lo=100.0)], calls)["records"][0]["dig_status"] == status
+
+
+def test_the_band_tolerance_is_relative_to_the_chains_price_scale():
+    assert digital_bounds.BAND_RELATIVE_TOLERANCE == 1e-12
+    assert "BAND_RELATIVE_TOLERANCE" in digital_bounds.__all__
+    assert not hasattr(digital_bounds, "BAND_TOLERANCE"), "one tolerance name, not two"
+
+
+@pytest.mark.parametrize("payoff, present", [("above", {"lo": 100.0}), ("below", {"hi": 100.0})])
+def test_a_row_without_the_bound_column_its_payoff_never_reads_is_bounded(payoff, present):
+    row = {"payoff": payoff, "chain": "x", **present}
+    assert run([row], HAND)["records"][0]["dig_status"] == STATUS_OK
+
+
+@pytest.mark.parametrize("row", [{"payoff": "above", "chain": "x"}, {"payoff": "between", "lo": 90.0, "chain": "x"},
+                                 {"payoff": "below", "lo": 100.0, "chain": "x"}])
+def test_a_row_missing_a_bound_column_its_payoff_reads_is_bad_bounds_not_a_crash(row):
+    assert run([row], HAND)["records"][0]["dig_status"] == "bad_bounds"
+
+
+def test_a_negative_strike_bound_is_bad_bounds():
+    assert run([contract("above", lo=-100.0)], HAND)["records"][0]["dig_status"] == "bad_bounds"
+
+
+@pytest.mark.parametrize("field, value, needle", [
+    ("strike", -100, "strike must be a positive"), ("strike", "100", "strike must be a positive"),
+    ("right", "p", "right must be"), ("chain", None, "chain key is missing")])
+def test_a_quote_row_with_an_unusable_strike_right_or_chain_is_refused_on_both_sides(field, value, needle):
+    bad = {**quote("P", 100, 4.0, 4.2), field: value}
+    out = run([contract("above", lo=100.0)], [q for q in HAND if not (q["right"] == "P" and q["strike"] == 100)] + [bad])
+    refused = [r for r in out["refusals"] if r["side"] == "both"]
+    assert len(refused) == 1 and any(needle in m for m in refused[0]["problems"])
+    # never filed as a put: the put band would otherwise read P100 and tighten the lower edge to 0.29
+    assert out["records"][0]["dig_lower"] == pytest.approx(0.28)
+
+
+@pytest.mark.parametrize("df", [0.0, -0.9, None, float("inf")])
+def test_a_quote_with_an_unusable_discount_factor_is_refused(df):
+    quotes = [{**q, "df": 1.0} for q in HAND]
+    quotes[1]["df"] = df  # C100
+    out = run([contract("above", lo=100.0)], quotes, discount_field="df")
+    refused = [r for r in out["refusals"] if r["side"] == "both"]
+    assert len(refused) == 1 and "discount factor" in refused[0]["problems"][0]
+
+
+def test_sizes_without_min_size_must_cover_one_contract():
+    assert digital_bounds.DEFAULT_MIN_SIZE == 1
+    quotes = [{**q, "bs": 5, "as": 5} for q in HAND]
+    quotes[1]["bs"] = 0  # C100: no size on the bid
+    out = run([contract("above", lo=100.0)], quotes, bid_size_field="bs", ask_size_field="as")
+    sells = [r for r in out["refusals"] if r["side"] == "sell"]
+    assert len(sells) == 1 and any("does not cover count 1" in m for m in sells[0]["problems"])
+    assert out["census"]["quotes"]["refused"] == 1
+
+
 def test_a_locked_chain_whose_edges_differ_by_float_dust_is_not_a_crossed_band():
     # zero-spread, linear calls: both edges are 0.45 exactly, but float division gives
     # lower 0.45 and upper 0.4499999999999999 -- dust, not a parity violation

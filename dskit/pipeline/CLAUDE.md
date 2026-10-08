@@ -800,7 +800,7 @@ dskit/pipeline/
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
 ├── binary_pricing.py  AveragedLognormal law, Above / Below / Between payoffs, BinaryFairValue node (by import path, ADR-0246)
-├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots (by import path, ADR-0249)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots; canonical_key, the one id/chain key rule (by import path, ADR-0249)
 ├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds) + quote_problems (by import path, ADR-0249)
 ├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0248)
 ├── binary_scoring.py  BucketedBinaryScore: model vs market, settlement-cut held-out gate, cluster-robust errors (by import path, ADR-0246)

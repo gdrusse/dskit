@@ -49,6 +49,22 @@ def test_finds_a_planted_bucket_versus_threshold_violation_with_its_direction_an
     assert arb["executable_units"] == pytest.approx(7.0)
 
 
+def test_an_underpriced_range_is_bought_against_the_thresholds():
+    # The other direction of the same identity: X = A - B is worth at least bid A - ask B
+    # = 0.50 - 0.22 = 0.28, yet X offers at 0.25. Buy X at 0.25, sell A at 0.50, buy B at 0.22:
+    # credit -0.25 + 0.50 - 0.22 = 0.03. Payout X - A + B: (A, B, X) in outcome S < 100 is
+    # (0, 0, 0) -> 0; 100 <= S < 110 is (1, 0, 1) -> 1 - 1 + 0 = 0; S >= 110 is (1, 1, 0) -> 0 - 1 + 1 = 0.
+    rows = [contract("A", 0.50, 0.52), contract("B", 0.20, 0.22), contract("X", 0.23, 0.25)]
+    arb = run(rows, differences=[["X", "A", "B"]])["arbitrage"]
+    assert arb["feasible"] is False
+    assert arb["violation"] == pytest.approx(0.03, abs=1e-9)
+    legs = {leg["id"]: (leg["side"], leg["units"], leg["price"]) for leg in arb["legs"]}
+    assert legs == {"X": ("buy", pytest.approx(1.0), 0.25), "A": ("sell", pytest.approx(1.0), 0.50),
+                    "B": ("buy", pytest.approx(1.0), 0.22)}
+    assert arb["credit_per_unit"] == pytest.approx(0.03)
+    assert arb["relations"] == [{"kind": "differences", "index": 0, "ids": ["X", "A", "B"]}]
+
+
 def test_a_partition_that_bids_over_one_is_a_sell_everything_arbitrage():
     rows = [contract("lo", 0.30, 0.32), contract("mid", 0.40, 0.42), contract("hi", 0.33, 0.35)]
     arb = run(rows, partitions=[["lo", "mid", "hi"]])["arbitrage"]
@@ -74,6 +90,75 @@ def test_the_tolerance_decides_whether_a_small_violation_counts():
     assert run(rows, partitions=[["lo", "mid", "hi"]])["arbitrage"]["feasible"] is False
     loose = run(rows, partitions=[["lo", "mid", "hi"]], tolerance=0.05)["arbitrage"]
     assert loose["feasible"] is True and loose["legs"] == []
+
+
+def test_the_executable_size_divides_each_legs_size_by_its_units():
+    # A + C = 1 and C = A - B force B = 2A - 1 (so A >= 1/2). Sell half a B at 0.33 and one C at 0.80:
+    # liability 0.5 (2A - 1) + (1 - A) = 0.5 in every outcome, credit 0.165 + 0.80 = 0.965, profit 0.465.
+    # B's bid size 10 covers 10 / 0.5 = 20 position units, C's 30 covers 30: the position is 20, not 10.
+    rows = [contract("A", 0.66, 0.68, bs=99, az=99), contract("B", 0.33, 0.35, bs=10, az=99),
+            contract("C", 0.80, 0.82, bs=30, az=99)]
+    arb = run(rows, chains=[["A", "B"]], differences=[["C", "A", "B"]], partitions=[["A", "C"]],
+              bid_size_field="bs", ask_size_field="az")["arbitrage"]
+    assert arb["violation"] == pytest.approx(0.465)
+    assert {leg["id"]: (leg["side"], leg["units"]) for leg in arb["legs"]} == {
+        "B": ("sell", pytest.approx(0.5)), "C": ("sell", pytest.approx(1.0))}
+    assert arb["executable_units"] == pytest.approx(20.0)
+
+
+def test_a_negative_or_missing_leg_size_executes_nothing():
+    rows = [contract("lo", 0.30, 0.32, bs=-5, az=9), contract("mid", 0.40, 0.42, bs=8, az=9),
+            contract("hi", 0.33, 0.35, bs=None, az=9)]
+    arb = run(rows, partitions=[["lo", "mid", "hi"]], bid_size_field="bs", ask_size_field="az")["arbitrage"]
+    assert arb["executable_units"] == 0.0
+    rows[0]["bs"], rows[2]["bs"] = 6, 7
+    assert run(rows, partitions=[["lo", "mid", "hi"]], bid_size_field="bs",
+               ask_size_field="az")["arbitrage"]["executable_units"] == pytest.approx(6.0)
+
+
+def test_the_unit_interval_bounds_the_lp_itself():
+    # X1 = A - B1 and X2 = A - B2 with A <= 1 cap each range at 0.9, yet both bid 0.95: widening 0.05
+    # each, 0.10 in all. Without the [0, 1] bound A could rise to 1.05 for a total widening of 0.05.
+    rows = [contract("A", 0.95, 1.0), contract("X1", 0.95, 0.95), contract("X2", 0.95, 0.95),
+            contract("B1", 0.10, 0.10), contract("B2", 0.10, 0.10)]
+    arb = run(rows, differences=[["X1", "A", "B1"], ["X2", "A", "B2"]])["arbitrage"]
+    assert arb["violation"] == pytest.approx(0.10)
+
+
+def test_the_projection_stays_inside_the_unit_interval_where_the_unconstrained_one_would_not():
+    # mids A 0.02, B 0.98, X 0.50 with X = A - B: unconstrained, X would land near -0.96
+    rows = [contract("A", 0.01, 0.03), contract("B", 0.97, 0.99), contract("X", 0.20, 0.80)]
+    fair = {r["id"]: r["coherent"] for r in run(rows, differences=[["X", "A", "B"]])["records"]}
+    assert all(0.0 <= v <= 1.0 for v in fair.values()), fair
+    assert fair["X"] == pytest.approx(0.0, abs=1e-6)
+    assert fair["A"] == pytest.approx(fair["B"], abs=1e-6)
+
+
+def test_the_tolerance_also_reads_a_small_legs_units_as_zero():
+    # A + C = 1, C = A - B, A >= B: violation 0.9 from buying A (1 unit) and selling half a B.
+    # With tolerance 0.7 the violation still counts but B's 0.5 units are read as zero.
+    rows = [contract("A", 0.06, 0.08), contract("B", 0.96, 0.98), contract("C", 0.02, 0.04)]
+    relations = {"chains": [["A", "B"]], "differences": [["C", "A", "B"]], "partitions": [["A", "C"]]}
+    exact = run(rows, **relations)["arbitrage"]
+    assert {leg["id"]: leg["units"] for leg in exact["legs"]} == {"A": pytest.approx(1.0), "B": pytest.approx(0.5)}
+    loose = run(rows, tolerance=0.7, **relations)["arbitrage"]
+    assert loose["feasible"] is False and [leg["id"] for leg in loose["legs"]] == ["A"]
+
+
+def test_a_solve_that_does_not_finish_optimal_is_refused_by_name(monkeypatch):
+    class Stopped:
+        class solver:
+            termination_condition = "maxTimeLimit"
+
+    monkeypatch.setattr(BinaryCoherence, "_solve", lambda self, solver, model: Stopped())
+    with pytest.raises(RuntimeError, match="widening LP.*maxTimeLimit"):
+        run(LADDER, **LADDER_RELATIONS)
+
+
+def test_contradictory_relations_raise_rather_than_report_a_verdict():
+    rows = [contract("A", 0.4, 0.6), contract("B", 0.4, 0.6), contract("C", 0.4, 0.6)]
+    with pytest.raises(Exception):
+        run(rows, partitions=[["A", "B"], ["A", "C"], ["B", "C"]], differences=[["A", "B", "C"]])
 
 
 def test_an_inverted_threshold_ladder_is_found_on_the_chain():
@@ -148,9 +233,11 @@ def test_a_relation_naming_an_unknown_id_is_skipped_by_name():
     assert out["records"][0]["coherent_status"] == "unrelated"
 
 
-def test_a_quote_above_one_is_refused():
-    out = run([contract("k1", 0.5, 1.2), contract("k2", 0.1, 0.2)], chains=[["k1", "k2"]])
+@pytest.mark.parametrize("bid, ask", [(0.5, 1.2), (-0.1, 0.2), (0.5, 0.4), ("0.1", 0.2), (True, 0.2)])
+def test_a_quote_outside_the_unit_interval_crossed_or_not_a_number_is_refused(bid, ask):
+    out = run([contract("k1", bid, ask), contract("k2", 0.1, 0.2)], chains=[["k1", "k2"]])
     assert out["records"][0]["coherent_status"] == "bad_quote"
+    assert out["summary"]["skipped_relations"][0]["bad_quote"] == ["k1"]
 
 
 # -- params and contract -------------------------------------------------------------------------------
@@ -158,6 +245,9 @@ def test_a_quote_above_one_is_refused():
 
 @pytest.mark.parametrize("bad, needle", [
     ({"chains": [["a"]]}, "chains"),
+    ({"partitions": [["a"]]}, "partitions"),
+    ({"chains": [["a", 1.5]]}, "chains"),
+    ({"chains": [["a", "b"]], "bid_size_field": "", "ask_size_field": "az"}, "bid_size_field"),
     ({"chains": "a,b"}, "chains"),
     ({"partitions": [["a", "a"]]}, "partitions"),
     ({"differences": [["x", "a"]]}, "differences"),

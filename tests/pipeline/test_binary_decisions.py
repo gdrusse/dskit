@@ -248,6 +248,18 @@ def test_quote_state_default_deny_and_required_knobs():
         QuoteState("state", {**PARAMS, "max_candle_age_ms": 0})
 
 
+def test_candles_out_of_order_still_give_the_latest_bar_ended_by_the_instant():
+    candles = [candle(DECISION - 30_000, bid=0.50, ask=0.54), candle(DECISION + MINUTE, bid=0.99, ask=0.995),
+               candle(DECISION - 2 * MINUTE, bid=0.10, ask=0.12), candle(DECISION - MINUTE, bid=0.30, ask=0.34)]
+    out = state([row()], candles)[0]
+    assert (out[bd.YES_BID], out[bd.YES_ASK]) == (0.50, 0.54)
+    assert out[bd.CANDLE_AGE_MS] == 30_000
+
+
+def test_the_candle_age_is_how_long_before_the_instant_the_bar_ended():
+    assert state([row()], [candle(DECISION - 45_000)])[0][bd.CANDLE_AGE_MS] == 45_000
+
+
 def test_the_candle_age_cap_is_inclusive_to_the_millisecond():
     cap = PARAMS["max_candle_age_ms"]
     assert state([row()], [candle(DECISION - cap)])[0][bd.YES_BID] == 0.40, "age == cap is still fresh"

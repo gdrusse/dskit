@@ -59,14 +59,16 @@ Import cost: stdlib only.
 
 import math
 from bisect import bisect_left, bisect_right
+from collections import Counter
 from decimal import Decimal
 
+from dskit.pipeline.binary_curve import canonical_key
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = [
-    "BAND_TOLERANCE",
+    "BAND_RELATIVE_TOLERANCE",
     "DEFAULT_MIN_SIZE",
     "LOWER_SUFFIX",
     "STATUSES",
@@ -85,9 +87,12 @@ STATUSES = (
     "no_upper_bracket", "crossed_band",
 )
 
-#: Float dust allowed before a lower edge above the upper edge counts as ``crossed_band``: a locked,
-#: arbitrage-free chain can compute its two edges a few ulps apart, which is no parity violation.
-BAND_TOLERANCE = 1e-12
+#: Float dust allowed before a lower edge above the upper edge counts as ``crossed_band``, as a
+#: fraction of the chain's price scale: a locked, arbitrage-free chain can compute its two edges a few
+#: ulps apart, and the rounding of ``(a - b) / h`` grows with ``|price| / h``. The allowance is this
+#: times ``max(1, scale)``, ``scale`` being the chain's largest quoted forward value over its smallest
+#: strike spacing (``_Chain.tolerance``).
+BAND_RELATIVE_TOLERANCE = 1e-12
 
 #: Suffixes of the columns written beside ``bound_field``.
 LOWER_SUFFIX = "_lower"
@@ -233,11 +238,18 @@ class _Chain:
     def __init__(self):
         self.calls, self.puts = _Strip(), _Strip()
         self._bands = {}
+        self.tolerance = BAND_RELATIVE_TOLERANCE
 
     def freeze(self):
-        """Sort both strips."""
+        """Sort both strips and size the float-dust allowance to the chain's price scale."""
         self.calls.freeze()
         self.puts.freeze()
+        books = (self.calls.bids, self.calls.asks, self.puts.bids, self.puts.asks)
+        strikes = sorted({k for book in books for k in book})
+        gaps = [b - a for a, b in zip(strikes, strikes[1:])]
+        if gaps:
+            largest = max(abs(price) for book in books for price in book.values())
+            self.tolerance = BAND_RELATIVE_TOLERANCE * max(1.0, largest / min(gaps))
 
     def band(self, strike):
         """Return ``(lower, upper)`` of ``P(S >= strike)``, each None when no spread bounds it."""
@@ -415,36 +427,41 @@ class DigitalBounds(Node):
                               quote.get(p["bid_size_field"]) if sized else 0,
                               quote.get(p["ask_size_field"]) if sized else 0, self._count(), side)
 
+    def _quote_key(self, quote):
+        """Return the key two listings of one strike and right share (``100`` and ``100.0`` are one strike)."""
+        p = self.params
+        return (canonical_key(quote[p["quote_chain_field"]]), canonical_key(quote[p["right_field"]]),
+                float(quote[p["strike_field"]]))
+
+    def _file(self, quote, chains, base):
+        """File a usable quote's sides into its chain; return a refusal row per side it cannot trade."""
+        p = self.params
+        discount = float(quote[p["discount_field"]]) if "discount_field" in p else 1.0
+        chain = chains.setdefault(canonical_key(quote[p["quote_chain_field"]]), _Chain())
+        strip = chain.calls if quote[p["right_field"]] == p["call_value"] else chain.puts
+        refusals = []
+        for side, book, field in ((_SELL, strip.bids, "bid_field"), (_BUY, strip.asks, "ask_field")):
+            side_problems = self._side_problems(quote, side)
+            if side_problems:
+                refusals.append({**base, "side": side, "problems": side_problems})
+            else:
+                book[float(quote[p["strike_field"]])] = float(quote[p[field]]) / discount
+        return refusals
+
     def _chains(self, quotes):
         """Build every chain's strips; return ``(chains, refusals, refused quote count)``."""
         p = self.params
-        keys = [(q.get(p["quote_chain_field"]), q.get(p["right_field"]), q.get(p["strike_field"])) for q in quotes]
-        seen = {}
-        for key in keys:
-            seen[_hashable(key)] = seen.get(_hashable(key), 0) + 1
+        problems = [self._row_problems(quote) for quote in quotes]
+        counts = Counter(self._quote_key(q) for q, found in zip(quotes, problems) if not found)
         chains, refusals, refused = {}, [], 0
-        for quote, key in zip(quotes, keys):
-            chain, right, strike = key
-            base = {"chain": chain, "strike": strike, "right": right}
-            problems = self._row_problems(quote)
-            if not problems and seen[_hashable(key)] > 1:
-                problems = ["duplicate quote: the chain lists this strike and right more than once"]
-            if problems:
-                refusals.append({**base, "side": "both", "problems": problems})
-                refused += 1
-                continue
-            discount = float(quote[p["discount_field"]]) if "discount_field" in p else 1.0
-            strip = chains.setdefault(_hashable(chain), _Chain())
-            strip = strip.calls if right == p["call_value"] else strip.puts
-            any_refused = False
-            for side, book, field in ((_SELL, strip.bids, "bid_field"), (_BUY, strip.asks, "ask_field")):
-                side_problems = self._side_problems(quote, side)
-                if side_problems:
-                    refusals.append({**base, "side": side, "problems": side_problems})
-                    any_refused = True
-                else:
-                    book[float(strike)] = float(quote[p[field]]) / discount
-            refused += any_refused
+        for quote, found in zip(quotes, problems):
+            base = {"chain": quote.get(p["quote_chain_field"]), "strike": quote.get(p["strike_field"]),
+                    "right": quote.get(p["right_field"])}
+            if not found and counts[self._quote_key(quote)] > 1:
+                found = ["duplicate quote: the chain lists this strike and right more than once"]
+            rows = [{**base, "side": "both", "problems": found}] if found else self._file(quote, chains, base)
+            refusals += rows
+            refused += bool(rows)
         for chain in chains.values():
             chain.freeze()
         return chains, refusals, refused
@@ -459,7 +476,7 @@ class DigitalBounds(Node):
         given = {"lower": lower, "upper": upper}
         if geometry.bounds_problem(lower, upper) is not None or not all(price_ok(given[b]) for b in geometry.bounds):
             return "bad_bounds"
-        if _hashable(row.get(p["chain_field"])) not in chains:
+        if canonical_key(row.get(p["chain_field"])) not in chains:
             return "no_chain"
         return None
 
@@ -470,10 +487,10 @@ class DigitalBounds(Node):
         low = high = None
         if status is None:
             geometry = PAYOFFS[row[p["payoff_field"]]]
-            constant, terms = _affine_terms(geometry, row[p["lower_field"]], row[p["upper_field"]])
-            chain = chains[_hashable(row[p["chain_field"]])]
+            constant, terms = _affine_terms(geometry, row.get(p["lower_field"]), row.get(p["upper_field"]))
+            chain = chains[canonical_key(row.get(p["chain_field"]))]
             low, high = _interval(constant, terms, chain.band)
-            status = _band_status(low, high)
+            status = _band_status(low, high, chain.tolerance)
         row.update({name + LOWER_SUFFIX: low, name + UPPER_SUFFIX: high, name + STATUS_SUFFIX: status})
         return row
 
@@ -510,15 +527,6 @@ def _name_ok(value):
     return isinstance(value, str) and bool(value)
 
 
-def _hashable(value):
-    """Return ``value`` when it can key a dict, else its repr (a list key is still one chain)."""
-    try:
-        hash(value)
-    except TypeError:
-        return repr(value)
-    return value
-
-
 def _interval(constant, terms, band):
     """Interval arithmetic over an affine geometry: ``(lower, upper)``, a side None when an edge it needs is."""
     low = high = constant
@@ -530,12 +538,12 @@ def _interval(constant, terms, band):
     return (None if low is None else max(0.0, low), None if high is None else min(1.0, high))
 
 
-def _band_status(low, high):
-    """Return the status of a computed band."""
+def _band_status(low, high, tolerance):
+    """Return the status of a computed band, ``tolerance`` being its chain's float-dust allowance."""
     if low is None and high is None:
         return "no_bracket"
     if low is None:
         return "no_lower_bracket"
     if high is None:
         return "no_upper_bracket"
-    return "crossed_band" if low > high + BAND_TOLERANCE else STATUS_OK
+    return "crossed_band" if low > high + tolerance else STATUS_OK

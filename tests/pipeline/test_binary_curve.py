@@ -165,6 +165,66 @@ def test_unknown_knobs_and_overwrites_are_refused():
     assert any("overwrite" in p for p in CurveBinaryFairValue.validate_params({**PARAMS, "fair_field": "lo"}))
 
 
+def test_an_atom_at_the_first_knot_counts_toward_survival_there():
+    # F jumps 0 -> 0.4 at 90: P(S >= 90) = 1 - F(90-) = 1, not 1 - 0.4
+    curve = CurveSurvival([90.0, 90.0, 110.0], [0.0, 0.4, 1.0])
+    assert curve.survival(90.0) == pytest.approx(1.0)
+    shifted = CurveSurvival([90.0, 110.0], [0.2, 1.0])
+    assert shifted.survival(90.0) == pytest.approx(0.8)
+
+
+def test_a_between_whose_upper_bound_leaves_the_support_is_outside_support():
+    # support is spot * exp(+-0.1) = [90.48, 110.52]: lower 100 is inside, upper 115 is not
+    out = run([{"payoff": "between", "lo": 100.0, "hi": 115.0, "curve": "k"},
+               {"payoff": "between", "lo": 85.0, "hi": 100.0, "curve": "k"}])
+    assert [r["fair_status"] for r in out["records"]] == ["outside_support", "outside_support"]
+
+
+@pytest.mark.parametrize("flag", [1, "yes", [True]])
+def test_only_a_literal_true_makes_a_curve_eligible(flag):
+    out = run([{"payoff": "above", "lo": 100.0, "curve": "k"}], curves=({**CURVE, "eligible": flag},),
+              eligible_field="eligible")
+    assert out["records"][0]["fair_status"] == "ineligible_curve"
+
+
+# -- canonical_key: the one id/chain key rule -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("a, b", [
+    (["X"], ("X",)), (["X", 1], ("X", 1.0)), (1, 1.0), ({"a": [1], "b": 2}, {"b": 2, "a": (1,)}),
+    ({1, 2}, frozenset({2, 1})), ("X", "X"), (None, None)])
+def test_canonical_key_merges_the_same_thing_spelled_two_ways(a, b):
+    assert binary_curve.canonical_key(a) == binary_curve.canonical_key(b)
+    assert hash(binary_curve.canonical_key(a)) == hash(binary_curve.canonical_key(b))
+
+
+@pytest.mark.parametrize("a, b", [
+    (["X"], "['X']"), (1, True), (0, False), ("1", 1), (None, "None"), (["X"], ["X", None]),
+    ((1, 2), (2, 1)), ([["X"]], ["X"]), (b"X", "X")])
+def test_canonical_key_never_merges_different_things(a, b):
+    assert binary_curve.canonical_key(a) != binary_curve.canonical_key(b)
+
+
+def test_canonical_key_never_raises_on_an_unhashable_or_self_containing_value():
+    loop = []
+    loop.append(loop)
+
+    class Opaque:
+        __hash__ = None
+
+    for value in (loop, {"k": [{"x": {1, 2}}]}, Opaque(), bytearray(b"x")):
+        hash(binary_curve.canonical_key(value))
+
+
+def test_curve_ids_are_matched_and_deduplicated_by_the_canonical_key():
+    node = CurveBinaryFairValue("c", PARAMS)
+    assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": ("k",)}]})
+    assert node.validate_inputs({"records": [], "curves": [{**CURVE, "id": ["k"]}, {**CURVE, "id": "['k']"}]}) == []
+    out = run([{"payoff": "above", "lo": 100.0, "curve": ("k", 1)}, {"payoff": "above", "lo": 100.0, "curve": True}],
+              curves=({**CURVE, "id": ["k", 1.0]}, {**CURVE, "id": 1}))
+    assert [r["fair_status"] for r in out["records"]] == ["ok", "no_curve"]
+
+
 def test_the_module_declares_its_public_api():
     assert CurveBinaryFairValue.role == "transform"
     assert CurveBinaryFairValue.outputs == ("records", "census")

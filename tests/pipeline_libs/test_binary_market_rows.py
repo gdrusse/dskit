@@ -19,7 +19,8 @@ import pytest
 from dskit.onboarding import OnboardingRoot, run_acquisition
 from dskit.pipeline import binary_decisions as bd
 from dskit.pipeline.binary_decisions import DecisionRows, QuoteState
-from dskit.pipeline.fee_mechanics import fee_model_from_spec
+from dskit.pipeline.fee_mechanics import FeeModel, fee_model_from_spec
+from dskit.pipeline.libs import binary_market_rows
 from dskit.pipeline.libs.binary_market_rows import (
     BinaryMarketRows,
     FeeColumns,
@@ -479,6 +480,25 @@ def test_what_cannot_be_priced_is_marked_never_defaulted(rows, schedules, status
     assert out[bd.FEE_BUY_YES] is None and out[bd.FEE_BUY_NO] is None
 
 
+def test_a_negative_multiplier_is_no_multiplier_not_a_rebate():
+    out = fees([fee_row()], [schedule(multiplier=-1.0)])[0]
+    assert out[bd.FEE_STATUS] == "no_multiplier" and out[bd.FEE_RATE] is None
+
+
+def test_the_no_side_is_priced_at_one_minus_the_bid_under_an_asymmetric_mechanic(monkeypatch):
+    # every shipped mechanic is symmetric in P(1 - P), so only an asymmetric one tells 1 - bid from bid
+    class Linear(FeeModel):
+        name = "linear_test"
+
+        def _exact_fee(self, contracts, price, rate):
+            return rate * contracts * price
+
+    monkeypatch.setattr(binary_market_rows, "fee_model_from_spec", lambda spec: Linear())
+    out = fees([fee_row(bid=0.40, ask=0.44)], [schedule()])[0]
+    assert out[bd.FEE_BUY_YES] == pytest.approx(0.07 * 0.44)
+    assert out[bd.FEE_BUY_NO] == pytest.approx(0.07 * 0.60)
+
+
 def test_a_second_fee_type_is_one_more_config_entry_not_code():
     types = {**FEE_TYPES, "type_grid": {"base_rate": 0.02, "model": {
         "mechanic": "probability_quadratic", "rounding": {"policy": "ceil_to_tick", "tick": 0.05}}}}
@@ -513,6 +533,15 @@ def test_fee_columns_default_deny_and_required_knobs():
     with pytest.raises(Exception, match="exactly the keys"):
         FeeColumns("fees", {"fee_types": {"type_q": {**entry, "notes": "a comment would move the hash"}},
                             "contracts": 1})
+
+
+def test_fee_columns_validation_names_a_missing_contracts_and_a_negative_rate_as_problems():
+    # refused by validate_params itself (as the first child's FeeColumns does), not by a KeyError later
+    assert any("contracts is required" in p for p in FeeColumns.validate_params({"fee_types": FEE_TYPES}))
+    entry = FEE_TYPES["type_q"]
+    assert any("base_rate" in p for p in FeeColumns.validate_params(
+        {"fee_types": {"type_q": {**entry, "base_rate": -0.07}}, "contracts": 1}))
+    assert FeeColumns.validate_params({"fee_types": FEE_TYPES, "contracts": 1}) == []
 
 
 # -- differential: the first child's interim classes, under its own field map ---------------------

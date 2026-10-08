@@ -28,7 +28,9 @@ Import cost: stdlib only.
 """
 
 import math
+import numbers
 from bisect import bisect_left
+from collections import Counter
 
 from dskit.pipeline.binary_pricing import PAYOFFS, STATUS_SUFFIX
 from dskit.pipeline.node import Node, reject_unknown_params
@@ -43,6 +45,7 @@ __all__ = [
     "STATUS_SUFFIX",
     "CurveBinaryFairValue",
     "CurveSurvival",
+    "canonical_key",
 ]
 
 #: The two abscissa conventions a curve's knots may be on.
@@ -304,9 +307,10 @@ class CurveBinaryFairValue(Node):
                     for port in ("records", "curves") if not isinstance(inputs.get(port), list)]
         if problems:
             return problems
-        ids = [_key(curve.get(self.params["curve_id_field"])) if isinstance(curve, dict) else None
+        ids = [curve.get(self.params["curve_id_field"]) if isinstance(curve, dict) else None
                for curve in inputs["curves"]]
-        repeated = sorted({repr(i) for i in ids if ids.count(i) > 1})
+        counts = Counter(canonical_key(i) for i in ids)
+        repeated = sorted({repr(i) for i in ids if counts[canonical_key(i)] > 1})
         return [f"curves lists the id(s) {repeated} more than once: a contract could not say which it reads"
                 ] if repeated else []
 
@@ -338,7 +342,7 @@ class CurveBinaryFairValue(Node):
     def _priced(self, row, curves):
         """Write the fair-value pair onto ``row`` (a copy)."""
         p, name = self.params, self.params["fair_field"]
-        survival, status = curves.get(_key(row.get(p["curve_key_field"])), (None, "no_curve"))
+        survival, status = curves.get(canonical_key(row.get(p["curve_key_field"])), (None, "no_curve"))
         if status is None:
             status = self._refusal(row, survival)
         fair = None
@@ -363,7 +367,7 @@ class CurveBinaryFairValue(Node):
         dict
             ``{"records": [...], "census": {...}}``, new row dicts in input order.
         """
-        curves = {_key(curve.get(self.params["curve_id_field"])): self._survival(curve) for curve in inputs["curves"]}
+        curves = {canonical_key(curve.get(self.params["curve_id_field"])): self._survival(curve) for curve in inputs["curves"]}
         records = [self._priced(dict(row), curves) for row in inputs["records"]]
         statuses = [row[self.params["fair_field"] + STATUS_SUFFIX] for row in records]
         census = {"rows": len(records), "priced": statuses.count(STATUS_OK),
@@ -377,10 +381,63 @@ def _name_ok(value):
     return isinstance(value, str) and bool(value)
 
 
-def _key(value):
-    """Return ``value`` when it can key a dict, else its repr."""
+def canonical_key(value):
+    """Return one hashable, type-tagged key for a row value used as an id or a chain key.
+
+    The one owner of "do these two cells name the same thing" for the binary-pricing nodes
+    (:class:`CurveBinaryFairValue` curve ids, ``digital_bounds.DigitalBounds`` chain keys). Every
+    value is tagged by its kind, so a list ``["X"]`` and the string ``"['X']"`` never merge and
+    ``True`` is never the number ``1``; a list and a tuple of the same items are ONE key (a row read
+    from JSON and the same row built in Python agree); numbers compare as numbers (``1 == 1.0``);
+    a mapping or a set keys by its contents in any order; anything else unhashable keys by its
+    ``repr`` under its own tag, so it never raises.
+
+    Parameters
+    ----------
+    value : object
+        Any cell.
+
+    Returns
+    -------
+    tuple
+        A hashable key, equal for two values exactly when they name the same thing.
+
+    Examples
+    --------
+    A JSON list and a Python tuple are one chain; its printed form is not::
+
+        canonical_key(["X", 1]) == canonical_key(("X", 1.0))   # True
+        canonical_key(["X"]) == canonical_key("['X']")         # False
+        canonical_key(1) == canonical_key(True)                # False
+    """
+    return _canonical(value, frozenset())
+
+
+def _canonical(value, ancestors):
+    """:func:`canonical_key` for ``value`` nested inside the containers whose ids are ``ancestors``."""
+    if value is None or isinstance(value, (bool, str, bytes)):
+        return (type(value).__name__, value)
+    if isinstance(value, numbers.Number):
+        return ("number", value) if _hashes(value) else ("repr", type(value).__qualname__, repr(value))
+    if isinstance(value, (list, tuple, dict, set, frozenset)):
+        if id(value) in ancestors:
+            return ("cycle",)
+        inner = ancestors | {id(value)}
+        if isinstance(value, (list, tuple)):
+            return ("sequence", tuple(_canonical(item, inner) for item in value))
+        if isinstance(value, dict):
+            pairs = ((_canonical(k, inner), _canonical(v, inner)) for k, v in value.items())
+            return ("map", tuple(sorted(pairs, key=repr)))
+        return ("set", tuple(sorted((_canonical(item, inner) for item in value), key=repr)))
+    if _hashes(value):
+        return ("object", type(value).__qualname__, value)
+    return ("repr", type(value).__qualname__, repr(value))
+
+
+def _hashes(value):
+    """Say whether ``value`` can be hashed."""
     try:
         hash(value)
     except TypeError:
-        return repr(value)
-    return value
+        return False
+    return True
