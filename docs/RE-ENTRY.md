@@ -1,3 +1,17 @@
+# Active handoff — 2026-10-08: rho explanation and calibration direction
+
+Owner agreed to start with average expected-loss underestimation protection,
+then later chronological validation and prespecified stress checks. Read
+children/index_options/docs/explanations/robust-condor-selection.md,
+section "How we will calibrate rho", and its linked Claude handoff.
+The explanation reuses I4/I5 and inventories AdaptiveWassersteinRadius; it
+does not change runtime/configuration or calculate a radius. Candidate/payoff
+coverage, settings/support and bounded execution remain to be frozen before
+calibration; MIO/backtest prohibitions and the2026 closure remain unchanged.
+Forecasting completion and all model/recovery identities below stay valid.
+
+---
+
 # Active handoff — 2026-10-08: restored-universe forecasting closed; calibration walkthrough next
 
 All66 new fits completed without failures:15feature +15newHPO +9confirmation

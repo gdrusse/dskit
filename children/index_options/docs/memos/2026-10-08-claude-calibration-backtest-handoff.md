@@ -38,6 +38,8 @@ Keep all chronological refits. Seed11/fold9 is the completed, recovered fixed la
 
 ## Calibrate rho, then optional Q bands
 
+Owner follow-up (2026-10-08): agreed to start with average expected-loss underestimation protection, then later chronological validation and prespecified stress checks. Read the [rho calibration explanation](../explanations/robust-condor-selection.md#how-we-will-calibrate-rho). It explains the existing selected-policy residual rule, smallest-passing radius, abstention limitations and the remaining execution contract. This agrees the methodological direction; it does not establish a numerical radius or authorize the previously excluded MIO/backtest execution. No new fits or data acquisition are needed for this documentation step.
+
 The nominal model describes standardized log return z. Convert to terminal price with S_T = S_t exp(a_t z), using that forecast's entry spot S_t and reference scale a_t. Probabilities are unitless; grid and spot share quote-currency units.
 
 For grid masses p and alternative masses q, require nonnegative masses summing to one. Let P and Q be their cumulative sums. Rho is the spot-normalized Wasserstein budget: sum of grid gap times absolute cumulative-probability difference, divided by spot. It is dimensionless. Optional Q^lo and Q^hi constrain the SAME cumulative Q at chosen grid points; they are not independent strike probabilities and are not derived automatically from rho.
