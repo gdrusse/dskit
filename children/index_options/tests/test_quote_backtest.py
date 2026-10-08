@@ -3384,3 +3384,23 @@ def test_projection_selection_and_expiry_share_exact_units(rho, status, robust):
     if status == "trade":
         assert settled["outcomes"][0]["pnl_usd"] == pytest.approx(-2.6)
         assert settled["outcomes"][0]["end_flat"] is True
+
+
+@pytest.mark.parametrize("status", ["skipped", "no_trade", "nonsense", None, False])
+def test_expiry_explicit_nontrade_status_refuses_before_any_accounting(status, monkeypatch):
+    valid = _expiry_selection()
+    invalid = _expiry_selection("invalid")
+    invalid["status"] = status
+    monkeypatch.setattr(nodes.WindowBook, "apply",
+                        lambda *args: pytest.fail("invalid decision reached accounting"))
+    with pytest.raises(ValueError, match="status"):
+        _expiry_node().run(None, {"selections": [valid, invalid],
+                                 "bars": _expiry_bars(), "skips": []})
+
+
+def test_expiry_explicit_trade_and_statusless_compatibility():
+    row = _expiry_selection()
+    expected = _expiry_node().run(None, {"selections": [row], "bars": _expiry_bars(), "skips": []})
+    row["status"] = "trade"
+    actual = _expiry_node().run(None, {"selections": [row], "bars": _expiry_bars(), "skips": []})
+    assert actual == expected

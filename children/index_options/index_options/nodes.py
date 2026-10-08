@@ -2956,8 +2956,9 @@ class CondorExpirySettle(Node):
     Selections carry decision_id, arm_id, symbol, quote_date, expiry, multiplier
     and four ordered legs: role, contract, right, side, strike,
     price_usd_per_share and fee_usd. Entry prices already include haircuts.
-    Bars carry symbol/date and the configured settlement field. No I/O or
-    broker action occurs. Evidence uses raw_fills rather than RunReport's
+    Bars carry symbol/date and the configured settlement field. Status-less
+    hand-authored selections remain supported; an explicit status must be trade.
+    No I/O or broker action occurs. Evidence uses raw_fills rather than RunReport's
     reserved fills fallback; one condor, never one leg, is the statistical unit.
 
     Parameters
@@ -3063,6 +3064,8 @@ class CondorExpirySettle(Node):
         """Refuse malformed or partial structures before creating any fills."""
         if not isinstance(row, dict):
             raise ValueError("selection must be a dict")
+        if "status" in row and row["status"] != "trade":
+            raise ValueError("selection status must be trade when declared")
         for key in ("decision_id", "arm_id", "symbol"):
             if not isinstance(row.get(key), str) or not row[key]:
                 raise ValueError(f"selection requires {key}")
@@ -3292,6 +3295,9 @@ class RobustCondorSelect(PyomoSolve):
         for key in self._IDENTITY:
             if not isinstance(context.get(key), str) or not context[key]:
                 raise ValueError(f"context requires {key}")
+        if (not _iso_day(context["quote_date"]) or not _iso_day(context["expiry"])
+                or context["quote_date"] >= context["expiry"]):
+            raise ValueError("context requires canonical quote_date before expiry")
         dual = WassersteinDual(context["grid"], context["masses"], context["rho"],
                                context["spot"], q_lo=context.get("q_lo"), q_hi=context.get("q_hi"))
         grid = dual.distribution.grid
@@ -3299,7 +3305,7 @@ class RobustCondorSelect(PyomoSolve):
             raise ValueError("equity strikes must be positive")
         if not isinstance(context.get("legs"), dict) or set(context["legs"]) != set(self._ROLES):
             raise ValueError("legs must declare LP/SP/SC/LC eligibility separately")
-        contracts = {}
+        contracts, identities = {}, {}
         for role in self._ROLES:
             rows = context["legs"][role]
             if not isinstance(rows, (list, tuple)):
@@ -3316,6 +3322,10 @@ class RobustCondorSelect(PyomoSolve):
                     raise ValueError("invalid contract identity, price or haircut")
                 if role in ("SP", "SC") and row["haircut"] > row["price"]:
                     raise ValueError("short-leg haircut exceeds price")
+                identity = ("put" if role in ("LP", "SP") else "call", index)
+                prior = identities.setdefault(row["contract_id"], identity)
+                if prior != identity:
+                    raise ValueError("contract identity has inconsistent right or strike")
                 contracts[role, index] = dict(row)
         self._context, self._dual, self._contracts = dict(context), dual, contracts
         self._certificates, self._skip = [], None
@@ -3381,6 +3391,9 @@ class RobustCondorSelect(PyomoSolve):
             return results
         if primary.bound-primary.objective > self.params["tie_tolerance_usd"]:
             self._skip = "primary_gap_exceeds_tie_tolerance"
+            return results
+        if primary.objective <= self.params["tie_tolerance_usd"] < primary.bound:
+            self._skip = "uncertified_no_trade_tie"
             return results
         model.objective.deactivate()
         model.tie_floor = Constraint(expr=model.robust_value >= primary.bound-self.params["tie_tolerance_usd"])

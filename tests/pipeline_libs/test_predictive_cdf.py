@@ -4911,3 +4911,52 @@ def test_discrete_grid_banded_choose_preserves_no_trade_and_nominal():
     assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
                                    q_lo=[0., 0., 1.],
                                    q_hi=[1., 1., 1.]) == pytest.approx(1.)
+
+
+def test_projection_admission_includes_actual_payoff_quadrature_uncertainty():
+    # Analytic E[(3-X)+] = integral_0^3 (x/3)^1000 dx = 3/1001.
+    kwargs = dict(spot=1., quadrature_tolerance=1., payoff_tolerance=1.,
+                  cdf_tolerance=1., w1_tolerance=10., integration_limit=100)
+    loose = predictive_cdf.MeanPreservingCDFGrid(
+        [0., 1., 2., 3.], lambda x: (x/3.)**1000, **kwargs)
+    analytic = 3./1001
+    actual = loose.masses @ np.maximum(3.-loose.grid, 0.)
+    assert abs(actual-analytic) > 1e-6  # Fixture exposes nontrivial integration error.
+    assert loose.evidence["payoff_reconstruction_residual"] < 1e-12
+    assert loose.evidence["max_payoff_error"] >= abs(actual-analytic)
+    assert loose.evidence["moment_quadrature_error_estimate"] > 1e-6
+    kwargs["payoff_tolerance"] = 1e-12
+    with pytest.raises(ValueError, match="payoff"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2., 3.], lambda x: (x/3.)**1000, **kwargs)
+
+
+def test_projection_w1_admission_accounts_for_quadrature_and_projection_uncertainty():
+    # For F(x)=(x/3)^n and each emitted CDF height q, integrate |F-q|
+    # analytically by splitting at the exact crossing 3*q**(1/n).
+    exponent = 200
+    kwargs = dict(spot=1., quadrature_tolerance=1., payoff_tolerance=1.,
+                  cdf_tolerance=1., w1_tolerance=10., integration_limit=100)
+    loose = predictive_cdf.MeanPreservingCDFGrid(
+        [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)
+    actual_distance = 0.
+    for a, b, q in zip(loose.grid[:-1], loose.grid[1:],
+                       np.cumsum(loose.masses)[:-1]):
+        crossing = np.clip(3.*q**(1./exponent), a, b)
+        def area(x):
+            return 3.*(x/3.)**(exponent+1)/(exponent+1)
+        actual_distance += (
+            q*(crossing-a)-(area(crossing)-area(a))
+            + area(b)-area(crossing)-q*(b-crossing))
+    sampled = loose.evidence["clipped_w1_over_spot"]
+    assert actual_distance-sampled > 1e-6
+    evidence = loose.evidence
+    assert evidence["clipped_w1_admission_upper_estimate_over_spot"] >= actual_distance
+    assert evidence["clipped_w1_error_estimate_over_spot"] == pytest.approx(
+        evidence["distance_quadrature_error_estimate"]
+        + evidence["moment_quadrature_error_estimate"]
+        + evidence["projection_transport_reconstruction_residual"])
+    kwargs["w1_tolerance"] = (sampled+actual_distance)/2.
+    with pytest.raises(ValueError, match="mesh"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2., 3.], lambda x: (x/3.)**exponent, **kwargs)

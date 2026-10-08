@@ -416,11 +416,13 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
     spot : float
         Positive outcome scale for dimensionless transport distance.
     quadrature_tolerance, payoff_tolerance : float
-        Positive absolute integration-error budget and maximum hinge-payoff
-        discrepancy, in outcome units.
+        Positive absolute integration-error budget and maximum estimated
+        discrepancy for capped 1-Lipschitz payoffs, in outcome units. The latter
+        includes moment quadrature uncertainty, not just reconstruction residual.
     cdf_tolerance, w1_tolerance : float
         Maximum conservative CDF-deviation bound (probability units), and maximum
-        clipped-support W1 divided by spot. These are explicit admission limits.
+        clipped-support W1 divided by spot including distance quadrature and
+        moment-projection uncertainty. These are explicit admission limits.
     integration_limit : int
         Positive QUADPACK subdivision limit per interval.
     breakpoints : sequence of float
@@ -475,8 +477,9 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
         values = np.array([self._probability(x) for x in points])
         if (np.diff(values) < 0).any():
             raise ValueError("incoherent projection CDF")
-        integrals = np.array([self._integral(self._probability, a, b)
-                              for a, b in zip(points[:-1], points[1:])])
+        moments = np.array([self._integral(self._probability, a, b)
+                            for a, b in zip(points[:-1], points[1:])])
+        integrals, moment_errors = moments.T
         widths = np.diff(points)
         interval_mass = np.diff(values)
         upper_mass = values[1:] - integrals / widths
@@ -494,8 +497,20 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
         super().__init__(checked.grid, np.minimum(np.cumsum(checked.masses), 1.))
         self.masses = checked.masses
         cumulative = np.cumsum(self.masses)[:-1]
-        w1 = sum(self._integral(lambda x, q=q: abs(self._probability(x) - q), a, b)
-                 for a, b, q in zip(points[:-1], points[1:], cumulative))
+        distances = np.array([
+            self._integral(lambda x, q=q: abs(self._probability(x) - q), a, b)
+            for a, b, q in zip(points[:-1], points[1:], cumulative)])
+        w1, distance_error = distances.sum(axis=0)
+        # The exact placed CDF is integral(F, interval) / interval width.
+        # Thus summed area residuals plus moment errors estimate the W1 error
+        # of the emitted masses relative to the ideal projection. This bounds
+        # expectation error for every 1-Lipschitz payoff, including condors.
+        projection_residual = float(np.abs(cumulative * widths - integrals).sum())
+        projection_error = projection_residual + float(moment_errors.sum())
+        # Include projection uncertainty as well as integration of |F-Q|. This
+        # conservatively admits both the emitted and ideal-placement distances.
+        w1_error = float(distance_error) + projection_error
+        w1_upper = float(w1 + w1_error)
         # Each hinge at a grid knot is a basis payoff for bounded linear pieces.
         put_reference = np.r_[0., np.cumsum(integrals)]
         put_actual = np.array([self.masses @ np.maximum(k - points, 0.)
@@ -504,8 +519,10 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             integrals.sum() - put_reference)
         call_actual = np.array([self.masses @ np.maximum(points - k, 0.)
                                 for k in points])
-        payoff_error = float(max(np.max(np.abs(put_reference - put_actual)),
-                                 np.max(np.abs(call_reference - call_actual))))
+        payoff_residual = float(max(np.max(np.abs(put_reference - put_actual)),
+                                    np.max(np.abs(call_reference - call_actual))))
+        payoff_error = max(projection_residual, payoff_residual) + float(
+            moment_errors.sum())
         cdf_bound = float(max(np.max(np.abs(values[:-1] - cumulative)),
                               np.max(np.abs(values[1:] - cumulative)),
                               values[0], 1. - values[-1]))
@@ -516,7 +533,7 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             raise ValueError("projection quadrature tolerance exceeded")
         if payoff_error > payoff_tolerance:
             raise ValueError("projection payoff tolerance exceeded")
-        if cdf_bound > cdf_tolerance or w1 / spot > w1_tolerance:
+        if cdf_bound > cdf_tolerance or w1_upper / spot > w1_tolerance:
             raise ValueError("projection mesh tolerance exceeded")
         self.evidence = {
             "tail_policy": "collapse_to_extreme_support",
@@ -524,6 +541,12 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             "upper_tail_mass": float(1. - values[-1]),
             "clipped_mean": float(self.masses @ points),
             "clipped_w1_over_spot": float(w1 / spot),
+            "clipped_w1_error_estimate_over_spot": float(w1_error / spot),
+            "clipped_w1_admission_upper_estimate_over_spot": float(w1_upper / spot),
+            "moment_quadrature_error_estimate": float(moment_errors.sum()),
+            "distance_quadrature_error_estimate": float(distance_error),
+            "projection_transport_reconstruction_residual": projection_residual,
+            "payoff_reconstruction_residual": payoff_residual,
             "full_w1_over_spot": None,
             "full_w1_unavailable_reason": "unbounded tails not integrated; may be infinite",
             "cdf_deviation_upper_bound": cdf_bound,
@@ -561,7 +584,7 @@ class MeanPreservingCDFGrid(DiscreteCDFGrid):
             raise ValueError("projection quadrature failed: " + str(result[3]))
         value, error, _ = result
         self._integration_error += error
-        return value
+        return value, error
 
 def _validate_temporal_frame(frame, date_field, end_field):
     """Refuse incomplete or noncanonical temporal metadata before filtering."""

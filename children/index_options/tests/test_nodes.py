@@ -1306,3 +1306,58 @@ def test_robust_condor_contract_multiplier_is_a_positive_integer(multiplier):
     node, _ = _robust_tie_fixture()
     with pytest.raises(ConfigError, match="multiplier"):
         type(node)("select", {**node.params, "multiplier":multiplier})
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(quote_date="not-a-date"),
+    lambda c: c.update(quote_date="2025-2-4"),
+    lambda c: c.update(expiry="2025-02-04"),
+    lambda c: c.update(expiry="2024-01-01"),
+    lambda c: c.update(expiry="2025-02-31"),
+    lambda c: c["legs"]["SP"][0].update(contract_id="LP"),
+    lambda c: c["legs"]["SC"][0].update(contract_id="LP"),
+])
+def test_robust_condor_inconsistent_identity_refuses_before_solver(mutate, monkeypatch):
+    node, context = _robust_tie_fixture(5.)
+    mutate(context)
+    monkeypatch.setattr(node, "_resolve_solver",
+                        lambda: pytest.fail("invalid identity woke the solver"))
+    with pytest.raises(ValueError):
+        node.run(None, {"context": context})
+
+
+def test_robust_condor_same_contract_may_be_eligible_on_both_sides():
+    node, context = _robust_tie_fixture(5.)
+    context["legs"]["SP"].append(dict(context["legs"]["LP"][0]))
+    decision = node.run(None, {"context": context})["decision"]
+    assert decision["status"] == "trade"
+    assert len({leg["contract"] for leg in decision["legs"]}) == 4
+
+
+@pytest.mark.parametrize("upper,tolerance,status", [
+    (200., 150., "skipped"), (120., 150., "no_trade"),
+    (120., 50., "trade"), (100., 100., "no_trade"), (100., 99., "trade"),
+])
+def test_robust_condor_primary_bounds_must_certify_the_no_trade_tie(
+        upper, tolerance, status, monkeypatch):
+    from dataclasses import replace
+    node, context = _robust_tie_fixture(2.)
+    node = type(node)("select", {**node.params, "tie_tolerance_usd": tolerance,
+                               "max_absolute_gap_usd": 101., "max_relative_gap": 1.1})
+    build_record = node._build_solve_record
+    calls = []
+
+    def valid_uncertain_primary(*args):
+        record = build_record(*args)
+        calls.append(record)
+        if len(calls) == 1:
+            assert record.objective == pytest.approx(100.)
+            return replace(record, bound=upper, gap=abs(upper-record.objective)/record.objective)
+        return record
+
+    monkeypatch.setattr(node, "_build_solve_record", valid_uncertain_primary)
+    result = node.run(None, {"context": context})
+    assert result["decision"]["status"] == status
+    if status == "skipped":
+        assert result["decision"]["reason"] == "uncertified_no_trade_tie"
+        assert len(result["evidence"]["solves"]) == 1
