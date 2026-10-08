@@ -31,7 +31,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "EmpiricalMLPBlendCDF", "AdaptiveEmpiricalMLPBlendCDF", "PCAAugmentedCDF",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
-           "DiscreteCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
+           "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
@@ -208,6 +208,78 @@ class DiscreteCDFGrid:
         self._matrix = None
         self._spot = None
 
+    @classmethod
+    def from_masses(cls, grid, masses):
+        """Construct directly from a probability simplex on a shared grid.
+
+        Parameters
+        ----------
+        grid, masses : array-like
+            Matching finite vectors; grid strictly increases and masses are
+            nonnegative, summing to one within absolute roundoff 1e-12.
+
+        Returns
+        -------
+        DiscreteCDFGrid
+            A private copy of the normalized mass vector and grid.
+
+        Raises
+        ------
+        ValueError
+            If the grid or simplex is invalid.
+        """
+        import numpy as np
+
+        values = np.asarray(masses, dtype=float)
+        points = np.asarray(grid, dtype=float)
+        if (values.ndim != 1 or values.shape != points.shape
+                or not np.isfinite(values).all() or (values < 0).any()
+                or not np.isclose(values.sum(), 1., rtol=0., atol=1e-12)):
+            raise ValueError("invalid probability masses")
+        values = values.copy() / values.sum()
+        cumulative = np.minimum(np.cumsum(values), 1.)
+        obj = cls.__new__(cls)
+        DiscreteCDFGrid.__init__(obj, points.copy(), cumulative)
+        obj.masses = values
+        return obj
+
+    def validate_bands(self, q_lo=None, q_hi=None):
+        """Validate optional nominal-containing cumulative probability bands.
+
+        Parameters
+        ----------
+        q_lo, q_hi : array-like or None
+            Both omitted, or matching grid-length cumulative bounds, ordered
+            in [0, 1], ending at exactly one and containing the nominal CDF.
+            An unconstrained interior location uses bounds zero and one.
+
+        Returns
+        -------
+        tuple or None
+            Private lower/upper arrays, or None when bands are disabled.
+
+        Raises
+        ------
+        ValueError
+            If either band is missing, invalid or excludes the nominal CDF.
+        """
+        import numpy as np
+
+        if q_lo is None and q_hi is None:
+            return None
+        if q_lo is None or q_hi is None:
+            raise ValueError("both CDF bands are required")
+        lo, hi = (np.asarray(v, dtype=float) for v in (q_lo, q_hi))
+        nominal = np.minimum(np.cumsum(self.masses), 1.)
+        nominal[-1] = 1.
+        if (any(v.shape != self.masses.shape or not np.isfinite(v).all()
+                or (v < 0).any() or (v > 1).any()
+                or (np.diff(v) < 0).any() or v[-1] != 1.
+                for v in (lo, hi))
+                or (lo > nominal).any() or (hi < nominal).any()):
+            raise ValueError("invalid or non-nominal-containing CDF bands")
+        return lo.copy(), hi.copy()
+
     def _constraints(self, spot):
         import numpy as np
         from scipy.sparse import csr_matrix, hstack, vstack
@@ -229,8 +301,28 @@ class DiscreteCDFGrid:
         self._spot = spot
         return self._matrix
 
-    def worst_expected_loss(self, loss, radius, spot):
-        """Maximize a fixed bounded payoff over the shared discrete W1 ball."""
+    def worst_expected_loss(self, loss, radius, spot, *, q_lo=None, q_hi=None):
+        """Maximize a fixed payoff over a discrete W1 ball and optional bands.
+
+        Parameters
+        ----------
+        loss : array-like
+            Finite payoff values in outcome units, one per support point.
+        radius, spot : float
+            Nonnegative dimensionless W1 budget and positive outcome scale.
+        q_lo, q_hi : array-like or None
+            Optional cumulative bands; see validate_bands.
+
+        Returns
+        -------
+        float
+            Maximum expected payoff over the common ambiguity set.
+
+        Raises
+        ------
+        ValueError
+            For invalid inputs, bands or an unsuccessful linear program.
+        """
         import numpy as np
         from scipy.optimize import linprog
 
@@ -239,12 +331,21 @@ class DiscreteCDFGrid:
                 or not np.isfinite(radius) or radius < 0
                 or not np.isfinite(spot) or spot <= 0):
             raise ValueError("invalid loss, radius or spot")
+        bands = self.validate_bands(q_lo, q_hi)
         nominal = float(self.masses @ values)
         if radius == 0:
             return nominal
         matrix, cumulative = self._constraints(spot)
         n = len(self.grid)
         rhs = np.r_[cumulative, -cumulative, radius]
+        if bands is not None:
+            from scipy.sparse import csr_matrix, hstack, vstack
+
+            cumulative_matrix = csr_matrix(np.tril(np.ones((n - 1, n))))
+            band_matrix = hstack((cumulative_matrix,
+                                  csr_matrix((n - 1, n - 1))))
+            matrix = vstack((matrix, band_matrix, -band_matrix), format="csr")
+            rhs = np.r_[rhs, bands[1][:-1], -bands[0][:-1]]
         objective = np.r_[-values, np.zeros(n - 1)]
         equality = np.r_[np.ones(n), np.zeros(n - 1)][None, :]
         result = linprog(objective, A_ub=matrix, b_ub=rhs,
@@ -253,10 +354,31 @@ class DiscreteCDFGrid:
             raise ValueError(f"W1 worst-loss program failed: {result.message}")
         return max(nominal, float(-result.fun))
 
-    def choose(self, candidates, radius, spot):
-        """Select the maximum positive robust value; ties favor no trade."""
+    def choose(self, candidates, radius, spot, *, q_lo=None, q_hi=None):
+        """Select the maximum positive robust value; ties favor no trade.
+
+        Parameters
+        ----------
+        candidates : sequence of dict
+            Unique id, net_credit and nonnegative loss vector for each choice.
+        radius, spot : float
+            Shared nonnegative W1 budget and positive outcome scale.
+        q_lo, q_hi : array-like or None
+            Shared optional nominal-containing cumulative bands.
+
+        Returns
+        -------
+        dict
+            Selected id, robust_value and worst_loss; id None means no trade.
+
+        Raises
+        ------
+        ValueError
+            For invalid candidates, bands or solver inputs.
+        """
         import numpy as np
 
+        self.validate_bands(q_lo, q_hi)
         if not isinstance(candidates, (list, tuple)):
             raise ValueError("candidates must be a finite declared sequence")
         seen = set()
@@ -271,13 +393,175 @@ class DiscreteCDFGrid:
             seen.add(item["id"])
         best = {"id": None, "robust_value": 0., "worst_loss": 0.}
         for item in sorted(candidates, key=lambda value: value["id"]):
-            worst = self.worst_expected_loss(item["loss"], radius, spot)
+            worst = self.worst_expected_loss(item["loss"], radius, spot,
+                                             q_lo=q_lo, q_hi=q_hi)
             value = float(item["net_credit"] - worst)
             if value > best["robust_value"]:
                 best = {"id": item["id"], "robust_value": value,
                         "worst_loss": worst}
         return best
 
+
+
+class MeanPreservingCDFGrid(DiscreteCDFGrid):
+    """Place a clipped CDF on interval endpoints preserving linear payoffs.
+
+    Parameters
+    ----------
+    grid : array-like
+        Strictly increasing finite outcome support containing every payoff kink.
+    cdf : callable
+        Scalar outcome to scalar cumulative probability. It must be a coherent
+        right-continuous CDF; checks only establish coherence at evaluated points.
+    spot : float
+        Positive outcome scale for dimensionless transport distance.
+    quadrature_tolerance, payoff_tolerance : float
+        Positive absolute integration-error budget and maximum hinge-payoff
+        discrepancy, in outcome units.
+    cdf_tolerance, w1_tolerance : float
+        Maximum conservative CDF-deviation bound (probability units), and maximum
+        clipped-support W1 divided by spot. These are explicit admission limits.
+    integration_limit : int
+        Positive QUADPACK subdivision limit per interval.
+    breakpoints : sequence of float
+        Known interior jumps or kinks, split before integration.
+
+    Notes
+    -----
+    Lower and upper tails collapse to the outer support points. Therefore only
+    capped piecewise-linear payoffs with kinks on this support are preserved.
+    Evidence labels clipped-support W1 separately from full-distribution W1,
+    which is not computed and can be infinite. Numerical quadrature error is an
+    estimate, not a mathematical certificate for arbitrary callable functions.
+
+    Examples
+    --------
+    Project a uniform CDF onto a coarser outcome support::
+
+        grid = MeanPreservingCDFGrid(
+            [0., 1., 2.], lambda x: min(1., max(0., x / 2.)),
+            spot=1., quadrature_tolerance=1e-9, payoff_tolerance=1e-8,
+            cdf_tolerance=.5, w1_tolerance=.5, integration_limit=100)
+    """
+
+    def __init__(self, grid, cdf, *, spot, quadrature_tolerance,
+                 payoff_tolerance, cdf_tolerance, w1_tolerance,
+                 integration_limit, breakpoints=()):
+        import numpy as np
+        from dskit.pipeline.records import number_ok
+
+        points = np.asarray(grid, dtype=float)
+        tolerances = (spot, quadrature_tolerance, payoff_tolerance,
+                      cdf_tolerance, w1_tolerance)
+        if (points.ndim != 1 or len(points) < 2
+                or not np.isfinite(points).all()
+                or not (np.diff(points) > 0).all() or not callable(cdf)
+                or any(not number_ok(v) or v <= 0 for v in tolerances)
+                or cdf_tolerance > 1
+                or type(integration_limit) is not int or integration_limit < 1):
+            raise ValueError("invalid projection grid, CDF or explicit tolerances")
+        knots = np.asarray(breakpoints, dtype=float)
+        if (knots.ndim != 1 or not np.isfinite(knots).all()
+                or (knots <= points[0]).any() or (knots >= points[-1]).any()
+                or (np.diff(knots) <= 0).any()):
+            raise ValueError("invalid projection breakpoints")
+        self._cdf_function = cdf
+        self._samples = {}
+        self._quadrature_tolerance = quadrature_tolerance
+        self._integration_limit = integration_limit
+        self._breakpoints = knots
+        self._integration_error = 0.
+        self._per_integral_tolerance = quadrature_tolerance / (2 * (len(points) - 1))
+        values = np.array([self._probability(x) for x in points])
+        if (np.diff(values) < 0).any():
+            raise ValueError("incoherent projection CDF")
+        integrals = np.array([self._integral(self._probability, a, b)
+                              for a, b in zip(points[:-1], points[1:])])
+        widths = np.diff(points)
+        interval_mass = np.diff(values)
+        upper_mass = values[1:] - integrals / widths
+        uncertainty = quadrature_tolerance / widths
+        if ((upper_mass < -uncertainty).any()
+                or (upper_mass > interval_mass + uncertainty).any()):
+            raise ValueError("projection moment outside interval")
+        upper_mass = np.clip(upper_mass, 0., interval_mass)
+        masses = np.zeros(len(points))
+        masses[:-1] += interval_mass - upper_mass
+        masses[1:] += upper_mass
+        masses[0] += values[0]
+        masses[-1] += 1. - values[-1]
+        checked = DiscreteCDFGrid.from_masses(points, masses)
+        super().__init__(checked.grid, np.minimum(np.cumsum(checked.masses), 1.))
+        self.masses = checked.masses
+        cumulative = np.cumsum(self.masses)[:-1]
+        w1 = sum(self._integral(lambda x, q=q: abs(self._probability(x) - q), a, b)
+                 for a, b, q in zip(points[:-1], points[1:], cumulative))
+        # Each hinge at a grid knot is a basis payoff for bounded linear pieces.
+        put_reference = np.r_[0., np.cumsum(integrals)]
+        put_actual = np.array([self.masses @ np.maximum(k - points, 0.)
+                               for k in points])
+        call_reference = (points[-1] - points) - (
+            integrals.sum() - put_reference)
+        call_actual = np.array([self.masses @ np.maximum(points - k, 0.)
+                                for k in points])
+        payoff_error = float(max(np.max(np.abs(put_reference - put_actual)),
+                                 np.max(np.abs(call_reference - call_actual))))
+        cdf_bound = float(max(np.max(np.abs(values[:-1] - cumulative)),
+                              np.max(np.abs(values[1:] - cumulative)),
+                              values[0], 1. - values[-1]))
+        sampled = sorted(self._samples.items())
+        if any(b[1] < a[1] for a, b in zip(sampled[:-1], sampled[1:])):
+            raise ValueError("incoherent projection CDF between grid points")
+        if self._integration_error > quadrature_tolerance:
+            raise ValueError("projection quadrature tolerance exceeded")
+        if payoff_error > payoff_tolerance:
+            raise ValueError("projection payoff tolerance exceeded")
+        if cdf_bound > cdf_tolerance or w1 / spot > w1_tolerance:
+            raise ValueError("projection mesh tolerance exceeded")
+        self.evidence = {
+            "tail_policy": "collapse_to_extreme_support",
+            "lower_tail_mass": float(values[0]),
+            "upper_tail_mass": float(1. - values[-1]),
+            "clipped_mean": float(self.masses @ points),
+            "clipped_w1_over_spot": float(w1 / spot),
+            "full_w1_over_spot": None,
+            "full_w1_unavailable_reason": "unbounded tails not integrated; may be infinite",
+            "cdf_deviation_upper_bound": cdf_bound,
+            "max_payoff_error": payoff_error,
+            "quadrature_error_estimate": self._integration_error,
+            "quadrature_tolerance": float(quadrature_tolerance),
+            "payoff_tolerance": float(payoff_tolerance),
+            "cdf_tolerance": float(cdf_tolerance),
+            "w1_tolerance": float(w1_tolerance),
+            "integration_limit": integration_limit,
+            "cdf_evaluations": len(self._samples),
+            "breakpoints": knots.tolist(),
+        }
+
+    def _probability(self, x):
+        """Evaluate a scalar CDF and retain the sampled coherence evidence."""
+        import numpy as np
+
+        value = np.asarray(self._cdf_function(float(x)), dtype=float)
+        if value.ndim != 0 or not np.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("invalid scalar projection CDF probability")
+        self._samples[float(x)] = float(value)
+        return float(value)
+
+    def _integral(self, function, low, high):
+        """Integrate with explicit breakpoints, refusing QUADPACK failures."""
+        from scipy.integrate import quad
+
+        knots = self._breakpoints[
+            (self._breakpoints > low) & (self._breakpoints < high)]
+        result = quad(function, low, high, points=knots.tolist(),
+                      epsabs=self._per_integral_tolerance, epsrel=0.,
+                      limit=self._integration_limit, full_output=True)
+        if len(result) != 3:
+            raise ValueError("projection quadrature failed: " + str(result[3]))
+        value, error, _ = result
+        self._integration_error += error
+        return value
 
 def _validate_temporal_frame(frame, date_field, end_field):
     """Refuse incomplete or noncanonical temporal metadata before filtering."""

@@ -4783,3 +4783,131 @@ def test_a_dead_group_worker_fails_the_run_naming_the_unfinished_groups(tmp_path
     note = next(n for n in raised.value.__notes__ if 'a group worker died' in n)
     assert "'A'" in note and "'B'" in note and "'C'" in note   # 2W - 1 = 3 were unfinished
     assert not (tmp_path/'dead'/'scores.parquet').exists()
+
+
+def test_mean_preserving_projection_has_payoff_and_tail_evidence():
+    assert hasattr(predictive_cdf, "MeanPreservingCDFGrid"), (
+        "missing mean-preserving projection; right-endpoint CDF masses bias payoffs")
+    project = predictive_cdf.MeanPreservingCDFGrid(
+        [1., 2., 3.], lambda x: np.clip(x / 4., 0., 1.), spot=2.,
+        quadrature_tolerance=1e-9, payoff_tolerance=1e-9,
+        cdf_tolerance=.5, w1_tolerance=.5, integration_limit=100)
+    np.testing.assert_allclose(project.masses, [.375, .25, .375], atol=1e-10)
+    assert project.masses @ project.grid == pytest.approx(2.)
+    assert project.evidence["lower_tail_mass"] == pytest.approx(.25)
+    assert project.evidence["upper_tail_mass"] == pytest.approx(.25)
+    assert project.evidence["clipped_w1_over_spot"] == pytest.approx(.0625)
+    assert project.evidence["full_w1_over_spot"] is None
+    assert project.evidence["max_payoff_error"] < 1e-9
+
+
+def test_discrete_grid_bands_restrict_worst_loss_and_refuse_invalid_sets():
+    assert hasattr(predictive_cdf.DiscreteCDFGrid, "from_masses"), (
+        "missing validated direct mass and band doorway")
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], [0., 1., 0.])
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., 1., 1.],
+                                   q_hi=[0., 1., 1.]) == pytest.approx(0.)
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., .8, 1.],
+                                   q_hi=[.2, 1., 1.]) == pytest.approx(.4)
+    for lo, hi in (([0., 0., 1.], None),
+                   ([.1, .9, 1.], [.2, 1., 1.]),
+                   ([0., .9, 1.], [0., .8, 1.]),
+                   ([0., 0., 0.], [1., 1., 1.]),
+                   ([0., 0., 1.], [1., .8, 1.])):
+        with pytest.raises(ValueError, match="band"):
+            grid.worst_expected_loss([1., 0., 1.], 0., 1., q_lo=lo, q_hi=hi)
+    with pytest.raises(ValueError, match="band"):
+        grid.choose([], 1., 1., q_lo=[0., 0., 1.])
+
+
+def test_mean_preserving_projection_atoms_empty_cells_and_all_linear_payoffs():
+    from itertools import combinations
+
+    # Atoms include tails, an exact grid knot and two within-cell outcomes.
+    outcomes = np.array([-3., 1., 1.3, 2.7, 8.])
+    probabilities = np.array([.1, .2, .25, .3, .15])
+    cdf = lambda x: float(probabilities[outcomes <= x].sum())
+    grid = np.array([0., 1., 2., 3., 4., 5.])
+    projected = predictive_cdf.MeanPreservingCDFGrid(
+        grid, cdf, spot=2., quadrature_tolerance=1e-8, payoff_tolerance=1e-8,
+        cdf_tolerance=1., w1_tolerance=1., integration_limit=100,
+        breakpoints=[1., 1.3, 2.7])
+    np.testing.assert_allclose(projected.masses, [.1, .375, .165, .21, 0., .15],
+                               atol=1e-10)
+    for lp, sp, sc, lc in combinations(grid, 4):
+        def loss(x):
+            return (np.maximum(sp-x, 0.) - np.maximum(lp-x, 0.)
+                    + np.maximum(x-sc, 0.) - np.maximum(x-lc, 0.))
+        actual = projected.masses @ loss(grid)
+        expected = probabilities @ loss(outcomes)
+        assert actual == pytest.approx(expected, abs=1e-9)
+    assert projected.evidence["full_w1_over_spot"] is None
+
+
+@pytest.mark.parametrize("override,match", [
+    ({"quadrature_tolerance": None}, "tolerances"),
+    ({"payoff_tolerance": -1.}, "tolerances"),
+    ({"spot": True}, "tolerances"),
+    ({"integration_limit": 1.5}, "tolerances"),
+    ({"cdf_tolerance": .01}, "mesh"),
+    ({"w1_tolerance": .001}, "mesh"),
+    ({"breakpoints": [4.]}, "breakpoints"),
+    ({"breakpoints": [2., 1.5]}, "breakpoints"),
+])
+def test_mean_preserving_projection_requires_explicit_numerical_limits(override, match):
+    kwargs = dict(spot=2., quadrature_tolerance=1e-9, payoff_tolerance=1e-9,
+                  cdf_tolerance=.5, w1_tolerance=.5, integration_limit=100)
+    kwargs.update(override)
+    with pytest.raises(ValueError, match=match):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [1., 2., 3.], lambda x: np.clip(x/4., 0., 1.), **kwargs)
+
+
+@pytest.mark.parametrize("cdf", [
+    lambda x: float("nan"),
+    lambda x: 1.1,
+    lambda x: [0.5],
+    lambda x: 1.-x/4.,
+])
+def test_mean_preserving_projection_refuses_invalid_cdf(cdf):
+    with pytest.raises(ValueError, match="CDF"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [1., 2., 3.], cdf, spot=1., quadrature_tolerance=1e-8,
+            payoff_tolerance=1e-8, cdf_tolerance=1., w1_tolerance=1.,
+            integration_limit=100)
+
+
+def test_mean_preserving_projection_refuses_unresolved_quadrature():
+    # Discontinuous off-mesh CDF needs subdivision: an insufficient limit refuses.
+    with pytest.raises(ValueError, match="quadrature"):
+        predictive_cdf.MeanPreservingCDFGrid(
+            [0., 1., 2.], lambda x: float(x >= .31415), spot=1.,
+            quadrature_tolerance=1e-12, payoff_tolerance=1e-10,
+            cdf_tolerance=1., w1_tolerance=1., integration_limit=1)
+
+
+def test_discrete_grid_direct_masses_are_copied_and_validated():
+    points = np.array([0., 1., 2.])
+    masses = np.array([.2, .5, .3])
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses(points, masses)
+    points[:] = 9.
+    masses[:] = 0.
+    np.testing.assert_allclose(grid.grid, [0., 1., 2.])
+    np.testing.assert_allclose(grid.masses, [.2, .5, .3])
+    for invalid in ([.1, .2, .3], [-.1, .8, .3], [0., 0.], [0., np.nan, 1.]):
+        with pytest.raises(ValueError):
+            predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], invalid)
+
+
+def test_discrete_grid_banded_choose_preserves_no_trade_and_nominal():
+    grid = predictive_cdf.DiscreteCDFGrid.from_masses([0., 1., 2.], [.2, .5, .3])
+    fixed = np.cumsum(grid.masses)
+    candidates = [{"id": "one", "net_credit": .4, "loss": [1., 0., 1.]}]
+    assert grid.choose(candidates, 1., 1., q_lo=fixed, q_hi=fixed)["id"] is None
+    assert grid.worst_expected_loss([1., 0., 1.], 0., 1.,
+                                   q_lo=fixed, q_hi=fixed) == pytest.approx(.5)
+    assert grid.worst_expected_loss([1., 0., 1.], 1., 1.,
+                                   q_lo=[0., 0., 1.],
+                                   q_hi=[1., 1., 1.]) == pytest.approx(1.)
