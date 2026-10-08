@@ -97,22 +97,22 @@
       }
     },
     "fold_table": {
-      "path": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007/20261008T020850Z-backfill-8248e4e7/payload/files/development-folds.jsonl",
-      "sha256": "761039707395aace109013177b36490d17cc6bc32b03014c348d150d6be312e6",
+      "path": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007-v2/20261008T022032Z-backfill-a398eada/payload/files/development-folds.jsonl",
+      "sha256": "b28d09b89e03a4e777cdd6e556051644e1a94a5c6834e7d3512d6c706481cfbd",
       "holdout_start": "2026-01-01",
       "cal_n": 40,
       "roles": [
-        "scored"
+        "warmup"
       ],
-      "notes": "Owner-approved2021-2022 development; expanding fits, settled labels and purged40date early-stopping bands. Not uncertainty calibration."
+      "notes": "Approved2021-2022 development; expandingmaturetraining andpurged40dateearlystop; allmodel-selectionlabels<2023-01-01. Fourthscoredrowisboundaryonly andneverexecuted."
     },
     "wing_metrics": false,
-    "notes": "ADR0251/0252/0253. Intended393-symbol retrospective universe;85qualifiedsource subset. Equal row weights and pairedhead/forecast identities acrossfeaturearms. Source snapshot 20261008T020850Z-backfill-8248e4e7 manifest 8248e4e7eabe59160c617454e226dc6dd0ff3b434efb31c573f4ff851d548027. Training and snapshots do not prove historical publication; after-close research assumption is frozen in retained research-contract. No2026read/scoring. Stage1featureselection only.",
+    "notes": "ADR0251/0252/0253 correctedselectionseam. Intended393 retrospective universe;85sourcequalifiedsubset. Equalweights/pairedheads/forecasts acrossarms. Onboardedsnapshot 20261008T022032Z-backfill-a398eada manifest a398eadac067f5722c67575b353572f90db04c373b3b292ad3e6f7ed3683cbcc. After-close researchavailabilityassumption; notobservedknown-at. Everydevelopmentlabel strictlybefore2023confirmation. No2026read/scoring; Stage1features only.",
     "tail_weight": 1.0,
     "min_task_fit_rows": 40,
     "min_task_cal_rows": 1
   },
-  "panel": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007/20261008T020850Z-backfill-8248e4e7/payload/files/panel/frame.parquet",
+  "panel": "/home/russell/data/index_options/ob/raw/production-model-inputs-20261007-v2/20261008T022032Z-backfill-a398eada/payload/files/panel/frame.parquet",
   "panel_sha256": "d770fa8a3c34b08ebb738b84411f7e7f7bfc33d62effbc9aa7f66faa60d41bc8",
   "output": "/home/russell/data/index_options/production-development-20261007/runs/features",
   "tickers": [
