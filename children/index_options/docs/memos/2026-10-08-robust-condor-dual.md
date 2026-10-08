@@ -4,7 +4,7 @@
 
 The dual replaces the inner “worst plausible price distribution” calculation with linear constraints. Embedding them lets one mixed-integer linear program choose four eligible strikes, including the choice not to trade.
 
-This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. It is a design record, not a completed solver, calibrated radius or backtest result.
+This memo publishes the mathematics reviewed in ADR-0255 at candidate 3f8ea439c96afa14f5776346738fa12746d82c54. The reusable projection, one-context solver and expiry-accounting components are now implemented and synthetically tested; independent integrated review is pending. No numerical radius, production qualification or historical backtest result is supplied.
 
 ## Contract and notation
 
@@ -131,3 +131,17 @@ The design at 3f8ea439 passed three independent GPT-6 reviews with zero Critical
 Bounding-strike placement preserves nominal capped piecewise-linear payoffs, not the entire continuous CDF. A finite strike-supported ball does not literally contain continuous distributions. Whether to absorb the forecast-to-grid W1 offset into rho remains an owner decision. Calibration criterion/search, update phases, bands, mesh and score-weight tolerances remain separate gates; no numerical rho or confidence guarantee is invented.
 
 Reproduce the contract from the candidate and draft JSON. Use published checkpoints only through a verified chronological schedule including training and monitoring-label availability. No market records, model fits, option-store copying, MIO execution or trading backtest occurred for this publication. Next: continue the owner's one-at-a-time design decisions, then obtain ADR/data-copy approval before remaining gates and tests-first implementation.
+
+## Targeted implementation evidence
+
+The owner requested parallel implementation after the branch/worktree inventory. Existing-file changes add MeanPreservingCDFGrid and optional bands to the existing DiscreteCDFGrid primal; WassersteinDual embeds the dual in Pyomo, and RobustCondorSelect subclasses PyomoSolve for one already governed context. CondorExpirySettle reuses WindowBook and the existing preceding-close settlement rule. No new solver, accounting framework, package or model fit was introduced.
+
+Three lanes worked from43eabca5. The projection lane's new-worktree writes were rejected by automatic approval review; its two exclusive file edits used the original authorized checkout. Other lanes stayed isolated. Projection48023113, settlementc0cd7749 plus documentation818a25c5, and dualdbe580b2 were integrated without discarding either child class. All source/test changes remain review candidates.
+
+Validation: each lane recorded expected assertion RED before implementation. The combined solver/child-accounting/import-purity command passed971 tests with7 existing skips; projection-focused coverage passed20 tests. Thirty seeded small-chain cases compare the MILP against independent candidate enumeration with a primal LP, including bands. Three cross-component fixtures exercise projection, selection, fees, no trade and expiry reconciliation. These are synthetic checks, not market replay. Projection Ruff findings exactly match the unchanged baseline; no new findings.
+
+The callable CDF projection preserves capped piecewise-linear payoffs on the declared strike support. It reports clipped-support W1 separately and leaves full-distribution W1 unavailable: unbounded tails have not been integrated and can have infinite first moment. Do not pass the clipped number as full Delta or claim continuous-distribution containment. Explicit numerical admission tolerances are required.
+
+The selector accepts one prepared context with governed eligibility and per-leg prices/haircuts; it does not yet implement the draft JSON's batch/raw-input adapter. Primary dollar-gap checks and the secondary binary certificate are separate. Settlement consumes traded selections only; it records the later confirming close date for downstream publication lag and retains raw fills outside RunReport's generic-trade fallback.
+
+Still required before the requested real research replay: protected source intake and basis/action checks; verified checkpoint-schedule and42-feature input wiring with saved-forecast parity; batch/phase/liquidity adapters; owner-selected calibration/search/update/Delta and numeric policies; and the calendar/template calibration adapter. The draft JSON remains deliberately unresolved. The completed model packages and the published evaluation calendar are unchanged.

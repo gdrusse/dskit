@@ -3347,3 +3347,40 @@ def test_expiry_cannot_use_a_close_before_its_entry():
                                   "skips": []})
     assert out["outcomes"] == []
     assert out["skips"][0]["reason"] == "missing_settlement"
+
+
+@pytest.mark.parametrize("rho,status,robust", [(0., "trade", 197.4),
+                                             (.001, "trade", 187.4),
+                                             (.02, "no_trade", 0.)])
+def test_projection_selection_and_expiry_share_exact_units(rho, status, robust):
+    from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
+    from index_options.nodes import RobustCondorSelect
+
+    source = _expiry_selection()
+    grid = [leg["strike"] for leg in source["legs"]]
+    projection = MeanPreservingCDFGrid(
+        grid, lambda x: min(1., max(0., (x-95.)/10.)), spot=100.,
+        quadrature_tolerance=1e-8, payoff_tolerance=1e-7,
+        cdf_tolerance=.51, w1_tolerance=.1, integration_limit=100)
+    context = {key: source[key] for key in
+               ("decision_id", "arm_id", "symbol", "quote_date", "expiry")}
+    context.update(grid=grid, masses=projection.masses.tolist(), spot=100., rho=rho,
+                   legs={leg["role"]: [{"index": i,
+                                        "price": leg["price_usd_per_share"],
+                                        "haircut": 0., "contract_id": leg["contract"]}]
+                         for i, leg in enumerate(source["legs"])})
+    selector = RobustCondorSelect("select", {
+        "solver": "appsi_highs", "multiplier": 100, "fee_per_contract_usd": .65,
+        "tie_tolerance_usd": 1e-6, "max_absolute_gap_usd": 1e-7,
+        "max_relative_gap": 1e-8})
+    selected = selector.run(None, {"context": context})["decision"]
+    assert selected["status"] == status
+    assert selected["robust_value_usd"] == pytest.approx(robust, abs=1e-6)
+    settled = _expiry_node().run(None, {
+        "selections": [selected] if status == "trade" else [],
+        "bars": _expiry_bars(93), "skips": []})
+    assert len(settled["outcomes"]) == (status == "trade")
+    assert len(settled["evidence"]["raw_fills"]) == (8 if status == "trade" else 0)
+    if status == "trade":
+        assert settled["outcomes"][0]["pnl_usd"] == pytest.approx(-2.6)
+        assert settled["outcomes"][0]["end_flat"] is True
