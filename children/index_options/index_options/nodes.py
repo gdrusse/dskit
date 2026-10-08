@@ -1,13 +1,17 @@
 """Thin, non-serving Nodes binding condor diagnostics and the condor, put-spread and debit-structure backtests."""
 
 import math
+import json
 from abc import ABC, abstractmethod
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from datetime import date, timedelta
 from itertools import product
+from fractions import Fraction
 from statistics import NormalDist
 from typing import NamedTuple
+
+from dskit.production.accounting import WindowBook
 
 from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
 from dskit.pipeline.distribution_scores import (
@@ -48,6 +52,7 @@ from .contracts import (
     american_call_dividend,
     american_put_carry,
     dividends_paid,
+    leg_intrinsic,
     quote_problems,
     structure_credit,
     structure_max_loss,
@@ -56,7 +61,7 @@ from .contracts import (
 from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
 
-__all__ = ["CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
+__all__ = ["CondorExpirySettle", "CondorBacktest", "CondorDistributionReport", "CondorPayoffDiagnostic",
            "CondorQuoteBacktest", "DebitStructureQuoteBacktest", "ExactExpiryPanelRead",
            "LongCallSpreadQuoteBacktest",
            "LongPutSpreadQuoteBacktest", "LongStraddleQuoteBacktest", "PayoffSelectQuoteBacktest",
@@ -1266,13 +1271,8 @@ class CondorQuoteBacktest(_CondorBacktestBase):
         """Return the ``(date, close)`` the entry settles at, or ``None`` when it cannot."""
         rows = self._closes.get(instrument, [])
         dates = self._close_dates.get(instrument, [])
-        at = bisect_right(dates, settle_date) - 1
-        if at < 0 or at + 1 >= len(rows):
-            return None
-        gap = (date.fromisoformat(settle_date) - date.fromisoformat(dates[at])).days
-        if gap > self.MAX_SETTLEMENT_GAP_DAYS:
-            return None
-        return rows[at]["date"], rows[at]["close"]
+        at = _bounded_settlement_index(dates, settle_date, self.MAX_SETTLEMENT_GAP_DAYS)
+        return None if at is None else (rows[at]["date"], rows[at]["close"])
 
     @staticmethod
     def _sessions(day, settle_date):
@@ -2927,3 +2927,202 @@ class ExactExpiryPanelRead(Node):
         snapshot = self._snapshot_once()
         return {"records": snapshot["records"], "provenance": snapshot["provenance"],
                 "cohort": snapshot["cohort"]}
+
+
+
+def _bounded_settlement_index(dates, settle_date, max_gap_days):
+    """One owner of preceding-close settlement with a later confirming date."""
+    at = bisect_right(dates, settle_date) - 1
+    if at < 0 or at + 1 >= len(dates):
+        return None
+    gap = (date.fromisoformat(settle_date) - date.fromisoformat(dates[at])).days
+    return at if gap <= max_gap_days else None
+
+
+class _ExpiryFill(NamedTuple):
+    """The raw fill attributes consumed by the public WindowBook."""
+
+    instrument: str
+    side: str
+    qty: int
+    price: Fraction
+    fee: Fraction
+
+
+class CondorExpirySettle(Node):
+    """Fold one-lot condor entry/expiry legs through WindowBook (ADR-0255).
+
+    Selections carry decision_id, arm_id, symbol, quote_date, expiry, multiplier
+    and four ordered legs: role, contract, right, side, strike,
+    price_usd_per_share and fee_usd. Entry prices already include haircuts.
+    Bars carry symbol/date and the configured settlement field. No I/O or
+    broker action occurs. Evidence uses raw_fills rather than RunReport's
+    reserved fills fallback; one condor, never one leg, is the statistical unit.
+    """
+
+    role = "transform"
+    outputs = ("outcomes", "skips", "evidence")
+    _PARAMS = ("settlement_field", "max_settlement_gap_days", "labels", "end_before")
+    _ROLES = ("LP", "SP", "SC", "LC")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require explicit settlement, availability boundary and research labels."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if not isinstance(params.get("settlement_field"), str) or not params["settlement_field"]:
+            problems.append("settlement_field must be nonempty text")
+        check_int_param(problems, "max_settlement_gap_days",
+                        params.get("max_settlement_gap_days"), ge=0)
+        if not _iso_day(params.get("end_before")):
+            problems.append("end_before must be an ISO date")
+        labels = params.get("labels")
+        if not isinstance(labels, dict) or set(labels) != {"fill", "exercise"}:
+            problems.append("labels must contain fill and exercise")
+        elif any(not isinstance(v, str) or not v.strip() for v in labels.values()):
+            problems.append("labels must be nonempty text")
+        return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Research-only accounting never enters a served graph."""
+        return "forbidden"
+
+    def _bars(self, rows):
+        """Validate the complete bounded close input before any accounting."""
+        grouped = {}
+        field, bound = self.params["settlement_field"], self.params["end_before"]
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("symbol"), str)
+                    or not row["symbol"] or not _iso_day(row.get("date"))
+                    or row["date"] >= bound or not price_ok(row.get(field))):
+                raise ValueError("settlement bars require symbol, bounded ISO date and positive close")
+            grouped.setdefault(row["symbol"], []).append(row)
+        for values in grouped.values():
+            values.sort(key=lambda r: r["date"])
+            if len({r["date"] for r in values}) != len(values):
+                raise ValueError("settlement bars repeat a symbol/date")
+        return grouped
+
+    def _selection(self, row):
+        """Refuse malformed or partial structures before creating any fills."""
+        if not isinstance(row, dict):
+            raise ValueError("selection must be a dict")
+        for key in ("decision_id", "arm_id", "symbol"):
+            if not isinstance(row.get(key), str) or not row[key]:
+                raise ValueError(f"selection requires {key}")
+        for key in ("quote_date", "expiry"):
+            if not _iso_day(row.get(key)) or row[key] >= self.params["end_before"]:
+                raise ValueError(f"selection requires bounded {key}")
+        if row["quote_date"] >= row["expiry"]:
+            raise ValueError("expiry must follow quote_date")
+        multiplier = row.get("multiplier")
+        if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier < 1:
+            raise ValueError("multiplier must be a positive integer")
+        legs = row.get("legs")
+        if not isinstance(legs, list) or len(legs) != len(CONDOR_LEGS):
+            raise ValueError("one condor needs four ordered legs")
+        for role, (right, sign), leg in zip(self._ROLES, CONDOR_LEGS, legs):
+            if (not isinstance(leg, dict) or leg.get("role") != role
+                    or leg.get("right") != right
+                    or leg.get("side") != ("buy" if sign > 0 else "sell")
+                    or not isinstance(leg.get("contract"), str) or not leg["contract"]
+                    or not price_ok(leg.get("strike"))):
+                raise ValueError("invalid ordered condor leg")
+            for field in ("price_usd_per_share", "fee_usd"):
+                if not number_ok(leg.get(field)) or leg[field] < 0:
+                    raise ValueError(f"{field} must be finite and nonnegative")
+            if "contracts" in leg and (type(leg["contracts"]) is not int or leg["contracts"] != 1):
+                raise ValueError("exactly one contract per leg is supported")
+            if "multiplier" in leg and (type(leg["multiplier"]) is not int
+                                       or leg["multiplier"] != multiplier):
+                raise ValueError("contract multiplier disagrees with selection")
+        if len({leg["contract"] for leg in legs}) != len(legs):
+            raise ValueError("condor contracts must be distinct")
+        if any(a["strike"] >= b["strike"] for a, b in zip(legs, legs[1:])):
+            raise ValueError("condor strikes must be strictly ordered")
+
+    def _fold(self, row, settled, confirmed_date):
+        """Emit auditable raw fills and reconcile exact closed-form expiry P&L."""
+        identity = {key: row[key] for key in ("decision_id", "arm_id", "symbol",
+                                             "quote_date", "expiry")}
+        book, positions, fills, orders = WindowBook(), Counter(), [], []
+        multiplier, level = row["multiplier"], Fraction(str(settled[self.params["settlement_field"]]))
+        credit, fees = Fraction(0), Fraction(0)
+        for leg, (_, sign) in zip(row["legs"], CONDOR_LEGS):
+            position = json.dumps([row["arm_id"], row["decision_id"], leg["contract"]],
+                                  separators=(",", ":"))
+            premium, fee = Fraction(str(leg["price_usd_per_share"])), Fraction(str(leg["fee_usd"]))
+            strike = Fraction(str(leg["strike"]))
+            intrinsic = leg_intrinsic(leg["right"], strike, level)
+            credit -= sign * premium
+            fees += fee
+            for phase, side, price, charge, day in (
+                ("entry", leg["side"], premium, fee, row["quote_date"]),
+                ("expiry", "sell" if sign > 0 else "buy", intrinsic, Fraction(0), row["expiry"]),
+            ):
+                signed = 1 if side == "buy" else -1
+                book.apply(_ExpiryFill(position, side, multiplier, price, charge))
+                positions[position] += signed * multiplier
+                raw = {**identity, "position_id": position, "contract": leg["contract"],
+                       "role": leg["role"], "phase": phase, "date": day, "side": side,
+                       "contracts": 1, "multiplier": multiplier, "qty": multiplier,
+                       "price_usd_per_share": float(price), "fee_usd": float(charge),
+                       "fill_label": self.params["labels"]["fill"]}
+                if phase == "expiry":
+                    raw.update(exercise_label=self.params["labels"]["exercise"],
+                               settlement_date=settled["date"],
+                               settlement_confirmed_date=confirmed_date)
+                orders.append({**raw, "order_id": position + ":" + phase})
+                fills.append({**raw, "order_id": position + ":" + phase,
+                              "fill_id": position + ":" + phase + ":fill"})
+        payoff = structure_payoff(CONDOR_LEGS, level,
+                                  [Fraction(str(leg["strike"])) for leg in row["legs"]])
+        expected = multiplier * (credit + payoff) - fees
+        if any(positions.values()) or book.realised != expected:
+            raise ValueError("expiry accounting did not reconcile")
+        outcome = {**identity, "settlement_date": settled["date"], "settlement": float(level),
+                   "settlement_confirmed_date": confirmed_date,
+                   "multiplier": multiplier, "fees_usd": float(fees),
+                   "credit_usd_per_share": float(credit), "pnl_usd": float(book.realised),
+                   "closed_form_pnl_usd": float(expected), "end_flat": True}
+        return outcome, orders, fills
+
+    def run(self, ctx, inputs):
+        """Return one outcome or explicit refusal for every validated selection."""
+        if not isinstance(inputs, dict) or set(inputs) != {"selections", "bars", "skips"}:
+            raise ValueError("inputs must contain selections, bars and skips")
+        if any(not isinstance(inputs[key], list) for key in inputs):
+            raise ValueError("settlement inputs must be lists")
+        if any(not isinstance(row, dict) for row in inputs["skips"]):
+            raise ValueError("upstream skips must be records")
+        grouped = self._bars(inputs["bars"])
+        seen = set()
+        for row in inputs["selections"]:
+            self._selection(row)
+            key = row["arm_id"], row["decision_id"]
+            if key in seen:
+                raise ValueError("duplicate arm/decision identity")
+            seen.add(key)
+        outcomes, orders, fills, skips = [], [], [], list(inputs["skips"])
+        for row in inputs["selections"]:
+            bars = grouped.get(row["symbol"], [])
+            at = _bounded_settlement_index([bar["date"] for bar in bars], row["expiry"],
+                                           self.params["max_settlement_gap_days"])
+            if at is None or bars[at]["date"] < row["quote_date"]:
+                skips.append({**{k: row[k] for k in ("decision_id", "arm_id", "symbol",
+                                                   "quote_date", "expiry")},
+                              "reason": "missing_settlement"})
+                continue
+            outcome, new_orders, new_fills = self._fold(row, bars[at], bars[at + 1]["date"])
+            outcomes.append(outcome)
+            orders.extend(new_orders)
+            fills.extend(new_fills)
+        orders.sort(key=lambda r: (r["date"], r["order_id"]))
+        fills.sort(key=lambda r: (r["date"], r["fill_id"]))
+        totals = {"n_condors": len(outcomes), "n_skips": len(skips),
+                  "net_pnl_usd": sum(row["pnl_usd"] for row in outcomes)}
+        evidence = {"stage": "condor_expiry", "totals": totals, "outcomes": outcomes,
+                    "skips": skips, "raw_orders": orders, "raw_fills": fills,
+                    "units": "USD per one-lot condor; no portfolio return"}
+        return {"outcomes": outcomes, "skips": skips, "evidence": evidence}

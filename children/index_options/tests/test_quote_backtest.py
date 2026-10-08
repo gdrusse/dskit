@@ -3205,3 +3205,145 @@ def test_the_sliced_charges_equal_the_charges_on_the_whole_series():
             whole, entry, settle)
     # a date contracts._day refuses is never sliced past: the owner still sees and refuses it
     assert node._charge_window("SPY", "2024-1-2", "2024-02-16") is whole
+
+
+# ADR-0255 single-condor settlement: prices are per share, fees per contract.
+def _expiry_selection(decision="a", arm="base"):
+    return {
+        "decision_id": decision, "arm_id": arm, "symbol": "XYZ",
+        "quote_date": "2025-01-02", "expiry": "2025-02-02", "multiplier": 100,
+        "legs": [
+            {"role": role, "contract": role + "-XYZ", "right": right,
+             "side": side, "strike": strike, "price_usd_per_share": premium,
+             "fee_usd": 0.65}
+            for role, right, side, strike, premium in [
+                ("LP", "put", "buy", 90, 1), ("SP", "put", "sell", 95, 2),
+                ("SC", "call", "sell", 105, 2), ("LC", "call", "buy", 110, 1)]
+        ],
+    }
+
+
+def _expiry_node(**over):
+    cls = getattr(nodes, "CondorExpirySettle", None)
+    assert cls is not None, "ADR-0255 settlement adapter is missing"
+    return cls("expiry", {
+        "settlement_field": "as_traded_close", "max_settlement_gap_days": 4,
+        "end_before": "2026-01-01",
+        "labels": {"fill": "assumed same-day average fill",
+                   "exercise": "early exercise and assignment ignored"}, **over})
+
+
+def _expiry_bars(close=100):
+    return [{"symbol": "XYZ", "date": "2025-01-31", "as_traded_close": close},
+            {"symbol": "XYZ", "date": "2025-02-03", "as_traded_close": 100}]
+
+
+@pytest.mark.parametrize("close,pnl", [(100, 197.4), (93, -2.6), (85, -302.6), (120, -302.6)])
+def test_expiry_condor_reconciles_zero_intrinsic_and_per_share_fees(close, pnl):
+    out = _expiry_node().run(None, {"selections": [_expiry_selection()],
+                                  "bars": _expiry_bars(close), "skips": []})
+    assert len(out["outcomes"]) == 1
+    result = out["outcomes"][0]
+    assert result["pnl_usd"] == pytest.approx(pnl)
+    assert result["fees_usd"] == pytest.approx(2.6)
+    assert result["end_flat"] is True
+    assert result["settlement_date"] == "2025-01-31"
+    assert result["settlement_confirmed_date"] == "2025-02-03"
+    ev = out["evidence"]
+    assert "fills" not in ev and "trades" not in ev
+    assert len(ev["raw_fills"]) == len(ev["raw_orders"]) == 8
+    assert [row["date"] for row in ev["raw_fills"]] == sorted(row["date"] for row in ev["raw_fills"])
+    assert ev["totals"]["n_condors"] == 1
+    assert all(row["qty"] == 100 for row in ev["raw_fills"])
+    expiry = [row for row in ev["raw_fills"] if row["phase"] == "expiry"]
+    assert all(row["fee_usd"] == 0 for row in expiry)
+    assert any(row["price_usd_per_share"] == 0 for row in expiry)
+    assert all(row["exercise_label"] == "early exercise and assignment ignored" for row in expiry)
+    assert all(row["fill_label"] == "assumed same-day average fill" for row in ev["raw_fills"])
+
+
+def test_expiry_positions_do_not_cross_net_between_decisions_or_arms():
+    selections = [_expiry_selection("a"), _expiry_selection("b"), _expiry_selection("a", "other")]
+    out = _expiry_node().run(None, {"selections": selections, "bars": _expiry_bars(), "skips": []})
+    assert len(out["outcomes"]) == 3
+    assert out["evidence"]["totals"]["net_pnl_usd"] == pytest.approx(592.2)
+    positions = {row["position_id"] for row in out["evidence"]["raw_fills"]}
+    assert len(positions) == 12
+
+
+@pytest.mark.parametrize("bars,reason", [
+    ([], "missing_settlement"),
+    ([{"symbol": "XYZ", "date": "2025-01-31", "as_traded_close": 100}], "missing_settlement"),
+    ([{"symbol": "XYZ", "date": "2025-01-27", "as_traded_close": 100},
+      {"symbol": "XYZ", "date": "2025-02-03", "as_traded_close": 100}], "missing_settlement"),
+])
+def test_expiry_requires_bounded_close_and_later_confirmation(bars, reason):
+    out = _expiry_node().run(None, {"selections": [_expiry_selection()], "bars": bars,
+                                  "skips": [{"reason": "upstream"}]})
+    assert out["outcomes"] == []
+    assert [row["reason"] for row in out["skips"]] == ["upstream", reason]
+    assert out["evidence"]["raw_fills"] == []
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda rows, bars: rows.append(copy.deepcopy(rows[0])),
+    lambda rows, bars: rows[0]["legs"][0].update(price_usd_per_share=float("nan")),
+    lambda rows, bars: rows[0]["legs"][0].update(side="sell"),
+    lambda rows, bars: rows[0]["legs"][0].update(fee_usd=-1),
+    lambda rows, bars: rows[0]["legs"][0].update(fee_usd=float("inf")),
+    lambda rows, bars: rows[0]["legs"][0].update(contracts=2),
+    lambda rows, bars: rows[0]["legs"][0].update(multiplier=10),
+    lambda rows, bars: rows[0].update(expiry="2026-01-01"),
+    lambda rows, bars: bars.append({"symbol": "XYZ", "date": "2026-01-01", "as_traded_close": 100}),
+    lambda rows, bars: bars.append(copy.deepcopy(bars[0])),
+])
+def test_expiry_malformed_or_protected_inputs_refuse(mutate):
+    selections, bars = [_expiry_selection()], _expiry_bars()
+    mutate(selections, bars)
+    with pytest.raises(ValueError):
+        _expiry_node().run(None, {"selections": selections, "bars": bars, "skips": []})
+
+
+def test_expiry_boundary_and_gap_are_explicit_not_silent_defaults():
+    cls = getattr(nodes, "CondorExpirySettle", None)
+    assert cls is not None, "ADR-0255 settlement adapter is missing"
+    for params in ({}, {"settlement_field": "close", "max_settlement_gap_days": 4,
+                       "labels": {"fill": "x", "exercise": "y"}}):
+        assert cls.validate_params(params)
+    assert _expiry_node(max_settlement_gap_days=0).run(
+        None, {"selections": [_expiry_selection()], "bars": _expiry_bars(), "skips": []}
+    )["outcomes"] == []
+
+def test_expiry_decimal_prices_and_nonhundred_multiplier():
+    selection = _expiry_selection()
+    selection["multiplier"] = 10
+    selection["legs"][0]["price_usd_per_share"] = 1.03
+    out = _expiry_node().run(None, {"selections": [selection], "bars": _expiry_bars(93.17),
+                                  "skips": []})
+    assert out["outcomes"][0]["pnl_usd"] == pytest.approx(-1.2)
+    assert out["outcomes"][0]["closed_form_pnl_usd"] == pytest.approx(-1.2)
+
+
+def test_expiry_preserves_inputs_and_reports_only_condor_statistics(tmp_path):
+    from dskit.pipeline.kinds_report import RunReport
+    from dskit.pipeline.node import NodeContext
+    inputs = {"selections": [_expiry_selection()], "bars": _expiry_bars(), "skips": []}
+    original = copy.deepcopy(inputs)
+    out = _expiry_node().run(None, inputs)
+    assert inputs == original
+    report = RunReport("report", {"sections": ["stages"]})
+    ctx = NodeContext(name="test", asof="2025-02-03", run_dir=str(tmp_path))
+    result = report.run(ctx, {"replay": out["evidence"]})
+    payload = json.loads(Path(result["path"]).read_text())
+    assert "trades" not in payload and "summary_metrics" not in payload
+    assert len(payload["stages"]["replay"]["raw_fills"]) == 8
+    assert payload["stages"]["replay"]["totals"]["n_condors"] == 1
+
+
+def test_expiry_cannot_use_a_close_before_its_entry():
+    selection = _expiry_selection()
+    selection["quote_date"] = "2025-02-01"
+    out = _expiry_node().run(None, {"selections": [selection], "bars": _expiry_bars(),
+                                  "skips": []})
+    assert out["outcomes"] == []
+    assert out["skips"][0]["reason"] == "missing_settlement"
