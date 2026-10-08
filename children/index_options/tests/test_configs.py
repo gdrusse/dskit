@@ -51,6 +51,18 @@ def test_exact_manifest_and_agent_parity(child_root):
         # Owner-authorized Stage-0 audit and recovery evidence; no new model fits.
         "docs/memos/2026-10-07-production-development-stage0.md",
         "docs/reports/production-development-20261007.json",
+        # ADR0251-0253: owner-authorized protected sources and production development.
+        "configs/panel-production-development-20261007-v2.json",
+        "configs/panel-production-development-20261007.json",
+        "configs/production-feature-selection-20261007.json",
+        "configs/run-production-liquidity-20261007.json",
+        "configs/source-production-liquidity-20261007.json",
+        "configs/source-production-vix-20261007.json",
+        "configs/source-store-production-history-audit-20261007.json",
+        "configs/source-store-production-model-inputs-20261007.json",
+        "configs/source-store-production-older-bars-20261007-v2.json",
+        "configs/source-store-production-older-bars-20261007.json",
+        "configs/source-store-production-vix-envelopes-20261007.json",
         "docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.html",
         "docs/reports/advanced-cdf-zoo-20261006/advanced-interim-performance.manifest.json",
         "index_options/__init__.py", "index_options/contracts.py",
@@ -280,7 +292,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the pooled workflow manifest and report spec = 432, plus its results memo = 433,
     # plus the per-ticker study, its workflow manifest and report spec = 436,
     # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
-    assert len(actual) == 449
+    # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
+    assert len(actual) == 460
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
