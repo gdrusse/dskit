@@ -87,7 +87,7 @@ The design handoff reported48 DTE31 calibration dates and43 entry dates before f
 
 **Forecast model:** no more feature selection, HPO, seed choice or performance-based checkpoint selection on these MIO windows. Scheduled inference changes checkpoint by historical availability, not by later profit.
 
-**Radius rule:** the recommended, still-pending G3 choice targets average realized capped loss minus robust expected loss on prespecified templates. The draft grid is 0, 0.001, 0.0025, 0.005 and0.01 of spot. Held-out loss versus pooled-CDF distance, grid versus continuous search, smallest-passing versus block-quantile selection, grid-offset treatment and accepted monthly phases remain owner choices. This memo does not select them.
+**Radius rule:** owner approved expected-loss calibration on fixed audit templates and the finite-grid/smallest-passing procedure on2026-10-08. Grid:0,0.001,0.0025,0.005,0.01 of spot. Compute each template/radius loss once for matching identities; bootstrap reuses cached residuals, and rho0 permits direct nominal expectation. No passing value means unsupported, with no automatic expansion. This evidence covers the audit-template population, not every optimizer-selected trade. Grid-offset treatment, admitted monthly phases and remaining numerical settings are unresolved. No empirical rho has been computed.
 
 The draft template matches short-put q=0.1 and short-call1-q quantiles, then one outward strike per long wing, using explicit baseline liquidity. Its calibration claim concerns that template population; later selected MILP trades require their own audit. Do not infer protection for every candidate from one template's result.
 

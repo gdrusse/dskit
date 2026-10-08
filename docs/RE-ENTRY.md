@@ -117321,3 +117321,10 @@ Reviewed code/test Git blob identities:
 Owner explicitly selected expected-loss calibration (2026-10-08). Use realized expiry loss minus robust expected loss on the prespecified audit-template population, with the reviewed dependence-aware mean-bound diagnostic. Pooled CDF distance is not the primary rho criterion. This does not validate every conditional forecast or every optimizer-selected trade; later selected-policy evaluation remains separate.
 
 Only the criterion is settled. Next owner choice, asked one at a time per ADR0255: finite configured rho grid versus continuous bisection. Search/selection/update phases, projection-error policy and remaining numerical settings are not inferred from this answer. Runtime/config/test blobs and the clean component ReviewExit remain unchanged. No market records, numerical calibration, fits or replay were run.
+
+
+### ADR-0255 owner approved finite-grid empirical rho procedure
+
+Owner approved the explained grid procedure after confirming that each audit template is evaluated at five candidate radii and bootstrap reuses cached losses. Record expected_loss_bound / finite_grid / smallest_passing in the proposed JSON; retain its five original radii and all other numerical values. Zero radius may use the nominal expectation directly; no passing value is unsupported, without automatic expansion.
+
+Correct the worked explanation: current ADR audits fixed templates, not a newly optimized trade at each radius. Evidence applies to those templates; later MILP-policy assessment remains separate. Cache identity includes all relevant forecast/model/source/grid/payoff/band/numerical inputs. These are proposed adapter semantics, not implemented caching or a real run. Exact residual weighting/update phases and remaining G3 settings are still open. Source/test blobs and prior clean component review remain unchanged. Scoped documentary/config consistency reviews pending; no market records, fits or replay.

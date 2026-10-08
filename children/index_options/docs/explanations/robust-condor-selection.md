@@ -211,143 +211,122 @@ All numbers above were checked by solving the LP directly.
 
 ## How we will calibrate rho
 
-### Purpose and agreed starting target
+### Approved criterion and finite search
 
-The owner agreed on 2026-10-08 to start with **protection against average
-expected-loss underestimation**, followed by later chronological validation and
-prespecified stress-period checks. This section explains that direction; it is
-not an executable calibration contract or a measured PatchTST radius.
+The owner selected **expected-loss calibration** and then approved a finite
+grid search on 2026-10-08. Rho still comes from historical evidence: the grid
+lists possible answers, not the answer itself. The approved candidates are
+0, 0.001, 0.0025, 0.005 and 0.01, all fractions of spot. No candidate has yet
+been measured or selected for PatchTST.
 
-Rho allows the optimizer to distrust the nominal probabilities. In (I4), it is
-a dimensionless transport budget: moving probability 0.10 by 5 dollars at spot
-100 costs 0.10 times 5 = 0.50 dollars per share, then 0.50 / 100 = 0.005 of rho.
-That is neither a 0.5% probability of loss nor a 0.5% confidence level.
+Rho is the transport budget in (I4), not a probability or confidence level.
+At spot100, moving probability0.10 by5 dollars costs0.50 dollars/share,
+or rho0.005. We calibrate underestimation of average capped expiry loss;
+we do not establish containment of each true conditional CDF.
 
-For a fixed candidate x, write R_t(x; rho) for the worst expected loss under
-(I1)-(I4), initially without bands (I5). Increasing rho enlarges the allowed
-set, so R cannot decrease for that fixed candidate. The selected candidate can
-change; its realized loss need not move monotonically with rho.
+### Fixed audit trades, then later optimizer evaluation
 
-The calibration question is: **how much probability movement is needed before
-the decision rule stops systematically understating average losses?** This
-targets a decision's expected-loss bound, not containment of the entire true
-conditional CDF. A single realized loss above R is possible even with a correct
-distribution: an expected loss is not a maximum realized loss.
+The current [ADR-0255](../../../../docs/architecture/decision-log.md#adr-0255--equity-iron-condor-robust-selection-research-replay-proposed)
+uses one prespecified audit condor per admitted ticker-date. The draft
+template places shorts near the forecast's complementary quantiles and longs
+one eligible strike farther out, with fixed eligibility and tie rules. This
+same template is used at every rho; it is not reselected by the MILP.
 
-### The residual and the smallest passing radius
-
-Before looking at results, freeze a finite, ordered set of trial radii G and
-the same candidate, credit, fee, availability and no-trade rules for each.
-Let x_t(rho) be the candidate selected using only information available at t,
-including the nominal forecast and that trial radius. Let Y_t be its eventual
-realized expiry loss per share. For no trade, both loss and bound are zero.
+For audit observation i, let x_i be that fixed condor, Y_i its realized
+expiry loss per share, and R_i(x_i;rho) its worst expected loss from (I1)-(I4).
+The residual is
 
 ```math
-e_t(\rho)=Y_t(x_t(\rho))-R_t(x_t(\rho);\rho).
+e_i(\rho)=Y_i-R_i(x_i;\rho).
 ```
 
-A positive residual means the realized loss exceeded the robust expected-loss
-estimate; a negative residual means the allowance exceeded that realization.
-Average residuals within each date using frozen eligible observations and
-weights. Estimate an upper uncertainty bound U(rho) on the mean date residual
-using contiguous date blocks, keeping all same-date stocks together.
-Account for trying multiple radii and any additional inferential claims.
+Positive means the realized loss exceeded the expected-loss allowance.
+A single positive residual is possible even under a correct distribution:
+an expected loss is not a maximum realized loss. Average within dates using
+frozen weights and estimate an upper bound U(rho) on the mean date residual,
+keeping same-date tickers together in dependence-aware date blocks.
+The draft requires both U(rho)<=0 and a nonpositive full observed mean,
+with adequate block support. Bounds remain approximate stress diagnostics.
 
-```math
-\rho^*=\min\lbrace \rho\in G: U(\rho)\le0\rbrace.
-```
+The previously explained selection rule is the smallest grid value passing
+that test. The larger alternatives are not chosen simply because they are
+more conservative. If none passes, calibration is unsupported; no automatic
+grid expansion or fabricated rho. Missing templates and insufficient support
+remain visible refusals, not artificial zero-loss successes.
 
-Here "smallest" means the least conservative radius that clears the chosen
-average-loss test, not the smallest radius regardless of evidence. If none
-passes, the result is unsupported and the rule abstains; do not enlarge G
-after seeing a failure. The formula is conditional on adequate support.
-Sparse or almost-always-abstaining policies cannot earn a calibration claim
-merely by accumulating zero residuals.
+An older version of this section described selecting a different trade at
+each trial rho. That is a different, selected-policy calibration experiment.
+It is not the fixed-template protocol in the current ADR. Template evidence
+does not establish protection for every condor the MILP might select; evaluate
+those actual selections separately on later dates.
 
-**Invented arithmetic, not computed calibration results:** suppose average
-realized loss is 0.75 dollars per share, and two trial policies happen to select
-the same trades. Their average robust bounds are 0.70 and 0.80. Their average
-residuals are 0.75 - 0.70 = +0.05 and 0.75 - 0.80 = -0.05 respectively.
-The first underestimates average loss. The second looks sufficient in-sample,
-but could still fail if its upper uncertainty bound is positive. We have not
-computed such a bound for this example. Rho cannot be recovered from these
-averages alone; the distributions, price grids and payoffs determine R.
+### How many LP solves, and what gets reused?
 
-### Why not the average miss, or the average rho?
+For each admitted ticker-date/template, compute five expected-loss values,
+one per approved radius. At rho0, the answer is the nominal mass-weighted
+loss directly; the other four generally require LP solves. A caller that
+uses the LP for zero too performs five solves. This is per fixed audit
+template, not five solves for every possible four-strike combination.
 
-A mean loss miss is in dollars per share; rho is a spot-normalized probability
-transport budget. There is no universal conversion. Even for a 1-Lipschitz
-condor loss, nominal expected loss plus spot times rho is an upper bound on R,
-not a general equality; the wide-condor example above shows the difference.
+Cache those loss values with the forecast/checkpoint, input snapshot,
+date/expiry, grid/masses/spot, payoff/template, bands, radius and numerical
+solver settings/code identities. Reuse requires all relevant identities to
+match. Preserve refusals; failed solves are not passing calibration evidence.
+This describes required reuse of run artifacts, not a newly built cache service.
 
-The sample mean also ignores uncertainty around that estimate. Signed misses
-can cancel across good and bad periods. An average of separately estimated
-radii has no automatic connection to an average-loss or stress-protection
-target either. Historical errors inform calibration, but do not define the
-protection target by themselves.
+Bootstrap resamples reuse the stored residuals; they do not solve the LP
+again. For N admitted templates, there are5N loss values and normally4N LP
+solves, not an additional factor of the bootstrap replicate count.
+A later prior-only update may reuse unchanged values for retained observations
+and compute values for newly admitted observations only.
 
-A larger radius may be chosen for a separately declared stronger objective.
-It is not automatically more scientifically justified: excessive conservatism
-can eliminate all trades. Conversely, passing an average-loss test does not
-establish protection against severe periods, individual tail losses, or
-portfolio drawdowns.
+After calibration, each ticker-date/arm uses its assigned rho for the
+dualized selection MILP, including the certified no-trade tie solve and
+post-solve checks. It does not search the five radii again. The nominal
+comparison arm uses zero; cost/liquidity sensitivity arms share the base
+calibration. This is not a claim of one solver call for the entire run.
 
-### Reuse, validation and the remaining execution contract
+### Why not the average miss or pooled CDF distance?
 
-Existing code already implements this starting approach:
-[AdaptiveWassersteinRadius and RobustCorrectionStudy](../../index_options/cdf_study.py).
-The former takes radii, min_dates, block_dates, replicates, alpha and seed.
-It averages residuals by date, uses a circular moving-block bootstrap,
-adjusts its percentile across the trial radii, and selects the smallest
-passing radius or refuses. The caller constructs selected-policy residuals
-and filters to strictly earlier, settled history by symbol and requested tenor.
-The [historical memo](../memos/2026-09-30-causal-decision-region-calibration-and-robust-condor.md)
-records an older GPD/ETF application. Its four-date blocks, small support
-threshold and grid are not adopted settings for the 31-day PatchTST stock study.
-Bootstrap bounds are approximate and depend on the sampling assumptions;
-multiplicity adjustment does not fix an invalid dependence model.
+A mean loss miss is dollars/share; rho is a normalized transport budget.
+There is no universal conversion. Even for a1-Lipschitz condor loss,
+nominal expected loss plus spot times rho is an upper bound on R, not a
+general equality. The wide-condor example above shows the difference.
+A mean also ignores estimation uncertainty; averaging separately estimated
+radii does not automatically meet the agreed average-loss target.
 
-The next bounded calibration contract must settle these items before a run:
+Pooled CDF distance compares the mixture of normalized forecasts with the
+empirical distribution of matched normalized outcomes. It can hide errors
+that cancel across dates/tickers. It is not the selected primary criterion
+and alone cannot justify per-forecast ball coverage.
 
-1. Match saved nominal seed11 chronological forecasts to supported instruments,
-   exact expiry, entry-known candidate payoffs and costs. Inventory the existing
-   onboarding and grid/LP seams before adding code; the old GPD archive runner
-   is not demonstrated to accept the new PatchTST packages unchanged.
-2. Freeze G, alpha, pooling/weights, minimum effective date-block support,
-   trade-active support and abstention reporting. Start with one fixed
-   calibration rule; do not average ticker radii or select a seed from later
-   performance. Preserve all eligible opportunities, refusals and no trades.
-3. Freeze a primary date-block length spanning the overlapping target horizon
-   and a longer sensitivity length. Report effective support at both lengths.
-   Many correlated ticker forecasts do not create many independent dates.
-4. Use strictly settled and available prior labels. Proposed research forecast
-   dates are 2024-02-06 through 2024-12-31 for calibration, with final 31-day
-   labels maturing through 2025-01-31 plus availability lag; later assessment
-   dates are 2025-02-04 through 2025-11-28, settling through 2025-12-29.
-   These dates remain conditional on actual matched coverage. Freeze rho
-   before later assessment, or separately freeze a prior-only update algorithm.
-5. Predeclare stress-period definitions from entry-known information, their
-   support rules and assessment criteria. Report average residuals, uncertainty,
-   trade activity and stress results on later dates without selecting from
-   later profits. Failure or inadequate evidence stays visible; it does not
-   trigger a retrospective change to rho. Separate tail-risk criteria are
-   needed for a stronger claim than average-loss protection.
-6. Defer Q bands until separately supported. The same-date Bernoulli outcomes
-   do not reveal a date's true conditional CDF. Preserve coherent masses and
-   common Q across strikes; do not infer bands from rho or interval miss rates.
+### Reuse and remaining execution contract
 
-Existing 2021-2025 history has already informed development. This can support a
-retrospective research assessment, not independent production qualification.
-Keep 2026 entirely closed, including lookbacks. Saved checkpoints avoid refits
-on their supported dates; never use a later checkpoint on an earlier date.
+[AdaptiveWassersteinRadius](../../index_options/cdf_study.py) already selects
+among candidate radii using date residuals; the
+[older calibration memo](../memos/2026-09-30-causal-decision-region-calibration-and-robust-condor.md)
+records its GPD/ETF use. Its circular observed-count bootstrap is not the
+draft's complete-calendar-block sampler. The PatchTST template adapter,
+calendar-block support checks and cached loss wiring are not implemented by
+this explanation.
 
-**Status:** explanation and agreed methodological direction only. No numerical
-PatchTST rho, calibrated bands, optimizer run or trading backtest was produced
-by this addition. Computing the selected-policy criterion requires actual
-candidate/LP decisions; it is not a forecast-format-only check. The remaining
-instrument, data and bounded-execution contract is recorded in the
-[Claude handoff](../memos/2026-10-08-claude-calibration-backtest-handoff.md).
-Earlier restrictions on MIO execution and trading backtests remain unchanged.
+The [draft JSON](../../configs/run-equity-condor-robust-backtest.json) and
+[evaluation calendar](../memos/2026-10-08-forecast-mio-evaluation-scheme.md)
+own the remaining proposals: calibration forecast dates2024-02-06..2024-12-31,
+later entries2025-02-04..2025-11-28, with settled/available labels only.
+Update phases, exact weights, projection-offset policy and numerical settings
+still require closure. Existing candidates/settings are not permission to
+read protected rows or launch an unresolved pipeline.
+
+Optional Q bands remain disabled pending separate evidence. More rho does
+not establish tail-loss, stress-period or portfolio-drawdown protection.
+The already-seen2021-2025 history supports retrospective research, not
+independent production qualification. Keep2026 closed and never use later
+checkpoints on earlier dates.
+
+**Status:** approved criterion and grid procedure; no empirical rho, calibrated
+bands or historical replay result yet. Source safety/basis, exact checkpoint
+and input wiring, remaining settings and end-to-end review still gate launch.
 
 ## What the real runs show
 
