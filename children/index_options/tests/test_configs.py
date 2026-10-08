@@ -56,6 +56,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "configs/panel-production-development-20261007.json",
         "configs/production-feature-selection-20261007.json",
         "configs/run-production-liquidity-20261007.json",
+        # ADR-0255 (PROPOSED): the robust equity iron-condor research replay.
+        "configs/run-equity-condor-robust-backtest.json",
         "configs/source-production-liquidity-20261007.json",
         "configs/source-production-vix-20261007.json",
         "configs/source-store-production-history-audit-20261007.json",
@@ -293,7 +295,8 @@ def test_exact_manifest_and_agent_parity(child_root):
     # plus the per-ticker study, its workflow manifest and report spec = 436,
     # plus ADR-0238 config, research and two interim report artifacts = 440; four final reports, evidence and memo = 446; production proposal = 447; Stage-0 evidence = 449
     # Plus eleven protected-source/panel/feature experiment JSON declarations = 460.
-    assert len(actual) == 460
+    # Plus ADR-0255's robust-condor backtest run config = 461.
+    assert len(actual) == 461
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
