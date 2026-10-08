@@ -117237,3 +117237,11 @@ ADR/data-copy OK, perform G1 relocation/verification and protected census,
 G2 verified schedule onboarding, then focused tests before minimal code.
 Do not infer main-merge approval. No GitHub PR found for this branch by API;
 review is against the explicitly supplied branch commit.
+
+### ADR-0255 second correction and convergence checkpoint
+
+Candidate f7f63fdc: math_r2 0C/1Major/1Minor; integration_r2 0C/2Major/1Minor; consistency_r2 adds template-liquidity Minor (full agent transcripts retained). Calendar target-date inclusion, explicit call quantile, liquidity binding, zero-price expiry and report populations corrected together.
+
+Integration reviewer independently checkpointed the repeated accounting family: R1 missed upstream Fill positivity and downstream mandatory leg/portfolio statistics. Bounded changed approach uses public WindowBook directly and RunReport stages; removes incompatible evaluator adapters, no new accounting/reporting framework. Reviewer authorizes this design correction only, not implementation/execution. Sampling now refuses omitted/degenerate support; no fabricated calibration when sparse dates cannot support the declared blocks. Fresh three-lens review pending; owner questions/ADR approval still next, no data/model/code action.
+
+Revised shape check:32 expanded nodes; JSON identity b17566fe688df3ae66490c966994530be18dc7c49b7b9fe8cdaa65b65821be14. Only existing ADR/JSON/pickup changed; runtime and inherited manifest-test blobs unchanged.

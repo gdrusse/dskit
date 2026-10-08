@@ -232,9 +232,13 @@
           "template": "short_quantile_wings",
           "short_q": 0.1,
           "wing_strikes": 1
+        },
+        "liquidity": {
+          "min_trade_count": 5,
+          "min_volume": 1
         }
       },
-      "notes": "PROPOSED child audit adapter over shared generic bootstrap/grid owners; tier decision remains G3. Expected-loss candidate uses realized MINUS robust loss; upper mean bound <=0. Template evidence covers only that fixed population, not all MILP-selected trades. Match shorts to nearest same-type nominal price-quantile strike (distance tie lower), longs wing_strikes distinct same-type positions outward; require liquidity, standard contract and strict ordering, otherwise missing-template refusal. Payoff-only audit never uses completed-window pricing tiers. Calendar blocks: complete [start,start+B) date groups, start+B <= last_observed+1 day; uniform complete-start sampling with replacement, concatenate until n dates and truncate; no calendar wrap. Refuse insufficient min_dates/no complete blocks, report effective/degenerate support. Primary selection only; longer sensitivity reported. Legacy observed-count behavior stays unchanged. Grid/search/selection/phase choice, Delta and weights remain G3. Calibration-only history gives constant rho; entry outcomes are excluded unless owner admits them. Every used outcome is published strictly before monthly reference. Emit rho and JSON audit dict (bounds/residuals/blocks/counts/all refusals), consumed by diagnostics. No test-profit selection."
+      "notes": "PROPOSED child audit adapter over shared generic bootstrap/grid owners; tier decision remains G3. Expected-loss candidate uses realized MINUS robust loss; upper mean bound <=0. Template evidence covers only that fixed population, not all MILP-selected trades. Match SP to F^-1(short_q) and SC to F^-1(1-short_q), each at the nearest same-type strike (distance tie lower), longs wing_strikes distinct same-type positions outward; require this node's explicit liquidity params, pinned equal to select base liquidity, standard contract and strict ordering, otherwise missing-template refusal. Payoff-only audit never uses completed-window pricing tiers. Calendar blocks: starts are observed dates; complete [start,start+B) date groups require start+B <= last_observed+1 day; uniform eligible-start sampling with replacement, concatenate until n dates and truncate; no calendar wrap. Before bounding, require every target date to have positive inclusion probability under this exact sampler and at least two distinct supported blocks; otherwise emit unsupported, never a passing bound. A passing bound also requires the full observed-date residual mean <=0. Refuse insufficient min_dates/no complete blocks/degenerate support, retain inclusion counts and full mean. This is an approximate block stress diagnostic, not a finite-sample confidence guarantee. Primary selection only; longer sensitivity reported. Legacy observed-count behavior stays unchanged. Grid/search/selection/phase choice, Delta and weights remain G3. Calibration-only history gives constant rho; entry outcomes are excluded unless owner admits them. Every used outcome is published strictly before monthly reference. Emit rho and JSON audit dict (bounds/residuals/blocks/counts/all refusals), consumed by diagnostics. No test-profit selection. Base-template liquidity is unchanged across all sensitivity arms; they reuse the same rho, never recalibrate."
     }
   },
   "foreach": {
@@ -368,114 +372,7 @@
             "exercise": "early exercise and assignment ignored"
           }
         },
-        "notes": "PROPOSED child expiry payoff accounting. Emit entry orders/fills plus opposite-side synthetic expiry closing orders/fills for EACH leg at its intrinsic value, zero expiry fee. No intrinsic external cashflow and no unclosed lots. Each position_id encodes arm_id/decision_id/actual contract; preserve contract mapping so overlap never nets across decisions. Both fill kinds carry fill_label; expiry label includes labels.exercise. Existing shared bounded settlement-close rule reused, later confirming bar must itself be pre2026. Each decision ends flat and sum leg P&L equals outcome = multiplier*(credit-intrinsic)-entry fees. One condor outcome, not four independent trades. Emits orders/fills/outcomes/skips plus JSON evidence with actual-contract mapping, per-decision reconciliation, arm/ticker results and all failures. No portfolio-return claim."
-      },
-      "events": {
-        "uses": "dskit.evaluation.nodes:RowsToEvents",
-        "inputs": {
-          "decisions": "$select.decisions",
-          "orders": "$settle.orders",
-          "fills": "$settle.fills",
-          "outcomes": "$settle.outcomes",
-          "skips": "$settle.skips",
-          "solves": "$select.solves"
-        },
-        "params": {
-          "run_start": {
-            "tz": "America/New_York",
-            "title": "Robust equity iron-condor selection - retrospective research replay (ADR-0255)",
-            "project": "index_options",
-            "units": {
-              "money": "USD"
-            }
-          },
-          "map": {
-            "decisions": {
-              "instrument": "symbol",
-              "fields": {
-                "decision_id": "decision_id",
-                "action": "action",
-                "reason": "reason",
-                "edge": "robust_edge_usd",
-                "model": {
-                  "const": "wasserstein-milp"
-                }
-              }
-            },
-            "orders": {
-              "instrument": "position_id",
-              "fields": {
-                "order_id": "order_id",
-                "decision_id": "decision_id",
-                "side": "side",
-                "qty": "qty",
-                "ref_price": "ref_price"
-              }
-            },
-            "fills": {
-              "instrument": "position_id",
-              "fields": {
-                "fill_id": "fill_id",
-                "order_id": "order_id",
-                "side": "side",
-                "qty": "qty",
-                "price": "price",
-                "fee": "fee",
-                "ref_price": "ref_price",
-                "tag": "fill_label"
-              }
-            },
-            "outcomes": {
-              "instrument": "symbol",
-              "fields": {
-                "decision_id": "decision_id",
-                "horizon": "horizon",
-                "realized": "realized_pnl_usd"
-              }
-            },
-            "skips": {
-              "instrument": "symbol",
-              "fields": {
-                "decision_id": "decision_id",
-                "reason": "reason",
-                "detail": "detail"
-              }
-            },
-            "solves": {
-              "instrument": "symbol",
-              "fields": {
-                "solver": "solver",
-                "status": "status",
-                "termination": "termination",
-                "objective": "objective",
-                "bound": "bound",
-                "gap": "gap",
-                "seconds": "seconds",
-                "variables": "variables",
-                "constraints": "constraints",
-                "model": {
-                  "const": "RobustCondorSelect"
-                }
-              }
-            }
-          }
-        },
-        "notes": "EXISTS RowsToEvents; one isolated arm log. Orders/fills map decision-scoped position_id, not shared actual contract; actual contracts retained in settle evidence. Fill tags carry entry look-ahead and expiry assignment-ignored labels. No external cashflow for intrinsic payoff. IDs include arm to avoid collisions. Outcome and per-decision reconciliation retained; report counts condor outcomes separately from leg trips. Run verdict UNJUDGED, no performance qualification."
-      },
-      "report": {
-        "uses": "dskit.evaluation.nodes:EvaluationReport",
-        "inputs": {
-          "events": "$events.events"
-        },
-        "params": {
-          "out_dir": "$each",
-          "title": "Robust equity iron-condor selection - retrospective research replay (ADR-0255)",
-          "sections": [
-            "summary",
-            "provenance"
-          ]
-        },
-        "notes": "EXISTS EvaluationReport, isolated arm events and arm directory. Only summary/provenance initially, avoiding portfolio or four-leg-trip claims; detailed condor outcomes, mesh/calibration and per-ticker sensitivity evidence are in diagnostics. No combining arms into one event log."
+        "notes": "PROPOSED child adapter reuses public dskit.production.accounting.WindowBook as sole accounting fold. Preserve raw entry and opposite-side synthetic expiry orders/fills for EACH leg, including zero intrinsic and zero expiry fee; these are evidence records, NOT dskit-eval-v1 events. Fold share-equivalent quantity=contracts*multiplier, USD/share prices and total USD fee (entry fee once per contract, zero expiry fee); never multiply fee again. Instrument is decision-scoped position_id encoding arm/decision/actual contract; retain actual contract and one-lot mapping. Both fills carry fill_label, expiry also labels.exercise. Reuse shared bounded settlement-close rule; later confirming bar itself pre2026. Assert per-position signed quantities end zero and WindowBook.realised equals independent closed-form multiplier*(credit-intrinsic)-entry fees. Do not use leg closes as trade counts. One condor outcome per decision. Evidence retains all raw records, mappings, reconciliation, arm/ticker outcomes/skips; no portfolio return or generic leg-statistic claims."
       },
       "diagnostics": {
         "uses": "run-report",
@@ -487,11 +384,13 @@
         },
         "params": {
           "title": "Robust condor calibration and single-trade evidence",
-          "sections": []
+          "sections": [
+            "stages"
+          ]
         },
-        "notes": "EXISTS RunReport. Stage labels in supplied evidence identify mesh, calibration, selection and settlement. Full JSON evidence (including every date/ticker/refusal) and Markdown saved through node-scoped artifact writer, one diagnostics node per arm. Report no portfolio return; retain one condor per decision and exact end-flat accounting. Shared calibration is unchanged across comparison arms."
+        "notes": "EXISTS RunReport with stages enabled. Stage labels identify mesh, calibration, selection and settlement. Exhaustive JSON preserves every raw decision/order/fill/solver/outcome/refusal record, diagnostic and reconciliation; Markdown renders stage summaries with its documented row cap and full-JSON pointer. Existing node-scoped artifact writer isolates arms. Condor outcomes are the statistical unit, not leg trips; no portfolio return. Shared base calibration is unchanged across comparison arms."
       }
     },
-    "notes": "Eight explicit one-factor arms, base settings except the declared index override. No Cartesian product, no ticker fan-out, no model fits. Node references and $each expand through existing foreach; each report directory is its arm key, diagnostic artifacts are node-scoped."
+    "notes": "Eight explicit one-factor arms, base settings except declared index override. No Cartesian product, ticker fan-out or fits. Existing foreach expands refs/$each and RunReport artifacts are node-scoped per arm. No RowsToEvents/EvaluationReport route."
   }
 }
