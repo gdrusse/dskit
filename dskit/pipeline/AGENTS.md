@@ -575,6 +575,9 @@ dskit/pipeline/
 │                      NO_VARIANCE_RTOL: newey_west_mean / across_fold_t report t None
 │                      for a spread within that fraction of the largest magnitude
 │                      (ADR-0195; the ONE owner of the float-noise no-variance rule)
+├── binary_curve.py   CurveSurvival + CurveBinaryFairValue: price a binary from any CDF curve's knots (by import path, ADR-0249)
+├── digital_bounds.py executable vertical-spread bounds on a digital (DigitalBounds) + quote_problems (by import path, ADR-0249)
+├── binary_decisions.py DecisionRows + QuoteState + the shared binary-market column names (by import path, ADR-0248)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
@@ -597,7 +600,9 @@ dskit/pipeline/
 │                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077),
-│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment)
+│                      parquet (ParquetRows, an onboarded parquet file as records, ADR-0228; ParquetFrameCache, a frame memo, ADR-0236 amendment),
+│                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows / FeeColumns, every field a param, ADR-0248),
+│                      binary_coherence (BinaryCoherence: LP feasibility + 1/spread² projection across linked binaries, a PyomoSolve subclass, ADR-0249)
 ├── README.md          user-facing docs
 └── AGENTS.md          this file
 ```
