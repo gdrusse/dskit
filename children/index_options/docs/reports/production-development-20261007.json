@@ -2393,5 +2393,24 @@
     "original_paths_denied": true,
     "off_device_disaster_recovery": false,
     "originals_deleted": false
+  },
+  "closing_reviews": {
+    "candidate": "2691f3b73923c1a903e9057d764f42779d8a5a3a",
+    "reviews": {
+      "correctness": {
+        "file": "production-closing-correctness-final.txt",
+        "sha256": "737df0b293e51d7f519f7c720ca9f6171a2ab79ef285a4d6ebafa0f4ba4e8e76"
+      },
+      "integration": {
+        "file": "production-closing-integration-final.txt",
+        "sha256": "7a253e858b5b3a12620d180c79c90c99b6cdcfac26e6b6efade77f076d2699fa"
+      }
+    },
+    "unresolved_critical": 0,
+    "unresolved_major": 0,
+    "unresolved_minor": 0,
+    "unresolved_nit": 0,
+    "scope": "closing execution/calibration/recovery evidence; prior unchanged runtime and gate reviews preserved",
+    "delivery_receipt": "/home/russell/data/index_options/production-development-audit-20261007/production-final-delivery-receipt.json"
   }
 }

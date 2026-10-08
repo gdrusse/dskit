@@ -112,8 +112,13 @@ e592a6e20cc8a87a5a47b8b90dfac59299e14d30dd14119e57560e3cf74cec72.
 Use audit/evaluation-v1-backup-recovery-receipt.json and
 evaluation-complete-v1/RECOVERY.txt together with earlier bundle instructions.
 
-Final scoped closing-document reviews and Git delivery are recorded in the
-aggregate report and the final private metadata supplement. The already-closed
+Two independent final closing lenses passed candidate 2691f3b7 with zero
+Critical/Major/Minor/Nit. Correctness report SHA256:
+737df0b293e51d7f519f7c720ca9f6171a2ab79ef285a4d6ebafa0f4ba4e8e76;
+integration report SHA256:
+7a253e858b5b3a12620d180c79c90c99b6cdcfac26e6b6efade77f076d2699fa.
+This closure append changes evidence only. Git delivery is recorded in
+audit/production-final-delivery-receipt.json and the final private metadata supplement. The already-closed
 runtime/configuration reviews remain valid: exact source/test/config blobs are
 unchanged; the gate ADR differs only by its recorded final-review evidence.
 
