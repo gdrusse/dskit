@@ -1,25 +1,25 @@
-# Active handoff — 2026-10-07: production Stage-0 evidence, training still gated
+# Active handoff — 2026-10-07: production prerequisites continue, 0/216 fits
 
-The owner-authorized 216-attempt development cycle remains incomplete: **0 fits started**.
-Read the [Stage-0 memo](../children/index_options/docs/memos/2026-10-07-production-development-stage0.md)
-and its aggregate manifest. Broader owned-history leads, 7,172 unresolved date omissions,
-action/vintage/availability evidence and historical universe limits remain open.
-A cached-panel rehearsal includes the COVID development window with purged 40-date
-monitors; it is not the frozen production manifest. Historical assets and dependencies
-were copied to durable local storage; one old PatchTST package restores in a fresh
-process with original checkout/shared-venv opens denied. The owner delegated the
-backup location: the retained/audit bundle now has a checksum-verified second copy
-under the owned data root's backups/index_options/production-development-20261007.
-Its seven-row recovery also denied primary retained/audit opens. This is same-disk,
-limited-scope recovery; other studies and full linked sources remain outside it.
-Read the memo's second-copy follow-up for hashes and recovery instructions.
-Preserve all originals; no cleanup is authorized by this evidence.
-No new champion/reserve, calibrated radius, MIO, holdout access or production qualification.
-ADR-0248/0249 add explicit bounded Parquet projection and split-inventory validation,
-with focused synthetic tests. Candidate fd8dffb8 closed two independent lenses with
-zero in-scope Critical/Major; the shared editorial Minor is corrected. Legacy configs remain unprotected
-unless explicitly opted in. The existing development authorization persists; close
-Stage-0 gates before fits.
+The owner-authorized production development cycle remains active. Read the
+[Stage-0 memo](../children/index_options/docs/memos/2026-10-07-production-development-stage0.md)
+and aggregate report. All 833,637 configured-source dates and 455,149 cached
+forecast identities reconcile: 2,425 action-path plus 4,747 reference exclusions
+explain the previously unresolved 7,172 dates, zero residual. Owned-history
+inventory and economic correctness remain separate open requirements.
+
+ADR-0250 JsonSQLProjection candidate d76dcf1c closed two independent final lenses
+with zero Critical/Major; 77 focused author tests, 110 independent integration.
+Reviewed identities and actual report hashes are in the aggregate report.
+Source-specific recipes require separate review; private Yahoo v1 failed
+action-type/multiplicity checks before real use. V2 is synthetic-tested,
+awaiting source review. Legacy readers remain unchanged.
+
+Continue bounded older AMZN/MSFT history and auxiliary-source inspection,
+split/vintage/volume validation, explicit retrospective-cohort and research-clock
+assumptions, then freeze purged COVID/development folds and candidate dependency
+recovery. Same-disk second-copy backup and seven-row historical restore passed;
+preserve all originals. Training remains gated; all 216 attempts remain.
+No champion, calibrated radius, protected 2026 access, MIO or production qualification.
 
 # Active handoff — 2026-10-07: crypto_trading child + additive dskit packs, merged to main
 

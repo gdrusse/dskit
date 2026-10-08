@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "status": "stage0_blocked_not_production_qualified",
+  "status": "stage0_in_progress_not_production_qualified",
   "base_commit": "80a194d526956b24745afe61024d4041b019d4b6",
   "integrated_main_before_evidence": "aa44819c686fc2734f1478b62e1184960f44b28e",
   "fit_budget": {
@@ -35,10 +35,12 @@
     "complete_owned_history_inventory": false
   },
   "omission_diagnostic": {
-    "requires_feature_action_or_reference_reconciliation": 7172,
+    "requires_feature_action_or_reference_reconciliation": 0,
     "nominal_expiry_not_session_exact_dte_rule": 362657,
     "nominal_31_day_target_reaches_2026": 8646,
-    "missing_price_session_on_outcome_path": 13
+    "missing_price_session_on_outcome_path": 13,
+    "corporate_action_path": 2425,
+    "missing_reference": 4747
   },
   "split_metadata": {
     "declared_nonunit_events": 103,
@@ -324,10 +326,10 @@
     "empirical_reference_is_qualified_fallback": false
   },
   "gates": {
-    "H1": "open: older owned history, complete census and 7172 date exclusions unresolved",
+    "H1": "open: complete owned census and older-history admission; configured-source/cached-panel coverage fully reconciled, zero residual",
     "C1": "date-only rehearsal passed; production availability/admission/folds not frozen",
     "S1": "open: action completeness, consistent vintages, feature units and publication clocks",
-    "R1": "second copy and seven-row historical recovery verified; full linked source/all-study package restoration remains open",
+    "R1": "second copy and seven-row historical recovery verified; retain originals; new candidate actual dependency closure/recovery remains before fitting",
     "U1": "synthetic representation checks passed; empirical calibration/validation unavailable"
   },
   "restrictions_observed": [
@@ -635,5 +637,41 @@
     ],
     "crossed_bands_refused": true,
     "empirical_calibration": false
+  },
+  "json_projection_review": {
+    "candidate": "d76dcf1c485842613180ff73c8077401a716c786",
+    "base": "38d2fba501c5b61087fa8b26a228061c3008b9d7",
+    "status": "two independent final lenses closed",
+    "counts": {
+      "Critical": 0,
+      "Major": 0,
+      "Minor": 0,
+      "Nit": 0
+    },
+    "reviewers": [
+      "/root/coverage_reconciliation_review",
+      "/root/stage0_execution_checkpoint"
+    ],
+    "reports_sha256": {
+      "json-projection-correctness-r2.txt": "7b23bed6ce8acd0267b6ba909e8dc7b6c148fbeda01f907f7e02f9ad5ecd80de",
+      "json-projection-integration-r2.txt": "f31009125dd74cb3da4bc07be4ce7ad731d6befe339fe5644d58384679daaaa2"
+    },
+    "locked_sha256": {
+      "dskit/onboarding/libs/localtables.py": "36643f93b3df9a68b9f5d7a878ec1ebe2e7ac72abb44ab6d4b6449390e1f6db4",
+      "tests/onboarding/test_localtables.py": "19459cf6eb2485bc33ca2289569f42fdb490e75784a9dec2a09b3c707710ed0d",
+      "docs/architecture/decision-log.md": "812065b1ffc4d7d1acfb89cbcb5bf07273f868ab80ee64c5af706d38b4ea6741",
+      "dskit/onboarding/README.md": "e38e77a0c17a797ebd4e94cc8c8a4d2b9c750ba8a95b4e05cd9a8552ffbead29",
+      "dskit/onboarding/AGENTS.md": "b5d4c9e055415abae6024bd08bf2f051f67386b27eac0ea9484d40d0e22f6a06",
+      "dskit/onboarding/CLAUDE.md": "a59cfc33611f6be93de9f850d33a3a8d7e80e1117e76dffc1d112684ee3c3f9d"
+    },
+    "author_tests": 77,
+    "independent_integration_tests": 110,
+    "scope": "generic helper only; source recipes separately reviewed; no real fits"
+  },
+  "continuation_evidence": {
+    "h1-exact-coverage-20261007-r2-receipt.json": "957b5d55581385e47480399d41fb8219c4d7d8a492a29882b8598637147a2ce8",
+    "h1-exact-coverage-20261007-r2-verification.json": "178d494f89cb2c04f020a32216a255df459be37d6b445da9647476f68975bc92",
+    "json-projection-correctness-r2.txt": "7b23bed6ce8acd0267b6ba909e8dc7b6c148fbeda01f907f7e02f9ad5ecd80de",
+    "json-projection-integration-r2.txt": "f31009125dd74cb3da4bc07be4ce7ad731d6befe339fe5644d58384679daaaa2"
   }
 }

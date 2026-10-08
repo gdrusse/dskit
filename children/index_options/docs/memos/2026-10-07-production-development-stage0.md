@@ -569,3 +569,14 @@ boundary excludes them before action accounting. No protected outcomes were
 inspected. The retained h1-exact-coverage-20261007-r2 receipt and per-date ledger
 pin this reproduction; older-source admission and economic correctness remain
 separate from historical coverage arithmetic.
+
+
+## Bounded helper review closed; development continues
+
+Candidate d76dcf1c485842613180ff73c8077401a716c786 closes ADR-0250 with two independent final lenses: /root/coverage_reconciliation_review (correctness/authority) and /root/stage0_execution_checkpoint (tests/integration), both GPT-6, each zero Critical/Major/Minor/Nit. The first independently passed 40 focused cases plus 40 additional probes; the second passed 110 focused cases plus 8 SQL-denial and 11 connection-closure probes. Author checks remain 77 focused tests and Ruff. Complete actual reports are in the private audit directory; the aggregate report pins their SHA256 and reviewed code/test/contract/document identities, rechecked unchanged before this evidence-only append.
+
+Stopped candidate 59d35c6 remains historical failure evidence: /root/stage0_correctness_r1 proved one Major temporary-file-spill defect, corrected in d76dcf1c. Its actual report was delivered in that reviewer conversation; a failed file-write attempt did not create the proposed report file. The correction and fresh reviews are retained locally. No fit was started.
+
+The integration reviewer separately demonstrated one Major in private Yahoo audit recipe v1: original JSON booleans lost type identity and duplicate action timestamps could collapse before validation. This diagnostic recipe defect is not evidence of corrupt owned records or a helper defect. No real audit used v1. It remains preserved; v2 has 17 synthetic negative checks and awaits independent source-policy approval. Full source admission, volume semantics and folds remain open.
+
+Next authorized work: bounded older-history and auxiliary projections, actual split/vintage checks, revised invariant volume configuration, frozen conservative research clocks and purged folds, candidate dependency recovery, then counted pilots/Stages 1-4. All 216 fit attempts remain. No production qualification, calibrated radius, MIO or strategy result is claimed.
