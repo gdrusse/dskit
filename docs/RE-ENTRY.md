@@ -1,3 +1,26 @@
+# Active handoff — 2026-10-07 evening: production pilot complete, recovery pending
+
+Continue the owner-authorized bounded forecasting cycle in isolated
+/home/russell/dskit-production-development-20261007; preserve other sessions.
+Candidate4f9e1084 closed both execution lenses zeroCritical/Major. Panel111011
+rows/85qualified symbols, source reconciliation residualzero;308 symbols
+quarantined for missing split inventory. Actual incremental backup/recovery passed.
+
+Current private audit: /home/russell/data/index_options/production-development-audit-20261007/.
+Read production-execution-lock.json, production-execution-plan-v2.json,
+production-fit-attempt-ledger.jsonl and features-pilot-v2-launch.json before
+starting any job. Pilot first launch refused deterministic CUDA setup before
+fitting; replacement JSON production-feature-selection-v2.json uses a distinct
+output root and CUBLAS_WORKSPACE_CONFIG=:4096:8. Never duplicate an active job.
+Pilot-v2 completed; check immutable output/status, then recover/check pilot
+before continuing the existing feature queue.
+
+Current protocol supersedes oldCOVID tuning:2021-2022 development,HPO;2023
+confirmation;nine2024-2025 fresh expanding-history refits. No2026access/scoring,
+MIO,providers,backtests,shared upgrades,full suite or budget expansion.
+Save every checkpoint; finish evaluation memo, recovery, reviewed wrap/push.
+See current Stage-0 memo and aggregate report; older handoffs follow unchanged.
+
 # Active handoff — 2026-10-07: production prerequisites continue, 0/216 fits
 
 The owner-authorized production development cycle remains active. Read the

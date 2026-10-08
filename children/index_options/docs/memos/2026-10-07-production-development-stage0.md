@@ -1,3 +1,59 @@
+## Current execution update — 2026-10-07 evening
+
+The corrected data and chronological JSON configuration are ready; the first
+actual training pilot completed:55epochs,47.421seconds,7,247forecasts, bestepoch35. New checkpoint recovery is pending. This is research execution, not production
+qualification. The original pilot launch refused a missing deterministic CUDA
+environment setting before fitting; its immutable refusal is retained. The
+replacement uses CUBLAS_WORKSPACE_CONFIG=:4096:8 with identical model/data
+settings and a distinct output identity. The attempt ledger conservatively
+charges both launches against216.
+
+The owned-source reconciliation now covers838,326 selected dates:111,011
+admitted,632,255 missing-action-inventory quarantine,89,729 non-session expiry,
+2,442 action-span,1,870 target-reaching2026,1,006 missing-reference and13
+incomplete-path exclusions. Residual:zero. This includes4,689 additional
+pre2016 AMZN dates; usable AMZN raw history starts1997-05-15. Other owned
+history was inventoried, including older MSFT, which cannot be admitted without
+its missing split inventory. The admitted85-symbol retrospective cohort is
+not the intended393-symbol universe and is not a point-in-time membership proof.
+
+ADR0251 uses existing relative-volume configuration; ADR0252 fixes one
+price-endpoint exclusion.104 focused tests and two independent prerequisite
+reviews closed those changes. ADR0253 freezes three eight-month2021-2022
+development windows, three four-month2023 confirmation windows and nine existing
+2024-2025 evaluations. Retraining starts fresh weights with all eligible settled
+earlier history, including COVID. Forty mature monitoring origins remain
+separate from scored outcomes. Development outcomes settling during2023 are
+purged before tuning; the analogous confirmation/evaluation seam is frozen.
+No2026 observations or scores are permitted.
+
+Execution candidate4f9e1084 closed independent correctness and integration
+lenses with zeroCritical/Major/Minor/Nit. The former checked75 no-fit cells;
+the latter ran13 focused checks including the460-file manifest and independently
+tested training-only imputation. The exact capacity grid retains540 no-fit
+cells acrossfive feature bundles. Only compactPatchTST32 is feasible throughout
+allthree development folds. Other widths/families remain explicit refusals;
+a smaller head or different CNN fusion is not silently substituted.
+
+The incremental second copy contains2,055 files (1,347,348,480bytes) and restored
+the entire111,011-row,175-column panel exactly in a fresh process with original
+paths denied. Its SHA256 is830c68f00c38a4434058665e53efa819fc351414085c427ef2aff7691c29e6fa.
+It reuses the previously recovered environment. This is same-disk recovery,
+not off-device disaster protection; preserve originals. New fit checkpoints
+will receive their own verified second copy.
+
+Private evidence lives under
+/home/russell/data/index_options/production-development-audit-20261007/.
+The running JSON is production-feature-selection-v2.json; original tracked
+JSON remains the retained first-launch identity. The current model inputs are
+the onboarded production-model-inputs-20261007-v2 snapshot. Review outputs,
+candidate lock, attempt ledger and conformance receipt are retained there.
+Earlier sections below are historical evidence; this update supersedes their
+pending-source/COVID-tuning descriptions. The final evaluation memo will follow
+the completed bounded stages or their explicit statistical stopping gate.
+
+---
+
 # Production development: Stage-0 evidence and unresolved gates
 
 ## TL;DR

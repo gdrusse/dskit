@@ -43,8 +43,6 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
-| A1101 | acquire | register-source production-vix-envelopes-20261007 | 2026-10-08T01:20:43+00:00 | --root /home/russell/data/index_options/ob --source  --stream  --mode | 1b32e488530b2dd6e1eab3c0aba41e3d570b2249806e976c027a13201d735bfc | /home/russell/data/index_options/ob | connector=localblobs |
-| A1102 | acquire | backfill production-vix-envelopes-20261007/files | 2026-10-08T01:20:43+00:00 | --root /home/russell/data/index_options/ob --source production-vix-envelopes-20261007 --stream files --mode backfill | 30c617eea35a347eeec6cb9d5c9e5254cd71e119f18ed25fc7383acb4f520c73 | /home/russell/data/index_options/ob |  |
 | A1103 | acquire | register-source production-vix-20261007 | 2026-10-08T01:20:43+00:00 | --root /home/russell/data/index_options/ob --source  --stream  --mode | 374058064c877b37f3fef9bad2d96ead653e562c16b34ff96829fd16be976bd2 | /home/russell/data/index_options/ob | connector=localtables |
 | A1104 | acquire | backfill production-vix-20261007/index_daily | 2026-10-08T01:20:44+00:00 | --root /home/russell/data/index_options/ob --source production-vix-20261007 --stream index_daily --mode backfill | aedb379cefb190a2246b6678a9de21e78f8e41ca7bf30502019b5b716eabe1fa | /home/russell/data/index_options/ob |  |
 | A1105 | acquire | register-source production-history-audit-20261007 | 2026-10-08T01:29:21+00:00 | --root /home/russell/data/index_options/ob --source  --stream  --mode | 3bf56c8f64f7db9ae79656572193f1245fe490337c1d96b234edc8a920b45e17 | /home/russell/data/index_options/ob | connector=localblobs |
@@ -53,6 +51,8 @@ Display only: `actions.csv` remains the complete, append-only journal.
 | A1108 | acquire | backfill production-older-bars-20261007/files | 2026-10-08T01:29:22+00:00 | --root /home/russell/data/index_options/ob --source production-older-bars-20261007 --stream files --mode backfill | ce5dd42689e8c4847e69d75ccd71e016705f0b0724d1c799a96801afaa9e2203 | /home/russell/data/index_options/ob |  |
 | A1109 | acquire | register-source production-older-bars-20261007-v2 | 2026-10-08T01:30:03+00:00 | --root /home/russell/data/index_options/ob --source  --stream  --mode | 13024dfffc62a5d1a2e79253ecca90e825647cab0a439e3acdb0230c6faaf1d9 | /home/russell/data/index_options/ob | connector=localblobs |
 | A1110 | acquire | backfill production-older-bars-20261007-v2/files | 2026-10-08T01:30:03+00:00 | --root /home/russell/data/index_options/ob --source production-older-bars-20261007-v2 --stream files --mode backfill | f456ba9df1ef668a02209d8e657d8b8d13d04312bd8af9eb4b70fc2b6a68182f | /home/russell/data/index_options/ob |  |
+| A1111 | execute | Production prerequisites closed and counted pilot launched | 2026-10-08T02:36:09+00:00 | ADR0251-0253;candidate4f9e1084;production-execution-plan-v2.json | 111011-row panel;exact recovery;two clean execution reviews;pilot-v2 |  | Pre-fit CUDA environment refusal retained;no2026;85 source-qualified symbols;216 ceiling unchanged;not production qualified |
+| A1112 | execute | Production pilot completed | 2026-10-08T02:37:31+00:00 | production-feature-selection-v2.json;seed11;developmentfold1 | bestcheckpoint35;55epochs;7247pairedforecasts |  | 47.421s fit;finitegradients;10943parameters;backup inference verification next;no2026 |
 
 ## Path to Production
 

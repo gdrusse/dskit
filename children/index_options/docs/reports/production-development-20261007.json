@@ -1,15 +1,19 @@
 {
   "format_version": 1,
-  "status": "stage0_in_progress_not_production_qualified",
+  "status": "pilot_completed_recovery_pending_not_production_qualified",
   "base_commit": "80a194d526956b24745afe61024d4041b019d4b6",
   "integrated_main_before_evidence": "aa44819c686fc2734f1478b62e1184960f44b28e",
   "fit_budget": {
     "ceiling": 216,
-    "attempted": 0,
-    "completed": 0,
+    "attempted": 1,
+    "completed": 1,
     "failed": 0,
-    "remaining": 216,
-    "pilots_and_stages_1_to_4": "not_run"
+    "remaining": 215,
+    "pilots_and_stages_1_to_4": "pilot-v2 completed; new checkpoint recovery pending; original pre-fit refusal retained",
+    "charged_upper_bound": 2,
+    "reserved_running": 0,
+    "pre_fit_refusals": 1,
+    "remaining_conservative": 214
   },
   "source_summary": {
     "tickers": 393,
@@ -673,5 +677,105 @@
     "h1-exact-coverage-20261007-r2-verification.json": "178d494f89cb2c04f020a32216a255df459be37d6b445da9647476f68975bc92",
     "json-projection-correctness-r2.txt": "7b23bed6ce8acd0267b6ba909e8dc7b6c148fbeda01f907f7e02f9ad5ecd80de",
     "json-projection-integration-r2.txt": "f31009125dd74cb3da4bc07be4ce7ad731d6befe339fe5644d58384679daaaa2"
+  },
+  "current_execution": {
+    "candidate": "4f9e1084f17e53547108ec8f4785e5e84435674e",
+    "protocol": "ADR0253:2021-2022 development,2023 confirmation,nine2024-2025 expanding-history refits; no2026",
+    "panel": {
+      "rows": 111011,
+      "symbols": 85,
+      "intended_symbols": 393,
+      "quarantined_symbols": 308,
+      "quote_range": [
+        "1997-06-17",
+        "2025-11-28"
+      ],
+      "settlement_range": [
+        "1997-07-18",
+        "2025-12-29"
+      ],
+      "sha256": "d770fa8a3c34b08ebb738b84411f7e7f7bfc33d62effbc9aa7f66faa60d41bc8"
+    },
+    "source_reconciliation": {
+      "ledger_sha256": "f688e37be8b0e97d464a8e8036a18804f81503ad894c16552ac59a1d2e1f7c8e",
+      "counts": {
+        "missing_reference": 1006,
+        "nominal_expiry_not_session_exact_dte_rule": 89729,
+        "admitted_panel_v2": 111011,
+        "corporate_action_path": 2442,
+        "nominal_31_day_target_reaches_2026": 1870,
+        "quarantined_unknown_action_inventory": 632255,
+        "missing_price_session_on_outcome_path": 13
+      },
+      "selected_source_dates": 838326,
+      "original_configured_dates": 833637,
+      "qualified_symbols": 85,
+      "quarantined_symbols": 308,
+      "panel_rows": 111011,
+      "residual": 0
+    },
+    "execution_lock": {
+      "candidate": "4f9e1084f17e53547108ec8f4785e5e84435674e",
+      "prerequisite_candidate": "5392464b23ebf16b0652d18ef4b8eb3550b9ac90",
+      "prerequisite_runtime_and_behavior_tests_unchanged": true,
+      "new_manifest_test_scope": "test_configs.py exact manifest adds11JSONs449to460; concrete execution integration lens owns this change",
+      "source_pins_verified": 66,
+      "feature_config_sha256": "b8e4167ac2ef31600579a44901e81bbb34f7121115edab3da08a80719efffbd0",
+      "fit_attempt_ceiling": 216,
+      "fits_started": 0,
+      "reviews": {
+        "execution-boundary-correctness-r2.txt": "5410c1b4388f4b5fc9d0919e0b0130cf1cce08dc00bc2fb4ea9bece52599b2ec",
+        "execution-boundary-integration-r2.txt": "f87df244380536ec3c77a0d37d7ccfceb53ed5e4f8ab59cf5bcf3dbe033caa13"
+      },
+      "unresolved_critical": 0,
+      "unresolved_major": 0,
+      "unresolved_minor": 0,
+      "unresolved_nit": 0,
+      "backup": {
+        "directory": "/home/russell/data/backups/index_options/production-development-20261007/incremental-4f9e1084",
+        "commit": "4f9e1084f17e53547108ec8f4785e5e84435674e",
+        "archive_sha256": "830c68f00c38a4434058665e53efa819fc351414085c427ef2aff7691c29e6fa",
+        "archive_bytes": 1347348480,
+        "files": 2055,
+        "exact_rebuilt_rows": 111011,
+        "exact_rebuilt_columns": 175,
+        "backup_gate_released": true,
+        "fits_started": 0,
+        "same_physical_disk": true,
+        "originals_preserved": true,
+        "written_after_archive_cutoff": true,
+        "receipts": {
+          "execution-lock.json": "372f000fd690ed4e60be37dda1e74ef76ffbd8cb48dac283f6a2313291f9de58",
+          "backup-verification.json": "4b454e83d1694998a2a900a69b9c51dae69ecaf25ffe8872f5039c04d4ff481a",
+          "recovery-verification.json": "a9975fbc467aee110db168bf41d4ed0f8db011114df51c0d845e789212520bfb",
+          "members.json": "0045de9da87680d9a78c05da16578eae565dc3f65710a271570c95a5113df4ed"
+        }
+      },
+      "state": "closed_for_bounded_execution"
+    },
+    "pilot_configuration": {
+      "changes": [
+        "output",
+        "study.output"
+      ],
+      "training_unchanged": true,
+      "source_pins_and_dependencies_unchanged": true,
+      "all_bands_and_capacity_unchanged": true,
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "encoder_validation": "passed",
+      "prior_attempt": "deterministic CUDA environment refusal before fit; retained immutable skipped artifact",
+      "config_sha256": "b490edec5b59f31fb64f9ad77b6edeb4f621bd669c83680039a82cce49c231e5",
+      "experiment_identity": "2dcea40ee7c21a3b2614b180e27653e6a6fbb4e9fa25907467f1d61c0bd145b9"
+    },
+    "capacity_disposition": "Only compactPatchTST32 is complete across allthree development folds; preserve all540 no-fit capacity cells acrossfivefeaturearms; no learnedreserve qualifies yet",
+    "historical_sections_below": "Earlier source_summary/path_inventory/omission_diagnostic describe prior audit states; this current_execution record supersedes them for present inputs.",
+    "pilot_result": {
+      "fit_seconds": 47.421423024032265,
+      "epochs": 55,
+      "best_epoch": 35,
+      "parameters": 10943,
+      "forecasts": 7247,
+      "checkpoint": "5c54e0f1d2ec60c8d30db2aed42bbe6c98d4683f87c4324be70296efcaa602d0"
+    }
   }
 }
