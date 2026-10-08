@@ -1,3 +1,35 @@
+## Stage1 result and HPO dispatch — 2026-10-07 night
+
+All15feature fits succeeded. Each arm has21,297 identical forecast identities
+overthree development windows. Weighted-CRPS skill versus the paired empirical
+reference:base -0.736555%;withoutmomentum -0.386357%;withoutliquidity -0.530675%;
+withoutdirectionalvolatility -0.596079%;withoutlongvolatility -0.710237%.
+The frozen selection rule chooses withoutmomentum(40inputs). All five bundles
+still lose to the reference; this is an HPO input, not a performance pass.
+An independent reviewer verified all15cells, checkpoint identities and totals.
+
+Fifteen new HPO fits are running across five remaining learning-rate/fusion-
+dropout settings. The default setting reuses the selected feature arm's three
+verified fits without rewriting identities. Backbone dropout remains fixed.
+The full108-cell family/width grid remains visible:30incomplete trials are
+ineligible; no CNN or VanillaTransformer fit is substituted or silently resized.
+
+Stage1's second copy has7,947files/82,749,440bytes, archive SHA256
+1a1ba8e00b6be00191824981933d3977fb9dcbe56cab8b05f6e7a93f4a49cddc.
+All15checkpoint/completion pairs and1,215score shards verified, and a lastfold
+checkpoint reproduced seven forecasts/scores in isolated recovery. A source
+registration whose subsecond as_of exceeded the acquisition clock's precision
+refused before acquisition; it was retained and retired. Its replacement uses
+the actual completed-queue time. No model/data setting changed.
+
+Before seeing HPO or confirmation scores, the existing seed-reliability stop
+was made explicit:allthree prespecified seeds must have strictlypositive
+aggregate paired weighted skill over complete confirmation folds to proceed.
+Two independent scoped reviews closed this rule at87e34105 with zeroCritical/
+Major. It is a conservative development gate, not confidence or qualification.
+
+---
+
 ## Current execution update — 2026-10-07 evening
 
 The corrected data and chronological JSON configuration are ready; the first

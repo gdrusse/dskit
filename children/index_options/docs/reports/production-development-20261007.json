@@ -1,19 +1,20 @@
 {
   "format_version": 1,
-  "status": "pilot_completed_recovery_pending_not_production_qualified",
+  "status": "stage1_complete_hpo_running_not_production_qualified",
   "base_commit": "80a194d526956b24745afe61024d4041b019d4b6",
   "integrated_main_before_evidence": "aa44819c686fc2734f1478b62e1184960f44b28e",
   "fit_budget": {
     "ceiling": 216,
-    "attempted": 1,
-    "completed": 1,
+    "attempted": 15,
+    "completed": 15,
     "failed": 0,
-    "remaining": 215,
-    "pilots_and_stages_1_to_4": "pilot-v2 completed; new checkpoint recovery pending; original pre-fit refusal retained",
-    "charged_upper_bound": 2,
-    "reserved_running": 0,
+    "remaining": 201,
+    "pilots_and_stages_1_to_4": "15Stage1 complete;15newHPO fits reserved;3defaulttrial cells verified reuse; activeattempt count reconciled on batch completion",
+    "charged_upper_bound": 31,
+    "reserved_running": 15,
     "pre_fit_refusals": 1,
-    "remaining_conservative": 214
+    "remaining_conservative": 185,
+    "counts_as_of": "beforeHPO start; see private append-only ledger for currentprogress"
   },
   "source_summary": {
     "tickers": 393,
@@ -776,6 +777,432 @@
       "parameters": 10943,
       "forecasts": 7247,
       "checkpoint": "5c54e0f1d2ec60c8d30db2aed42bbe6c98d4683f87c4324be70296efcaa602d0"
+    },
+    "feature_results": {
+      "selected_arm": "minus_momentum",
+      "rows_per_complete_arm": 21297,
+      "complete_fits": 15,
+      "failed_cells": [],
+      "arms": [
+        {
+          "arm": "base",
+          "features": 42,
+          "complete": true,
+          "rows": 21297,
+          "sums": {
+            "model_crps": 13775.87800030691,
+            "baseline_crps": 13701.921883911902,
+            "model_tail_crps": 7897.89842024085,
+            "baseline_tail_crps": 7813.382380598949,
+            "model_weighted_crps": 21673.77642054776,
+            "baseline_weighted_crps": 21515.30426451085
+          },
+          "objective_ratio": 1.0073655549597924,
+          "skill_pct": -0.7365554959792409,
+          "folds": [
+            {
+              "fold": 1,
+              "rows": 7247,
+              "sums": {
+                "model_crps": 4190.225426762994,
+                "baseline_crps": 4211.321689242376,
+                "model_tail_crps": 2345.8478546888705,
+                "baseline_tail_crps": 2342.1991781424067,
+                "model_weighted_crps": 6536.073281451865,
+                "baseline_weighted_crps": 6553.520867384782
+              },
+              "skill_pct": 0.2662322480691093,
+              "forecast_identity": "a85bd05f741cbe921efd8ad99597f7d51b3626ea68b771e47005c94d34c37c96"
+            },
+            {
+              "fold": 2,
+              "rows": 7343,
+              "sums": {
+                "model_crps": 5361.658924754957,
+                "baseline_crps": 5304.2058055924335,
+                "model_tail_crps": 3120.335395251249,
+                "baseline_tail_crps": 3079.6204099587453,
+                "model_weighted_crps": 8481.994320006206,
+                "baseline_weighted_crps": 8383.82621555118
+              },
+              "skill_pct": -1.170922463456292,
+              "forecast_identity": "6109ea09789c7c72d0d34ed82cfac7ae1683958fafc75ee8865f36c16b1e2433"
+            },
+            {
+              "fold": 3,
+              "rows": 6707,
+              "sums": {
+                "model_crps": 4223.993648788959,
+                "baseline_crps": 4186.394389077094,
+                "model_tail_crps": 2431.7151703007316,
+                "baseline_tail_crps": 2391.5627924977957,
+                "model_weighted_crps": 6655.70881908969,
+                "baseline_weighted_crps": 6577.9571815748905
+              },
+              "skill_pct": -1.1820027915746323,
+              "forecast_identity": "9404af96714379f8c585b46d687410c44a3342a2256656694974ae04493a6b95"
+            }
+          ]
+        },
+        {
+          "arm": "minus_momentum",
+          "features": 40,
+          "complete": true,
+          "rows": 21297,
+          "sums": {
+            "model_crps": 13728.871413566247,
+            "baseline_crps": 13701.921883911902,
+            "model_tail_crps": 7869.558761104776,
+            "baseline_tail_crps": 7813.382380598949,
+            "model_weighted_crps": 21598.430174671023,
+            "baseline_weighted_crps": 21515.30426451085
+          },
+          "objective_ratio": 1.0038635712113673,
+          "skill_pct": -0.3863571211367267,
+          "folds": [
+            {
+              "fold": 1,
+              "rows": 7247,
+              "sums": {
+                "model_crps": 4174.2753717989435,
+                "baseline_crps": 4211.321689242376,
+                "model_tail_crps": 2336.367500149312,
+                "baseline_tail_crps": 2342.1991781424067,
+                "model_weighted_crps": 6510.642871948256,
+                "baseline_weighted_crps": 6553.520867384782
+              },
+              "skill_pct": 0.6542741879394853,
+              "forecast_identity": "a85bd05f741cbe921efd8ad99597f7d51b3626ea68b771e47005c94d34c37c96"
+            },
+            {
+              "fold": 2,
+              "rows": 7343,
+              "sums": {
+                "model_crps": 5333.560515762301,
+                "baseline_crps": 5304.2058055924335,
+                "model_tail_crps": 3106.696420236667,
+                "baseline_tail_crps": 3079.6204099587453,
+                "model_weighted_crps": 8440.256935998968,
+                "baseline_weighted_crps": 8383.82621555118
+              },
+              "skill_pct": -0.6730902931064486,
+              "forecast_identity": "6109ea09789c7c72d0d34ed82cfac7ae1683958fafc75ee8865f36c16b1e2433"
+            },
+            {
+              "fold": 3,
+              "rows": 6707,
+              "sums": {
+                "model_crps": 4221.035526005002,
+                "baseline_crps": 4186.394389077094,
+                "model_tail_crps": 2426.494840718797,
+                "baseline_tail_crps": 2391.5627924977957,
+                "model_weighted_crps": 6647.530366723799,
+                "baseline_weighted_crps": 6577.9571815748905
+              },
+              "skill_pct": -1.0576716027246968,
+              "forecast_identity": "9404af96714379f8c585b46d687410c44a3342a2256656694974ae04493a6b95"
+            }
+          ]
+        },
+        {
+          "arm": "minus_liquidity",
+          "features": 38,
+          "complete": true,
+          "rows": 21297,
+          "sums": {
+            "model_crps": 13744.68762848197,
+            "baseline_crps": 13701.921883911902,
+            "model_tail_crps": 7884.793040826911,
+            "baseline_tail_crps": 7813.382380598949,
+            "model_weighted_crps": 21629.480669308883,
+            "baseline_weighted_crps": 21515.30426451085
+          },
+          "objective_ratio": 1.005306752969623,
+          "skill_pct": -0.5306752969622908,
+          "folds": [
+            {
+              "fold": 1,
+              "rows": 7247,
+              "sums": {
+                "model_crps": 4213.008919192031,
+                "baseline_crps": 4211.321689242376,
+                "model_tail_crps": 2362.841956846568,
+                "baseline_tail_crps": 2342.1991781424067,
+                "model_weighted_crps": 6575.8508760385985,
+                "baseline_weighted_crps": 6553.520867384782
+              },
+              "skill_pct": -0.3407330060539948,
+              "forecast_identity": "a85bd05f741cbe921efd8ad99597f7d51b3626ea68b771e47005c94d34c37c96"
+            },
+            {
+              "fold": 2,
+              "rows": 7343,
+              "sums": {
+                "model_crps": 5308.8082452983745,
+                "baseline_crps": 5304.2058055924335,
+                "model_tail_crps": 3095.7542581757766,
+                "baseline_tail_crps": 3079.6204099587453,
+                "model_weighted_crps": 8404.56250347415,
+                "baseline_weighted_crps": 8383.82621555118
+              },
+              "skill_pct": -0.24733680529429591,
+              "forecast_identity": "6109ea09789c7c72d0d34ed82cfac7ae1683958fafc75ee8865f36c16b1e2433"
+            },
+            {
+              "fold": 3,
+              "rows": 6707,
+              "sums": {
+                "model_crps": 4222.870463991566,
+                "baseline_crps": 4186.394389077094,
+                "model_tail_crps": 2426.196825804567,
+                "baseline_tail_crps": 2391.5627924977957,
+                "model_weighted_crps": 6649.067289796133,
+                "baseline_weighted_crps": 6577.9571815748905
+              },
+              "skill_pct": -1.08103635001493,
+              "forecast_identity": "9404af96714379f8c585b46d687410c44a3342a2256656694974ae04493a6b95"
+            }
+          ]
+        },
+        {
+          "arm": "minus_directional",
+          "features": 38,
+          "complete": true,
+          "rows": 21297,
+          "sums": {
+            "model_crps": 13752.281880569206,
+            "baseline_crps": 13701.921883911902,
+            "model_tail_crps": 7891.270674841129,
+            "baseline_tail_crps": 7813.382380598949,
+            "model_weighted_crps": 21643.552555410333,
+            "baseline_weighted_crps": 21515.30426451085
+          },
+          "objective_ratio": 1.0059607937365322,
+          "skill_pct": -0.5960793736532244,
+          "folds": [
+            {
+              "fold": 1,
+              "rows": 7247,
+              "sums": {
+                "model_crps": 4197.808855808382,
+                "baseline_crps": 4211.321689242376,
+                "model_tail_crps": 2357.707918946659,
+                "baseline_tail_crps": 2342.1991781424067,
+                "model_weighted_crps": 6555.51677475504,
+                "baseline_weighted_crps": 6553.520867384782
+              },
+              "skill_pct": -0.030455497291415057,
+              "forecast_identity": "a85bd05f741cbe921efd8ad99597f7d51b3626ea68b771e47005c94d34c37c96"
+            },
+            {
+              "fold": 2,
+              "rows": 7343,
+              "sums": {
+                "model_crps": 5329.473946037385,
+                "baseline_crps": 5304.2058055924335,
+                "model_tail_crps": 3105.6606883614286,
+                "baseline_tail_crps": 3079.6204099587453,
+                "model_weighted_crps": 8435.134634398813,
+                "baseline_weighted_crps": 8383.82621555118
+              },
+              "skill_pct": -0.6119928720905721,
+              "forecast_identity": "6109ea09789c7c72d0d34ed82cfac7ae1683958fafc75ee8865f36c16b1e2433"
+            },
+            {
+              "fold": 3,
+              "rows": 6707,
+              "sums": {
+                "model_crps": 4224.99907872344,
+                "baseline_crps": 4186.394389077094,
+                "model_tail_crps": 2427.9020675330407,
+                "baseline_tail_crps": 2391.5627924977957,
+                "model_weighted_crps": 6652.90114625648,
+                "baseline_weighted_crps": 6577.9571815748905
+              },
+              "skill_pct": -1.139319740352085,
+              "forecast_identity": "9404af96714379f8c585b46d687410c44a3342a2256656694974ae04493a6b95"
+            }
+          ]
+        },
+        {
+          "arm": "minus_long_volatility",
+          "features": 40,
+          "complete": true,
+          "rows": 21297,
+          "sums": {
+            "model_crps": 13771.32727291874,
+            "baseline_crps": 13701.921883911902,
+            "model_tail_crps": 7896.786619041841,
+            "baseline_tail_crps": 7813.382380598949,
+            "model_weighted_crps": 21668.11389196058,
+            "baseline_weighted_crps": 21515.30426451085
+          },
+          "objective_ratio": 1.0071023688798948,
+          "skill_pct": -0.7102368879894794,
+          "folds": [
+            {
+              "fold": 1,
+              "rows": 7247,
+              "sums": {
+                "model_crps": 4195.773535898522,
+                "baseline_crps": 4211.321689242376,
+                "model_tail_crps": 2352.8428341014837,
+                "baseline_tail_crps": 2342.1991781424067,
+                "model_weighted_crps": 6548.616370000005,
+                "baseline_weighted_crps": 6553.520867384782
+              },
+              "skill_pct": 0.07483759469181228,
+              "forecast_identity": "a85bd05f741cbe921efd8ad99597f7d51b3626ea68b771e47005c94d34c37c96"
+            },
+            {
+              "fold": 2,
+              "rows": 7343,
+              "sums": {
+                "model_crps": 5351.633195761838,
+                "baseline_crps": 5304.2058055924335,
+                "model_tail_crps": 3115.39162589951,
+                "baseline_tail_crps": 3079.6204099587453,
+                "model_weighted_crps": 8467.024821661347,
+                "baseline_weighted_crps": 8383.82621555118
+              },
+              "skill_pct": -0.9923703565782649,
+              "forecast_identity": "6109ea09789c7c72d0d34ed82cfac7ae1683958fafc75ee8865f36c16b1e2433"
+            },
+            {
+              "fold": 3,
+              "rows": 6707,
+              "sums": {
+                "model_crps": 4223.92054125838,
+                "baseline_crps": 4186.394389077094,
+                "model_tail_crps": 2428.5521590408466,
+                "baseline_tail_crps": 2391.5627924977957,
+                "model_weighted_crps": 6652.472700299226,
+                "baseline_weighted_crps": 6577.9571815748905
+              },
+              "skill_pct": -1.132806381486584,
+              "forecast_identity": "9404af96714379f8c585b46d687410c44a3342a2256656694974ae04493a6b95"
+            }
+          ]
+        }
+      ],
+      "artifact_source": {
+        "source": "production-feature-runs-20261007-v2",
+        "stream": "files",
+        "snapshot": "20261008T025710Z-backfill-08ae27bb",
+        "manifest_sha256": "08ae27bbc5b783b77c5a4821afbb2c577348c7ba00979ae84236080f25f38e38"
+      },
+      "independent_selection_review_sha256": "27860998a2475c1842cf7ce4c49fac263cc984aaa9c3939415bb81cf2f849f2f",
+      "scientific_role": "development selection; not independent calibration or qualification"
+    },
+    "hpo": {
+      "selected_arm": "minus_momentum",
+      "trials": [
+        {
+          "index": 0,
+          "learning_rate": 0.0001,
+          "fusion_dropout": 0.0,
+          "config_sha256": "2105fff80a9c29c3bd2b636ca2b98b60ec9dd3343e62c2f65af082ab06cdacb0",
+          "experiment_identity": "5401b081509e9d427560ea3b5ba7948ca4888376589f33ddc5b3295e6a176e3b",
+          "disposition": "run_three_folds"
+        },
+        {
+          "index": 1,
+          "learning_rate": 0.0001,
+          "fusion_dropout": 0.1,
+          "config_sha256": "4b44f75248efef133dc1c2c35f0841fed897143038c1538dfe4393e17d0f0e0e",
+          "experiment_identity": "1a78ac4882b663fe3625ad732b897d4b6c54889b735478ae83f4fb1e390d2aa4",
+          "disposition": "run_three_folds"
+        },
+        {
+          "index": 2,
+          "learning_rate": 0.0003,
+          "fusion_dropout": 0.0,
+          "config_sha256": "f93a5572269c23f0af8424ffbe23c2376341b30b66bb05db6f432fa7d203232c",
+          "experiment_identity": "a0282d21078e0c71dcca4f49d44d98ffb4acc9433f5511008f6621f945bc6e69",
+          "disposition": "run_three_folds"
+        },
+        {
+          "index": 3,
+          "learning_rate": 0.0003,
+          "fusion_dropout": 0.1,
+          "config_sha256": "e9b0e758ef773aa84407716babc3a15b54da1e8c632e3b75ad71008f3e93c996",
+          "experiment_identity": "2e26bf62ac98ee83e56697263c492e0a05b81233bf5c2e8cc05ce7d650c90e64",
+          "disposition": "verified_original_feature_reuse"
+        },
+        {
+          "index": 4,
+          "learning_rate": 0.001,
+          "fusion_dropout": 0.0,
+          "config_sha256": "5438f066c9ae0b64eb8732c75b2c1e7237177e8f2e80237c9cd5d07c8cb2a0ed",
+          "experiment_identity": "58d2deceee67d6b40595da892f187a8bc711fa2555ef8bc6dca5299c100a6e40",
+          "disposition": "run_three_folds"
+        },
+        {
+          "index": 5,
+          "learning_rate": 0.001,
+          "fusion_dropout": 0.1,
+          "config_sha256": "44005b0246a236e2ff8cf8f7d6a15c799bfa583291255fac12142112abf9b5cc",
+          "experiment_identity": "2ca392c7e8d035e6d69cab881f904f6fc216a3bf0a97c269bcfadf48247b2a4c",
+          "disposition": "run_three_folds"
+        }
+      ],
+      "maximum_new_fit_attempts": 15,
+      "verified_reuse_cells": 3,
+      "infeasible_complete_trials": 30,
+      "explicit_grid_cells": 108,
+      "dropout_scope": "fusion only; backbone dropout unchanged"
+    },
+    "stage1_backup": {
+      "status": "all15 Stage1 fits and1215shards restored and verified",
+      "directory": "/home/russell/data/backups/index_options/production-development-20261007/stage1-complete-2dcea40e",
+      "archive_sha256": "1a1ba8e00b6be00191824981933d3977fb9dcbe56cab8b05f6e7a93f4a49cddc",
+      "archive_bytes": 82749440,
+      "files": 7947,
+      "audit_cutoff": 1791428402.6238606,
+      "onboarded_snapshots_verified": [
+        {
+          "snapshot": "20261008T025710Z-backfill-08ae27bb",
+          "manifest_sha256": "08ae27bbc5b783b77c5a4821afbb2c577348c7ba00979ae84236080f25f38e38"
+        }
+      ],
+      "recovery_receipt_sha256": "a9ece70c0d1443bced3200ba31b877c388a76fce9d35ef29bc54dabe7abf3a69",
+      "representative": {
+        "arm": "minus_momentum",
+        "fold": 3,
+        "rows": 7,
+        "checkpoint": "bccaee8a6a1768e643f789b19578bd750242061d9e0f09fd03dcbbf2f118859c",
+        "best_epochs": [
+          2
+        ],
+        "total_epochs": [
+          22
+        ],
+        "max_errors": {
+          "weights": 2.9412868585154683e-08,
+          "means": 5.960464477539063e-08,
+          "scales": 1.1920928955078125e-07,
+          "crps": 2.030800638763708e-08,
+          "tail_crps": 7.196149010013642e-09
+        }
+      },
+      "originals_preserved": true,
+      "fits_started": 0,
+      "same_physical_disk": true,
+      "capture_released": true
+    },
+    "confirmation_gate": {
+      "candidate": "87e341050372ba6cafe539aff82237ce84df901b",
+      "plan_sha256": "96f2cc0e165601f0923e939cf87b15dbec31e933dd73ade99458690493e45bcc",
+      "reviews": {
+        "confirmation-gate-correctness-final.txt": "08ffadf474d26921e608f3eb4c58efaa93bdc54bcc04c0ddbc37d6a84eae37aa",
+        "confirmation-gate-integration-final.txt": "72773859b7ad0bd8b358b5c87997672b0490e6aa158a3efbcfa51d6fe702b6c8"
+      },
+      "unresolved_critical": 0,
+      "unresolved_major": 0,
+      "unresolved_minor": 0,
+      "unresolved_nit": 0,
+      "scope": "confirmation continuation gate; unchanged feature/HPO/runtime reviews preserved",
+      "stage4_requires": "retained actual complete-paired all3seed positive-skill gate receipt"
     }
   }
 }

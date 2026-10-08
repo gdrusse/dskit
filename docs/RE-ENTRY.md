@@ -1,3 +1,33 @@
+# Active handoff — 2026-10-07 night: Stage1 complete, HPO running
+
+Use WSL2 and /home/russell/dskit-production-development-20261007 only.
+Read private audit production-fit-attempt-ledger.jsonl and hpo-batch-v1-launch.json
+before dispatching any job; PID3005310 runs the five remaining HPO JSONs serially.
+Inspect process start identity, batch/per-trial logs and queue states. Never
+duplicate an active or completed fit. CUBLAS_WORKSPACE_CONFIG=:4096:8 is required.
+Current shared venv plus retained historical-advanced/runtime remain unchanged.
+
+All15 feature fits completed and21,297 paired forecasts/arm verified. Selected
+minus_momentum(40features), skill-0.386357% versus empirical reference; every
+featurearmtrails baseline. Selection independently verified, not qualification.
+Stage1 backup/recovery verified all15fits and1,215score shards. HPO has15newfits
+reserved; its default(.0003,.1) reuses3exactlyverified originalStage1 fits.
+Current conservative budget charge31/216 includes one pre-fit environment refusal.
+
+Read production-execution-plan-v3.json and confirmation-gate-lock.json:
+freeze HPO winner, thenthree2023 folds for eachseed11/29/47; allthree seeds must
+have strictlypositive aggregatepairedweightedskill tocontinueStage4. Neverselect
+bestseed; seed11nominal. Candidate87e34105 has two clean scoped gate reviews.
+No confirmation evidence has been inspected. Later nine2024-2025 refits use
+freshweights andexpanding settled history; saveallcheckpoints. No2026read/scoring.
+
+On HPO completion: onboard immutable outputs, verify alloriginalartifact
+identities/pairing andfull3fold objectives, selectonlycompletefinite trial;
+create/preflight constrained confirmationJSONs andrecordactualattempts. Continue
+the authorized cycle, uncertainty findings, finalmemo, recovery and reviewed
+merge/push. NoMIO,provider,backtest,upgrade,fullsuite,live orbudgetexpansion.
+Older handoffs below are historical; current private receipts take precedence.
+
 # Active handoff — 2026-10-07 evening: production pilot complete, recovery pending
 
 Continue the owner-authorized bounded forecasting cycle in isolated
